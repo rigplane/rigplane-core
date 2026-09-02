@@ -87,8 +87,18 @@ def test_profile_query_bytes_replace_scheduler_literals(
 @pytest.mark.parametrize("model", ["IC-7300", "IC-7610", "IC-9700"])
 def test_missing_ptt_getter_fails_closed(model: str) -> None:
     profile = get_radio_profile(model)
-    assert "get_transceiver_status" not in profile.command_names
-    executor, _sent = recording_executor(profile)
+    assert profile.command_map is not None
+    without_getter = replace(
+        profile,
+        command_map=CommandMap(
+            {
+                name: profile.command_map.get(name)
+                for name in profile.command_map
+                if name != "get_transceiver_status"
+            }
+        ),
+    )
+    executor, _sent = recording_executor(without_getter)
 
     assert executor.query_for_path(FieldPath.global_("tx_state", "ptt")) is None
 
@@ -972,7 +982,7 @@ def test_ic7610_real_profile_freq_mode_are_pollable_and_emit_25_26() -> None:
     } <= set(sent)
 
 
-def test_ic7610_real_profile_ptt_without_getter_fails_closed() -> None:
+def test_ic7610_real_profile_ptt_getter_emits_declared_read() -> None:
     acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
     assert acquisition is not None
 
@@ -987,7 +997,7 @@ def test_ic7610_real_profile_ptt_without_getter_fails_closed() -> None:
 
     executor, sent = recording_executor(get_radio_profile("IC-7610"))
 
-    assert executor.query_for_path(ptt) is None
+    assert executor.query_for_path(ptt) == acquisition_query(0x1C, sub=0x00)
 
     for request in requests:
         if ptt not in request.paths:
@@ -995,10 +1005,9 @@ def test_ic7610_real_profile_ptt_without_getter_fails_closed() -> None:
         execution = asyncio.run(
             executor.execute(request, already_sent_paths=frozenset())
         )
-        assert execution.sent_paths == ()
-        assert execution.failed_paths == (ptt,)
-        assert execution.failure_reason == "no_civ_query_mapping"
-    assert sent == []
+        assert ptt in execution.sent_paths
+        assert ptt not in execution.failed_paths
+    assert acquisition_query(0x1C, sub=0x00) in sent
 
 
 def test_ic7610_real_profile_att_preamp_squelch_query_for_path() -> None:
@@ -2995,7 +3004,7 @@ def test_ic7610_real_profile_tx_vox_toggle_query_for_path() -> None:
     ptt = FieldPath.global_("tx_state", "ptt")
     rit_on = FieldPath.global_("tx_state", "rit_on")
     rit_tx = FieldPath.global_("tx_state", "rit_tx")
-    assert executor.query_for_path(ptt) is None
+    assert executor.query_for_path(ptt) == acquisition_query(0x1C, sub=0x00)
     assert executor.query_for_path(rit_on) == acquisition_query(0x21, sub=0x01)
     assert executor.query_for_path(rit_tx) == acquisition_query(0x21, sub=0x02)
 
@@ -3140,7 +3149,7 @@ def test_ic7610_real_profile_vfo_global_query_for_path() -> None:
     compressor_on = FieldPath.global_("tx_state", "compressor_on")
     monitor_on = FieldPath.global_("tx_state", "monitor_on")
     vox_on = FieldPath.global_("tx_state", "vox_on")
-    assert executor.query_for_path(ptt) is None
+    assert executor.query_for_path(ptt) == acquisition_query(0x1C, sub=0x00)
     assert executor.query_for_path(rit_on) == acquisition_query(0x21, sub=0x01)
     assert executor.query_for_path(rit_tx) == acquisition_query(0x21, sub=0x02)
     assert executor.query_for_path(compressor_on) == acquisition_query(0x16, sub=0x44)

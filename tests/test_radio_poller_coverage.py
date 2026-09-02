@@ -1004,6 +1004,16 @@ async def test_scheduler_ptt_request_uses_ic705_declared_getter() -> None:
 @pytest.mark.asyncio
 async def test_scheduler_ptt_without_profile_getter_fails_closed() -> None:
     radio = _make_radio(active="MAIN", model="IC-7610")
+    profile = radio.profile
+    assert profile.command_map is not None
+    command_map = CommandMap(
+        {
+            name: profile.command_map.get(name)
+            for name in profile.command_map
+            if name != "get_transceiver_status"
+        }
+    )
+    radio.profile = dataclasses.replace(profile, command_map=command_map)
     path = FieldPath.global_("tx_state", "ptt")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
     radio._acquisition_scheduler = scheduler
@@ -2212,10 +2222,7 @@ async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None
 
 @pytest.mark.parametrize(
     ("model", "expected_seconds"),
-    # IC-705 dropped from 11.1s to 11.0s (one fewer query per rotation) when
-    # MOR-1540 removed the over-declared "digisel" capability, which had
-    # been adding an unanswerable 0x16/0x4E poll to every rotation.
-    (("IC-7300", 8.0), ("IC-705", 11.0)),
+    (("IC-7300", 8.0), ("IC-705", 5.0)),
 )
 def test_relative_vfo_retention_window_follows_provider_poll_cadence(
     model: str,
@@ -2692,9 +2699,6 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
 
     assert {
-        acquisition_query(0x15, sub=0x01, receiver=0x00),
-        acquisition_query(0x15, sub=0x01, receiver=0x01),
-        acquisition_query(0x15, sub=0x07),
         acquisition_query(0x16, sub=0x12, receiver=0x00),
         acquisition_query(0x16, sub=0x12, receiver=0x01),
         acquisition_query(0x16, sub=0x32, receiver=0x00),
@@ -2709,13 +2713,17 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
         acquisition_query(0x16, sub=0x48, receiver=0x01),
         acquisition_query(0x16, sub=0x4F, receiver=0x00),
         acquisition_query(0x16, sub=0x4F, receiver=0x01),
-        acquisition_query(0x16, sub=0x50),
         acquisition_query(0x16, sub=0x56, receiver=0x00),
         acquisition_query(0x16, sub=0x56, receiver=0x01),
-        acquisition_query(0x16, sub=0x58),
         acquisition_query(0x1A, sub=0x04, receiver=0x00),
         acquisition_query(0x1A, sub=0x04, receiver=0x01),
     }.issubset(set(poller._STATE_QUERIES))  # noqa: SLF001
+    assert {
+        acquisition_query(0x15, sub=0x01, receiver=0x00),
+        acquisition_query(0x15, sub=0x07),
+        acquisition_query(0x16, sub=0x50),
+        acquisition_query(0x16, sub=0x58),
+    }.isdisjoint(set(poller._STATE_QUERIES))  # noqa: SLF001
 
 
 def test_state_queries_include_transceiver_status_reads_for_ic7610() -> None:
@@ -2723,11 +2731,11 @@ def test_state_queries_include_transceiver_status_reads_for_ic7610() -> None:
 
     assert {
         acquisition_query(0x1C, sub=0x01),
-        acquisition_query(0x1C, sub=0x03),
         acquisition_query(0x21, sub=0x00),
         acquisition_query(0x21, sub=0x01),
         acquisition_query(0x21, sub=0x02),
     }.issubset(set(poller._STATE_QUERIES))  # noqa: SLF001
+    assert acquisition_query(0x1C, sub=0x03) not in poller._STATE_QUERIES  # noqa: SLF001
 
 
 def test_fast_cmds_include_comp_meter_for_ic7610() -> None:

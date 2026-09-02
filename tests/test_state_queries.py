@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
 from rigplane.commands._frame import build_civ_frame, decode_wire_tuple
+from rigplane.commands.command_map import CommandMap
 from rigplane.commands.commander import Priority
 from rigplane.commands.scope import (
     SCOPE_RECEIVER_SELECTOR_SUBS,
@@ -199,7 +201,7 @@ def test_acquisition_profile_resolver_six_profile_census_and_exact_declared_byte
                 census["missing"] += 1
                 assert resolver(path) is None
 
-    assert census == Counter(agree=299, diverge=4, absent=23, missing=70)
+    assert census == Counter(agree=301, diverge=4, absent=23, missing=68)
 
 
 def test_acquisition_profile_resolver_relative_vfo_and_refusal_rules() -> None:
@@ -474,6 +476,8 @@ class TestBuildStateQueries:
         ]
         assert acquisition_query(0x07, data=b"\xd2") not in queries
         assert acquisition_query(0x07, data=b"\xc2") not in queries
+        assert acquisition_query(0x14, sub=0x01) in queries
+        assert acquisition_query(0x14, sub=0x01, receiver=0) not in queries
 
     def test_ic7610_includes_scope_queries(self) -> None:
         """IC-7610 should have scope sub-commands (0x27)."""
@@ -492,56 +496,84 @@ class TestBuildStateQueries:
         else:
             assert len(scope_queries) == 0
 
-    def test_global_queries_present(self) -> None:
-        """Power, PTT, split, RIT etc. must be in every query list."""
+    def test_queries_follow_profile_field_capabilities_and_command_map(self) -> None:
         profile = resolve_radio_profile(model="IC-7610")
         queries = build_state_queries(profile, _ic7610_caps())
-        parts = map(civ_frame_parts, queries)
-        cmds = {(part.command, part.sub) for part in parts if not part.data}
-        assert (0x18, None) in cmds  # Power status
-        assert (0x1C, 0x00) in cmds  # PTT
-        assert (0x0F, None) in cmds  # Split
-        assert (0x21, 0x00) in cmds  # RIT frequency
+        assert profile.state_acquisition is not None
+        pollable = profile.state_acquisition.pollable_paths()
+        resolve = acquisition_query_resolver_for_profile(profile)
+        expected = []
+        for path in pollable:
+            query = resolve(path)
+            if query is None:
+                continue
+            if query.receiver is not None and not profile.supports_cmd29(
+                query.command, query.sub
+            ):
+                if query.receiver != 0:
+                    continue
+                query = replace(query, receiver=None)
+            if query not in expected:
+                expected.append(query)
 
-    def test_serial_adds_meter_queries(self) -> None:
-        """Serial backends should include ALC/comp/VD/Id meter queries."""
-        profile = resolve_radio_profile(model="IC-7610")
-        lan_queries = build_state_queries(profile, _ic7610_caps(), is_serial=False)
-        serial_queries = build_state_queries(profile, _ic7610_caps(), is_serial=True)
-        # Serial should have more queries (the extra meters)
-        assert len(serial_queries) > len(lan_queries)
-        parts = map(civ_frame_parts, serial_queries)
-        serial_cmds = {(part.command, part.sub) for part in parts if not part.data}
-        assert (0x15, 0x13) in serial_cmds  # ALC meter
-        assert (0x15, 0x14) in serial_cmds  # Compressor meter
-        assert (0x15, 0x15) in serial_cmds  # VD
-        assert (0x15, 0x16) in serial_cmds  # Id
+        assert queries == expected
+        assert acquisition_query(0x18) not in queries
+        assert acquisition_query(0x1C, sub=0x03) not in queries
 
-    def test_missing_capability_skips_query(self) -> None:
-        """If a capability is missing, its per-rx queries should be skipped."""
-        profile = resolve_radio_profile(model="IC-7610")
-        full_caps = _ic7610_caps()
-        # Remove 'nb' capability
-        reduced_caps = full_caps - {"nb"}
-        full_queries = build_state_queries(profile, full_caps)
-        reduced_queries = build_state_queries(profile, reduced_caps)
-        # Both receiver-routed NB queries should disappear with the capability.
-        expected = {
-            acquisition_query(0x16, sub=0x22, receiver=0),
-            acquisition_query(0x16, sub=0x22, receiver=1),
-        }
-        assert expected.issubset(full_queries)
-        assert expected.isdisjoint(reduced_queries)
+    def test_command_map_mutation_changes_built_query(self) -> None:
+        profile = resolve_radio_profile(model="IC-7300")
+        assert profile.command_map is not None
+        commands = {name: profile.command_map.get(name) for name in profile.command_map}
+        commands["get_rf_power"] = (0x14, 0x7E)
+        mutated = replace(profile, command_map=CommandMap(commands))
 
-    def test_empty_capabilities_still_has_globals(self) -> None:
-        """Even with no capabilities, global queries should be present."""
+        original_queries = build_state_queries(profile, set())
+        mutated_queries = build_state_queries(mutated, set())
+
+        assert acquisition_query(0x14, sub=0x0A) in original_queries
+        assert acquisition_query(0x14, sub=0x7E) not in original_queries
+        assert acquisition_query(0x14, sub=0x0A) not in mutated_queries
+        assert acquisition_query(0x14, sub=0x7E) in mutated_queries
+
+    def test_polling_membership_mutation_changes_built_query(self) -> None:
+        profile = resolve_radio_profile(model="IC-7300")
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        power_path = FieldPath.global_("operator_controls", "power_level")
+        capabilities = tuple(
+            capability
+            for capability in acquisition.capabilities
+            if capability.path != power_path
+        )
+        mutated = replace(
+            profile,
+            state_acquisition=replace(acquisition, capabilities=capabilities),
+        )
+
+        assert acquisition_query(0x14, sub=0x0A) in build_state_queries(profile, set())
+        assert acquisition_query(0x14, sub=0x0A) not in build_state_queries(
+            mutated, set()
+        )
+
+    def test_legacy_arguments_do_not_override_profile_declarations(self) -> None:
         profile = resolve_radio_profile(model="IC-7610")
-        queries = build_state_queries(profile, set())
-        # Should still have freq/mode + globals
-        assert len(queries) > 0
-        parts = map(civ_frame_parts, queries)
-        cmds = {(part.command, part.sub) for part in parts if not part.data}
-        assert (0x18, None) in cmds  # Power status
+        expected = build_state_queries(profile, set(), is_serial=False)
+        assert (
+            build_state_queries(
+                profile,
+                set(profile.capabilities),
+                is_serial=True,
+            )
+            == expected
+        )
+
+    @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "X6100"])
+    def test_profile_without_state_acquisition_emits_no_queries(
+        self, model: str
+    ) -> None:
+        profile = resolve_radio_profile(model=model)
+        assert profile.state_acquisition is None
+        assert build_state_queries(profile, set(profile.capabilities)) == []
 
     def test_deterministic_output(self) -> None:
         """Same inputs should produce identical output."""
@@ -551,35 +583,39 @@ class TestBuildStateQueries:
         q2 = build_state_queries(profile, caps)
         assert q1 == q2
 
-    def test_ic9700_dual_watch_query_uses_profile_wire_tuple(self) -> None:
-        profile = resolve_radio_profile(model="IC-9700")
-        command, sub, prefix = decode_wire_tuple(
-            profile.command_map.get("get_dual_watch")
-        )
-        assert (command, sub, prefix) == (0x16, 0x59, b"")
-
-        dual_watch_delta = Counter(
-            build_state_queries(profile, {"dual_watch"})
-        ) - Counter(build_state_queries(profile, set()))
-
-        assert dual_watch_delta == Counter({acquisition_query(0x16, sub=0x59): 1})
-
     def test_ic7610_dual_watch_query_preserves_wire_tuple(self) -> None:
         profile = resolve_radio_profile(model="IC-7610")
         command, sub, prefix = decode_wire_tuple(
             profile.command_map.get("get_dual_watch")
         )
         assert (command, sub, prefix) == (0x07, None, b"\xc2")
-
-        dual_watch_delta = Counter(
-            build_state_queries(profile, {"dual_watch"})
-        ) - Counter(build_state_queries(profile, set()))
-
-        assert dual_watch_delta == Counter({acquisition_query(0x07, data=b"\xc2"): 1})
-        assert acquisition_query(0x07) not in dual_watch_delta
+        queries = build_state_queries(profile, set())
+        assert queries.count(acquisition_query(0x07, data=b"\xc2")) == 1
+        assert acquisition_query(0x07) not in queries
         assert build_civ_frame(0x98, 0xE0, 0x07, sub=0xC2) == bytes.fromhex(
             "FE FE 98 E0 07 C2 FD"
         )
+
+    def test_duplicate_query_resolution_is_deduplicated_in_profile_order(self) -> None:
+        profile = resolve_radio_profile(model="IC-7300")
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        filter_num = FieldPath.active("main", "freq_mode", "filter_num")
+        capabilities = tuple(
+            replace(capability, polling=True)
+            if capability.path == filter_num
+            else capability
+            for capability in acquisition.capabilities
+        )
+        assert any(capability.path == filter_num for capability in capabilities)
+        mutated = replace(
+            profile,
+            state_acquisition=replace(acquisition, capabilities=capabilities),
+        )
+
+        queries = build_state_queries(mutated, set())
+        assert len(queries) == len(set(queries))
+        assert queries.count(acquisition_query(0x26, selector=0)) == 1
 
 
 class TestScopeReceiverSelector:
@@ -609,29 +645,33 @@ class TestScopeReceiverSelector:
         """
         assert 0x1E not in SCOPE_RECEIVER_SELECTOR_SUBS
 
-    def test_sweep_splits_scope_reads_eight_selector_four_bare(self) -> None:
+    def test_sweep_scope_reads_follow_declared_commands_and_shapes(self) -> None:
         profile = resolve_radio_profile(model="IC-7300")
         scope = _scope_queries(build_state_queries(profile, _ic7300_caps()))
 
         frame_parts = [civ_frame_parts(query) for query in scope]
-        with_selector = {part.sub for part in frame_parts if part.data}
+        with_selector = {
+            part.sub
+            for part in frame_parts
+            if len(part.data) == 1 and part.data == bytes([SCOPE_SELECTOR_MAIN])
+        }
         bare = {part.sub for part in frame_parts if not part.data}
 
-        assert with_selector == _SELECTOR_SUBS
+        assert with_selector == _SELECTOR_SUBS - {0x1F}
         assert bare == _BARE_SUBS
-        assert len(scope) == len(_SELECTOR_SUBS) + len(_BARE_SUBS) == 12
-        # Scope reads are the only queries with both a sub-command and data.
-        queries = build_state_queries(profile, _ic7300_caps())
-        parts = map(civ_frame_parts, queries)
-        assert [
-            part.command for part in parts if part.sub is not None and part.data
-        ] == [0x27] * len(_SELECTOR_SUBS)
+        assert acquisition_query(0x27, sub=0x1E, data=b"\x01\x01") in scope
+        assert acquisition_query(0x27, sub=0x1F, data=b"\x00") not in scope
+        assert len(scope) == 12
 
     def test_sweep_selector_is_one_byte_and_main(self) -> None:
         profile = resolve_radio_profile(model="IC-7300")
         scope = _scope_queries(build_state_queries(profile, _ic7300_caps()))
 
-        carried = [part.data for part in map(civ_frame_parts, scope) if part.data]
+        carried = [
+            part.data
+            for part in map(civ_frame_parts, scope)
+            if part.sub in SCOPE_RECEIVER_SELECTOR_SUBS
+        ]
         assert carried, "no scope read carried a selector"
         for data in carried:
             assert data == bytes([SCOPE_SELECTOR_MAIN])
@@ -686,8 +726,37 @@ class TestFetchInitialState:
     @pytest.mark.asyncio
     async def test_dispatches_all_queries(self, radio) -> None:
         queries = build_state_queries(radio._profile, set(radio._profile.capabilities))
+        poller = object.__new__(RadioPoller)
+        poller._profile = radio._profile
+        poller._caps = set(radio._profile.capabilities)
+        poller._is_serial = not radio._profile.has_lan
+
+        assert RadioPoller._build_state_queries(poller) == queries
+
         await radio._fetch_initial_state()
-        assert radio.send_civ.call_count == len(queries)
+        expected_calls = []
+        for query in queries:
+            if query.receiver is not None:
+                inner = bytes([query.receiver, query.command])
+                if query.sub is not None:
+                    inner += bytes([query.sub])
+                expected_calls.append(
+                    call(
+                        0x29,
+                        data=inner + query.data,
+                        wait_response=False,
+                    )
+                )
+            else:
+                expected_calls.append(
+                    call(
+                        query.command,
+                        sub=query.sub,
+                        data=query.data,
+                        wait_response=False,
+                    )
+                )
+        assert radio.send_civ.await_args_list == expected_calls
         assert radio._initial_state_fetched is True
 
     @pytest.mark.asyncio
@@ -711,19 +780,12 @@ class TestFetchInitialState:
     async def test_scope_reads_carry_the_selector_only_where_it_is_legal(
         self, radio
     ) -> None:
-        """MOR-1981: the eight get ``<sub> 00``, the four go out bare.
-
-        Measured on a live IC-7300: the bare form of each of the eight is
-        refused with a NAK, and the four answer.  A mutation that adds the
-        byte to one of the four -- 0x1C above all, where ``27 1C 00`` is a
-        SET -- fails here.
-        """
         radio._profile = resolve_radio_profile(model="IC-7300")
 
         await radio._fetch_initial_state()
 
         sent = radio.send_civ.await_args_list
-        for sub in sorted(_SELECTOR_SUBS):
+        for sub in sorted(_SELECTOR_SUBS - {0x1F}):
             assert (
                 call(
                     0x27,
@@ -737,6 +799,24 @@ class TestFetchInitialState:
             assert call(0x27, sub=sub, data=b"", wait_response=False) in sent, (
                 f"0x27/0x{sub:02X} was not sent bare"
             )
+        assert (
+            call(
+                0x27,
+                sub=0x1E,
+                data=b"\x01\x01",
+                wait_response=False,
+            )
+            in sent
+        )
+        assert (
+            call(
+                0x27,
+                sub=0x1F,
+                data=b"\x00",
+                wait_response=False,
+            )
+            not in sent
+        )
 
     @pytest.mark.asyncio
     async def test_sets_flag_on_success(self, radio) -> None:

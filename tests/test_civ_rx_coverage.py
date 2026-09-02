@@ -1738,12 +1738,6 @@ _SLOW_STATE_TOGGLE_CASES = (
         "tunerStatus",
         2,
     ),
-    (
-        _make_frame(cmd=0x1C, sub=0x03, data=b"\x01"),
-        "global.tx_state.tx_freq_monitor",
-        "txFreqMonitor",
-        True,
-    ),
     # 0x12 0x00 0x01 RX-ANT for ANT1 ON → global slow-state bool (MOR-462).
     (
         _make_frame(cmd=0x12, sub=0x00, data=b"\x01"),
@@ -4167,14 +4161,18 @@ def test_update_radio_state_tuner_status(radio_with_state: IcomRadio) -> None:
     assert field.value == 2
 
 
-def test_update_radio_state_tx_freq_monitor(radio_with_state: IcomRadio) -> None:
-    """TX freq monitor (0x1C 0x03) is observation-backed (MOR-437)."""
-    frame = CivFrame(0xE0, 0x98, 0x1C, 0x03, b"\x01")
-    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
-    field = radio_with_state._state_store.snapshot().field(
-        "global.tx_state.tx_freq_monitor"
-    )
-    assert field.value is True
+def test_transmit_frequency_does_not_update_boolean_monitor_state(
+    radio_with_state: IcomRadio,
+) -> None:
+    frame = CivFrame(0xE0, 0x98, 0x1C, 0x03, b"\x00\x00\x10\x07\x00")
+    with patch(
+        "rigplane.runtime._civ_rx.parse_frequency_response",
+        return_value=7_100_000,
+    ) as parse_frequency:
+        radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+
+    parse_frequency.assert_called_once_with(frame)
+    assert radio_with_state._state_store.snapshot().fields == ()
 
 
 def test_update_radio_state_rit_frequency(radio_with_state: IcomRadio) -> None:

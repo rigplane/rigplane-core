@@ -2466,13 +2466,7 @@ class CivRuntime:
                 )
             )
         elif frame.command == 0x1C and frame.sub == 0x03 and frame.data:
-            observations.append(
-                self._observation(
-                    FieldPath.global_("tx_state", "tx_freq_monitor"),
-                    bool(frame.data[0]),
-                    frame=frame,
-                )
-            )
+            parse_frequency_response(frame)
         elif frame.command == 0x07 and len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
