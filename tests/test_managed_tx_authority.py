@@ -1079,6 +1079,54 @@ async def test_late_physical_on_retains_debt_until_a_fresh_off(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["termination", "late_on", "late_on_isolated"])
+async def test_startup_wait_failure_leaves_no_pending_tasks(
+    scenario: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = asyncio.all_tasks()
+    captured: dict[str, object] = {}
+    wait_for = asyncio.wait_for
+    task = None
+
+    async def fail_startup(awaitable, timeout):
+        if asyncio.current_task() is task and not captured:
+            frame = task.get_coro().cr_frame
+            assert frame is not None
+            assert awaitable.cr_code is asyncio.Event.wait.__code__
+            assert awaitable.cr_frame.f_locals["self"] is frame.f_locals["started"]
+            captured.update(frame.f_locals)
+            awaitable.close()
+            raise TimeoutError("injected startup wait failure")
+        return await wait_for(awaitable, timeout)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(asyncio, "wait_for", fail_startup)
+        task = asyncio.create_task(
+            test_shutdown_termination_cancels_owned_cleanup_without_waiting_for_gate()
+            if scenario == "termination"
+            else test_late_physical_on_retains_debt_until_a_fresh_off(
+                scenario == "late_on_isolated"
+            )
+        )
+        try:
+            done, _ = await asyncio.wait((task,), timeout=0.2)
+            assert captured, "startup fault did not reach the intended Event.wait"
+            assert task in done, "startup failure stranded scenario teardown"
+            with pytest.raises(TimeoutError, match="injected startup wait failure"):
+                task.result()
+            assert not (asyncio.all_tasks() - before), "startup failure leaked tasks"
+        finally:
+            for value in captured.values():
+                if isinstance(value, asyncio.Event):
+                    value.set()
+            pending = asyncio.all_tasks() - before
+            for pending_task in pending:
+                pending_task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_repeated_force_off_and_retry_leave_cleanup_owned_until_close() -> None:
     fence, clock = TxAbortFence(), FakeClock()
     cleanup_started, finish_cleanup = asyncio.Event(), asyncio.Event()
