@@ -51,6 +51,11 @@ export function isValidLanguageId(id: string): boolean {
 /** Required groups: typography, geometry, meters, frequency, motion, focus ring, RX/TX. Density and renderer slots are manifest-level, not tokens. */
 export interface StateFeedbackTokens { readonly idle: string; readonly active: string; readonly tuning: string }
 
+export interface MeterDisplay {
+  readonly segmentCount: number; // integer >= 2
+  readonly segmentGapPx: number; // >= 0
+}
+
 export const REQUIRED_TOKEN_GROUPS = [
   'typography', 'geometry', 'meters', 'frequency', 'motion', 'focusRing', 'rx', 'tx',
 ] as const;

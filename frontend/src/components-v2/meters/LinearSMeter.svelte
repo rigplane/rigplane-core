@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { createSmoother, prefersReducedMotion, onReducedMotionChange } from '$lib/utils/smoothing.svelte';
+  import type { MeterDisplay } from '../../presentation/languages/contract';
+  import { DEFAULT_METER_DISPLAY } from './meter-display';
   import {
     calibratedToSegments,
     calibratedToSUnit,
     calibratedToDbm,
     formatDbm,
     getScaleMarks,
+    getS9Raw,
     rawToSegments,
   } from './smeter-scale';
 
@@ -15,16 +18,24 @@
     compact?: boolean;
     label?: string;
     variant?: string;
+    display?: MeterDisplay;
   }
 
-  let { value, compact = false, label, variant }: Props = $props();
+  let { value, compact = false, label, variant, display = DEFAULT_METER_DISPLAY }: Props = $props();
 
   const isVfoVariant = $derived(variant === 'vfo' || variant === 'vfo-wide');
   const isWideVfoVariant = $derived(variant === 'vfo-wide');
 
   // ── Segment geometry ────────────────────────────────────────────────────────
-  const SEG_COUNT = 20;
-  const SEG_GAP = 1;
+  // `smeter-scale.ts`'s rawToSegments/calibratedToSegments always report a
+  // position on a fixed 0-20 domain (that file's `rawToSegments` tops out at
+  // 20 for any input, regardless of caller) — independent of how many visual
+  // segments this component draws. RAW_SEGMENT_DOMAIN names that fixed width
+  // so a raw-domain reading can be rescaled onto the `display.segmentCount`
+  // visual domain below.
+  const RAW_SEGMENT_DOMAIN = 20;
+  const SEG_COUNT = $derived(display.segmentCount);
+  const SEG_GAP = $derived(display.segmentGapPx);
   const BAR_X = $derived(compact && isVfoVariant ? (isWideVfoVariant ? 14 : 12) : 8);
   const BAR_WIDTH = $derived(compact && isVfoVariant ? (isWideVfoVariant ? 498 : 492) : 484);
   const SEG_W = $derived((BAR_WIDTH - (SEG_COUNT - 1) * SEG_GAP) / SEG_COUNT);
@@ -35,10 +46,21 @@
     return BAR_X + i * (SEG_W + SEG_GAP);
   }
 
-  // x position (from bar left) for a given raw value
+  // x position (from bar left) for a given raw value — rawToSegments(raw) is
+  // on the fixed RAW_SEGMENT_DOMAIN, rescaled here onto SEG_COUNT segments.
   function rawToX(raw: number): number {
-    return BAR_X + rawToSegments(raw) * (SEG_W + SEG_GAP);
+    return BAR_X + (rawToSegments(raw) / RAW_SEGMENT_DOMAIN) * SEG_COUNT * (SEG_W + SEG_GAP);
   }
+
+  // Index of the first visual segment at or above the calibrated S9 anchor.
+  // `rawToSegments(getS9Raw())` is exactly 11 on the raw 0-20 domain — S9 is
+  // the last S-unit knot, so `rawToSegments` (via `rawToSFloat`) resolves it
+  // to exactly (9/9)*11 — rescaled here by SEG_COUNT so this index tracks a
+  // non-20 segment count instead of the fixed literal 11 the
+  // pre-display-prop code used.
+  const s9SegmentIndex = $derived(
+    Math.round((rawToSegments(getS9Raw()) / RAW_SEGMENT_DOMAIN) * SEG_COUNT),
+  );
 
   // ── Colors ──────────────────────────────────────────────────────────────────
   const ACTIVE_COLORS: ReadonlyArray<string> = [
@@ -49,8 +71,14 @@
     '#E57010', '#EB6210', '#F05418', '#F44820', '#F83C28',
   ];
 
+  // Samples the 20-entry ramp above by fraction of SEG_COUNT, so a non-20
+  // segment count still walks the same color progression start-to-end.
+  function activeColor(i: number): string {
+    return ACTIVE_COLORS[Math.round((i / (SEG_COUNT - 1)) * (ACTIVE_COLORS.length - 1))];
+  }
+
   function dimColor(i: number): string {
-    return i < 11 ? '#0A2415' : '#1A1008';
+    return i < s9SegmentIndex ? '#0A2415' : '#1A1008';
   }
 
   // ── Label marks ─────────────────────────────────────────────────────────────
@@ -140,7 +168,7 @@
   const smoother = createSmoother(0.06, 0.1);
 
   $effect(() => {
-    smoother.update(calibratedToSegments(value));
+    smoother.update((calibratedToSegments(value) / RAW_SEGMENT_DOMAIN) * SEG_COUNT);
   });
 
   onMount(() => {
@@ -150,9 +178,13 @@
 
   // ── Peak hold ───────────────────────────────────────────────────────────────
   const PEAK_HOLD_MS = 1000;   // hold at peak for 1 second
-  const PEAK_DECAY   = 0.0195; // segments per frame to drop after hold expires (~30% faster)
+  // Fraction of full scale to drop per frame once the hold window expires
+  // (~30% faster), scaled by SEG_COUNT below — peakSegs lives on the
+  // SEG_COUNT-wide visual domain (fed by the rescaled smoother.update()
+  // above), not the fixed RAW_SEGMENT_DOMAIN.
+  const PEAK_DECAY_FRACTION = 0.0195 / RAW_SEGMENT_DOMAIN;
 
-  let peakSegs   = $state(0);  // peak position in segments (0-20)
+  let peakSegs   = $state(0);  // peak position in segments (0-SEG_COUNT)
   let peakTime   = $state(0);  // timestamp when peak was set
   let peakFrameId = 0;
 
@@ -203,7 +235,7 @@
         peakTime = now;
       } else if (elapsed > PEAK_HOLD_MS) {
         // Hold expired — decay toward current level
-        peakSegs = Math.max(current, peakSegs - PEAK_DECAY * 16.67); // ~1 seg/sec at 60fps
+        peakSegs = Math.max(current, peakSegs - PEAK_DECAY_FRACTION * SEG_COUNT * 16.67); // ~1 seg/sec at 60fps
       }
       // else: holding — do nothing
 
@@ -238,8 +270,14 @@
   // Only show peak line if it's meaningfully ahead of current bar
   let showPeak = $derived(peakSegs - smoother.value > 0.3);
 
+  // Peak-line color zones as fractions of the raw 20-segment domain — 15/20
+  // and 18/20 are visual gradient stops with no calibration anchor (unlike
+  // s9SegmentIndex above), rescaled the same way so they track SEG_COUNT.
+  const peakZoneYellow = $derived(Math.round((15 / RAW_SEGMENT_DOMAIN) * SEG_COUNT));
+  const peakZoneOrange = $derived(Math.round((18 / RAW_SEGMENT_DOMAIN) * SEG_COUNT));
+
   // Color of peak line based on zone
-  let peakColor = $derived(peakSegs <= 11 ? 'var(--v2-accent-cyan-bright)' : peakSegs <= 15 ? 'var(--v2-accent-yellow)' : peakSegs <= 18 ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)');
+  let peakColor = $derived(peakSegs <= s9SegmentIndex ? 'var(--v2-accent-cyan-bright)' : peakSegs <= peakZoneYellow ? 'var(--v2-accent-yellow)' : peakSegs <= peakZoneOrange ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)');
 
   // ── Reactive display values ─────────────────────────────────────────────────
   let fullSegs = $derived(Math.floor(smoother.value));
@@ -324,6 +362,7 @@
 
     <!-- Dim (inactive) -->
     <rect
+      data-segment={i}
       {x} y={TRACK_Y + 1}
       width={SEG_W} height={TRACK_H - 2}
       fill={dimColor(i)}
@@ -334,13 +373,13 @@
       <rect
         {x} y={TRACK_Y + 1}
         width={SEG_W} height={TRACK_H - 2}
-        fill={ACTIVE_COLORS[i]}
+        fill={activeColor(i)}
       />
     {:else if i === fullSegs && fracSeg > 0.01}
       <rect
         {x} y={TRACK_Y + 1}
         width={Math.max(1, SEG_W * fracSeg)} height={TRACK_H - 2}
-        fill={ACTIVE_COLORS[i]}
+        fill={activeColor(i)}
       />
     {/if}
   {/each}
