@@ -39,7 +39,7 @@
  */
 import type { DesignLanguageTokens, RendererViewModel } from '../contract';
 import {
-  resolveTxFeedbackState, stringField, type TxFeedbackRail, type TxKeyTreatment,
+  resolveTxFeedbackState, stringField, toneFor, type TxFeedbackRail, type TxKeyTreatment,
 } from '../tx-feedback-state';
 import { SEGMENTLINE_INK, SEGMENTLINE_PALETTE } from './tokens';
 
@@ -103,9 +103,7 @@ export function renderStateFeedback(
   });
   const { treatment, keyed, faultText } = resolved;
   const rail = RAIL_TABLE[resolved.rail];
-  const tone = resolved.tone === 'rx-idle' ? tokens.rx.idle
-    : resolved.tone === 'tx-active' ? tokens.tx.active
-      : tokens.tx.tuning;
+  const tone = toneFor(resolved.tone, tokens);
 
   return {
     kind: 'segmentline-state-feedback',
