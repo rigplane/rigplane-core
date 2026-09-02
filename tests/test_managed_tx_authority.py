@@ -598,7 +598,7 @@ async def test_replacement_during_shutdown_stales_old_release() -> None:
 
 
 @pytest.mark.asyncio
-async def test_termination_during_initial_release_skips_retirement() -> None:
+async def test_termination_before_initial_release_acceptance_preserves_debt() -> None:
     managed, _, _, _, _, lane = authority(generation=7)
     release_gate = lane.block_next()
     termination = asyncio.Event()
@@ -610,19 +610,17 @@ async def test_termination_during_initial_release_skips_retirement() -> None:
         )
     )
     await asyncio.wait_for(lane.started.get(), 0.2)
+    before = await managed.snapshot()
     termination.set()
-
-    try:
-        result = await asyncio.wait_for(asyncio.shield(shutdown), 0.2)
-    finally:
-        release_gate.set()
-        if not shutdown.done():
-            await shutdown
+    asyncio.get_running_loop().call_soon(release_gate.set)
+    result = await asyncio.wait_for(shutdown, 0.2)
 
     assert result is ShutdownResult.TERMINATED
     assert retired == []
-    assert (await managed.snapshot()).state.release_required
+    assert await managed.snapshot() == before
     assert managed._scheduler_task.done()
+    with pytest.raises(RuntimeError, match="clean RX state"):
+        await managed.close()
 
 
 @pytest.mark.asyncio

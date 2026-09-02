@@ -116,6 +116,7 @@ class ManagedTxAuthority:
         self._release_drained.set()
         self._shutting_down = False
         self._terminated = False
+        self._shutdown_termination: asyncio.Event | None = None
         self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
         self._closing = False
         self._closed = False
@@ -219,6 +220,7 @@ class ManagedTxAuthority:
             if task is None:
                 self._require_open_locked()
                 self._shutting_down = True
+                self._shutdown_termination = termination
                 transition = self._force_off_locked()
                 self._wakeup.wake()
                 task = asyncio.create_task(
@@ -277,6 +279,7 @@ class ManagedTxAuthority:
             async with self._lock:
                 self._shutting_down = False
                 if self._shutdown_task is asyncio.current_task():
+                    self._shutdown_termination = None
                     self._shutdown_task = None
             raise
 
@@ -289,14 +292,18 @@ class ManagedTxAuthority:
         drained = asyncio.create_task(self._release_drained.wait())
         terminated = asyncio.create_task(termination.wait())
         try:
-            await asyncio.wait(
+            done, _ = await asyncio.wait(
                 (drained, terminated), return_when=asyncio.FIRST_COMPLETED
             )
             async with self._lock:
+                if self._terminated:
+                    return False
                 if self._state_is_clean_locked():
                     return True
-                self._terminated = True
-                return False
+                if terminated in done:
+                    self._terminated = True
+                    return False
+                raise RuntimeError("managed TX drain signalled before clean RX state")
         finally:
             for waiter in (drained, terminated):
                 if not waiter.done():
@@ -418,7 +425,11 @@ class ManagedTxAuthority:
                     )
             followup = None
             async with self._lock:
-                if self._terminated:
+                if self._terminated or (
+                    self._shutdown_termination is not None
+                    and self._shutdown_termination.is_set()
+                ):
+                    self._terminated = True
                     return
                 for event in events:
                     transition = self._reduce_locked(event)
