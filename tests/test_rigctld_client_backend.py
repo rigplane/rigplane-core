@@ -351,13 +351,20 @@ async def test_cancelled_lifecycle_preserves_real_stream_close_future(
     writer = asyncio.StreamWriter(wire, protocol, reader, loop)
     closed = protocol._get_close_waiter(writer)
     entered = asyncio.Event()
+    read_entered = asyncio.Event()
     native_wait_closed = writer.wait_closed
+    native_readline = reader.readline
+
+    async def observe_pending_read() -> bytes:
+        read_entered.set()
+        return await native_readline()
 
     async def observe_close_wait() -> None:
         entered.set()
         await native_wait_closed()
 
     monkeypatch.setattr(writer, "wait_closed", observe_close_wait)
+    monkeypatch.setattr(reader, "readline", observe_pending_read)
     replacement = _ExchangeStream()
     connections = iter(((reader, writer), (replacement, replacement)))
 
@@ -370,7 +377,9 @@ async def test_cancelled_lifecycle_preserves_real_stream_close_future(
     tasks = [asyncio.create_task(transport.command("T 1"))]
     lost = False
     try:
-        await asyncio.wait_for(wire.written.wait(), 1)
+        await asyncio.wait_for(read_entered.wait(), 1)
+        assert wire.written.is_set()
+        assert reader._waiter is not None and not reader._waiter.done()
         tasks[0].cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(tasks[0], 1)
