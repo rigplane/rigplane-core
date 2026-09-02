@@ -48,6 +48,7 @@ from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.runtime._state_queries import build_state_queries
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.web.radio_poller import (
     CommandQueue,
@@ -2234,16 +2235,33 @@ def test_relative_vfo_retention_window_follows_provider_poll_cadence(
     poller = RadioPoller(radio, CommandQueue())
 
     acquisition = radio.profile.state_acquisition
-    expected_rotation = (
-        acquisition.default_policy.cadence_seconds
-        if acquisition is not None
-        else 2 * len(poller._STATE_QUERIES) * poller._fast_interval
-    )
+    assert acquisition is not None
+    expected_rotation = acquisition.default_policy.cadence_seconds
     assert expected_rotation is not None
     assert poller._relative_vfo_retention_max_age == pytest.approx(
         2 * expected_rotation + 5.0
     )
     assert poller._relative_vfo_retention_max_age == pytest.approx(expected_seconds)
+
+
+def test_relative_vfo_retention_policy_fallback_is_zero_without_state_acquisition() -> (
+    None
+):
+    """MOR-2221: without ``state_acquisition`` the cadence fallback is 0.0.
+
+    TX-500 declares no ``[state_acquisition]`` block (``rigs/tx500.toml``),
+    so ``acquisition`` is ``None`` and the method falls back to 0.0 rather
+    than the removed ``_STATE_QUERIES``-based estimate.
+    """
+    radio = _make_radio(model="TX-500")
+    radio._civ_ready_idle_timeout = 5.0
+    poller = RadioPoller(radio, CommandQueue())
+
+    assert poller._profile.state_acquisition is None
+    retention_age, coherence_window = poller._relative_vfo_retention_policy()  # noqa: SLF001
+
+    assert coherence_window == pytest.approx(5.0)
+    assert retention_age == pytest.approx(2.0 * 0.0 + 5.0)
 
 
 @pytest.mark.asyncio
@@ -2574,36 +2592,6 @@ async def test_execute_set_agc_undeclared_command_refuses_without_firing_event(
 
 
 @pytest.mark.asyncio
-async def test_send_query_even_and_odd_branch_variants() -> None:
-    radio = _make_radio()
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
-
-    poller._poll_index = 0  # even => fast meter query  # noqa: SLF001
-    await poller._send_query()  # noqa: SLF001
-    assert radio.send_civ.await_args.args[0] == 0x15
-
-    poller._STATE_QUERIES = [  # noqa: SLF001
-        acquisition_query(0x25, selector=0x01)
-    ]
-    poller._poll_index = 1  # odd  # noqa: SLF001
-    await poller._send_query()  # noqa: SLF001
-    assert radio.send_civ.await_args.args[0] == 0x25
-    assert radio.send_civ.await_args.kwargs["data"] == bytes([0x01])
-
-    poller._STATE_QUERIES = [  # noqa: SLF001
-        acquisition_query(0x16, sub=0x22, receiver=0x01)
-    ]
-    poller._poll_index = 1  # noqa: SLF001
-    await poller._send_query()  # noqa: SLF001
-    assert radio.send_civ.await_args.args[0] == 0x29
-
-    poller._STATE_QUERIES = [acquisition_query(0x0F)]  # noqa: SLF001
-    poller._poll_index = 1  # noqa: SLF001
-    await poller._send_query()  # noqa: SLF001
-    assert radio.send_civ.await_args.args[0] == 0x0F
-
-
-@pytest.mark.asyncio
 async def test_run_backoff_and_query_error_paths() -> None:
     queue = CommandQueue()
     queue.put(SetPower(10))
@@ -2697,6 +2685,7 @@ def test_start_stop_running_and_emit_helpers() -> None:
 
 def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
+    queries = set(build_state_queries(poller._profile))  # noqa: SLF001
 
     assert {
         acquisition_query(0x16, sub=0x12, receiver=0x00),
@@ -2717,25 +2706,26 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
         acquisition_query(0x16, sub=0x56, receiver=0x01),
         acquisition_query(0x1A, sub=0x04, receiver=0x00),
         acquisition_query(0x1A, sub=0x04, receiver=0x01),
-    }.issubset(set(poller._STATE_QUERIES))  # noqa: SLF001
+    }.issubset(queries)
     assert {
         acquisition_query(0x15, sub=0x01, receiver=0x00),
         acquisition_query(0x15, sub=0x07),
         acquisition_query(0x16, sub=0x50),
         acquisition_query(0x16, sub=0x58),
-    }.isdisjoint(set(poller._STATE_QUERIES))  # noqa: SLF001
+    }.isdisjoint(queries)
 
 
 def test_state_queries_include_transceiver_status_reads_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
+    queries = set(build_state_queries(poller._profile))  # noqa: SLF001
 
     assert {
         acquisition_query(0x1C, sub=0x01),
         acquisition_query(0x21, sub=0x00),
         acquisition_query(0x21, sub=0x01),
         acquisition_query(0x21, sub=0x02),
-    }.issubset(set(poller._STATE_QUERIES))  # noqa: SLF001
-    assert acquisition_query(0x1C, sub=0x03) not in poller._STATE_QUERIES  # noqa: SLF001
+    }.issubset(queries)
+    assert acquisition_query(0x1C, sub=0x03) not in queries
 
 
 def test_fast_cmds_include_comp_meter_for_ic7610() -> None:
@@ -4063,7 +4053,7 @@ async def test_multiple_commands_execute_in_order_after_fetch() -> None:
 def test_state_queries_include_scope_vbw_rbw_edge_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
 
-    queries = set(poller._STATE_QUERIES)  # noqa: SLF001
+    queries = set(build_state_queries(poller._profile))  # noqa: SLF001
     # Eight reads carry a sub-command plus one-byte Main/Sub selector data;
     # the rest carry only the bare sub-command (MOR-1981).
     assert acquisition_query(0x27, sub=0x16, data=b"\x00") in queries  # edge

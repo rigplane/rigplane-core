@@ -14,6 +14,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState, ReceiverState
 from rigplane.rigctld.state_cache import StateCache
+from rigplane.runtime._state_queries import build_state_queries
 from rigplane.types import CivFrame
 from rigplane.web.radio_poller import (
     CommandQueue,
@@ -26,7 +27,6 @@ from rigplane.web.radio_poller import (
     SetVoxDelay,
     SetVoxGain,
 )
-from test_poller_poll_priority import logical_civ_call
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -328,8 +328,7 @@ def test_civ_rx_0x1a_0x05_vox_delay(tmp_path: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> None:
+def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> None:
     """MOR-661: the IC-7610 (HF/6m) has no FM-repeater CTCSS tone feature, so
     the capability-gated tone/tsql queries (0x16/0x42, 0x16/0x43, 0x1B/0x00,
     0x1B/0x01) are NOT polled — they read garbage (16.5 Hz) on this radio.
@@ -339,74 +338,45 @@ async def test_build_state_queries_omits_repeater_tone_and_tsql_on_ic7610() -> N
     simply filtered out here because the IC-7610 profile no longer declares it.
     """
     profile = resolve_radio_profile(model="IC-7610")
-    radio = MagicMock()
-    radio.profile = profile
-    radio.model = profile.model
-    radio.capabilities = set(profile.capabilities)
-    radio._radio_state = SimpleNamespace(active="MAIN")
-    radio.send_civ = AsyncMock()
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
+    queries = build_state_queries(profile)
 
-    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
-        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
-        await poller._send_query()  # noqa: SLF001
-
-    calls = set(map(logical_civ_call, radio.send_civ.await_args_list))
-    assert not any(command == 0x16 and sub == 0x42 for _, command, sub, _ in calls), (
+    assert not any(q.command == 0x16 and q.sub == 0x42 for q in queries), (
         "repeater_tone should not be polled"
     )
-    assert not any(command == 0x16 and sub == 0x43 for _, command, sub, _ in calls), (
+    assert not any(q.command == 0x16 and q.sub == 0x43 for q in queries), (
         "repeater_tsql should not be polled"
     )
-    assert not any(command == 0x1B and sub == 0x00 for _, command, sub, _ in calls), (
+    assert not any(q.command == 0x1B and q.sub == 0x00 for q in queries), (
         "tone_freq should not be polled"
     )
-    assert not any(command == 0x1B and sub == 0x01 for _, command, sub, _ in calls), (
+    assert not any(q.command == 0x1B and q.sub == 0x01 for q in queries), (
         "tsql_freq should not be polled"
     )
-    assert (None, 0x14, 0x16, b"") in calls, "vox_gain not polled"
-    assert (None, 0x14, 0x17, b"") in calls, "anti_vox_gain not polled"
+    assert any(q.command == 0x14 and q.sub == 0x16 for q in queries), (
+        "vox_gain not polled"
+    )
+    assert any(q.command == 0x14 and q.sub == 0x17 for q in queries), (
+        "anti_vox_gain not polled"
+    )
 
 
-@pytest.mark.asyncio
-async def test_build_state_queries_includes_notch_width() -> None:
-    """_build_state_queries includes 0x16/0x57 (manual notch width) for IC-7610."""
+def test_build_state_queries_includes_notch_width() -> None:
+    """build_state_queries includes 0x16/0x57 (manual notch width) for IC-7610."""
     profile = resolve_radio_profile(model="IC-7610")
-    radio = MagicMock()
-    radio.profile = profile
-    radio.model = profile.model
-    radio.capabilities = set(profile.capabilities)
-    radio._radio_state = SimpleNamespace(active="MAIN")
-    radio.send_civ = AsyncMock()
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
+    queries = build_state_queries(profile)
 
-    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
-        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
-        await poller._send_query()  # noqa: SLF001
-
-    assert (0, 0x16, 0x57, b"") in set(
-        map(logical_civ_call, radio.send_civ.await_args_list)
+    assert any(
+        q.command == 0x16 and q.sub == 0x57 and q.receiver == 0x00 for q in queries
     ), "manual notch width (0x16/0x57) not polled through command 29"
 
 
-@pytest.mark.asyncio
-async def test_build_state_queries_includes_break_in_delay() -> None:
-    """_build_state_queries includes 0x14/0x0F (break-in delay) as common query."""
+def test_build_state_queries_includes_break_in_delay() -> None:
+    """build_state_queries includes 0x14/0x0F (break-in delay) as common query."""
     profile = resolve_radio_profile(model="IC-7610")
-    radio = MagicMock()
-    radio.profile = profile
-    radio.model = profile.model
-    radio.capabilities = set(profile.capabilities)
-    radio._radio_state = SimpleNamespace(active="MAIN")
-    radio.send_civ = AsyncMock()
-    poller = RadioPoller(radio, StateCache(), CommandQueue())
+    queries = build_state_queries(profile)
 
-    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
-        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
-        await poller._send_query()  # noqa: SLF001
-
-    assert (None, 0x14, 0x0F, b"") in set(
-        map(logical_civ_call, radio.send_civ.await_args_list)
+    assert any(
+        q.command == 0x14 and q.sub == 0x0F and q.receiver is None for q in queries
     ), "break_in_delay (0x14/0x0F) not polled"
 
 

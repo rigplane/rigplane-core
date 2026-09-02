@@ -63,11 +63,6 @@ def _priority_of(call) -> Priority | None:
     return call.kwargs.get("priority")
 
 
-def _wait_dispatch_of(call) -> object:
-    """Extract the ``wait_dispatch`` kwarg from a ``send_civ`` call (None if absent)."""
-    return call.kwargs.get("wait_dispatch")
-
-
 def logical_civ_call(
     call: Any, *, selected_unselected: bool = False
 ) -> tuple[int | None, int, int | None, bytes]:
@@ -119,25 +114,6 @@ async def test_meter_poll_sends_background_priority() -> None:
 
 
 @pytest.mark.asyncio
-async def test_state_query_sends_background_priority() -> None:
-    radio = _make_radio(active="MAIN")
-    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
-
-    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
-        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
-        await poller._send_query()  # noqa: SLF001
-
-    assert radio.send_civ.await_count >= 1
-    calls = [logical_civ_call(call) for call in radio.send_civ.await_args_list]
-    assert any(receiver is not None for receiver, _, _, _ in calls)
-    assert any(command == 0x1C and sub == 0x00 for _, command, sub, _ in calls)
-    assert all(command != 0x18 for _, command, _, _ in calls)
-    for call in radio.send_civ.await_args_list:
-        assert _priority_of(call) == Priority.BACKGROUND
-        assert _wait_dispatch_of(call) is False
-
-
-@pytest.mark.asyncio
 async def test_unselected_slot_poll_sends_no_vfo_selection_frames() -> None:
     radio = _make_radio(model="IC-7300", active="MAIN")
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
@@ -146,31 +122,6 @@ async def test_unselected_slot_poll_sends_no_vfo_selection_frames() -> None:
     await poller._poll_unselected_slot(0)  # noqa: SLF001
 
     radio.send_civ.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_state_query_sends_fire_and_forget() -> None:
-    """MOR-497(ii): the state-query poll path must be fire-and-forget so the
-    poll burst does not park the poll loop on the commander future.
-
-    Every ``send_civ`` from ``_send_one_state_query`` must be BACKGROUND AND
-    carry ``wait_dispatch=False``.
-    """
-    radio = _make_radio(active="MAIN")
-    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
-
-    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
-        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
-        await poller._send_query()  # noqa: SLF001
-
-    assert radio.send_civ.await_count >= 1
-    calls = [logical_civ_call(call) for call in radio.send_civ.await_args_list]
-    assert any(receiver is not None for receiver, _, _, _ in calls)
-    assert any(command == 0x1C and sub == 0x00 for _, command, sub, _ in calls)
-    assert all(command != 0x18 for _, command, _, _ in calls)
-    for call in radio.send_civ.await_args_list:
-        assert _priority_of(call) == Priority.BACKGROUND
-        assert _wait_dispatch_of(call) is False
 
 
 @pytest.mark.asyncio

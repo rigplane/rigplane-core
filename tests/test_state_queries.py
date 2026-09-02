@@ -868,13 +868,7 @@ class TestFetchInitialState:
     async def test_dispatches_all_queries(self, radio, model: str) -> None:
         radio._profile = resolve_radio_profile(model=model)
         queries = build_state_queries(radio._profile)
-        assert queries, f"{model}: initial/periodic acquisition must not be empty"
-        poller = object.__new__(RadioPoller)
-        poller._profile = radio._profile
-        poller._caps = set(radio._profile.capabilities)
-        poller._is_serial = not radio._profile.has_lan
-
-        assert RadioPoller._build_state_queries(poller) == queries
+        assert queries, f"{model}: initial acquisition must not be empty"
 
         await radio._fetch_initial_state()
         expected_calls = []

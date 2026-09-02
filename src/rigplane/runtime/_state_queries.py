@@ -1,9 +1,7 @@
 """Shared state query list for populating RadioState.
 
-Used by RadioPoller (periodic polling) and by the one-shot sweep run at
-connect (``runtime/radio_initial_state.py: fetch_initial_state``). Each query
-keeps its CI-V command, semantic sub-command, payload data, and optional
-cmd29 receiver route distinct.
+Each query keeps its CI-V command, semantic sub-command, payload data, and
+optional cmd29 receiver route distinct.
 """
 
 from __future__ import annotations

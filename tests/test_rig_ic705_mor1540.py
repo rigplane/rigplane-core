@@ -18,16 +18,12 @@ IC-705's declared capabilities, they pass.
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
-from rigplane.rigctld.state_cache import StateCache
-from rigplane.web.radio_poller import CommandQueue, RadioPoller
-from test_poller_poll_priority import logical_civ_call
+from rigplane.runtime._state_queries import build_state_queries
 from test_radio import MockTransport
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
@@ -73,26 +69,10 @@ class TestDigiselCapabilityRemoved:
 class TestPollerSkipsDigiselQuery:
     """Cascade: the per-receiver state-query builder follows the capability."""
 
-    @pytest.mark.asyncio
-    async def test_no_0x16_0x4e_query_for_ic705(self, profile) -> None:
-        radio = MagicMock()
-        radio.profile = profile
-        radio.model = profile.model
-        radio.capabilities = set(profile.capabilities)
-        radio._radio_state = SimpleNamespace(active="MAIN")
-        radio.send_civ = AsyncMock()
-        poller = RadioPoller(radio, StateCache(), CommandQueue())
+    def test_no_0x16_0x4e_query_for_ic705(self, profile) -> None:
+        queries = build_state_queries(profile)
 
-        for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
-            poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
-            await poller._send_query()  # noqa: SLF001
-
-        assert not any(
-            command == 0x16 and sub == 0x4E
-            for _, command, sub, _ in map(
-                logical_civ_call, radio.send_civ.await_args_list
-            )
-        )
+        assert not any(q.command == 0x16 and q.sub == 0x4E for q in queries)
 
 
 class TestD2DocumentaryCommandBytes:
