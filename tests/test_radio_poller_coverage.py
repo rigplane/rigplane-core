@@ -1004,6 +1004,16 @@ async def test_scheduler_ptt_request_uses_ic705_declared_getter() -> None:
 @pytest.mark.asyncio
 async def test_scheduler_ptt_without_profile_getter_fails_closed() -> None:
     radio = _make_radio(active="MAIN", model="IC-7610")
+    profile = radio.profile
+    assert profile.command_map is not None
+    command_map = CommandMap(
+        {
+            name: profile.command_map.get(name)
+            for name in profile.command_map
+            if name != "get_transceiver_status"
+        }
+    )
+    radio.profile = dataclasses.replace(profile, command_map=command_map)
     path = FieldPath.global_("tx_state", "ptt")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
     radio._acquisition_scheduler = scheduler
@@ -2212,10 +2222,7 @@ async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None
 
 @pytest.mark.parametrize(
     ("model", "expected_seconds"),
-    # IC-705 dropped from 11.1s to 11.0s (one fewer query per rotation) when
-    # MOR-1540 removed the over-declared "digisel" capability, which had
-    # been adding an unanswerable 0x16/0x4E poll to every rotation.
-    (("IC-7300", 8.0), ("IC-705", 11.0)),
+    (("IC-7300", 8.0), ("IC-705", 9.0)),
 )
 def test_relative_vfo_retention_window_follows_provider_poll_cadence(
     model: str,
@@ -2692,9 +2699,6 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
     poller = RadioPoller(_make_radio(), StateCache(), CommandQueue())
 
     assert {
-        acquisition_query(0x15, sub=0x01, receiver=0x00),
-        acquisition_query(0x15, sub=0x01, receiver=0x01),
-        acquisition_query(0x15, sub=0x07),
         acquisition_query(0x16, sub=0x12, receiver=0x00),
         acquisition_query(0x16, sub=0x12, receiver=0x01),
         acquisition_query(0x16, sub=0x32, receiver=0x00),
@@ -2709,13 +2713,17 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
         acquisition_query(0x16, sub=0x48, receiver=0x01),
         acquisition_query(0x16, sub=0x4F, receiver=0x00),
         acquisition_query(0x16, sub=0x4F, receiver=0x01),
-        acquisition_query(0x16, sub=0x50),
         acquisition_query(0x16, sub=0x56, receiver=0x00),
         acquisition_query(0x16, sub=0x56, receiver=0x01),
-        acquisition_query(0x16, sub=0x58),
         acquisition_query(0x1A, sub=0x04, receiver=0x00),
         acquisition_query(0x1A, sub=0x04, receiver=0x01),
     }.issubset(set(poller._STATE_QUERIES))  # noqa: SLF001
+    assert {
+        acquisition_query(0x15, sub=0x01, receiver=0x00),
+        acquisition_query(0x15, sub=0x07),
+        acquisition_query(0x16, sub=0x50),
+        acquisition_query(0x16, sub=0x58),
+    }.isdisjoint(set(poller._STATE_QUERIES))  # noqa: SLF001
 
 
 def test_state_queries_include_transceiver_status_reads_for_ic7610() -> None:
@@ -2723,11 +2731,11 @@ def test_state_queries_include_transceiver_status_reads_for_ic7610() -> None:
 
     assert {
         acquisition_query(0x1C, sub=0x01),
-        acquisition_query(0x1C, sub=0x03),
         acquisition_query(0x21, sub=0x00),
         acquisition_query(0x21, sub=0x01),
         acquisition_query(0x21, sub=0x02),
     }.issubset(set(poller._STATE_QUERIES))  # noqa: SLF001
+    assert acquisition_query(0x1C, sub=0x03) not in poller._STATE_QUERIES  # noqa: SLF001
 
 
 def test_fast_cmds_include_comp_meter_for_ic7610() -> None:
@@ -5970,14 +5978,10 @@ async def test_tx_target_unsupported_for_non_selected_unselected_profile() -> No
 async def test_tx_target_max_age_floors_fallback_for_profile_without_acquisition() -> (
     None
 ):
-    """Review R3: IC-705 has ``vfo_readback == "selected_unselected"`` (so
-    it DOES get a derivation) but currently ships no ``[state_acquisition]``
-    block, so the old bare ``4 * self._fast_interval`` fallback floored at
-    0.1s on its LAN profile (25ms fast interval) — the verifier measured
-    6.6 stale-transitions/s from that on an otherwise-idle radio. The
-    fallback must floor at ``_TX_TARGET_FALLBACK_MAX_AGE`` instead."""
+    """Profiles constructed without acquisition policy retain the safe floor."""
 
     radio = _make_radio(model="IC-705")
+    radio.profile = dataclasses.replace(radio.profile, state_acquisition=None)
     assert radio.profile.state_acquisition is None
     assert radio.profile.vfo_readback == "selected_unselected"
     poller = RadioPoller(radio, CommandQueue(), state_store=StateStore())

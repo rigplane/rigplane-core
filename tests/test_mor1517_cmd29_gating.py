@@ -506,9 +506,7 @@ class TestManualNotchGating:
 
 
 class TestManualNotchWidthGating:
-    """0x16/0x57 (manual notch width) is not in IC-7610's [cmd29] routes
-    either — it must go out unwrapped on BOTH profiles. Before this fix it
-    was silently broken on IC-7610 too, not just IC-7300."""
+    """IC-7610 marks 0x16/0x57 command-29 capable; IC-7300 does not."""
 
     @pytest.mark.asyncio
     async def test_set_manual_notch_width_unwrapped_on_ic7300(self) -> None:
@@ -525,19 +523,22 @@ class TestManualNotchWidthGating:
         assert _sent_civ(mock) == expected
 
     @pytest.mark.asyncio
-    async def test_set_manual_notch_width_unwrapped_on_ic7610(self) -> None:
+    @pytest.mark.parametrize("receiver", (0, 1))
+    async def test_set_manual_notch_width_wrapped_on_ic7610(
+        self, receiver: int
+    ) -> None:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
-        await radio.set_manual_notch_width(2, receiver=0)
+        await radio.set_manual_notch_width(2, receiver=receiver)
         expected = set_manual_notch_width(
             2,
             to_addr=_IC7610_ADDR,
-            receiver=0,
-            command29=False,
+            receiver=receiver,
+            command29=True,
             cmd_map=_IC7610_CMD_MAP,
         )
         assert _sent_civ(mock) == expected
-        assert radio._profile.supports_cmd29(0x16, 0x57) is False
+        assert radio._profile.supports_cmd29(0x16, 0x57) is True
 
 
 class TestTwinPeakFilterGating:

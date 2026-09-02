@@ -186,6 +186,18 @@ polling_only = [
     "global.meters.comp",
     "global.meters.vd",
     "global.meters.id",
+    "scope_controls.global.display.receiver",
+    "scope_controls.global.display.dual",
+    "scope_controls.global.display.mode",
+    "scope_controls.global.display.span",
+    "scope_controls.global.display.edge",
+    "scope_controls.global.display.hold",
+    "scope_controls.global.display.ref_db",
+    "scope_controls.global.display.speed",
+    "scope_controls.global.display.during_tx",
+    "scope_controls.global.display.center_type",
+    "scope_controls.global.display.vbw_narrow",
+    "scope_controls.global.display.fixed_edge",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -444,7 +456,7 @@ adaptive_decay = false
 # 1.5s-or-faster tier for everything else that matters live; it only ever
 # fires during a TX segment, transiently adding 4 fields / 1.0s = 4.0 q/s on
 # top of this profile's RX-state demand (see vd/id below; 19.967 q/s when
-# this was written, 19.433 q/s after the MOR-1484 cadence tightening above)
+# this was written, 19.833 q/s after the MOR-1484 and MOR-1983 cadence changes)
 # for as long as the key is down -- an accepted, TX-scoped tradeoff, not a
 # steady-state regression of the MOR-1484 serial medians.
 [state_acquisition.field_policies."global.meters.power"]
@@ -484,7 +496,7 @@ tx_only = true
 # a slowly-varying supply rail/current reading roughly once a minute --
 # "live", just not fast. (These 19.933/19.967 figures predate the MOR-1484
 # cadence tightening above/below this block -- see that block's comment for
-# the current total, 19.433 q/s.)
+# the current total, 19.833 q/s.)
 [state_acquisition.field_policies."global.meters.vd"]
 cadence_seconds = 60.0
 freshness_ttl_seconds = 90.0
@@ -641,6 +653,66 @@ adaptive_decay = false
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.receiver"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.dual"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.mode"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.span"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.edge"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.hold"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.ref_db"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.speed"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.during_tx"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.center_type"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.vbw_narrow"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
+adaptive_decay = false
+
+[state_acquisition.field_policies."scope_controls.global.display.fixed_edge"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 60.0
 adaptive_decay = false
 
 # ── Parameterized Capabilities ───────────────────────────────────
@@ -1035,6 +1107,7 @@ set_agc_time_constant = [0x1A, 0x04]
 # ── TX Controls (Power, Mic, Compressor, Monitor, VOX) ──
 ptt_on = [0x1C, 0x00, 0x01]
 ptt_off = [0x1C, 0x00, 0x00]
+get_transceiver_status = [0x1C, 0x00]     # source: IC-7300 Advanced Manual (11a) command table p.19-7
 get_rf_power = [0x14, 0x0A]
 set_rf_power = [0x14, 0x0A]
 get_mic_gain = [0x14, 0x0B]

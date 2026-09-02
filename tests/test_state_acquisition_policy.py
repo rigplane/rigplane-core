@@ -565,6 +565,18 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.global_("meters", "comp"),
         FieldPath.global_("meters", "vd"),
         FieldPath.global_("meters", "id"),
+        FieldPath.scope_control("display", "receiver"),
+        FieldPath.scope_control("display", "dual"),
+        FieldPath.scope_control("display", "mode"),
+        FieldPath.scope_control("display", "span"),
+        FieldPath.scope_control("display", "edge"),
+        FieldPath.scope_control("display", "hold"),
+        FieldPath.scope_control("display", "ref_db"),
+        FieldPath.scope_control("display", "speed"),
+        FieldPath.scope_control("display", "during_tx"),
+        FieldPath.scope_control("display", "center_type"),
+        FieldPath.scope_control("display", "vbw_narrow"),
+        FieldPath.scope_control("display", "fixed_edge"),
     }
 
     assert set(acquisition.pollable_paths()) == expected_pollable
@@ -674,18 +686,17 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     # +0.4 = +0.133 q/s), funded by giving six rarely-touched settings
     # (tuner_status, power_level, compressor_on/level, att, preamp; 6 fields)
     # back from 1.5s to 3.0s (-4.0 -> -2.0 = -2.0 q/s). Net:
-    # 19.967 + 1.333 + 0.133 - 2.0 = 19.433 q/s, comfortably BELOW the 20 q/s
-    # ceiling — required, not just desirable, since exceeding it would
-    # necessarily slow every other polled field's real throughput and risk
-    # regressing the very medians this tightening is meant to improve.
-    assert rx_state_demand_hz == pytest.approx(19.433, abs=0.001)
+    # 19.967 + 1.333 + 0.133 - 2.0 = 19.433 q/s before the twelve 30s scope
+    # reads declared by MOR-1983 add 0.4 q/s. The resulting 19.833 q/s stays
+    # below the 20 q/s ceiling.
+    assert rx_state_demand_hz == pytest.approx(19.833, abs=0.001)
     assert rx_state_demand_hz < serial_ceiling_hz
     # Po/SWR/ALC/COMP: 4 fields / 1.0s = 4.0 q/s, ONLY while tx_only gating
     # lets them through (PTT observed true) — a transient TX-window cost, not
     # a steady-state one. Untouched by MOR-1484.
     assert tx_only_demand_hz == pytest.approx(4.0, abs=0.001)
     total_during_tx_hz = rx_state_demand_hz + tx_only_demand_hz
-    assert total_during_tx_hz == pytest.approx(23.433, abs=0.001)
+    assert total_during_tx_hz == pytest.approx(23.833, abs=0.001)
 
     assert (
         acquisition.capability_for(

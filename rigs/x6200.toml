@@ -83,13 +83,10 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     documented CI-V table at all — the X6200 PDF only documents QSK hang
 #     time (``0x14 0x0F``), not a BK-IN-mode register. This profile declares
 #     no ``break_in_delay`` key, control or feature either (unlike its four
-#     IC-7300/7610/9700/705 siblings, which all do). ``0x14 0x0F`` on X6200
-#     is reached today by exactly ONE path: the unconditional poll in
-#     ``runtime/_state_queries.py: build_state_queries``'s
-#     ``_COMMON_FEATURE_QUERIES`` list, which every CI-V radio built
-#     through this query builder sends regardless of declared capability
-#     or this profile's ``[commands]`` table — the same undeclared-hardcode
-#     class this bullet warns about, not an exception to it.
+#     IC-7300/7610/9700/705 siblings, which all do). MOR-1983 removed the
+#     former unconditional ``0x14 0x0F`` state poll: the sweep now follows
+#     ``[state_acquisition]`` plus ``[commands]``, neither of which declares
+#     a break-in-delay read for this profile, so the frame is suppressed.
 #     ``CoreRadio.get_break_in_delay`` / ``CoreRadio.set_break_in_delay``
 #     (``commands/levels.py: get_break_in_delay`` / ``set_break_in_delay``)
 #     do NOT reach it: both route through the bound command map
@@ -474,11 +471,9 @@ end_hz = 136000000
 #   BK-IN-mode register (MOR-1534, docs/validation/cat-audits/x6200.md
 #   § "D. MISMATCH / WRONG", break-in row). This profile declares no
 #   break_in_delay key either (unlike its four IC-7300/7610/9700/705
-#   siblings). [0x14, 0x0F] is reached today by exactly one path: the
-#   unconditional poll in runtime/_state_queries.py: build_state_queries's
-#   _COMMON_FEATURE_QUERIES list, sent regardless of declared capability
-#   or this profile's [commands] table -- a separate undeclared-hardcode
-#   path, not one this bullet's promotion touches. CoreRadio.
+#   siblings). MOR-1983 removed the former unconditional [0x14, 0x0F]
+#   state poll; profile-derived acquisition now suppresses it because this
+#   profile declares neither a pollable path nor a getter. CoreRadio.
 #   get_break_in_delay / CoreRadio.set_break_in_delay (commands/levels.py)
 #   do NOT reach it either: both route through the bound command map
 #   (commands/bound.py: BoundCommands, MOR-2006), and since this profile

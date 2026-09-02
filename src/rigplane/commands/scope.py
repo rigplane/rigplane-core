@@ -113,10 +113,9 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 # no selector byte -- except 0x1E, which carries a ``<range><edge>`` selector
 # of its own; see ``get_scope_fixed_edge`` below.
 #
-# Imported by ``runtime/_state_queries.py: build_state_queries``, whose list
-# ``runtime/radio_initial_state.py: fetch_initial_state`` then sends, and by
-# ``web/radio_poller.py: RadioPoller._send_one_state_query``.  Those are the
-# senders that consult this set.
+# Imported by ``runtime/_state_queries.py`` when it resolves profile-declared
+# scope paths.  The resulting shared query list is sent by initial acquisition,
+# legacy periodic polling, and rigctld through their common semantic envelope.
 #
 # Two further places hold this membership and do NOT import it, so an edit
 # here does not reach them -- change all three together:
@@ -130,31 +129,21 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 # Nothing asserts that the three agree.  Making the RX path import this
 # constant is the real fix and is deliberately not done here (MOR-1981).
 #
-# ``rigctld/server.py: RigctldServer._send_one_state_query`` has the same
-# shape and does NOT consult this set.  It cannot reach 0x27 today because
-# ``core/acquisition_scheduler.py: IcomCivAcquisitionExecutor.query_for_path``
-# has no ``scope_controls`` branch, so every scope field resolves to None.
-# Nothing pins that.  If that branch is ever added, this set is the third
-# place to wire up, or rigctld will send ``27 14`` bare while web does not.
-#
 # Membership (MOR-1981).  Measured on a live IC-7300, six runs with no
 # variance: each sub-command below is refused with a NAK when sent bare,
 # while 0x12, 0x13, 0x1B and 0x1C answer.  Icom's CI-V Reference Guide for
 # the IC-705 -- the same single-scope architecture -- prints a two-byte data
 # field for 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A and 0x1D and a one-byte field
 # for 0x12, 0x13, 0x1B and 0x1C, matching that bench result with no
-# exception.  0x1F (RBW) has no row in that guide, but Hamlib supplies the
-# selector for it and the bare form NAKs, so it is the same class.  The
-# IC-7300's own command table (advanced manual, table 19-8) and the
-# IC-7610 and IC-9700 CI-V Reference Guides have since been read directly
-# and print the same split: the IC-7300 leg now has both the bench
-# measurement and its own manual behind it, and the IC-7610 leg is
-# confirmed from its guide.  Documentary evidence exists for the IC-9700
-# (its CI-V Reference Guide); no bench evidence exists for the IC-9700.
-# The de-risking fact is that ``web/radio_poller.py`` has been putting this
-# exact split on the wire to all four scope-capable profiles since long
-# before this constant existed: the connect sweep is catching up to
-# shipped behaviour, not trying something new.
+# exception. The IC-7300 manual and IC-705/IC-9700 guides have no 0x1F row,
+# so those profiles fail closed for RBW. The IC-7610 guide documents 0x1F
+# and its selector shape, which is why the shared selector set retains it.
+# The other documented scope reads use the same split across these profiles.
+# The IC-7300 leg has both bench and manual evidence; IC-9700 has documentary
+# evidence but no bench evidence.
+# Profile declaration remains the final gate: a selector shape in this shared
+# set is emitted only when that profile also declares the corresponding getter
+# and pollable field.
 #
 # The exclusions are not omissions -- on a sub-command that takes no
 # selector the extra byte is a WRITE, not a no-op:

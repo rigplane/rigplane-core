@@ -31,6 +31,8 @@ from rigplane.commands import (
     set_mode,
     set_rf_power,
 )
+from rigplane.commands.bound import BoundCommands
+from rigplane.exceptions import CommandError
 from rigplane.types import (
     AgcMode,
     AudioPeakFilter,
@@ -1304,9 +1306,9 @@ class TestTransceiverStatusBuilders:
     batch 1 for the system.py builders here -- band edge, tuner/XFC/
     TX-freq-monitor status, RIT/XIT; batch 2 for the meters.py builders --
     various-squelch and the power/comp/Vd/Id meters. Every builder here now
-    requires ``cmd_map`` -- zero divergence rows, so IC-7610's own map
-    declares the identical bytes the fallback used to build, and the
-    expected frames below are unchanged.
+    requires ``cmd_map``. The legacy TX-frequency-monitor pair is explicitly
+    absent on IC-7610 because 1C/03 is a read-only frequency payload; the
+    remaining builders use the profile-declared bytes below.
     """
 
     @pytest.fixture()
@@ -1404,23 +1406,28 @@ class TestTransceiverStatusBuilders:
         with pytest.raises(TypeError, match="MOR-2006"):
             set_tuner_status(1, cmd_map=None)
 
-    def test_get_tx_freq_monitor(self, cmd_map) -> None:
-        from rigplane.commands import get_tx_freq_monitor
+    def test_get_tx_freq_monitor_fails_closed(self) -> None:
+        profile = load_rig(RIG_DIR / "ic7610.toml").to_profile()
+        assert profile.command_map is not None
+        commands = BoundCommands(
+            profile.command_map,
+            profile.absent_command_sources,
+        )
 
-        frame = get_tx_freq_monitor(cmd_map=cmd_map)
-        assert b"\xfe\xfe\x98\xe0\x1c\x03\xfd" == frame
+        with pytest.raises(CommandError, match="declared absent"):
+            commands.get_tx_freq_monitor(to_addr=profile.civ_addr)
 
-    def test_set_tx_freq_monitor_on(self, cmd_map) -> None:
-        from rigplane.commands import set_tx_freq_monitor
+    @pytest.mark.parametrize("on", (True, False))
+    def test_set_tx_freq_monitor_fails_closed(self, on: bool) -> None:
+        profile = load_rig(RIG_DIR / "ic7610.toml").to_profile()
+        assert profile.command_map is not None
+        commands = BoundCommands(
+            profile.command_map,
+            profile.absent_command_sources,
+        )
 
-        frame = set_tx_freq_monitor(True, cmd_map=cmd_map)
-        assert b"\x1c\x03\x01" in frame
-
-    def test_set_tx_freq_monitor_off(self, cmd_map) -> None:
-        from rigplane.commands import set_tx_freq_monitor
-
-        frame = set_tx_freq_monitor(False, cmd_map=cmd_map)
-        assert b"\x1c\x03\x00" in frame
+        with pytest.raises(CommandError, match="declared absent"):
+            commands.set_tx_freq_monitor(on, to_addr=profile.civ_addr)
 
     def test_get_rit_frequency(self, cmd_map) -> None:
         from rigplane.commands import get_rit_frequency

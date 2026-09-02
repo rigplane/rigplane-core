@@ -197,7 +197,7 @@ def test_all_strict_prefix_overlaps_preserve_shorter_candidates() -> None:
                         f"shorter={shorter!r} longer={longer!r}"
                     )
                     assert frozenset(prefix_groups[shorter]) <= expected
-    assert overlaps == 14
+    assert overlaps == 20
 
 
 class TestKnownCollisionShapes:

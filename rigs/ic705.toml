@@ -118,6 +118,74 @@ features = [
     "system_settings",
 ]
 
+# MOR-1983: initial and legacy periodic state acquisition is declared here,
+# using getters already sourced to the IC-705 CI-V Reference Guide below.
+# The runtime resolves these semantic paths through this profile's CommandMap;
+# no model-specific query list exists in code.
+[state_acquisition]
+provider = "icom_civ"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 4.0
+adaptive_decay_max_cadence_seconds = 30.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.main.unselected.freq_mode.freq_hz",
+    "receiver.main.unselected.freq_mode.mode",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_toggles.nb",
+    "receiver.main.operator_toggles.nr",
+    "global.operator_controls.power_level",
+    "global.tx_state.compressor_on",
+    "global.operator_controls.compressor_level",
+    "global.tx_state.ptt",
+    "global.operator_controls.tuner_status",
+    "global.tx_state.split",
+    "scope_controls.global.display.receiver",
+    "scope_controls.global.display.dual",
+    "scope_controls.global.display.mode",
+    "scope_controls.global.display.span",
+    "scope_controls.global.display.edge",
+    "scope_controls.global.display.hold",
+    "scope_controls.global.display.ref_db",
+    "scope_controls.global.display.speed",
+    "scope_controls.global.display.during_tx",
+    "scope_controls.global.display.center_type",
+    "scope_controls.global.display.vbw_narrow",
+    "scope_controls.global.display.fixed_edge",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "global.meters.power",
+    "global.meters.swr",
+    "global.meters.alc",
+    "global.meters.comp",
+    "global.meters.vd",
+    "global.meters.id",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+
 # ── Parameterized Capabilities ───────────────────────────────────
 
 [attenuator]
@@ -718,8 +786,8 @@ get_tuner_status = [0x1C, 0x01]
 set_tuner_status = [0x1C, 0x01]
 get_xfc_status = [0x1C, 0x02]
 set_xfc_status = [0x1C, 0x02]
-get_tx_freq_monitor = [0x1C, 0x03]
-set_tx_freq_monitor = [0x1C, 0x03]
+get_tx_freq_monitor = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) pp.7,16: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
+set_tx_freq_monitor = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) pp.7,16: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
 
 # ── RIT / XIT ──
 get_rit_frequency = [0x21, 0x00]
@@ -777,8 +845,8 @@ get_scope_vbw = [0x27, 0x1D]
 set_scope_vbw = [0x27, 0x1D]
 get_scope_fixed_edge = [0x27, 0x1E]
 set_scope_fixed_edge = [0x27, 0x1E]
-get_scope_rbw = [0x27, 0x1F]
-set_scope_rbw = [0x27, 0x1F]
+get_scope_rbw = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15: the 0x27 scope table ends at 1E, with no 1F RBW command" }
+set_scope_rbw = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.15: the 0x27 scope table ends at 1E, with no 1F RBW command" }
 
 # ── D-STAR voice / protocol ack ──
 get_voice_tx = [0x28]

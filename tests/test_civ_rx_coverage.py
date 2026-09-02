@@ -41,7 +41,7 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.tone import _encode_tone_freq
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
@@ -56,6 +56,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.tx_target import KnownTxTarget
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -1737,12 +1738,6 @@ _SLOW_STATE_TOGGLE_CASES = (
         "global.operator_controls.tuner_status",
         "tunerStatus",
         2,
-    ),
-    (
-        _make_frame(cmd=0x1C, sub=0x03, data=b"\x01"),
-        "global.tx_state.tx_freq_monitor",
-        "txFreqMonitor",
-        True,
     ),
     # 0x12 0x00 0x01 RX-ANT for ANT1 ON → global slow-state bool (MOR-462).
     (
@@ -4167,14 +4162,64 @@ def test_update_radio_state_tuner_status(radio_with_state: IcomRadio) -> None:
     assert field.value == 2
 
 
-def test_update_radio_state_tx_freq_monitor(radio_with_state: IcomRadio) -> None:
-    """TX freq monitor (0x1C 0x03) is observation-backed (MOR-437)."""
-    frame = CivFrame(0xE0, 0x98, 0x1C, 0x03, b"\x01")
+def test_update_radio_state_tx_freq_monitor_decodes_transmit_frequency_not_boolean(
+    radio_with_state: IcomRadio,
+) -> None:
+    # Full directed IC-7610 response: 1C/03 + 7.100 MHz in five-byte BCD.
+    frame = parse_civ_frame(bytes.fromhex("FE FE E0 98 1C 03 00 00 10 07 00 FD"))
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
-    field = radio_with_state._state_store.snapshot().field(
-        "global.tx_state.tx_freq_monitor"
+
+    snapshot = radio_with_state._state_store.snapshot()
+    field = snapshot.field("global.tx_state.tx_target")
+    assert field.value == KnownTxTarget(
+        receiver="MAIN", slot=None, frequency_hz=7_100_000
     )
-    assert field.value is True
+    assert field.max_age == 8.0
+    radio_with_state._state_store.mark_stale_due(
+        now=field.last_observed_monotonic + field.max_age + 0.001
+    )
+    assert (
+        radio_with_state._state_store.snapshot()
+        .field("global.tx_state.tx_target")
+        .freshness
+        is FreshnessState.STALE
+    )
+    with pytest.raises(KeyError):
+        snapshot.field("global.tx_state.tx_freq_monitor")
+
+
+def test_direct_tx_frequency_coexists_with_ic7300_derived_target() -> None:
+    radio = IcomRadio("192.0.2.1", model="IC-7300")
+    radio._radio_state = RadioState()
+    frame = parse_civ_frame(bytes.fromhex("FE FE E0 94 1C 03 00 00 50 14 00 FD"))
+    radio._civ_runtime._update_state_cache_from_frame(frame)
+
+    path = FieldPath.global_("tx_state", "tx_target")
+    direct = radio._state_store.snapshot().field(path)
+    assert direct.value == KnownTxTarget(
+        receiver="MAIN", slot=None, frequency_hz=14_500_000
+    )
+    assert direct.max_age == 3.0
+
+    # The ordinary IC-7300 derivation remains authoritative when it follows a
+    # one-off direct response, and retains the same finite profile TTL.
+    derived_at = direct.last_observed_monotonic + 0.1
+    radio._state_store.apply(
+        Observation(
+            path=path,
+            value=KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=14_250_000),
+            source=SourceMetadata(source="local_reconcile", provider="icom_civ"),
+            timestamp_monotonic=derived_at,
+            max_age=direct.max_age,
+            provider_generation=radio._state_store.provider_generation,
+        )
+    )
+    derived = radio._state_store.snapshot().field(path)
+    assert derived.value == KnownTxTarget(
+        receiver="MAIN", slot="A", frequency_hz=14_250_000
+    )
+    radio._state_store.mark_stale_due(now=derived_at + derived.max_age + 0.001)
+    assert radio._state_store.snapshot().field(path).freshness is FreshnessState.STALE
 
 
 def test_update_radio_state_rit_frequency(radio_with_state: IcomRadio) -> None:
