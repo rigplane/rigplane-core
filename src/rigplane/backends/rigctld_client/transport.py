@@ -26,7 +26,6 @@ class RigctldCommandError(CommandError):
 
     def __init__(self, command: str, code: int) -> None:
         self.command = command
-        self.code = code
         hint = _ERROR_HINTS.get(code, "command failed")
         super().__init__(
             f"External rigctld command {command!r} failed with RPRT {code} ({hint})."

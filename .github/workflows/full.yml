@@ -17,8 +17,9 @@ jobs:
     # On push: only when commit message contains [full-ci].
     # On schedule / manual dispatch: always run.
     if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+      github.ref != 'refs/heads/codex/rigctld-result-code-mutant' &&
+      (github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]'))
     # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
@@ -187,8 +188,9 @@ jobs:
     # `workflow_dispatch`, always runs. This keeps the job off every
     # ordinary push to `main`.
     if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+      github.ref != 'refs/heads/codex/rigctld-result-code-mutant' &&
+      (github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]'))
     runs-on: [self-hosted, linux, build]
     # Budget: ~45s once the Playwright browser cache is warm (npm ci +
     # cached chromium + the capture matrix itself). 10 minutes is a
@@ -264,3 +266,37 @@ jobs:
       - name: Annotate result
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
+
+  rigctld-result-proof:
+    if: github.ref == 'refs/heads/codex/rigctld-result-code-mutant'
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 10
+    env:
+      UV_PYTHON: "3.11"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run rigctld result proof
+        run: |
+          set +e
+          uv run pytest tests/test_rigctld_client_backend.py -q --tb=short --timeout=300 --timeout-method=thread 2>&1 | tee rigctld-result-proof.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          exit "$rc"
+
+      - name: Upload proof log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rigctld-result-proof
+          path: rigctld-result-proof.txt
