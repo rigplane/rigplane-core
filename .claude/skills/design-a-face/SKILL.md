@@ -117,12 +117,51 @@ So extract, in this order:
 
 1. **The parts.** What elements exist, how they group.
 2. **The measurements.** Relative size, aspect ratio, proportion between
-   groups, what is dimmed against what is bright. Measured off the image, not
-   estimated in adjectives.
+   groups, what is dimmed against what is bright. **Measured with a script, not
+   estimated by eye** — see below.
 3. **Why each part is where it is.** What is read continuously, what is glanced
    at, what is set once a session and then ignored. What must be adjacent to
    what because they are operated together. What is separated because
    confusing them is expensive.
+
+### Measuring the reference
+
+**Do not estimate proportions by eye.** Project the image onto each axis and
+read the boundaries off the profile: for every row of pixels, sum how dark it
+is; do the same per column. Elements are dark, gutters are light, so band
+boundaries and the vertical division appear as steps in the profile. Ten lines
+of PIL or numpy. The numbers are then reproducible — anyone can run the same
+script and get them.
+
+**Two scales, same method.** A profile over the whole panel gives the bands and
+the divider. For a fine element — glyph cells, segment pitch, chip padding —
+crop that region and profile it in its own resolution. Precision comes from the
+crop, not from a better algorithm.
+
+**Report proportions of the panel box, never pixels**, and state the tolerance.
+The stage scales as one block, so a pixel figure is true only at one size,
+while a share of the panel survives scaling. Say which image you measured and
+its dimensions.
+
+**No external service.** This is arithmetic over a local file. A service
+returns a number that has to be taken on faith, which is the opposite of what
+every other rule here demands — and it means sending the design somewhere,
+which is a decision for the owner rather than a convenience for the agent.
+
+**The constraint that actually stops this**, and it has: an agent given the
+image *in conversation* has no file to run a script over, and cannot measure at
+all. Say so plainly and fall back to reading proportions with a stated,
+generous tolerance — do not present an eye estimate in the same form as a
+measurement. If a file path exists, ask for it; it is the difference between
+"about a third" and a number someone else can reproduce.
+
+**And a measured proportion is evidence for a rule, not a result.** A precise
+figure with no reason attached still does not transfer to a changed element
+set. "Readout 14%, spectrum 38%" decides nothing; "the readout takes a fixed
+share sized for legibility, the spectrum takes the remainder" decides
+everything, and the measurement is what supports it. Precision makes a wrong
+rule *more* convincing, so measure in order to test a rule, not instead of
+having one.
 
 **Step 3 is inference and must be labelled as such, per claim.** The designer's
 reasons are not in the image. An agent will produce a confident rationale for a
