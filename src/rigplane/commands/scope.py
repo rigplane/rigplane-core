@@ -113,10 +113,6 @@ _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
 # no selector byte -- except 0x1E, which carries a ``<range><edge>`` selector
 # of its own; see ``get_scope_fixed_edge`` below.
 #
-# Imported by ``runtime/_state_queries.py`` when it resolves profile-declared
-# scope paths.  The resulting shared query list is sent by initial acquisition,
-# legacy periodic polling, and rigctld through their common semantic envelope.
-#
 # Two further places hold this membership and do NOT import it, so an edit
 # here does not reach them -- change all three together:
 #   ``runtime/_scope_runtime.py`` passes ``receiver=`` per getter, reaching

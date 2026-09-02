@@ -111,10 +111,7 @@ from ..core.tx_target import (
     TxTarget,
     UnknownTxTarget,
 )
-from .._state_queries import (
-    acquisition_query_resolver_for_profile,
-    build_state_queries,
-)
+from .._state_queries import acquisition_query_resolver_for_profile
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime._state_queries import tx_target_max_age
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
@@ -670,7 +667,6 @@ class RadioPoller:
         self._FAST_CMDS = (
             self._FAST_CMDS_SERIAL if self._is_serial else self._FAST_CMDS_LAN
         )
-        self._STATE_QUERIES = self._build_state_queries()
         self._relative_vfo_retention_max_age: float | None = None
         if self._profile.vfo_readback == "selected_unselected":
             retention_age, coherence_window = self._relative_vfo_retention_policy()
@@ -910,11 +906,14 @@ class RadioPoller:
         cadence = (
             None if acquisition is None else acquisition.default_policy.cadence_seconds
         )
-        expected_rotation = (
-            float(cadence)
-            if cadence is not None
-            else 2.0 * len(self._STATE_QUERIES) * self._fast_interval
-        )
+        # MOR-2221: the ``_STATE_QUERIES``-based fallback this replaced was
+        # dead on every shipped rig -- ``cadence`` is only ``None`` when
+        # ``acquisition`` is ``None`` (every declared ``state_acquisition``
+        # profile pins a numeric ``default_cadence_seconds``, confirmed by
+        # `grep -n cadence_seconds rigs/*.toml`), and ``build_state_queries``
+        # returns ``[]`` for exactly that same ``acquisition is None`` case,
+        # so the old fallback always evaluated to ``0.0`` in practice.
+        expected_rotation = float(cadence) if cadence is not None else 0.0
         return (2.0 * expected_rotation + health_grace, health_grace)
 
     def _apply_bsr_readback_observations(
@@ -1275,23 +1274,18 @@ class RadioPoller:
             f"{self._profile.model} (receivers={self._profile.receiver_count})"
         )
 
-    def _build_state_queries(self) -> list[AcquisitionQuery]:
-        result: list[AcquisitionQuery] = build_state_queries(self._profile)
-        return result
-
     async def _send_one_state_query(
         self,
         query: AcquisitionQuery,
         *,
         priority: Priority = Priority.BACKGROUND,
     ) -> None:
-        """Send a single state query (shared by initial fetch and slow rotation).
+        """Send a single state query
 
-        Defaults to ``Priority.BACKGROUND`` so both the odd-cycle state poll
-        and the acquisition-scheduler executor (which is bound to this method)
+        Defaults to ``Priority.BACKGROUND`` so
+        the acquisition-scheduler executor (which is bound to this method)
         yield to user commands on the shared CI-V lane (MOR-497i).  All sends
-        here are fire-and-forget (``wait_dispatch=False``) so the poll burst
-        does not park the poll loop on the commander future (MOR-497ii); the
+        here are fire-and-forget (``wait_dispatch=False``) so the
         response still arrives via the CI-V RX path.
 
         The lossless query envelope keeps the CI-V sub-command, payload data,
@@ -3615,10 +3609,6 @@ class RadioPoller:
     ]
     _LOW_STRIDE: int = 5
 
-    # State queries interleaved on odd cycles.
-    # Populated per instance from runtime profile/capabilities.
-    _STATE_QUERIES: list[AcquisitionQuery] = []
-
     def _pick_high_meter(self, high_idx: int) -> tuple[int, int | None]:
         """Choose HIGH-tier meter based on PTT state."""
         on_tx = (
@@ -3862,7 +3852,11 @@ class RadioPoller:
         if self._acquisition_scheduler is not None:
             await self._send_scheduler_requests()
             return
-        # Even cycles → meter query; odd cycles → state query.
+        # Even cycles → meter query; odd cycles are a no-op without a
+        # scheduler (MOR-2221: the legacy state-query rotation this replaced
+        # was unreachable in production -- it required a scheduler-free
+        # poller with a non-empty state-query list, and both conditions
+        # trace back to the same ``profile.state_acquisition`` check).
         if self._poll_index % 2 == 0:
             if self._is_serial:
                 # Serial path UNCHANGED — keep flat round-robin over _FAST_CMDS.
@@ -3903,21 +3897,6 @@ class RadioPoller:
                 priority=Priority.BACKGROUND,
                 wait_dispatch=False,
             )
-        else:
-            if not self._STATE_QUERIES:
-                self._poll_index += 1
-                return
-            state_idx = (self._poll_index // 2) % len(self._STATE_QUERIES)
-            query = self._STATE_QUERIES[state_idx]
-            self._record_state_diagnostic(
-                "backend_read",
-                "web.radio_poller",
-                family="state",
-                command=f"0x{query.command:02x}",
-                sub=None if query.sub is None else f"0x{query.sub:02x}",
-                receiver=query.receiver,
-            )
-            await self._send_one_state_query(query)
         self._poll_index += 1
 
     # Issue #2303: passive observation must never select or exchange a VFO.
@@ -4109,15 +4088,6 @@ class RadioPoller:
         mark, or it having aged fully past its own TTL, all still write —
         the last of those is what lets a healthy-again re-derivation heal
         the field back to FRESH after it actually went stale.
-
-        Never declare ``global.tx_state.tx_target`` in any profile's
-        polling_only/unsolicited_push capability metadata (rigs/*.toml or
-        ``RadioAcquisitionProfile.field_policies``): its absence from
-        capability metadata is exactly what lets the TTL-driven
-        reconciliation request this ``max_age`` generates drop cleanly
-        instead of looping — ``AcquisitionScheduler.query_for_path`` has no
-        CI-V wire mapping for this derived field, so a declared/pollable
-        capability here would retry forever as ``no_civ_query_mapping``.
 
         Uses ``apply_current`` (not ``apply``): this runs synchronously off
         the just-read snapshot with no ``await`` in between, so it always

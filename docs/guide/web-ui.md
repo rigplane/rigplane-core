@@ -499,11 +499,6 @@ behavior is implemented in the layout and runtime modules listed above.
 
 ### Backend CI-V poll cadence (state freshness)
 
-`src/rigplane/web/radio_poller.py` interleaves meter and state queries:
-
-- even cycles -> meter query
-- odd cycles -> one state query
-
 Poll interval is backend-specific:
 
 - LAN backends: `25ms` fast cycle (`_FAST_INTERVAL`)
