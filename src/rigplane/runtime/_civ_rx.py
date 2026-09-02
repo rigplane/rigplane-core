@@ -61,6 +61,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import CivFrame, Mode, bcd_decode
+from rigplane.runtime._state_queries import tx_target_max_age
 from rigplane.runtime.meter_cal import interpolate_meter
 
 if TYPE_CHECKING:
@@ -2729,10 +2730,11 @@ class CivRuntime:
             (path.scope.value, path.family.value, path.name)
         )
         if path == FieldPath.global_("tx_state", "tx_target"):
-            acquisition = getattr(self._host._profile, "state_acquisition", None)
-            if acquisition is not None:
-                policy_ttl = acquisition.policy_for(path).freshness_ttl_seconds
-                max_age = policy_ttl
+            # MOR-2223: single source shared with
+            # ``RadioPoller._tx_target_max_age`` — see
+            # ``tx_target_max_age``'s docstring for the fail-open rationale
+            # this TTL exists to prevent.
+            max_age = tx_target_max_age(self._host._profile)
         return Observation(
             path=path,
             value=value,

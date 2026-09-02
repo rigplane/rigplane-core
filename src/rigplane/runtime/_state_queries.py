@@ -255,3 +255,48 @@ def build_state_queries(profile: RadioProfile) -> list[AcquisitionQuery]:
         seen.add(query)
         queries.append(query)
     return queries
+
+
+_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
+
+# Fallback for the derived tx_target field's own freshness TTL when a
+# profile has no [state_acquisition] block at all (MOR-1496 review R3, F1
+# follow-up). Renamed from ``_TX_TARGET_MIN_MAX_AGE`` (MOR-1501, #2422
+# review) — despite the "MIN" naming this is a straight substitute, not a
+# ``max()``-clamped floor: when a profile has no acquisition policy at all
+# there is no computed TTL to clamp against, so ``tx_target_max_age`` swaps
+# this value in outright. ``4 * fast_interval`` alone is not a defensible
+# TX-gate horizon: on a LAN profile (25ms fast interval) that floors to
+# 0.1s, which the verifier measured causing 6.6 stale-transitions/s on an
+# idle IC-705 (no [state_acquisition] block). Matches the concrete 3.0s
+# ``freshness_ttl_seconds`` IC-7300's own ``[state_acquisition]`` block
+# already uses for this same field via ``policy_for`` — not the unrelated
+# generic ``AcquisitionPolicy`` dataclass default (15.0s, calibrated for
+# slower-changing fields, not a TX gate).
+_TX_TARGET_FALLBACK_MAX_AGE: float = 3.0
+
+
+def tx_target_max_age(profile: RadioProfile) -> float:
+    """TTL for the derived ``global.tx_state.tx_target`` field (MOR-2223).
+
+    Without a finite max_age, ``StateStore.mark_stale_due`` skips the field
+    forever (it only ages entries with ``max_age`` set — see its own
+    docstring), so a stale input would silently freeze ``tx_target`` at its
+    last FRESH value instead of degrading — a fail-open on a TX gate.
+    Single source for both ``RadioPoller._tx_target_max_age`` (the poller's
+    own republish check) and ``CivRuntime._observation`` (the value the
+    field is actually stamped with when a CI-V response derives it): the two
+    used to compute this independently, and only one of the two fell back to
+    a finite value when the profile had no ``[state_acquisition]`` block.
+
+    Reuses the profile's declared TTL for this path — ``policy_for`` falls
+    back to ``default_policy`` for any path with no declared capability
+    (3.0s on IC-7300) — falling back to ``_TX_TARGET_FALLBACK_MAX_AGE`` when
+    the profile has no ``state_acquisition`` block, or when the resolved
+    policy leaves ``freshness_ttl_seconds`` unset.
+    """
+    acquisition = profile.state_acquisition
+    if acquisition is None:
+        return _TX_TARGET_FALLBACK_MAX_AGE
+    ttl = acquisition.policy_for(_TX_TARGET_PATH).freshness_ttl_seconds
+    return ttl if ttl is not None else _TX_TARGET_FALLBACK_MAX_AGE

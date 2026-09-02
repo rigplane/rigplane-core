@@ -116,6 +116,7 @@ from .._state_queries import (
     build_state_queries,
 )
 from ..profiles import RadioProfile, resolve_radio_profile
+from ..runtime._state_queries import tx_target_max_age
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,
@@ -235,22 +236,6 @@ _WEB_IMMEDIATE_BLOCK_FAMILIES = (
     TxInterlockCommandFamily.PTT_ON,
 )
 
-
-# Fallback for the derived tx_target field's own freshness TTL when a
-# profile has no [state_acquisition] block at all (MOR-1496 review R3, F1
-# follow-up). Renamed from ``_TX_TARGET_MIN_MAX_AGE`` (MOR-1501, #2422
-# review) — despite the "MIN" naming this is a straight substitute, not a
-# ``max()``-clamped floor: when a profile has no acquisition policy at all
-# there is no computed TTL to clamp against, so ``_tx_target_max_age`` swaps
-# this value in outright. ``4 * self._fast_interval`` alone is not a
-# defensible TX-gate horizon: on a LAN profile (``_FAST_INTERVAL`` = 25ms)
-# that floors to 0.1s, which the verifier measured causing 6.6
-# stale-transitions/s on an idle IC-705 (no [state_acquisition] block).
-# Matches the concrete 3.0s ``freshness_ttl_seconds`` IC-7300's own
-# ``[state_acquisition]`` block already uses for this same field via
-# ``policy_for`` — not the unrelated generic ``AcquisitionPolicy`` dataclass
-# default (15.0s, calibrated for slower-changing fields, not a TX gate).
-_TX_TARGET_FALLBACK_MAX_AGE: float = 3.0
 
 _KEY_ACCEPTED = frozenset({TxOutcome.ACCEPTED, TxOutcome.IDEMPOTENT})  # lease is ours
 
@@ -4084,30 +4069,19 @@ class RadioPoller:
         )
 
     def _tx_target_max_age(self) -> float:
-        """TTL for the derived ``tx_target`` field itself (review R2, F1).
+        """TTL for the derived ``tx_target`` field itself (MOR-2223).
 
-        Without this, ``StateStore.mark_stale_due`` skips the field forever
-        (it only ages entries with ``max_age`` set — see its own docstring),
-        so a stale input would silently freeze ``tx_target`` at its last
-        FRESH value instead of degrading, a fail-open on a TX gate. Reuses
-        this profile's default acquisition TTL — ``policy_for`` falls back
-        to ``default_policy`` for any path with no declared capability (3.0s
-        on IC-7300) — which needs no capability declaration for
-        ``tx_target`` itself; see :meth:`_publish_tx_target` for why that
-        declaration must never exist. Falls back to
-        ``_TX_TARGET_FALLBACK_MAX_AGE`` (a fixed default, not a bare multiple
-        of the poll loop's own fast interval — see that constant's comment)
-        if a profile has no acquisition policy at all.
+        Delegates to :func:`tx_target_max_age`, the single source shared
+        with ``CivRuntime._observation`` — see that function's docstring for
+        the fail-open rationale and the fallback it applies. Needs no
+        capability declaration for ``tx_target`` itself; see
+        :meth:`_publish_tx_target` for why that declaration must never
+        exist.
         """
-        acquisition = self._profile.state_acquisition
-        ttl = (
-            None
-            if acquisition is None
-            else acquisition.policy_for(
-                FieldPath.global_("tx_state", "tx_target")
-            ).freshness_ttl_seconds
-        )
-        return ttl if ttl is not None else _TX_TARGET_FALLBACK_MAX_AGE
+        # mypy --strict src/rigplane/web's own follow_imports=skip means the
+        # cross-package call resolves to Any; float(...) makes the strict
+        # return-type explicit rather than suppressing the check.
+        return float(tx_target_max_age(self._profile))
 
     def _publish_tx_target(self) -> None:
         """Recompute and, if changed or stale, republish tx_target (MOR-1496).
