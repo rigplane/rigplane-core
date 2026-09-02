@@ -18,6 +18,7 @@
  * `getBoundingClientRect`), so this file is named `*.isolated.test.ts` per
  * the pool-membership convention in `vite.config.ts`.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync, type Snippet } from 'svelte';
 import ScaledStage from '../ScaledStage.svelte';
@@ -243,5 +244,47 @@ describe('ScaledStage — anchor prop (MOR-2251)', () => {
     // now inside a 300x100 host: 200px leftover width (100 each side), 0
     // leftover height.
     expect(readTransform(target)).toBe('translate(100px, 0px) scale(0.5)');
+  });
+});
+
+describe('ScaledStage — .scaled-stage declares flex-shrink: 0 (MOR-2251)', () => {
+  // This is a TEXT pin on the component's own <style> block, the same
+  // idiom `PeerSplitLayout.component.test.ts`'s `declarationsFor` uses
+  // (read that file before touching this one). It verifies the
+  // declaration SURVIVES in source; it cannot verify the BEHAVIOUR the
+  // declaration produces, because jsdom computes no layout at all — a
+  // finding both this file's own `getBoundingClientRect`/`offsetWidth`
+  // probe and `PeerSplitLayout.component.test.ts`'s file header establish
+  // independently (that file: "this Vitest/jsdom config injects no
+  // component <style> during a mount ... every element's getComputedStyle
+  // reads the UA default regardless of what any <style> block declares").
+  // A comment claiming this test proves the stage cannot reflow would be
+  // false. What it does prove: the declaration is the ENTIRE mechanism —
+  // no other property makes `.scaled-stage` shrink-proof, and the grid
+  // case (see the property's own comment in ScaledStage.svelte) needs no
+  // second declaration — so deleting this line is the only regression path
+  // for this fix, and this pin fails exactly on that deletion.
+  const source = readFileSync('src/primitives/stage/ScaledStage.svelte', 'utf8');
+  const styleBlock = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  const css = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  function declarationsFor(selector: string): Record<string, string> {
+    for (const [, selectorList, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      for (const candidate of selectorList.split(',')) {
+        if (candidate.trim() !== selector) continue;
+        const declarations: Record<string, string> = {};
+        for (const declaration of body.split(';')) {
+          const colon = declaration.indexOf(':');
+          if (colon > 0) declarations[declaration.slice(0, colon).trim()] = declaration.slice(colon + 1).trim();
+        }
+        return declarations;
+      }
+    }
+    throw new Error(`no rule for selector "${selector}" in ScaledStage.svelte's <style> block`);
+  }
+
+  it('declares flex-shrink: 0', () => {
+    const stage = declarationsFor('.scaled-stage');
+    expect(stage['flex-shrink']).toBe('0');
   });
 });
