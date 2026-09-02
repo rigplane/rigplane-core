@@ -541,21 +541,27 @@ def main() -> None:
     print("reachability.component.test.ts`.\n")
     for name, info in sorted(data["surfaceComponents"].items()):
         comps = info["components"]
-        if not comps:
-            slots = info["rendersSlots"]
-            if slots:
-                named = ", ".join(f"`{s}`" for s in slots)
-                print(f"- `{name}` — no shared component, but calls `renderSlot()` "
-                      f"itself for {named}; design-language attributes DO reach "
-                      "this surface's own markup")
-            else:
-                print(f"- `{name}` — no shared component and no `renderSlot()` "
-                      "call found; no design-language attribute reaches this "
-                      "surface's markup from here (see the reachability test above)")
-            continue
-        parts = ", ".join(f"`{c['name']}` (**{c['tier']}**, "
-                          f"--dl- {c['dl']} / --v2- {c['v2']})" for c in comps)
-        print(f"- `{name}` — {parts}")
+        slots = info["rendersSlots"]
+        # `rendersSlots` is printed for EVERY row, not only rows with no
+        # shared component: MetersSurface and VfoSurface have both a shared
+        # component AND their own `renderSlot()` call, and skipping the
+        # slots half there made them read as "does not reach" — the two
+        # rows this partial derived list was silently wrong for.
+        if comps:
+            component_part = ", ".join(f"`{c['name']}` (**{c['tier']}**, "
+                                       f"--dl- {c['dl']} / --v2- {c['v2']})" for c in comps)
+        else:
+            component_part = "no shared component"
+        if slots:
+            named = ", ".join(f"`{s}`" for s in slots)
+            slot_part = (f"calls `renderSlot()` itself for {named}; "
+                         "design-language attributes DO reach this "
+                         "surface's own markup")
+        else:
+            slot_part = ("no `renderSlot()` call found; no design-language "
+                         "attribute reaches this surface's markup from here "
+                         "(see the reachability test above)")
+        print(f"- `{name}` — {component_part}; {slot_part}")
     print()
 
     feats = data["radioFeatures"]
