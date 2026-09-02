@@ -2390,41 +2390,16 @@ class WebServer:
                 # attached poller-like object (MOR-1187/1196 invariant —
                 # ``_refetch_and_reenable`` is the only thing in ``src/``
                 # that ever re-sets it; ``test_web_recovery_durable_off``
-                # pins this with a non-RadioPoller stub). Only the identity
-                # establish below is narrowed to real ``RadioPoller``s
-                # (MOR-1443 review R3, N2: keeps MagicMock doubles from
-                # raising a spurious warning inside the try/except).
+                # pins this with a non-RadioPoller stub).
                 if self._radio_poller is not None:
                     self._radio_poller._initial_fetch_done.set()
                 if isinstance(self._radio_poller, RadioPoller):
-                    # MOR-1443 review R2, finding 1: reset_vfo_session() above
-                    # discarded active_slot for this new connection epoch, and
-                    # unlike the process-startup call site, RadioPoller._run()
-                    # never re-fires after a soft-reconnect (it only runs its
-                    # one-time startup section once). Without this call,
-                    # identity stays unknown until the process restarts even
-                    # though the readback is unqueryable again. The gate reads
-                    # unobserved here (reset just cleared it), so this emits
-                    # the same confirmed VFO-A select the startup path does.
-                    try:
-                        await self._radio_poller.establish_vfo_identity()
-                    except Exception:
-                        logger.warning(
-                            "reconnect: auto VFO identity establish failed",
-                            exc_info=True,
-                        )
                     # MOR-1495 review R2: RadioPoller._run()'s one-time
-                    # startup section (same reasoning as
-                    # establish_vfo_identity above) never re-fires after a
-                    # soft-reconnect either, so re-seed scanning/
-                    # scan_resume_mode here too — otherwise a reconnect after
-                    # any scan command would leave the web trusting a
-                    # possibly-stale pre-reconnect value forever. Pure local
-                    # seed, unlike the VFO-identity call above — never writes
-                    # to the radio, so it needs no external-CAT-session guard
-                    # and cannot itself fail against the wire; the try/except
-                    # here only guards the StateStore call for consistency
-                    # with its sibling.
+                    # startup section never re-fires after a soft-reconnect,
+                    # so re-seed scanning/scan_resume_mode here too — otherwise
+                    # a reconnect after any scan command would leave the web
+                    # trusting a possibly-stale pre-reconnect value forever.
+                    # This is a pure local seed and never writes to the radio.
                     try:
                         self._radio_poller._seed_scan_facts_at_connect()
                     except Exception:
