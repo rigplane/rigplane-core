@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 2
+          fetch-depth: 3
       - uses: astral-sh/setup-uv@v8.1.0
       - name: Focused exchange GREEN and canonical checks
         shell: bash
@@ -29,7 +29,7 @@ jobs:
           set -euo pipefail
           mkdir -p exchange-proof
           git rev-parse HEAD | tee exchange-proof/head.txt
-          git diff --exit-code 9187cc4554b85aa0487d826d7bdbed092bd82b83 -- src/ tests/ .claude/audits/
+          git diff --exit-code 1e22244e0d66a07e7eee08880ae59791dc0ff760 -- src/ tests/ .claude/audits/
           uv sync --all-extras
           uv run python --version | tee exchange-proof/python.txt
           timeout 90s uv run pytest tests/test_rigctld_client_backend.py -vv --tb=short --timeout=15 --timeout-method=thread --junitxml=exchange-proof/green.xml 2>&1 | tee exchange-proof/green.log
