@@ -83,7 +83,7 @@ def test_rx_rejects_either_retained_timing_field(timing: dict[str, float]) -> No
 
 def test_observation_is_structurally_not_an_authority_event() -> None:
     assert not hasattr(subject, "ObservedPtt")
-    assert len(get_args(ManagedTxEvent)) == 6
+    assert len(get_args(ManagedTxEvent)) == 7
     assert "IGNORED" not in ManagedTxOutcome.__members__
 
 
@@ -98,7 +98,18 @@ def test_ptt_down_records_debt_before_returning_non_optional_effect() -> None:
     assert result.effects == (result.state.pending_effect,)
     effect = result.effects[0]
     assert effect.operation is ActuationOperation.PTT_ON
-    assert effect.token.effect_epoch == result.state.effect_epoch == 0
+    assert effect.token.effect_epoch == result.state.effect_epoch == 1
+
+
+@pytest.mark.parametrize(
+    "event", [PttDown("web-1", 7, "ptt", 10, None), TransmitOn(7, "tx", 10, None)]
+)
+def test_accepted_on_advances_epoch_before_emitting_effect(
+    event: ManagedTxEvent,
+) -> None:
+    result = reduce_managed_tx(replace(ManagedTxState(), effect_epoch=4), event)
+    assert result.state.effect_epoch == 5
+    assert result.effects[0].token.effect_epoch == 5
 
 
 @pytest.mark.parametrize(
@@ -143,6 +154,7 @@ def test_matching_ptt_up_returns_rx_with_release_effect_and_debt() -> None:
     assert result.state.tx_started_at_monotonic is None
     assert result.effects == (result.state.pending_effect,)
     assert result.effects[0].operation is ActuationOperation.FORCE_RECEIVE
+    assert result.effects[0].token.effect_epoch == result.state.effect_epoch
 
 
 def test_on_is_rejected_while_release_debt_is_outstanding() -> None:
@@ -160,11 +172,50 @@ def test_force_off_always_fences_debt_and_repeated_call_replaces_effect() -> Non
     assert first.state.release_plan is ReleasePlan.FORCE_RELEASE
     assert first.state.intent == ManagedTxIntent.rx()
     assert first.state.pending_effect is None
+    assert first.state.current_abort_token is None
     assert first.effects == ()
     assert first.state.abort_errors == ()
     assert second.state.effect_epoch == state.effect_epoch + 2
     assert second.effects == (second.state.pending_effect,)
     assert second.effects[0].token.attempt_id == "online"
+    assert second.state.current_abort_token == second.effects[0].token
+
+
+def test_retry_force_receive_advances_epoch_for_force_release_debt() -> None:
+    state = replace(
+        ManagedTxState(), release_plan=ReleasePlan.FORCE_RELEASE, effect_epoch=4
+    )
+    result = reduce_managed_tx(state, subject.RetryForceReceive(8, "retry"))
+    assert result.outcome is ManagedTxOutcome.ACCEPTED
+    assert result.state.effect_epoch == 5
+    assert result.effects == (result.state.pending_effect,)
+    assert result.effects[0].token == subject.EffectToken(8, 5, "retry")
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        ManagedTxState(),
+        ManagedTxState(release_plan=ReleasePlan.PTT_RELEASE),
+        keyed(),
+        reduce_managed_tx(ManagedTxState(), TransmitOn(7, "tx", 10, None)).state,
+        force_off().state,
+    ],
+)
+def test_retry_force_receive_rejects_without_rx_debt(state: ManagedTxState) -> None:
+    result = reduce_managed_tx(state, subject.RetryForceReceive(8, "retry"))
+    assert result.outcome is ManagedTxOutcome.REJECTED
+    assert result.state == state
+    assert result.effects == ()
+
+
+def test_live_release_rejects_ten_thousand_retries_without_state_change() -> None:
+    state = force_off().state
+    for attempt in range(10_000):
+        result = reduce_managed_tx(state, subject.RetryForceReceive(8, str(attempt)))
+        assert result.outcome is ManagedTxOutcome.REJECTED
+        assert result.state == state
+        assert result.effects == ()
 
 
 @pytest.mark.parametrize(
@@ -207,6 +258,35 @@ def test_force_receive_result_matrix(result: ActuationResult) -> None:
         ActuationOperation.FORCE_RECEIVE, result, "off-1"
     )
     assert settled.state.last_error == (None if accepted else "failed")
+
+
+def test_force_off_parent_token_survives_primary_settlement_then_new_cycle_clears() -> (
+    None
+):
+    forced = force_off().state
+    assert forced.pending_effect is not None
+    parent = forced.pending_effect.token
+    assert forced.current_abort_token == parent
+    released = settle(forced, ActuationResult.ACCEPTED).state
+    assert released.current_abort_token == parent
+    restarted = reduce_managed_tx(released, ptt_down()).state
+    assert restarted.current_abort_token is None
+
+
+def test_force_off_parent_survives_retries_until_next_force_off() -> None:
+    forced = force_off().state
+    assert forced.current_abort_token is not None
+    parent = forced.current_abort_token
+    failed = settle(forced, ActuationResult.REJECTED).state
+    retry = reduce_managed_tx(failed, subject.RetryForceReceive(8, "retry")).state
+    assert retry.current_abort_token == parent
+    failed_again = settle(retry, ActuationResult.REJECTED).state
+    retry_again = reduce_managed_tx(
+        failed_again, subject.RetryForceReceive(8, "retry-2")
+    ).state
+    assert retry_again.current_abort_token == parent
+    fenced = reduce_managed_tx(retry_again, ForceOff(8, "new-fence")).state
+    assert fenced.current_abort_token != parent
 
 
 @pytest.mark.parametrize(
@@ -257,13 +337,22 @@ def test_typed_abort_failures_are_diagnostic_only(operation: AbortOperation) -> 
     assert recorded.outcome is ManagedTxOutcome.APPLIED
     assert replace(recorded.state, abort_errors=()) == state
     assert recorded.state.abort_errors == (AbortError(operation, "stuck"),)
+    repeated = reduce_managed_tx(
+        recorded.state, AbortFailed(state.pending_effect.token, operation, "stuck")
+    )
+    assert repeated.state.abort_errors == recorded.state.abort_errors * 2
 
 
-def test_abort_failure_from_prior_force_off_epoch_is_stale() -> None:
-    first = force_off().state
-    assert first.pending_effect is not None
-    second = reduce_managed_tx(first, ForceOff(9, "new")).state
-    late = AbortFailed(first.pending_effect.token, AbortOperation.STOP_TUNE, "late")
-    result = reduce_managed_tx(second, late)
+@pytest.mark.parametrize(
+    "field,value",
+    [("provider_generation", 8), ("effect_epoch", 0), ("attempt_id", "old")],
+)
+def test_abort_failure_requires_full_parent_token(field: str, value: object) -> None:
+    state = force_off().state
+    assert state.current_abort_token is not None
+    stale = replace(state.current_abort_token, **{field: value})
+    result = reduce_managed_tx(
+        state, AbortFailed(stale, AbortOperation.STOP_TUNE, "late")
+    )
     assert result.outcome is ManagedTxOutcome.STALE
-    assert result.state == second
+    assert result.state == state
