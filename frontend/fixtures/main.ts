@@ -31,7 +31,7 @@ import ReferenceLayout from './ReferenceLayout.svelte';
 import {
   runAssertions, styleProbe, tokenSnapshot, type AssertionOptions,
 } from './assertions';
-import { setCapabilities } from '../src/lib/stores/capabilities.svelte';
+import { clearCapabilities, setCapabilities } from '../src/lib/stores/capabilities.svelte';
 import { fixtureById } from './catalog';
 import { DEFAULT_AUDIO_RUNTIME, harness, IDLE_TX } from './harness-state';
 
@@ -87,7 +87,12 @@ harness.caps = fixture.caps();
 // singleton must be populated directly here for the S-meter (or any other
 // capabilities-calibrated readout) to render as the fixture intends rather
 // than falling back to the honest-uncalibrated path.
-setCapabilities(fixture.caps());
+// `Fixture.caps` is nullable — `caps-unloaded` returns null — so the unloaded
+// case clears the singleton instead of pushing null through `setCapabilities`,
+// which takes a non-null `Capabilities`.
+const fixtureCaps = fixture.caps();
+if (fixtureCaps) setCapabilities(fixtureCaps);
+else clearCapabilities();
 harness.tx = { ...IDLE_TX, ...fixture.tx };
 harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
 harness.audioRuntime = { ...DEFAULT_AUDIO_RUNTIME, ...fixture.audioRuntime };

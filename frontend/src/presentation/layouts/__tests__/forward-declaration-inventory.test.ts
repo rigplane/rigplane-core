@@ -64,6 +64,7 @@ const radioLayoutSource = readFileSync('src/components-v2/layout/RadioLayout.sve
 const lcdLayoutSource = readFileSync('src/components-v2/layout/LcdLayout.svelte', 'utf8');
 const mobileLayoutSource = readFileSync('src/components-v2/layout/MobileRadioLayout.svelte', 'utf8');
 const cockpitShellSource = readFileSync('src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte', 'utf8');
+const peerSplitShellSource = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
 
 /**
  * MOR-1313. `sdr-test` and `desktop-v2` share the one shell whose semantic
@@ -86,9 +87,10 @@ const sharedShellMounts = (manifest: LayoutManifest): boolean =>
 
 /**
  * Per-manifest DOM-backing proof, read off the ACTUAL skin source — never a
- * hardcoded boolean. The four dedicated shells each mount
- * `SemanticRadioSurfaces` outright (verified unconditional — not wrapped in any
- * `{#if}` — by direct reading, MOR-1266 pin round).
+ * hardcoded boolean. Five dedicated shells each mount `SemanticRadioSurfaces`
+ * outright (verified unconditional — not wrapped in any `{#if}` — by direct
+ * reading: the original four in the MOR-1266 pin round, `peer-split` here in
+ * MOR-2151).
  */
 const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'sdr-test': () => sharedShellMounts(sdrTestLayout),
@@ -97,6 +99,10 @@ const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'lcd-scope': () => /<SemanticRadioSurfaces\s*\/>/.test(lcdLayoutSource),
   'mobile': () => /<SemanticRadioSurfaces\s*\/>/.test(mobileLayoutSource),
   'dual-receiver-cockpit': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(cockpitShellSource),
+  // MOR-2151: PeerSplitLayout.svelte (MOR-2155) mounts the same
+  // `strips="dual"` composition unconditionally, the identical shape
+  // `dual-receiver-cockpit` above proves DOM-backed with.
+  'peer-split': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(peerSplitShellSource),
 };
 
 describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () => {

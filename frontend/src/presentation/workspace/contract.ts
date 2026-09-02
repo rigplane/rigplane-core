@@ -30,7 +30,7 @@ const LAYOUT_ALIASES: Readonly<Record<string, WorkspaceLayoutId>> = LEGACY_LAYOU
 /** Workspace id space → layout-manifest id space. `auto` is resolved by the existing
  *  `skins/registry.ts::resolveSkinId()` (it needs live scope facts this module must not
  *  see), so it maps to null — "defer", not "unknown". */
-const LAYOUT_MANIFEST_ID: Readonly<Record<WorkspaceLayoutId, string | null>> = { auto: null, 'lcd-cockpit': 'lcd-cockpit', 'lcd-scope': 'lcd-scope', standard: 'desktop-v2', 'sdr-test': 'sdr-test' };
+const LAYOUT_MANIFEST_ID: Readonly<Record<WorkspaceLayoutId, string | null>> = { auto: null, 'lcd-cockpit': 'lcd-cockpit', 'lcd-scope': 'lcd-scope', standard: 'desktop-v2', 'sdr-test': 'sdr-test', 'peer-split': 'peer-split' };
 
 /** Decision 2: frozen by MOR-977 §4.6. */
 export const WORKSPACE_DESIGN_LANGUAGE_IDS = ['studioline', 'fieldline'] as const;
@@ -50,7 +50,7 @@ export const WORKSPACE_THEME_IDS = [
 export type WorkspaceThemeId = (typeof WORKSPACE_THEME_IDS)[number];
 
 /** Every zone id declared by a registered layout manifest (decisions 5 and 6). */
-export const WORKSPACE_ZONE_IDS = ['main', 'receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global', 'portrait-deck', 'control-column', 'tx-aux', 'meters', 'scope-display', 'filter', 'rf-front-end', 'band', 'antenna', 'rit-xit-scan', 'rx-audio', 'dsp', 'cw-keyer', 'scope-controls'] as const;
+export const WORKSPACE_ZONE_IDS = ['main', 'receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global', 'portrait-deck', 'control-column', 'tx-aux', 'meters', 'scope-display', 'filter', 'rf-front-end', 'band', 'antenna', 'rit-xit-scan', 'rx-audio', 'dsp', 'cw-keyer', 'scope-controls', 'peer-columns'] as const;
 export type WorkspaceZoneId = (typeof WORKSPACE_ZONE_IDS)[number];
 
 /** Decision 7: command-bus intent names (`set_compressor`), never module paths. */
