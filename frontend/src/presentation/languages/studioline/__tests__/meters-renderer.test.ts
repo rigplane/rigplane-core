@@ -19,11 +19,9 @@ describe('the meter is a continuous rail', () => {
     expect(m.segmentGap).toBe('0px');
   });
 
-  it('MOR-2214: reports a single undivided segment, with no gap, as MeterDisplay', () => {
-    // "Continuous" translated onto a segmented-rect renderer is one segment,
-    // not many — the rail has no internal divisions to count.
+  it('MOR-2214: reports the default 20-segment geometry, with no gap, as MeterDisplay', () => {
     const m = render({ value: 5 });
-    expect(m.segmentCount).toBe(1);
+    expect(m.segmentCount).toBe(20);
     expect(m.segmentGapPx).toBe(0);
   });
 

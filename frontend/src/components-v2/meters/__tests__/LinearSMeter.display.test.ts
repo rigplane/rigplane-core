@@ -115,10 +115,13 @@ describe('LinearSMeter display prop', () => {
   // different points of the ramp. `ACTIVE_COLORS[ACTIVE_COLORS.length - 1]`
   // ('#F83C28', LinearSMeter.svelte's own last ramp entry, read directly off
   // that file — not a guessed hex string) is the value that would have
-  // caught the original `ACTIVE_COLORS[0]`-fixed-color mistake: that mistake
-  // would still pass a "low !== high" check by accident if the low reading
-  // happened to differ from index 0, so the assertion has to pin the actual
-  // hot-end color, not just inequality.
+  // caught the original `ACTIVE_COLORS[0]`-fixed-color mistake: under that
+  // mistake, both the low and high readings resolve to the same fixed color
+  // (`#0D633B`), so even a bare "low !== high" inequality check would have
+  // caught it too. Pinning the actual hot-end color is still the stronger
+  // assertion — it also catches a mistake that returns two *different*
+  // wrong colors (neither of them the ramp's actual top), which a bare
+  // inequality check would silently pass.
   describe('segmentCount: 1 samples the color ramp by fill fraction, not by index', () => {
     // Extends the module-level 2-knot CAL with a real over-S9 anchor so a
     // "high" reading can land at the ramp's actual top, not just partway up

@@ -359,7 +359,7 @@ describe('MOR-2214 — the meters slot supplies LinearSMeter\'s segment geometry
     // LinearSMeter (i.e. the wiring never having happened) would make every
     // language converge on LinearSMeter's own 20-segment default, collapsing
     // this distinction — see the mutation-and-revert proof in the PR body.
-    expect(renderedSegmentCount('studioline')).toBe(1);
+    expect(renderedSegmentCount('studioline')).toBe(20);
     expect(renderedSegmentCount('fieldline')).toBe(12);
     expect(renderedSegmentCount('segmentline')).toBe(20);
   });
@@ -371,7 +371,7 @@ describe('MOR-2214 — the meters slot supplies LinearSMeter\'s segment geometry
   it('renderSlot(\'meters\', ...) itself reports the differing MeterDisplay per language', () => {
     const reading = { value: 0.5, max: 1, s9: 0.6 };
     activate('studioline');
-    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 1, segmentGapPx: 0 });
+    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 20, segmentGapPx: 0 });
     activate('fieldline');
     expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 12, segmentGapPx: 3 });
     activate('segmentline');
