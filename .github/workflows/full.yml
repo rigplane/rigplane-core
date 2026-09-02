@@ -281,7 +281,7 @@ jobs:
             mm-build-core-1|mm-build-core-2) ;;
             *) echo 'Rejected non-Mini runner'; exit 2 ;;
           esac
-          uv run pytest tests/test_managed_tx_fence.py tests/test_managed_tx_effect_lane.py tests/test_managed_tx_authority.py -q --tb=short --timeout=30 --timeout-method=thread 2>&1 | tee force-off-proof.txt
+          uv run pytest tests/test_managed_tx_fence.py tests/test_managed_tx_effect_lane.py tests/test_managed_tx_authority.py -vv --tb=short --timeout=30 --timeout-method=thread 2>&1 | tee force-off-proof.txt
           exit "${PIPESTATUS[0]}"
       - uses: actions/upload-artifact@v4
         if: always()
