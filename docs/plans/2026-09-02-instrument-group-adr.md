@@ -1,4 +1,4 @@
-# The instrument group — Phase 2 ADR draft
+# The instrument group — Phase 2 ADR
 
 **Status: Decided, 2026-09-02.** All decisions are recorded: the Svelte-5 and
 faces-are-data decisions in §1 under "Decided 2026-09-02", and the eight items
@@ -138,15 +138,15 @@ because behaviour and the instruments themselves stay code.
 | Capability gating decides visibility | `lib/runtime/adapters/radio-view-model-adapter.ts: toRadioViewModel` plus the per-surface `{#if view?.…}` gates and `zoned(…, allowBare=false)` in the wiring (MOR-1069: a control-bearing surface never renders bare) | Yes for a group's own `requires` field — it must resolve through the same view model, never a second capability schema (v3 "Capability integration") |
 | Native size stays declaration-only outside `presentation/layouts/` | `presentation/layouts/__tests__/stage-sizing-boundary.test.ts` (`GUARDED_NAMES` = `stageSizing`, `fitsViewport`), a textual scan | No new guard, but see §4: a group carrying its own canvas field never names either identifier, which is why `skins/segmentline/PeerSplitLayout.svelte` passes today while duplicating the numbers |
 
-### Proposed replacement text for the v3 plan's "Goals and non-goals"
+### Replacement text adopted for the v3 plan's "Goals and non-goals"
 
-Exact replacements for the fourth and fifth non-goal bullets (2026-09-02,
-MOR-2249, pending owner decision):
+The fourth and fifth non-goal bullets were replaced in the v3 plan on
+2026-09-02 (decision 4):
 
-- fourth bullet, currently "making an arbitrary JSON UI-tree editor", becomes:
+- fourth bullet, previously "making an arbitrary JSON UI-tree editor", becomes:
   *"a free-form widget tree: a face composes only the declared instrument
   vocabulary, never arbitrary components"*;
-- fifth bullet, currently "faithfully cloning physical radio faceplates",
+- fifth bullet, previously "faithfully cloning physical radio faceplates",
   becomes: *"cloning a manufacturer's trade dress one-for-one"* — the owner's
   own wording is «не копировать фирменный вид производителя один в один».
 
@@ -424,8 +424,9 @@ input file, and I did not read that revision's source.
 
 ## 9. Migration order and deletions
 
-1. **Peer-split glass first**, after MOR-2243 lands (it moves the glass into
-   `LcdLayout` as `variant="peer-split"` and renames the id — input file §5).
+1. **Peer-split glass first**. MOR-2243 is merged (#3048 moved the glass into
+   `LcdLayout` as `variant="peer-split"`; #3051 relabelled the picker entry;
+   the id stays `peer-split`).
    No instrument changes: the members are the surfaces the dual composition
    already mounts, so this slice tests the declaration and nothing else.
 2. **The SDR deck** (MOR-2231). Its decomposition items 1–2 become, under a
@@ -454,7 +455,7 @@ rather than being rewritten:
 | `presentation/layouts/lcd-declarations.ts` and `mobile-declarations.ts` | MOR-1160 "froze without implementing it" — stale; the same sentence's claim that the primitive owns measurement and the transform is now true and stays |
 | `docs/plans/2026-07-25-ui-composition-architecture-v3.md` | "the future `ScaledStage` primitive, which will own …"; "until `ScaledStage` exists to enforce it" |
 
-**D1, D3, D4 are options, not decisions.** D1: the viewport/topology half of
+D1: the viewport/topology half of
 `contract.ts` — `fitsViewport`, `resolveLayoutForViewport`,
 `resolveLayoutForTopology`, `supportsTopology`, `resolveFallback`,
 `listLayoutIds` — has no caller outside `presentation/layouts/` and its own
@@ -463,12 +464,12 @@ module-private, not exported — over `frontend/src` excluding `__tests__` at
 `b197b09a` returns their definitions, their uses inside `contract.ts`, and
 comment mentions in `desktop-declarations.ts`, `mobile-declarations.ts`
 (`fitsViewport`) and `dual-receiver-cockpit.ts` (`resolveLayoutForTopology`),
-all under `presentation/layouts/`). Keep it awaiting its consumer, or delete and re-add
-when a group needs it. D3 (`minScale`): make the group declaration its reader,
-or delete it with D1. D4 (`LayoutManifest.loader` invoked only in one test,
+all under `presentation/layouts/`). Decided: delete (MOR-2254).
+D3 (`minScale`): kept; the group declaration becomes its reader. D4
+(`LayoutManifest.loader` invoked only in one test,
 while `SKIN_LOADERS` is the real load path — from the input file's audit, not
-re-derived here): pick one loader mechanism, or leave both until the group work
-says which one a group uses.
+re-derived here): deferred to the first migration slice, which reports which
+loader a group uses; the other is then deleted.
 
 ## 10. Decisions reserved for the owner
 
