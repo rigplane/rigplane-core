@@ -366,9 +366,7 @@ const SCENES: readonly Scene[] = [
     // with it, the `.digit`/`.sep` spans that render the actual per-glyph
     // frequency readout. No scene above ever supplies it, so without this one
     // a selector targeting `.digit`/`.sep` would misreport as an orphan
-    // regardless of whether it is one. `grep -c '.digit\|\.sep\b'` over all
-    // three stylesheets returns 0 today (verified above), so this closes a
-    // latent coverage gap rather than changing any current orphan verdict.
+    // regardless of whether it is one.
     name: 'vfo-surface (2/main_sub, tunable — FrequencyDisplayInteractive mounts)',
     render: () => mountInto(VfoSurface, {
       viewModel: topologyFixtures['2/main_sub'], hasDualReceiver: true,
