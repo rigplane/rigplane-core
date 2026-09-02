@@ -46,8 +46,7 @@ features = [
     "preamp",
     "ip_plus",
     # NOTE: no digisel on IC-7300
-    # Antenna
-    "antenna",
+    # Antenna topology is declared below; IC-7300 has no antenna-selection control.
     # NOTE: no rx_antenna on IC-7300 (single antenna)
     # DSP / Noise
     "nb",

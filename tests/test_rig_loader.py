@@ -1366,6 +1366,17 @@ class TestToProfile:
         profile = load_rig(ftx1_path).to_profile()
         assert profile.transceiver_count == 2
 
+    def test_ic7300_antenna_topology_without_control_capability(self):
+        """MOR-2118: topology metadata must not imply antenna selection."""
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        profile = rig.to_profile()
+
+        assert "antenna" not in profile.capabilities
+        assert profile.antenna_tx_count == 1
+        assert rig.antenna_has_rx_ant is False
+        assert profile.supports_command("get_antenna") is False
+        assert profile.supports_command("set_antenna") is False
+
     def test_capabilities_frozenset(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert isinstance(profile.capabilities, frozenset)

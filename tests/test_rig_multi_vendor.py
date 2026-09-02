@@ -374,7 +374,7 @@ class TestMultiVendorProfiles:
         assert "speech" in profile.capabilities
         assert "nb" in profile.capabilities
         assert "apf" not in profile.capabilities
-        assert len(profile.capabilities) == 41
+        assert len(profile.capabilities) == 40
         assert rig.commands["set_speech"].bytes == (0x13,)
 
     def test_ftx1_without_announcement_routes_does_not_advertise_speech(self):
