@@ -300,7 +300,7 @@
     </p>
   </section>
 
-  <section class="demo-card" data-testid="gallery-dotbutton" style="opacity: 0">
+  <section class="demo-card" data-testid="gallery-dotbutton">
     <h2>DotButton <span class="hint">(component)</span></h2>
     <div class="demo-grid">
       {#each indicatorColors as color}
@@ -315,7 +315,7 @@
     </div>
   </section>
 
-  <section class="demo-card" data-testid="gallery-fillbutton" style="opacity: 0">
+  <section class="demo-card" data-testid="gallery-fillbutton">
     <h2>FillButton <span class="hint">(component)</span></h2>
     <div class="demo-grid">
       {#each hardwareButtons as btn}
@@ -330,7 +330,7 @@
     </div>
   </section>
 
-  <section class="demo-card" data-testid="gallery-hardwarebutton" style="opacity: 0">
+  <section class="demo-card" data-testid="gallery-hardwarebutton">
     <h2>HardwareButton <span class="hint">(component)</span></h2>
     <div class="demo-grid">
       {#each hardwareButtons as btn}
@@ -346,7 +346,7 @@
     </div>
   </section>
 
-  <section class="demo-card" data-testid="gallery-hardwareplainbutton" style="opacity: 0">
+  <section class="demo-card" data-testid="gallery-hardwareplainbutton">
     <h2>HardwarePlainButton <span class="hint">(component)</span></h2>
     <div class="demo-grid">
       {#each hardwareButtons as btn}
@@ -916,7 +916,7 @@
     </div>
   </section>
 
-  <section class="demo-card" data-testid="gallery-statusindicator" style="opacity: 0">
+  <section class="demo-card" data-testid="gallery-statusindicator">
     <h2>StatusIndicator <span class="hint">(display-only component)</span></h2>
     <p class="lab-note">
       Read-only status/mode display. No <code>onclick</code>, rendered as a dedicated primitive.
