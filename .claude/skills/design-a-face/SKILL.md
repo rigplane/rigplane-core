@@ -220,17 +220,18 @@ Measure the stripe spacing in the raw (unsmoothed) profile first, then choose
 a window a few times that period: wide enough to flatten the stripes, narrow
 enough to leave a genuine band's boundary where it is.
 
-**`--signal variation` profiles spread instead of level, and is not a
-nicety — it is what makes a textured reference measurable at all.** A
-scanline ground inks every row about equally, so the *mean* ink per row
-(`level`, the default) cannot tell a band from a gutter — both read as
-inked. The *spread* of ink within a row can: a row that is part of a real
-band varies across its width (edges, glyphs, a filled meter segment sitting
-beside empty ones), while a row that is only texture does not vary beyond the
-texture's own period. Reach for `--signal variation` whenever `level` reports
-either "no runs" or one run spanning nearly the whole image on a reference
-you know is not actually blank — that is the signature of a textured ground,
-not evidence the reference has no structure.
+**`--signal variation` profiles spread instead of level.** A scanline ground
+inks every row about equally, so the *mean* ink per row (`level`, the
+default) cannot tell a band from a gutter — both read as inked. The *spread*
+of ink within a row can: a row that is part of a real band varies across its
+width (edges, glyphs, a filled meter segment sitting beside empty ones),
+while a row that is only texture does not vary beyond the texture's own
+period — verified on a planted fixture built for exactly this contrast
+(`selftest`'s `--signal level` vs `--signal variation` check). It is not a
+guaranteed fix — on this skill's own reference it does not separate
+anything at all; see the "Known limit" note below. Reach for it when
+`level` reports "no runs" or one run spanning nearly the whole image on a
+reference you know is not blank; it is worth trying, not a promise.
 
 **Known limit, and worth knowing before you trust a number:** on a reference
 with a regular texture (this one has a fine scanline-style ground), the
@@ -238,8 +239,19 @@ floor-relative threshold reads the texture itself as ink almost everywhere,
 so a whole-panel `bands` collapses to nearly one giant run instead of finding
 the real bands. Reproduced: `bands /var/tmp/ftx1-reference.png` on the
 2572×1100 reference returns exactly **one run spanning 98.0%** of the image
-(`22-1100`). Use `--smooth` or `--signal variation` (both above) first; crop
-only once one of those has shown there is a real boundary to crop to.
+(`22-1100`). Neither treatment above rescues *this particular* reference:
+`--smooth` 8/24/36/48 each still return one run, 98.3-99.7% of the image;
+`--signal variation` returns the same single run as `level`, byte-identical
+— and on the crop the trial used (`--crop 60,55,2515,1060 --min-run 8`),
+`level` finds 12 runs against `variation`'s 11, not the clean split the
+mechanism above predicts. The floor here is set by the bright out-of-panel
+border rather than by the scanline texture the two treatments target, so
+nearly everything clears the threshold in every mode. Where `--smooth` or
+`--signal variation` does surface a real boundary on a given reference,
+crop to it; where neither does, as here, do not crop blind — fall back to
+reading proportions from the image directly with a stated, generous
+tolerance instead of reporting a script number this instrument cannot
+produce for a texture this uniform.
 
 **Report proportions of the panel box, never pixels**, and state the tolerance.
 The stage scales as one block, so a pixel figure is true only at one size,
