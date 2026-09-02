@@ -159,20 +159,20 @@ polling_only = [
     "global.tx_state.split",
     # MOR-1452: documented-readable §19 0x14 sub-commands (0x0B/0x15/0x16/0x17,
     # see docs/validation/cat-audits/ic7300.md) that the poller never queried —
-    # the TX-aux panel showed them as an honest but permanent "?". Same
-    # provider-generic `_GLOBAL_LEVEL_QUERY_SUBS` mapping IC-7610 already
-    # polls these 4 fields through; slow field_policies below, not the
-    # freq/mode/keep-alive fast tier.
+    # the TX-aux panel showed them as an honest but permanent "?".
+    # The active profile declares getters for these 4 controls. The acquisition
+    # scheduler resolves their canonical getter names through the profile-bound
+    # resolver and this profile's CommandMap, not a hardcoded scheduler table;
+    # slow field_policies below, not the freq/mode/keep-alive fast tier.
     "global.operator_controls.mic_gain",
     "global.operator_controls.monitor_gain",
     "global.operator_controls.vox_gain",
     "global.operator_controls.anti_vox_gain",
     # MOR-1485: TX/PA meters (0x15 0x11-0x16). ``[commands]`` already declares
     # get_power_meter/get_swr/get_alc/get_comp_meter/get_vd_meter/get_id_meter
-    # below and the scheduler's query mapping
-    # (``_GLOBAL_METER_QUERY_SUBS``/``IcomCivAcquisitionExecutor``) already
-    # handles the whole "global.meters.*" family generically — nothing there
-    # was IC-7300-specific or missing. The gap was purely acquisition
+    # below. The acquisition scheduler resolves those canonical getter names
+    # through the profile-bound resolver and this active profile's CommandMap,
+    # not a hardcoded scheduler table. The gap was purely acquisition
     # membership: no field_policies entry meant due_requests() never touched
     # these paths, so rigctld's own one-shot reads (proven healthy —
     # ``_OBSERVABLE_CMD15_FIELDS``, ``_civ_rx.py``) were the only thing that
