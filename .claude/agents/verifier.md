@@ -23,13 +23,6 @@ Rules:
 - Hunt for what is missing, not only what is wrong: sites the change should
   have touched but didn't, contradictions with existing docs and rules,
   loopholes in wording, silent scope creep.
-- Audit the prose as strictly as the code: apply the prose-claim rule in
-  CLAUDE.md §Testing from the reviewer's side, checking every sentence in the
-  diff against the tree, never against the author's summary. Superlatives and
-  totality claims — "the only caller", "every write lands here", "nothing
-  calls this" — are wrong more often than not; test them by enumerating, not
-  by one example. A false claim in prose is a blocking finding: it is what the
-  next implementer will build from.
 - Give every claim you check one of three verdicts: CONFIRMED (you reproduced
   it), REFUTED (you reproduced its opposite), or NARROWED (true on the part
   you checked, false on the part it also claimed but you didn't — the shape
