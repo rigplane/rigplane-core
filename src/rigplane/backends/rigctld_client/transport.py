@@ -21,6 +21,18 @@ _ERROR_HINTS = {
 }
 
 
+class RigctldCommandError(CommandError):
+    """A nonzero ``RPRT`` result from external ``rigctld``."""
+
+    def __init__(self, command: str, code: int) -> None:
+        self.command = command
+        self.code = code
+        hint = _ERROR_HINTS.get(code, "command failed")
+        super().__init__(
+            f"External rigctld command {command!r} failed with RPRT {code} ({hint})."
+        )
+
+
 class RigctldTransport:
     """Serialized line-oriented TCP client for external ``rigctld``."""
 
@@ -140,7 +152,7 @@ class RigctldTransport:
                 line = await self._read_line(command)
                 if line.startswith("RPRT "):
                     code = _parse_rprt(line, command)
-                    if code < 0:
+                    if code != 0:
                         _raise_rprt(command, code)
                     raise CommandError(
                         f"External rigctld returned status {line!r} for query "
@@ -195,7 +207,7 @@ class RigctldTransport:
                     line = raw.decode("latin-1").rstrip("\r\n")
 
         code = _parse_rprt(line, command)
-        if code < 0:
+        if code != 0:
             _raise_rprt(command, code)
 
     async def _write_line(self, command: str) -> None:
@@ -271,7 +283,4 @@ def _parse_rprt(line: str, command: str) -> int:
 
 
 def _raise_rprt(command: str, code: int) -> None:
-    hint = _ERROR_HINTS.get(code, "command failed")
-    raise CommandError(
-        f"External rigctld command {command!r} failed with RPRT {code} ({hint})."
-    )
+    raise RigctldCommandError(command, code)
