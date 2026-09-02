@@ -83,7 +83,12 @@ describe.each(SHEETS)(
     const SELECTORS = selectors(css);
 
     it('parses into selectors worth pinning', () => {
-      expect(SELECTORS.length).toBeGreaterThan(20);
+      // The floor guards against a broken parse (0 selectors), not against a
+      // small but real stylesheet: segmentline.css was retargeted onto real
+      // emitted markup and every rule with no reachable target was deleted,
+      // so its selector count is legitimately smaller than its siblings'
+      // while still comfortably clearing this floor.
+      expect(SELECTORS.length).toBeGreaterThan(10);
     });
 
     it('opens every selector with the sanctioned attribute, doubled for specificity', () => {
