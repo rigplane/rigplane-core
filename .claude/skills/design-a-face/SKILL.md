@@ -458,8 +458,11 @@ automated check.
 **A skin's markup is invisible to the design-language check.** It mounts the
 semantic surfaces, not skin layouts. So a rule consumed only by a skin component
 reports as an orphan, correctly by the check's own scope and wrongly in fact.
-That is exactly how `dl-glass` came to be deleted while it had a consumer. If
-you retarget or delete a rule, grep the skins too.
+That is exactly how `dl-glass` came to be renamed away in `segmentline.css`
+on main (`8cc5471d`, MOR-2163/#2968) while its only consumer,
+`PeerSplitLayout.svelte`, existed on the unmerged branch
+`codex/mor-2153-peer-split-chassis` (`968aec6f`) rather than on main. If you
+retarget or delete a rule, grep the skins too.
 
 **A component's own `<style>` block is invisible to its own tests.** Deleting
 the entire block from `PeerSplitLayout.svelte` left all four of its tests green
