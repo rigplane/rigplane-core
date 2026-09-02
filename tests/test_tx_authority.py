@@ -13,11 +13,6 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
-from rigplane.core.state_pipeline_contracts import (
-    FieldPath,
-    SourceMetadata,
-)
-from rigplane.core.state_store import FieldSnapshot, FreshnessState, StateSnapshot
 from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
 from rigplane.core.tx_authority import (
     DECISION_LOG_CAPACITY,
@@ -30,7 +25,6 @@ from rigplane.core.tx_authority import (
     UNRESOLVED_ARGUMENT,
     BandRelation,
     TransmitAuthority,
-    TransmitTruth,
     TxArgumentContext,
     TxFamily,
     TxMethodEntry,
@@ -39,13 +33,10 @@ from rigplane.core.tx_authority import (
     TxStateReading,
     TxWriteClass,
     band_relation,
-    build_transmit_truth,
     first_parameter_name,
     resolve_band,
     short_circuit_family,
 )
-
-PTT_PATH = FieldPath.global_("tx_state", "ptt")
 
 BANDS: tuple[tuple[int, int], ...] = (
     (14_000_000, 14_350_000),
@@ -262,6 +253,17 @@ def test_key_down_bound_is_imported_not_respelled() -> None:
 
 def test_read_deadline_is_its_own_named_bound() -> None:
     assert TX_READ_DEADLINE_SECONDS == 0.3
+
+
+def test_transmit_truth_projection_is_absent() -> None:
+    from rigplane.core import tx_authority
+
+    for name in (
+        "TransmitTruth",
+        "EMPTY_TRANSMIT_TRUTH",
+        "build_transmit_truth",
+    ):
+        assert not hasattr(tx_authority, name)
 
 
 def test_argument_predicate_registry_is_named_and_pure() -> None:
@@ -931,28 +933,19 @@ async def test_decision_ring_is_bounded() -> None:
     assert len(authority.view().records) == DECISION_LOG_CAPACITY
 
 
-async def test_view_reports_truth_holds_and_deadline() -> None:
+async def test_view_reports_holds_and_deadline() -> None:
     clock = Clock()
     link = FakeTransmitStateLink(clock)
-    truth = TransmitTruth(
-        value=False,
-        attributed="rx",
-        age_seconds=0.2,
-        source="poll_response",
-        generation_current=True,
-    )
     authority = TransmitAuthority(
         read_transmit_state=link.read,
         last_resort_unkey=FakeUnkey(),
         method_map=METHOD_MAP,
         clock=clock,
         bands=BANDS,
-        truth_provider=lambda: truth,
     )
     async with authority.admit("set_ptt", (True,)):
         pass
     view = authority.view()
-    assert view.truth is truth
     assert view.own_transmit_holds == ("key",)
     assert view.deadline_monotonic is not None
     assert view.records[-1].method == "set_ptt"
@@ -980,91 +973,6 @@ async def test_raw_excluded_methods_are_not_classified() -> None:
             assert admission.family is None  # bytes are not classified
     assert authority.view().records == ()
     assert link.reads == []
-
-
-# --------------------------------------------------------------------------
-# TransmitTruth builder (§3.7)
-# --------------------------------------------------------------------------
-
-
-def _snapshot(
-    *,
-    value: object,
-    source: str,
-    observed: float,
-    generated: float,
-    provider_generation: int = 3,
-) -> StateSnapshot:
-    field = FieldSnapshot(
-        path=PTT_PATH,
-        value=value,
-        freshness=FreshnessState.FRESH,
-        last_observed_monotonic=observed,
-        max_age=1.0,
-        source=SourceMetadata(source=source, provider="fake"),  # type: ignore[arg-type]
-        provider_generation=provider_generation,
-    )
-    return StateSnapshot(
-        state_revision=1,
-        freshness_revision=1,
-        observation_seq=1,
-        generated_at_monotonic=generated,
-        fields=(field,),
-        provider_generation=provider_generation,
-    )
-
-
-def test_transmit_truth_accepts_radio_readback_provenance() -> None:
-    snapshot = _snapshot(
-        value=True, source="poll_response", observed=9.5, generated=10.0
-    )
-    truth = build_transmit_truth(snapshot, provider_generation=3)
-    assert truth.value is True
-    assert truth.source == "poll_response"
-    assert truth.age_seconds == pytest.approx(0.5)
-    assert truth.generation_current is True
-
-
-@pytest.mark.parametrize(
-    "source", ["state_poller", "command_response", "local_reconcile", "test"]
-)
-def test_transmit_truth_rejects_non_readback_provenance(source: str) -> None:
-    snapshot = _snapshot(value=True, source=source, observed=9.5, generated=10.0)
-    truth = build_transmit_truth(snapshot, provider_generation=3)
-    assert truth.value is None
-    assert truth.source is None
-    assert truth.age_seconds is None
-
-
-def test_transmit_truth_requires_a_strict_bool() -> None:
-    snapshot = _snapshot(value=1, source="poll_response", observed=9.5, generated=10.0)
-    assert build_transmit_truth(snapshot, provider_generation=3).value is None
-
-
-def test_transmit_truth_is_empty_without_the_field() -> None:
-    empty = StateSnapshot.empty()
-    truth = build_transmit_truth(empty, provider_generation=0)
-    assert truth == TransmitTruth(
-        value=None,
-        attributed=None,
-        age_seconds=None,
-        source=None,
-        generation_current=False,
-    )
-
-
-def test_transmit_truth_marks_a_stale_generation_without_discarding_it() -> None:
-    snapshot = _snapshot(
-        value=False,
-        source="civ_unsolicited",
-        observed=9.0,
-        generated=10.0,
-        provider_generation=2,
-    )
-    truth = build_transmit_truth(snapshot, provider_generation=3)
-    assert truth.value is False
-    assert truth.generation_current is False
-    assert truth.age_seconds == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------

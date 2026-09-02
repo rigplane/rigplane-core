@@ -36,8 +36,6 @@ from functools import lru_cache
 from types import MappingProxyType
 from typing import Final, Literal, NoReturn
 
-from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.state_store import StateSnapshot
 from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,9 +49,6 @@ TX_READ_DEADLINE_SECONDS: float = 0.3
 #: Decision records retained per radio.
 DECISION_LOG_CAPACITY: int = 256
 
-#: The only observation provenance that may feed :class:`TransmitTruth`. Our
-#: own command responses, the state poller, local reconciliation and test
-#: fixtures have no intake — a write outcome is never evidence of receiving.
 RADIO_READBACK_SOURCES: frozenset[str] = frozenset(
     {"poll_response", "civ_unsolicited", "hamlib_response", "yaesu_poll_response"}
 )
@@ -71,8 +66,6 @@ TX_ENGINE_FAILURE_TAGS: frozenset[str] = frozenset(
 RAW_EXCLUDED: frozenset[str] = frozenset(
     {"send_civ", "send_civ_transaction", "send_civ_raw_fire_and_forget"}
 )
-
-_PTT_FIELD_PATH = FieldPath.global_("tx_state", "ptt")
 
 
 class TxWriteClass(StrEnum):
@@ -191,53 +184,6 @@ class TxStateReading:
     source: str | None = None
     verified_readback: bool = False
     failure: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TransmitTruth:
-    """Display/UX-grade transmit truth. Never used for a hazard decision."""
-
-    value: bool | None
-    attributed: str | None
-    age_seconds: float | None
-    source: str | None
-    generation_current: bool
-
-
-EMPTY_TRANSMIT_TRUTH = TransmitTruth(
-    value=None,
-    attributed=None,
-    age_seconds=None,
-    source=None,
-    generation_current=False,
-)
-
-
-def build_transmit_truth(
-    snapshot: StateSnapshot, *, provider_generation: int
-) -> TransmitTruth:
-    """Project ``global.tx_state.ptt`` through the provenance pin.
-
-    Freshness is deliberately not pre-collapsed: the age travels out and each
-    consumer applies its own tolerance.
-    """
-    try:
-        field = snapshot.field(_PTT_FIELD_PATH)
-    except KeyError:
-        return EMPTY_TRANSMIT_TRUTH
-    if str(field.source.source) not in RADIO_READBACK_SOURCES:
-        return EMPTY_TRANSMIT_TRUTH
-    if type(field.value) is not bool:
-        return EMPTY_TRANSMIT_TRUTH
-    age = snapshot.generated_at_monotonic - field.last_observed_monotonic
-    return TransmitTruth(
-        value=field.value,
-        # Row 6 routes Yaesu's ``tx_state_map`` attribution into this field.
-        attributed=None,
-        age_seconds=age if age >= 0.0 else None,
-        source=str(field.source.source),
-        generation_current=field.provider_generation == provider_generation,
-    )
 
 
 # Band relation — data in, no profile import
@@ -553,7 +499,6 @@ class TxAuthorityView:
     """Read-only debuggability surface: why did it decide that."""
 
     records: tuple[TxDecisionRecord, ...]
-    truth: TransmitTruth | None
     own_transmit_holds: tuple[str, ...]
     deadline_monotonic: float | None
     lease_active: bool
@@ -592,7 +537,6 @@ class TransmitAuthority:
         bands: Sequence[tuple[int, int]] = (),
         current_frequency_hz: Callable[[], float | None] | None = None,
         lease_active: Callable[[], bool] | None = None,
-        truth_provider: Callable[[], TransmitTruth] | None = None,
         provider_generation: Callable[[], int] | None = None,
         cw_hold_duration: Callable[[TxArgumentContext], float] | None = None,
         read_deadline_seconds: float = TX_READ_DEADLINE_SECONDS,
@@ -605,7 +549,6 @@ class TransmitAuthority:
         self._bands = tuple(bands)
         self._current_frequency_hz = current_frequency_hz
         self._lease_active = lease_active
-        self._truth_provider = truth_provider
         self._provider_generation = provider_generation
         self._cw_hold_duration = cw_hold_duration
         self._read_deadline_seconds = read_deadline_seconds
@@ -639,7 +582,6 @@ class TransmitAuthority:
     def view(self) -> TxAuthorityView:
         return TxAuthorityView(
             records=tuple(self._records),
-            truth=self._truth_provider() if self._truth_provider else None,
             own_transmit_holds=tuple(
                 hold.kind for hold in self._active_holds(self._clock())
             ),
