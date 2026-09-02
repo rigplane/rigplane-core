@@ -1,13 +1,9 @@
 /**
  * MOR-2031 — the design-language-agnostic half of TX state feedback.
  *
- * Each design language renders TX state in its own vocabulary, and until
- * this ticket each language's own `state-feedback-renderer.ts` re-derived
- * the identical fail-closed decision over its own private copy of the
- * logic — `resolveTxFeedbackState` is that one decision, extracted. (The
- * `KEY_TREATMENT` ordering below — the F3/N3 fix that makes `keyBlocked`
- * lose to a louder session — was itself hand-duplicated into both files in
- * a single commit, MOR-1275.)
+ * The `KEY_TREATMENT` ordering below — the F3/N3 fix that makes `keyBlocked`
+ * lose to a louder session — was hand-duplicated into both files in a single
+ * commit, MOR-1275.
  *
  * Lives under `presentation/languages/`, not `semantic/`: the renderers
  * that consume it are `presentation/` modules, and the v3 ADR's one-way
@@ -63,7 +59,7 @@ export interface TxFeedbackState {
   readonly quiet: boolean;
   readonly tone: TxFeedbackTone;
   readonly failed: boolean;
-  /** `` `TX FAULT: ${fault}` `` when `failed` and `fault` is non-empty, else `null`. Both languages build the same string; only WHERE they place it differs. */
+  /** `` `TX FAULT: ${fault}` `` when `failed` and `fault` is non-empty, else `null`. */
   readonly faultText: string | null;
 }
 
@@ -95,8 +91,7 @@ const isTxSessionState = (value: string): value is TxSessionState =>
 
 /**
  * Reads a flat renderer field as a string, defaulting an absent or
- * non-string value to `''`. Shared by both design languages' state-feedback
- * renderers, which previously each defined this identically.
+ * non-string value to `''`.
  */
 export const stringField = (
   fields: Readonly<Record<string, string | number | boolean | null>>, key: string,
