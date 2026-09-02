@@ -88,6 +88,8 @@ def _document_for(config: ManagedTxTotConfig) -> dict[str, float | int | None]:
 
 
 def _normalize_timeout_seconds(value: object) -> float | None:
+    if value is None:
+        return None
     if type(value) not in (int, float):
         raise ValueError("timeout seconds must be finite-positive or zero")
     seconds = float(value)

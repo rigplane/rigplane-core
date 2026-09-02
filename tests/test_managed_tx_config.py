@@ -30,6 +30,20 @@ def test_zero_normalizes_to_disabled_and_persists_only_config(tmp_path: Path) ->
         "software_tot_seconds": None,
         "version": 1,
     }
+    assert ManagedTxTotConfigStore(path).config == ManagedTxTotConfig(None)
+
+
+def test_none_disables_directly(tmp_path: Path) -> None:
+    store = ManagedTxTotConfigStore(tmp_path / "managed-tx.json")
+
+    assert store.set_timeout_seconds(None) == ManagedTxTotConfig(None)
+
+
+def test_preexisting_canonical_null_document_disables(tmp_path: Path) -> None:
+    path = tmp_path / "managed-tx.json"
+    path.write_text('{"software_tot_seconds": null, "version": 1}', encoding="utf-8")
+
+    assert ManagedTxTotConfigStore(path).config == ManagedTxTotConfig(None)
 
 
 @pytest.mark.parametrize(
