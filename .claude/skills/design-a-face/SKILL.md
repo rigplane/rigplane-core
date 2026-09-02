@@ -25,6 +25,26 @@ states into two, and two of the collapsed ones are safety-relevant.
 
 This skill exists to make both impossible to ship by accident.
 
+## Phase 0 — check whether a design language for this reference already exists
+
+**Search before you write, before anything else here.** This can change what
+the rest of the exercise even is, which is why it comes before Phase 1 rather
+than alongside it. Read `frontend/src/presentation/languages/` — every shipped
+design language lives there. Checked: `segmentline` is on `main` in full —
+three renderers (`frequency-renderer.ts`, `meters-renderer.ts`,
+`state-feedback-renderer.ts`), `tokens.ts`, a stylesheet (`segmentline.css`)
+and five test files (`find frontend/src/presentation/languages/segmentline
+-type f`). Skipping this step lets a proposal read as greenfield work when it
+is half-built — exactly the omission CLAUDE.md's "search before you write" and
+"close enough is reuse" scope rules exist to prevent.
+
+A hit is not "reuse it" and stop. Establish three things: what the existing
+language already covers, what it does not, and whether closing the gap is a
+stylesheet change (`tokens.ts` / the family's `.css`, the cheap tier Phase 4
+names) or new markup (a change to the shared semantic-surface layer, not to
+this design language). Only then does deriving a fresh contract in Phase 1
+make sense to run.
+
 ## Phase 1 — derive the data contract
 
 **Never write this by hand.** A hand-maintained contract at a layer boundary
@@ -138,6 +158,8 @@ So extract, in this order:
     ./measure-reference.py columns <image>
     ./measure-reference.py bands   <image> --crop L,T,R,B
     ./measure-reference.py bands   <image> --by colour
+    ./measure-reference.py bands   <image> --smooth 8
+    ./measure-reference.py bands   <image> --signal variation
 
 `bands` profiles rows and finds the horizontal bands; `columns` profiles
 columns and finds the vertical divisions. It reports every run as a **share of
@@ -151,6 +173,18 @@ it, not only a broken threshold. It fails loudly if any is not recovered
 exactly. The low-contrast band is the one that matters: an earlier version
 planted only strong bands, and deliberately breaking the threshold left it
 green, so it verified nothing. An ideal case survives being measured badly.
+It also checks `--smooth` (the same three bands must still be recovered,
+strictly wider, at `smooth=5`, and a second, larger window must widen them
+further still — not just the same window applied again) and `--signal
+variation` (a scanline fixture that `level` cannot separate into a band and a
+gutter by design, but `variation` can), both routed through `main()` rather
+than called directly so a flag dropped between the CLI and `report()` fails
+the check too, not only a broken function — and the degenerate-colour warning
+(`DEGENERATE_CHROMA`, above). Confirmed by mutation to fail the self-test: a
+no-op smoothing branch, `--smooth` dropped before it reaches `report()`,
+`--signal` inverted at the CLI, a smoothing window hardcoded regardless of
+the requested size, and the degenerate-colour threshold broken in either
+direction (`selftest` in `measure-reference.py`).
 
 **Two scales, same method.** A profile over the whole panel gives the bands and
 the divider. For a fine element — glyph cells, segment pitch, chip padding —
@@ -164,11 +198,65 @@ separates a *dimmed* indicator, which is the same hue with less ink, from a
 *differently coloured* one: the ink profile confuses them, the colour profile
 does not.
 
-**Known limit, found by the selftest and worth knowing before you trust a
-number:** the run detector thresholds just above the profile's floor, because a
-midpoint threshold loses faint bands whenever a heavy element is present in the
-same image — and these panels always contain both. If two elements sit with no
-gutter between them, they read as one run; crop to separate them.
+**This is a statistic over the measured box, not a judgement about "the
+ground."** "Distance from grey" only isolates an accent if the ground has
+none to compete with — but the median chroma is taken over whatever box is
+measured, so the same warning fires whether the ground itself is tinted or a
+crop is simply tight enough that the accent IS most of the box. On a
+reference whose ground itself carries a tint — this one's amber LCD, not a
+neutral panel with one coloured accent — most of the box already reads as
+"coloured", and `--by colour` profiles the ground, not any meaning: `bands
+/var/tmp/ftx1-reference.png --by colour` gives one run at ~94%, and
+colour-distance there is *anti-correlated* with ink (`corrcoef ≈ -0.63` —
+the mode sits over the LEAST-inked pixels, i.e. the ground). The script
+detects this itself: `load()` prints a WARNING when the measured box's
+median chroma exceeds a threshold (`DEGENERATE_CHROMA` in
+`measure-reference.py`). `selftest` only exercises the whole-image case; it
+does not claim the threshold behaves any particular way on a crop. If that
+warning fires on a `--by colour` run, check whether it is because the ground
+itself is tinted or because the crop is mostly the accent, before reporting
+the run as a colour-based finding.
+
+**`--smooth <window>` flattens a regular texture before profiling.** Design
+references often carry one — scanlines on an LCD imitation, a dot grid —
+whose period is small and whose amplitude rivals a real element's. Untreated,
+the detector can return one run per texture stripe and bury the bands.
+Measure the stripe spacing in the raw (unsmoothed) profile first, then choose
+a window a few times that period: wide enough to flatten the stripes, narrow
+enough to leave a genuine band's boundary where it is.
+
+**`--signal variation` profiles spread instead of level.** A scanline ground
+inks every row about equally, so the *mean* ink per row (`level`, the
+default) cannot tell a band from a gutter — both read as inked. The *spread*
+of ink within a row can: a row that is part of a real band varies across its
+width (edges, glyphs, a filled meter segment sitting beside empty ones),
+while a row that is only texture does not vary beyond the texture's own
+period — verified on a planted fixture built for exactly this contrast
+(`selftest`'s `--signal level` vs `--signal variation` check). It is not a
+guaranteed fix — on this skill's own reference it does not separate
+anything at all; see the "Known limit" note below. Reach for it when
+`level` reports "no runs" or one run spanning nearly the whole image on a
+reference you know is not blank; it is worth trying, not a promise.
+
+**Known limit, and worth knowing before you trust a number:** on a reference
+with a regular texture (this one has a fine scanline-style ground), the
+floor-relative threshold reads the texture itself as ink almost everywhere,
+so a whole-panel `bands` collapses to nearly one giant run instead of finding
+the real bands. Reproduced: `bands /var/tmp/ftx1-reference.png` on the
+2572×1100 reference returns exactly **one run spanning 98.0%** of the image
+(`22-1100`). Neither treatment above rescues *this particular* reference:
+`--smooth` 8/24/36/48 each still return one run, 98.3-99.7% of the image;
+`--signal variation` returns the same single run as `level`, byte-identical
+— and on the crop the trial used (`--crop 60,55,2515,1060 --min-run 8`),
+`level` finds 12 runs against `variation`'s 11, not the clean split the
+mechanism above predicts. The floor here is set by the bright out-of-panel
+border rather than by the scanline texture the two treatments target, so
+nearly everything clears the threshold in every mode. Where `--smooth` or
+`--signal variation` does surface a real boundary on a given reference,
+crop to it; where neither does, as here, do not crop blind — fall back to
+reading proportions from the image directly with a stated, generous
+tolerance instead of reporting a script number this instrument cannot
+produce for a texture this uniform.
 
 **Report proportions of the panel box, never pixels**, and state the tolerance.
 The stage scales as one block, so a pixel figure is true only at one size,
@@ -331,6 +419,21 @@ A field existing in the view model does not mean the radio reports it, and a
 group being present does not mean its fields are supported. Both gates are
 separate and both are checkable.
 
+**The two fourteens are different sets, not the same fourteen counted
+twice.** A complete mapping exists between them (checked against every
+surface component's own header): ten surfaces map to one optional group of
+the matching name (`txAux`, `meters`, `rxAudio`, `dsp`, `rfFrontEnd`, `band`,
+`antenna`, `cwKeyer`, `scopeControls`, `scopeDisplay`). Two surfaces each own
+*two* groups — `FilterSurface` renders both `modeFilter` and
+`filterPassband`, `RitXitScanSurface` renders both `ritXit` and `scan`, each
+surface's own header says so — which is where the other four groups go
+(10 + 2×2 = 14). The remaining two surfaces, `vfo` and `rxTx`, are backed by
+required top-level `RadioViewModel` fields that carry no `?` — `vfos`,
+`activeReceiver`, `split`, `dualWatch` for `vfo`; `txTarget`, `txPermit` for
+`rxTx` — not by any of the fourteen optional groups at all (10 + 2 + 2 = 14
+surfaces). The shared count of fourteen invites a one-to-one reading; there
+is a correspondence, but it is not that one.
+
 ### The path an appearance takes
 
 A design language supplies three things and no markup: tokens, renderers, a
@@ -419,18 +522,20 @@ rationale, the rationale becomes a constraint, and nothing downstream can tell
 it was invented. So "ask if unsure" is too weak to act on. These are the
 triggers, and at any of them stop and ask rather than pick the likely reading:
 
-- **You cannot say what an element is.** Name it as unidentified. Do not give it
-  a plausible name; a wrong name is inherited silently by everything after it.
-- **The measurement is ambiguous.** Two elements with no gutter read as one run.
-  Ask which it is rather than splitting it by eye.
-- **You cannot tell established from inferred.** The owner knows their own
-  intent, and one sentence from them converts a guess into a fact. That is the
+- **You cannot say what an element is.** Ask the owner. Name it as unidentified
+  in the meantime; do not give it a plausible name — a wrong name is inherited
+  silently by everything after it.
+- **The measurement is ambiguous.** Ask the owner. Two elements with no gutter
+  read as one run; ask which it is rather than splitting it by eye.
+- **You cannot tell established from inferred.** Ask the owner. They know their
+  own intent, and one sentence from them converts a guess into a fact — the
   cheapest question available.
-- **The reference shows something no field can fill.** Whether to widen the
-  contract or drop the element is a scope decision, not a design one.
-- **A rule you extracted cannot place an unshown field.** That is the signal it
-  described the picture rather than the reasoning — say so and ask, instead of
-  stretching it.
+- **The reference shows something no field can fill.** Ask the owner. Whether
+  to widen the contract or drop the element is a scope decision, not a design
+  one.
+- **A rule you extracted cannot place an unshown field.** Ask the owner. That
+  is the signal it described the picture rather than the reasoning — say so,
+  instead of stretching it.
 
 The instance: this skill's own earlier pass read the reference as a control
 panel and derived placement rules about adjacency and reach. It is a display —
@@ -440,6 +545,13 @@ no way to know; it also never asked.
 
 Asking costs one message. A wrong premise costs everything built on it, and it
 does not announce itself.
+
+**If no answer arrives** — a one-shot task, nobody to ask back — do not read
+that as licence to produce nothing. Name the assumption you are making
+explicitly (which trigger fired, and the reading you picked), mark everything
+downstream of it as resting on that assumption rather than a finding, and
+continue. An unanswered question is not permission to guess silently; it is
+permission to guess out loud and label the guess.
 
 ## Traps
 
@@ -522,6 +634,14 @@ Before handing it over, for each backed element:
   general answer.
 - Confirm the styling reaches it. `design-language-selector-reachability.component.test.ts`
   reports any selector that addresses markup nothing emits.
+- **Confirm the language can be selected at all — the stricter fourth check,
+  and the one the first three don't cover.** `WORKSPACE_DESIGN_LANGUAGE_IDS` in
+  `presentation/workspace/contract.ts` is the closed set an operator can pick;
+  a language absent from it cannot activate in production regardless of what
+  the other three checks say — `pickId` falls back to `studioline` instead
+  (already stated once, in the "Where the layout decides" reference section
+  above; a checklist reader does not go there, which is why it is repeated
+  here).
 
-A proposal that passes those three is implementable. One that does not is a
-plan, and should say which of the three it fails.
+A proposal that fails any of the four is a plan, not an implementable one,
+and should say which it fails.

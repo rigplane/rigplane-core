@@ -24,6 +24,7 @@ from typing import NoReturn
 
 VIEW_MODEL = Path("frontend/src/semantic/radio-view-model.ts")
 LAYOUT_CONTRACT = Path("frontend/src/presentation/layouts/contract.ts")
+ADAPTER = Path("frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts")
 
 
 def die(msg: str) -> NoReturn:
@@ -193,6 +194,239 @@ def radio_declares(radio: str) -> tuple[list[str], str]:
     return [str(f) for f in feats], str(path)
 
 
+def _function_body(text: str, name: str) -> str | None:
+    """The `{ ... }` body of `function <name>(...): ReturnType { ... }`,
+    found by brace-depth counting from the parameter list's own closing
+    paren — so a multi-line signature or a generic return type does not
+    confuse it. None if no such function exists; callers must report that
+    as its own outcome (Phase 1: never silently skip a group)."""
+    m = re.search(rf"\bfunction {re.escape(name)}\(", text)
+    if m is None:
+        return None
+    i = text.index("(", m.end() - 1)
+    depth = 1
+    j = i + 1
+    while depth > 0:
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+        j += 1
+    brace = text.index("{", j)
+    depth = 1
+    k = brace + 1
+    while depth > 0:
+        if text[k] == "{":
+            depth += 1
+        elif text[k] == "}":
+            depth -= 1
+        k += 1
+    return text[brace + 1 : k - 1]
+
+
+# Shapes of a `derive<Group>` function's leading guard clause(s), tried in
+# this order (most specific first; `_GATE_NULLCAPS` before the generic live
+# patterns, since a bare `!caps` would otherwise also match those). Every
+# pattern anchors at the body's own start (`\A`, after stripping the
+# function's own leading newline) — a guard found later in the body is not
+# "the first question for any block", it is exactly the scattered case.
+_GATE_HASCAP = re.compile(r"\A\s*if \(!hasCap\(caps, '([a-z_]+)'\)\) return undefined;")
+_GATE_OR_HASCAP = re.compile(
+    r"\A\s*const (\w+) = hasCap\(caps, '([a-z_]+)'\);\s*\n"
+    r"\s*const (\w+) = hasCap\(caps, '([a-z_]+)'\);\s*\n"
+    r"\s*if \(!\1 && !\3\) return undefined;"
+)
+_GATE_NUMERIC = re.compile(
+    r"\A\s*const (\w+) = caps\?\.(\w+) \?\? (\d+);\s*\n\s*if \(\1 <= (\d+)\) return undefined;"
+)
+_GATE_HALF = re.compile(r"\A\s*if \(!(\w+) \|\| !(\w+)\(caps\)\) return undefined;")
+_GATE_EVER_REPORTED = re.compile(
+    r"\A\s*const (\w+) = \[[^\]]*\];\s*\n"
+    r"\s*if \(!\1\.some\(\(v\) => v !== undefined\)\) return undefined;"
+)
+_GATE_NULLCAPS = re.compile(r"\A\s*if \(!caps\) return undefined;")
+_GATE_LIVE_MULTI = re.compile(r"\A\s*if \((!\w+(?: \|\| !\w+)+)\) return undefined;")
+_GATE_LIVE_SINGLE = re.compile(r"\A\s*if \((![a-zA-Z]+)\) return undefined;")
+
+
+def _match_if_return_undefined(text: str, i: int) -> str | None:
+    """If `text[i:]` is `if (<balanced condition>) return undefined;` — `i`
+    the index of the leading `if`, any whitespace including a newline
+    between the condition and the keyword — the matched text, else None.
+
+    The condition is matched by counting parens, not by stopping at the
+    first `)`: an arrow function's parameter list or a nested call puts a
+    `)` inside the condition itself, and a text scan that treats the first
+    one as the close reads the whole guard as absent."""
+    depth = 1
+    j = i + 4  # past "if ("
+    n = len(text)
+    while j < n and depth > 0:
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+        j += 1
+    if depth != 0:
+        return None
+    k = j
+    while k < n and text[k] in " \t\r\n":
+        k += 1
+    if text.startswith("return undefined;", k):
+        return text[i : k + len("return undefined;")]
+    return None
+
+
+def _later_return_undefined(stripped: str, after: int) -> str | None:
+    """The first `if (...) return undefined;` at brace depth 0, outside a
+    comment, appearing strictly after index `after` — or None.
+
+    A top guard matching one of the STATIC patterns answers Phase 1's "first
+    question for any block" only if it is the ONLY such guard. `deriveTxAux`
+    is the counter-example that motivated this: a recognised `!hasCap(caps,
+    'tx')` guard at the top, and a second `if (!hasEvidence) return
+    undefined;` later, where `hasEvidence` is itself computed from live
+    `state?.*` values — exactly the "half static, half live" shape
+    `_classify_gate`'s own docstring assigns to `not-derivable`.
+
+    Brace depth excludes a guard that belongs to a NESTED block — a local
+    helper function's own body, a `.map()`/`.filter()` callback. A `//` or
+    `/* */` comment is skipped outright for the same reason: text
+    documenting a guard that used to exist is not a guard that still runs.
+    Called only from the static-pattern branches below: `scattered` and
+    `not-derivable` already read past the top guard by construction, so a
+    later guard there is not news."""
+    depth = 0
+    i = after
+    n = len(stripped)
+    while i < n:
+        ch = stripped[i]
+        if ch == "/" and stripped[i + 1 : i + 2] == "/":
+            nl = stripped.find("\n", i)
+            i = n if nl == -1 else nl + 1
+            continue
+        if ch == "/" and stripped[i + 1 : i + 2] == "*":
+            end = stripped.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif depth == 0 and stripped.startswith("if (", i):
+            matched = _match_if_return_undefined(stripped, i)
+            if matched is not None:
+                return matched
+        i += 1
+    return None
+
+
+def _classify_gate(body: str) -> tuple[str, str]:
+    """(classification, detail) for one group's `derive*` body.
+
+    Three classifications, matching Phase 1's own "first question for any
+    block": `static` — a single, legible condition read purely from `caps`,
+    at the top of the function, AND no other `if (...) return undefined;` —
+    that exact, unbraced shape, the only one `_later_return_undefined`
+    looks for — at the function's own top-level control flow (brace depth
+    0, outside a comment).
+    `scattered` — the only top-of-function guard is a generic `!caps`, and
+    the real decision (an array length, an OR of several capability flags
+    computed further down) is further into the body; read the function.
+    `not-derivable` — the guard reads a LIVE object (runtime state, a
+    TX/audio/scope snapshot) or an accumulated "was this ever reported"
+    check, neither of which static source can answer; this also covers a
+    guard that is HALF a static capability test and half a live check (its
+    detail says which half is which) — including a static top guard
+    followed by an unrelated later guard, since a function that returns
+    early twice is not "a single, legible condition" no matter how clean
+    the first return looks alone."""
+    stripped = body.lstrip("\n")
+
+    m = _GATE_HASCAP.match(stripped)
+    if m:
+        later = _later_return_undefined(stripped, m.end())
+        if later:
+            return "not-derivable", (
+                f"!hasCap(caps, '{m.group(1)}') at the top looks static, "
+                f"but the body has a later guard too — `{later}` — so the "
+                "top guard alone is not the real gate; read the function"
+            )
+        return "static", f"!hasCap(caps, '{m.group(1)}')"
+
+    m = _GATE_OR_HASCAP.match(stripped)
+    if m:
+        detail = f"!hasCap(caps, '{m.group(2)}') && !hasCap(caps, '{m.group(4)}')"
+        later = _later_return_undefined(stripped, m.end())
+        if later:
+            return "not-derivable", (
+                f"{detail} at the top looks static, but the body has a "
+                f"later guard too — `{later}` — so the top guard alone is "
+                "not the real gate; read the function"
+            )
+        return "static", detail
+
+    m = _GATE_NUMERIC.match(stripped)
+    if m:
+        ident, field, _default, limit = m.groups()
+        later = _later_return_undefined(stripped, m.end())
+        if later:
+            return "not-derivable", (
+                f"{ident} <= {limit} (where {ident} = caps?.{field}) at the "
+                f"top looks static, but the body has a later guard too — "
+                f"`{later}` — so the top guard alone is not the real gate; "
+                "read the function"
+            )
+        return "static", f"{ident} <= {limit}, where {ident} = caps?.{field}"
+
+    m = _GATE_HALF.match(stripped)
+    if m:
+        live, cap_fn = m.groups()
+        return "not-derivable", (
+            f"half static, half live: !{live} || !{cap_fn}(caps) — the "
+            f"capability half is checkable, the live `{live}` half is not"
+        )
+
+    m = _GATE_EVER_REPORTED.match(stripped)
+    if m:
+        return "not-derivable", (
+            f"gated on whether any of `{m.group(1)}` was ever reported — an "
+            "accumulated-observation check, not a capability tag"
+        )
+
+    if _GATE_NULLCAPS.match(stripped):
+        return "scattered", "only a generic `!caps` guard at the top; the real gate is further into the body"
+
+    m = _GATE_LIVE_MULTI.match(stripped) or _GATE_LIVE_SINGLE.match(stripped)
+    if m:
+        return "not-derivable", f"gated on a live runtime object: {m.group(1)}"
+
+    return "scattered", "no recognised single-guard shape at the top of the function"
+
+
+def presence_gates(adapter_text: str, groups: list[str]) -> list[dict[str, str]]:
+    """Per optional group, does a block exist at all for a given radio —
+    "the first question for any block" (Phase 1) — answered, or said why it
+    cannot be, for EVERY group. Emitting only the easy ones would produce a
+    derived list that is silently incomplete, worse than none.
+
+    Derives the classification per group by reading its own `derive<Group>`
+    function; does not hand-maintain which group falls in which bucket."""
+    out: list[dict[str, str]] = []
+    for group in groups:
+        fn = "derive" + group[0].upper() + group[1:]
+        body = _function_body(adapter_text, fn)
+        if body is None:
+            out.append({
+                "group": group, "function": fn, "classification": "not-found",
+                "detail": f"no `function {fn}` found in {ADAPTER}",
+            })
+            continue
+        classification, detail = _classify_gate(body)
+        out.append({"group": group, "function": fn, "classification": classification, "detail": detail})
+    return out
+
+
 def surface_components() -> dict[str, dict]:
     """Per surface: the shared components it mounts, and how far a design
     language reaches each.
@@ -206,7 +440,18 @@ def surface_components() -> dict[str, dict]:
       language  — reads `--dl-*`; a stylesheet can restyle it.
       theme     — reads `--v2-*` only; a change lands in EVERY skin.
       code      — reads neither; the form is in the source.
+
+    A surface with NO shared component still might reach the design
+    language directly, by calling `renderSlot()` itself and spreading the
+    result's `.attributes` onto its own markup. "No shared component" alone
+    answers nothing about cost; whether design-language attributes land on
+    ANY markup here is the question that does. This reports only whether
+    that machinery is invoked at all — the per-selector answer for what is
+    actually addressable is
+    `components-v2/wiring/__tests__/design-language-selector-reachability
+    .component.test.ts`, not duplicated here.
     """
+    render_slot = re.compile(r"renderSlot\('(\w+)'")
     out: dict[str, dict] = {}
     for f in sorted(Path("frontend/src/semantic").glob("*Surface.svelte")):
         text = f.read_text(encoding="utf-8")
@@ -226,7 +471,10 @@ def surface_components() -> dict[str, dict]:
                 info["tier"] = ("language" if info["dl"]
                                 else "theme" if info["v2"] else "code")
             comps.append(info)
-        out[f.stem] = {"components": comps}
+        out[f.stem] = {
+            "components": comps,
+            "rendersSlots": sorted(set(render_slot.findall(text))),
+        }
     if not out:
         die("no *Surface.svelte found — run from the repository root")
     return out
@@ -239,15 +487,22 @@ def main() -> None:
     args = ap.parse_args()
 
     vm_text = read(VIEW_MODEL)
+    view_models_data = view_models(vm_text)
+    optional_groups = [
+        f["name"] for f in view_models_data.get("RadioViewModel", []) if f["optional"]
+    ]
     data = {
         "surfaces": surfaces(),
         "absence": absence_model(vm_text),
-        "viewModels": view_models(vm_text),
+        "viewModels": view_models_data,
         "fieldShapes": field_shapes(vm_text),
         "radio": args.radio,
         "radioFeatures": radio_declares(args.radio)[0],
         "surfaceComponents": surface_components(),
-        "sources": [str(VIEW_MODEL), str(LAYOUT_CONTRACT), radio_declares(args.radio)[1]],
+        "presenceGates": presence_gates(read(ADAPTER), optional_groups),
+        "sources": [
+            str(VIEW_MODEL), str(LAYOUT_CONTRACT), str(ADAPTER), radio_declares(args.radio)[1],
+        ],
     }
 
     if args.json:
@@ -299,6 +554,24 @@ def main() -> None:
         print("_No type carries a named-reason union._")
     print()
 
+    print(f"## Whether each group exists on this radio ({len(data['presenceGates'])} groups)\n")
+    print(
+        "The first question for any block (above), answered per group — or "
+        f"said why it cannot be, for every group; never silently for only "
+        f"some. Derived by reading each group's `derive<Group>` function in "
+        f"`{ADAPTER}`:\n"
+    )
+    gate_label = {
+        "static": "static guard",
+        "scattered": "not a single guard",
+        "not-derivable": "not derivable from source",
+        "not-found": "function not found",
+    }
+    for gate in data["presenceGates"]:
+        label = gate_label[gate["classification"]]
+        print(f"- `{gate['group']}` (`{gate['function']}`) — **{label}**: {gate['detail']}")
+    print()
+
     print("## Field shapes\n")
     for name, shape in sorted(data["fieldShapes"].items()):
         print(f"- `{name}` = {shape}")
@@ -317,15 +590,34 @@ def main() -> None:
     print("and whether a design language can restyle it. **language** = reads")
     print("`--dl-*`; **theme** = reads `--v2-*` only, so a change lands in every")
     print("skin; **code** = reads neither, the form is in the source. A surface")
-    print("with no component draws its own markup.\n")
+    print("with no shared component draws its own markup — the question that")
+    print("decides cost is whether design-language attributes reach ANY of it,")
+    print("not whether a component exists. The per-selector answer either way")
+    print("is `components-v2/wiring/__tests__/design-language-selector-")
+    print("reachability.component.test.ts`.\n")
     for name, info in sorted(data["surfaceComponents"].items()):
         comps = info["components"]
-        if not comps:
-            print(f"- `{name}` — no shared component; draws its own markup")
-            continue
-        parts = ", ".join(f"`{c['name']}` (**{c['tier']}**, "
-                          f"--dl- {c['dl']} / --v2- {c['v2']})" for c in comps)
-        print(f"- `{name}` — {parts}")
+        slots = info["rendersSlots"]
+        # `rendersSlots` is printed for EVERY row, not only rows with no
+        # shared component: MetersSurface and VfoSurface have both a shared
+        # component AND their own `renderSlot()` call, and skipping the
+        # slots half there made them read as "does not reach" — the two
+        # rows this partial derived list was silently wrong for.
+        if comps:
+            component_part = ", ".join(f"`{c['name']}` (**{c['tier']}**, "
+                                       f"--dl- {c['dl']} / --v2- {c['v2']})" for c in comps)
+        else:
+            component_part = "no shared component"
+        if slots:
+            named = ", ".join(f"`{s}`" for s in slots)
+            slot_part = (f"calls `renderSlot()` itself for {named}; "
+                         "design-language attributes DO reach this "
+                         "surface's own markup")
+        else:
+            slot_part = ("no `renderSlot()` call found; no design-language "
+                         "attribute reaches this surface's markup from here "
+                         "(see the reachability test above)")
+        print(f"- `{name}` — {component_part}; {slot_part}")
     print()
 
     feats = data["radioFeatures"]
