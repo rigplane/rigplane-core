@@ -136,6 +136,45 @@ def radio_declares(radio: str) -> tuple[list[str], str]:
     return [str(f) for f in feats], str(path)
 
 
+def surface_components() -> dict[str, dict]:
+    """Per surface: the shared components it mounts, and how far a design
+    language reaches each.
+
+    This is the lookup a recogniser needs. Seeing an S-meter in a reference is
+    only useful if it answers "how does an S-meter connect HERE" — which field
+    feeds it, what already draws it, and whether its appearance is reachable
+    from a stylesheet at all. Written by hand it would rot; derived, it cannot.
+
+    Tiers, decided by which custom-property vocabulary the component reads:
+      language  — reads `--dl-*`; a stylesheet can restyle it.
+      theme     — reads `--v2-*` only; a change lands in EVERY skin.
+      code      — reads neither; the form is in the source.
+    """
+    out: dict[str, dict] = {}
+    for f in sorted(Path("frontend/src/semantic").glob("*Surface.svelte")):
+        text = f.read_text(encoding="utf-8")
+        mounted = sorted({
+            m.group(1) for m in re.finditer(
+                r"import ([A-Z]\w+) from '([^']+\.svelte)'", text)
+        })
+        comps = []
+        for name in mounted:
+            m = re.search(rf"import {name} from '([^']+)'", text)
+            rel = (f.parent / m.group(1)).resolve() if m else None
+            info = {"name": name, "tier": "unknown", "dl": 0, "v2": 0}
+            if rel and rel.is_file():
+                body = rel.read_text(encoding="utf-8")
+                info["dl"] = len(re.findall(r"var\(--dl-", body))
+                info["v2"] = len(re.findall(r"var\(--v2-", body))
+                info["tier"] = ("language" if info["dl"]
+                                else "theme" if info["v2"] else "code")
+            comps.append(info)
+        out[f.stem] = {"components": comps}
+    if not out:
+        die("no *Surface.svelte found — run from the repository root")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--radio", default="ftx1")
@@ -150,6 +189,7 @@ def main() -> None:
         "fieldShapes": field_shapes(vm_text),
         "radio": args.radio,
         "radioFeatures": radio_declares(args.radio)[0],
+        "surfaceComponents": surface_components(),
         "sources": [str(VIEW_MODEL), str(LAYOUT_CONTRACT), radio_declares(args.radio)[1]],
     }
 
@@ -195,6 +235,22 @@ def main() -> None:
         for fname, ftype in fields.items():
             print(f"- `{fname}`: `{ftype}`")
         print()
+
+    print("## What already draws each surface\n")
+    print("The lookup for a recognised element: which shared component draws it,")
+    print("and whether a design language can restyle it. **language** = reads")
+    print("`--dl-*`; **theme** = reads `--v2-*` only, so a change lands in every")
+    print("skin; **code** = reads neither, the form is in the source. A surface")
+    print("with no component draws its own markup.\n")
+    for name, info in sorted(data["surfaceComponents"].items()):
+        comps = info["components"]
+        if not comps:
+            print(f"- `{name}` — no shared component; draws its own markup")
+            continue
+        parts = ", ".join(f"`{c['name']}` (**{c['tier']}**, "
+                          f"--dl- {c['dl']} / --v2- {c['v2']})" for c in comps)
+        print(f"- `{name}` — {parts}")
+    print()
 
     feats = data["radioFeatures"]
     print(f"## What `{args.radio}` declares ({len(feats)} features)\n")

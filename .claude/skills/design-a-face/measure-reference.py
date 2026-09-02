@@ -36,6 +36,9 @@ except ImportError as exc:  # pragma: no cover - environment, not logic
     raise SystemExit(1)
 
 
+VARIANCE = [False]
+
+
 def die(msg: str) -> NoReturn:
     print(f"measure-reference: {msg}", file=sys.stderr)
     raise SystemExit(1)
@@ -71,9 +74,25 @@ def load(path: str, crop: str | None, by: str = "ink") -> np.ndarray:
     return 1.0 - rgb.mean(axis=2)
 
 
-def profile(a: np.ndarray, axis: str) -> np.ndarray:
-    """Mean ink per row (axis='rows') or per column (axis='columns')."""
-    return a.mean(axis=1 if axis == "rows" else 0)
+def profile(a: np.ndarray, axis: str, smooth: int = 0) -> np.ndarray:
+    """Mean ink per row (axis='rows') or per column (axis='columns').
+
+    `smooth` is a moving-average window. Design references often carry a
+    regular texture — scanlines on an LCD imitation, a dot grid — whose period
+    is small and whose amplitude rivals a real element's. Untreated, the
+    detector returns one run per texture stripe and buries the bands. A window
+    a few times the texture's period flattens it and leaves the bands, because
+    a band is wide and a stripe is not.
+
+    Choose it from the texture, not from taste: measure the stripe spacing in
+    the raw profile first, then smooth past it.
+    """
+    ax = 1 if axis == "rows" else 0
+    p = a.std(axis=ax) if VARIANCE[0] else a.mean(axis=ax)
+    if smooth > 1:
+        k = np.ones(smooth) / smooth
+        p = np.convolve(p, k, mode="same")
+    return p
 
 
 def runs(p: np.ndarray, min_run: int) -> list[tuple[int, int]]:
@@ -107,8 +126,9 @@ def runs(p: np.ndarray, min_run: int) -> list[tuple[int, int]]:
     return out
 
 
-def report(a: np.ndarray, axis: str, min_run: int, label: str) -> None:
-    p = profile(a, axis)
+def report(a: np.ndarray, axis: str, min_run: int, label: str,
+           smooth: int = 0) -> None:
+    p = profile(a, axis, smooth)
     total = len(p)
     found = runs(p, min_run)
     h, w = a.shape
@@ -193,8 +213,17 @@ def main() -> None:
     ap.add_argument("--crop", help="L,T,R,B in pixels, for a fine element")
     ap.add_argument("--min-run", type=int, default=4,
                     help="ignore runs shorter than this many px (default 4)")
+    ap.add_argument("--smooth", type=int, default=0,
+                    help="moving-average window, to flatten a regular texture")
     ap.add_argument("--by", choices=["ink", "colour"], default="ink",
                     help="profile darkness (default) or distance from grey")
+    ap.add_argument("--signal", choices=["level", "variation"], default="level",
+                    help="mean along the axis (default), or spread. Use "
+                         "`variation` when the reference carries a regular "
+                         "texture: a scanline ground has ink everywhere, so "
+                         "level cannot separate a band from a gutter, while "
+                         "spread can — a band varies across its width, an "
+                         "empty row does not.")
     args = ap.parse_args()
 
     if args.mode == "selftest":
@@ -203,12 +232,13 @@ def main() -> None:
     if not args.image:
         die("an image path is required for bands/columns")
 
+    VARIANCE[0] = args.signal == "variation"
     a = load(args.image, args.crop, args.by)
     what = "ink" if args.by == "ink" else "colour"
     if args.mode == "bands":
-        report(a, "rows", args.min_run, f"horizontal {what} bands of {args.image}")
+        report(a, "rows", args.min_run, f"horizontal {what} bands of {args.image}", args.smooth)
     else:
-        report(a, "columns", args.min_run, f"vertical {what} divisions of {args.image}")
+        report(a, "columns", args.min_run, f"vertical {what} divisions of {args.image}", args.smooth)
 
 
 if __name__ == "__main__":
