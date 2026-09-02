@@ -542,6 +542,14 @@ Before handing it over, for each backed element:
   general answer.
 - Confirm the styling reaches it. `design-language-selector-reachability.component.test.ts`
   reports any selector that addresses markup nothing emits.
+- **Confirm the language can be selected at all — the stricter fourth check,
+  and the one the first three don't cover.** `WORKSPACE_DESIGN_LANGUAGE_IDS` in
+  `presentation/workspace/contract.ts` is the closed set an operator can pick;
+  a language absent from it cannot activate in production regardless of what
+  the other three checks say — `pickId` falls back to `studioline` instead
+  (already stated once, in the "Where the layout decides" reference section
+  above; a checklist reader does not go there, which is why it is repeated
+  here).
 
-A proposal that passes those three is implementable. One that does not is a
-plan, and should say which of the three it fails.
+A proposal that passes all four is implementable. One that does not is a
+plan, and should say which it fails.
