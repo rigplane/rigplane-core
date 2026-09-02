@@ -360,6 +360,7 @@ async def test_uncertain_on_immediately_runs_one_force_off_family(
 async def test_stale_on_settlement_does_not_run_force_off() -> None:
     managed, _, _, _, fence, lane = authority()
     lane.stale_once = True
+    lane.results.append(ActuationResult.UNCERTAIN)
     await managed.ptt_down("owner")
     assert fence.calls == 0 and len(lane.effects) == 1
     await managed.force_off()
