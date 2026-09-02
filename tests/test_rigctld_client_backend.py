@@ -324,6 +324,87 @@ async def test_cancelled_lock_waiter_keeps_active_exchange(
         await _finish_exchanges(transport, (stream,), tasks)
 
 
+@pytest.mark.parametrize("operation", ["close", "connect"])
+async def test_cancelled_lifecycle_preserves_real_stream_close_future(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DelayedCloseTransport(asyncio.Transport):
+        def __init__(self) -> None:
+            self.written = asyncio.Event()
+            self.closing = False
+
+        def write(self, data: bytes) -> None:
+            self.written.set()
+
+        def close(self) -> None:
+            self.closing = True
+
+        def is_closing(self) -> bool:
+            return self.closing
+
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    wire = DelayedCloseTransport()
+    protocol.connection_made(wire)
+    writer = asyncio.StreamWriter(wire, protocol, reader, loop)
+    closed = protocol._get_close_waiter(writer)
+    entered = asyncio.Event()
+    native_wait_closed = writer.wait_closed
+
+    async def observe_close_wait() -> None:
+        entered.set()
+        await native_wait_closed()
+
+    monkeypatch.setattr(writer, "wait_closed", observe_close_wait)
+    replacement = _ExchangeStream()
+    connections = iter(((reader, writer), (replacement, replacement)))
+
+    async def connect(*args: object) -> tuple[object, object]:
+        return next(connections)
+
+    monkeypatch.setattr(asyncio, "open_connection", connect)
+    transport = RigctldTransport(host="127.0.0.1")
+    await transport.connect()
+    tasks = [asyncio.create_task(transport.command("T 1"))]
+    lost = False
+    try:
+        await asyncio.wait_for(wire.written.wait(), 1)
+        tasks[0].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[0], 1)
+        assert wire.closing and not closed.done()
+        finish = transport.close if operation == "close" else transport.connect
+        tasks.append(asyncio.create_task(finish()))
+        await asyncio.wait_for(entered.wait(), 1)
+        tasks[-1].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[-1], 1)
+        assert not closed.cancelled(), "caller cancellation poisoned shared close Future"
+        assert transport._writer is writer and not closed.done()
+        entered.clear()
+        tasks.append(asyncio.create_task(finish()))
+        await asyncio.wait_for(entered.wait(), 1)
+        assert not tasks[-1].done()
+        protocol.connection_lost(None)
+        lost = True
+        await asyncio.wait_for(tasks[-1], 1)
+        assert closed.done() and not closed.cancelled()
+        assert transport.connected == (operation == "connect")
+    finally:
+        if not lost:
+            protocol.connection_lost(None)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
+        # Broken-source RED may leave the native shared Future cancelled;
+        # retrieve that cleanup cancellation without masking the assertion.
+        await asyncio.wait_for(
+            asyncio.gather(transport.close(), return_exceptions=True), 1
+        )
+
+
 @pytest.mark.parametrize("interruption", ["cancel", "eof", "oserror", "timeout"])
 async def test_old_exchange_interruption_does_not_retire_replacement(
     interruption: str, monkeypatch: pytest.MonkeyPatch
