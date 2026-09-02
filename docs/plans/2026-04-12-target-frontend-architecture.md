@@ -307,3 +307,33 @@ This architecture guarantees:
 - **New radio capability** = changes in runtime + adapter, zero changes to skins
 - **Behavioral parity** = enforced architecturally (one runtime, one adapter set) and by eslint (`docs/internals/skins-presentation-boundary-gate.md`, MOR-2034)
 - **No code duplication** = protocol parsing once in runtime, semantic logic once in adapters, visual variants only in skins
+
+---
+
+## Addendum 2026-09-02: instrument components and their single home
+
+### Decision
+
+Layer 4 above predates design languages; since the design-language contract landed (`DesignLanguageManifest` in `frontend/src/presentation/languages/contract.ts`, registered per family in `frontend/src/presentation/languages/declarations.ts`) presentation has four knobs, not three; this addendum does not reconcile the Layer 4 table. There is a finite set of instrument components — button/toggle, slider/knob, S-meter and gauges, frequency display, state feedback — each receiving and sending data only through the frozen semantic contract: `RadioViewModel` in `frontend/src/semantic/radio-view-model.ts` plus typed intents (callback props). How an instrument looks is decided outside the instrument itself: the design language supplies the display model and the stylesheet, the skin composes the instruments and chooses which language applies (see the decision below). The 14 semantic surfaces under `frontend/src/semantic/` are panels that stay where they are; today only `MetersSurface.svelte` (importing `BarGauge`/`LinearSMeter` from `components-v2/meters/`) and `VfoSurface.svelte` (importing `FrequencyDisplayInteractive` from `primitives/frequency/`) mount instrument components, and of the other twelve, eleven write instrument markup inline while `ScopeDisplaySurface.svelte` renders text only. Instruments live today across many homes (census below); the single home going forward is `frontend/src/primitives/`. Legacy v1/v2 presentation under `frontend/src/components-v2/` is to be removed — MOR-1099 covers legacy-wrapper and duplicate-ownership retirement, and the tree's removal is an owner decision recorded in MOR-2215 — but `components-v2/wiring/SemanticRadioSurfaces.svelte` and `components-v2/theme/` are live v3 infrastructure, not legacy, and stay put regardless. The home is not renamed. Each migration PR re-points every consumer and deletes the old file in the same change (no compatibility re-exports); `frontend/src/components/` (Toast, spectrum) is left as is. Recorded in MOR-2215. Migration proceeds one instrument per PR, adapting each to the conformance checklist below, with no compatibility re-exports left behind.
+
+### Where instruments live today
+
+A name census at `fef3431e` found instrument-shaped components in twelve directories (among them `frontend/src/lib/Button/`, `components-v2/controls/value-control/`, `components-v2/meters/`, `components-v2/panels/lcd/`, `primitives/frequency/`). The authoritative, current enumeration is MOR-2216; the single home going forward is `frontend/src/primitives/`.
+
+### Conformance checklist
+
+1. **No runtime/transport/audio imports.** Enforced by `FORBIDDEN_PRIMITIVES_IMPORTS` in `frontend/eslint.config.js`, which bans primitives from `$lib/runtime/adapters/*`, transport, audio, and stores, and separately from `semantic/`/`components-v2/` — primitives depend on nothing above them.
+2. **Semantic props and callbacks only.** `FrequencyDisplayInteractive.svelte`'s `Props` interface is the existing precedent — flat values (`freq: number`) and callback props (`onFreqChange`), never a runtime or store object — the same rule this ADR's Layer 3 "Contract" section states for semantic components above.
+3. **Honest unknown.** Never fabricate a value or `aria-pressed="false"` on a toggle over an unread reading (rule: MOR-1358, `docs/validation/desktop-v2-v3-parity.md` P13; reference implementation `frontend/src/semantic/pressed-of.ts`, which a primitive cannot import — the migration moves or re-derives the helper under `primitives/`). Choice groups per P13c.
+4. **Look from outside.** Simple styling via stable classes selected by the language stylesheet, e.g. `.rx-tx-surface` under `[data-design-language='segmentline']` in `frontend/src/presentation/languages/segmentline/segmentline.css`. Instrument geometry goes through a display model the instrument consumes as a component prop; supplied by the design language chosen for the skin (see the decision below).
+5. **Accessibility.** Name, focus, and aria state consistent with unknown — the aria half is the same rule as item 3; name and focus are checked per instrument by its own component test (item 6).
+6. **Pinned coverage.** An isolated component test (naming precedent: `frontend/src/primitives/stage/__tests__/ScaledStage.isolated.test.ts`), an entry in the fixture-harness catalog (`frontend/fixtures/catalog.ts`, MOR-1070), and one reddening mutation — the mutation-kill convention already used in this codebase, e.g. row P13's "mutation-killed 8×" in `docs/validation/desktop-v2-v3-parity.md`.
+
+### Order of work
+
+1. Read-only inventory of existing instruments against the six-item checklist above (MOR-2216).
+2. Migrate one instrument per PR into `primitives/`, adapting it to the checklist and re-pointing every consumer, with no compatibility re-exports. A migration PR carries its directory-scoped gates with it (the meters census, `METER_REGISTRY` in `frontend/src/components-v2/meters/__tests__/meter-contract.ts`) and updates `docs/architecture/building-a-skin.md`'s meter section in the same PR.
+
+### Decision on look vs layout (2026-09-02)
+
+Decided 2026-09-02 (MOR-2215): each skin declares the design languages it supports and one default; the operator may switch only among the current skin's declared languages; the language preference is stored per skin, not globally, so an incompatible skin/language pair cannot exist by construction. The display model an instrument consumes as a prop is supplied by the design language (renderer slots in `RENDERER_SLOT_NAMES`, `frontend/src/presentation/languages/contract.ts`); the skin composes. `layoutCompatibility` (`DesignLanguageManifest`, populated in `frontend/src/presentation/languages/declarations.ts`) is consulted only over the pairs a skin declares. The `data-dl-*` attribute channel `annotate()` writes (`frontend/src/semantic/design-language-renderers.ts`) is internal (MOR-2214): of the three registered design-language stylesheets, only `frontend/src/presentation/languages/segmentline/segmentline.css` selects on any `data-dl-*` attribute, and only on `[data-dl-unknown]` and `[data-dl-hot]` — `fieldline.css` and `studioline.css` select on none.
