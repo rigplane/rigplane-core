@@ -64,7 +64,7 @@ from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTimeoutError
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
-from rigplane.core.tx_authority import TxStateReading
+from rigplane.core.tx_observation import TxStateReading
 from rigplane.radio import IcomRadio
 
 # ---------------------------------------------------------------------------

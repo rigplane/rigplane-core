@@ -15,7 +15,7 @@ from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
-from ...core.tx_authority import TxStateReading
+from ...core.tx_observation import TxStateReading
 from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
 from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
@@ -1115,28 +1115,11 @@ class YaesuCatRadio:
         return ptt
 
     async def read_transmit_state(self) -> TxStateReading:
-        """One solicited transmit-state read (ADR row 5).
+        """One solicited transmit-state observation.
 
-        Implements :class:`~rigplane.core.radio_protocol.TransmitStateReadable`
-        on :meth:`read_ptt_token` and :meth:`_interpret_ptt_token` -- the
-        same fail-closed mapping :meth:`read_ptt` uses, not a second copy of
-        it -- plus the per-vendor attribution (``tx_cat`` / ``tx_other``)
-        §3.7 requires be carried, not discarded.
-
-        The real :class:`~.transport.YaesuCatTransport` raises a typed
-        exception per outcome rather than returning a sentinel string, so
-        this never trusts a raw ``"?"`` token -- it catches the transport's
-        own vocabulary instead. A rejected, unanswered, or malformed-but-
-        delivered read is never raised -- it comes back as a
-        :class:`TxStateReading` with a ``failure`` tag -- but a
-        precondition failure ahead of the wire (``read_ptt_token`` ->
-        ``_query`` -> ``_require_connected``, not connected at all) still
-        raises, the same convention every other read on this class
-        follows. A malformed reply that gets past ``query()``'s ``?``-
-        prefix rejection but fails the response template (a noisy serial
-        line) raises :class:`~.parser.CatParseError`, a ``ValueError``
-        subclass outside the ``transport.py`` ``Cat*Error`` family -- also
-        caught here, not a precondition failure.
+        It uses the same token interpretation as :meth:`read_ptt` and carries
+        the profile's attribution. Transport outcomes return a ``failure``
+        tag; connection preconditions still raise.
         """
         try:
             token = await self.read_ptt_token()
