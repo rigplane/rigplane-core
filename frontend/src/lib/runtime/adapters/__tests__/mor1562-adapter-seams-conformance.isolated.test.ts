@@ -296,14 +296,14 @@ describe('panel-adapters.ts derive*Props over the live ic7300 fixture (MOR-1562)
     expect(deriveScanProps()).toEqual({ scanning: false, scanType: 0, scanResumeMode: 0 });
   });
 
-  it('deriveCwProps: mode-gated APF/TPF disable + full capability catalog for the live USB reading', () => {
+  it('deriveCwProps: mode-gated APF/TPF disable + honest capability catalog for the live USB reading', () => {
     expect(deriveCwProps()).toMatchObject({
       currentMode: 'USB',
       apfDisabled: true, // active mode is USB, not CW/CW-R
       tpfDisabled: true, // active mode is USB, not RTTY/RTTY-R
       hasCw: true,
       hasBreakIn: true,
-      hasApf: true,
+      hasApf: false, // IC-7300 manual/bench evidence does not declare APF
       hasTwinPeak: true,
     });
   });
