@@ -354,11 +354,13 @@ describe('MOR-2214 — the meters slot supplies LinearSMeter\'s segment geometry
     return count;
   }
 
-  it('renders a different segment count per language for the SAME reading', () => {
+  it('fieldline draws a different segment count than the shared 20-segment default, for the SAME reading', () => {
     // Kill-mutation: MetersSurface always passing `display={undefined}` to
-    // LinearSMeter (i.e. the wiring never having happened) would make every
-    // language converge on LinearSMeter's own 20-segment default, collapsing
-    // this distinction — see the mutation-and-revert proof in the PR body.
+    // LinearSMeter (i.e. the wiring never having happened) would make
+    // fieldline converge on LinearSMeter's own 20-segment default too,
+    // collapsing this distinction — see the mutation-and-revert proof in the
+    // PR body. studioline and segmentline both currently match that
+    // no-language default (20); only fieldline (12) differs.
     expect(renderedSegmentCount('studioline')).toBe(20);
     expect(renderedSegmentCount('fieldline')).toBe(12);
     expect(renderedSegmentCount('segmentline')).toBe(20);
