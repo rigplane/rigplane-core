@@ -111,7 +111,14 @@ async def test_burst_coalesces_to_last_value_not_dropped() -> None:
 
     n = 10
     base_freq = 14_000_000
-    for i in range(n):
+    key = _default_key("set_freq")
+
+    await handler._handle_command(
+        {"id": "0", "name": "set_freq", "params": {"freq": base_freq}}
+    )
+    handler._cmd_last[key] = time.monotonic()  # noqa: SLF001
+
+    for i in range(1, n):
         await handler._handle_command(
             {"id": str(i), "name": "set_freq", "params": {"freq": base_freq + i}}
         )
