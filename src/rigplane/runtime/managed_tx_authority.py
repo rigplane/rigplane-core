@@ -243,7 +243,7 @@ class ManagedTxAuthority:
                 self._wait_for_release_or_termination(termination)
             )
             release = asyncio.create_task(
-                self._execute(transition.effects, full_force=True)
+                self._execute(transition.effects, full_force=False)
             )
             try:
                 done, _ = await asyncio.wait(
