@@ -2458,8 +2458,8 @@
       "family": "transceiver_status",
       "status": "implemented",
       "runtime_symbols": [
-        "rigplane.commands:parse_frequency_response",
-        "rigplane._civ_rx:CivRuntime._update_state_cache_from_frame",
+        "rigplane._civ_rx:CivRuntime._observations_from_frame",
+        "rigplane.core.types:bcd_decode",
         "rigplane.core.tx_target:KnownTxTarget"
       ],
       "test_patterns": [
