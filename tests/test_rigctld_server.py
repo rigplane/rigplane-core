@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -24,9 +25,11 @@ from serial_stub import SerialMockRadio
 from rigplane.core.acquisition_scheduler import (
     AcquisitionExecutionResult,
     AcquisitionPriority,
+    AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionStatus,
+    IcomCivAcquisitionExecutor,
     RadioStateModelService,
     StateFreshnessService,
 )
@@ -51,6 +54,7 @@ from rigplane.rigctld.contract import (
     RigctldResponse,
 )
 from rigplane.rigctld.server import RigctldServer, run_rigctld_server
+from rigplane.profiles import resolve_radio_profile
 from rigplane.types import Mode
 
 # ---------------------------------------------------------------------------
@@ -1108,16 +1112,10 @@ class TestLifecycle:
     ) -> None:
         freq = FieldPath.active("main", "freq_mode", "freq_hz")
         radio = _CivProfiledStandaloneRadio(
-            profile=type(
-                "Profile",
-                (),
-                {
-                    "state_acquisition": _acquisition_profile(
-                        freq,
-                        provider="icom_civ",
-                    )
-                },
-            )(),
+            profile=replace(
+                resolve_radio_profile(model="IC-705"),
+                state_acquisition=_acquisition_profile(freq, provider="icom_civ"),
+            ),
             observed_freq=14_110_000,
         )
         fake_server = _FakeAsyncServer()
@@ -1176,6 +1174,23 @@ class TestLifecycle:
                 assert srv._acquisition_scheduler.pending_requests() == ()
             finally:
                 await srv.stop()
+
+    async def test_civ_executor_uses_active_ic9700_profile_query(
+        self, cfg: RigctldConfig
+    ) -> None:
+        path = FieldPath.global_("tx_state", "dual_watch")
+        profile = replace(
+            resolve_radio_profile(model="IC-9700"),
+            state_acquisition=_acquisition_profile(path, provider="icom_civ"),
+        )
+        radio = _CivProfiledStandaloneRadio(profile=profile, observed_freq=0)
+        srv = RigctldServer(radio, cfg)
+        scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+
+        executor = srv._default_acquisition_executor_for_scheduler(scheduler)
+
+        assert isinstance(executor, IcomCivAcquisitionExecutor)
+        assert executor.query_for_path(path) == AcquisitionQuery(0x16, sub=0x59)
 
     async def test_unavailable_field_records_distinct_acquisition_diagnostic(
         self, cfg: RigctldConfig

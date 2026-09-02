@@ -11,7 +11,10 @@ from rigplane.core.acquisition_scheduler import (
 )
 
 if TYPE_CHECKING:
+    from rigplane.profiles import RadioProfile
     from rigplane.web.radio_poller import RadioPoller
+
+from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 
 
 AcquisitionQueryCase = AcquisitionQuery
@@ -95,6 +98,7 @@ def query_selector(query: AcquisitionQueryCase) -> int | None:
 
 
 def recording_executor(
+    profile: RadioProfile,
     *,
     supports_cmd29: Callable[[int, int | None], bool] | None = None,
 ) -> tuple[IcomCivAcquisitionExecutor, list[AcquisitionQueryCase]]:
@@ -105,7 +109,11 @@ def recording_executor(
         sent.append(_require_query(query))
 
     return (
-        IcomCivAcquisitionExecutor(send_query, supports_cmd29=supports_cmd29),
+        IcomCivAcquisitionExecutor(
+            send_query,
+            resolve_query=acquisition_query_resolver_for_profile(profile),
+            supports_cmd29=supports_cmd29,
+        ),
         sent,
     )
 

@@ -111,7 +111,10 @@ from ..core.tx_target import (
     TxTarget,
     UnknownTxTarget,
 )
-from .._state_queries import build_state_queries
+from .._state_queries import (
+    acquisition_query_resolver_for_profile,
+    build_state_queries,
+)
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.tx_interlock import (
@@ -706,6 +709,7 @@ class RadioPoller:
             self._acquisition_executor = civ_acquisition_executor_for_provider(
                 self._acquisition_scheduler.provider,
                 self._send_one_state_query,
+                resolve_query=acquisition_query_resolver_for_profile(self._profile),
                 supports_cmd29=self._profile.supports_cmd29,
             )
         # Set by default — cleared at _run() start, re-set after initial fetch.

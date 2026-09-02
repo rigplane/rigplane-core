@@ -981,8 +981,8 @@ async def test_scheduler_unknown_query_mapping_is_recorded_and_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
-    radio = _make_radio(active="MAIN")
+async def test_scheduler_ptt_request_uses_ic705_declared_getter() -> None:
+    radio = _make_radio(active="MAIN", model="IC-705")
     path = FieldPath.global_("tx_state", "ptt")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
     radio._acquisition_scheduler = scheduler
@@ -999,6 +999,22 @@ async def test_scheduler_ptt_request_sends_civ_ptt_query() -> None:
         wait_dispatch=False,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_ptt_without_profile_getter_fails_closed() -> None:
+    radio = _make_radio(active="MAIN", model="IC-7610")
+    path = FieldPath.global_("tx_state", "ptt")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    await poller._send_query()  # noqa: SLF001
+
+    radio.send_civ.assert_not_awaited()
+    assert scheduler.diagnostics()["failureCountByReason"] == {
+        "no_civ_query_mapping": 1
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1135,6 +1151,22 @@ async def test_execute_set_attenuator_readback_does_not_depend_on_slowed_cadence
     # confirming read is dispatched on the very next drain, not gated by the
     # 3.0s tier at all.
     assert pending[0].priority is AcquisitionPriority.USER
+
+
+def test_web_scheduler_executor_uses_active_ic9700_profile_query() -> None:
+    path = FieldPath.global_("tx_state", "dual_watch")
+    radio = _make_radio(model="IC-9700")
+    radio._acquisition_scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(path, provider="icom_civ")
+    )
+
+    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
+
+    assert poller._acquisition_executor is not None  # noqa: SLF001
+    assert poller._acquisition_executor.query_for_path(path) == acquisition_query(  # type: ignore[attr-defined]  # noqa: SLF001
+        0x16,
+        sub=0x59,
+    )
 
 
 @pytest.mark.asyncio
