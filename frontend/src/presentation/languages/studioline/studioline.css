@@ -88,8 +88,7 @@
 
 /* Weight, not only colour — 200-weight glyphs read thinner than their
    contrast ratio implies (MOR-977 §3.2 studioline weak point). */
-[data-design-language='studioline'][data-design-language][data-theme='high-contrast'],
-[data-design-language='studioline'][data-design-language] [data-theme='high-contrast'] {
+[data-design-language='studioline'][data-design-language][data-theme='high-contrast'] {
   --dl-studioline-text: #ffffff;
   --dl-studioline-muted: #d5dbde;
   --dl-studioline-numerals: 600;
