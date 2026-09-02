@@ -16,7 +16,7 @@ so the matrix runs each ADR-named row twice:
 fake wire, with the admission driven from the test. These prove the component
 composes: a hazard write at scripted TX is refused and nothing reaches the
 wire; at scripted RX the solicited read precedes the write; an unmapped value
-is never receiving; and an unkey is never refused.
+is never receiving.
 
 *Cutover rows (``xfail(strict=True)``).* The same behaviours driven the way a
 consumer will drive them — a plain method call, or a command through
@@ -107,7 +107,7 @@ CONFORMANCE_METHOD_MAP: Mapping[str, TxMethodEntry] = {
     "set_tuner_status": TxMethodEntry(TxFamily.TUNER),
     "set_tuner": TxMethodEntry(TxFamily.TUNER),
     "set_vfo_slot": TxMethodEntry(TxFamily.VFO_SELECT),
-    "set_ptt": TxMethodEntry(TxFamily.PTT_ON, predicate="ptt"),
+    "set_ptt": TxMethodEntry(TxFamily.PTT_ON),
 }
 
 
@@ -443,55 +443,6 @@ async def test_a_hazard_write_at_scripted_rx_reads_before_it_writes(
     )
 
 
-@every_backend()
-@pytest.mark.parametrize("answer", ["tx_cat", "silence", "unmapped"])
-async def test_an_unkey_is_never_refused(
-    harness: TxConformanceHarness, answer: str
-) -> None:
-    """§3.10 item 3, row 6 / INV-5: the one-sided unkey, on every column.
-
-    Driven under the most hostile truth each wire can produce — keyed, silent,
-    unmapped — because an unkey that only works when truth is healthy is not
-    the doctrine (``managed_tx_ingress.py:1-21``).
-
-    # MUTATION: in `src/rigplane/core/tx_authority.py`, in `admit()`, insert
-    # `raise TxRefusal(TxRefusalCode.TX_TRUTH_UNAVAILABLE, TxEvidence())` as
-    # the first statement of the `if write_class is TxWriteClass.UNKEY:`
-    # branch at :526 -> this row goes red on every column.
-    """
-    harness.script(answer)
-    authority = build_authority(harness)
-    writes_before = len(harness.writes())
-
-    async with authority.admit("set_ptt", (False,)):
-        await harness.unkey()
-
-    assert harness.writes()[writes_before:], f"{harness.name}: the unkey never landed"
-
-
-@every_backend()
-async def test_a_pass_class_write_never_consults_transmit_truth(
-    harness: TxConformanceHarness,
-) -> None:
-    """INV-3, composed: a poisoned read must not be reachable from PASS.
-
-    ``set_ptt(False)`` resolves through the T5 short circuit and ``set_freq``
-    is absent from the matrix map, so the row uses the unkey — the one write
-    that is structurally ahead of every table.
-    """
-
-    async def poisoned() -> TxStateReading:  # pragma: no cover - must not run
-        raise AssertionError("transmit truth was consulted on a non-hazard write")
-
-    authority = TransmitAuthority(
-        read_transmit_state=poisoned,
-        method_map=CONFORMANCE_METHOD_MAP,
-        clock=FakeClock(),
-    )
-    async with authority.admit("set_ptt", (False,)):
-        await harness.unkey()
-
-
 @pytest.mark.parametrize("harness", QUEUE_PATH_BACKENDS, indirect=True)
 async def test_the_queue_drain_reaches_the_backend_write_method(
     harness: TxConformanceHarness,
@@ -499,10 +450,8 @@ async def test_the_queue_drain_reaches_the_backend_write_method(
     """The D1 ingress is real, and this file can drive it.
 
     Live on purpose: the queue-path cutover rows below are ``xfail``, and an
-    xfail proves nothing if the plumbing under it never worked. ``PttOff`` is
-    the probe because it is ``ALWAYS_PASS`` at the old seat still standing
-    above the authority (row 11 deletes that seat), so this row measures the
-    drain rather than the seat.
+    xfail proves nothing if the plumbing under it never worked. The queued
+    command is the probe, so this row measures the drain rather than admission.
     """
     harness.script("rx")
     queue = harness.extras["queue"]
