@@ -10,18 +10,24 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import MISSING, FrozenInstanceError, fields
+from typing import get_type_hints
 
 import pytest
 
 from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
+from rigplane.core.tx_observation import (
+    RADIO_READBACK_SOURCES,
+    TX_READ_DEADLINE_SECONDS,
+    TxStateReading,
+)
+from rigplane.core import tx_authority
 from rigplane.core.tx_authority import (
     DECISION_LOG_CAPACITY,
     FAMILY_WRITE_CLASS,
-    RADIO_READBACK_SOURCES,
     RAW_EXCLUDED,
     TX_ARGUMENT_PREDICATES,
     TX_ENGINE_FAILURE_TAGS,
-    TX_READ_DEADLINE_SECONDS,
     UNRESOLVED_ARGUMENT,
     BandRelation,
     TransmitAuthority,
@@ -30,13 +36,52 @@ from rigplane.core.tx_authority import (
     TxMethodEntry,
     TxRefusal,
     TxRefusalCode,
-    TxStateReading,
     TxWriteClass,
     band_relation,
     first_parameter_name,
     resolve_band,
     short_circuit_family,
 )
+
+
+def test_tx_observation_contract_is_canonical_and_authority_reexports_it() -> None:
+    """The observation value has one canonical definition during migration."""
+    import rigplane.core.tx_observation as tx_observation
+
+    reading_type = tx_observation.TxStateReading
+    reading_fields = fields(reading_type)
+    assert [field.name for field in reading_fields] == [
+        "value",
+        "attributed",
+        "source",
+        "verified_readback",
+        "failure",
+    ]
+    assert get_type_hints(reading_type) == {
+        "value": bool | None,
+        "attributed": str | None,
+        "source": str | None,
+        "verified_readback": bool,
+        "failure": str | None,
+    }
+    assert reading_fields[0].default is MISSING
+    assert [field.default for field in reading_fields[1:]] == [None, None, False, None]
+
+    reading = reading_type(value=False)
+    assert not hasattr(reading, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        reading.value = True  # type: ignore[misc]
+
+    assert tx_observation.TX_READ_DEADLINE_SECONDS == 0.3
+    assert tx_observation.RADIO_READBACK_SOURCES == frozenset(
+        {"poll_response", "civ_unsolicited", "hamlib_response", "yaesu_poll_response"}
+    )
+    assert tx_authority.TxStateReading is reading_type
+    assert (
+        tx_authority.TX_READ_DEADLINE_SECONDS is tx_observation.TX_READ_DEADLINE_SECONDS
+    )
+    assert tx_authority.RADIO_READBACK_SOURCES is tx_observation.RADIO_READBACK_SOURCES
+
 
 BANDS: tuple[tuple[int, int], ...] = (
     (14_000_000, 14_350_000),

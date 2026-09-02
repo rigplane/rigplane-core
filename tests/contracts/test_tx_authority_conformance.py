@@ -63,14 +63,13 @@ from tx_authority_fakes import (
 
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat import YaesuCatRadio
+from rigplane.core.tx_observation import RADIO_READBACK_SOURCES, TxStateReading
 from rigplane.core.tx_authority import (
-    RADIO_READBACK_SOURCES,
     TransmitAuthority,
     TxFamily,
     TxMethodEntry,
     TxRefusal,
     TxRefusalCode,
-    TxStateReading,
 )
 from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
 

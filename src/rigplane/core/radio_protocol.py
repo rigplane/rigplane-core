@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     from rigplane.audio_bus import AudioBus
     from rigplane.runtime._poller_types import CommandQueue
     from rigplane.scope import ScopeFrame
-    from .tx_authority import TxStateReading
+    from .tx_observation import TxStateReading
     from .types import BandStackRegister, MemoryChannel, ScopeFixedEdge
 
 __all__ = [
@@ -516,46 +516,32 @@ class SplitCapable(Protocol):
         ...
 
 
-# --- Transmit-state read primitive (ADR row 5) ------------------------------
+# --- Transmit-state observation primitive -----------------------------------
 
 
 @runtime_checkable
 class TransmitStateReadable(Protocol):
-    """A backend that can perform one solicited, radio-truth transmit read.
+    """A backend that can request one solicited transmit-state observation.
 
     Deliberately **not** a member of :class:`Radio`: ``Radio`` is
     ``@runtime_checkable``, so a new required member would silently break
     ``isinstance`` for every implementer that lacks it — the identical
-    capability-loss mechanism the transmit-authority design's facade
-    refutation relies on (``docs/architecture/open-core-policy.md:178-180``
-    classes a new required method as a breaking change). A backend that does
-    not publish this capability is not degraded gracefully: the transmit
-    authority refuses every HAZARD admission — the four owner-ruled hazard
-    families unconditionally, and ``set_freq`` when its band relation
-    resolves to a crossing — with ``tx-truth-unavailable`` /
-    ``failure="no-capability"`` rather than guessing.
-
-    ``docs/plans/2026-08-20-transmit-authority.md`` §3.9 item 1, §4 row 5.
+    capability-loss mechanism caused by adding a required protocol member.
     """
 
     async def read_transmit_state(self) -> TxStateReading:
-        """Return one fresh, solicited transmit-state reading.
+        """Return one solicited transmit-state observation.
 
         A read that reaches the wire and fails, is refused, or is
         unverifiable comes back as an ordinary
-        :class:`~rigplane.core.tx_authority.TxStateReading` with ``value``
+        :class:`~rigplane.core.tx_observation.TxStateReading` with ``value``
         left ``None`` (or ``verified_readback=False``) and a ``failure``
-        tag — never as an exception for *that* outcome. This is **not** a
+        tag — never as an exception for *that* outcome. A returned value does
+        not by itself prove a fresh physical-radio read; callers must inspect
+        ``verified_readback`` and provenance. This is **not** a
         blanket "never raises" guarantee, though: a precondition failure
         ahead of the wire — not connected at all — follows the same
-        convention every other read on this class uses and raises, on two
-        of the three shipped implementations (the third, the rigctld-client
-        adapter, wraps everything in ``except Exception``). The transmit
-        authority's hazard admission is the caller, and its own blanket
-        ``except Exception`` around the whole call
-        (``core/tx_authority.py``) is what actually makes this fail-closed
-        end to end — not a per-implementer promise this protocol cannot
-        enforce structurally.
+        convention every other read on the implementation uses and may raise.
         """
         ...
 

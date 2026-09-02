@@ -17,7 +17,7 @@ import pytest
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTimeoutError
 from rigplane.core.radio_protocol import Radio
 from rigplane.core.radio_state import RadioState
-from rigplane.core.tx_authority import TxStateReading
+from rigplane.core.tx_observation import TxStateReading
 from rigplane.validation.hardware import execute_hardware_checks
 from rigplane.validation.interactive import InteractivePrompter
 from rigplane.validation.schema import (

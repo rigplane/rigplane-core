@@ -37,21 +37,16 @@ from types import MappingProxyType
 from typing import Final, Literal, NoReturn
 
 from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
+from .tx_observation import (
+    RADIO_READBACK_SOURCES,  # noqa: F401
+    TX_READ_DEADLINE_SECONDS,
+    TxStateReading,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-#: Ceiling on the one solicited transmit-state read a hazard admission makes.
-#: Deliberately not the backend's generic 2.0 s GET bound: a relay throw waits
-#: for this, and an order of magnitude under the measured unkey barrier keeps
-#: a same-connection command from queueing behind it.
-TX_READ_DEADLINE_SECONDS: float = 0.3
-
 #: Decision records retained per radio.
 DECISION_LOG_CAPACITY: int = 256
-
-RADIO_READBACK_SOURCES: frozenset[str] = frozenset(
-    {"poll_response", "civ_unsolicited", "hamlib_response", "yaesu_poll_response"}
-)
 
 #: Every ``TxEvidence.failure`` tag this engine produces itself. A backend's
 #: read primitive may supply its own through ``TxStateReading.failure`` (for
@@ -173,17 +168,6 @@ class TxRefusal(Exception):
         super().__init__(str(code))
         self.code = code
         self.evidence = evidence
-
-
-@dataclass(frozen=True, slots=True)
-class TxStateReading:
-    """One answer from the injected solicited transmit-state read."""
-
-    value: bool | None
-    attributed: str | None = None
-    source: str | None = None
-    verified_readback: bool = False
-    failure: str | None = None
 
 
 # Band relation — data in, no profile import

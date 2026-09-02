@@ -167,7 +167,7 @@ from rigplane.commands import get_repeater_tsql as _get_repeater_tsql_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.state_store import StateStore
-from rigplane.core.tx_authority import (
+from rigplane.core.tx_observation import (
     RADIO_READBACK_SOURCES,
     TX_READ_DEADLINE_SECONDS,
     TxStateReading,
@@ -3714,34 +3714,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
 
     async def read_transmit_state(self) -> TxStateReading:
-        """One solicited CI-V transmit-state read (ADR row 5).
+        """One solicited CI-V transmit-state observation.
 
-        Implements :class:`~rigplane.core.radio_protocol.TransmitStateReadable`
-        over the directed-exact-reply discipline, applying the shape check
-        *itself* rather than inheriting it: ``CivRequestTracker`` matches a
-        pending request only on ``(command, sub, receiver)`` with no address
-        check (``core/civ.py:76-82,380-393``), so a well-addressed but
-        wrong-shaped reply — e.g. an unmapped two-byte ``1C 00`` payload —
-        would otherwise resolve this read as if it were a real answer. The
-        reply is instead re-validated through the shared ``_observation``
-        shape check (``_civ_rx.py:2636-2650``) via ``_observations_from_frame``
-        — the same discrimination the live RX pump applies to unsolicited
-        traffic — so an ACK, our own setter echo, or a mis-addressed frame
-        can never satisfy the read (INV-13).
-
-        Deliberately not built on ``execute_civ_transaction`` (single slot,
-        raises on concurrent use, ``_civ_rx.py:1027-1028``), nor on the
-        poller's ``Commander.send(dedupe=True)`` key
-        (``commander.py:151-156`` — would hand back a pre-decision in-flight
-        read and gut INV-4), nor on the observer-bound
-        ``_request_authoritative_ptt_read`` (``_civ_rx.py:679,718-732``).
-
-        Icom carries no keying attribution on this wire (§3.7): ``attributed``
-        is honestly ``None``. A read that reaches the wire and fails is
-        never raised — it comes back as a :class:`TxStateReading` with a
-        ``failure`` tag — but ``self._check_connected()`` above still
-        raises on a precondition failure (not connected at all), the same
-        convention every other read on this class follows.
+        The directed reply is parsed through the shared observation decoder;
+        only a matching PTT observation supplies a value. Icom provides no
+        keying attribution. Wire-level failures return a ``failure`` tag;
+        connection preconditions still raise.
         """
         self._check_connected()
         frame = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
