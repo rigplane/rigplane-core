@@ -267,12 +267,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
-      - name: Run bounded RED proofs
+      - name: Run focused GREEN proofs
         shell: bash
         run: bash .github/diagnostics/run-cleanup-drain-red.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cleanup-drain-red
+          name: cleanup-drain-green
           path: cleanup-proof/
           retention-days: 14
