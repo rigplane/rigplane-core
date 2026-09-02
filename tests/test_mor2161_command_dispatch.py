@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,7 +16,7 @@ from rigplane.backends.rigctld_client.radio import (
     RigctldClientRadio,
 )
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
-from rigplane.core.exceptions import CommandRejectedError
+from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.profiles import resolve_radio_profile
@@ -118,21 +119,37 @@ async def test_success_waits_for_real_yaesu_drain(surface: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["http", "batch", "ws"])
 @pytest.mark.parametrize(
-    ("surface", "error", "expected"),
+    ("error", "supported", "http_status", "error_code", "batch_status"),
     [
-        ("http", CommandRejectedError("radio returned ?;"), (409, "radio_nak")),
-        ("batch", CommandRejectedError("radio returned ?;"), (200, "radio_nak")),
-        ("ws", CommandRejectedError("radio returned ?;"), (None, "radio_nak")),
-        ("http", RigplaneTimeoutError("late"), (504, "command_timeout")),
-        ("batch", RigplaneTimeoutError("late"), (200, "command_timeout")),
-        ("ws", RigplaneTimeoutError("late"), (None, "command_timeout")),
+        (None, False, 409, "unsupported_command", "failed_validation"),
+        (
+            CommandRejectedError("radio returned ?;"),
+            True,
+            409,
+            "radio_nak",
+            "failed_execution",
+        ),
+        (
+            CommandError("backend failed"),
+            True,
+            500,
+            "command_failed",
+            "failed_execution",
+        ),
+        (RigplaneTimeoutError("late"), True, 504, "command_timeout", "timed_out"),
     ],
 )
 async def test_structured_error_reaches_every_surface(
-    surface: str, error: Exception, expected: tuple[int | None, str]
+    surface: str,
+    error: Exception | None,
+    supported: bool,
+    http_status: int,
+    error_code: str,
+    batch_status: str,
 ) -> None:
-    radio = _radio(error=error)
+    radio = _radio(error=error, supported=supported)
     server = WebServer(radio, WebConfig())
     payload = {"id": "shift", "name": "set_repeater_shift", "params": {"direction": 2}}
     if surface == "http":
@@ -155,16 +172,20 @@ async def test_structured_error_reaches_every_surface(
         )
 
     await asyncio.sleep(0)
-    await _drain_yaesu(server, radio)
+    if server.command_queue.has_commands:
+        await _drain_yaesu(server, radio)
     await request
     if surface == "ws":
         body = ws.messages[-1]
     else:
-        assert writer.status == expected[0]
+        assert writer.status == (200 if surface == "batch" else http_status)
         body = writer.body
         if surface == "batch":
+            assert body["ok"] is False
             body = body["results"][0]  # type: ignore[index,assignment]
-    assert body["error"] == expected[1]
+            assert body["status"] == batch_status
+    assert body["ok"] is False
+    assert body["error"] == error_code
 
 
 @pytest.mark.asyncio
@@ -192,8 +213,12 @@ async def test_all_three_drains_execute_the_same_neutral_intent() -> None:
     for drain in ("icom", "yaesu", "rigctld"):
         radio = _radio()
         intent = prepare_command_intent(
-            radio, "set_repeater_shift", {"direction": 3}, source="http"
+            radio,
+            "set_repeater_shift",
+            {"direction": 3, "receiver": 1},
+            source="http",
         )
+        assert str(intent.target) == "receiver.1.operator_controls.repeater_shift"
         if drain == "icom":
             poller = SimpleNamespace(
                 _radio=radio,
@@ -211,7 +236,7 @@ async def test_all_three_drains_execute_the_same_neutral_intent() -> None:
             )
             poller._radio = radio  # type: ignore[attr-defined]
             await poller._execute_command(intent)  # noqa: SLF001
-        radio.set_repeater_shift.assert_awaited_once_with(direction=3, receiver=0)
+        radio.set_repeater_shift.assert_awaited_once_with(direction=3, receiver=1)
 
 
 @pytest.mark.asyncio
@@ -222,14 +247,16 @@ async def test_descriptor_timeout_and_cancellation_cleanup_is_exact_once() -> No
     intent = prepare_command_intent(
         radio,
         "set_repeater_shift",
-        {"direction": 1, "session_id": "ws-a"},
+        {"direction": 1},
         source="websocket",
         command_id="cancel-me",
+        session_id="ws-a",
     )
     server = WebServer(radio, WebConfig())
     service = server.command_service
     task = asyncio.create_task(service.execute(intent))
     await asyncio.sleep(0)
+    assert ("websocket", "ws-a", "cancel-me") in service._active_commands  # noqa: SLF001
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -240,26 +267,77 @@ async def test_descriptor_timeout_and_cancellation_cleanup_is_exact_once() -> No
         )
         == ()
     )
-    assert [event.state for event in service.lifecycle_events()].count("failed") == 1
-    assert service.terminate_active_commands("late") == 0
+    assert ("websocket", "ws-a", "cancel-me") not in service._active_commands  # noqa: SLF001
+    assert [
+        event.state
+        for event in service.lifecycle_events()
+        if event.command_id == "cancel-me"
+        and event.state in {"acknowledged", "failed", "timed_out"}
+    ] == ["failed"]
+    assert (
+        service.terminate_active_commands("late", source="websocket", session_id="ws-a")
+        == 0
+    )
     await _drain_yaesu(server, radio)
+    assert [
+        event.state
+        for event in service.lifecycle_events()
+        if event.command_id == "cancel-me"
+        and event.state in {"acknowledged", "failed", "timed_out"}
+    ] == ["failed"]
     radio.set_repeater_shift.assert_not_awaited()
 
     timed = replace(intent, id="time-me", timeout=0.001)
     timed_service = server.command_service
     with pytest.raises(TimeoutError):
         await timed_service.execute(timed)
-    assert [event.state for event in timed_service.lifecycle_events()].count(
-        "timed_out"
-    ) == 1
+    assert [
+        event.state
+        for event in timed_service.lifecycle_events()
+        if event.command_id == "time-me"
+        and event.state in {"acknowledged", "failed", "timed_out"}
+    ] == ["timed_out"]
     assert (
         timed_service.pending_overlays(
             source="websocket", session_id="ws-a", command_id="time-me"
         )
         == ()
     )
+    assert ("websocket", "ws-a", "time-me") not in service._active_commands  # noqa: SLF001
     await _drain_yaesu(server, radio)
+    assert [
+        event.state
+        for event in timed_service.lifecycle_events()
+        if event.command_id == "time-me"
+        and event.state in {"acknowledged", "failed", "timed_out"}
+    ] == ["timed_out"]
     radio.set_repeater_shift.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_descriptor_queue_policy_controls_enqueue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.core import command_dispatch
+    from rigplane.core.command_dispatch import prepare_command_intent
+
+    radio = _radio()
+    descriptor = command_dispatch.command_descriptor("set_repeater_shift")
+    assert descriptor is not None
+    mutated = replace(descriptor, queue_policy=cast(Any, "unknown"))
+    monkeypatch.setattr(
+        command_dispatch,
+        "_COMMAND_DESCRIPTORS",
+        {mutated.name: mutated},
+    )
+    server = WebServer(radio, WebConfig())
+    intent = prepare_command_intent(
+        radio, mutated.name, {"direction": 1}, source="http"
+    )
+
+    with pytest.raises(CommandError, match="unsupported queue policy 'unknown'"):
+        await server.command_service.execute(intent)
+    assert not server.command_queue.has_commands
 
 
 @pytest.mark.asyncio

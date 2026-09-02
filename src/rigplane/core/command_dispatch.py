@@ -9,6 +9,7 @@ same descriptor; drains must not add operation-specific branches.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ __all__ = [
     "CommandUnsupportedError",
     "command_descriptor",
     "command_descriptors",
+    "enqueue_command_intent",
     "execute_command_intent",
     "prepare_command_intent",
 ]
@@ -38,6 +40,15 @@ class CommandUnsupportedError(CommandError):
 
 class DispatchRadio(Protocol):
     def supports_command(self, command: str) -> bool: ...
+
+
+class DispatchQueue(Protocol):
+    def put_ordered(
+        self,
+        command: Any,
+        *,
+        future: asyncio.Future[None] | None = None,
+    ) -> None: ...
 
 
 Binder = Callable[[Mapping[str, Any]], dict[str, Any]]
@@ -103,6 +114,25 @@ def command_descriptors() -> Mapping[str, CommandDescriptor]:
 
 def command_descriptor(name: str) -> CommandDescriptor | None:
     return _COMMAND_DESCRIPTORS.get(name)
+
+
+def enqueue_command_intent(
+    queue: DispatchQueue,
+    intent: CommandIntent,
+    *,
+    future: asyncio.Future[None],
+) -> None:
+    """Enqueue through the policy owned by the command descriptor."""
+
+    descriptor = command_descriptor(intent.name)
+    if descriptor is None:
+        raise CommandError(f"no command descriptor for {intent.name!r}")
+    if descriptor.queue_policy == "ordered":
+        queue.put_ordered(intent, future=future)
+        return
+    raise CommandError(
+        f"unsupported queue policy {descriptor.queue_policy!r} for {descriptor.name!r}"
+    )
 
 
 def prepare_command_intent(

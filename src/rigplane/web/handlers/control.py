@@ -21,6 +21,7 @@ from ...core.command_dispatch import (
     CommandUnsupportedError,
     command_descriptor,
     command_descriptors,
+    enqueue_command_intent,
     prepare_command_intent,
 )
 from ...core.exceptions import CommandError, CommandRejectedError
@@ -1457,7 +1458,7 @@ class ControlHandler:
                 raise RuntimeError("no command queue available")
             queue = self._server.command_queue
             future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-            queue.put_ordered(intent, future=future)
+            enqueue_command_intent(queue, intent, future=future)
             try:
                 await asyncio.wait_for(future, timeout=intent.timeout)
             except asyncio.CancelledError:

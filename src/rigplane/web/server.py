@@ -4304,7 +4304,11 @@ class WebServer:
                 writer,
                 status,
                 reason,
-                {"error": code, "message": str(exc) or type(exc).__name__},
+                {
+                    "ok": False,
+                    "error": code,
+                    "message": str(exc) or type(exc).__name__,
+                },
             )
             return
         except (ValueError, KeyError, TypeError) as exc:
