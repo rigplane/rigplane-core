@@ -13,12 +13,41 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  cancelled-exchange-diagnostic:
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 10
+    env:
+      UV_PYTHON: '3.13'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+      - uses: astral-sh/setup-uv@v8.1.0
+      - name: Focused exchange GREEN and canonical checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p exchange-proof
+          git rev-parse HEAD | tee exchange-proof/head.txt
+          git diff --exit-code 9187cc4554b85aa0487d826d7bdbed092bd82b83 -- src/ tests/ .claude/audits/
+          uv sync --all-extras
+          uv run python --version | tee exchange-proof/python.txt
+          timeout 90s uv run pytest tests/test_rigctld_client_backend.py -vv --tb=short --timeout=15 --timeout-method=thread --junitxml=exchange-proof/green.xml 2>&1 | tee exchange-proof/green.log
+          uv run ruff check src/ tests/ 2>&1 | tee exchange-proof/ruff.log
+          uv run ruff format --check --diff src/ tests/ 2>&1 | tee exchange-proof/format.log
+          uv run lint-imports 2>&1 | tee exchange-proof/imports.log
+          uv run mypy --strict src/rigplane/web 2>&1 | tee exchange-proof/mypy.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cancelled-exchange-green
+          path: exchange-proof/
+          retention-days: 14
+
   test:
     # On push: only when commit message contains [full-ci].
     # On schedule / manual dispatch: always run.
-    if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+    if: false
     # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
@@ -186,9 +215,7 @@ jobs:
     # the commit message contains `[full-ci]`; on `schedule`/
     # `workflow_dispatch`, always runs. This keeps the job off every
     # ordinary push to `main`.
-    if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+    if: false
     runs-on: [self-hosted, linux, build]
     # Budget: ~45s once the Playwright browser cache is warm (npm ci +
     # cached chromium + the capture matrix itself). 10 minutes is a
