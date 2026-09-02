@@ -400,6 +400,21 @@ A field existing in the view model does not mean the radio reports it, and a
 group being present does not mean its fields are supported. Both gates are
 separate and both are checkable.
 
+**The two fourteens are different sets, not the same fourteen counted
+twice.** A complete mapping exists between them (checked against every
+surface component's own header): ten surfaces map to one optional group of
+the matching name (`txAux`, `meters`, `rxAudio`, `dsp`, `rfFrontEnd`, `band`,
+`antenna`, `cwKeyer`, `scopeControls`, `scopeDisplay`). Two surfaces each own
+*two* groups — `FilterSurface` renders both `modeFilter` and
+`filterPassband`, `RitXitScanSurface` renders both `ritXit` and `scan`, each
+surface's own header says so — which is where the other four groups go
+(10 + 2×2 = 14). The remaining two surfaces, `vfo` and `rxTx`, are backed by
+required top-level `RadioViewModel` fields that carry no `?` — `vfos`,
+`activeReceiver`, `split`, `dualWatch` for `vfo`; `txTarget`, `txPermit` for
+`rxTx` — not by any of the fourteen optional groups at all (10 + 2 + 2 = 14
+surfaces). The shared count of fourteen invites a one-to-one reading; there
+is a correspondence, but it is not that one.
+
 ### The path an appearance takes
 
 A design language supplies three things and no markup: tokens, renderers, a
