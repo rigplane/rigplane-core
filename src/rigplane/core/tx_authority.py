@@ -11,29 +11,20 @@ transmit-state read. Nothing in the product consumes this module yet — it land
 ahead of the backend admission rows so the contracts exist before any call site
 cites them.
 
-One requirement those rows inherit: an admission that passes its argument by
-keyword must also pass ``target``, so classification reads the method's real
-signature rather than a guessed parameter name.
-:meth:`TransmitAuthority.admit` states it and :data:`UNRESOLVED_ARGUMENT`
-records what failing it costs.
-
 Design: ``docs/plans/2026-08-20-transmit-authority.md`` §3.3-§3.7.
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import time
-from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
-from functools import lru_cache
 from types import MappingProxyType
-from typing import Final, Literal, NoReturn
+from typing import NoReturn
 
 from .tx_observation import (
     RADIO_READBACK_SOURCES,  # noqa: F401
@@ -43,23 +34,6 @@ from .tx_observation import (
 
 _LOGGER = logging.getLogger(__name__)
 
-#: Decision records retained per radio.
-DECISION_LOG_CAPACITY: int = 256
-
-#: Every ``TxEvidence.failure`` tag this engine produces itself. A backend's
-#: read primitive may supply its own through ``TxStateReading.failure`` (for
-#: example ``"no-capability"``); those pass through untouched.
-TX_ENGINE_FAILURE_TAGS: frozenset[str] = frozenset(
-    {"timeout", "transport", "read-error", "unverifiable-provenance", "unclassified"}
-)
-
-#: Raw byte writes, excluded by name. Bytes cannot be classified, so the
-#: authority does not classify them; the totality test covers map ∪ this set,
-#: so an unmapped method can never hide as "raw".
-RAW_EXCLUDED: frozenset[str] = frozenset(
-    {"send_civ", "send_civ_transaction", "send_civ_raw_fire_and_forget"}
-)
-
 
 class TxWriteClass(StrEnum):
     """The closed vocabulary of write classes."""
@@ -67,7 +41,6 @@ class TxWriteClass(StrEnum):
     PASS = "pass"
     HAZARD = "hazard"
     KEYING = "keying"
-    UNKEY = "unkey"
 
 
 class TxFamily(StrEnum):
@@ -83,7 +56,6 @@ class TxFamily(StrEnum):
     SCAN_START = "scan-start"
     SCAN_STOP = "scan-stop"
     POWER_ON = "power-on"
-    POWER_OFF = "power-off"
     CW_STOP = "cw-stop"
     BAND = "band"
     TUNER = "tuner"
@@ -91,7 +63,6 @@ class TxFamily(StrEnum):
     VFO_SELECT = "vfo-select"
     PTT_ON = "ptt-on"
     CW_TEXT = "cw-text"
-    PTT_OFF = "ptt-off"
 
 
 #: The neutral family → class table. Pinned literal, never computed: PASS is
@@ -111,7 +82,6 @@ FAMILY_WRITE_CLASS: Mapping[TxFamily, TxWriteClass] = MappingProxyType(
         TxFamily.SCAN_START: TxWriteClass.PASS,
         TxFamily.SCAN_STOP: TxWriteClass.PASS,
         TxFamily.POWER_ON: TxWriteClass.PASS,
-        TxFamily.POWER_OFF: TxWriteClass.PASS,
         TxFamily.CW_STOP: TxWriteClass.PASS,
         TxFamily.BAND: TxWriteClass.HAZARD,
         TxFamily.TUNER: TxWriteClass.HAZARD,
@@ -119,7 +89,6 @@ FAMILY_WRITE_CLASS: Mapping[TxFamily, TxWriteClass] = MappingProxyType(
         TxFamily.VFO_SELECT: TxWriteClass.HAZARD,
         TxFamily.PTT_ON: TxWriteClass.KEYING,
         TxFamily.CW_TEXT: TxWriteClass.KEYING,
-        TxFamily.PTT_OFF: TxWriteClass.UNKEY,
     }
 )
 
@@ -144,20 +113,6 @@ class TxEvidence:
     failure: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class TxDecisionRecord:
-    """One record per non-PASS admission."""
-
-    monotonic: float
-    provider_generation: int
-    method: str
-    family: str
-    write_class: TxWriteClass
-    action: Literal["sent", "refused"]
-    code: TxRefusalCode | None
-    evidence: TxEvidence | None
-
-
 class TxRefusal(Exception):
     """The one exception consumers of the authority handle."""
 
@@ -165,184 +120,6 @@ class TxRefusal(Exception):
         super().__init__(str(code))
         self.code = code
         self.evidence = evidence
-
-
-# Argument predicates — named and pure
-
-
-class _UnresolvedArgument:
-    """The value of an argument the engine could not determine."""
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return "UNRESOLVED_ARGUMENT"
-
-
-#: Returned by :meth:`TxArgumentContext.first` when the engine cannot say what
-#: the caller passed, distinct from a supplied falsey argument.
-#:
-UNRESOLVED_ARGUMENT: Final = _UnresolvedArgument()
-
-#: How many gated signatures the resolver keeps. A backend gates on the order
-#: of a hundred methods, so one entry per method fits many times over.
-SIGNATURE_CACHE_SIZE: Final = 512
-
-#: Methods the T5 short-circuit resolves from their argument rather than from
-#: any table. Named once so the engine and the short-circuit agree on which
-#: admissions actually consult an argument.
-ARGUMENT_SHORT_CIRCUIT_METHODS: frozenset[str] = frozenset({"set_ptt", "set_powerstat"})
-
-
-@lru_cache(maxsize=SIGNATURE_CACHE_SIZE)
-def _first_parameter_name(function: Callable[..., object]) -> str | None:
-    try:
-        parameters = list(inspect.signature(function).parameters.values())
-    except (TypeError, ValueError):  # pragma: no cover - builtins, C callables
-        return None
-    for index, parameter in enumerate(parameters):
-        if parameter.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            continue
-        if index == 0 and parameter.name in ("self", "cls"):
-            continue
-        return parameter.name
-    return None
-
-
-def first_parameter_name(target: Callable[..., object] | None) -> str | None:
-    """The gated method's first caller-supplied parameter, from its signature.
-
-    The point of reading the *real* signature is that classification cannot
-    depend on how a call site happened to spell its argument. Reflection runs
-    once per underlying function and is cached, bounded at
-    :data:`SIGNATURE_CACHE_SIZE` — enough for a whole backend's write surface,
-    though a caller that resolves more distinct callables than that will evict
-    and pay for the reflection again. A bound method is normalised onto its
-    function, so the cache holds no radio instances.
-    """
-    if target is None:
-        return None
-    function = getattr(target, "__func__", target)
-    try:
-        return _first_parameter_name(function)
-    except TypeError:  # pragma: no cover - unhashable callable
-        return None
-
-
-@dataclass(frozen=True, slots=True)
-class TxArgumentContext:
-    """Everything a predicate may look at. No I/O, no globals."""
-
-    args: tuple[object, ...]
-    kwargs: Mapping[str, object]
-    target: Callable[..., object] | None = None
-
-    def first(self) -> object:
-        """The gated method's first argument, however the call spelled it.
-
-        Positionally it is simply the first of :attr:`args`; by keyword it is
-        read under the name :attr:`target`'s own signature declares. With no
-        signature to read, or a keyword the signature does not name, it is
-        :data:`UNRESOLVED_ARGUMENT` — never a name guessed on the method's
-        behalf, and a sentinel rather than ``None`` so that it stays
-        distinguishable from an argument the caller really did pass as
-        ``None``, or as ``0``, or as ``False``.
-
-        A predicate for a method whose interesting argument is *not* the first
-        one must read :attr:`args` / :attr:`kwargs` directly.
-        """
-        if self.args:
-            return self.args[0]
-        if not self.kwargs:
-            return UNRESOLVED_ARGUMENT
-        name = first_parameter_name(self.target)
-        if name is not None and name in self.kwargs:
-            return self.kwargs[name]
-        return UNRESOLVED_ARGUMENT
-
-
-ArgumentPredicate = Callable[[TxArgumentContext], TxFamily]
-
-
-def ptt_family(context: TxArgumentContext) -> TxFamily:
-    """``set_ptt(True)`` keys; ``set_ptt(False)`` is the one-sided unkey.
-
-    An unresolved argument is read as the key, not the unkey: PTT_ON is the
-    KEYING branch, which has no refusal path, so answering it can never turn
-    an admission into a refusal — while answering PTT_OFF would walk a
-    key-down straight through the gate.
-    """
-    value = context.first()
-    if value is UNRESOLVED_ARGUMENT:
-        return TxFamily.PTT_ON
-    return TxFamily.PTT_ON if bool(value) else TxFamily.PTT_OFF
-
-
-def powerstat_family(context: TxArgumentContext) -> TxFamily:
-    """``set_powerstat(False)`` joins the short-circuit set, never gated."""
-    value = context.first()
-    if value is UNRESOLVED_ARGUMENT:
-        return TxFamily.POWER_ON
-    return TxFamily.POWER_ON if bool(value) else TxFamily.POWER_OFF
-
-
-TX_ARGUMENT_PREDICATES: Mapping[str, ArgumentPredicate] = MappingProxyType(
-    {
-        "ptt": ptt_family,
-        "powerstat": powerstat_family,
-    }
-)
-
-
-def short_circuit_family(method: str, context: TxArgumentContext) -> TxFamily | None:
-    """T5: resolve de-key / power-off / stop-CW ahead of every table.
-
-    A corrupt or incomplete classification table must never make an unkey
-    harder, so this consults no map and no profile data.
-
-    Exactly which admissions bypass the table, stated narrowly because the
-    code is narrow: ``stop_cw_text`` always; ``set_ptt`` / ``set_powerstat``
-    when their argument reads falsy, and when it cannot be read at all. A
-    *readable truthy* argument returns ``None`` and goes on to the table like
-    any other write — deliberately, and what the table then does with it is
-    the table's business, measured rather than assumed: with **no entry** the
-    key-down is refused ``unclassified`` (INV-1's fail direction, at RX and at
-    TX alike); with an entry that **misclassifies** it into a hazard family it
-    is refused at a scripted TX but **admitted as that hazard at RX** — not
-    refused at all. Neither case is rescued here, and neither is safe to
-    describe as one.
-
-    The guarantee this function carries is one sentence, and it is about
-    **these three methods only**: no table can turn ``stop_cw_text``, a
-    readable de-key, or an unreadable ``set_ptt`` / ``set_powerstat`` argument
-    into a refusal.
-
-    """
-    if method == "stop_cw_text":
-        return TxFamily.CW_STOP
-    if method in ARGUMENT_SHORT_CIRCUIT_METHODS:
-        value = context.first()
-        if value is UNRESOLVED_ARGUMENT:
-            # An unreadable argument takes the strict twin, still ahead of the
-            # table, so a key-down can never hide in the unkey branch merely
-            # because of how its argument was spelled (MOR-1954). Each is safe
-            # for its own reason, and the two reasons are not interchangeable:
-            #   set_ptt       — PTT_ON is KEYING, a branch with no refusal path
-            #                   at all, so the strict answer cannot become a
-            #                   refusal.
-            #   set_powerstat — POWER_ON and POWER_OFF are *both* PASS in
-            #                   FAMILY_WRITE_CLASS, so the branch is inert here
-            #                   whichever way it answers. The KEYING argument
-            #                   above says nothing about powerstat: anyone who
-            #                   reclassifies POWER_ON must re-derive this, not
-            #                   inherit it.
-            return TxFamily.PTT_ON if method == "set_ptt" else TxFamily.POWER_ON
-        if not bool(value):
-            return TxFamily.PTT_OFF if method == "set_ptt" else TxFamily.POWER_OFF
-    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,25 +130,13 @@ class TxMethodEntry:
     """
 
     family: TxFamily
-    predicate: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TxAuthorityView:
-    """Read-only debuggability surface: why did it decide that."""
-
-    records: tuple[TxDecisionRecord, ...]
 
 
 @dataclass
 class TxAdmission:
-    """Handed to the caller for the duration of an admitted write.
+    """Handed to the caller for the duration of an admitted write."""
 
-    ``family`` is ``None`` only for a ``RAW_EXCLUDED`` method: bytes are not
-    classified, and the admission says so rather than borrowing a family.
-    """
-
-    family: TxFamily | None
+    family: TxFamily
     write_class: TxWriteClass
     evidence: TxEvidence | None = None
 
@@ -385,17 +150,14 @@ class TransmitAuthority:
         read_transmit_state: Callable[[], Awaitable[TxStateReading]],
         method_map: Mapping[str, TxMethodEntry],
         clock: Callable[[], float] = time.monotonic,
-        provider_generation: Callable[[], int] | None = None,
         read_deadline_seconds: float = TX_READ_DEADLINE_SECONDS,
     ) -> None:
         self._read_transmit_state = read_transmit_state
         self._method_map = dict(method_map)
         self._clock = clock
-        self._provider_generation = provider_generation
         self._read_deadline_seconds = read_deadline_seconds
 
         self._lock = asyncio.Lock()
-        self._records: deque[TxDecisionRecord] = deque(maxlen=DECISION_LOG_CAPACITY)
         self._transmit_epoch = 0
 
     # -- intake ------------------------------------------------------------
@@ -411,13 +173,6 @@ class TransmitAuthority:
         if transmitting:
             self._transmit_epoch += 1
 
-    # -- inspection --------------------------------------------------------
-
-    def view(self) -> TxAuthorityView:
-        return TxAuthorityView(
-            records=tuple(self._records),
-        )
-
     # -- admission ---------------------------------------------------------
 
     @asynccontextmanager
@@ -426,51 +181,9 @@ class TransmitAuthority:
         method: str,
         args: Sequence[object] = (),
         kwargs: Mapping[str, object] | None = None,
-        *,
-        target: Callable[..., object] | None = None,
     ) -> AsyncIterator[TxAdmission]:
-        """Gate one write. The body performs the write; the lock spans both.
-
-        ``target`` is the gated method itself. It is how a keyword admission
-        resolves its argument by the method's real signature instead of a name
-        guessed in the predicate table (MOR-1954).
-
-        **Requirement on every call site that admits an argument by keyword**,
-        row 7 onward: pass ``target``. INV-2 form A — the bare ``@tx_admit``
-        decorator — passes the function it wraps; INV-2 form B — the in-body
-        ``async with ... admit(...)`` block — passes ``self.<method>``, or
-        forwards the argument positionally and needs no ``target`` at all.
-        Failing to is not silent: the argument resolves to
-        :data:`UNRESOLVED_ARGUMENT`, and wherever classifying the method
-        actually reads an argument, a warning names it and the keywords it
-        saw and every predicate then fails closed — which for every family
-        except the two the T5 short-circuit owns can mean a refusal. That
-        constant records what the fail-closed path costs; it is not free.
-        """
-        if method in RAW_EXCLUDED:
-            yield TxAdmission(None, TxWriteClass.PASS)
-            return
-
-        context = TxArgumentContext(
-            args=tuple(args),
-            kwargs=dict(kwargs or {}),
-            target=target,
-        )
-        if self._consults_argument(method) and context.first() is UNRESOLVED_ARGUMENT:
-            # Loud, because the predicates below now fail closed on it and a
-            # silently mis-spelled admission is what MOR-1954 closed.
-            _LOGGER.warning(
-                "transmit authority could not resolve the admission argument",
-                extra={
-                    "method": method,
-                    "keywords": sorted(context.kwargs),
-                    "signature": first_parameter_name(target),
-                },
-            )
-
-        family = short_circuit_family(method, context)
-        if family is None:
-            family = self._classify(method, context)
+        """Gate one write. The body performs the write; the lock spans both."""
+        family = self._classify(method)
         if family is None:
             # INV-1's fail direction: nothing defaults to PASS by omission.
             self._refuse(
@@ -487,41 +200,20 @@ class TransmitAuthority:
             yield TxAdmission(family, write_class)
             return
 
-        if write_class is TxWriteClass.UNKEY:
-            yield TxAdmission(family, write_class)
-            self._record(method, family, write_class, "sent", None, None)
-            return
-
         async with self._lock:
             if write_class is TxWriteClass.KEYING:
                 ticket = self._admit_keying(family)
             else:
                 ticket = await self._admit_hazard(method, family)
-            try:
-                yield ticket
-            finally:
-                # A write that raised may already have reached the radio, so
-                # the decision record lands either way.
-                self._commit(method, ticket)
+            yield ticket
 
     # -- internals ---------------------------------------------------------
 
-    def _consults_argument(self, method: str) -> bool:
-        """Does classifying this method read an argument at all?"""
-        if method in ARGUMENT_SHORT_CIRCUIT_METHODS:
-            return True
-        entry = self._method_map.get(method)
-        if entry is None:
-            return False
-        return entry.predicate is not None
-
-    def _classify(self, method: str, context: TxArgumentContext) -> TxFamily | None:
+    def _classify(self, method: str) -> TxFamily | None:
         entry = self._method_map.get(method)
         if entry is None:
             return None
-        if entry.predicate is None:
-            return entry.family
-        return TX_ARGUMENT_PREDICATES[entry.predicate](context)
+        return entry.family
 
     def _admit_keying(self, family: TxFamily) -> TxAdmission:
         self._transmit_epoch += 1
@@ -571,11 +263,6 @@ class TransmitAuthority:
 
         return TxAdmission(family, TxWriteClass.HAZARD, evidence=evidence)
 
-    def _commit(self, method: str, ticket: TxAdmission) -> None:
-        """Called once the caller's write has been handed off."""
-        family = str(ticket.family)
-        self._record(method, family, ticket.write_class, "sent", None, ticket.evidence)
-
     def _refuse(
         self,
         method: str,
@@ -584,7 +271,6 @@ class TransmitAuthority:
         code: TxRefusalCode,
         evidence: TxEvidence,
     ) -> NoReturn:
-        self._record(method, family, write_class, "refused", code, evidence)
         _LOGGER.warning(
             "transmit authority refused write",
             extra={
@@ -596,27 +282,3 @@ class TransmitAuthority:
             },
         )
         raise TxRefusal(code, evidence)
-
-    def _record(
-        self,
-        method: str,
-        family: TxFamily | str,
-        write_class: TxWriteClass,
-        action: Literal["sent", "refused"],
-        code: TxRefusalCode | None,
-        evidence: TxEvidence | None,
-    ) -> None:
-        self._records.append(
-            TxDecisionRecord(
-                monotonic=self._clock(),
-                provider_generation=(
-                    self._provider_generation() if self._provider_generation else 0
-                ),
-                method=method,
-                family=str(family),
-                write_class=write_class,
-                action=action,
-                code=code,
-                evidence=evidence,
-            )
-        )
