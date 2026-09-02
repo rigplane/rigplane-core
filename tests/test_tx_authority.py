@@ -8,6 +8,7 @@ MagicMock anywhere near the authority (repo hard rule).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import MISSING, FrozenInstanceError, fields
@@ -15,7 +16,6 @@ from typing import get_type_hints
 
 import pytest
 
-from rigplane.core.tx_safety import BACKEND_MAX_KEY_DOWN_SECONDS
 from rigplane.core.tx_observation import (
     RADIO_READBACK_SOURCES,
     TX_READ_DEADLINE_SECONDS,
@@ -168,14 +168,6 @@ class PoisonedLink:
         raise AssertionError("transmit truth was consulted on a PASS write")
 
 
-class FakeUnkey:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def __call__(self) -> None:
-        self.calls += 1
-
-
 RX = TxStateReading(
     value=False,
     attributed="rx",
@@ -210,24 +202,16 @@ def build_authority(
     clock: Clock,
     link: FakeTransmitStateLink | PoisonedLink,
     *,
-    unkey: FakeUnkey | None = None,
     method_map: Mapping[str, TxMethodEntry] | None = None,
     bands: Sequence[tuple[int, int]] = BANDS,
     current_frequency_hz: float | None = 14_200_000,
-    lease_active: bool = False,
-    cw_hold_seconds: float | None = 5.0,
 ) -> TransmitAuthority:
     return TransmitAuthority(
         read_transmit_state=link.read,
-        last_resort_unkey=unkey or FakeUnkey(),
         method_map=METHOD_MAP if method_map is None else method_map,
         clock=clock,
         bands=tuple(bands),
         current_frequency_hz=lambda: current_frequency_hz,
-        lease_active=lambda: lease_active,
-        cw_hold_duration=(
-            None if cw_hold_seconds is None else (lambda _ctx: cw_hold_seconds)
-        ),
     )
 
 
@@ -285,17 +269,6 @@ def test_family_class_table_is_total_and_pinned() -> None:
     assert FAMILY_WRITE_CLASS[TxFamily.CW_STOP] is TxWriteClass.PASS
 
 
-def test_key_down_bound_is_imported_not_respelled() -> None:
-    from rigplane.core import tx_authority
-
-    assert tx_authority.BACKEND_MAX_KEY_DOWN_SECONDS is BACKEND_MAX_KEY_DOWN_SECONDS
-    source = tx_authority.__file__ or ""
-    assert source.endswith("tx_authority.py")
-    with open(source, encoding="utf-8") as handle:
-        text = handle.read()
-    assert "180" not in text
-
-
 def test_read_deadline_is_its_own_named_bound() -> None:
     assert TX_READ_DEADLINE_SECONDS == 0.3
 
@@ -309,6 +282,38 @@ def test_transmit_truth_projection_is_absent() -> None:
         "build_transmit_truth",
     ):
         assert not hasattr(tx_authority, name)
+
+
+def test_dormant_authority_watchdog_surface_is_absent() -> None:
+    """The authority retains admission records, not a second TX watchdog."""
+    for name in ("_Hold", "TxDeadlineExpiry"):
+        assert not hasattr(tx_authority, name)
+    assert not hasattr(TransmitAuthority, "poll")
+    assert not hasattr(TransmitAuthority, "fire_last_resort_unkey")
+
+    parameters = inspect.signature(TransmitAuthority).parameters
+    for name in (
+        "last_resort_unkey",
+        "lease_active",
+        "cw_hold_duration",
+        "max_key_down_seconds",
+    ):
+        assert name not in parameters
+
+    authority = TransmitAuthority(
+        read_transmit_state=PoisonedLink().read,
+        method_map=METHOD_MAP,
+        clock=Clock(),
+    )
+    for name in ("_last_resort_unkey", "_holds", "_deadline", "_lease_active"):
+        assert not hasattr(authority, name)
+    assert [field.name for field in fields(tx_authority.TxAuthorityView)] == ["records"]
+    assert [field.name for field in fields(tx_authority.TxAdmission)] == [
+        "family",
+        "write_class",
+        "evidence",
+    ]
+    assert "own_transmit_hold" not in get_type_hints(tx_authority.TxEvidence)
 
 
 def test_argument_predicate_registry_is_named_and_pure() -> None:
@@ -458,7 +463,6 @@ async def test_hazard_at_transmit_is_refused_with_evidence() -> None:
     assert refusal.evidence.attributed == "tx_other"
     assert refusal.evidence.source == "poll_response"
     assert refusal.evidence.solicited is True
-    assert refusal.evidence.own_transmit_hold is None
     record = authority.view().records[-1]
     assert record.action == "refused"
     assert record.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
@@ -536,7 +540,7 @@ async def test_hazard_without_capability_fails_closed() -> None:
 
 
 async def test_unverifiable_readback_fails_closed() -> None:
-    """§3.7: the rigctld-client answer is an upstream cache, not radio truth."""
+    """§3.7: an unverified readback cannot admit a hazard write."""
     clock = Clock()
     link = FakeTransmitStateLink(clock)
     link.script(UNVERIFIED_RX)
@@ -568,99 +572,6 @@ async def test_every_refusal_carries_evidence(answer: TxStateReading | str) -> N
     assert evidence is not None
     assert (evidence.value is not None) or (evidence.failure is not None)
     assert authority.view().records[-1].evidence is evidence
-
-
-# --------------------------------------------------------------------------
-# Own-transmit holds — the B6 golden (§3.5 step 1, INV-16)
-# --------------------------------------------------------------------------
-
-
-async def test_b6_golden_own_cw_hold_refuses_without_any_wire_read() -> None:
-    """A scripted RX answer during our own CW message must not admit a hazard.
-
-    B6, on the bench: the radio reported *receiving* while it was audibly
-    still sending a CAT-issued CW message. The hold is the evidence; the wire
-    is not consulted at all.
-    """
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX, RX)  # the radio would answer "receiving" if asked
-    authority = build_authority(clock, link, cw_hold_seconds=5.0)
-
-    async with authority.admit("send_cw_text", ("CQ CQ DE TEST",)):
-        pass
-    assert link.reads == []
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_band", (15,)):
-            pytest.fail("hazard write admitted during our own CW message")
-
-    refusal = excinfo.value
-    assert refusal.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
-    assert refusal.evidence.own_transmit_hold == "cw"
-    assert refusal.evidence.solicited is False
-    assert refusal.evidence.value is None
-    assert link.reads == []  # no wire read at all
-    assert authority.view().records[-1].evidence.own_transmit_hold == "cw"
-
-    clock.advance(6.0)  # the computed message duration elapses
-    async with authority.admit("set_band", (15,)):
-        pass
-    assert len(link.reads) == 1
-
-
-@pytest.mark.parametrize(
-    ("setup_method", "setup_args", "hold"),
-    [
-        ("set_ptt", (True,), "key"),
-        ("set_tuner_status", (2,), "tune"),
-    ],
-)
-async def test_own_transmit_holds_refuse_hazard_writes(
-    setup_method: str, setup_args: tuple[object, ...], hold: str
-) -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX, RX)
-    authority = build_authority(clock, link)
-
-    async with authority.admit(setup_method, setup_args):
-        pass
-    reads_after_setup = len(link.reads)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_antenna_1", ()):
-            pytest.fail("hazard write admitted while we hold our own transmission")
-    assert excinfo.value.evidence.own_transmit_hold == hold
-    assert len(link.reads) == reads_after_setup  # step 1 makes no wire read
-
-
-async def test_supervisor_lease_is_an_own_transmit_hold() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX)
-    authority = build_authority(clock, link, lease_active=True)
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_antenna_1", ()):
-            pytest.fail("hazard write admitted under an active managed lease")
-    assert excinfo.value.evidence.own_transmit_hold == "lease"
-    assert link.reads == []
-
-
-async def test_an_admitted_unkey_clears_the_key_hold() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    async with authority.admit("set_ptt", (False,)):
-        pass
-    async with authority.admit("set_antenna_1", ()):
-        pass
-    assert len(link.reads) == 1
 
 
 # --------------------------------------------------------------------------
@@ -696,30 +607,11 @@ async def test_unkey_is_never_refused_even_with_a_poisoned_table() -> None:
             pass
 
     assert link.reads == []  # not one of the three consulted the radio
-    assert authority.view().deadline_monotonic is None
     assert authority.view().records[-1].write_class is TxWriteClass.UNKEY
 
 
-async def test_unkey_clears_the_deadline_and_the_holds() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    assert authority.view().deadline_monotonic == pytest.approx(
-        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
-    )
-    assert authority.view().own_transmit_holds == ("key",)
-
-    async with authority.admit("set_ptt", (False,)):
-        pass
-    assert authority.view().deadline_monotonic is None
-    assert authority.view().own_transmit_holds == ()
-
-
 # --------------------------------------------------------------------------
-# KEYING and the one deadline (§3.6, INV-7)
+# KEYING
 # --------------------------------------------------------------------------
 
 
@@ -741,107 +633,7 @@ async def test_keying_is_admitted_on_every_truth_answer(
     assert record.evidence is None
 
 
-async def test_deadline_fires_once_and_is_disarmed() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    assert authority.poll(clock.now) == ()
-
-    clock.advance(BACKEND_MAX_KEY_DOWN_SECONDS - 0.001)
-    assert authority.poll(clock.now) == ()
-
-    clock.advance(0.002)
-    effects = authority.poll(clock.now)
-    assert len(effects) == 1
-    assert effects[0].reason == "backend_max_key_down"
-    assert authority.poll(clock.now) == ()
-    assert authority.view().deadline_monotonic is None
-    assert authority.view().own_transmit_holds == ()
-
-
-async def test_a_newer_key_rearms_the_deadline() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    clock.advance(60.0)
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    assert authority.view().deadline_monotonic == pytest.approx(
-        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
-    )
-
-
-async def test_admitted_tune_start_holds_and_arms_but_a_bypass_throw_does_not() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX, RX)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_tuner_status", (0,)):
-        pass
-    assert authority.view().deadline_monotonic is None
-    assert authority.view().own_transmit_holds == ()
-
-    async with authority.admit("set_tuner_status", (2,)):
-        pass
-    assert authority.view().own_transmit_holds == ("tune",)
-    assert authority.view().deadline_monotonic == pytest.approx(
-        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
-    )
-
-
-async def test_a_refused_tune_start_neither_holds_nor_arms() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(TX)
-    authority = build_authority(clock, link)
-
-    with pytest.raises(TxRefusal):
-        async with authority.admit("set_tuner_status", (2,)):
-            pytest.fail("tune start admitted while transmitting")
-    assert authority.view().deadline_monotonic is None
-    assert authority.view().own_transmit_holds == ()
-
-
-@pytest.mark.parametrize(
-    ("method", "args", "hold"),
-    [("set_ptt", (True,), "key"), ("set_tuner_status", (2,), "tune")],
-)
-async def test_own_transmit_holds_do_not_outlive_the_deadline_without_a_driver(
-    method: str, args: tuple[object, ...], hold: str
-) -> None:
-    """The bound the ADR already specifies, evaluated without a ``poll()`` caller.
-
-    Rows 7-11 arm no deadline driver, and a tune start has no natural unkey at
-    all, so a hold that only ``poll()`` could clear would refuse the whole
-    hazard set for the life of the connection. An expired hold does not go
-    blind: it falls through to the solicited read.
-    """
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX, RX)
-    authority = build_authority(clock, link)
-
-    async with authority.admit(method, args):
-        pass
-    assert authority.view().own_transmit_holds == (hold,)
-
-    clock.advance(BACKEND_MAX_KEY_DOWN_SECONDS + 1.0)
-    assert authority.view().own_transmit_holds == ()  # poll() was never called
-
-    reads_before = len(link.reads)
-    async with authority.admit("set_antenna_1", ()):
-        pass
-    assert len(link.reads) == reads_before + 1
-
-
-async def test_a_failed_key_write_still_records_its_hold() -> None:
+async def test_a_failed_key_write_still_records_its_decision() -> None:
     """A write that raised may already have reached the radio."""
     clock = Clock()
     link = FakeTransmitStateLink(clock)
@@ -851,18 +643,10 @@ async def test_a_failed_key_write_still_records_its_hold() -> None:
         async with authority.admit("set_ptt", (True,)):
             raise OSError("the transport died after the frame went out")
 
-    assert authority.view().own_transmit_holds == ("key",)
-    assert authority.view().deadline_monotonic is not None
-
-
-async def test_last_resort_unkey_is_the_only_other_injected_effect() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    unkey = FakeUnkey()
-    authority = build_authority(clock, link, unkey=unkey)
-
-    await authority.fire_last_resort_unkey()
-    assert unkey.calls == 1
+    record = authority.view().records[-1]
+    assert record.action == "sent"
+    assert record.method == "set_ptt"
+    assert record.write_class is TxWriteClass.KEYING
 
 
 # --------------------------------------------------------------------------
@@ -930,21 +714,6 @@ async def test_a_key_cannot_slip_between_a_hazard_read_and_its_write() -> None:
     assert order == ["hazard-relay-throw", "key-write"]
 
 
-async def test_a_receive_observation_never_clears_anything() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    authority.note_transmit_observation(False)
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_antenna_1", ()):
-            pytest.fail("a radio RX report cleared our own key hold")
-    assert excinfo.value.evidence.own_transmit_hold == "key"
-
-
 async def test_concurrent_hazard_admissions_do_not_share_a_read() -> None:
     clock = Clock()
     link = FakeTransmitStateLink(clock)
@@ -978,12 +747,11 @@ async def test_decision_ring_is_bounded() -> None:
     assert len(authority.view().records) == DECISION_LOG_CAPACITY
 
 
-async def test_view_reports_holds_and_deadline() -> None:
+async def test_view_reports_keying_decisions() -> None:
     clock = Clock()
     link = FakeTransmitStateLink(clock)
     authority = TransmitAuthority(
         read_transmit_state=link.read,
-        last_resort_unkey=FakeUnkey(),
         method_map=METHOD_MAP,
         clock=clock,
         bands=BANDS,
@@ -991,8 +759,6 @@ async def test_view_reports_holds_and_deadline() -> None:
     async with authority.admit("set_ptt", (True,)):
         pass
     view = authority.view()
-    assert view.own_transmit_holds == ("key",)
-    assert view.deadline_monotonic is not None
     assert view.records[-1].method == "set_ptt"
 
 
@@ -1065,7 +831,7 @@ async def test_keyword_key_down_is_never_read_as_an_unkey() -> None:
 
     Before this fix the predicate read ``kwargs["value"]``; the Icom body
     declares ``on``, so a keyword key-down resolved to ``None``, classified
-    PTT_OFF and was short-circuited past the gate built to arm the watchdog.
+    PTT_OFF and was short-circuited past the gate.
     No signature is supplied here on purpose — even with nothing to resolve
     from, the engine must fail towards the key, never towards the unkey.
     """
@@ -1077,11 +843,9 @@ async def test_keyword_key_down_is_never_read_as_an_unkey() -> None:
         assert admission.family is TxFamily.PTT_ON
         assert admission.write_class is TxWriteClass.KEYING
 
-    view = authority.view()
-    assert view.own_transmit_holds == ("key",)
-    assert view.deadline_monotonic == pytest.approx(
-        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
-    )
+    record = authority.view().records[-1]
+    assert record.method == "set_ptt"
+    assert record.write_class is TxWriteClass.KEYING
 
 
 @pytest.mark.parametrize(
@@ -1152,18 +916,6 @@ async def test_an_unresolvable_keyword_argument_fails_closed_and_is_loud(
     assert any("could not resolve" in record.getMessage() for record in caplog.records)
 
 
-async def test_an_unresolvable_tuner_argument_still_holds_the_tune() -> None:
-    """``set_tuner_status`` with nothing to resolve holds as if a tune started."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_tuner_status", (), {"value": 2}):
-        pass
-    assert authority.view().own_transmit_holds == ("tune",)
-
-
 @pytest.mark.parametrize("spelling", ["positional", "keyword", "unresolvable"])
 async def test_the_unkey_is_still_never_refused_in_any_spelling(
     spelling: str,
@@ -1201,24 +953,6 @@ async def test_the_unkey_is_still_never_refused_in_any_spelling(
         assert admission.write_class is TxWriteClass.UNKEY
 
 
-async def test_a_keyword_unkey_clears_the_deadline_and_the_holds() -> None:
-    """The UNKEY branch's whole effect, reached by the keyword spelling."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    assert authority.view().own_transmit_holds == ("key",)
-
-    async with authority.admit(
-        "set_ptt", (), {"on": False}, target=SignatureMirror.set_ptt
-    ):
-        pass
-    assert authority.view().deadline_monotonic is None
-    assert authority.view().own_transmit_holds == ()
-
-
 def test_predicates_resolve_the_argument_by_signature_not_by_guess() -> None:
     """Predicate-level twin of the admission pins, including the sentinel."""
     keyed = TxArgumentContext(
@@ -1250,40 +984,3 @@ def test_predicates_resolve_the_argument_by_signature_not_by_guess() -> None:
     assert short_circuit_family("set_ptt", blind) is TxFamily.PTT_ON
     assert short_circuit_family("set_powerstat", blind) is TxFamily.POWER_ON
     assert short_circuit_family("stop_cw_text", blind) is TxFamily.CW_STOP
-
-
-async def test_an_unresolvable_unkey_keeps_the_hold_it_could_not_read() -> None:
-    """The price of the fail-closed path, pinned so the comment cannot drift.
-
-    An unreadable de-key is admitted (never refused) but is not *believed*: it
-    takes the KEYING branch, so the live hold and deadline survive and a second
-    hold stacks, and hazard writes stay refused for the key-down bound. That is
-    the documented cost of :data:`UNRESOLVED_ARGUMENT`, and it is the direction
-    worth being expensive in.
-    """
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(RX)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    async with authority.admit("set_ptt", (), {"on": False}) as admission:
-        assert admission.write_class is TxWriteClass.KEYING  # admitted, not refused
-
-    view = authority.view()
-    assert view.own_transmit_holds == ("key", "key")
-    assert view.deadline_monotonic == pytest.approx(
-        clock.now + BACKEND_MAX_KEY_DOWN_SECONDS
-    )
-
-    with pytest.raises(TxRefusal) as refusal:
-        async with authority.admit("set_antenna_1", ()):
-            pass  # pragma: no cover - the admission refuses first
-    assert refusal.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
-    assert refusal.value.evidence.own_transmit_hold == "key"
-    assert link.reads == []  # refused on our own hold, with no wire read at all
-
-    clock.advance(BACKEND_MAX_KEY_DOWN_SECONDS + 0.1)
-    async with authority.admit("set_antenna_1", ()):
-        pass  # the hold expires on the key-down bound; it is not permanent
