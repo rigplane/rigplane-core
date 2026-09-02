@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import replace
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
@@ -991,3 +992,63 @@ class TestFetchInitialState:
         assert radio._initial_state_fetched is True
         assert call_count > 0
         assert sleep.await_count == call_count
+
+    @pytest.mark.asyncio
+    async def test_summary_log_names_sends_not_ok(self, radio, caplog) -> None:
+        """MOR-2224: send_civ is called with wait_response=False, so the sweep
+        never learns whether the radio replied — the summary must say what
+        was measured (queries sent), not the unchecked word "ok"."""
+        queries = build_state_queries(radio._profile)
+        with patch(
+            "rigplane.runtime.radio_initial_state.asyncio.sleep", new=AsyncMock()
+        ):
+            with caplog.at_level(
+                logging.INFO, logger="rigplane.runtime.radio_initial_state"
+            ):
+                await radio._fetch_initial_state()
+
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.getMessage().startswith("initial state fetch sent")
+        ]
+        assert len(summary_records) == 1
+        message = summary_records[0].getMessage()
+        assert "ok" not in message.split()
+        assert (
+            message == f"initial state fetch sent {len(queries)}/{len(queries)} queries"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_failure_logs_the_failing_query_and_continues(
+        self, radio, caplog
+    ) -> None:
+        radio._profile = resolve_radio_profile(model="IC-7300")
+        queries = build_state_queries(radio._profile)
+        failing = queries[0]
+
+        call_count = 0
+
+        async def flaky_send(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("transient error")
+
+        radio.send_civ = flaky_send
+        with patch(
+            "rigplane.runtime.radio_initial_state.asyncio.sleep", new=AsyncMock()
+        ):
+            with caplog.at_level(
+                logging.DEBUG, logger="rigplane.runtime.radio_initial_state"
+            ):
+                await radio._fetch_initial_state()
+
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert len(debug_records) == 1
+        message = debug_records[0].getMessage()
+        assert f"command=0x{failing.command:02X}" in message
+        assert "RuntimeError" in message
+        # the sweep continues past the failure: every query is still attempted
+        assert call_count == len(queries)
+        assert radio._initial_state_fetched is True

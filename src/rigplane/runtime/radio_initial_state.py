@@ -55,7 +55,7 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
             len(queries),
             gap * 1000,
         )
-        ok = 0
+        sent = 0
         for query in queries:
             try:
                 if query.receiver is not None:
@@ -74,14 +74,21 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
                         data=query.data,
                         wait_response=False,
                     )
-                ok += 1
-            except Exception:
-                pass  # non-fatal; regular polling will retry
+                sent += 1
+            except Exception as exc:
+                # non-fatal; regular polling will retry
+                logger.debug(
+                    "initial state query failed: command=0x%02X sub=%s data=%s (%s)",
+                    query.command,
+                    "None" if query.sub is None else f"0x{query.sub:02X}",
+                    query.data.hex(),
+                    type(exc).__name__,
+                )
             await asyncio.sleep(gap)
 
         logger.info(
-            "initial state fetch done (%d/%d ok)",
-            ok,
+            "initial state fetch sent %d/%d queries",
+            sent,
             len(queries),
         )
     except Exception:
