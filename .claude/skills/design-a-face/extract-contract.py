@@ -249,32 +249,78 @@ _GATE_LIVE_MULTI = re.compile(r"\A\s*if \((!\w+(?: \|\| !\w+)+)\) return undefin
 _GATE_LIVE_SINGLE = re.compile(r"\A\s*if \((![a-zA-Z]+)\) return undefined;")
 
 
+def _later_return_undefined(stripped: str, after: int) -> str | None:
+    """The first `if (...) return undefined;` appearing strictly after
+    index `after`, or None.
+
+    A top guard matching one of the STATIC patterns answers Phase 1's "first
+    question for any block" only if it is the ONLY guard. `deriveTxAux` is
+    the counter-example that motivated this: a recognised `!hasCap(caps,
+    'tx')` guard at the top, and a second `if (!hasEvidence) return
+    undefined;` later, where `hasEvidence` is itself computed from live
+    `state?.*` values — exactly the "half static, half live" shape
+    `_classify_gate`'s own docstring assigns to `not-derivable`, missed
+    because nothing looked past the first match. Called only from the
+    static-pattern branches below: `scattered` and `not-derivable` already
+    read past the top guard by construction, so a later guard there is not
+    news."""
+    m = re.search(r"if \([^)]*\) return undefined;", stripped[after:])
+    return m.group(0) if m else None
+
+
 def _classify_gate(body: str) -> tuple[str, str]:
     """(classification, detail) for one group's `derive*` body.
 
     Three classifications, matching Phase 1's own "first question for any
     block": `static` — a single, legible condition read purely from `caps`,
-    at the top of the function. `scattered` — the only top-of-function
-    guard is a generic `!caps`, and the real decision (an array length, an
-    OR of several capability flags computed further down) is further into
-    the body; read the function. `not-derivable` — the guard reads a LIVE
-    object (runtime state, a TX/audio/scope snapshot) or an accumulated
-    "was this ever reported" check, neither of which static source can
-    answer; this also covers a guard that is HALF a static capability test
-    and half a live check (its detail says which half is which)."""
+    at the top of the function, AND the only early-return guard in the body.
+    `scattered` — the only top-of-function guard is a generic `!caps`, and
+    the real decision (an array length, an OR of several capability flags
+    computed further down) is further into the body; read the function.
+    `not-derivable` — the guard reads a LIVE object (runtime state, a
+    TX/audio/scope snapshot) or an accumulated "was this ever reported"
+    check, neither of which static source can answer; this also covers a
+    guard that is HALF a static capability test and half a live check (its
+    detail says which half is which) — including a static top guard
+    followed by an unrelated later guard, since a function that returns
+    early twice is not "a single, legible condition" no matter how clean
+    the first return looks alone."""
     stripped = body.lstrip("\n")
 
     m = _GATE_HASCAP.match(stripped)
     if m:
+        later = _later_return_undefined(stripped, m.end())
+        if later:
+            return "not-derivable", (
+                f"!hasCap(caps, '{m.group(1)}') at the top looks static, "
+                f"but the body has a later guard too — `{later}` — so the "
+                "top guard alone is not the real gate; read the function"
+            )
         return "static", f"!hasCap(caps, '{m.group(1)}')"
 
     m = _GATE_OR_HASCAP.match(stripped)
     if m:
-        return "static", f"!hasCap(caps, '{m.group(2)}') && !hasCap(caps, '{m.group(4)}')"
+        detail = f"!hasCap(caps, '{m.group(2)}') && !hasCap(caps, '{m.group(4)}')"
+        later = _later_return_undefined(stripped, m.end())
+        if later:
+            return "not-derivable", (
+                f"{detail} at the top looks static, but the body has a "
+                f"later guard too — `{later}` — so the top guard alone is "
+                "not the real gate; read the function"
+            )
+        return "static", detail
 
     m = _GATE_NUMERIC.match(stripped)
     if m:
         ident, field, _default, limit = m.groups()
+        later = _later_return_undefined(stripped, m.end())
+        if later:
+            return "not-derivable", (
+                f"{ident} <= {limit} (where {ident} = caps?.{field}) at the "
+                f"top looks static, but the body has a later guard too — "
+                f"`{later}` — so the top guard alone is not the real gate; "
+                "read the function"
+            )
         return "static", f"{ident} <= {limit}, where {ident} = caps?.{field}"
 
     m = _GATE_HALF.match(stripped)
