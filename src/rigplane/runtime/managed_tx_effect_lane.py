@@ -55,10 +55,6 @@ class _Claim:
     isolation: tuple[asyncio.Task[None], ...] = ()
 
 
-async def _ignore_poison(_: int) -> None:
-    return None
-
-
 class ManagedTxEffectLane:
     """Claim, prioritize, and normalize managed actuator attempts."""
 
@@ -71,7 +67,7 @@ class ManagedTxEffectLane:
     ) -> None:
         self._actuator = actuator
         self._clock = clock or time.monotonic
-        self._poison_generation = poison_generation or _ignore_poison
+        self._poison_generation = poison_generation
         self._lock = asyncio.Lock()
         self._on_lane = asyncio.Lock()
         self._claims: dict[_ClaimKey, _Claim] = {}
@@ -197,6 +193,7 @@ class ManagedTxEffectLane:
         async with self._lock:
             if claim.result.done():
                 return
+            isolation_pending = any(not task.done() for task in claim.isolation)
             claim.started = True
             claim.provider = asyncio.create_task(
                 self._actuator.actuate(claim.token, claim.operation)
@@ -226,9 +223,12 @@ class ManagedTxEffectLane:
             )
             return
         if result is ActuationResult.ACCEPTED and claim.isolation:
-            if isolation_error := await self._await_isolation(
+            isolation_error = await self._await_isolation(
                 claim.isolation, claim.deadline
-            ):
+            )
+            if isolation_error is None and isolation_pending:
+                isolation_error = "release preceded ON isolation"
+            if isolation_error:
                 result = ActuationResult.UNCERTAIN
                 await self._finish(claim, _Outcome(result, isolation_error))
                 return
@@ -253,7 +253,7 @@ class ManagedTxEffectLane:
                 return
             self._claims.pop((claim.token, claim.operation), None)
             if poison:
-                isolation = self._isolate_locked(claim.token.provider_generation)
+                isolation = self._isolate_locked(claim)
         if isolation is not None:
             await self._await_isolation((isolation,), claim.deadline)
         async with self._lock:
@@ -291,16 +291,34 @@ class ManagedTxEffectLane:
         )
         claim.result.set_result(_Outcome(result, after if claim.started else before))
         if claim.started and claim.operation in _ON_OPERATIONS:
-            return self._isolate_locked(claim.token.provider_generation)
+            return self._isolate_locked(claim)
         return None
 
-    def _isolate_locked(self, provider_generation: int) -> asyncio.Task[None]:
-        if self._isolation is not None and self._isolation[0] == provider_generation:
+    def _isolate_locked(self, claim: _Claim) -> asyncio.Task[None]:
+        provider_generation = claim.token.provider_generation
+        if (
+            self._poison_generation is not None
+            and self._isolation is not None
+            and self._isolation[0] == provider_generation
+        ):
             return self._isolation[1]
-        task = asyncio.ensure_future(self._poison_generation(provider_generation))
+        previous = None if self._isolation is None else self._isolation[1]
+        task = asyncio.create_task(self._isolate_provider(claim, previous))
         task.add_done_callback(self._harvest)
         self._isolation = (provider_generation, task)
         return task
+
+    async def _isolate_provider(
+        self, claim: _Claim, previous: asyncio.Task[None] | None
+    ) -> None:
+        if self._poison_generation is not None:
+            await self._poison_generation(claim.token.provider_generation)
+        else:
+            assert claim.provider is not None
+            pending: list[asyncio.Future[Any]] = [asyncio.shield(claim.provider)]
+            if previous is not None:
+                pending.append(asyncio.shield(previous))
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _await_isolation(
         self, tasks: tuple[asyncio.Task[None], ...], deadline: float

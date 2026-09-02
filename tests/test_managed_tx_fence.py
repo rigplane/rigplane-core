@@ -125,3 +125,48 @@ def test_another_fence_cannot_accept_this_fences_token() -> None:
     assert another.is_current(token) is False
     with pytest.raises(ValueError, match="current token"):
         another.register(token, lambda: None)
+
+
+@pytest.mark.asyncio
+async def test_force_off_invalidates_at_call_and_keeps_each_batch_epoch() -> None:
+    fence = TxAbortFence()
+    old = fence.issue()
+    called: list[int] = []
+    fence.register(old, lambda: called.append(1))
+    first = fence.force_off()
+    try:
+        assert not fence.is_current(old)
+        assert called == []
+        second = await fence.force_off()
+        assert second.epoch == 2
+    finally:
+        result = await first
+    assert result.epoch == 1
+    assert called == [1]
+
+
+@pytest.mark.asyncio
+async def test_held_cleanup_does_not_starve_other_cancellations() -> None:
+    fence = TxAbortFence()
+    held, other, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def first() -> None:
+        held.set()
+        await release.wait()
+
+    async def second() -> None:
+        other.set()
+        raise RuntimeError("cleanup failed")
+
+    fence.register(fence.issue(), first)
+    fence.register(fence.issue(), second)
+    cleanup = asyncio.create_task(fence.force_off())
+    try:
+        await asyncio.wait_for(held.wait(), 1)
+        await asyncio.wait_for(other.wait(), 1)
+        assert not cleanup.done()
+    finally:
+        release.set()
+        result = await cleanup
+    assert len(result.failures) == 1
+    assert str(result.failures[0].error) == "cleanup failed"

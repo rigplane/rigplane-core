@@ -6,6 +6,8 @@ import pytest
 
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
+from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import (
     AbortFailed,
     AbortOperation,
@@ -80,14 +82,16 @@ class FakeConfigStore:
 FenceOrderLog = list[tuple[str, object] | tuple[str]]
 
 
-class FakeFence:
+class FakeFence(TxAbortFence):
     def __init__(self, log: FenceOrderLog | None = None) -> None:
+        super().__init__()
         self.calls = 0
         self.log: FenceOrderLog = log if log is not None else []
 
-    async def force_off(self) -> None:
+    def force_off(self):
         self.calls += 1
         self.log.append(("fence",))
+        return super().force_off()
 
 
 class FakeLane:
@@ -850,6 +854,38 @@ async def test_close_disposes_clean_scheduler_idempotently_without_effects() -> 
 
 
 @pytest.mark.asyncio
+async def test_cleanup_drain_reaps_done_task_before_queued_discard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    managed, _, _, _, fence, _ = authority()
+    await managed._stop_scheduler(managed._scheduler_task)
+    managed._pending_abort_cleanup.append(fence.force_off())
+    managed._start_abort_cleanup()
+    (cleanup,) = managed._abort_cleanup
+    gather = asyncio.gather
+
+    def bounded_gather(*tasks, **kwargs):
+        assert not tasks or not all(
+            isinstance(task, asyncio.Future) and task.done() for task in tasks
+        ), "drain awaited completed owned cleanup before queued discard"
+        return gather(*tasks, **kwargs)
+
+    async def drain() -> None:
+        assert cleanup.done() and cleanup in managed._abort_cleanup
+        with monkeypatch.context() as patch:
+            patch.setattr(asyncio, "gather", bounded_gather)
+            await managed._finish_abort_cleanup()
+        assert not managed._abort_cleanup
+
+    try:
+        await asyncio.create_task(drain())
+    finally:
+        cleanup.result()
+        managed._abort_cleanup.discard(cleanup)
+        await asyncio.wait_for(managed.close(), 1)
+
+
+@pytest.mark.asyncio
 async def test_ten_thousand_idempotent_commands_keep_one_scheduler() -> None:
     managed, _, _, _, _, lane = authority()
     scheduler = managed._scheduler_task
@@ -863,3 +899,330 @@ async def test_ten_thousand_idempotent_commands_keep_one_scheduler() -> None:
     assert not hasattr(managed, "observed_ptt")
     await managed.force_off()
     await managed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["force_off", "shutdown", "offline_shutdown"])
+async def test_real_fence_releases_before_cleanup_and_shutdown_waits_for_cleanup(
+    entry: str,
+) -> None:
+    fence = TxAbortFence()
+    old = fence.issue()
+    cleanup_started, finish_cleanup = asyncio.Event(), asyncio.Event()
+    off_written = asyncio.Event()
+    writes: list[bool] = []
+    retired: list[int] = []
+
+    class Actuator:
+        async def actuate(self, token, operation):
+            assert not fence.is_current(old)
+            state = (await managed.snapshot()).state
+            assert state.intent.kind is ManagedTxIntentKind.RX
+            if operation is ActuationOperation.FORCE_RECEIVE:
+                writes.append(False)
+                off_written.set()
+            return ActuationResult.ACCEPTED
+
+    async def cleanup() -> None:
+        assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
+        cleanup_started.set()
+        await finish_cleanup.wait()
+
+    fence.register(old, cleanup)
+    managed = ManagedTxAuthority(
+        ManagedTxEffectLane(Actuator()),
+        FakeConfigStore(None),
+        fence,
+        provider_generation=None if entry == "offline_shutdown" else 7,
+    )
+    task = asyncio.create_task(
+        managed.force_off()
+        if entry == "force_off"
+        else managed.shutdown(
+            retire_provider=lambda generation: _append_async(retired, generation),
+            termination=asyncio.Event(),
+        )
+    )
+    try:
+        if entry == "offline_shutdown":
+            while not (await managed.snapshot()).state.release_required:
+                await asyncio.sleep(0)
+            assert not fence.is_current(old)
+            await managed.provider_available(8)
+        await asyncio.wait_for(cleanup_started.wait(), 1)
+        await asyncio.wait_for(off_written.wait(), 1)
+        assert writes == [False]
+        if entry == "force_off":
+            assert (
+                await asyncio.wait_for(asyncio.shield(task), 1)
+                is ManagedTxOutcome.ACCEPTED
+            )
+            assert not (await managed.snapshot()).state.release_required
+        else:
+            assert not task.done() and retired == []
+    finally:
+        finish_cleanup.set()
+        if entry == "force_off" and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await managed.force_off()
+        if (await managed.snapshot()).provider_generation is None:
+            await managed.provider_available(8)
+        if not task.cancelled():
+            await task
+        await managed.close()
+    assert retired == (
+        [] if entry == "force_off" else [8 if entry == "offline_shutdown" else 7]
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_termination_cancels_owned_cleanup_without_waiting_for_gate() -> (
+    None
+):
+    fence = TxAbortFence()
+    started, stopped, never, termination = (asyncio.Event() for _ in range(4))
+
+    async def cleanup() -> None:
+        started.set()
+        try:
+            await never.wait()
+        finally:
+            stopped.set()
+
+    fence.register(fence.issue(), cleanup)
+    managed = ManagedTxAuthority(
+        FakeLane(), FakeConfigStore(None), fence, provider_generation=None
+    )
+    task = asyncio.create_task(
+        managed.shutdown(
+            retire_provider=lambda _: asyncio.sleep(0), termination=termination
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        termination.set()
+        assert (
+            await asyncio.wait_for(asyncio.shield(task), 1) is ShutdownResult.TERMINATED
+        )
+        assert stopped.is_set() and not never.is_set()
+        assert (await managed.snapshot()).state.release_required
+    finally:
+        termination.set()
+        never.set()
+        await asyncio.wait_for(task, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_isolation", [False, True])
+async def test_late_physical_on_retains_debt_until_a_fresh_off(
+    with_isolation: bool,
+) -> None:
+    clock, wakeup = FakeClock(), FakeWakeup()
+    started, allow_late_on, late_on, off_written = (asyncio.Event() for _ in range(4))
+    writes: list[tuple[str, EffectToken]] = []
+
+    class Actuator:
+        async def actuate(self, token, operation):
+            if operation is ActuationOperation.TRANSMIT_ON:
+                started.set()
+                try:
+                    await allow_late_on.wait()
+                except asyncio.CancelledError:
+                    await allow_late_on.wait()
+                writes.append(("ON", token))
+                late_on.set()
+            elif operation is ActuationOperation.FORCE_RECEIVE:
+                writes.append(("OFF", token))
+                off_written.set()
+            return ActuationResult.ACCEPTED
+
+    async def isolate(generation: int) -> None:
+        await late_on.wait()
+
+    lane = ManagedTxEffectLane(
+        Actuator(), clock=clock, poison_generation=isolate if with_isolation else None
+    )
+    managed = ManagedTxAuthority(
+        lane,
+        FakeConfigStore(None),
+        TxAbortFence(),
+        provider_generation=7,
+        clock=clock,
+        wakeup=wakeup,
+        retry_delay_seconds=2,
+    )
+    await managed._stop_scheduler(managed._scheduler_task)
+    on = asyncio.create_task(managed.transmit_on())
+    off = None
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        off = asyncio.create_task(managed.force_off())
+        await asyncio.wait_for(off_written.wait(), 1)
+        allow_late_on.set()
+        await asyncio.wait_for(late_on.wait(), 1)
+        await asyncio.wait_for(asyncio.gather(on, off), 1)
+        state = (await managed.snapshot()).state
+        assert state.release_required
+        assert state.last_actuation.result is ActuationResult.UNCERTAIN
+        assert [value for value, _ in writes] == ["OFF", "ON"]
+        assert managed._retry_due is not None
+        clock.now = managed._retry_due
+        await managed._process_due()
+        assert [value for value, _ in writes] == ["OFF", "ON", "OFF"]
+        assert writes[0][1] != writes[-1][1]
+        assert not (await managed.snapshot()).state.release_required
+    finally:
+        allow_late_on.set()
+        await asyncio.wait_for(asyncio.gather(on, *(() if off is None else (off,))), 1)
+        state = (await managed.snapshot()).state
+        if state.release_required or state.intent.kind is not ManagedTxIntentKind.RX:
+            await asyncio.wait_for(managed.force_off(), 1)
+        await asyncio.wait_for(managed.close(), 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["termination", "late_on", "late_on_isolated"])
+async def test_startup_wait_failure_leaves_no_pending_tasks(
+    scenario: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = asyncio.all_tasks()
+    captured: dict[str, object] = {}
+    wait_for = asyncio.wait_for
+    task = None
+
+    async def fail_startup(awaitable, timeout):
+        if asyncio.current_task() is task and not captured:
+            frame = task.get_coro().cr_frame
+            assert frame is not None
+            assert awaitable.cr_code is asyncio.Event.wait.__code__
+            assert awaitable.cr_frame.f_locals["self"] is frame.f_locals["started"]
+            captured.update(frame.f_locals)
+            awaitable.close()
+            raise TimeoutError("injected startup wait failure")
+        return await wait_for(awaitable, timeout)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(asyncio, "wait_for", fail_startup)
+        task = asyncio.create_task(
+            test_shutdown_termination_cancels_owned_cleanup_without_waiting_for_gate()
+            if scenario == "termination"
+            else test_late_physical_on_retains_debt_until_a_fresh_off(
+                scenario == "late_on_isolated"
+            )
+        )
+        try:
+            done, _ = await asyncio.wait((task,), timeout=0.2)
+            assert captured, "startup fault did not reach the intended Event.wait"
+            assert task in done, "startup failure stranded scenario teardown"
+            with pytest.raises(TimeoutError, match="injected startup wait failure"):
+                task.result()
+            assert not (asyncio.all_tasks() - before), "startup failure leaked tasks"
+        finally:
+            for value in captured.values():
+                if isinstance(value, asyncio.Event):
+                    value.set()
+            pending = asyncio.all_tasks() - before
+            for pending_task in pending:
+                pending_task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_repeated_force_off_and_retry_leave_cleanup_owned_until_close() -> None:
+    fence, clock = TxAbortFence(), FakeClock()
+    cleanup_started, finish_cleanup = asyncio.Event(), asyncio.Event()
+    calls: list[EffectToken] = []
+
+    class Actuator:
+        async def actuate(self, token, operation):
+            if operation is ActuationOperation.FORCE_RECEIVE:
+                calls.append(token)
+                if len(calls) == 1:
+                    return ActuationResult.REJECTED
+            return ActuationResult.ACCEPTED
+
+    async def cleanup() -> None:
+        cleanup_started.set()
+        await finish_cleanup.wait()
+
+    fence.register(fence.issue(), cleanup)
+    managed = ManagedTxAuthority(
+        ManagedTxEffectLane(Actuator(), clock=clock),
+        FakeConfigStore(None),
+        fence,
+        provider_generation=7,
+        clock=clock,
+    )
+    await managed._stop_scheduler(managed._scheduler_task)
+    try:
+        await asyncio.wait_for(managed.force_off(), 1)
+        await asyncio.wait_for(cleanup_started.wait(), 1)
+        assert managed._retry_due is not None
+        clock.now = managed._retry_due
+        await managed._process_due()
+        assert not (await managed.snapshot()).state.release_required
+        await managed.force_off()
+        assert len(set(calls)) == 3 and fence.epoch == 2
+        closing = asyncio.create_task(managed.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+    finally:
+        finish_cleanup.set()
+        await managed.close()
+    await closing
+
+
+@pytest.mark.asyncio
+async def test_ptt_up_does_not_cancel_unrelated_registered_work() -> None:
+    fence = TxAbortFence()
+    token = fence.issue()
+    cancelled: list[bool] = []
+    fence.register(token, lambda: cancelled.append(True))
+    managed = ManagedTxAuthority(
+        FakeLane(), FakeConfigStore(None), fence, provider_generation=7
+    )
+    await managed.ptt_down("owner")
+    assert await managed.ptt_up("other") is ManagedTxOutcome.REJECTED
+    assert await managed.ptt_up("owner") is ManagedTxOutcome.ACCEPTED
+    assert fence.is_current(token) and cancelled == []
+    await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_can_be_rejoined_until_cleanup_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fence = TxAbortFence()
+    finish_cleanup, closing = asyncio.Event(), asyncio.Event()
+    fence.register(fence.issue(), finish_cleanup.wait)
+    managed = ManagedTxAuthority(
+        FakeLane(), FakeConfigStore(None), fence, provider_generation=7
+    )
+    await managed.force_off()
+    finish = managed._finish_abort_cleanup
+
+    async def tracked_finish() -> None:
+        closing.set()
+        await finish()
+
+    monkeypatch.setattr(managed, "_finish_abort_cleanup", tracked_finish)
+    first = asyncio.create_task(managed.close())
+    second = None
+    try:
+        await asyncio.wait_for(closing.wait(), 1)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        with pytest.raises(RuntimeError, match="closed"):
+            await managed.ptt_down("owner")
+        second = asyncio.create_task(managed.close())
+        await asyncio.sleep(0)
+        assert not second.done()
+    finally:
+        finish_cleanup.set()
+        await asyncio.gather(first, return_exceptions=True)
+        if second is not None:
+            await second
+    assert managed._closed and not managed._closing
