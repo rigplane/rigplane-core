@@ -274,10 +274,9 @@ jobs:
     env:
       UV_PYTHON: '3.11'
       PYTHONDONTWRITEBYTECODE: '1'
-      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/icom-stop-cw-red-pycache
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
       - run: uv sync --all-extras
       - name: Run focused RED proof
-        run: uv run pytest tests/test_radio_extended.py::TestCW::test_stop_cw_nak -q --tb=short
+        run: PYTHONPYCACHEPREFIX="$RUNNER_TEMP/icom-stop-cw-red-pycache" uv run pytest tests/test_radio_extended.py::TestCW::test_stop_cw_nak -q --tb=short
