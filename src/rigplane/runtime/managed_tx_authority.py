@@ -413,8 +413,6 @@ class ManagedTxAuthority:
         while True:
             deadline = self._clock() + self._attempt_timeout
             events: list[ManagedTxEvent] = []
-            if full_force:
-                await self._abort_fence.force_off()
             for effect in effects:
                 if full_force:
                     aborts = [
@@ -433,6 +431,8 @@ class ManagedTxAuthority:
                     events.extend(
                         item for item in await asyncio.gather(*aborts) if item
                     )
+            if full_force:
+                await self._abort_fence.force_off()
             followup = None
             async with self._lock:
                 if self._terminated or (
