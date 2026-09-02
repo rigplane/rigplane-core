@@ -531,8 +531,10 @@ def _decl_body(text: str, name: str) -> str | None:
     brace-balancing from the parameter list. None if no such declaration
     exists. Matches the FIRST occurrence only; two same-named `function`
     declarations in one file would make this ambiguous, and none exist in
-    either source file this is run against today (checked by grepping
-    `function \\w+` and diffing against its own `sort | uniq -c`)."""
+    any of the three source files this is run against today —
+    `panel-commands.ts`, `panel-adapters.ts`, `SemanticRadioSurfaces.svelte`
+    (checked by grepping `function \\w+` in each and diffing against its own
+    `sort | uniq -c`)."""
     m = re.search(rf"\bfunction {re.escape(name)}\s*\(", text)
     if m is None:
         return None
@@ -652,13 +654,19 @@ class _SendSideIndex:
     ) -> set[str]:
         """Radio intents reachable from `text` (panel-commands.ts territory):
         literal `dispatchRadioIntent({name: '<x>', ...})` calls, plus one
-        level of recursion per bare call to a `function` declared anywhere in
-        `panel-commands.ts` that `text` names — the `tuningAccumulator()` /
-        `activateReceiver()` shape, where the literal dispatch sits in a
-        helper rather than in the exposed handler itself. A `name:` that is
-        not a string literal (`onModInputChange`'s `modInputCommand(dataMode)`
-        — the one dynamic call site, also called out by this repo's own
-        `waived.ts`) is reported via `unresolved`, never guessed."""
+        level of recursion per reference — call OR bare identifier — to a
+        `function` declared anywhere in `panel-commands.ts` that `text`
+        names. Two distinct shapes need this: `tuningAccumulator()` /
+        `activateReceiver()`, a CALL where the literal dispatch sits in a
+        helper rather than in the exposed handler; and `onVoxToggle:
+        toggleVox` (`makeTxHandlers`/`makeVoxHandlers`), a BARE reference —
+        the property's whole value text IS the function's name, no `(`
+        anywhere in it, so a call-only pattern silently drops it and the
+        surface that binds it prints as though it dispatches nothing. A
+        `name:` that is not a string literal (`onModInputChange`'s
+        `modInputCommand(dataMode)` — the one dynamic call site inside THIS
+        file; `adapters/mod-input-auto.svelte.ts` has a second, out of this
+        function's reach) is reported via `unresolved`, never guessed."""
         intents: set[str] = set()
         if depth > 12:
             unresolved.append("resolution depth exceeded 12 — likely a reference cycle")
@@ -675,7 +683,7 @@ class _SendSideIndex:
                 + _value_span(text, i) + "`"
             )
         for name, body in self.panel_fns.items():
-            if re.search(rf"\b{re.escape(name)}\s*\(", text) is None:
+            if re.search(rf"\b{re.escape(name)}\b", text) is None:
                 continue
             key = ("panel", name)
             if key in visited:
@@ -873,8 +881,13 @@ def send_side(svelte_text: str, panel_text: str, panel_adapters_text: str) -> li
             continue
         props = _parse_tag_props(tag_text)
         callback_props = {k: v for k, v in props.items() if re.match(r"^on[A-Z]", k)}
+        # `pending*` (e.g. `pendingFrequencyHz`) and `*Feedback` (e.g.
+        # `breakInDelayFeedback`, `cwKeyer`'s prop for
+        # `getBreakInDelayControlFeedback()`) — a naming check over the
+        # props this specific surface's mount tag actually receives, not a
+        # hand-typed per-surface list.
         pending_props = sorted(
-            k for k in props if re.match(r"^pending[A-Z]", k) or k.endswith("ControlFeedback")
+            k for k in props if re.match(r"^pending[A-Za-z]*$", k) or k.endswith("Feedback")
         )
         callbacks = []
         for prop, value in sorted(callback_props.items()):
@@ -968,14 +981,13 @@ def validate_checklist(path: Path) -> list[str]:
 
 
 def _run_selftest() -> int:
-    """Proves the checklist validator discriminates, per the MOR-2217 owner
-    ruling that an acceptance check must be shown failing, not just passing:
-    a good proposal (every expected key present with a non-empty value)
-    must exit 0; the same proposal with one FIELD line and one INTENT line
-    struck must exit non-zero and name both. Both runs go through this
-    script's own `argv` entry point via `subprocess` — not a direct call
-    into `validate_checklist` — so a flag wired to nothing still fails this,
-    the same discipline `measure-reference.py`'s `selftest` uses."""
+    """Proves the checklist validator discriminates: a good proposal (every
+    expected key present with a non-empty value) must exit 0; the same
+    proposal with one FIELD line and one INTENT line struck must exit
+    non-zero and name both. Both runs go through this script's own `argv`
+    entry point via `subprocess` — not a direct call into
+    `validate_checklist` — so a flag wired to nothing still fails this, the
+    same discipline `measure-reference.py`'s `selftest` uses."""
     import tempfile
 
     field_keys, intent_keys = _checklist_keys()
@@ -1189,11 +1201,15 @@ def main() -> None:
         "is display-only; where the trace cannot resolve part of the chain, "
         "the reason is printed instead of a guess.\n"
     )
+    pending_by_surface = {row["surface"]: row.get("pendingProps", []) for row in data["sendSide"]}
     for row in data["sendSide"]:
         print(f"### `{row['surface']}` (`{row['tag']}`)\n")
         if row.get("notDerivable"):
             print(f"**not derivable from source**: {row['notDerivable']}\n")
             continue
+        if row["pendingProps"]:
+            print("Pending/confirmation props on its mount tag: "
+                  + ", ".join(f"`{p}`" for p in row["pendingProps"]) + "\n")
         if not row["callbacks"]:
             print("_display only — no callback props on its mount tag._\n")
             continue
@@ -1210,20 +1226,25 @@ def main() -> None:
 
     print("## Feedback adoption per surface\n")
     print(
-        "`pressedOf` (`semantic/pressed-of.ts`) reflects the last CONFIRMED "
+        "`pressedOf` (`semantic/pressed-of.ts`) reflects the last OBSERVED "
         "radio reading; `control-feedback-presentation` "
         "(`primitives/control-feedback/`) projects the in-flight command "
-        "phase. Neither is universal — check per surface, not per intent.\n"
+        "phase; a `pending*`/`*Feedback` prop on the mount tag (from the "
+        "'Send side' section above) is the pending/confirmation contract "
+        "where neither of those is adopted. None of the three is "
+        "universal — check per surface, not per intent.\n"
     )
     fa = data["feedbackAdoption"]
     pressed_n = sum(1 for v in fa.values() if v["pressedOf"])
     cfp_n = sum(1 for v in fa.values() if v["controlFeedbackPresentation"])
     button_n = sum(1 for v in fa.values() if v["rendersButton"])
     shared_button_n = sum(1 for v in fa.values() if v["sharedButtonClass"])
+    pending_n = sum(1 for p in pending_by_surface.values() if p)
     print(f"`pressedOf`: {pressed_n} of {len(fa)}. "
           f"`control-feedback-presentation`: {cfp_n} of {len(fa)}. "
           f"Shared `v2-control-button` class: {shared_button_n} of {button_n} "
-          "surfaces that render a `<button>`.\n")
+          f"surfaces that render a `<button>`. Pending/confirmation props: "
+          f"{pending_n} of {len(fa)}.\n")
     for name, info in sorted(fa.items()):
         marks = []
         if info["pressedOf"]:
@@ -1232,6 +1253,9 @@ def main() -> None:
             marks.append("control-feedback-presentation")
         if info["rendersButton"]:
             marks.append("shared button class" if info["sharedButtonClass"] else "own button markup")
+        pending = pending_by_surface.get(name, [])
+        if pending:
+            marks.append("pending props: " + ", ".join(f"`{p}`" for p in pending))
         print(f"- `{name}` — " + (", ".join(marks) if marks else "none of the above"))
     print()
 

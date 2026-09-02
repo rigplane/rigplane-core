@@ -65,8 +65,10 @@ The state vocabulary is the part designs get wrong, and there are **three
 mechanisms**. Do not generalise any of them.
 
 **The one that decides whether a block exists at all.** `RadioViewModel`
-declares its fourteen groups optional — `readonly meters?:`, `readonly dsp?:`.
-An absent group is not the same fact as every field in it being unsupported: a
+declares some of its groups optional — `readonly meters?:`, `readonly dsp?:`.
+Run the extractor; its "How absence is expressed" section states exactly how
+many, freshly, every time. An absent group is not the same fact as every field
+in it being unsupported: a
 present group can hold nothing but unsupported fields, and a design reaching
 into an absent one throws. Each group's docstring names its own gate. This is
 the first question for any block, before any question about its contents.
@@ -82,10 +84,11 @@ are the only way to tell them apart.
 `reason` union of `not-observed`, `stale`, `unsupported`, `contradiction`.
 It is the only one. An earlier version of the extractor took the first
 occurrence of that union and printed it as the model-wide vocabulary; the
-resulting document told a designer to distinguish four states that twelve of
-fourteen surfaces cannot express — `RxTxSurface` and `VfoSurface` are the two
-that read `txTarget`. Run the extractor and read what it reports per type;
-never carry a vocabulary across from one field to the rest.
+resulting document told a designer to distinguish four states that most
+surfaces cannot express — `RxTxSurface` and `VfoSurface` are the only two
+that read `txTarget` (`grep -rl txTarget frontend/src/semantic/*Surface.svelte`
+names exactly these two). Run the extractor and read what it reports per
+type; never carry a vocabulary across from one field to the rest.
 
 If a design needs *never asked* distinguished from *answer aged out* on a field
 that does not carry the reason union, that is a request for a state the model
@@ -327,12 +330,12 @@ remember:**
    `RADIO_INTENT_NAMES` (the extractor's "Send side" section) — and the
    feedback mechanism for it — or is marked `display only`.
 
-A proposal failing either is a plan, not an implementable one. `./extract-
-contract.py --checklist` emits a skeleton with one line per field and per
-intent to fill in; `--checklist --validate <file>` fails, naming what is
-missing, when a filled-in proposal drops one (`./extract-contract.py
---selftest` proves this discriminates: a complete proposal exits 0, one
-with a field or an intent struck exits non-zero).
+A proposal failing either is a plan, not an implementable one.
+`./extract-contract.py --checklist` emits a skeleton with one line per field
+and per intent to fill in; `--checklist --validate <file>` fails, naming
+what is missing, when a filled-in proposal drops one (`./extract-contract.py
+--selftest` proves this discriminates: a complete proposal exits 0, one with
+a field or an intent struck exits non-zero).
 
 ## Phase 4 — place, by the reasoning rather than by the picture
 
@@ -372,12 +375,14 @@ document and weeks in the tree:
   decay constant. Changing the look means changing a shared component that every
   skin renders.
 
-The worked example: `components-v2/meters/LinearSMeter.svelte` reads eighteen
-`--v2-*` variables, so its colours are theme-restylable — but `SEG_COUNT = 20`
-and its bar geometry are computed in code, and its peak decay is a constant. A
-design language declaring a meter track width and segment gap cannot move any of
-it. That is why segmentline's meter tokens could not have worked even with a
-functioning value channel: there was nothing on the other end reading them.
+The worked example: `components-v2/meters/LinearSMeter.svelte` reads `--v2-*`
+variables — run `./extract-contract.py` and check its "What already draws each
+surface" section for the current count — so its colours are theme-restylable,
+but its segment count and bar geometry are computed in code, and its peak
+decay is a constant. A design language declaring a meter track width and
+segment gap cannot move any of it. That is why segmentline's meter tokens
+could not have worked even with a functioning value channel: there was
+nothing on the other end reading them.
 
 Check the tier per element **before** proposing its appearance. An element in
 tier three whose proposed look differs from what the component draws is not a
