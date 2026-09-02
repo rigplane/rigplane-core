@@ -66,7 +66,8 @@ RigPlane capabilities through an external `rigctld` process.
 | USB Serial | ✅ | ✅ |
 
 The Web UI automatically hides the DIGI-SEL control when connected to an IC-7300
-(capability-based UI guards). VFO labels switch to "VFO A" / "VFO B" automatically.
+(capability-based UI guards), while the documented IP+ control is supported and
+visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 
 ### Yaesu FTX-1
 
