@@ -28,6 +28,7 @@ from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime import _state_queries as state_queries_module
 from rigplane.runtime._state_queries import build_state_queries
 from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
+from rigplane.runtime._state_queries import wire_parts_for_query
 from rigplane.runtime.radio_initial_state import fetch_initial_state
 from rigplane.web.radio_poller import RadioPoller
 from _acquisition_query_helpers import (
@@ -256,13 +257,20 @@ class _RecordingCivRadio:
         self.options.append((wait_response, priority, wait_dispatch))
 
 
-async def _send_through_initial(query: AcquisitionQueryCase) -> _FrameParts:
+async def _send_through_initial(
+    query: AcquisitionQueryCase,
+    *,
+    scope_receiver: int = 0,
+) -> _FrameParts:
     radio = _RecordingCivRadio()
     radio._profile = SimpleNamespace(has_lan=True)
     radio.capabilities = set()
     radio._INITIAL_STATE_GAP_SERIAL = 0.0
     radio._INITIAL_STATE_GAP_LAN = 0.0
     radio._initial_state_fetched = False
+    radio.radio_state = SimpleNamespace(
+        scope_controls=SimpleNamespace(receiver=scope_receiver),
+    )
     with patch.object(
         state_queries_module, "build_state_queries", return_value=[query]
     ):
@@ -297,8 +305,15 @@ async def _send_through_web(
     )
 
 
-async def _send_through_rigctld(query: AcquisitionQueryCase) -> _FrameParts:
+async def _send_through_rigctld(
+    query: AcquisitionQueryCase,
+    *,
+    scope_receiver: int = 0,
+) -> _FrameParts:
     radio = _RecordingCivRadio()
+    radio.radio_state = SimpleNamespace(
+        scope_controls=SimpleNamespace(receiver=scope_receiver),
+    )
     server = object.__new__(RigctldServer)
     server._radio = radio
     await RigctldServer._send_one_state_query(server, query)  # noqa: SLF001
@@ -385,6 +400,30 @@ async def test_web_scope_receiver_rewrite_preserves_data_suffix() -> None:
         0x14,
         b"\x01\xaa\xbb",
     )
+
+
+@pytest.mark.asyncio
+async def test_all_senders_substitute_live_scope_receiver_on_0x27() -> None:
+    query = acquisition_query(0x27, sub=0x14, data=b"\x00\xaa\xbb")
+    expected = (0x27, 0x14, b"\x01\xaa\xbb")
+    assert await _send_through_initial(query, scope_receiver=1) == expected
+    assert await _send_through_web(query, scope_receiver=1) == expected
+    assert await _send_through_rigctld(query, scope_receiver=1) == expected
+
+
+def test_wire_parts_for_query_cmd29_wraps_receiver_sub_and_data() -> None:
+    query = acquisition_query(0x1A, sub=0x05, data=b"\x01\x91", receiver=1)
+    assert wire_parts_for_query(query, 0) == (0x29, None, b"\x01\x1a\x05\x01\x91")
+
+
+def test_wire_parts_for_query_substitutes_live_scope_receiver_on_0x27() -> None:
+    query = acquisition_query(0x27, sub=0x14, data=b"\x00\xaa\xbb")
+    assert wire_parts_for_query(query, 1) == (0x27, 0x14, b"\x01\xaa\xbb")
+
+
+def test_wire_parts_for_query_passes_through_non_scope_selector_query() -> None:
+    query = acquisition_query(0x1A, sub=0x05, data=b"\x01\x91")
+    assert wire_parts_for_query(query, 1) == (0x1A, 0x05, b"\x01\x91")
 
 
 @pytest.mark.asyncio
@@ -847,6 +886,9 @@ class TestFetchInitialState:
             profile = resolve_radio_profile(model="IC-7610")
             r._profile = profile
             r._initial_state_fetched = False
+            r._radio_state = SimpleNamespace(
+                scope_controls=SimpleNamespace(receiver=0),
+            )
             r.send_civ = AsyncMock()
             return r
 
@@ -867,6 +909,7 @@ class TestFetchInitialState:
                 expected_calls.append(
                     call(
                         0x29,
+                        sub=None,
                         data=inner + query.data,
                         wait_response=False,
                     )
