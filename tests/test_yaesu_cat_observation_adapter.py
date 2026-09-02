@@ -1609,8 +1609,16 @@ async def test_repeater_shift_emits_both_receivers_directly(code: int) -> None:
 @pytest.mark.parametrize(
     ("side_effect", "expected_path", "expected_value"),
     [
-        ([ValueError("MAIN failed"), 2], "receiver.sub.operator_controls.repeater_shift", 2),
-        ([1, ValueError("SUB failed")], "receiver.main.operator_controls.repeater_shift", 1),
+        (
+            [ValueError("MAIN failed"), 2],
+            "receiver.sub.operator_controls.repeater_shift",
+            2,
+        ),
+        (
+            [1, ValueError("SUB failed")],
+            "receiver.main.operator_controls.repeater_shift",
+            1,
+        ),
     ],
 )
 @pytest.mark.asyncio
