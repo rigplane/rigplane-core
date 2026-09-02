@@ -1,0 +1,22 @@
+diff --git a/src/rigplane/backends/rigctld_client/transport.py b/src/rigplane/backends/rigctld_client/transport.py
+index fbd87890..a7afad5f 100644
+--- a/src/rigplane/backends/rigctld_client/transport.py
++++ b/src/rigplane/backends/rigctld_client/transport.py
+@@ -115,8 +115,6 @@ class RigctldTransport:
+         self._reader = None
+         if had_connection and not self._connection_retired:
+             self._connection_retired = True
+-            if writer is not None:
+-                writer.close()
+             advance = self._provider_generation_advance
+             if advance is not None:
+                 try:
+@@ -125,6 +123,8 @@ class RigctldTransport:
+                     _LOGGER.exception(
+                         "external rigctld provider generation callback failed"
+                     )
++            if writer is not None:
++                writer.close()
+ 
+     async def _close_connection(
+         self,

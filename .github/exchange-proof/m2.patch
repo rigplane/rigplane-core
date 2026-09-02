@@ -1,0 +1,23 @@
+diff --git a/src/rigplane/backends/rigctld_client/transport.py b/src/rigplane/backends/rigctld_client/transport.py
+index fbd87890..638c97c1 100644
+--- a/src/rigplane/backends/rigctld_client/transport.py
++++ b/src/rigplane/backends/rigctld_client/transport.py
+@@ -132,8 +132,7 @@ class RigctldTransport:
+         writer: asyncio.StreamWriter | None,
+     ) -> None:
+         async with self._lifecycle_lock:
+-            if self._reader is reader and self._writer is writer:
+-                await self._close_locked()
++            await self._close_locked()
+ 
+     @asynccontextmanager
+     async def _exchange(
+@@ -145,7 +144,7 @@ class RigctldTransport:
+                 yield reader, writer
+             except asyncio.CancelledError:
+                 # No await: quarantine precedes release of transaction ownership.
+-                self._retire_connection(reader, writer)
++                self._retire_connection(self._reader, self._writer)
+                 raise
+ 
+     async def _drain_stale(
