@@ -278,6 +278,15 @@ async def test_cancelled_exchange_quarantines_before_close_barrier(
         tasks.append(asyncio.create_task(finish))
         await asyncio.wait_for(stream.close_entered.wait(), 1)
         assert not tasks[-1].done()
+        tasks[-1].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[-1], 1)
+        assert transport._writer is stream and not transport.connected
+        stream.close_entered.clear()
+        finish = transport.connect() if operation == "query" else transport.close()
+        tasks.append(asyncio.create_task(finish))
+        await asyncio.wait_for(stream.close_entered.wait(), 1)
+        assert not tasks[-1].done()
         stream.close_release.set()
         await asyncio.wait_for(tasks[-1], 1)
         assert stream.closes == 1 and notifications == [(False, 1)]
@@ -323,8 +332,7 @@ async def test_old_exchange_interruption_does_not_retire_replacement(
     transport = await _connect_exchange(monkeypatch, old, new)
     notifications = []
     transport.bind_provider_generation(
-        advance=lambda: notifications.append(transport.connected)
-        or len(notifications)
+        advance=lambda: notifications.append(transport.connected) or len(notifications)
     )
     tasks = [asyncio.create_task(transport.query("f", response_lines=1))]
     try:
