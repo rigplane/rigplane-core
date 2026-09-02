@@ -52,7 +52,7 @@ export function isValidLanguageId(id: string): boolean {
 export interface StateFeedbackTokens { readonly idle: string; readonly active: string; readonly tuning: string }
 
 export interface MeterDisplay {
-  readonly segmentCount: number; // integer >= 2
+  readonly segmentCount: number; // integer >= 1
   readonly segmentGapPx: number; // >= 0
 }
 

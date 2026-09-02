@@ -26,7 +26,13 @@ export interface StudiolineMeter {
    * segmented-rect renderer (`LinearSMeter`). `segmentGapPx` is the same
    * `tokens.meters.segmentGap` used above, parsed to a number; a single
    * segment has no internal gap to speak of, and the token is `'0px'` here,
-   * so the two facts agree.
+   * so the two facts agree. `LinearSMeter.svelte`'s own `activeColor(i)` used
+   * to divide by `SEG_COUNT - 1` to place a segment on its color ramp, which
+   * degenerated to `0/0` at `segmentCount: 1` — that consumer-side bug is
+   * fixed in `LinearSMeter.svelte` itself (the single segment now samples
+   * the ramp by the reading's own fill fraction instead of by segment
+   * index, so it keeps reporting strong readings in the ramp's hot colors);
+   * this file needs no change for it.
    */
   readonly segmentCount: number;
   readonly segmentGapPx: number;
