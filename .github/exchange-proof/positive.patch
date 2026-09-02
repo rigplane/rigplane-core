@@ -1,0 +1,22 @@
+diff --git a/src/rigplane/backends/rigctld_client/transport.py b/src/rigplane/backends/rigctld_client/transport.py
+index f0c1f19a..f1de3e02 100644
+--- a/src/rigplane/backends/rigctld_client/transport.py
++++ b/src/rigplane/backends/rigctld_client/transport.py
+@@ -109,7 +109,7 @@ class RigctldTransport:
+         writer: asyncio.StreamWriter | None,
+     ) -> None:
+         """Quarantine only the captured connection, retaining its close barrier."""
+-        if self._reader is not reader or self._writer is not writer:
++        if not (self._reader is reader and self._writer is writer):
+             return
+         had_connection = reader is not None or writer is not None
+         self._reader = None
+@@ -132,7 +132,7 @@ class RigctldTransport:
+         writer: asyncio.StreamWriter | None,
+     ) -> None:
+         async with self._lifecycle_lock:
+-            if self._reader is reader and self._writer is writer:
++            if not (self._reader is not reader or self._writer is not writer):
+                 await self._close_locked()
+ 
+     @asynccontextmanager
