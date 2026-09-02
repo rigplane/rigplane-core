@@ -318,6 +318,22 @@ First, three lists:
 3. **Unshown.** Fields that exist, that the reference has no element for.
    Usually the larger list, and usually where the real work is.
 
+**Two mechanical checks the Backed list must pass, not two more things to
+remember:**
+
+1. Every drawn element names the field backing it, from the contract
+   `extract-contract.py` emitted — or is marked `unavailable` with a reason.
+2. Every drawn control names the intent it dispatches, from
+   `RADIO_INTENT_NAMES` (the extractor's "Send side" section) — and the
+   feedback mechanism for it — or is marked `display only`.
+
+A proposal failing either is a plan, not an implementable one. `./extract-
+contract.py --checklist` emits a skeleton with one line per field and per
+intent to fill in; `--checklist --validate <file>` fails, naming what is
+missing, when a filled-in proposal drops one (`./extract-contract.py
+--selftest` proves this discriminates: a complete proposal exits 0, one
+with a field or an intent struck exits non-zero).
+
 ## Phase 4 — place, by the reasoning rather than by the picture
 
 Group the backed fields into functional blocks — things operated together,
@@ -401,107 +417,6 @@ horizon or argue explicitly that it should not vary.
 states. Stale, unsupported, contradictory and disconnected are usually drawn
 nowhere in it — which means everything proposed for them is new work rather than
 adaptation, and must be labelled that way when it lands.
-
-## Reference — how this is actually wired
-
-Established by reading and measuring, not by reasoning from the architecture
-document. Start here rather than rediscovering it; verify anything you are about
-to depend on, because the tree moves.
-
-### The path a value takes
-
-`rigs/<radio>.toml` declares features and per-field acquisition policies →
-capabilities → `semantic/radio-view-model.ts` (fourteen **optional** groups) →
-`lib/runtime/adapters/radio-view-model-adapter.ts` → the fourteen surfaces in
-`semantic/` → shared components in `components-v2/` and `primitives/`.
-
-A field existing in the view model does not mean the radio reports it, and a
-group being present does not mean its fields are supported. Both gates are
-separate and both are checkable.
-
-**The two fourteens are different sets, not the same fourteen counted
-twice.** A complete mapping exists between them (checked against every
-surface component's own header): ten surfaces map to one optional group of
-the matching name (`txAux`, `meters`, `rxAudio`, `dsp`, `rfFrontEnd`, `band`,
-`antenna`, `cwKeyer`, `scopeControls`, `scopeDisplay`). Two surfaces each own
-*two* groups — `FilterSurface` renders both `modeFilter` and
-`filterPassband`, `RitXitScanSurface` renders both `ritXit` and `scan`, each
-surface's own header says so — which is where the other four groups go
-(10 + 2×2 = 14). The remaining two surfaces, `vfo` and `rxTx`, are backed by
-required top-level `RadioViewModel` fields that carry no `?` — `vfos`,
-`activeReceiver`, `split`, `dualWatch` for `vfo`; `txTarget`, `txPermit` for
-`rxTx` — not by any of the fourteen optional groups at all (10 + 2 + 2 = 14
-surfaces). The shared count of fourteen invites a one-to-one reading; there
-is a correspondence, but it is not that one.
-
-### The path an appearance takes
-
-A design language supplies three things and no markup: tokens, renderers, a
-stylesheet.
-
-- **Custom properties** carry values CSS must *consume* — a length, a colour.
-  Each family's root rule declares `--dl-<family>-*`; `tokens.ts` wraps them in
-  a local `tone()` helper with fallbacks.
-- **Data attributes** carry values CSS only *selects on*. `annotate()` in
-  `semantic/design-language-renderers.ts` copies **top-level primitives only**,
-  skips `text`, and `String()`s the value. Nested objects and arrays are
-  dropped with no `else` branch, so anything nested reaches no attribute in any
-  state.
-- The surfaces spread the result: `{...<slot>?.attributes ?? {}}` in
-  `RxTxSurface`, `MetersSurface`, `VfoSurface`.
-
-An attribute is a string. A length sent that way arrives as `"7"` and no rule
-can make a width of it.
-
-### Where the layout decides
-
-`presentation/layouts/contract.ts` holds `SEMANTIC_SURFACE_NAMES` — fourteen,
-closed. A manifest declares zones; `zoned()` in
-`components-v2/wiring/SemanticRadioSurfaces.svelte` mounts a surface into its
-zone. Nine surfaces in the dual composition pass `allowBare={false}` and vanish
-when undeclared; the rest render bare. `zoneShowsSurface`
-(`presentation/workspace/resolution.ts`) is fail-open.
-
-`presentation/workspace/contract.ts` gates what an operator can pick:
-`WORKSPACE_DESIGN_LANGUAGE_IDS` and `WORKSPACE_ZONE_IDS`. A language absent from
-that list cannot activate — `pickId` falls back — regardless of what any
-manifest says.
-
-### The instruments, and how far a design language reaches them
-
-The shared components read the **theme** vocabulary, not the design language's.
-Measured: `components-v2/meters/LinearSMeter.svelte` has eighteen `var(--v2-*)`
-and zero `var(--dl-*)`; `primitives/frequency/FrequencyDisplayInteractive.svelte`
-has fourteen and zero.
-
-`FrequencyDisplayInteractive` emits one element per glyph — `.digit`, `.sep`,
-inside `.freq` — and mounts only when `onTuneFrequency` is supplied. The readout
-slot `studioline.css` targets is `.vfo-freq` on `VfoSurface`, which is a
-different element from `.freq`.
-
-### The shared control layer, and how far adoption got
-
-It exists and works: `components-v2/controls/control-button.css` and
-`button-tokens.css`, `primitives/control-feedback/control-feedback-presentation.ts`,
-and helpers in `semantic/` — `pressed-of.ts`, `disabled-reason.ts`,
-`format-level.ts`, `pbt-presentation-continuity.ts`.
-
-Adoption by the fourteen v3 surfaces, measured: `pressedOf` **7 of 14**,
-`control-feedback-presentation` **1 of 14**, the shared button class **0 of 12**
-that render a `<button>`. `semantic/controls/` is named by an eslint boundary
-rule and does not exist.
-
-`pressed-of.ts`'s own header records four independent re-derivations of one
-rule, one of them unpinned. Assume a control behaviour you need already exists
-somewhere and look for it before proposing that a design introduce it.
-
-### Import boundaries
-
-`semantic/` may not import skins. It already imports from
-`components-v2/controls`, `panels` and `meters`, so reaching the shared control
-layer is allowed. `presentation/` may not import transport, stores or the
-runtime barrel. Rules are in `frontend/eslint.config.js`; `lint-imports` covers
-the Python side.
 
 ## Ask, and here is exactly when
 
@@ -602,9 +517,27 @@ reaches no attribute in any state.
 symbol opened. A count with no adjacent command is a claim, not a measurement,
 and the grammar of a ratio makes it read as though it had already been counted.
 
+**Import boundaries are enforced, not advisory.** `semantic/` may not import
+skins or runtime internals (`FORBIDDEN_SEMANTIC_IMPORTS`,
+`frontend/eslint.config.js`); `presentation/` may not import transport,
+stores, the runtime barrel, or `lib/runtime/commands/*`
+(`FORBIDDEN_PRESENTATION_IMPORTS`, same file). A proposal that would need
+either is a change to a lower layer, not a design-language change. Run
+`./extract-contract.py` for the current send-side and feedback-adoption
+facts these rules used to be typed out from by hand — they rot the same way
+any hand-maintained count does.
+
 ## Verifying a proposal is buildable
 
-Before handing it over, for each backed element:
+Before handing it over, run the two mechanical checks Phase 3 states:
+
+1. Every drawn element names its backing field from the extractor's output,
+   or is marked `unavailable` with a reason.
+2. Every drawn control names the intent it dispatches and the feedback
+   mechanism for it, or is marked `display only`.
+
+A proposal failing either is a plan, not an implementable one. Then, for
+each backed element:
 
 - Name the surface it mounts on and confirm that surface is in
   `SEMANTIC_SURFACE_NAMES`.
@@ -627,10 +560,8 @@ Before handing it over, for each backed element:
   and the one the first three don't cover.** `WORKSPACE_DESIGN_LANGUAGE_IDS` in
   `presentation/workspace/contract.ts` is the closed set an operator can pick;
   a language absent from it cannot activate in production regardless of what
-  the other three checks say — `pickId` falls back to `studioline` instead
-  (already stated once, in the "Where the layout decides" reference section
-  above; a checklist reader does not go there, which is why it is repeated
-  here).
+  the other three checks say — `pickId` falls back to `studioline` instead.
 
-A proposal that fails any of the four is a plan, not an implementable one,
-and should say which it fails.
+A proposal that fails any of these four mount checks, or either of the two
+mechanical checks above, is a plan, not an implementable one, and should say
+which it fails.
