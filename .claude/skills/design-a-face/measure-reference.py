@@ -40,10 +40,40 @@ except ImportError as exc:  # pragma: no cover - environment, not logic
 
 VARIANCE = [False]
 
+# `--by colour` profiles distance from grey (chroma). Most of any panel is
+# its own ground, so the MEDIAN chroma over a measured box is, in practice,
+# the ground's own chroma. If the ground itself is tinted (this reference's
+# amber LCD ground, not merely an accent on a neutral ground), that median is
+# already high, and "distance from grey" cannot separate "ground" from
+# "signal" — the run(s) it reports profile the tint, not a meaning.
+#
+# Chosen by measuring both sides on real fixtures, not by guessing a round
+# number first: median chroma on `/var/tmp/ftx1-reference.png` (a genuinely
+# single-hue amber panel, `ink` vs `colour` corrcoef -0.63) is 0.463; on two
+# fixtures where a real accent sits on a near-neutral ground — this file's
+# own `selftest` fixture (white ground, one red patch) and a constructed
+# dark-grey-ground-plus-red-accent image — it is 0.0 and 0.02 respectively.
+# 0.15 sits roughly a third of the way from the reference's value toward
+# zero, and 7-20x above either genuine-accent fixture: a real accent against
+# a neutral ground will not trip it, and any ground that is even moderately
+# tinted will.
+DEGENERATE_CHROMA = 0.15
+
 
 def die(msg: str) -> NoReturn:
     print(f"measure-reference: {msg}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def colour_degeneracy(colour: np.ndarray) -> float | None:
+    """The median chroma of a `--by colour` field, if it exceeds
+    DEGENERATE_CHROMA, else None.
+
+    A separate, callable check (rather than inlined where it is used) so
+    `selftest` can assert on it directly instead of scraping printed text.
+    """
+    median = float(np.median(colour))
+    return median if median > DEGENERATE_CHROMA else None
 
 
 def load(path: str, crop: str | None, by: str = "ink") -> np.ndarray:
@@ -55,6 +85,8 @@ def load(path: str, crop: str | None, by: str = "ink") -> np.ndarray:
     colour is reserved for one meaning — a transmit group, an alarm — this
     locates that meaning without being told where to look, and separates a
     dimmed indicator (same hue, less ink) from a differently-coloured one.
+    Warns (see DEGENERATE_CHROMA) when the measured box's ground itself is
+    tinted enough that this separation cannot hold.
     """
     try:
         img = Image.open(path).convert("RGB")
@@ -72,7 +104,17 @@ def load(path: str, crop: str | None, by: str = "ink") -> np.ndarray:
     if rgb.size == 0:
         die("empty image after crop")
     if by == "colour":
-        return rgb.max(axis=2) - rgb.min(axis=2)
+        colour = rgb.max(axis=2) - rgb.min(axis=2)
+        degenerate = colour_degeneracy(colour)
+        if degenerate is not None:
+            print(
+                f"measure-reference: WARNING — median chroma {degenerate:.2f} "
+                f"exceeds {DEGENERATE_CHROMA}. The GROUND itself reads as "
+                "coloured here, not only an accent: --by colour cannot tell "
+                "'ground' from 'signal' on this image, and any run reported "
+                "below profiles the ground, not a colour-coded meaning."
+            )
+        return colour
     return 1.0 - rgb.mean(axis=2)
 
 
@@ -218,7 +260,23 @@ def selftest() -> None:
         print(f"  flat image yields {len(control)} run(s) — expected 0"
               f"   {'ok' if not control else 'MISMATCH'}")
 
-        if not ok or not c_ok or not crop_ok or control:
+        # DEGENERATE_CHROMA must discriminate both ways: silent on a genuine
+        # accent (this fixture — white ground, one red patch), firing on a
+        # ground that is itself tinted with no accent at all.
+        silent_flag = colour_degeneracy(load(path, None, "colour"))
+        silent_ok = silent_flag is None
+        print(f"  degenerate-colour check, genuine accent: flagged={silent_flag}"
+              f" — expected None   {'ok' if silent_ok else 'MISMATCH'}")
+
+        tinted = np.full((40, 40, 3), (196, 156, 64), dtype=np.uint8)
+        tinted_path = str(Path(tmp) / "tinted.png")
+        Image.fromarray(tinted).save(tinted_path)
+        fires_flag = colour_degeneracy(load(tinted_path, None, "colour"))
+        fires_ok = fires_flag is not None
+        print(f"  degenerate-colour check, tinted ground: flagged={fires_flag}"
+              f" — expected a value   {'ok' if fires_ok else 'MISMATCH'}")
+
+        if not ok or not c_ok or not crop_ok or control or not silent_ok or not fires_ok:
             die("selftest failed — do not trust measurements from this build")
     print("\nselftest passed. The low-contrast band is the load-bearing case:")
     print("it is what makes a broken threshold visible, and an all-ideal")

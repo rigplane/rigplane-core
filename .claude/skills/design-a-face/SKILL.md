@@ -186,6 +186,20 @@ separates a *dimmed* indicator, which is the same hue with less ink, from a
 *differently coloured* one: the ink profile confuses them, the colour profile
 does not.
 
+**That assumes the ground itself is neutral, and warns when it is not.**
+"Distance from grey" only isolates an accent if the ground has none to
+compete with. On a reference whose ground itself carries a tint — this one's
+amber LCD, not a neutral panel with one coloured accent — most of the box
+already reads as "coloured", and `--by colour` profiles the ground, not any
+meaning: `bands /var/tmp/ftx1-reference.png --by colour` gives one run at
+~94%, and colour-distance there is *anti-correlated* with ink
+(`corrcoef ≈ -0.63` — the mode sits over the LEAST-inked pixels, i.e. the
+ground). The script now detects this itself: `load()` prints a WARNING when
+the measured box's median chroma exceeds a threshold (`DEGENERATE_CHROMA` in
+`measure-reference.py`), proven in `selftest` to fire on a tinted ground and
+stay silent on a genuine accent against a neutral one. Do not report a
+`--by colour` run as a colour-based finding if that warning fired.
+
 **`--smooth <window>` flattens a regular texture before profiling.** Design
 references often carry one — scanlines on an LCD imitation, a dot grid —
 whose period is small and whose amplitude rivals a real element's. Untreated,
