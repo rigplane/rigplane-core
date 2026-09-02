@@ -244,6 +244,18 @@ def selftest() -> None:
             tag = " (low contrast)" if w == faint else ""
             print(f"  planted {w}{tag}   recovered {h}   {'ok' if m else 'MISMATCH'}")
 
+        # --smooth must still find the same three bands, only wider (a
+        # moving-average window blurs a boundary, it does not move its
+        # centre). A mutation that zeroes the smoothing branch collapses
+        # every run to none here; the smooth=0 checks above never exercise
+        # `smooth > 1` at all, so they cannot catch that.
+        smoothed = runs(profile(load(path, None, "ink"), "rows", smooth=5), 4)
+        smooth_ok = len(smoothed) == len(want) and all(
+            gs <= ws and ge >= we for (gs, ge), (ws, we) in zip(smoothed, want)
+        )
+        print(f"  smooth=5 recovers {smoothed}, containing planted {want}"
+              f"   {'ok' if smooth_ok else 'MISMATCH'}")
+
         cruns = runs(profile(load(path, None, "colour"), "rows"), 4)
         c_ok = cruns == [(210, 240)]
         print(f"  colour profile finds {cruns} — expected [(210, 240)]"
@@ -276,7 +288,43 @@ def selftest() -> None:
         print(f"  degenerate-colour check, tinted ground: flagged={fires_flag}"
               f" — expected a value   {'ok' if fires_ok else 'MISMATCH'}")
 
-        if not ok or not c_ok or not crop_ok or control or not silent_ok or not fires_ok:
+        # --signal variation: a scanline ground that inks every row about
+        # equally (alternating level, period 2) so LEVEL can never separate
+        # a band from a gutter — every "high" stripe is only 1 row deep,
+        # below --min-run, so LEVEL finds nothing at all. Rows 80-120 carry
+        # a real band: a mean-preserving checkerboard, so its LEVEL is
+        # unchanged but its per-row spread is not. A mutation that makes the
+        # VARIANCE dispatch unconditionally compute the mean (ignoring
+        # VARIANCE[0]) makes `variation` collapse to the same "no runs" as
+        # `level` here, which this catches.
+        vH, vW = 200, 160
+        v_ink = np.zeros((vH, vW), dtype=np.float64)
+        for y in range(vH):
+            v_ink[y, :] = 0.55 if (y // 2) % 2 == 0 else 0.45
+        v_band = (80, 120)
+        v_cols = np.arange(vW)
+        for y in range(*v_band):
+            base = v_ink[y, 0]
+            v_ink[y, :] = np.clip(np.where((v_cols % 4) < 2, base + 0.12, base - 0.12), 0, 1)
+        v_gray = np.clip((1.0 - v_ink) * 255.0, 0, 255).astype(np.uint8)
+        v_path = str(Path(tmp) / "variation.png")
+        Image.fromarray(np.stack([v_gray] * 3, axis=-1)).save(v_path)
+
+        v_loaded = load(v_path, None, "ink")
+        VARIANCE[0] = False
+        level_runs = runs(profile(v_loaded, "rows"), 4)
+        level_ok = level_runs == []
+        VARIANCE[0] = True
+        variation_runs = runs(profile(v_loaded, "rows"), 4)
+        variation_ok = variation_runs == [v_band]
+        VARIANCE[0] = False
+        print(f"  --signal level on a scanline ground finds {level_runs} — "
+              f"expected []   {'ok' if level_ok else 'MISMATCH'}")
+        print(f"  --signal variation on the same ground finds {variation_runs} — "
+              f"expected [{v_band}]   {'ok' if variation_ok else 'MISMATCH'}")
+
+        if (not ok or not c_ok or not crop_ok or control or not silent_ok
+                or not fires_ok or not smooth_ok or not level_ok or not variation_ok):
             die("selftest failed — do not trust measurements from this build")
     print("\nselftest passed. The low-contrast band is the load-bearing case:")
     print("it is what makes a broken threshold visible, and an all-ideal")
