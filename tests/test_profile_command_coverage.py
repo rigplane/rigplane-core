@@ -74,6 +74,7 @@ import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
+from rigplane.backends.rigctld_client.radio import RigctldClientObservationPoller
 from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.command_map import CommandMap, ReverseLookupResult
 from rigplane.commands.command_spec import (
@@ -82,8 +83,10 @@ from rigplane.commands.command_spec import (
     CivCommandSpec,
 )
 from rigplane.core.radio_protocol import DualReceiverCapable
+from rigplane.core.command_dispatch import command_descriptors
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.runtime.radio import CoreRadio
+from rigplane.web.radio_poller import RadioPoller
 from support.command_builders import (
     PythonParseHealth,
     parse_python_paths as _parse_python_paths,
@@ -631,6 +634,38 @@ def _yaesu_executor_methods(class_node: ast.ClassDef) -> frozenset[str]:
     raise AssertionError("YaesuCatPoller._execute_command AST missing")
 
 
+def _has_neutral_intent_hook(class_node: ast.ClassDef, method_name: str) -> bool:
+    method = next(
+        (
+            node
+            for node in class_node.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == method_name
+        ),
+        None,
+    )
+    return method is not None and any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "execute_command_intent"
+        for node in ast.walk(method)
+    )
+
+
+def _neutral_intent_hooks(parse_health: PythonParseHealth) -> dict[str, bool]:
+    return {
+        "icom": _has_neutral_intent_hook(
+            _class_node(parse_health, RadioPoller), "_execute"
+        ),
+        "yaesu": _has_neutral_intent_hook(
+            _class_node(parse_health, YaesuCatPoller), "_execute_command"
+        ),
+        "rigctld": _has_neutral_intent_hook(
+            _class_node(parse_health, RigctldClientObservationPoller),
+            "_execute_command",
+        ),
+    }
+
+
 def _class_node(
     parse_health: PythonParseHealth,
     implementation: type[typing.Any],
@@ -840,10 +875,23 @@ def implementation_completeness_report(
     inbound_pairs = _civ_inbound_pairs(parse_health)
     yaesu_class = _class_node(parse_health, YaesuCatRadio)
     yaesu_routes = _cat_dispatch_routes(yaesu_class)
-    yaesu_executor_routes = _cat_dispatch_routes(
+    legacy_executor_routes = _cat_dispatch_routes(
         yaesu_class,
         _yaesu_executor_methods(_class_node(parse_health, YaesuCatPoller)),
     )
+    descriptor_executor_routes = (
+        _cat_dispatch_routes(
+            yaesu_class,
+            frozenset(item.method_name for item in command_descriptors().values()),
+        )
+        if _neutral_intent_hooks(parse_health)["yaesu"]
+        else {}
+    )
+    yaesu_executor_routes = {
+        name: legacy_executor_routes.get(name, frozenset())
+        | descriptor_executor_routes.get(name, frozenset())
+        for name in legacy_executor_routes.keys() | descriptor_executor_routes.keys()
+    }
     findings: list[_ImplementationFinding] = []
 
     for _model, config in sorted(configs.items()):
@@ -1199,16 +1247,21 @@ def test_declared_absent_marker_does_not_hide_existing_code_route(
     assert finding.reachability is _ExecutionReachability.UNKNOWN
 
 
-def test_real_yaesu_executor_exposes_missing_repeater_shift_route(
+def test_descriptor_route_reaches_real_yaesu_repeater_shift_executor(
     implementation_report: _ImplementationReport,
 ) -> None:
     finding = implementation_report.find("yaesu_ftx1", "command", "set_repeater_shift")
     assert finding.relation is _DeclarationRelation.IMPLEMENTED
-    assert finding.reachability is _ExecutionReachability.UNREACHABLE
-    assert not finding.fully_complete
-    assert finding.diagnostics == (
-        "yaesu_ftx1 command set_repeater_shift: backend execution route unreachable",
-    )
+    assert finding.reachability is _ExecutionReachability.REACHABLE
+    assert finding.fully_complete
+    assert finding.diagnostics == ()
+
+
+@pytest.mark.parametrize("provider", ("icom", "yaesu", "rigctld"))
+def test_every_selected_drain_has_the_generic_neutral_intent_hook(
+    implementation_report: _ImplementationReport, provider: str
+) -> None:
+    assert _neutral_intent_hooks(implementation_report.parse_health)[provider]
 
 
 def test_real_yaesu_executor_follows_indirect_attenuator_helper(

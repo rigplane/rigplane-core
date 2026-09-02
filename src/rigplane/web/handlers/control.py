@@ -17,7 +17,15 @@ from ...core.command_service import (
     _raw_int_level_from_param,
     command_intent_from_request,
 )
-from ...core.exceptions import CommandError
+from ...core.command_dispatch import (
+    CommandUnsupportedError,
+    command_descriptor,
+    command_descriptors,
+    enqueue_command_intent,
+    prepare_command_intent,
+)
+from ...core.exceptions import CommandError, CommandRejectedError
+from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.state_store import FreshnessState, StateStore
 from ...profiles import RadioProfile, resolve_radio_profile
@@ -119,7 +127,6 @@ from ..radio_poller import (  # noqa: TID251
     SetNbDepth,
     SetNbWidth,
     SetDashRatio,
-    SetRepeaterShift,
     SetRepeaterTone,
     SetRepeaterTsql,
     SetRxAntenna,
@@ -214,16 +221,7 @@ class _ControlCommandExecutor:
     handler: "ControlHandler"
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
-        params = dict(intent.params)
-        params.pop("_control_server", None)
-        result = await self.handler._enqueue_legacy_command(  # noqa: SLF001
-            intent.name,
-            params,
-            command_id=intent.id,
-            source=intent.source,
-            command_service=self.handler._command_service,  # noqa: SLF001
-        )
-        return CommandExecutionResult(details=result)
+        return await self.handler._execute_intent(intent)  # noqa: SLF001
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,7 +423,6 @@ class ControlHandler:
             "set_nb_depth",
             "set_nb_width",
             "set_dash_ratio",
-            "set_repeater_shift",
             "set_repeater_tone",
             "set_repeater_tsql",
             "set_rx_antenna",
@@ -482,7 +479,7 @@ class ControlHandler:
             # Issue #677 — CW auto-tune via FFT peak detection
             "cw_auto_tune",
         ]
-    )
+    ) | frozenset(command_descriptors())
 
     # Commands that can transmit or send arbitrary radio writes — rejected when read_only=True.
     # set_tuner_status value=2 (TUNING) is handled inline in _enqueue_read_only.
@@ -1252,7 +1249,17 @@ class ControlHandler:
             message = str(exc)
             if isinstance(exc, RadioNotReadyError):
                 error = "radio_not_ready"
-            elif "does not support" in message or "not supported" in message:
+            elif isinstance(exc, CommandUnsupportedError):
+                error = "unsupported_command"
+            elif isinstance(exc, CommandRejectedError):
+                error = "radio_nak"
+            elif isinstance(exc, (TimeoutError, RigplaneTimeoutError)):
+                error = "command_timeout"
+            elif isinstance(exc, CommandError):
+                error = "command_failed"
+            elif command_descriptor(name) is None and (
+                "does not support" in message or "not supported" in message
+            ):
                 error = "unsupported_command"
             else:
                 error = "command_failed"
@@ -1424,16 +1431,57 @@ class ControlHandler:
             power_max_watts = getattr(
                 getattr(self._radio, "profile", None), "max_watts", None
             )
-        intent = command_intent_from_request(
-            name,
-            intent_params,
-            source=source,
-            command_id=command_id,
-            session_id=self._session_id if source == "websocket" else None,
-            power_max_watts=power_max_watts,
-        )
+        descriptor = command_descriptor(name)
+        if descriptor is not None:
+            intent = prepare_command_intent(
+                self._radio,
+                name,
+                intent_params,
+                source=source,
+                command_id=command_id,
+                session_id=self._session_id if source == "websocket" else None,
+            )
+        else:
+            intent = command_intent_from_request(
+                name,
+                intent_params,
+                source=source,
+                command_id=command_id,
+                session_id=self._session_id if source == "websocket" else None,
+                power_max_watts=power_max_watts,
+            )
         result = await self._command_service.execute(intent)
         return dict(result.executor_result.details or {})
+
+    async def _execute_intent(self, intent: CommandIntent) -> CommandExecutionResult:
+        descriptor = command_descriptor(intent.name)
+        if descriptor is not None:
+            if self._server is None:
+                raise RuntimeError("no command queue available")
+            queue = self._server.command_queue
+            future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            enqueue_command_intent(queue, intent, future=future)
+            try:
+                await asyncio.wait_for(future, timeout=intent.timeout)
+            except asyncio.CancelledError:
+                if not future.done():
+                    future.cancel()
+                raise
+            finally:
+                if not future.done():
+                    future.cancel()
+            return CommandExecutionResult(details=descriptor.result(intent))
+
+        params = dict(intent.params)
+        params.pop("_control_server", None)
+        result = await self._enqueue_legacy_command(
+            intent.name,
+            params,
+            command_id=intent.id,
+            source=intent.source,
+            command_service=self._command_service,
+        )
+        return CommandExecutionResult(details=result)
 
     async def _enqueue_legacy_command(
         self,
@@ -2729,13 +2777,6 @@ class ControlHandler:
                 self._ensure_receiver_supported(rx)
                 q.put(SetTsqlFreq(freq, receiver=rx))
                 return {"freq": freq, "receiver": rx}
-            case "set_repeater_shift":
-                direction = int(params["direction"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("repeater_shift", "set_repeater_shift")
-                self._ensure_receiver_supported(rx)
-                q.put(SetRepeaterShift(direction, receiver=rx))
-                return {"direction": direction, "receiver": rx}
             case "set_ref_adjust":
                 value = int(params["value"])
                 q.put(SetRefAdjust(value))

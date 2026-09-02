@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
-from rigplane.core.state_pipeline_contracts import CommandSource
+from rigplane.core.state_pipeline_contracts import CommandIntent, CommandSource
 
 __all__ = [
     "Command",
@@ -98,7 +98,6 @@ __all__ = [
     "SetQuickDualWatch",
     "SetQuickSplit",
     "SetRefAdjust",
-    "SetRepeaterShift",
     "SetRepeaterTone",
     "SetRepeaterTsql",
     "SetRfGain",
@@ -679,12 +678,6 @@ class SetDashRatio:
 
 
 @dataclass(frozen=True, slots=True)
-class SetRepeaterShift:
-    direction: int
-    receiver: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class SetRepeaterTone:
     on: bool
     receiver: int = 0
@@ -850,8 +843,9 @@ class Speak:
     mode: int = 0
 
 
-Command = (
-    SetFreq
+Command: TypeAlias = (
+    CommandIntent
+    | SetFreq
     | SetMode
     | SendCiv
     | SetFilter

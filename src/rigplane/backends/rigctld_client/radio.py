@@ -11,11 +11,13 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
 from ...exceptions import TimeoutError as RadioTimeoutError
+from ...core.command_dispatch import execute_command_intent
 from ...core.radio_protocol import (
     PhysicalWriteReadbackResult,
     PhysicalWriteReadbackStatus,
 )
 from ...core.state_pipeline_contracts import (
+    CommandIntent,
     CommandSource,
     FieldPath,
     Observation,
@@ -319,6 +321,9 @@ class RigctldClientObservationPoller:
         return tuple(annotated)
 
     async def _execute_command(self, cmd: Any) -> None:
+        if isinstance(cmd, CommandIntent):
+            await execute_command_intent(self._radio, cmd)
+            return
         from ..._poller_types import (
             PttOff,
             PttOn,
