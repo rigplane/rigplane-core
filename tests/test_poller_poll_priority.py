@@ -130,7 +130,8 @@ async def test_state_query_sends_background_priority() -> None:
     assert radio.send_civ.await_count >= 1
     calls = [logical_civ_call(call) for call in radio.send_civ.await_args_list]
     assert any(receiver is not None for receiver, _, _, _ in calls)
-    assert any(command == 0x18 for _, command, _, _ in calls)
+    assert any(command == 0x1C and sub == 0x00 for _, command, sub, _ in calls)
+    assert all(command != 0x18 for _, command, _, _ in calls)
     for call in radio.send_civ.await_args_list:
         assert _priority_of(call) == Priority.BACKGROUND
         assert _wait_dispatch_of(call) is False
@@ -165,7 +166,8 @@ async def test_state_query_sends_fire_and_forget() -> None:
     assert radio.send_civ.await_count >= 1
     calls = [logical_civ_call(call) for call in radio.send_civ.await_args_list]
     assert any(receiver is not None for receiver, _, _, _ in calls)
-    assert any(command == 0x18 for _, command, _, _ in calls)
+    assert any(command == 0x1C and sub == 0x00 for _, command, sub, _ in calls)
+    assert all(command != 0x18 for _, command, _, _ in calls)
     for call in radio.send_civ.await_args_list:
         assert _priority_of(call) == Priority.BACKGROUND
         assert _wait_dispatch_of(call) is False

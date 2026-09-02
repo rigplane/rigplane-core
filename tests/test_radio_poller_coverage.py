@@ -2222,7 +2222,7 @@ async def test_relative_vfo_epoch_reset_discards_vfo_facts_but_not_ptt() -> None
 
 @pytest.mark.parametrize(
     ("model", "expected_seconds"),
-    (("IC-7300", 8.0), ("IC-705", 5.0)),
+    (("IC-7300", 8.0), ("IC-705", 9.0)),
 )
 def test_relative_vfo_retention_window_follows_provider_poll_cadence(
     model: str,
@@ -5978,14 +5978,10 @@ async def test_tx_target_unsupported_for_non_selected_unselected_profile() -> No
 async def test_tx_target_max_age_floors_fallback_for_profile_without_acquisition() -> (
     None
 ):
-    """Review R3: IC-705 has ``vfo_readback == "selected_unselected"`` (so
-    it DOES get a derivation) but currently ships no ``[state_acquisition]``
-    block, so the old bare ``4 * self._fast_interval`` fallback floored at
-    0.1s on its LAN profile (25ms fast interval) — the verifier measured
-    6.6 stale-transitions/s from that on an otherwise-idle radio. The
-    fallback must floor at ``_TX_TARGET_FALLBACK_MAX_AGE`` instead."""
+    """Profiles constructed without acquisition policy retain the safe floor."""
 
     radio = _make_radio(model="IC-705")
+    radio.profile = dataclasses.replace(radio.profile, state_acquisition=None)
     assert radio.profile.state_acquisition is None
     assert radio.profile.vfo_readback == "selected_unselected"
     poller = RadioPoller(radio, CommandQueue(), state_store=StateStore())

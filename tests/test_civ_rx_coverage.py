@@ -41,7 +41,7 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.tone import _encode_tone_freq
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
@@ -56,6 +56,7 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.tx_target import KnownTxTarget
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -4161,18 +4162,19 @@ def test_update_radio_state_tuner_status(radio_with_state: IcomRadio) -> None:
     assert field.value == 2
 
 
-def test_transmit_frequency_does_not_update_boolean_monitor_state(
+def test_update_radio_state_tx_freq_monitor_decodes_transmit_frequency_not_boolean(
     radio_with_state: IcomRadio,
 ) -> None:
-    frame = CivFrame(0xE0, 0x98, 0x1C, 0x03, b"\x00\x00\x10\x07\x00")
-    with patch(
-        "rigplane.runtime._civ_rx.parse_frequency_response",
-        return_value=7_100_000,
-    ) as parse_frequency:
-        radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+    # Full directed IC-7610 response: 1C/03 + 7.100 MHz in five-byte BCD.
+    frame = parse_civ_frame(bytes.fromhex("FE FE E0 98 1C 03 00 00 10 07 00 FD"))
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
 
-    parse_frequency.assert_called_once_with(frame)
-    assert radio_with_state._state_store.snapshot().fields == ()
+    snapshot = radio_with_state._state_store.snapshot()
+    assert snapshot.field("global.tx_state.tx_target").value == KnownTxTarget(
+        receiver="MAIN", slot=None, frequency_hz=7_100_000
+    )
+    with pytest.raises(KeyError):
+        snapshot.field("global.tx_state.tx_freq_monitor")
 
 
 def test_update_radio_state_rit_frequency(radio_with_state: IcomRadio) -> None:

@@ -49,6 +49,7 @@ from rigplane.commands import (
 from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
+from rigplane.core.tx_target import KnownTxTarget
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
     FieldChange,
@@ -59,7 +60,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.scope import ScopeFrame
-from rigplane.core.types import CivFrame, Mode
+from rigplane.core.types import CivFrame, Mode, bcd_decode
 from rigplane.runtime.meter_cal import interpolate_meter
 
 if TYPE_CHECKING:
@@ -2111,7 +2112,7 @@ class CivRuntime:
     def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
         """Decode one CI-V frame into supported observation contracts."""
 
-        receiver_id, _, slot_override = self._receiver_context(frame)
+        receiver_id, receiver_name, slot_override = self._receiver_context(frame)
         observations: list[Observation] = []
 
         if (
@@ -2166,8 +2167,6 @@ class CivRuntime:
                     )
                 )
         elif frame.command == 0x25 and len(frame.data) >= 6:
-            from rigplane.types import bcd_decode
-
             relative = (
                 getattr(self._host._profile, "vfo_readback", "none")
                 == "selected_unselected"
@@ -2465,8 +2464,23 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x1C and frame.sub == 0x03 and frame.data:
-            parse_frequency_response(frame)
+        elif frame.command == 0x1C and frame.sub == 0x03 and len(frame.data) == 5:
+            # Icom documents 1C/03 as the current transmit frequency, not the
+            # boolean "TX frequency monitor" control exposed by older shared
+            # command names.  Publish the decoded value through the existing
+            # backend-neutral TX-target contract; this response does not carry
+            # a VFO-slot identity, so keep that portion deliberately unknown.
+            observations.append(
+                self._observation(
+                    FieldPath.global_("tx_state", "tx_target"),
+                    KnownTxTarget(
+                        receiver="SUB" if receiver_name == "SUB" else "MAIN",
+                        slot=None,
+                        frequency_hz=bcd_decode(frame.data),
+                    ),
+                    frame=frame,
+                )
+            )
         elif frame.command == 0x07 and len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]

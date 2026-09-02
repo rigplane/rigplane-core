@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
 
@@ -19,6 +20,7 @@ from rigplane.commands.scope import (
 from rigplane.core.acquisition_scheduler import IcomCivAcquisitionExecutor
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.profiles import resolve_radio_profile
+from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime import _state_queries as state_queries_module
 from rigplane.runtime._state_queries import build_state_queries
@@ -42,6 +44,15 @@ _SELECTOR_SUBS = frozenset({0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1D, 0x1F})
 _BARE_SUBS = frozenset({0x12, 0x13, 0x1B, 0x1C})
 
 _FrameParts = tuple[int, int | None, bytes]
+_RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+
+def _shipped_civ_models() -> tuple[str, ...]:
+    return tuple(
+        model
+        for model, config in sorted(discover_rigs(_RIGS_DIR).items())
+        if config.protocol_type == "civ"
+    )
 
 
 def _profile_resolver_cases() -> list[tuple[FieldPath, str]]:
@@ -201,7 +212,7 @@ def test_acquisition_profile_resolver_six_profile_census_and_exact_declared_byte
                 census["missing"] += 1
                 assert resolver(path) is None
 
-    assert census == Counter(agree=301, diverge=4, absent=23, missing=68)
+    assert census == Counter(agree=302, diverge=4, absent=23, missing=67)
 
 
 def test_acquisition_profile_resolver_relative_vfo_and_refusal_rules() -> None:
@@ -567,13 +578,34 @@ class TestBuildStateQueries:
             == expected
         )
 
-    @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "X6100"])
-    def test_profile_without_state_acquisition_emits_no_queries(
+    @pytest.mark.parametrize("model", _shipped_civ_models())
+    def test_every_shipped_civ_profile_has_traceable_acquisition(
         self, model: str
     ) -> None:
         profile = resolve_radio_profile(model=model)
-        assert profile.state_acquisition is None
-        assert build_state_queries(profile, set(profile.capabilities)) == []
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        pollable = acquisition.pollable_paths()
+        assert pollable
+
+        resolver = acquisition_query_resolver_for_profile(profile)
+        expected = []
+        for path in pollable:
+            query = resolver(path)
+            assert query is not None, f"{model}: unresolved declared path {path}"
+            if query.receiver is not None and not profile.supports_cmd29(
+                query.command, query.sub
+            ):
+                if query.receiver != 0:
+                    continue
+                query = replace(query, receiver=None)
+            if query not in expected:
+                expected.append(query)
+
+        queries = build_state_queries(profile, set(profile.capabilities))
+        assert queries
+        assert queries == expected
+        assert len(queries) == len(set(queries))
 
     def test_deterministic_output(self) -> None:
         """Same inputs should produce identical output."""
@@ -724,8 +756,11 @@ class TestFetchInitialState:
             return r
 
     @pytest.mark.asyncio
-    async def test_dispatches_all_queries(self, radio) -> None:
+    @pytest.mark.parametrize("model", _shipped_civ_models())
+    async def test_dispatches_all_queries(self, radio, model: str) -> None:
+        radio._profile = resolve_radio_profile(model=model)
         queries = build_state_queries(radio._profile, set(radio._profile.capabilities))
+        assert queries, f"{model}: initial/periodic acquisition must not be empty"
         poller = object.__new__(RadioPoller)
         poller._profile = radio._profile
         poller._caps = set(radio._profile.capabilities)

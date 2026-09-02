@@ -139,6 +139,40 @@ features = [
     "dial_lock",
 ]
 
+# MOR-1983: mirror the conservative X6200 acquisition envelope. This inherits
+# the same shared-firmware rationale as the command declarations below; it does
+# not claim direct X6100 hardware evidence. Every polled path resolves through
+# this profile's own explicitly declared getter.
+[state_acquisition]
+provider = "xiegu_civ"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 4.0
+adaptive_decay_max_cadence_seconds = 30.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.25
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "global.meters.power",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+unsupported = ["global.tx_state.power_on"]
+
 [modes]
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]
 
@@ -348,13 +382,9 @@ end_hz = 136000000
 #   written, and this profile declares neither key present nor
 #   declared-absent -- so both now refuse with ``CommandError`` (the
 #   undeclared-command policy, D1, MOR-2005) instead of reaching the wire.
-#   [0x14, 0x0F] is reached today by exactly ONE path: the unconditional
-#   poll in ``runtime/_state_queries.py: build_state_queries``'s
-#   ``_COMMON_FEATURE_QUERIES`` list, which every CI-V radio using this
-#   query builder sends regardless of capability. That poll does not read
-#   this profile's civ_addr or [commands] table either -- it is reached
-#   only if something ever constructs a CI-V radio object against this
-#   profile, per the Reachability note in the file header above.
+#   MOR-1983 removed the former unconditional [0x14, 0x0F] state poll;
+#   profile-derived acquisition now suppresses it because this profile
+#   declares neither a pollable path nor a getter.
 # - rit / xit -> hardcoded [0x21] in the RIT/XIT command builders
 #   (commands/_frame.py: _CMD_RIT, consumed by commands/system.py), no
 #   [commands] key here or on X6200. X6200's write-only *behavior* (SET
