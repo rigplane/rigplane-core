@@ -100,20 +100,31 @@ Use the global `repo-hygiene` skill for cross-repo inventory and cleanup.
 
 RigPlane's standard automation gate is `.github/workflows/agent-review-gate.yml`.
 It updates the required commit status `Agent Review Gate` on the current PR
-head SHA and passes only after a normal PR comment contains `Agent Review:
-PASS` for that head. Use this status instead of GitHub required approving
-reviews; same-user approval restrictions break automated agent flow.
+head SHA. The gate accepts a verdict only when the first non-blank line of a
+trusted, non-minimized PR comment is exactly one of these forms, with the
+placeholder replaced by the PR's current 40-character lowercase head SHA:
+
+```text
+Agent Review: PASS <40-character-lowercase-head-sha>
+Agent Review: BLOCKED <40-character-lowercase-head-sha>
+```
+
+A BLOCKED directive must put concrete findings, file/line references where
+applicable, risk, required fixes, and checks to run on subsequent lines. A
+missing, short, uppercase, or stale SHA is not a directive. Use this status
+instead of GitHub required approving reviews; same-user approval restrictions
+break automated agent flow.
 
 Every non-trivial PR requires independent agent review before merge. The
 implementation agent may not be the review agent.
 
-- `Agent Review: PASS`/`BLOCKED` is the verifier's verdict on the code
-  alone: post it as soon as review is done, reporting CI state as found
-  (queued, running, or complete with counts) without waiting for CI to
-  finish or withholding a verdict because it hasn't. Confirming that
-  required checks are actually green at the exact head is a separate step
-  the coordinator takes immediately before merging — both conditions still
-  gate the merge, just held by two roles instead of one.
+- The PASS/BLOCKED token in an exact-head directive is the verifier's verdict
+  on the code alone: post it as soon as review is done, reporting CI state as
+  found (queued, running, or complete with counts) without waiting for CI to
+  finish or withholding a verdict because it hasn't. Confirming that required
+  checks are actually green at the exact head is a separate step the
+  coordinator takes immediately before merging — both conditions still gate
+  the merge, just held by two roles instead of one.
 - That split exists because CI is a shared, limited resource: `quick.yml`,
   `full.yml`, and `visual.yml` all set `runs-on: [self-hosted, linux, build]`,
   while everything else under `.github/workflows/` runs on `ubuntu-latest`.
@@ -128,22 +139,20 @@ implementation agent may not be the review agent.
   clean rerun (e.g. `tests/test_mor1499_coalesce_keys.py`, one such case on
   2026-08-30) is more often runner load than a regression; the same test
   failing twice is evidence about the code, not the machine.
-- `Agent Review: BLOCKED` must include concrete problems, file/line references
-  where applicable, risk, required fixes, and checks to run.
 - The implementation agent must address BLOCKED feedback, push updates, and
   rerun or wait for checks before merge.
 - A PASS may still carry corrections, marked REQUIRED BEFORE MERGE or MANDATORY
   SQUASH-BODY CORRECTION: findings real enough to state but not fixable by a
   commit — a false claim in the PR body or a comment, or one in a pushed commit
   message that the squash body will carry onto `main`. No workflow checks them;
-  nothing reads a PR body, and the gate matches its directive pattern against
-  only the first non-blank line of a comment.
+  nothing reads a PR body, and the gate matches its exact, SHA-bound directive
+  pattern against only the first non-blank line of a comment.
   Whoever merges must apply them before merge anyway — editing the body or
   comment, or writing the corrected squash body at merge — and say in the PR
   that it did.
-- A failed `Agent Review Gate` without BLOCKED feedback usually means no fresh
-  PASS comment exists for the current head; perform or refresh the review
-  instead of skipping the PR.
+- A failed `Agent Review Gate` without valid exact-head BLOCKED feedback usually
+  means no fresh, valid exact-head PASS directive exists; perform or refresh
+  the review instead of skipping the PR.
 - A PR based on a branch other than `main` shows a partly-populated check
   list, which is more misleading than an empty one:
   `agent-review-gate.yml`'s `pull_request` trigger carries no `branches:`
