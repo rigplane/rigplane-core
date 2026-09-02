@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source_sha=1e22244e0d66a07e7eee08880ae59791dc0ff760
+source_sha=2db9a2f9b8977de3e42e3ecbd5fec9874b8bfb1d
 mkdir -p exchange-proof
 git rev-parse HEAD | tee exchange-proof/head.txt
 uv sync --all-extras
@@ -10,6 +10,7 @@ nodes=(
   tests/test_rigctld_client_backend.py::test_transport_command_accepts_only_rprt_zero_and_preserves_failure_code
   tests/test_rigctld_client_backend.py::test_cancelled_exchange_quarantines_before_close_barrier
   tests/test_rigctld_client_backend.py::test_cancelled_lock_waiter_keeps_active_exchange
+  tests/test_rigctld_client_backend.py::test_cancelled_lifecycle_preserves_real_stream_close_future
   tests/test_rigctld_client_backend.py::test_old_exchange_interruption_does_not_retire_replacement
   tests/test_rigctld_client_backend.py::test_delayed_cancelled_rprt_cannot_complete_next_command
 )
@@ -33,7 +34,7 @@ git diff --exit-code "$source_sha" -- src/ tests/ .claude/audits/
 run_cases initial
 test "$test_rc" -eq 0
 uv run python .github/exchange-proof/check.py control exchange-proof/initial.xml
-for mutation in m1 m2 m3 m4; do
+for mutation in m1 m2 m3 m4 m5 positive; do
   patch_path=".github/exchange-proof/$mutation.patch"
   git apply "$patch_path"
   active_patch=$patch_path
@@ -42,7 +43,9 @@ for mutation in m1 m2 m3 m4; do
   restore
   git diff --exit-code "$source_sha" -- src/ tests/ .claude/audits/
   echo "$mutation restored exact source" | tee -a exchange-proof/status.txt
-  test "$test_rc" -eq 1
+  expected_rc=1
+  if [ "$mutation" = positive ]; then expected_rc=0; fi
+  test "$test_rc" -eq "$expected_rc"
   uv run python .github/exchange-proof/check.py "$mutation" "exchange-proof/$mutation.xml"
   run_cases "$mutation-restored"
   test "$test_rc" -eq 0

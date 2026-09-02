@@ -1,5 +1,4 @@
 diff --git a/src/rigplane/backends/rigctld_client/transport.py b/src/rigplane/backends/rigctld_client/transport.py
-index fbd87890..8849687f 100644
 --- a/src/rigplane/backends/rigctld_client/transport.py
 +++ b/src/rigplane/backends/rigctld_client/transport.py
 @@ -145,7 +145,6 @@ class RigctldTransport:

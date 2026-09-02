@@ -1,11 +1,13 @@
 diff --git a/src/rigplane/backends/rigctld_client/transport.py b/src/rigplane/backends/rigctld_client/transport.py
+index f0c1f19a..fbd87890 100644
 --- a/src/rigplane/backends/rigctld_client/transport.py
 +++ b/src/rigplane/backends/rigctld_client/transport.py
-@@ -94,6 +94,7 @@ class RigctldTransport:
-     async def _close_locked(self) -> None:
-         writer = self._writer
-         self._retire_connection(self._reader, writer)
-+        self._writer = None
+@@ -97,7 +97,7 @@ class RigctldTransport:
          if writer is None:
              return
          try:
+-            await asyncio.shield(writer.wait_closed())
++            await writer.wait_closed()
+         except OSError:
+             pass
+         if self._writer is writer:
