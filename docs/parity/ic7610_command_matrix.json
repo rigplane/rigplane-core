@@ -2458,20 +2458,17 @@
       "family": "transceiver_status",
       "status": "implemented",
       "runtime_symbols": [
-        "rigplane.commands:get_tx_freq_monitor",
-        "rigplane.commands:set_tx_freq_monitor",
-        "rigplane.radio:IcomRadio.get_tx_freq_monitor",
-        "rigplane.radio:IcomRadio.set_tx_freq_monitor",
-        "rigplane._civ_rx:_CivRxMixin._update_radio_state_from_frame",
-        "rigplane.web.radio_poller:RadioPoller._build_state_queries"
+        "rigplane.commands:parse_frequency_response",
+        "rigplane._civ_rx:CivRuntime._update_state_cache_from_frame",
+        "rigplane.core.tx_target:KnownTxTarget"
       ],
       "test_patterns": [
-        "tests/test_commands.py::test_get_tx_freq_monitor",
-        "tests/test_commands.py::test_set_tx_freq_monitor_on",
-        "tests/test_civ_rx_coverage.py::test_update_radio_state_tx_freq_monitor",
-        "tests/test_radio_poller_coverage.py::test_state_queries_include_transceiver_status_reads_for_ic7610"
+        "tests/test_civ_rx_coverage.py::test_update_radio_state_tx_freq_monitor_decodes_transmit_frequency_not_boolean",
+        "tests/test_commands.py::test_get_tx_freq_monitor_fails_closed",
+        "tests/test_commands.py::test_set_tx_freq_monitor_fails_closed",
+        "tests/test_state_queries.py::test_legacy_tx_freq_monitor_builders_fail_closed"
       ],
-      "notes": ""
+      "notes": "The official IC-7610 CI-V guide documents 1C 03 as a read-only five-byte transmit-frequency payload despite wfview marking set=true. Runtime decodes it into the existing tx_target state with finite profile freshness; the legacy boolean get/set_tx_freq_monitor APIs are explicitly absent and fail closed. XFC boolean read/write remains 1C 02."
     },
     {
       "id": 110,
