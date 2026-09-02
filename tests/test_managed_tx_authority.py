@@ -169,24 +169,30 @@ def authority(
     return managed, clock, wakeup, store, fence, lane
 
 
-def _assert_force_off_precedes_provider_io(log: FenceOrderLog, since: int) -> None:
+def _assert_force_off_precedes_provider_io(
+    log: FenceOrderLog, since: int, *, prefix: tuple[str, ...] = ()
+) -> None:
     """Pin the ForceOff ordering rule: within one full-force pass, the fence
     entry must be logged before the provider I/O (settle/settle_abort) that
-    pass performs.
+    pass performs, and nothing but `prefix` may precede the fence.
 
     `since` bookmarks the log length right before the action that triggers
-    the pass. An entry logged earlier in the window (e.g. the on-attempt
-    settle that itself decided to force off, in the UNCERTAIN-followup
-    case) is not provider I/O this fence guards, so only entries after the
-    *last* fence entry in the window are checked -- which is exactly the
-    entries this same pass produced.
+    the pass. `prefix` names the tags permitted before the fence entry in
+    the window -- empty for a pass that starts with the fence, or
+    `("effect",)` for the UNCERTAIN-followup case, where the on-attempt
+    settle that itself decided to force off is logged first. Exactly one
+    fence entry is required, everything before it must equal `prefix`
+    exactly, and at least one provider-I/O entry must follow it.
     """
     window = log[since:]
-    fence_positions = [i for i, entry in enumerate(window) if entry[0] == "fence"]
-    assert fence_positions, "expected a fence entry recorded in this window"
-    after = window[fence_positions[-1] + 1 :]
+    tags = [entry[0] for entry in window]
+    assert tags.count("fence") == 1, f"expected exactly one fence entry, got {tags}"
+    index = tags.index("fence")
+    assert tuple(tags[:index]) == prefix, (
+        f"unexpected provider I/O before the fence: {tags}"
+    )
+    after = window[index + 1 :]
     assert after, "expected provider I/O logged after the fence"
-    assert all(entry[0] in ("effect", "abort") for entry in after)
 
 
 @pytest.mark.asyncio
@@ -335,7 +341,7 @@ async def test_uncertain_on_immediately_runs_one_force_off_family(
         else await managed.transmit_on()
     )
     assert outcome is ManagedTxOutcome.ACCEPTED
-    _assert_force_off_precedes_provider_io(fence.log, since)
+    _assert_force_off_precedes_provider_io(fence.log, since, prefix=("effect",))
     assert fence.calls == 1
     assert [effect.operation for effect in lane.effects] == [
         operation,
