@@ -1,8 +1,10 @@
 # Profile-Driven Command Bytes — Deleting the Hardcoded Fallback
 
 **Date:** 2026-08-29
-**Status:** Proposed (design only — this document's own commit changes no code,
-no test and no profile).
+**Status:** Historical record, as of 2026-09-02. Every step this document
+describes has shipped: closed by `bce3be1e` (PR #2918, "delete the
+command-builder fallback machinery") and `bb5123a8` (PR #2917, "derive scope
+reply shapes from the profile command map").
 **Companion — read together, neither is complete alone:**
 `docs/plans/2026-08-29-profile-driven-command-bytes-evidence.md`
 carries the evidence, the measurements and the analysis that this plan acts on.
