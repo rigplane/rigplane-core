@@ -413,7 +413,7 @@ class ManagedTxAuthority:
         while True:
             deadline = self._clock() + self._attempt_timeout
             events: list[ManagedTxEvent] = []
-            if full_force:
+            if full_force and effects:
                 await self._abort_fence.force_off()
             for effect in effects:
                 if full_force:
