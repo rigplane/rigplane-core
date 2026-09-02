@@ -507,7 +507,6 @@ class ManagedTxAuthority:
         return (
             self._state.intent.kind is ManagedTxIntentKind.RX
             and self._state.release_required
-            and self._state.pending_effect is None
         )
 
     def _refresh_retry_locked(self) -> None:
