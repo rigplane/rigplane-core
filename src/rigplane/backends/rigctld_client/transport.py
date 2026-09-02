@@ -207,7 +207,7 @@ class RigctldTransport:
                     line = raw.decode("latin-1").rstrip("\r\n")
 
         code = _parse_rprt(line, command)
-        if code != 0:
+        if code < 0:
             _raise_rprt(command, code)
 
     async def _write_line(self, command: str) -> None:
