@@ -1,24 +1,23 @@
-# Runtime `_KNOWN_COMMANDS` reverse audit
+# Runtime callable-support reverse audit
 
-**Derived audit evidence — 2026-09-01.** This is not a runtime source of truth. It records a reproducible classification from the supplied read-only evidence, not a profile, API, or ticket change. The radio profile remains the radio-fact source of truth; any future callable-support relation belongs with the implementation. Context: MOR-2114 and MOR-2161; this audit does not claim either issue is closed.
+**Derived audit evidence — updated 2026-09-02.** This document is not a runtime source of truth. Profiles own direct radio facts, command-builder `cmd_map_key` metadata owns the primitive each implementation uses, and `src/rigplane/runtime/callable_support.py: CALLABLE_RELATIONS` owns only the relations between public operations and those facts.
 
 ## Pinned evidence and result
 
-Current census ref: `8cc5471dbb60f246ccb7a17a5e29f75fd6f20a00`. Supplied reverse-classification sources: Markdown SHA-256 `f75b2287495e38fd1b40f70866051971c30cdc7b2b5d306d64a119c1a38b541b`; JSON SHA-256 `41bfdf563b91fc91122a9cacb4070a39e388420338b93d6b2623d529cb19e982`. Independent reverse-census verification source: SHA-256 `53f769853234b93a9bf0c7e2bd8b6cc010939542ffc318dd440a339e96996e82`.
+Pre-removal census ref: `0878667ec36e39c418efa084a6e73d9e706d8c4c`. The executable literal was removed by implementation commit `8ddc3bdaea0bbed2ef8208d8e6721ec1a0c3f816`. The CSV preserves the original 2026-09-01 reverse-classification provenance and records the corrected rulings where that evidence was later superseded.
 
-Let `K` be the AST-literal strings in `CoreRadio._KNOWN_COMMANDS`. Let `D` be the union of `RadioProfile.command_names` after loading every `rigs/` configuration through `discover_rigs()` and `RigConfig.to_profile()`. Let `A` be the union of `absent_command_names`, reported only as provenance. `D` includes positive CI-V and CAT declarations, excludes `AbsentCommandSpec`, and deliberately does not use `CommandMap` (which drops CAT specs).
+At the pinned pre-removal ref, let `K` be the former AST literal, `D` the union of `RadioProfile.command_names` after loading all eight `rigs/` configurations, and `A` the union of explicit absences.
 
 | Measure | Count |
 |---|---:|
 | `K` known names | 236 |
-| `D` declared names | 502 |
+| `D` declared names | 500 |
 | `K & D` | 201 |
 | `K - D` known-not-declared-any-profile | 35 |
-| `D - K` declared-not-known | 301 |
-| `A` absent union | 73 |
-| Python parse health | 714 parsed / 0 syntax errors |
+| `D - K` declared-not-known | 299 |
+| `A` absent union | 79 |
 
-The CSV has exactly 35 unique names: 16 `composite`, 17 `alias`, 1 `obsolete_synthetic`, and 1 `unsupported_fallback`. Loader positive control: `get_freq` is positively declared. Caller-scan positive controls include production calls to `radio.set_scope_dual(...)` and `radio.capture_scope_frame(...)`; therefore the recorded negative caller findings are not an empty-loader or failed-scan result.
+The 35 historical names now partition into 16 `composite`, 16 `alias`, 1 `implementation_defect`, 1 `obsolete_synthetic`, and 1 `unsupported_fallback`. Exactly 32 have runtime relations. `set_scope_dual` is fail-closed pending MOR-2113; `get_mode_enum` and `get_memory_mode` also have no relation. Their methods remain for compatibility, but `supports_command` returns false unless a future direct profile fact or reviewed relation establishes support.
 
 ## Historical 52 is a different denominator
 
@@ -32,20 +31,20 @@ silent_fallback_names = known - set(ic7300.commands)
 assert len(silent_fallback_names) == 52
 ```
 
-This is the IC-7300-*mentioned* denominator: `cfg.commands` contains positive and explicit-absent keys, so 52 means the fallback advertised a name on which the IC-7300 profile was silent. It is neither the positive-declaration-only difference (74) nor the current all-profile `K - D` (35). The historical CI-V `command_map - K` result was 169. At the current ref, the same IC-7300 mentioned-name calculation is 50.
+This is the IC-7300-*mentioned* denominator: `cfg.commands` contains positive and explicit-absent keys, so 52 means the fallback advertised a name on which the IC-7300 profile was silent. It is neither the positive-declaration-only difference (74) nor the pre-removal all-profile `K - D` (35). The historical CI-V `command_map - K` result was 169. At the pinned pre-removal ref, the same IC-7300 mentioned-name calculation is 50.
 
 ## Interpretation and ownership boundary
 
-Composite operations are legitimate public operations: scope lifecycles, raw CI-V transport, and negotiated audio do not correspond to one finite profile command. They **must survive** any support-source-of-truth refactor. Do not delete `_KNOWN_COMMANDS` wholesale. A future, separately owned design may express each callable's exact primitive, alias, composite, or transport relation next to the callable, while profiles retain radio facts.
+The registry contains 16 builder-derived aliases, five builder-derived composites, ten audio-capability operations, and one CI-V protocol operation. Builder targets are evaluated from their existing `cmd_map_key`; the registry does not duplicate profile command-key strings or branch on model/vendor identity. Explicit profile absence wins over a direct positive declaration or a relation.
 
-The one unsupported fallback (`get_memory_mode`) is an unconditional `NotImplementedError` stub; the one obsolete/synthetic helper (`get_mode_enum`) is deprecated legacy derivation. Their rows recommend a future narrowly reviewed cleanup. `src/rigplane/runtime/radio.py` is actively owned by MOR-2180 and was not changed by this audit.
+`get_mode_info` derives base support from `get_mode`; SUB use separately requires receiver 1 and `get_unselected_mode`. The exact ten audio operations derive from the profile's `audio` capability, while `send_civ` derives only from `protocol.type = "civ"`.
 
 ## Reproduction
 
 Run each against a clean archive, with the project virtual environment available:
 
 ```bash
-REF=8cc5471dbb60f246ccb7a17a5e29f75fd6f20a00; SNAP=$(mktemp -d /tmp/known-current.XXXXXX)
+REF=0878667ec36e39c418efa084a6e73d9e706d8c4c; SNAP=$(mktemp -d /tmp/known-current.XXXXXX)
 git archive "$REF" | tar -x -C "$SNAP"
 SNAP="$SNAP" PYTHONPATH="$SNAP/src" /Users/moroz/Projects/rigplane-core/.venv/bin/python - <<'PY'
 import ast, os
@@ -59,8 +58,8 @@ assert not errors
 cls=next(n for n in trees[r/'src/rigplane/runtime/radio.py'].body if isinstance(n,ast.ClassDef) and n.name=='CoreRadio')
 k=next(frozenset(ast.literal_eval(n.value.args[0])) for n in cls.body if isinstance(n,ast.AnnAssign) and isinstance(n.target,ast.Name) and n.target.id=='_KNOWN_COMMANDS')
 ps=[c.to_profile() for c in discover_rigs(r/'rigs').values()]; d=frozenset().union(*(p.command_names for p in ps)); a=frozenset().union(*(p.absent_command_names for p in ps))
-assert 'get_freq' in d; print(len(trees),len(errors),len(k),len(d),len(k&d),len(k-d),len(d-k),len(a))
-# expected: 714 0 236 502 201 35 301 73
+assert 'get_freq' in d; print(len(k),len(d),len(k&d),len(k-d),len(d-k),len(a))
+# expected: 236 500 201 35 299 79
 PY
 ```
 
