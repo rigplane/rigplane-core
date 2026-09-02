@@ -328,7 +328,7 @@ def reduce_managed_tx(
         return ManagedTxTransition(next_state, ManagedTxOutcome.ACCEPTED, (effect,))
 
     if isinstance(event, ForceOff):
-        epoch = state.effect_epoch + 1
+        epoch = state.effect_epoch
         force_effect = (
             None
             if event.provider_generation is None
