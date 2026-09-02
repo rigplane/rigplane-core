@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import Protocol
 
 from rigplane.runtime.managed_tx_config import (
@@ -69,6 +70,14 @@ class ManagedTxProjection:
     provider_generation: int | None
 
 
+class ShutdownResult(StrEnum):
+    DRAINED = "drained"
+    TERMINATED = "terminated"
+
+
+_ProviderRetirement = Callable[[int], Awaitable[None]]
+
+
 class ManagedTxAuthority:
     def __init__(
         self,
@@ -103,6 +112,12 @@ class ManagedTxAuthority:
         )
         self._attempt = 0
         self._retry_due: float | None = None
+        self._release_drained = asyncio.Event()
+        self._release_drained.set()
+        self._shutting_down = False
+        self._terminated = False
+        self._shutdown_termination: asyncio.Event | None = None
+        self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
         self._closing = False
         self._closed = False
         self._scheduler_task = asyncio.create_task(self._scheduler())
@@ -121,7 +136,7 @@ class ManagedTxAuthority:
 
     async def owner_disconnect(self, owner: str) -> ManagedTxOutcome:
         async with self._lock:
-            self._require_open_locked()
+            self._require_ingress_open_locked()
             if self._state.intent != ManagedTxIntent.ptt(owner):
                 return ManagedTxOutcome.REJECTED
             transition = self._force_off_locked()
@@ -136,7 +151,7 @@ class ManagedTxAuthority:
     async def set_tot_seconds(self, value: object) -> ManagedTxTotConfig:
         transition = None
         async with self._lock:
-            self._require_open_locked()
+            self._require_ingress_open_locked()
             config = self._config_store.set_timeout_seconds(value)
             deadline = self._tot_deadline_locked(config.timeout_seconds)
             if deadline is not None and deadline <= self._clock():
@@ -158,44 +173,167 @@ class ManagedTxAuthority:
                 self._provider_generation,
             )
 
-    async def set_provider_generation(self, generation: int | None) -> None:
+    async def provider_unavailable(self) -> None:
+        transition = None
         async with self._lock:
             self._require_open_locked()
-            if generation is not None:
-                if generation <= self._generation_high_water:
-                    if generation == self._provider_generation:
-                        return
-                    raise ValueError("provider generation must increase")
-                self._generation_high_water = generation
-            self._provider_generation = generation
-            if generation is None:
-                self._retry_due = None
-            elif self._release_is_retryable_locked():
-                self._retry_due = self._clock()
+            self._require_provider_change_locked()
+            if self._provider_generation is None:
+                return
+            self._provider_generation = None
+            self._retry_due = None
+            if self._state.release_required:
+                transition = self._force_off_locked()
             self._wakeup.wake()
+        if transition is not None:
+            await self._execute(transition.effects, full_force=True)
+
+    async def provider_available(self, generation: int) -> None:
+        transition = None
+        async with self._lock:
+            self._require_open_locked()
+            self._require_provider_change_locked()
+            if generation == self._provider_generation:
+                return
+            if self._provider_generation is not None:
+                raise RuntimeError("current provider must become unavailable first")
+            if generation <= self._generation_high_water:
+                raise ValueError("provider generation must increase")
+            self._generation_high_water = generation
+            self._provider_generation = generation
+            if self._release_is_retryable_locked():
+                transition = self._reduce_locked(
+                    RetryForceReceive(generation, self._attempt_id_locked())
+                )
+            self._wakeup.wake()
+        if transition is not None:
+            await self._execute(transition.effects, full_force=False)
+
+    async def shutdown(
+        self,
+        *,
+        retire_provider: _ProviderRetirement,
+        termination: asyncio.Event,
+    ) -> ShutdownResult:
+        async with self._lock:
+            task = self._shutdown_task
+            if task is None:
+                self._require_open_locked()
+                self._shutting_down = True
+                self._shutdown_termination = termination
+                transition = self._force_off_locked()
+                self._wakeup.wake()
+                task = asyncio.create_task(
+                    self._complete_shutdown(transition, retire_provider, termination)
+                )
+                self._shutdown_task = task
+        return await asyncio.shield(task)
 
     async def close(self) -> None:
+        await self._dispose_clean(from_shutdown=False)
+
+    async def _complete_shutdown(
+        self,
+        transition: ManagedTxTransition,
+        retire_provider: _ProviderRetirement,
+        termination: asyncio.Event,
+    ) -> ShutdownResult:
+        try:
+            drain = asyncio.create_task(
+                self._wait_for_release_or_termination(termination)
+            )
+            release = asyncio.create_task(
+                self._execute(transition.effects, full_force=True)
+            )
+            try:
+                done, _ = await asyncio.wait(
+                    (drain, release), return_when=asyncio.FIRST_COMPLETED
+                )
+                if release in done:
+                    await release
+                drained = await drain
+            finally:
+                for task in (drain, release):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(drain, release, return_exceptions=True)
+            if not drained:
+                async with self._lock:
+                    scheduler = self._scheduler_task
+                await self._stop_scheduler(scheduler)
+                return ShutdownResult.TERMINATED
+
+            async with self._lock:
+                if not self._state_is_clean_locked():
+                    raise RuntimeError("managed TX shutdown drain lost clean state")
+                generation = self._provider_generation
+            if generation is not None:
+                await retire_provider(generation)
+            async with self._lock:
+                if self._provider_generation != generation:
+                    raise RuntimeError("managed TX provider changed during retirement")
+                self._provider_generation = None
+            await self._dispose_clean(from_shutdown=True)
+            return ShutdownResult.DRAINED
+        except BaseException:
+            async with self._lock:
+                self._shutting_down = False
+                if self._shutdown_task is asyncio.current_task():
+                    self._shutdown_termination = None
+                    self._shutdown_task = None
+            raise
+
+    async def _wait_for_release_or_termination(
+        self, termination: asyncio.Event
+    ) -> bool:
+        async with self._lock:
+            if self._state_is_clean_locked():
+                return True
+        drained = asyncio.create_task(self._release_drained.wait())
+        terminated = asyncio.create_task(termination.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (drained, terminated), return_when=asyncio.FIRST_COMPLETED
+            )
+            async with self._lock:
+                if self._terminated:
+                    return False
+                if self._state_is_clean_locked():
+                    return True
+                if terminated in done:
+                    self._terminated = True
+                    return False
+                raise RuntimeError("managed TX drain signalled before clean RX state")
+        finally:
+            for waiter in (drained, terminated):
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(drained, terminated, return_exceptions=True)
+
+    async def _dispose_clean(self, *, from_shutdown: bool) -> None:
         async with self._lock:
             if self._closed or self._closing:
                 return
-            if (
-                self._state.intent.kind is not ManagedTxIntentKind.RX
-                or self._state.release_required
-                or self._state.pending_effect is not None
-            ):
+            if not self._state_is_clean_locked():
                 raise RuntimeError("managed TX disposal requires clean RX state")
+            if self._shutting_down and not from_shutdown:
+                raise RuntimeError("managed TX shutdown is in progress")
             self._closing = True
             scheduler = self._scheduler_task
-        scheduler.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await scheduler
+        await self._stop_scheduler(scheduler)
         async with self._lock:
             self._closed = True
             self._closing = False
 
+    @staticmethod
+    async def _stop_scheduler(scheduler: asyncio.Task[None]) -> None:
+        scheduler.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scheduler
+
     async def _ingress(self, action: str, owner: str | None = None) -> ManagedTxOutcome:
         async with self._lock:
-            self._require_open_locked()
+            self._require_ingress_open_locked()
             transition, full_force = self._transition_locked(action, owner)
             self._wakeup.wake()
         if transition is None:
@@ -253,6 +391,10 @@ class ManagedTxAuthority:
     def _reduce_locked(self, event: ManagedTxEvent) -> ManagedTxTransition:
         transition = reduce_managed_tx(self._state, event)
         self._state = transition.state
+        if self._state_is_clean_locked():
+            self._release_drained.set()
+        else:
+            self._release_drained.clear()
         return transition
 
     async def _execute(
@@ -283,6 +425,12 @@ class ManagedTxAuthority:
                     )
             followup = None
             async with self._lock:
+                if self._terminated or (
+                    self._shutdown_termination is not None
+                    and self._shutdown_termination.is_set()
+                ):
+                    self._terminated = True
+                    return
                 for event in events:
                     transition = self._reduce_locked(event)
                     if (
@@ -302,6 +450,8 @@ class ManagedTxAuthority:
     async def _scheduler(self) -> None:
         while True:
             async with self._lock:
+                if self._closing or self._closed or self._terminated:
+                    return
                 deadline = self._next_due_locked()
             await self._wakeup.wait_until(deadline)
             await self._process_due()
@@ -365,5 +515,23 @@ class ManagedTxAuthority:
         return str(self._attempt)
 
     def _require_open_locked(self) -> None:
+        if self._terminated:
+            raise RuntimeError("managed TX authority runtime has terminated")
         if self._closing or self._closed:
             raise RuntimeError("managed TX authority is closed")
+
+    def _require_ingress_open_locked(self) -> None:
+        self._require_open_locked()
+        if self._shutting_down:
+            raise RuntimeError("managed TX authority is shutting down")
+
+    def _require_provider_change_locked(self) -> None:
+        if self._shutting_down and self._state_is_clean_locked():
+            raise RuntimeError("managed TX shutdown drain is complete")
+
+    def _state_is_clean_locked(self) -> bool:
+        return (
+            self._state.intent.kind is ManagedTxIntentKind.RX
+            and not self._state.release_required
+            and self._state.pending_effect is None
+        )
