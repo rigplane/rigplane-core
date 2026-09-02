@@ -2,143 +2,179 @@
 
 ## Authority and scope
 
-- **Manual:** Yaesu FTX-1 Series CAT Operation Reference Manual **2508-C**.
-- **Official source:** <https://www.yaesu.com/Files/4CB893D7-1018-01AF-FA97E9E9AD48B50C/FTX-1_CAT_OM_ENG_2508-C.pdf>
+- **Official authority:** Yaesu FTX-1 Series CAT Operation Reference Manual
+  **2508-C**.
+- **Official source:**
+  <https://www.yaesu.com/Files/4CB893D7-1018-01AF-FA97E9E9AD48B50C/FTX-1_CAT_OM_ENG_2508-C.pdf>
 - **Retrieved:** 2026-08-14.
-- **Pinned SHA-256:** `fbbd8eb6b12d1fec9474f3771f4b872ba4fd195dbe4b080cc2a1aae2b4ebc56c`.
-- **Implementation surfaces:** `src/rigplane/backends/yaesu_cat/`, `rigs/ftx1.toml`, and the validation registry.
+- **Manual SHA-256:**
+  `fbbd8eb6b12d1fec9474f3771f4b872ba4fd195dbe4b080cc2a1aae2b4ebc56c`.
+- **Runtime radio-fact SSOT:** `rigs/ftx1.toml`, SHA-256
+  `d81012e2d26cbe61ba1af86c97b0d28e630e4f8508733e4a4faab88792563c3c`.
+- **Derived decision register:**
+  [`ftx1-command-gaps.csv`](ftx1-command-gaps.csv).
 
-The vendor PDF is copyrighted and is not committed. This is a source-to-code audit,
-not a hardware-validation record: historical FTX-1 observations are not evidence for
-the current release candidate, and this document makes no live, RX, TX, or safety
-claim.
+The vendor PDF is copyrighted and is not committed. The profile remains the
+runtime source of truth after each approved declaration. This document and its
+CSV are pinned derived evidence: they classify official-manual coverage and
+route bounded follow-up work, but do not authorize a bulk profile/API update.
+They also make no live-radio, RX, TX, or current-release validation claim.
 
-### Revision-consistency witness
+The normalized decisions were independently verified from the corrected census
+(MD SHA-256
+`751739289a2b19f140b9cf7e67d85611657202504fc32dae1c515e084ee606b2`;
+JSON SHA-256
+`31f6f1ce9af2a38654d8143a9c986a4ad1ffc1bb30ecd5bed51e467258b52859`)
+against profile ref `5bb947db845d801d1ab53e47f9b6d9425048e7bf`.
 
-The audit index records the same manual revision and links to this file, which is the
-single repository location for the source URL, retrieval date, and pinned digest.
-Review both entries together whenever the manual changes.
+## Reconciled denominator
 
-## Receiver, VFO, and function semantics
+The former “43 of 89 commands are absent” statement is retired. It mixed an
+index count with a different implementation unit and cannot be used as an
+acceptance gate.
 
-The FTX-1 is a two-receiver (MAIN/SUB) radio. Its CAT words must not be projected as
-a generic per-receiver VFO A/B model.
+- The official command-list index contains **89** unique CAT families.
+- `EO` exists only in the detail tables, so the official detail-table
+  denominator is **90 families**.
+- The detail tables contain **580 evidence rows/subcommands**. Of those, 427
+  belong to the single parameterized `EX` menu-address grammar.
+- The current profile represents 50 documented families. Another 40 families
+  are wholly absent, covering 488 evidence rows.
+- Fifteen of the 50 represented families have uncovered selector/domain rows,
+  covering 23 evidence rows.
+- Therefore the implementation-planning register is exactly
+  **40 wholly absent families / 488 rows + 15 existing-family extensions /
+  23 rows = 55 normalized decisions**.
+- The profile has one additional undocumented family, `RC`, handled
+  separately as provenance rather than as a manual gap.
+- Approved bulk additions: **0**.
 
-| CAT | Official 2508-C meaning | RigPlane reading | Status / owner |
+`EX` is one parameterized family, not 427 APIs. `EO` is one parameterized
+family, not six APIs. `SS` is one selector-aware scope-settings family and
+`VE` one selector-aware firmware-version read unless a later public API
+decision intentionally splits their semantics.
+
+## Normalized disposition totals
+
+The CSV contains one stable row for each of the 55 decisions, with official
+page/domain/direction, current profile coverage, normalized semantic group,
+disposition, owner, reachability gate, bench requirement, and bounded next
+action.
+
+| Disposition | Families | Meaning |
+|---|---:|---|
+| `route_existing_owner` | 21 | An existing Linear owner must absorb the documented family/domain without duplicating another implementation. |
+| `extend_existing_generic` | 14 | Extend the existing generic family by literal receiver/function selector and prove the active path. |
+| `new_profile_candidate` | 6 | A bounded public-domain decision is required before declaration. |
+| `composite_only` | 4 | Keep one typed parameterized/composite grammar; expose only approved semantic fields. |
+| `intentional_no_public_surface` | 9 | Keep the manual fact in the audit, but do not expose a runtime/UI operation. |
+| `unresolved_manual_semantics` | 1 | Resolve the official-manual/live-radio conflict before declaration. |
+
+The totals reconcile to 55 exactly. No row is permission to implement the
+remaining register as one batch.
+
+## Required MAIN/SUB semantics
+
+FTX-1 CAT commands describe MAIN/SUB receiver sides. They must not be renamed
+or projected as generic VFO A/B operations.
+
+| CAT | Official 2508-C meaning | Required RigPlane ruling | Owner / gate |
 |---|---|---|---|
-| `VS` | Selects the operating receiver: `0` = MAIN TX/RX + SUB RX; `1` = MAIN RX + SUB TX/RX. | `select_receiver()` / `get_active_receiver()` use `VS`; this is receiver selection, not VFO-slot selection. | Existing command mapping; MAIN/SUB dispatch and UI acceptance: MOR-1671. |
-| `SV` | Swaps MAIN-side and SUB-side. | A MAIN/SUB exchange, not a VFO-A/VFO-B swap. | No generic A/B swap is exposed; retain this distinction. |
-| `AB` / `BA` | Copy MAIN to SUB / SUB to MAIN. | One-way receiver-side copies, not A-to-B or B-to-A VFO copies. | Generic A/B copy/exchange remains unsupported for this topology. |
-| `FA` / `FB` | Read/write MAIN-side / SUB-side frequency. | `freq` / `freq_sub` map directly. | Existing mapping; receiver-specific restoration work is MOR-1676. |
-| `IF` / `OI` | Read-only information for MAIN-side / opposite-band SUB-side, including frequency, clarifier, mode, memory state, squelch type, and shift. | `IF` is a MAIN composite status read; `OI` is not represented as a generic VFO-A/B status. | Do not infer cross-receiver symmetry from `IF`; profile-domain work is MOR-1670 and its children. |
-| `FR` | RX function: `00` dual receive, `01` single receive. | A receive-mode setting, not VFO selection. | Existing command mapping; no per-control VFO abstraction may substitute for it. |
-| `FT` | Selects transmitter: `0` MAIN, `1` SUB. | Transmitter-source routing, separate from `VS` and `FR`. | Existing command mapping; TX authority and interlock work remains separately gated. |
+| `FR00` / `FR01` | Dual receive / single receive. | Treat as receiver-function state. Existing templates do not prove executor reachability. | MOR-2189 / MOR-2161 |
+| `SV;` | Swap MAIN and SUB. | SET-only MAIN/SUB exchange; never expose as VFO A/B swap. | MOR-2189 |
+| `AB;` | Copy MAIN to SUB. | Replace the false `vfo_a_to_b` meaning; prove the active executor path. | MOR-2189 / MOR-2161 |
+| `BA;` | Copy SUB to MAIN. | Replace the false `vfo_b_to_a` meaning; prove the active executor path. | MOR-2189 / MOR-2161 |
+| `VS` | Select the MAIN/SUB TX/RX pairing. | Receiver selection, separate from `FR` and `FT`. | Existing mapping; MOR-1671 |
+| `FT` | Select MAIN or SUB transmitter. | Transmitter-source routing, not permission to key TX. | Existing mapping; RF-authority gates |
+| `FA` / `FB` | MAIN / SUB frequency. | Preserve literal side identity. | Existing mapping |
+| `IF` / `OI` | MAIN / opposite-band SUB composite status. | Parse into canonical side-specific fields; do not infer A/B symmetry. | `OI`: MOR-2189 / MOR-2161 |
 
-In particular, `VS`, `FR`, and `FT` answer three different questions: which receiver
-is selected for the TX/RX pairing, whether both receivers are receiving, and which
-side is the transmitter. `FA`/`FB` address MAIN/SUB frequency, while `AB`/`BA`/`SV`
-operate between those sides. None of those commands establishes a per-receiver VFO
-A/B selection, copy, or exchange.
+No MAIN/SUB tracking command is documented in 2508-C. Existing tracking stubs
+are not evidence for a radio capability.
 
-## Material reconciliation from 2507-B
+## Corrections and provenance boundaries
 
-The prior committed audit named 2507-B, reduced the manual to an old command-count
-summary, and treated `VS` through the failed generic `vfo_slot` harness path. Revision
-2508-C's command list and detailed pages make the following audit corrections
-material:
+- **`MW` is SET-only.** Both the printed command list and detail table omit
+  READ and ANSWER. The earlier read/write census classification was wrong.
+- **`RC` is undocumented profile provenance.** The profile declares
+  `reset_clarifier`, but 2508-C does not document `RC`. Retain it until an
+  official provenance source or bounded bench evidence supports removal; do
+  not count it in the 55 manual gaps.
+- **`ML` is the sole unresolved family.** The official table documents
+  monitor state/level read and write, while the profile comment records a live
+  `?;` response. Reproduce by firmware, mode, and source and compare the
+  corresponding `EX` monitor address before adding a declaration.
+- **`BP` documents state and frequency, not width.** Do not invent a
+  manual-notch width register.
+- **`DA` is intentionally not public.** MOR-676's product ruling and this
+  MOR-2112 decision retain the physical-display control in the census without
+  creating a runtime/UI operation.
+- **`VD` and `VG` are intentionally not public.** The later MOR-2112 owner
+  ruling supersedes the old VOX implementation request; MOR-674 is
+  **Canceled**.
+- **`OS` ownership is exactly MOR-2111/MOR-2160/MOR-2161.** Its SUB
+  extension must preserve the FM admission rule and four-value direction
+  domain and must reach the active Yaesu executor.
 
-- `VS` is explicitly MAIN/SUB TX/RX selection; it is not the `ab_shared` VFO-slot
-  operation. The production/UI follow-up is MOR-1671.
-- `AB`, `BA`, and `SV` are respectively MAIN-to-SUB copy, SUB-to-MAIN copy, and
-  MAIN/SUB exchange; they are not A/B copy or swap commands. This stays an honesty
-  boundary, not a request to emulate missing VFO-A/B behavior.
-- `FR` (dual/single receive), `FT` (MAIN/SUB transmitter), `FA`/`FB` (side-specific
-  frequency), and the asymmetric `IF`/`OI` status records are separate command
-  domains. Profile quantization/restoration defects belong to MOR-1670 and its
-  children MOR-1676 through MOR-1682, rather than to a model-name frontend branch.
-- The `MC` read form materially changed. Revision 2507-B documented the
-  receiver-ambiguous `MC;`; revision 2508-C requires the receiver-qualified
-  `MCP1;` in the manual's parameter notation (`MC0;` for MAIN or `MC1;` for
-  SUB). The future memory API and parser must preserve that receiver identity;
-  MOR-676 owns the feature.
-- The old audit's current-looking live-run summary, including a TX-enabled claim, is
-  historical and removed. Hardware acceptance remains outside this documentation PR.
+## Reachability and safety gates
 
-## Gap register
+A profile declaration is not “implemented” merely because a template or
+backend method exists.
 
-| Gap class | Reconciled finding | Live Linear owner / state |
-|---|---|---|
-| D — receiver mismatch | MAIN/SUB UI dispatch must use documented `VS` semantics, not an A/B control. | MOR-1671 |
-| A — profile domains | Native discrete domains need profile-derived lattices, not generic continuous assumptions. | MOR-1670; MOR-1676..MOR-1682 |
-| A/C — VOX wiring | `VG` gain and `VD` delay remain unwired in the FTX-1 profile; the backend methods raise `NotImplementedError`. Acceptance requires real command wiring and verified payload widths. | MOR-674 — Backlog |
-| B — validation coverage | BI break-in and PR/PL compressor on/off still lack the requested RMVR rows. The `sql_type.set` RMVR now exists, so its remaining failure is routed separately rather than counted as a missing row. | MOR-673 — Backlog; MOR-696 — Backlog |
-| C — operator commands | `MX` MOX, `OS` repeater shift, and `TS` TX watch remain absent from the backend/profile surface. Documentation of `MX` or `TS` is not TX-test authorization. | MOR-675 — Backlog |
-| C — memory/keyer feature | The memory bank plus CW/voice message-keyer surface remains unimplemented. For `MC`, implementation must use the 2508-C receiver-qualified read `MCP1;` (`MC0;`/`MC1;`), not the 2507-B `MC;`. | MOR-676 — Backlog epic; decompose before implementation |
-| D — CAT mismatch | `sql_type.set` exists, and `rigs/ftx1.toml`'s `set_sql_type` now writes the single SQL-type digit 2508-C documents (`CT0{type};`), corrected from a two-digit write by MOR-2104. The recorded non-round-trip evidence is historical; current hardware acceptance is still required. | MOR-696 — Backlog |
-| A — unsupported power | CAT power control must not imply a uniformly supported browser power control. | MOR-1673 |
-| A — capability-derived bands | Exposed bands must follow actual profile capability rather than a static front-end list. | MOR-1674 |
-| A — AF presentation | CAT AF-scale values require the agreed percent formatting. | MOR-1675 |
-| D — TX behavior | `FT` routing is not authorization to key or test TX; interlock and RF-authority tickets own that safety work. | MOR-1500; MOR-1625..MOR-1630; MOR-1694 |
+### Reads
 
-This audit deliberately does not create a second backlog, change a profile, or claim
-that any listed command has completed hardware validation.
+Every declared read requires all of:
+
+1. a typed response parser;
+2. routing into the canonical observation/state model;
+3. proof that the active Yaesu receive/observer path reaches it;
+4. a loud, test-covered failure for malformed or unsupported responses.
+
+This applies especially to the safe read candidates `OI`, `RI`, `VE`,
+and `MR`. Read-only status does not waive parser or observer reachability.
+
+### Writes
+
+Every declared write requires all of:
+
+1. an approved public operation and bounded value domain;
+2. admission policy for mode, receiver side, TX authority, and other
+   preconditions;
+3. proof that the active Yaesu executor sends the command;
+4. loud refusal instead of asynchronous false success when the route is
+   missing or the radio rejects the command;
+5. RMVR/readback verification, or an explicit fire-and-forget rationale with
+   a separately observable effect;
+6. Mac mini automated validation and, where `bench_required=true`, separate
+   live FTX-1 hardware acceptance with restoration evidence.
+
+`MX` and `TS` additionally remain behind managed-TX authority. Documentation
+of a TX command is never authorization to key the transmitter.
+
+All 14 generic selector extensions, plus the separately routed `OS`
+extension, must use literal MAIN/SUB semantics and the actual Yaesu
+executor/observer. Adding profile strings alone would repeat the
+declaration-without-reachability failure.
+
+## Ownership and sequencing
+
+1. Retire or freshly reconcile draft PR #1717 before any FTX-1 profile edit.
+   It is a stale 88-file change with failed checks and still touches
+   `rigs/ftx1.toml`; it does not own these audit documents.
+2. Land this normalized documentation and CSV after independent review.
+3. Complete `SV`/`AB`/`BA`/`FR` under MOR-2189 behind MOR-2161
+   reachability.
+4. Route memory/keyer/voice families to MOR-676 and repeater `OS` only to
+   MOR-2111/MOR-2160/MOR-2161.
+5. Preserve intentional no-public rulings for physical controls and remote
+   VOX. Create new children only for approved bounded domains.
+6. Close each child only after its exact parser/executor/test/bench acceptance
+   evidence lands. Never create a catch-all “remaining 55” implementation
+   batch.
 
 ## Out of scope
 
-Front-panel and menu-domain controls (including display, FUNC-knob assignment, and
-the broad `EX` menu) are not automatically browser controls. A documented command is
-not, by itself, a product-support or hardware-acceptance claim.
-
----
-
-## Manual/profile census snapshot (2026-09-01)
-
-The official Yaesu **FTX-1 Series CAT Operation Reference Manual 2508-C** is the
-command authority; `rigs/ftx1.toml` is the runtime radio-fact SSOT. The companion
-[family/domain gap CSV](ftx1-command-gaps.csv) is a dated derived audit snapshot,
-not an implementation source or a second profile SSOT. It does not approve a bulk
-profile/API update. The IC-7300 MOR-2158 hold applied during this census and review;
-this census PR did not change that profile. It was released after MOR-2158/MOR-2133
-closure at main `bf66038c8b0ac74020d9f985677542cc3aba167d` (PR #2975 merge and
-post-merge PASS). Any future implementation must re-read current ownership and
-re-anchor from fresh main; this history does not make the profile permanently free.
-
-This snapshot is pinned to census ref
-`8cc5471dbb60f246ccb7a17a5e29f75fd6f20a00`, manual SHA-256
-`fbbd8eb6b12d1fec9474f3771f4b872ba4fd195dbe4b080cc2a1aae2b4ebc56c`, and
-profile SHA-256 `d81012e2d26cbe61ba1af86c97b0d28e630e4f8508733e4a4faab88792563c3c`.
-Its read-only inputs were `ftx1-manual-profile-census.md`
-(`751739289a2b19f140b9cf7e67d85611657202504fc32dae1c515e084ee606b2`) and JSON
-(`31f6f1ce9af2a38654d8143a9c986a4ad1ffc1bb30ecd5bed51e467258b52859`).
-
-### Reconciled unit of count
-
-- 580 manual rows/subcommands are evidence rows across 90 raw command keys; 427 of
-  those rows are `EX` menu addresses.
-- The defensible planning unit is **40 wholly absent raw families plus 15 existing
-  family extensions** (23 evidence rows). It is not a generated API-name total.
-- `EX` is one parameterized menu-address grammar, `EO` one parameterized encoder-
-  offset grammar, and `SS` one scope-settings family unless a future API design
-  intentionally splits it. The CSV collapses those selector rows accordingly.
-- Nine already-covered selector rows (one `AC`, eight `RM`) remain generic coverage,
-  not nine new operations. Approved bulk additions: **0**.
-- The CSV's stable rows have source IDs from the JSON (the `EX` aggregate records its
-  `manual:EX:*` prefix and 427-row cardinality), classification, current declaration/
-  reachability, confidence, and next action.
-
-### Required semantic/provenance rulings
-
-- `RC` (`reset_clarifier`) is profile-only and undocumented in 2508-C. Its omission
-  does **not** authorize removal: retain it pending separate official provenance or
-  hardware evidence.
-- `FR00`/`FR01` is dual receive/single receive; it is a receiver-function domain,
-  not VFO selection. `AB`/`BA` are MAIN/SUB copy directions, not VFO A/B aliases.
-- `BP` documents on/off and frequency parameters but no notch-width register; keep
-  any width API absent/stubbed until an official command exists.
-- `VX` is the documented VOX status surface; `VG`/`VD` are absent-family evidence,
-  while the manual-required/client-side VOX policy is not a new radio-side defect
-  claim.
-
-This is manual evidence, not new hardware evidence. It makes no bench, RX, TX, or
-current-release validation claim; the historical observation boundary above remains
-unchanged.
+This audit does not modify `rigs/ftx1.toml`, backend/runtime code, public API,
+or hardware state. Front-panel and menu-domain commands are not automatically
+browser controls, and a documented CAT command is not by itself a
+product-support or hardware-acceptance claim.
