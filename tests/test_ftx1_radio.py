@@ -323,9 +323,9 @@ async def test_set_powerstat_off(connected_radio):
 @pytest.mark.asyncio
 async def test_set_ptt_on(connected_radio):
     """MOR-1941: ``set_ptt`` no longer self-writes the legacy mirror. Our
-    own command is a claim about the wire, never receive/transmit truth
-    (§3.7 of the transmit-authority ADR) -- the mirror is left exactly as
-    it was, and only a real read-back (``get_ptt``) may change it.
+    own command is a wire-write outcome, not a ``TxStateReading`` from
+    ``core.tx_observation``. The mirror is left exactly as it was, and only
+    a real read-back (``get_ptt``) may change it.
     """
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_ptt(True)

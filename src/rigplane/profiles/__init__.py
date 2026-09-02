@@ -241,16 +241,16 @@ class TxPolicy:
 
     ``refused_during_tx`` names the command families this radio refuses on
     its own while transmitting. Entries are opaque, validated strings: the
-    single source of truth for the family vocabulary is
-    ``core/tx_authority.py`` (landing separately), so this type does not
-    check membership, only shape.
+    profile type owns their measured representation and checks shape, not
+    membership in a runtime command-family vocabulary.
 
     ``tx_state_map`` is the positive transmit-state map for the radio's PTT
     read-back: it lists the raw values that mean the radio is receiving.
     Everything else — including a raw value with no entry at all — must be
-    treated as *not receiving* (§3.7 of the transmit-authority ADR). Use
-    :meth:`is_receiving` rather than testing the map directly so that rule
-    cannot be quietly inverted by a later reader.
+    treated as *not receiving*. Backend reads carry that result in the
+    canonical :class:`~rigplane.core.tx_observation.TxStateReading` contract.
+    Use :meth:`is_receiving` rather than testing the map directly so that
+    rule cannot be quietly inverted by a later reader.
     """
 
     refused_during_tx: frozenset[str] = frozenset()
@@ -268,13 +268,13 @@ class TxPolicy:
     def attribution(self, raw_value: str) -> str | None:
         """The vendor label mapped to ``raw_value``, or ``None`` if unmapped.
 
-        Display-grade only (MOR-1941, §3.7 of the transmit-authority ADR):
-        unlike :meth:`is_receiving`, this carries no fail-closed safety
-        rule — an unmapped value is simply ``None``, not a hazard answer.
-        Yaesu's three-valued ``TX;`` answer surfaces here as ``"rx"`` /
-        ``"tx_cat"`` / ``"tx_other"``; a vendor with no attribution (e.g.
-        Icom) never populates ``tx_state_map`` with more than ``"rx"``, so
-        this is honestly ``None`` for every other raw value.
+        Display-grade only (MOR-1941): unlike :meth:`is_receiving`, this
+        carries no fail-closed safety rule — an unmapped value is simply
+        ``None``, not a hazard answer. Yaesu's three-valued ``TX;`` answer
+        surfaces here as ``"rx"`` / ``"tx_cat"`` / ``"tx_other"``; a vendor
+        with no attribution (e.g. Icom) never populates ``tx_state_map`` with
+        more than ``"rx"``, so this is honestly ``None`` for every other raw
+        value.
         """
         return self.tx_state_map.get(raw_value)
 
