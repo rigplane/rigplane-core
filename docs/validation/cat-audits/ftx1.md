@@ -88,3 +88,53 @@ that any listed command has completed hardware validation.
 Front-panel and menu-domain controls (including display, FUNC-knob assignment, and
 the broad `EX` menu) are not automatically browser controls. A documented command is
 not, by itself, a product-support or hardware-acceptance claim.
+
+---
+
+## Manual/profile census snapshot (2026-09-01)
+
+The official Yaesu **FTX-1 Series CAT Operation Reference Manual 2508-C** is the
+command authority; `rigs/ftx1.toml` is the runtime radio-fact SSOT. The companion
+[family/domain gap CSV](ftx1-command-gaps.csv) is a dated derived audit snapshot,
+not an implementation source or a second profile SSOT. It does not approve a bulk
+profile/API update and it does not alter the active IC-7300 MOR-2158 profile HOLD.
+
+This snapshot is pinned to census ref
+`8cc5471dbb60f246ccb7a17a5e29f75fd6f20a00`, manual SHA-256
+`fbbd8eb6b12d1fec9474f3771f4b872ba4fd195dbe4b080cc2a1aae2b4ebc56c`, and
+profile SHA-256 `d81012e2d26cbe61ba1af86c97b0d28e630e4f8508733e4a4faab88792563c3c`.
+Its read-only inputs were `ftx1-manual-profile-census.md`
+(`751739289a2b19f140b9cf7e67d85611657202504fc32dae1c515e084ee606b2`) and JSON
+(`31f6f1ce9af2a38654d8143a9c986a4ad1ffc1bb30ecd5bed51e467258b52859`).
+
+### Reconciled unit of count
+
+- 580 manual rows/subcommands are evidence rows across 90 raw command keys; 427 of
+  those rows are `EX` menu addresses.
+- The defensible planning unit is **40 wholly absent raw families plus 15 existing
+  family extensions** (23 evidence rows). It is not a generated API-name total.
+- `EX` is one parameterized menu-address grammar, `EO` one parameterized encoder-
+  offset grammar, and `SS` one scope-settings family unless a future API design
+  intentionally splits it. The CSV collapses those selector rows accordingly.
+- Nine already-covered selector rows (one `AC`, eight `RM`) remain generic coverage,
+  not nine new operations. Approved bulk additions: **0**.
+- The CSV's stable rows have source IDs from the JSON (the `EX` aggregate records its
+  `manual:EX:*` prefix and 427-row cardinality), classification, current declaration/
+  reachability, confidence, and next action.
+
+### Required semantic/provenance rulings
+
+- `RC` (`reset_clarifier`) is profile-only and undocumented in 2508-C. Its omission
+  does **not** authorize removal: retain it pending separate official provenance or
+  hardware evidence.
+- `FR00`/`FR01` is dual receive/single receive; it is a receiver-function domain,
+  not VFO selection. `AB`/`BA` are MAIN/SUB copy directions, not VFO A/B aliases.
+- `BP` documents on/off and frequency parameters but no notch-width register; keep
+  any width API absent/stubbed until an official command exists.
+- `VX` is the documented VOX status surface; `VG`/`VD` are absent-family evidence,
+  while the manual-required/client-side VOX policy is not a new radio-side defect
+  claim.
+
+This is manual evidence, not new hardware evidence. It makes no bench, RX, TX, or
+current-release validation claim; the historical observation boundary above remains
+unchanged.
