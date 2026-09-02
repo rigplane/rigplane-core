@@ -174,6 +174,20 @@
     grid-row: 4;
     grid-column: 1 / -1;
   }
+  /* The wiring's own `.channel-strips` rule (SemanticRadioSurfaces
+     .svelte) sets `grid-template-columns: repeat(auto-fit, minmax(0, 1fr))`
+     — a nested grid computed independently of this chassis's own two
+     columns. `subgrid` makes the receiver strips occupy THIS grid's column 1
+     / column 2 tracks directly, the same tracks `.rx-tx-zone`/`.tx-aux-
+     surface` and `.meters-surface`/`.scope-display-surface` already place
+     into above, rather than a separate track list an unrelated content
+     change could throw out of alignment. Doubled class for specificity,
+     same reason as the `.semantic-surfaces.semantic-surfaces` rule above:
+     this overrides a property (`grid-template-columns`) the base rule also
+     sets, so a single-class selector would tie and lose to source order. */
+  .peer-split-glass :global(.channel-strips.channel-strips) {
+    grid-template-columns: subgrid;
+  }
   .peer-split-glass :global(.meters-surface) {
     grid-row: 5;
     grid-column: 1;
