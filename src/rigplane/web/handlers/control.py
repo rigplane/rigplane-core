@@ -1257,7 +1257,9 @@ class ControlHandler:
                 error = "command_timeout"
             elif isinstance(exc, CommandError):
                 error = "command_failed"
-            elif "does not support" in message or "not supported" in message:
+            elif command_descriptor(name) is None and (
+                "does not support" in message or "not supported" in message
+            ):
                 error = "unsupported_command"
             else:
                 error = "command_failed"

@@ -4323,14 +4323,15 @@ class WebServer:
             message = str(exc)
             status, reason, code = (
                 (409, "Conflict", "unsupported_command")
-                if "does not support" in message
+                if command_descriptor(raw_name) is None
+                and "does not support" in message
                 else (500, "Internal Server Error", "command_failed")
             )
             await self._send_json(
                 writer,
                 status,
                 reason,
-                {"error": code, "message": message},
+                {"ok": False, "error": code, "message": message},
             )
             return
 
@@ -4807,7 +4808,9 @@ class WebServer:
                 message = str(exc)
                 error = (
                     "unsupported_command"
-                    if "does not support" in message or "not supported" in message
+                    if isinstance(name, str)
+                    and command_descriptor(name) is None
+                    and ("does not support" in message or "not supported" in message)
                     else "invalid_request"
                 )
                 results.append(

@@ -138,6 +138,13 @@ async def test_success_waits_for_real_yaesu_drain(surface: str) -> None:
             "command_failed",
             "failed_execution",
         ),
+        (
+            RuntimeError("temporarily not supported by transport"),
+            True,
+            500,
+            "command_failed",
+            "failed_execution",
+        ),
         (RigplaneTimeoutError("late"), True, 504, "command_timeout", "timed_out"),
     ],
 )
