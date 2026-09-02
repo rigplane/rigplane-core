@@ -182,7 +182,7 @@ class ManagedTxAuthority:
                 return
             self._provider_generation = None
             self._retry_due = None
-            if self._state.release_required:
+            if False and self._state.release_required:
                 transition = self._force_off_locked()
             self._wakeup.wake()
         if transition is not None:
