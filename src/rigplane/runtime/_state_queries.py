@@ -220,31 +220,19 @@ def acquisition_query_resolver_for_profile(
     return resolve
 
 
-def build_state_queries(
-    profile: RadioProfile,
-    capabilities: set[str],
-    *,
-    is_serial: bool = False,
-) -> list[AcquisitionQuery]:
+def build_state_queries(profile: RadioProfile) -> list[AcquisitionQuery]:
     """Build the profile-declared list of CI-V state queries.
 
     Parameters
     ----------
     profile:
         Radio profile (model, cmd29 support, receiver count).
-    capabilities:
-        Legacy caller input retained for compatibility. Query membership comes
-        from the profile's field-level acquisition capabilities.
-    is_serial:
-        Legacy caller input retained for compatibility. Transport does not
-        override profile-declared query membership.
 
     Returns
     -------
     list[AcquisitionQuery]
         Ordered list of lossless acquisition queries.
     """
-    _ = capabilities, is_serial
     acquisition = profile.state_acquisition
     if acquisition is None:
         return []

@@ -3,8 +3,8 @@
 Extracted from ``radio.py`` (issue #1260, Tier 3 wave 3 of #1063) to slim down
 the god-object module. The single function here drives a one-shot population
 of :class:`RadioState` immediately after connect by iterating CI-V state
-queries built from the radio profile and capabilities and dispatching them as
-fire-and-forget reads.
+queries built from the radio profile and dispatching them as fire-and-forget
+reads.
 
 Behaviour is intentionally identical to the previous
 ``IcomRadio._fetch_initial_state`` method: per-query failures are swallowed,
@@ -45,11 +45,7 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
             if is_serial
             else radio._INITIAL_STATE_GAP_LAN
         )
-        queries = build_state_queries(
-            radio._profile,
-            radio.capabilities,
-            is_serial=is_serial,
-        )
+        queries = build_state_queries(radio._profile)
         if not queries:
             radio._initial_state_fetched = True
             return

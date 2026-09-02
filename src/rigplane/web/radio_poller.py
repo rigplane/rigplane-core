@@ -1291,11 +1291,7 @@ class RadioPoller:
         )
 
     def _build_state_queries(self) -> list[AcquisitionQuery]:
-        result: list[AcquisitionQuery] = build_state_queries(
-            self._profile,
-            self._caps,
-            is_serial=self._is_serial,
-        )
+        result: list[AcquisitionQuery] = build_state_queries(self._profile)
         return result
 
     async def _send_one_state_query(
