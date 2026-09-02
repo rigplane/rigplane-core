@@ -70,6 +70,7 @@ class RecordingLanRadio(IcomRadio):
         self._mode: str = "USB"
         self._filter_width: int | None = None
         self._data_mode: int | bool = False
+        self._split = False
         self._ptt = False
 
     def fake_connect_audio(self, transport: _RecordingAudioTransport) -> None:
@@ -109,6 +110,10 @@ class RecordingLanRadio(IcomRadio):
 
     async def get_data_mode(self) -> bool:
         return bool(self._data_mode)
+
+    async def set_split(self, on: bool) -> None:
+        self.calls.append(("set_split", (on,)))
+        self._split = on
 
     async def set_data1_mod_input(self, source: int) -> None:
         self.calls.append(("set_data1_mod_input", (source,)))
@@ -247,7 +252,7 @@ async def rigctld_audio_setup() -> AsyncGenerator[
         radio._connected = False
 
 
-async def test_defer_write_is_dropped_while_the_radio_transmits(
+async def test_defer_split_is_dropped_while_the_radio_transmits(
     rigctld_audio_setup: tuple[
         RecordingLanRadio,
         RigctldServer,
@@ -256,7 +261,7 @@ async def test_defer_write_is_dropped_while_the_radio_transmits(
         _RecordingAudioTransport,
     ],
 ) -> None:
-    """The PTT re-read reports TX, so the DEFER gate drops a MODE write.
+    """The PTT re-read reports TX, so the DEFER gate drops a split write.
 
     This is the discriminating half of the fixture in
     ``_ptt_reread_fixtures.py``: it can only reach the ``rf_state is TX``
@@ -280,23 +285,21 @@ async def test_defer_write_is_dropped_while_the_radio_transmits(
         # The key state reaches the gate only via the next re-read tick.
         await wait_for_rf_state(server, tx_interlock.RfState.TX)
 
-        def mode_writes() -> list[tuple[str, tuple[Any, ...]]]:
-            return [
-                call for call in radio.calls if call[0] in ("set_mode", "set_data_mode")
-            ]
+        def split_writes() -> list[tuple[str, tuple[Any, ...]]]:
+            return [call for call in radio.calls if call[0] == "set_split"]
 
-        dropped_from = mode_writes()
-        assert await client.send("M PKTUSB") == "RPRT 0"
-        assert mode_writes() == dropped_from
+        dropped_from = split_writes()
+        assert await client.send("S 1 VFOA") == "RPRT 0"
+        assert split_writes() == dropped_from
 
         assert await client.send("T 0") == "RPRT 0"
         await wait_for_rf_state(server, tx_interlock.RfState.RX)
 
         # Same command, same client, RX now — it reaches the radio, so the
         # drop above was the TX branch and not a fixture that never writes.
-        assert await client.send("M PKTUSB") == "RPRT 0"
-        assert mode_writes() != dropped_from
-        assert ("set_mode", ("USB", None, 0)) in radio.calls
+        assert await client.send("S 1 VFOA") == "RPRT 0"
+        assert split_writes() != dropped_from
+        assert ("set_split", (True,)) in radio.calls
     finally:
         await client.close()
 
@@ -317,9 +320,6 @@ async def test_rigctld_wsjtx_replay_drives_data2_lan_tx_audio_pipeline(
 
     client = await _make_client(server)
     try:
-        # ``M`` (SET MODE) is DEFER-classified; wait out the same startup
-        # window a real hamlib client would (see _ptt_reread_fixtures.py)
-        # before the gate can know the radio is not transmitting.
         await wait_for_known_rf_state(server)
         assert await client.send("M PKTUSB") == "RPRT 0"
         assert await client.send("T 1") == "RPRT 0"

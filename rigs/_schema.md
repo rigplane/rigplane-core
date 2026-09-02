@@ -127,14 +127,16 @@ The current stable family identifiers and their fixed base dispositions are:
 | Base disposition | Family identifiers |
 |------------------|--------------------|
 | `always-pass` | `ptt-off`, `power-off`, `scan-stop`, `tuner-off` |
-| `tx-safe` | `power-on`, `frequency`, `rit-xit` |
+| `tx-safe` | `power-on`, `frequency`, `mode`, `band`, `vfo-select`, `vfo-contents`, `rit-xit` |
 | `block` | `ptt-on`, `raw-civ`, `scan-start`, `antenna-switch`, `tuner-engage` |
-| `defer` | `mode`, `band`, `vfo-select`, `vfo-topology`, `memory` |
+| `defer` | `vfo-topology`, `memory` |
 
 Only a known family whose fixed base disposition is `tx-safe` may appear in
-`disposition_overrides`, and its value must be `"defer"`. This is a one-way
-tightening: it causes a TX-SAFE family to use the existing deferred handling;
-it cannot create a new disposition or override any other base disposition.
+`disposition_overrides`, and its value must be `"defer"`. For `power-on` and
+`rit-xit`, this is a one-way tightening that uses the existing deferred
+handling. Overrides for `frequency`, `mode`, `band`, `vfo-select`, and
+`vfo-contents` are accepted as input but ignored: observed RF state cannot own
+admission for those authority-approved families.
 
 Structural `always-pass` families and hard `block` families are
 non-negotiable. A profile must not list them, alter them, or make them less

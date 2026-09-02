@@ -35,8 +35,11 @@ from rigplane.radio_state import RadioState
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import (
     CommandQueue,
+    SelectVfo,
+    SetBand,
     SetFreq,
     SetMode,
+    SetSplit,
     VfoEqualize,
     VfoSwap,
 )
@@ -781,28 +784,25 @@ async def test_yaesu_profile_override_cannot_change_structural_floors(
 async def test_yaesu_deferred_command_supersedes_without_extending_expiry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # MOR-1940: MODE is the DEFER exemplar here -- FREQUENCY was reclassified
-    # tx-safe (see test_yaesu_frequency_now_dispatches_without_entering_the_
-    # deferred_lane below, which pins the opposite contrast for SetFreq).
     clock = [10.0]
     monkeypatch.setattr(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
     )
     radio, queue = make_radio(), CommandQueue()
-    radio.set_mode = AsyncMock()
+    radio.set_split = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
     service = MagicMock()
     first = asyncio.get_running_loop().create_future()
     second = asyncio.get_running_loop().create_future()
     queue.put_ordered(
-        SetMode("LSB"),
+        SetSplit(False),
         future=first,
         command_id="first",
         command_service=service,
     )
     await _drain_with_ptt(poller, clock, 10.0, True)
     assert not first.done()
-    queue.put_ordered(SetMode("USB"), future=second)
+    queue.put_ordered(SetSplit(True), future=second)
     await _drain_with_ptt(poller, clock, 12.5, True)
     assert isinstance(first.exception(), CommandError)
     assert "superseded" in str(first.exception())
@@ -810,7 +810,7 @@ async def test_yaesu_deferred_command_supersedes_without_extending_expiry(
     assert service.emit_lifecycle.call_args.args[1] == "superseded"
     await _drain_with_ptt(poller, clock, 13.0, False)
     assert isinstance(second.exception(), TimeoutError)
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -826,7 +826,7 @@ async def test_yaesu_deferred_command_emits_held_lifecycle_once(
         executor=MagicMock(), state_store=StateStore(), clock=lambda: clock[0]
     )
     poller = YaesuCatPoller(radio, command_queue=queue)
-    queue.put_ordered(SetMode("USB"), command_id="held", command_service=service)
+    queue.put_ordered(SetSplit(True), command_id="held", command_service=service)
 
     await _drain_with_ptt(poller, clock, 10.0, True)
     event = service.lifecycle_events()[0]
@@ -866,14 +866,11 @@ async def test_ftx1_web_deferred_hold_preserves_ingress_lifecycle_context(
     )
     radio, handler, poller, _store, _accept = _real_ftx1_control_path()
     service = handler._command_service  # noqa: SLF001
-    # MOR-1940: MODE is the DEFER exemplar (FREQUENCY was reclassified
-    # tx-safe); the assertions below compare `held` against `ingress`
-    # generically, so the swap needs no other change in this test.
-    params = {"mode": "USB", "receiver": 1}
+    params = {"on": True}
     original_params = dict(params)
 
     await handler._enqueue_command(  # noqa: SLF001
-        "set_mode", params, command_id=f"held-{source}", source=source
+        "set_split", params, command_id=f"held-{source}", source=source
     )
     ingress = service.lifecycle_events()[0]
     assert params == original_params
@@ -919,13 +916,13 @@ async def test_yaesu_deferred_replacement_lifecycle_preserves_deadline_truth(
     poller = YaesuCatPoller(radio, command_queue=queue)
     first = asyncio.get_running_loop().create_future()
     queue.put_ordered(
-        SetMode("LSB"),
+        SetSplit(False),
         future=first,
         command_id="first",
         command_service=service,
     )
     await _drain_with_ptt(poller, clock, 20.0, True)
-    queue.put_ordered(SetMode("USB"), command_id="replacement", command_service=service)
+    queue.put_ordered(SetSplit(True), command_id="replacement", command_service=service)
     await _drain_with_ptt(poller, clock, replacement_at, True)
 
     events = service.lifecycle_events()
@@ -952,32 +949,27 @@ async def test_yaesu_deferred_release_requires_continuous_fresh_rx(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
     )
     radio, queue = make_radio(), CommandQueue()
-    radio.set_mode = AsyncMock()
+    radio.set_split = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
     future = asyncio.get_running_loop().create_future()
-    queue.put_ordered(SetMode("USB"), future=future)
+    queue.put_ordered(SetSplit(True), future=future)
     await _drain_with_ptt(poller, clock, 20.0, True)
     await _drain_with_ptt(poller, clock, 20.5, False)
     await _drain_with_ptt(poller, clock, 21.0, None)
     await _drain_with_ptt(poller, clock, 21.1, False)
     await _drain_with_ptt(poller, clock, 22.099, False)
     assert not future.done()
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
     await _drain_with_ptt(poller, clock, 22.1, False)
     await poller._drain_commands()  # noqa: SLF001
     assert future.result() is None
-    radio.set_mode.assert_awaited_once_with("USB", receiver=0)
+    radio.set_split.assert_awaited_once_with(True)
 
 
 @pytest.mark.asyncio
 async def test_yaesu_frequency_now_dispatches_without_entering_the_deferred_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MOR-1940: the exact contrast to the MODE tests above. FREQUENCY was
-    reclassified DEFER -> tx-safe (both bench radios accept and apply it
-    while keyed), so it dispatches immediately even under known TX -- it
-    never reaches ``poller._deferred_tx_lane`` at all.
-    """
     clock = [20.0]
     monkeypatch.setattr(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
@@ -996,6 +988,60 @@ async def test_yaesu_frequency_now_dispatches_without_entering_the_deferred_lane
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "family", "method", "expected_args"),
+    (
+        (
+            SetFreq(7_100_000),
+            TxInterlockCommandFamily.FREQUENCY,
+            "set_freq",
+            (7_100_000,),
+        ),
+        (SetMode("USB"), TxInterlockCommandFamily.MODE, "set_mode", ("USB",)),
+        (SetBand(3), TxInterlockCommandFamily.BAND, "set_band", (3,)),
+        (
+            SelectVfo("A"),
+            TxInterlockCommandFamily.VFO_SELECT,
+            "set_vfo_select",
+            (0,),
+        ),
+        (
+            VfoSwap(),
+            TxInterlockCommandFamily.VFO_CONTENTS,
+            "swap_vfo_ab",
+            (0,),
+        ),
+        (
+            VfoEqualize(),
+            TxInterlockCommandFamily.VFO_CONTENTS,
+            "equalize_vfo_ab",
+            (0,),
+        ),
+    ),
+)
+async def test_yaesu_authority_approved_commands_dispatch_during_observed_tx(
+    command: object,
+    family: TxInterlockCommandFamily,
+    method: str,
+    expected_args: tuple[object, ...],
+) -> None:
+    radio = make_radio()
+    radio.receiver_count = 1
+    radio.profile.tx_interlock_disposition_overrides = {
+        family: TxInterlockDisposition.DEFER
+    }
+    setattr(radio, method, AsyncMock())
+    poller = YaesuCatPoller(radio)
+    _set_fresh_ptt_observation(poller, active=True)
+
+    await poller._execute_command(command)  # type: ignore[arg-type] # noqa: SLF001
+
+    getattr(radio, method).assert_awaited_once()
+    assert getattr(radio, method).await_args.args == expected_args
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("knownness", ("missing", "stale", "generation_mismatch"))
 async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
     monkeypatch: pytest.MonkeyPatch,
@@ -1005,7 +1051,7 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: 30.0
     )
     radio, queue = make_radio(), CommandQueue()
-    radio.set_mode = AsyncMock()
+    radio.set_split = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
     service = MagicMock()
     if knownness == "stale":
@@ -1021,7 +1067,7 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
         )
     future = asyncio.get_running_loop().create_future()
     queue.put_ordered(
-        SetMode("USB"),
+        SetSplit(True),
         future=future,
         command_id="unknown",
         command_service=service,
@@ -1030,7 +1076,7 @@ async def test_yaesu_unknown_deferred_command_fails_without_entering_lane(
     error = future.exception()
     assert isinstance(error, CommandError)
     assert "unknown" in str(error)
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
     service.emit_lifecycle.assert_not_called()
 
@@ -1058,7 +1104,7 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
         "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
     )
     radio, queue, store = _tx_target_radio(), CommandQueue(), StateStore()
-    radio.set_mode = AsyncMock()
+    radio.set_split = AsyncMock()
     poller = YaesuCatPoller(radio, command_queue=queue)
     poller.bind_provider_generation(
         capture=lambda: store.provider_generation,
@@ -1068,7 +1114,7 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
     service = MagicMock()
     queue.register_session("ws")
     queue.put_ordered(
-        SetMode("USB"),
+        SetSplit(True),
         future=future,
         command_id="held",
         source="websocket",
@@ -1114,7 +1160,7 @@ async def test_yaesu_lifecycle_boundary_retires_held_deferred_command(
     clock[0] = 11.5
     _set_fresh_ptt_observation(poller, active=False)
     await poller._drain_commands()  # noqa: SLF001
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 @pytest.mark.asyncio

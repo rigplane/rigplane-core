@@ -39,18 +39,19 @@ def _intent(name: str, **params: object) -> CommandIntent:
 
 
 def test_material_intents_use_shared_policy() -> None:
-    # MOR-1940: set_freq/set_rit/set_xit moved DEFER -> tx-safe (both bench
-    # radios accept and apply these writes while keyed; ADR
-    # docs/plans/2026-08-20-transmit-authority.md S3.3). set_mode/set_vfo/
-    # set_split_vfo are untouched.
     cases = (
         (_intent("set_freq", freq_hz=1), commands.SetFreq, "tx-safe", "frequency"),
-        (_intent("set_mode", mode="USB"), commands.SetMode, "defer", "mode"),
+        (_intent("set_mode", mode="USB"), commands.SetMode, "tx-safe", "mode"),
         (_intent("set_ptt", ptt=False), commands.PttOff, "always-pass", "ptt-off"),
         (_intent("set_ptt", ptt=True), commands.PttOn, "block", "ptt-on"),
         (_intent("set_rit", hz=50), commands.SetRitFrequency, "tx-safe", "rit-xit"),
         (_intent("set_xit", hz=-50), commands.SetRitFrequency, "tx-safe", "rit-xit"),
-        (_intent("set_vfo", vfo="VFOA"), commands.SelectVfo, "defer", "vfo-select"),
+        (
+            _intent("set_vfo", vfo="VFOA"),
+            commands.SelectVfo,
+            "tx-safe",
+            "vfo-select",
+        ),
         (_intent("set_split_vfo", on=True), commands.SetSplit, "defer", "vfo-topology"),
         (
             _intent("send_raw", frame_bytes=b"\xfe\xfd"),
@@ -283,17 +284,10 @@ async def test_structural_exemptions_never_resolve_rf_truth(
 # stale RF -- never held in-band. See ``RigctldHandler._defer_write_gate``.
 
 
-# MOR-1940: "F" (set_freq) was dropped from this set -- frequency is now
-# tx-safe, not DEFER (see test_frequency_now_dispatches_in_every_rf_state
-# below, which pins the opposite contrast for exactly this wire).
-_DEFER_WIRES = (b"M USB 2400", b"V VFOA", b"S 1 VFOA", b"U SPLIT 1")
+_DEFER_WIRES = (b"S 1 VFOA", b"U SPLIT 1")
 
 
 def _defer_wire_method(radio: AsyncMock, wire: bytes) -> AsyncMock:
-    if wire.startswith(b"M"):
-        return radio.set_mode
-    if wire.startswith(b"V"):
-        return radio.set_vfo
     return radio.set_split  # b"S ..." (set_split_vfo) and b"U SPLIT ..."
 
 
@@ -346,24 +340,34 @@ async def test_defer_writes_are_dropped_silently_during_known_tx(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["tx", "absent", "stale", "generation"])
-async def test_frequency_now_dispatches_in_every_rf_state(
-    case: str, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("wire", "method", "expected_args"),
+    (
+        (b"F 14074000", "set_freq", (14_074_000,)),
+        (b"M USB 2400", "set_mode", ("USB",)),
+        (b"V VFOA", None, ()),
+    ),
+)
+async def test_authority_approved_writes_dispatch_in_every_rf_state(
+    case: str,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: bytes,
+    method: str | None,
+    expected_args: tuple[object, ...],
 ) -> None:
-    """MOR-1940: the exact contrast to the DEFER wires above. Frequency was
-    reclassified DEFER -> tx-safe (both bench radios accept and apply it
-    while keyed), so ``F`` no longer fails closed under UNKNOWN/stale RF and
-    no longer gets silently dropped during known TX -- it reaches the radio
-    unconditionally, same as a plain TX-SAFE write.
-    """
     store, forced = _store(case)
     handler, radio, _routing = _handler(store)
     if forced is not None:
         monkeypatch.setattr(StateStore, "snapshot", lambda _: forced)
 
-    response = await handler.execute(parse_line(b"F 14074000"))
+    response = await handler.execute(parse_line(wire))
 
     assert response.ok
-    radio.set_freq.assert_awaited_once_with(14_074_000, receiver=0)
+    if method is not None:
+        called = getattr(radio, method)
+        called.assert_awaited_once()
+        assert called.await_args.args == expected_args
+    assert handler._command_service.lifecycle_events()[-1].state == "acknowledged"  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -378,19 +382,16 @@ async def test_dropped_write_leaves_state_store_and_lifecycle_untouched() -> Non
     lifecycle events run INSIDE ``execute``, so a write that never reaches
     ``execute`` cannot produce any of them.
 
-    MOR-1940: uses ``M`` (mode), not ``F`` (frequency) -- frequency is no
-    longer DEFER and no longer drops during TX (see
-    test_frequency_now_dispatches_in_every_rf_state above). This test is
-    about the drop's shape, not about which family triggers it, so the
-    exemplar moved; the property it pins is unchanged.
+    Split remains DEFER, so it continues to pin the drop's shape while
+    band/frequency, mode, and pure VFO commands bypass observed RF state.
     """
     store = _store("tx")[0]
     handler, radio, _routing = _handler(store)
 
-    response = await handler.execute(parse_line(b"M USB 2400"))
+    response = await handler.execute(parse_line(b"S 1 VFOA"))
 
     assert response.ok
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
     assert handler._command_service.lifecycle_events() == ()  # noqa: SLF001
     assert (
         handler._command_service.pending_overlays(  # noqa: SLF001
@@ -399,27 +400,24 @@ async def test_dropped_write_leaves_state_store_and_lifecycle_untouched() -> Non
         == ()
     )
     with pytest.raises(KeyError):
-        store.snapshot().field("receiver.main.active.freq_mode.mode")
+        store.snapshot().field("global.tx_state.split")
 
 
 @pytest.mark.asyncio
 async def test_known_tx_drop_is_logged_once(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """MOR-1940: uses ``M`` (mode), not ``F`` -- see the note on
-    test_dropped_write_leaves_state_store_and_lifecycle_untouched above.
-    """
     caplog.set_level(logging.WARNING, logger="rigplane.rigctld.handler")
     handler, _radio, _routing = _handler(_store("tx")[0])
 
-    response = await handler.execute(parse_line(b"M USB 2400"))
+    response = await handler.execute(parse_line(b"S 1 VFOA"))
 
     assert response.ok
     drop_records = [r for r in caplog.records if "dropped" in r.getMessage()]
     assert len(drop_records) == 1
     assert drop_records[0].levelno == logging.WARNING
     message = drop_records[0].getMessage()
-    assert "set_mode" in message
+    assert "set_split_vfo" in message
     assert "transmitting" in message
 
 
@@ -641,14 +639,13 @@ async def test_success_without_a_lifecycle_record_is_only_the_tx_drop() -> None:
     this property from the other side, because that decision is taken inside
     the executor and does leave an ``acknowledged`` record.
 
-    MOR-1940: the dropped half uses ``M`` (mode), not ``F`` -- frequency no
-    longer drops during TX. The applied/RX half keeps ``F``: an ordinary RX
-    dispatch is unaffected by the reclassification either way.
+    The dropped half uses split, which remains DEFER. The applied half keeps
+    frequency, an authority-approved family that no longer consults RF state.
     """
     dropped_handler, dropped_radio, _ = _handler(_store("tx")[0])
-    dropped = await dropped_handler.execute(parse_line(b"M USB 2400"))
+    dropped = await dropped_handler.execute(parse_line(b"S 1 VFOA"))
     assert dropped.ok
-    dropped_radio.set_mode.assert_not_awaited()
+    dropped_radio.set_split.assert_not_awaited()
     assert dropped_handler._command_service.lifecycle_events() == ()  # noqa: SLF001
 
     applied_handler, applied_radio, _ = _handler(_store("rx")[0])
@@ -732,16 +729,13 @@ async def test_unkey_asks_the_radio_to_re_observe_rf_truth() -> None:
 
 @pytest.mark.asyncio
 async def test_dropped_write_asks_for_nothing() -> None:
-    """A write that never reached the radio changed no field to re-observe.
-
-    MOR-1940: uses ``M`` (mode), not ``F`` -- frequency no longer drops.
-    """
+    """A write that never reached the radio changed no field to re-observe."""
     handler, radio, freshness = _handler_with_freshness(_store("tx")[0])
 
-    response = await handler.execute(parse_line(b"M USB 2400"))
+    response = await handler.execute(parse_line(b"S 1 VFOA"))
 
     assert response.ok
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
     assert freshness.requests == []
 
 
@@ -830,9 +824,8 @@ async def test_ptt_poll_leaves_a_stale_canonical_field_untouched() -> None:
 async def test_ptt_poll_does_not_unlock_a_deferred_write() -> None:
     """Refusal replaces fabrication: a poll cannot create RX truth.
 
-    MOR-1940: uses ``M`` (mode), not ``F`` -- frequency is tx-safe now and no
-    longer fails closed under UNKNOWN, so it can no longer probe this
-    property (the poll not fabricating RX truth for a still-DEFER write).
+    Split remains DEFER and therefore probes that the poll cannot fabricate
+    RX truth.
     """
     store = StateStore()
     handler, radio = _mirror_handler(store)
@@ -842,12 +835,12 @@ async def test_ptt_poll_does_not_unlock_a_deferred_write() -> None:
 
     assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.UNKNOWN
 
-    command = parse_line(b"M USB 2400")
+    command = parse_line(b"S 1 VFOA")
     response = await handler.execute(command)
 
     assert response.error is HamlibError.ERJCTED
     assert format_response(command, response, ClientSession()) == b"RPRT -9\n"
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 @pytest.mark.asyncio
