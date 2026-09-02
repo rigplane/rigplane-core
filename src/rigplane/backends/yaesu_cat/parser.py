@@ -94,6 +94,7 @@ _ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(
         "chan",
         "tone",
         "shift",
+        "receiver",
     }
 )
 
@@ -152,6 +153,7 @@ _PLACEHOLDER_REGEX: dict[str, tuple[str, Any]] = {
     "chan": (r"(?P<chan>.{5})", str),
     "tone": (r"(?P<tone>.)", str),
     "shift": (r"(?P<shift>.)", str),
+    "receiver": (r"(?P<receiver>[01])", int),
 }
 
 

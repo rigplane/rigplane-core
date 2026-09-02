@@ -1500,58 +1500,90 @@ async def test_get_ctcss_tone_returns_centihz(connected_radio):
 # -- Repeater shift (OS command, MOR-2111) ----------------------------------
 
 
+@pytest.mark.parametrize(("receiver", "direction"), [(0, 0), (1, 3)])
 @pytest.mark.asyncio
-async def test_get_repeater_shift_simplex(connected_radio):
-    """MAIN repeater shift read sends ``OS0;`` and parses ``OS0n;``.
-
-    OS P1=0 (MAIN); the answer's P2 (0-3) is the direction code.
-    FTX-1_CAT_OM_ENG_2508-C, OS OFFSET (REPEATER SHIFT).
-    """
-    connected_radio._transport.query = AsyncMock(return_value="OS00")
-    result = await connected_radio.get_repeater_shift()
-    assert result == RepeaterShiftDirection.SIMPLEX
-    assert isinstance(result, RepeaterShiftDirection)
-    connected_radio._transport.query.assert_called_once_with("OS0;")
-
-
-@pytest.mark.asyncio
-async def test_get_repeater_shift_ars(connected_radio):
-    connected_radio._transport.query = AsyncMock(return_value="OS03")
-    result = await connected_radio.get_repeater_shift()
-    assert result == RepeaterShiftDirection.ARS
-    connected_radio._transport.query.assert_called_once_with("OS0;")
-
-
-@pytest.mark.asyncio
-async def test_read_repeater_shift_is_a_pure_read(connected_radio):
-    """``read_repeater_shift`` must not mutate legacy ``radio_state``.
-
-    Pre-seed a sentinel value outside the real 0-3 range and confirm the
-    read leaves the state object identity and repeater_shift untouched
-    (MOR-434 pattern) — used by the observation pipeline via ``read_*``,
-    never ``get_*``.
-    """
-    connected_radio.radio_state.main.repeater_shift = 99
+async def test_read_repeater_shift_routes_receiver_and_is_pure(
+    connected_radio, receiver: int, direction: int
+):
+    """OS P1 selects MAIN/SUB; a pure read leaves both legacy sides intact."""
+    connected_radio.radio_state.main.repeater_shift = 98
+    connected_radio.radio_state.sub.repeater_shift = 99
     state_before = connected_radio.radio_state
+    connected_radio._transport.query = AsyncMock(
+        return_value=f"OS{receiver}{direction}"
+    )
 
-    connected_radio._transport.query = AsyncMock(return_value="OS02")
-    assert await connected_radio.read_repeater_shift() == 2
+    assert await connected_radio.read_repeater_shift(receiver) == direction
+    connected_radio._transport.query.assert_called_once_with(f"OS{receiver};")
     assert connected_radio.radio_state is state_before
-    assert connected_radio.radio_state.main.repeater_shift == 99
+    assert connected_radio.radio_state.main.repeater_shift == 98
+    assert connected_radio.radio_state.sub.repeater_shift == 99
 
 
 @pytest.mark.asyncio
-async def test_set_repeater_shift_plus(connected_radio):
+async def test_get_repeater_shift_returns_enum_for_sub(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="OS13")
+    result = await connected_radio.get_repeater_shift(1)
+    assert result is RepeaterShiftDirection.ARS
+    connected_radio._transport.query.assert_called_once_with("OS1;")
+
+
+@pytest.mark.parametrize("receiver", [-1, 2, True, False, 0.0, "0"])
+@pytest.mark.asyncio
+async def test_repeater_shift_rejects_invalid_receiver_before_io(
+    connected_radio, receiver: object
+):
+    connected_radio._transport.query = AsyncMock()
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_repeater_shift(RepeaterShiftDirection.PLUS)
-    connected_radio._transport.write.assert_called_once_with("OS01;")
+
+    with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.read_repeater_shift(receiver)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError), match="receiver"):
+        await connected_radio.set_repeater_shift(0, receiver=receiver)  # type: ignore[arg-type]
+
+    connected_radio._transport.query.assert_not_awaited()
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.parametrize("direction", [-1, 4, True, False, 1.0, "1"])
+@pytest.mark.asyncio
+async def test_repeater_shift_rejects_invalid_direction_before_io(
+    connected_radio, direction: object
+):
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises((TypeError, ValueError), match="direction"):
+        await connected_radio.set_repeater_shift(direction)  # type: ignore[arg-type]
+    connected_radio._transport.write.assert_not_awaited()
+
+
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.parametrize("direction", list(RepeaterShiftDirection))
+@pytest.mark.asyncio
+async def test_set_repeater_shift_routes_all_values(
+    connected_radio, receiver: int, direction: RepeaterShiftDirection
+):
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_repeater_shift(direction, receiver=receiver)
+    connected_radio._transport.write.assert_called_once_with(
+        f"OS{receiver}{int(direction)};"
+    )
 
 
 @pytest.mark.asyncio
-async def test_set_repeater_shift_minus_accepts_bare_int(connected_radio):
-    connected_radio._transport.write = AsyncMock()
-    await connected_radio.set_repeater_shift(2)
-    connected_radio._transport.write.assert_called_once_with("OS02;")
+async def test_read_repeater_shift_rejects_answer_for_other_receiver(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="OS12")
+    with pytest.raises(CommandError, match="receiver.*mismatch"):
+        await connected_radio.read_repeater_shift(0)
+
+
+@pytest.mark.parametrize("answer", ["OS04", "OS0X"])
+@pytest.mark.asyncio
+async def test_read_repeater_shift_rejects_invalid_answer_direction(
+    connected_radio, answer: str
+):
+    connected_radio._transport.query = AsyncMock(return_value=answer)
+    with pytest.raises(CommandError, match="direction in answer"):
+        await connected_radio.read_repeater_shift(0)
 
 
 @pytest.mark.parametrize(

@@ -2315,35 +2315,41 @@ class YaesuCatRadio:
         return _ctcss_index_to_centihz(await self.read_ctcss_tone_index(receiver))
 
     async def read_repeater_shift(self, receiver: int = 0) -> int:
-        """Read the MAIN repeater shift direction (OS0) — pure read.
+        """Read one receiver's repeater shift direction — pure read.
 
-        Sends ``OS0;`` (P1=0 MAIN) and parses the ``OS0n;`` answer per the
+        Sends ``OS0;`` for MAIN or ``OS1;`` for SUB and parses the answer per the
         FTX-1 CAT Operation Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``),
         OS OFFSET (REPEATER SHIFT). Returns the raw 0-3 P2 code (0=Simplex,
         1=Plus Shift, 2=Minus Shift, 3=ARS) — shift magnitude is not covered
         by this command (see :class:`RepeaterShiftCapable`). Pure CAT read
         used by the observation pipeline: it does NOT mutate ``radio_state``.
-        MAIN only (OS0); the SUB receiver would need OS1, out of scope.
         """
-        result = await self._query("get_repeater_shift")
-        return int(result["shift"])
+        receiver = self._validate_repeater_shift_receiver(receiver)
+        result = await self._query("get_repeater_shift", receiver=receiver)
+        if result["receiver"] != receiver:
+            raise CommandError(
+                "repeater shift receiver mismatch: "
+                f"requested {receiver}, received {result['receiver']}"
+            )
+        try:
+            return int(RepeaterShiftDirection(int(result["shift"])))
+        except (TypeError, ValueError) as exc:
+            raise CommandError(
+                f"invalid repeater shift direction in answer: {result['shift']!r}"
+            ) from exc
 
     async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
-        """Get the MAIN repeater shift direction (OS0 command)."""
+        """Get one receiver's repeater shift direction (OS command)."""
         return RepeaterShiftDirection(await self.read_repeater_shift(receiver))
 
     async def set_repeater_shift(
         self, direction: RepeaterShiftDirection | int, receiver: int = 0
     ) -> None:
-        """Set the MAIN repeater shift direction (OS0 command).
+        """Set one receiver's repeater shift direction (OS command).
 
         Args:
             direction: Target shift direction.
-            receiver: Ignored (FTX-1 writes MAIN only via OS0). Present for
-                protocol compat. As with other MAIN-only FTX-1 setters,
-                passing ``receiver=1`` still writes the MAIN frame, and the
-                poller then records the result under SUB — a pre-existing
-                convention across this file, not specific to this method.
+            receiver: 0 for MAIN or 1 for SUB, matching the manual's P1.
 
         The manual's own footnote says this command "can be activated only
         with an FM mode" — nothing more; the manual documents no error
@@ -2355,7 +2361,29 @@ class YaesuCatRadio:
         refused only for the current mode — a different failure wearing the
         same reply.
         """
-        await self._write("set_repeater_shift", shift=int(direction))
+        receiver = self._validate_repeater_shift_receiver(receiver)
+        if isinstance(direction, bool) or not isinstance(direction, int):
+            raise TypeError("repeater shift direction must be an integer from 0 to 3")
+        try:
+            validated_direction = RepeaterShiftDirection(direction)
+        except ValueError as exc:
+            raise ValueError(
+                f"repeater shift direction must be from 0 to 3, got {direction}"
+            ) from exc
+        await self._write(
+            "set_repeater_shift",
+            receiver=receiver,
+            shift=int(validated_direction),
+        )
+
+    def _validate_repeater_shift_receiver(self, receiver: object) -> int:
+        if isinstance(receiver, bool) or not isinstance(receiver, int):
+            raise TypeError("repeater shift receiver must be an integer")
+        if not self.profile.supports_receiver(receiver):
+            raise ValueError(
+                f"repeater shift receiver must be supported by the profile, got {receiver}"
+            )
+        return receiver
 
     # -- D10: System --------------------------------------------------------
 

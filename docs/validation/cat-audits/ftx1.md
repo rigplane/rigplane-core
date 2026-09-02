@@ -10,7 +10,7 @@
 - **Manual SHA-256:**
   `fbbd8eb6b12d1fec9474f3771f4b872ba4fd195dbe4b080cc2a1aae2b4ebc56c`.
 - **Runtime radio-fact SSOT:** `rigs/ftx1.toml`, SHA-256
-  `d81012e2d26cbe61ba1af86c97b0d28e630e4f8508733e4a4faab88792563c3c`.
+  `a18d0026302b9f76f331090894f773207a60a626d4333e748b074220c10d3b63`.
 - **Derived decision register:**
   [`ftx1-command-gaps.csv`](ftx1-command-gaps.csv).
 
@@ -112,9 +112,11 @@ are not evidence for a radio capability.
 - **`VD` and `VG` are intentionally not public.** The later MOR-2112 owner
   ruling supersedes the old VOX implementation request; MOR-674 is
   **Canceled**.
-- **`OS` ownership is exactly MOR-2111/MOR-2160/MOR-2161.** Its SUB
-  extension must preserve the FM admission rule and four-value direction
-  domain and must reach the active Yaesu executor.
+- **`OS` ownership is exactly MOR-2111/MOR-2160/MOR-2161.** MOR-2160 now
+  routes the official P1 selector through profile-owned `OS{receiver}`
+  templates and polls distinct MAIN/SUB readback with the same 30/120 policy.
+  The manual's FM-only rule and four-value direction domain remain unchanged;
+  MOR-2161 still owns caller-visible executor completion/refusal propagation.
 
 ## Reachability and safety gates
 

@@ -1586,21 +1586,12 @@ async def test_sql_type_skipped_without_ctcss_capability() -> None:
     radio.read_sql_type.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    "code",
-    [0, 1, 2, 3],  # Simplex, Plus Shift, Minus Shift, ARS
-)
+@pytest.mark.parametrize("code", [0, 1, 2, 3])
 @pytest.mark.asyncio
-async def test_repeater_shift_code_emits_directly(code: int) -> None:
-    """MOR-2111: each ``OS`` P2 code emits as-is onto the neutral path.
-
-    Unlike sql_type's boolean-pair derivation, RepeaterShiftDirection's own
-    wire values ARE the neutral representation (FTX-1 is the only
-    implementer of RepeaterShiftCapable today) -- no mapping happens here.
-    """
+async def test_repeater_shift_emits_both_receivers_directly(code: int) -> None:
     radio = _make_radio()
     radio.capabilities = radio.capabilities | {"repeater_shift"}
-    radio.read_repeater_shift = AsyncMock(return_value=code)
+    radio.read_repeater_shift = AsyncMock(side_effect=[code, code])
     adapter = YaesuObservationAdapter(
         radio,
         profile=_profile_state_acquisition(),
@@ -1611,7 +1602,56 @@ async def test_repeater_shift_code_emits_directly(code: int) -> None:
     by_path = {str(item.path): item.value for item in observations}
 
     assert by_path["receiver.main.operator_controls.repeater_shift"] == code
-    assert radio.read_repeater_shift.await_count == 1
+    assert by_path["receiver.sub.operator_controls.repeater_shift"] == code
+    assert radio.read_repeater_shift.await_args_list == [call(0), call(1)]
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "expected_path", "expected_value"),
+    [
+        ([ValueError("MAIN failed"), 2], "receiver.sub.operator_controls.repeater_shift", 2),
+        ([1, ValueError("SUB failed")], "receiver.main.operator_controls.repeater_shift", 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_repeater_shift_receiver_failures_are_isolated(
+    side_effect: list[object], expected_path: str, expected_value: int
+) -> None:
+    radio = _make_radio()
+    radio.capabilities.add("repeater_shift")
+    radio.read_repeater_shift = AsyncMock(side_effect=side_effect)
+    adapter = YaesuObservationAdapter(radio, profile=_profile_state_acquisition())
+
+    observations = await adapter.poll_slow_controls()
+    shifts = {
+        str(item.path): item.value
+        for item in observations
+        if str(item.path).endswith("repeater_shift")
+    }
+
+    assert shifts == {expected_path: expected_value}
+    assert radio.read_repeater_shift.await_args_list == [call(0), call(1)]
+
+
+@pytest.mark.asyncio
+async def test_repeater_shift_sub_read_is_gated_by_acquisition_policy() -> None:
+    radio = _make_radio()
+    radio.capabilities.add("repeater_shift")
+    radio.read_repeater_shift = AsyncMock(return_value=1)
+    profile = _profile_state_acquisition()
+    sub_path = "receiver.sub.operator_controls.repeater_shift"
+    profile = replace(
+        profile,
+        capabilities=tuple(
+            capability
+            for capability in profile.capabilities
+            if str(capability.path) != sub_path
+        ),
+    )
+
+    await YaesuObservationAdapter(radio, profile=profile).poll_slow_controls()
+
+    radio.read_repeater_shift.assert_awaited_once_with(0)
 
 
 @pytest.mark.asyncio
