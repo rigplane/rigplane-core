@@ -96,6 +96,7 @@ class ManagedTxState:
     tot_deadline_monotonic: float | None = None
     effect_epoch: int = 0
     pending_effect: ManagedTxEffect | None = None
+    current_abort_token: EffectToken | None = None
     last_actuation: ActuationDiagnostic | None = None
     last_error: str | None = None
     abort_errors: tuple[AbortError, ...] = ()
@@ -148,6 +149,12 @@ class ForceOff:
 
 
 @dataclass(frozen=True, slots=True)
+class RetryForceReceive:
+    provider_generation: int
+    attempt_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class ActuationSettled:
     token: EffectToken
     operation: ActuationOperation
@@ -163,7 +170,13 @@ class AbortFailed:
 
 
 ManagedTxEvent: TypeAlias = (
-    PttDown | PttUp | TransmitOn | ForceOff | ActuationSettled | AbortFailed
+    PttDown
+    | PttUp
+    | TransmitOn
+    | ForceOff
+    | RetryForceReceive
+    | ActuationSettled
+    | AbortFailed
 )
 
 
@@ -193,7 +206,8 @@ def _on(
     intent: ManagedTxIntent,
     operation: ActuationOperation,
 ) -> ManagedTxTransition:
-    token = _token(state, event.provider_generation, event.attempt_id)
+    epoch = state.effect_epoch + 1
+    token = _token(state, event.provider_generation, event.attempt_id, epoch)
     effect = ManagedTxEffect(operation, token)
     next_state = replace(
         state,
@@ -201,7 +215,9 @@ def _on(
         release_plan=ReleasePlan.PTT_RELEASE,
         tx_started_at_monotonic=event.tx_started_at_monotonic,
         tot_deadline_monotonic=event.tot_deadline_monotonic,
+        effect_epoch=epoch,
         pending_effect=effect,
+        current_abort_token=None,
         last_error=None,
     )
     return ManagedTxTransition(next_state, ManagedTxOutcome.ACCEPTED, (effect,))
@@ -292,9 +308,28 @@ def reduce_managed_tx(
         )
         return ManagedTxTransition(next_state, ManagedTxOutcome.ACCEPTED, (effect,))
 
+    if isinstance(event, RetryForceReceive):
+        if (
+            state.intent.kind is not ManagedTxIntentKind.RX
+            or state.release_plan is not ReleasePlan.FORCE_RELEASE
+            or state.pending_effect is not None
+        ):
+            return ManagedTxTransition(state, ManagedTxOutcome.REJECTED)
+        epoch = state.effect_epoch + 1
+        effect = ManagedTxEffect(
+            ActuationOperation.FORCE_RECEIVE,
+            _token(state, event.provider_generation, event.attempt_id, epoch),
+        )
+        next_state = replace(
+            state,
+            effect_epoch=epoch,
+            pending_effect=effect,
+        )
+        return ManagedTxTransition(next_state, ManagedTxOutcome.ACCEPTED, (effect,))
+
     if isinstance(event, ForceOff):
         epoch = state.effect_epoch + 1
-        effect = (
+        force_effect = (
             None
             if event.provider_generation is None
             else ManagedTxEffect(
@@ -309,17 +344,18 @@ def reduce_managed_tx(
             tx_started_at_monotonic=None,
             tot_deadline_monotonic=None,
             effect_epoch=epoch,
-            pending_effect=effect,
+            pending_effect=force_effect,
+            current_abort_token=None if force_effect is None else force_effect.token,
             abort_errors=(),
         )
-        effects = () if effect is None else (effect,)
+        effects = () if force_effect is None else (force_effect,)
         return ManagedTxTransition(next_state, ManagedTxOutcome.ACCEPTED, effects)
 
     if isinstance(event, ActuationSettled):
         return _settle(state, event)
 
     if isinstance(event, AbortFailed):
-        if event.token.effect_epoch != state.effect_epoch:
+        if event.token != state.current_abort_token:
             return ManagedTxTransition(state, ManagedTxOutcome.STALE)
         error = AbortError(event.operation, event.error)
         return ManagedTxTransition(
