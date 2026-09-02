@@ -19,6 +19,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxEffect,
     ManagedTxOutcome,
     ManagedTxState,
+    RetryForceReceive,
     reduce_managed_tx,
 )
 
@@ -121,32 +122,26 @@ async def test_concurrent_duplicate_claim_executes_actuator_exactly_once() -> No
 
 
 @pytest.mark.asyncio
-async def test_replay_conflict_stale_scope_and_attempt_order_do_not_execute() -> None:
+async def test_fixed_primary_slots_bound_replay_and_conflicts() -> None:
     actuator = FakeActuator()
     lane = ManagedTxEffectLane(actuator)
-    base = effect(ActuationOperation.FORCE_RECEIVE, attempt="opaque-old")
-    assert (await settle(lane, base)).result is ActuationResult.ACCEPTED
-    assert await settle(lane, base) is None
-    assert await settle(lane, effect(attempt="opaque-old")) is None
-    started, release = asyncio.Event(), asyncio.Event()
-    actuator.actions[ActuationOperation.PTT_ON] = blocking_action(started, release)
-    current = effect(attempt="opaque-new")
-    on = asyncio.create_task(settle(lane, current))
-    await asyncio.wait_for(started.wait(), 0.2)
-    assert await settle(lane, base) is None and not on.done()
-    queued = asyncio.create_task(settle(lane, effect(attempt="queued")))
-    await asyncio.sleep(0)
-    actuator.actions[ActuationOperation.PTT_ON] = ActuationResult.ACCEPTED
-    newer = effect(generation=8, attempt="newer")
+    on = effect(attempt="on")
+    force = effect(ActuationOperation.FORCE_RECEIVE, attempt="off")
+    assert (await settle(lane, on)).result is ActuationResult.ACCEPTED
+    assert (await settle(lane, force)).result is ActuationResult.ACCEPTED
+    for attempt in range(1_000):
+        retry = effect(ActuationOperation.FORCE_RECEIVE, attempt=str(attempt))
+        assert await settle(lane, retry) is None
+    assert (
+        await settle(lane, effect(ActuationOperation.TRANSMIT_ON, attempt="on")) is None
+    )
+    assert len(lane._slots) == 2 and not lane._claims
+    newer = effect(generation=8, epoch=4, attempt="newer")
     assert (await settle(lane, newer)).result is ActuationResult.ACCEPTED
-    assert [item.result for item in await asyncio.gather(on, queued)] == [
-        ActuationResult.UNCERTAIN,
-        ActuationResult.REJECTED,
-    ]
     assert await settle(lane, effect(attempt="late-old")) is None
     assert [token for token, _ in actuator.calls] == [
-        base.token,
-        current.token,
+        on.token,
+        force.token,
         newer.token,
     ]
 
@@ -225,10 +220,17 @@ async def test_force_receive_bypasses_and_poisons_inflight_on() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "isolation_fails,preexisting", [(False, False), (True, False), (False, True)]
+    "mode,preexisting",
+    [
+        ("success", False),
+        ("failure", False),
+        ("success", True),
+        ("deadline", False),
+        ("cancel", False),
+    ],
 )
 async def test_force_receive_awaits_isolation_and_maps_failure(
-    isolation_fails: bool, preexisting: bool
+    mode: str, preexisting: bool
 ) -> None:
     actuator = FakeActuator()
     on_started, on_release = asyncio.Event(), asyncio.Event()
@@ -236,8 +238,10 @@ async def test_force_receive_awaits_isolation_and_maps_failure(
 
     async def isolate(_: int) -> None:
         isolation_started.set()
-        if isolation_fails:
+        if mode == "failure":
             raise RuntimeError("isolation failed")
+        if mode == "cancel":
+            raise asyncio.CancelledError
         await isolated.wait()
 
     actuator.actions[ActuationOperation.PTT_ON] = blocking_action(
@@ -251,18 +255,30 @@ async def test_force_receive_awaits_isolation_and_maps_failure(
         assert (await on).error == "attempt cancelled after dispatch"
         await asyncio.wait_for(isolation_started.wait(), 0.2)
     force = asyncio.create_task(
-        settle(lane, effect(ActuationOperation.FORCE_RECEIVE, attempt="off"))
+        settle(
+            lane,
+            effect(ActuationOperation.FORCE_RECEIVE, attempt="off"),
+            0.01 if mode == "deadline" else 1,
+        )
     )
     await asyncio.wait_for(isolation_started.wait(), 0.2)
-    if not isolation_fails:
+    if mode == "success":
         assert not force.done() and not on_release.is_set()
         isolated.set()
     forced = await asyncio.wait_for(force, 0.2)
     expected = (
-        ActuationResult.UNCERTAIN if isolation_fails else ActuationResult.ACCEPTED
+        ActuationResult.ACCEPTED if mode == "success" else ActuationResult.UNCERTAIN
     )
     assert forced.result is expected
-    assert forced.error == ("isolation failed" if isolation_fails else None)
+    errors = {
+        "failure": "isolation failed",
+        "deadline": "isolation deadline expired",
+        "cancel": "CancelledError",
+    }
+    assert forced.error == errors.get(mode)
+    if mode == "deadline":
+        assert lane._isolation is not None and not lane._isolation[1].cancelled()
+    isolated.set()
     if not preexisting:
         assert (await on).result is ActuationResult.UNCERTAIN
     on_release.set()
@@ -271,26 +287,21 @@ async def test_force_receive_awaits_isolation_and_maps_failure(
 @pytest.mark.asyncio
 async def test_force_receive_rejects_queued_on_without_dispatch_or_poison() -> None:
     actuator = FakeActuator()
-    started, release = asyncio.Event(), asyncio.Event()
     poisoned: list[int] = []
-    actuator.actions[ActuationOperation.PTT_ON] = blocking_action(
-        started, release, resist_cancellation=True
-    )
     lane = poison_lane(actuator, poisoned)
-    active = asyncio.create_task(settle(lane, effect(attempt="active")))
-    await asyncio.wait_for(started.wait(), 0.2)
+    await lane._on_lane.acquire()
     queued_effect = effect(attempt="queued")
     queued = asyncio.create_task(settle(lane, queued_effect))
     await asyncio.sleep(0)
-    force = effect(ActuationOperation.FORCE_RECEIVE, epoch=4, attempt="off")
+    force = effect(ActuationOperation.FORCE_RECEIVE, attempt="off")
     await settle(lane, force)
-    _, queued_result = await asyncio.gather(active, queued)
+    queued_result = await queued
     assert queued_result.result is ActuationResult.REJECTED
     assert queued_result.error == "superseded before dispatch"
     assert queued_effect.token not in [token for token, _ in actuator.calls]
     await asyncio.sleep(0)
-    assert poisoned == [7]
-    release.set()
+    assert poisoned == []
+    lane._on_lane.release()
 
 
 @pytest.mark.asyncio
@@ -318,6 +329,37 @@ async def test_abort_binding(result: ActuationResult, error: str | None) -> None
 
 
 @pytest.mark.asyncio
+async def test_force_receive_and_both_aborts_have_independent_slots() -> None:
+    actuator = FakeActuator()
+    actuator.actions.update(
+        {
+            AbortOperation.STOP_CW: ActuationResult.REJECTED,
+            AbortOperation.STOP_TUNE: ActuationResult.UNCERTAIN,
+        }
+    )
+    lane = ManagedTxEffectLane(actuator)
+    token = EffectToken(9, 5, "force")
+    primary, cw, tune = await asyncio.gather(
+        lane.settle(
+            ManagedTxEffect(ActuationOperation.FORCE_RECEIVE, token),
+            deadline_monotonic=time.monotonic() + 1,
+        ),
+        lane.settle_abort(
+            token, AbortOperation.STOP_CW, deadline_monotonic=time.monotonic() + 1
+        ),
+        lane.settle_abort(
+            token, AbortOperation.STOP_TUNE, deadline_monotonic=time.monotonic() + 1
+        ),
+    )
+    assert primary.result is ActuationResult.ACCEPTED
+    assert (cw, tune) == (
+        AbortFailed(token, AbortOperation.STOP_CW, "rejected"),
+        AbortFailed(token, AbortOperation.STOP_TUNE, "uncertain"),
+    )
+    assert len(actuator.calls) == len(lane._slots) == 3
+
+
+@pytest.mark.asyncio
 async def test_stale_lane_settlement_cannot_clear_current_release_debt() -> None:
     lane = ManagedTxEffectLane(FakeActuator())
     transition = reduce_managed_tx(ManagedTxState(), ForceOff(8, "current"))
@@ -328,3 +370,42 @@ async def test_stale_lane_settlement_cannot_clear_current_release_debt() -> None
     reduced = reduce_managed_tx(transition.state, stale_settlement)
     assert reduced.outcome is ManagedTxOutcome.STALE
     assert reduced.state.release_required
+
+
+@pytest.mark.asyncio
+async def test_ten_thousand_authority_epochs_keep_lane_bounded() -> None:
+    actuator = FakeActuator()
+    actuator.actions[ActuationOperation.FORCE_RECEIVE] = ActuationResult.REJECTED
+    lane = ManagedTxEffectLane(actuator)
+    state = reduce_managed_tx(ManagedTxState(), ForceOff(8, "initial")).state
+    for attempt in range(10_000):
+        assert state.pending_effect is not None
+        settled = await settle(lane, state.pending_effect)
+        state = reduce_managed_tx(state, settled).state
+        transition = reduce_managed_tx(state, RetryForceReceive(8, str(attempt)))
+        assert transition.outcome is ManagedTxOutcome.ACCEPTED
+        state = transition.state
+        assert len(lane._slots) == 1 and not lane._claims
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", list(ActuationResult))
+async def test_retry_epoch_prevents_stale_release_clear(
+    result: ActuationResult,
+) -> None:
+    actuator = FakeActuator()
+    actuator.actions[ActuationOperation.FORCE_RECEIVE] = result
+    lane = ManagedTxEffectLane(actuator)
+    forced = reduce_managed_tx(ManagedTxState(), ForceOff(8, "force"))
+    assert forced.state.pending_effect is not None
+    settled = await settle(lane, forced.state.pending_effect)
+    state = reduce_managed_tx(forced.state, settled).state
+    retry = reduce_managed_tx(state, RetryForceReceive(8, "retry"))
+    if result is ActuationResult.ACCEPTED:
+        assert retry.outcome is ManagedTxOutcome.REJECTED
+        assert not state.release_required
+    else:
+        stale = reduce_managed_tx(retry.state, settled)
+        assert retry.outcome is ManagedTxOutcome.ACCEPTED
+        assert stale.outcome is ManagedTxOutcome.STALE
+        assert stale.state.release_required

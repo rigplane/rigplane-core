@@ -19,9 +19,13 @@ from rigplane.runtime.managed_tx_state import (
 )
 
 _Operation: TypeAlias = ActuationOperation | AbortOperation
+_ClaimKey: TypeAlias = tuple[EffectToken, _Operation]
+_Slot: TypeAlias = str | AbortOperation
 _Clock: TypeAlias = Callable[[], float]
 _PoisonGeneration: TypeAlias = Callable[[int], Awaitable[None]]
 _ON_OPERATIONS = frozenset({ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON})
+_ON_SLOT = "on"
+_FORCE_SLOT = "force_receive"
 
 
 @runtime_checkable
@@ -48,7 +52,6 @@ class _Claim:
     driver: asyncio.Task[None] | None = None
     provider: asyncio.Task[ActuationResult] | None = None
     started: bool = False
-    order: int = 0
     isolation: tuple[asyncio.Task[None], ...] = ()
 
 
@@ -71,11 +74,11 @@ class ManagedTxEffectLane:
         self._poison_generation = poison_generation or _ignore_poison
         self._lock = asyncio.Lock()
         self._on_lane = asyncio.Lock()
-        self._claims: dict[EffectToken, _Claim] = {}
-        self._records: dict[EffectToken, tuple[_Operation, int]] = {}
+        self._claims: dict[_ClaimKey, _Claim] = {}
+        self._slots: dict[_Slot, tuple[EffectToken, _Operation]] = {}
         self._scope = (-1, -1)
-        self._next_order = 0
-        self._isolations: dict[int, asyncio.Task[None]] = {}
+        self._release_token: EffectToken | None = None
+        self._isolation: tuple[int, asyncio.Task[None]] | None = None
 
     async def settle(
         self, effect: ManagedTxEffect, *, deadline_monotonic: float
@@ -117,65 +120,60 @@ class ManagedTxEffectLane:
     ) -> _Claim | None:
         async with self._lock:
             scope = (token.provider_generation, token.effect_epoch)
-            if scope < self._scope or token in self._records:
+            if scope < self._scope:
                 return None
             if scope > self._scope:
-                self._scope, self._next_order = scope, 0
-                self._records.clear()
-                self._isolations = {
-                    generation: task
-                    for generation, task in self._isolations.items()
-                    if not task.done() or generation >= token.provider_generation
-                }
+                self._scope = scope
+                self._slots.clear()
+                self._release_token = None
                 for active in tuple(self._claims.values()):
                     active_scope = (
                         active.token.provider_generation,
                         active.token.effect_epoch,
                     )
-                    if active.operation in _ON_OPERATIONS and active_scope < scope:
+                    if active_scope < scope:
                         self._displace_locked(active)
-            self._next_order += 1
-            self._records[token] = (operation, self._next_order)
+            slot = _slot(operation)
+            if slot in self._slots or not self._bind_family_locked(token, operation):
+                return None
+            self._slots[slot] = (token, operation)
             loop = asyncio.get_running_loop()
-            claim = _Claim(
-                token, operation, deadline, loop.create_future(), order=self._next_order
-            )
-            self._claims[token] = claim
+            claim = _Claim(token, operation, deadline, loop.create_future())
+            self._claims[(token, operation)] = claim
             if operation is ActuationOperation.FORCE_RECEIVE:
                 active_ons = tuple(
                     active
                     for active in self._claims.values()
                     if active is not claim and active.operation in _ON_OPERATIONS
                 )
-                token_order = (*scope, claim.order)
-                if any(
-                    (
-                        item.token.provider_generation,
-                        item.token.effect_epoch,
-                        item.order,
-                    )
-                    > token_order
-                    for item in active_ons
-                ):
-                    self._claims.pop(token)
-                    claim.result.set_result(
-                        _Outcome(
-                            ActuationResult.REJECTED, "stale attempt before dispatch"
-                        )
-                    )
-                    return claim
                 for active in active_ons:
                     if barrier := self._displace_locked(active):
                         claim.isolation += (barrier,)
-                claim.isolation += tuple(
-                    task
-                    for generation, task in self._isolations.items()
-                    if generation <= token.provider_generation
-                    and task not in claim.isolation
-                )
+                if self._isolation is not None:
+                    generation, task = self._isolation
+                    if (
+                        generation <= token.provider_generation
+                        and task not in claim.isolation
+                    ):
+                        claim.isolation += (task,)
             claim.driver = asyncio.create_task(self._drive(claim))
             claim.driver.add_done_callback(self._harvest)
             return claim
+
+    def _bind_family_locked(self, token: EffectToken, operation: _Operation) -> bool:
+        if operation in _ON_OPERATIONS:
+            return self._release_token is None
+        if (
+            operation is ActuationOperation.FORCE_RECEIVE
+            and (primary := self._slots.get(_ON_SLOT))
+            and primary[0] == token
+        ):
+            return False
+        if self._release_token is None:
+            if _ON_SLOT in self._slots and isinstance(operation, AbortOperation):
+                return False
+            self._release_token = token
+        return bool(self._release_token == token)
 
     async def _drive(self, claim: _Claim) -> None:
         try:
@@ -228,7 +226,9 @@ class ManagedTxEffectLane:
             )
             return
         if result is ActuationResult.ACCEPTED and claim.isolation:
-            if isolation_error := await self._await_isolation(claim.isolation):
+            if isolation_error := await self._await_isolation(
+                claim.isolation, claim.deadline
+            ):
                 result = ActuationResult.UNCERTAIN
                 await self._finish(claim, _Outcome(result, isolation_error))
                 return
@@ -251,11 +251,11 @@ class ManagedTxEffectLane:
         async with self._lock:
             if claim.result.done():
                 return
-            self._claims.pop(claim.token, None)
+            self._claims.pop((claim.token, claim.operation), None)
             if poison:
                 isolation = self._isolate_locked(claim.token.provider_generation)
         if isolation is not None:
-            await self._await_isolation((isolation,))
+            await self._await_isolation((isolation,), claim.deadline)
         async with self._lock:
             if claim.result.done():
                 return
@@ -280,7 +280,7 @@ class ManagedTxEffectLane:
     ) -> asyncio.Task[None] | None:
         if claim.result.done():
             return None
-        self._claims.pop(claim.token, None)
+        self._claims.pop((claim.token, claim.operation), None)
         if claim.provider is not None:
             claim.provider.cancel()
             claim.provider.add_done_callback(self._harvest)
@@ -295,19 +295,26 @@ class ManagedTxEffectLane:
         return None
 
     def _isolate_locked(self, provider_generation: int) -> asyncio.Task[None]:
-        if task := self._isolations.get(provider_generation):
-            return task
+        if self._isolation is not None and self._isolation[0] == provider_generation:
+            return self._isolation[1]
         task = asyncio.ensure_future(self._poison_generation(provider_generation))
         task.add_done_callback(self._harvest)
-        self._isolations[provider_generation] = task
+        self._isolation = (provider_generation, task)
         return task
 
-    @staticmethod
-    async def _await_isolation(tasks: tuple[asyncio.Task[None], ...]) -> str | None:
-        try:
-            await asyncio.gather(*(asyncio.shield(task) for task in tasks))
-        except BaseException as error:
-            return _error_text(error)
+    async def _await_isolation(
+        self, tasks: tuple[asyncio.Task[None], ...], deadline: float
+    ) -> str | None:
+        done, pending = await asyncio.wait(
+            tasks, timeout=max(0.0, deadline - self._clock())
+        )
+        if pending:
+            return "isolation deadline expired"
+        for task in done:
+            if task.cancelled():
+                return "CancelledError"
+            if error := task.exception():
+                return _error_text(error)
         return None
 
     @staticmethod
@@ -318,3 +325,11 @@ class ManagedTxEffectLane:
 
 def _error_text(error: BaseException) -> str:
     return str(error) or type(error).__name__
+
+
+def _slot(operation: _Operation) -> _Slot:
+    if operation in _ON_OPERATIONS:
+        return _ON_SLOT
+    if operation is ActuationOperation.FORCE_RECEIVE:
+        return _FORCE_SLOT
+    return operation
