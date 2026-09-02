@@ -22,10 +22,7 @@ from rigplane.core.tx_observation import (
 )
 from rigplane.core import tx_authority
 from rigplane.core.tx_authority import (
-    DECISION_LOG_CAPACITY,
     FAMILY_WRITE_CLASS,
-    RAW_EXCLUDED,
-    TX_ENGINE_FAILURE_TAGS,
     TransmitAuthority,
     TxFamily,
     TxMethodEntry,
@@ -197,7 +194,7 @@ def build_authority(
 
 
 # --------------------------------------------------------------------------
-# Pinned literals (INV-8 and the raw exclusion)
+# Pinned literals (INV-8)
 # --------------------------------------------------------------------------
 
 
@@ -217,17 +214,6 @@ def test_radio_readback_sources_pin() -> None:
     )
     for excluded in ("command_response", "state_poller", "local_reconcile", "test"):
         assert excluded not in RADIO_READBACK_SOURCES
-
-
-def test_raw_excluded_pin() -> None:
-    """Raw byte writes are excluded by name, never classified."""
-    assert RAW_EXCLUDED == frozenset(
-        {
-            "send_civ",
-            "send_civ_transaction",
-            "send_civ_raw_fire_and_forget",
-        }
-    )
 
 
 def test_family_class_table_is_total_and_pinned() -> None:
@@ -286,13 +272,39 @@ def test_dormant_authority_watchdog_surface_is_absent() -> None:
     )
     for name in ("_last_resort_unkey", "_holds", "_deadline", "_lease_active"):
         assert not hasattr(authority, name)
-    assert [field.name for field in fields(tx_authority.TxAuthorityView)] == ["records"]
     assert [field.name for field in fields(tx_authority.TxAdmission)] == [
         "family",
         "write_class",
         "evidence",
     ]
     assert "own_transmit_hold" not in get_type_hints(tx_authority.TxEvidence)
+
+
+def test_dormant_decision_surface_is_absent() -> None:
+    """MOR-2179 leaves the authority as an admission gate, not an audit ring."""
+    for name in (
+        "DECISION_LOG_CAPACITY",
+        "TX_ENGINE_FAILURE_TAGS",
+        "RAW_EXCLUDED",
+        "TxDecisionRecord",
+        "TxAuthorityView",
+    ):
+        assert not hasattr(tx_authority, name)
+
+    assert "provider_generation" not in inspect.signature(TransmitAuthority).parameters
+    assert not hasattr(TransmitAuthority, "view")
+    assert not hasattr(TransmitAuthority, "_commit")
+    assert not hasattr(TransmitAuthority, "_record")
+
+    authority = TransmitAuthority(
+        read_transmit_state=PoisonedLink().read,
+        method_map=METHOD_MAP,
+        clock=Clock(),
+    )
+    for name in ("_provider_generation", "_records"):
+        assert not hasattr(authority, name)
+
+    assert get_type_hints(tx_authority.TxAdmission)["family"] is TxFamily
 
 
 def test_dormant_argument_resolution_surface_is_absent() -> None:
@@ -385,7 +397,6 @@ async def test_pass_class_never_consults_truth() -> None:
         async with authority.admit(method, args):
             sent.append(method)
     assert len(sent) == 5
-    assert authority.view().records == ()
 
 
 async def test_hazard_at_confirmed_rx_reads_before_the_write() -> None:
@@ -396,19 +407,16 @@ async def test_hazard_at_confirmed_rx_reads_before_the_write() -> None:
     wire: list[str] = []
     link.on_read.append(lambda: wire.append("read"))
 
-    async with authority.admit("set_antenna_1", ()):
+    async with authority.admit("set_antenna_1", ()) as admission:
         wire.append("write")
 
     assert wire == ["read", "write"]
-    record = authority.view().records[-1]
-    assert record.action == "sent"
-    assert record.family == TxFamily.ANTENNA
-    assert record.write_class is TxWriteClass.HAZARD
-    assert record.code is None
-    assert record.evidence is not None
-    assert record.evidence.solicited is True
-    assert record.evidence.value is False
-    assert record.evidence.age_seconds == pytest.approx(link.read_latency)
+    assert admission.family is TxFamily.ANTENNA
+    assert admission.write_class is TxWriteClass.HAZARD
+    assert admission.evidence is not None
+    assert admission.evidence.solicited is True
+    assert admission.evidence.value is False
+    assert admission.evidence.age_seconds == pytest.approx(link.read_latency)
 
 
 async def test_hazard_at_transmit_is_refused_with_evidence() -> None:
@@ -427,9 +435,6 @@ async def test_hazard_at_transmit_is_refused_with_evidence() -> None:
     assert refusal.evidence.attributed == "tx_other"
     assert refusal.evidence.source == "poll_response"
     assert refusal.evidence.solicited is True
-    record = authority.view().records[-1]
-    assert record.action == "refused"
-    assert record.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
 
 
 async def test_hazard_read_timeout_fails_closed() -> None:
@@ -474,20 +479,6 @@ async def test_an_unexpected_read_error_is_still_a_typed_refusal() -> None:
             pytest.fail("hazard write reached the wire on an undecodable reply")
     assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
     assert excinfo.value.evidence.failure == "read-error"
-    assert authority.view().records[-1].action == "refused"
-
-
-def test_engine_failure_tag_set_is_pinned() -> None:
-    """A sixth tag must not appear unnoticed: row 9b widens the web envelope."""
-    assert TX_ENGINE_FAILURE_TAGS == frozenset(
-        {
-            "timeout",
-            "transport",
-            "read-error",
-            "unverifiable-provenance",
-            "unclassified",
-        }
-    )
 
 
 async def test_hazard_without_capability_fails_closed() -> None:
@@ -535,7 +526,6 @@ async def test_every_refusal_carries_evidence(answer: TxStateReading | str) -> N
     evidence = excinfo.value.evidence
     assert evidence is not None
     assert (evidence.value is not None) or (evidence.failure is not None)
-    assert authority.view().records[-1].evidence is evidence
 
 
 # --------------------------------------------------------------------------
@@ -555,26 +545,6 @@ async def test_keying_is_admitted_on_every_truth_answer(
     async with authority.admit("set_ptt", (True,)):
         pass
     assert link.reads == []  # a key is explicit operator intent, never truth-gated
-    record = authority.view().records[-1]
-    assert record.action == "sent"
-    assert record.write_class is TxWriteClass.KEYING
-    assert record.evidence is None
-
-
-async def test_a_failed_key_write_still_records_its_decision() -> None:
-    """A write that raised may already have reached the radio."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, link)
-
-    with pytest.raises(OSError):
-        async with authority.admit("set_ptt", (True,)):
-            raise OSError("the transport died after the frame went out")
-
-    record = authority.view().records[-1]
-    assert record.action == "sent"
-    assert record.method == "set_ptt"
-    assert record.write_class is TxWriteClass.KEYING
 
 
 # --------------------------------------------------------------------------
@@ -605,10 +575,9 @@ async def test_a_key_cannot_slip_between_a_hazard_read_and_its_write() -> None:
     else, so it cannot tell a lock held through the write handoff from one
     released at the verdict.
 
-    # MUTATION: in `src/rigplane/core/tx_authority.py`, dedent the
-    # `try:/yield ticket/finally:/self._commit(...)` block at :538-543 by one
-    # level so it sits after the `async with self._lock:` body rather than
-    # inside it -> this row goes red with
+    # MUTATION: in `src/rigplane/core/tx_authority.py`, dedent `yield ticket`
+    # so it sits after the `async with self._lock:` body rather than inside it
+    # -> this row goes red with
     # `["key-write", "hazard-relay-throw"]`: a key completed inside the
     # relay-throw window.
     """
@@ -659,36 +628,6 @@ async def test_concurrent_hazard_admissions_do_not_share_a_read() -> None:
 
 
 # --------------------------------------------------------------------------
-# Decision ring and view (§3.4)
-# --------------------------------------------------------------------------
-
-
-async def test_decision_ring_is_bounded() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, link)
-    assert DECISION_LOG_CAPACITY == 256
-
-    for _ in range(DECISION_LOG_CAPACITY + 20):
-        async with authority.admit("set_ptt", (True,)):
-            pass
-    assert len(authority.view().records) == DECISION_LOG_CAPACITY
-
-
-async def test_view_reports_keying_decisions() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = TransmitAuthority(
-        read_transmit_state=link.read,
-        method_map=METHOD_MAP,
-        clock=clock,
-    )
-    async with authority.admit("set_ptt", (True,)):
-        pass
-    view = authority.view()
-    assert view.records[-1].method == "set_ptt"
-
-
 async def test_an_unmapped_method_fails_closed() -> None:
     """INV-1's fail direction: nothing defaults to PASS by omission."""
     clock = Clock()
@@ -702,12 +641,17 @@ async def test_an_unmapped_method_fails_closed() -> None:
     assert excinfo.value.evidence.failure == "unclassified"
 
 
-async def test_raw_excluded_methods_are_not_classified() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, PoisonedLink())
-    for method in sorted(RAW_EXCLUDED):
-        async with authority.admit(method, (b"\xfe\xfe",)) as admission:
-            assert admission.family is None  # bytes are not classified
-    assert authority.view().records == ()
-    assert link.reads == []
+@pytest.mark.parametrize(
+    "method",
+    ("send_civ", "send_civ_transaction", "send_civ_raw_fire_and_forget"),
+)
+async def test_former_raw_methods_fail_closed_as_unclassified(method: str) -> None:
+    """Former raw exclusions are unmapped writes and therefore typed refusals."""
+    authority = build_authority(Clock(), PoisonedLink())
+
+    with pytest.raises(TxRefusal) as excinfo:
+        async with authority.admit(method, (b"\xfe\xfe",)):
+            pytest.fail("an unmapped raw write reached the wire")
+
+    assert excinfo.value.code is TxRefusalCode.TX_TRUTH_UNAVAILABLE
+    assert excinfo.value.evidence.failure == "unclassified"
