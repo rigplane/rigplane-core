@@ -174,11 +174,17 @@ exactly. The low-contrast band is the one that matters: an earlier version
 planted only strong bands, and deliberately breaking the threshold left it
 green, so it verified nothing. An ideal case survives being measured badly.
 It also checks `--smooth` (the same three bands must still be recovered,
-wider, at `smooth=5`), `--signal variation` (a scanline fixture that `level`
-cannot separate into a band and a gutter by design, but `variation` can),
-and the degenerate-colour warning (`DEGENERATE_CHROMA`, above) — each
-confirmed, by mutation, to fail the self-test when that one path is broken
-and pass when it is not.
+strictly wider, at `smooth=5`, and a second, larger window must widen them
+further still — not just the same window applied again) and `--signal
+variation` (a scanline fixture that `level` cannot separate into a band and a
+gutter by design, but `variation` can), both routed through `main()` rather
+than called directly so a flag dropped between the CLI and `report()` fails
+the check too, not only a broken function — and the degenerate-colour warning
+(`DEGENERATE_CHROMA`, above). Confirmed by mutation to fail the self-test: a
+no-op smoothing branch, `--smooth` dropped before it reaches `report()`,
+`--signal` inverted at the CLI, a smoothing window hardcoded regardless of
+the requested size, and the degenerate-colour threshold broken in either
+direction (`selftest` in `measure-reference.py`).
 
 **Two scales, same method.** A profile over the whole panel gives the bands and
 the divider. For a fine element — glyph cells, segment pitch, chip padding —

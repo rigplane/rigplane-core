@@ -172,7 +172,10 @@ def runs(p: np.ndarray, min_run: int) -> list[tuple[int, int]]:
 
 
 def report(a: np.ndarray, axis: str, min_run: int, label: str,
-           smooth: int = 0) -> None:
+           smooth: int = 0) -> list[tuple[int, int]]:
+    """As well as printing, returns the runs found — so a caller (selftest,
+    routing a check through `main()`) can assert on the real result instead
+    of re-deriving it or scraping printed text."""
     p = profile(a, axis, smooth)
     total = len(p)
     found = runs(p, min_run)
@@ -182,7 +185,7 @@ def report(a: np.ndarray, axis: str, min_run: int, label: str,
     if not found:
         print("no runs found — the image has no usable contrast on this axis,")
         print("or --min-run is larger than every band. Not a clean result.")
-        return
+        return found
     print(f"{len(found)} run(s), as share of the {axis[:-1]} extent:\n")
     print(f"  {'#':>3}  {'start':>7}  {'end':>7}  {'extent':>7}   px")
     for i, (s, e) in enumerate(found, 1):
@@ -197,6 +200,7 @@ def report(a: np.ndarray, axis: str, min_run: int, label: str,
     print("\nReport these as shares, not pixels, and state the image and its")
     print("dimensions. A share survives the stage's uniform scaling; a pixel")
     print("figure is true at one size only.")
+    return found
 
 
 def selftest() -> None:
@@ -244,17 +248,32 @@ def selftest() -> None:
             tag = " (low contrast)" if w == faint else ""
             print(f"  planted {w}{tag}   recovered {h}   {'ok' if m else 'MISMATCH'}")
 
-        # --smooth must still find the same three bands, only wider (a
-        # moving-average window blurs a boundary, it does not move its
-        # centre). A mutation that zeroes the smoothing branch collapses
-        # every run to none here; the smooth=0 checks above never exercise
-        # `smooth > 1` at all, so they cannot catch that.
-        smoothed = runs(profile(load(path, None, "ink"), "rows", smooth=5), 4)
-        smooth_ok = len(smoothed) == len(want) and all(
-            gs <= ws and ge >= we for (gs, ge), (ws, we) in zip(smoothed, want)
+        # --smooth must still find the same three bands, STRICTLY wider (a
+        # moving-average window blurs a boundary outward, it does not move
+        # its centre): `gs <= ws` is also satisfied by no widening at all,
+        # so a mutation that no-ops the smoothing branch would pass a
+        # non-strict containment check silently — the smooth=0 checks above
+        # never exercise `smooth > 1`, so they cannot catch that either.
+        # Routed through `main()`, not `profile()` directly: calling
+        # `profile()` here exercises the function but never the `--smooth`
+        # flag that is supposed to reach it, so a CLI wiring bug (the flag
+        # parsed but dropped before it reaches `report()`) would pass too.
+        smoothed = main(["bands", path, "--smooth", "5"])
+        smooth_ok = smoothed is not None and len(smoothed) == len(want) and all(
+            gs < ws and ge > we for (gs, ge), (ws, we) in zip(smoothed, want)
         )
-        print(f"  smooth=5 recovers {smoothed}, containing planted {want}"
-              f"   {'ok' if smooth_ok else 'MISMATCH'}")
+        print(f"  smooth=5 recovers {smoothed}, strictly containing planted "
+              f"{want}   {'ok' if smooth_ok else 'MISMATCH'}")
+
+        # A hardcoded window (e.g. always size 3, ignoring the requested
+        # value) still widens the bands relative to no smoothing, so the
+        # check above alone would not catch it — it would just under-widen
+        # and still pass. A larger requested window has to widen the same
+        # bands MORE, or the size the flag carries is not the size applied.
+        smoothed_more = main(["bands", path, "--smooth", "9"])
+        window_scales_ok = smoothed_more is not None and smoothed_more != smoothed
+        print(f"  smooth=9 recovers {smoothed_more}, different from smooth=5's "
+              f"{smoothed}   {'ok' if window_scales_ok else 'MISMATCH'}")
 
         cruns = runs(profile(load(path, None, "colour"), "rows"), 4)
         c_ok = cruns == [(210, 240)]
@@ -296,7 +315,12 @@ def selftest() -> None:
         # unchanged but its per-row spread is not. A mutation that makes the
         # VARIANCE dispatch unconditionally compute the mean (ignoring
         # VARIANCE[0]) makes `variation` collapse to the same "no runs" as
-        # `level` here, which this catches.
+        # `level` here, which this catches. Both routed through `main()`,
+        # not `profile()` directly with `VARIANCE[0]` set by hand: this
+        # module's own `--signal` flag is what a caller actually uses, and
+        # a mutation that inverts its dispatch in `main()` (e.g. `variation`
+        # mapping to level's behaviour) reaches neither `level_ok` nor
+        # `variation_ok` unless the flag itself is exercised.
         vH, vW = 200, 160
         v_ink = np.zeros((vH, vW), dtype=np.float64)
         for y in range(vH):
@@ -310,12 +334,9 @@ def selftest() -> None:
         v_path = str(Path(tmp) / "variation.png")
         Image.fromarray(np.stack([v_gray] * 3, axis=-1)).save(v_path)
 
-        v_loaded = load(v_path, None, "ink")
-        VARIANCE[0] = False
-        level_runs = runs(profile(v_loaded, "rows"), 4)
+        level_runs = main(["bands", v_path])
         level_ok = level_runs == []
-        VARIANCE[0] = True
-        variation_runs = runs(profile(v_loaded, "rows"), 4)
+        variation_runs = main(["bands", v_path, "--signal", "variation"])
         variation_ok = variation_runs == [v_band]
         VARIANCE[0] = False
         print(f"  --signal level on a scanline ground finds {level_runs} — "
@@ -324,14 +345,21 @@ def selftest() -> None:
               f"expected [{v_band}]   {'ok' if variation_ok else 'MISMATCH'}")
 
         if (not ok or not c_ok or not crop_ok or control or not silent_ok
-                or not fires_ok or not smooth_ok or not level_ok or not variation_ok):
+                or not fires_ok or not smooth_ok or not window_scales_ok
+                or not level_ok or not variation_ok):
             die("selftest failed — do not trust measurements from this build")
     print("\nselftest passed. The low-contrast band is the load-bearing case:")
     print("it is what makes a broken threshold visible, and an all-ideal")
     print("self-test would have reported the same green either way.")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> list[tuple[int, int]] | None:
+    """`argv` defaults to `sys.argv[1:]` (real CLI use). selftest passes an
+    explicit list instead, so `--smooth` and `--signal` are exercised through
+    the same argument parsing and dispatch a real invocation goes through —
+    not just the functions they eventually call — and a wiring bug between
+    the flag and `report()`/`VARIANCE[0]` fails the self-test rather than
+    passing silently."""
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["bands", "columns", "selftest"])
     ap.add_argument("image", nargs="?")
@@ -349,11 +377,11 @@ def main() -> None:
                          "level cannot separate a band from a gutter, while "
                          "spread can — a band varies across its width, an "
                          "empty row does not.")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.mode == "selftest":
         selftest()
-        return
+        return None
     if not args.image:
         die("an image path is required for bands/columns")
 
@@ -361,9 +389,9 @@ def main() -> None:
     a = load(args.image, args.crop, args.by)
     what = "ink" if args.by == "ink" else "colour"
     if args.mode == "bands":
-        report(a, "rows", args.min_run, f"horizontal {what} bands of {args.image}", args.smooth)
+        return report(a, "rows", args.min_run, f"horizontal {what} bands of {args.image}", args.smooth)
     else:
-        report(a, "columns", args.min_run, f"vertical {what} divisions of {args.image}", args.smooth)
+        return report(a, "columns", args.min_run, f"vertical {what} divisions of {args.image}", args.smooth)
 
 
 if __name__ == "__main__":
