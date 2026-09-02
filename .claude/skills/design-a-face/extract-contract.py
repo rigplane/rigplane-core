@@ -50,14 +50,20 @@ def surfaces() -> list[str]:
 
 
 def absence_model(text: str) -> dict:
-    """How absence is expressed. There are TWO mechanisms and they are not the
-    same; reporting either one as universal produces a false contract.
+    """How absence is expressed by `Availability` and the named-reason unions.
+
+    These are two of THREE mechanisms in the state model. The third — whether
+    a `RadioViewModel` group exists at all — lives on fields this function
+    never looks at; `view_models()` reports it, since that is where the
+    `readonly <name>?:` optionality is parsed. Reporting any one of the three
+    as universal produces a false contract.
 
     An earlier version of this function took the FIRST `reason:` union it found
     and printed it as the model-wide vocabulary. It occurs once, on one type,
     and the resulting document told a designer to distinguish four states that
-    thirteen of fourteen surfaces cannot express. Find every occurrence and say
-    which type carries it.
+    twelve of fourteen surfaces cannot express — `RxTxSurface` and `VfoSurface`
+    are the two that read `txTarget`. Find every occurrence and say which type
+    carries it.
     """
     general = re.search(r"export interface Availability\s*\{(.*?)\n\}", text, re.S)
     if not general:
@@ -80,17 +86,68 @@ def absence_model(text: str) -> dict:
             "namedReasons": named}
 
 
-def view_models(text: str) -> dict[str, list[tuple[str, str]]]:
-    """Every `*ViewModel` interface and its declared fields."""
-    out: dict[str, list[tuple[str, str]]] = {}
+def _count_top_level_members(body: str) -> int:
+    """Independently count interface members, to catch a field pattern that
+    silently drops or double-counts some of them.
+
+    Strips `/** ... */` and `//` comments — prose inside them can contain a
+    `;` that would otherwise be miscounted — then counts `;` at bracket depth
+    zero. That is a different signal from the FIELD pattern: it does not know
+    what a member declaration looks like, only where nesting closes. The two
+    agreeing across every `*ViewModel` interface in this file (verified by
+    hand before this check was added) is real evidence the pattern parsed
+    every member; disagreeing means it didn't, which is exactly the shape of
+    bug that let `RadioViewModel` read as 10 fields when the source declared
+    24 — the FIELD pattern silently skipped every `readonly <name>?:` line.
+    """
+    stripped = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    stripped = re.sub(r"//[^\n]*", "", stripped)
+    depth = 0
+    count = 0
+    for ch in stripped:
+        if ch in "{[(<":
+            depth += 1
+        elif ch in "}])>":
+            depth = max(0, depth - 1)
+        elif ch == ";" and depth == 0:
+            count += 1
+    return count
+
+
+def view_models(text: str) -> dict[str, list[dict[str, object]]]:
+    """Every `*ViewModel` interface, its declared fields, and whether each is
+    optional.
+
+    Optionality decides whether the field's whole block can be absent at all
+    — Phase 1's first question about any block — so it has to survive into
+    the output, not just the field's presence. `RadioViewModel` is the only
+    interface in this file that declares `readonly` fields (checked across
+    every `export interface` block, not only the ones named `*ViewModel`);
+    a pattern that does not accept the modifier matches none of them and
+    drops the `?` along with it.
+    """
+    out: dict[str, list[dict[str, object]]] = {}
     for block in re.finditer(
         r"export interface (\w+ViewModel)\s*\{(.*?)\n\}", text, re.S
     ):
         name, body = block.group(1), block.group(2)
         fields = [
-            (f.group(1), f.group(2).strip())
-            for f in re.finditer(r"^\s{2}(\w+)\??:\s*([^;]+);", body, re.M)
+            {
+                "name": f.group(1),
+                "optional": f.group(2) == "?",
+                "type": f.group(3).strip(),
+            }
+            for f in re.finditer(
+                r"^\s{2}(?:readonly\s+)?(\w+)(\??):\s*([^;]+);", body, re.M
+            )
         ]
+        expected = _count_top_level_members(body)
+        if len(fields) != expected:
+            die(
+                f"{name}: field pattern matched {len(fields)} member(s) but "
+                f"an independent bracket-depth count found {expected} "
+                f"top-level `;` — the parse cannot be trusted"
+            )
         out[name] = fields
     if not out:
         die("no *ViewModel interfaces parsed — the file shape moved")
@@ -185,7 +242,7 @@ def main() -> None:
     data = {
         "surfaces": surfaces(),
         "absence": absence_model(vm_text),
-        "viewModels": {k: dict(v) for k, v in view_models(vm_text).items()},
+        "viewModels": view_models(vm_text),
         "fieldShapes": field_shapes(vm_text),
         "radio": args.radio,
         "radioFeatures": radio_declares(args.radio)[0],
@@ -207,6 +264,24 @@ def main() -> None:
 
     print("## How absence is expressed\n")
     ab = data["absence"]
+    rvm = data["viewModels"].get("RadioViewModel", [])
+    optional_groups = [f["name"] for f in rvm if f["optional"]]
+    print(
+        "**Per-group optionality — whether a block exists at all.** "
+        f"`RadioViewModel` declares {len(optional_groups)} of its "
+        f"{len(rvm)} fields optional; an absent group is not the same "
+        "fact as every field in it being unsupported. This is the first "
+        "question for any block, before any question about its "
+        "contents:\n"
+    )
+    print(
+        (
+            ", ".join(f"`{n}?`" for n in optional_groups)
+            if optional_groups
+            else "_none parsed_"
+        )
+        + "\n"
+    )
     print("**The general mechanism, carried by every field.** A reading is "
           "`known` with a value or `unknown` with none, and `Availability` "
           "carries these flags alongside it:\n")
@@ -232,8 +307,9 @@ def main() -> None:
     print("## Per surface\n")
     for name, fields in sorted(data["viewModels"].items()):
         print(f"### `{name}` ({len(fields)} fields)\n")
-        for fname, ftype in fields.items():
-            print(f"- `{fname}`: `{ftype}`")
+        for f in fields:
+            marker = "?" if f["optional"] else ""
+            print(f"- `{f['name']}{marker}`: `{f['type']}`")
         print()
 
     print("## What already draws each surface\n")

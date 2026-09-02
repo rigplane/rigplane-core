@@ -62,9 +62,10 @@ are the only way to tell them apart.
 `reason` union of `not-observed`, `stale`, `unsupported`, `contradiction`.
 It is the only one. An earlier version of the extractor took the first
 occurrence of that union and printed it as the model-wide vocabulary; the
-resulting document told a designer to distinguish four states that thirteen of
-fourteen surfaces cannot express. Run the extractor and read what it reports
-per type; never carry a vocabulary across from one field to the rest.
+resulting document told a designer to distinguish four states that twelve of
+fourteen surfaces cannot express — `RxTxSurface` and `VfoSurface` are the two
+that read `txTarget`. Run the extractor and read what it reports per type;
+never carry a vocabulary across from one field to the rest.
 
 If a design needs *never asked* distinguished from *answer aged out* on a field
 that does not carry the reason union, that is a request for a state the model
@@ -87,9 +88,13 @@ vocabularies have been found this way where the extractor reported one, and the
 one it is furthest from reporting — the by-name disabled-reason list — is the
 one a design most needs, because it answers *why is this control not operable*.
 
-It has also been wrong twice in ways patterns did fix: reporting a union from
-one type as model-wide, and reporting a feature the profile disables in a
-comment. A generated contract is a fast starting point, never evidence.
+It has also been wrong three times in ways patterns did fix, and the last was
+the largest: reporting a union from one type as model-wide; reporting a
+feature the profile disables in a comment; and, until it was fixed, silently
+dropping all fourteen of `RadioViewModel`'s optional groups because its field
+pattern did not accept the `readonly` modifier those groups declare — the
+reported count read as 10 fields against a real 24. A generated contract is a
+fast starting point, never evidence.
 
 ## Phase 2 — read the design reference for its reasoning, not its layout
 
@@ -139,11 +144,13 @@ columns and finds the vertical divisions. It reports every run as a **share of
 the measured box**, with the pixel range beside it, and the gaps between runs.
 
 **Run `selftest` first, every time, and read its output.** It plants three
-bands — one of them deliberately low-contrast — plus a coloured patch, and
-fails if any is not recovered exactly. The low-contrast band is the one that
-matters: an earlier version planted only strong bands, and deliberately
-breaking the threshold left it green, so it verified nothing. An ideal case
-survives being measured badly.
+bands — one of them deliberately low-contrast — plus a coloured patch, writes
+them to a real file, and recovers all four by calling `load()` itself — the
+same function `bands`/`columns` use — so a broken `--by colour` dispatch fails
+it, not only a broken threshold. It fails loudly if any is not recovered
+exactly. The low-contrast band is the one that matters: an earlier version
+planted only strong bands, and deliberately breaking the threshold left it
+green, so it verified nothing. An ideal case survives being measured badly.
 
 **Two scales, same method.** A profile over the whole panel gives the bands and
 the divider. For a fine element — glyph cells, segment pitch, chip padding —
@@ -261,7 +268,7 @@ document and weeks in the tree:
   decay constant. Changing the look means changing a shared component that every
   skin renders.
 
-The worked example: `components-v2/meters/LinearSMeter.svelte` reads fifteen
+The worked example: `components-v2/meters/LinearSMeter.svelte` reads eighteen
 `--v2-*` variables, so its colours are theme-restylable — but `SEG_COUNT = 20`
 and its bar geometry are computed in code, and its peak decay is a constant. A
 design language declaring a meter track width and segment gap cannot move any of
@@ -360,7 +367,7 @@ manifest says.
 ### The instruments, and how far a design language reaches them
 
 The shared components read the **theme** vocabulary, not the design language's.
-Measured: `components-v2/meters/LinearSMeter.svelte` has fifteen `var(--v2-*)`
+Measured: `components-v2/meters/LinearSMeter.svelte` has eighteen `var(--v2-*)`
 and zero `var(--dl-*)`; `primitives/frequency/FrequencyDisplayInteractive.svelte`
 has fourteen and zero.
 
@@ -439,15 +446,14 @@ does not announce itself.
 Every one of these was paid for. They are listed with the instance because an
 abstract warning does not survive contact.
 
-**A class in the markup with no rule anywhere.** The reachability check answers
-*does this selector find an element*. Nothing answers the mirror — *does this
-element have a rule* — so a class can be emitted, styled by nobody, and look
-deliberate. Two live instances: `PeerSplitLayout` wore `dl-glass` after those
-rules were renamed away, and the panel rendered as a black screen; and
-`MetersSurface` emits `class="meter-unknown"`, which **none** of the three
-design languages style and no test pins, so it renders in the browser's default
-type on a fully drawn panel. When a proposal names a class, confirm something
-styles it — that direction has no automated check.
+**A class styled by its own component answers to no design language.**
+`MetersSurface` emits `class="meter-unknown"` and its own `<style>` block sets
+`font-weight: 700` on it — a real rule, so this is not a case of a class
+styled by nobody. But none of the three design languages own that rule and no
+test pins it, so switching languages can never change how the class looks: it
+reads like a tier-one hook and is actually tier three. When a proposal names a
+class, confirm which file's `<style>` owns the rule — that direction has no
+automated check.
 
 **A skin's markup is invisible to the design-language check.** It mounts the
 semantic surfaces, not skin layouts. So a rule consumed only by a skin component
@@ -457,9 +463,12 @@ you retarget or delete a rule, grep the skins too.
 
 **A component's own `<style>` block is invisible to its own tests.** Deleting
 the entire block from `PeerSplitLayout.svelte` left all four of its tests green
-— established by the builder and confirmed by the reviewer. A design change that
-lives in a component's styles cannot be verified by mounting it; a pin has to
-read the source text, the way the stylesheet tests already do.
+— reported by the builder. The reviewer confirmed the file is in that state at
+`codex/mor-2153-peer-split-chassis` (commit `968aec6f`, unmerged) but did not
+re-run the deletion, so the claim is relayed with a checkable source rather
+than independently reproduced. A design change that lives in a component's
+styles cannot be verified by mounting it; a pin has to read the source text,
+the way the stylesheet tests already do.
 
 **A rendered value is a claim about the radio.** Do not draw a number you do not
 have. A meter at zero says *the signal is at the noise floor*, which is a
@@ -467,8 +476,11 @@ statement about the world, and if the reading is merely absent that statement is
 false. The danger is narrower than it first appears: when everything is absent
 the panel is obviously dead and nobody is misled. It bites when the absence is
 **partial** — one stale value among a dozen live ones, borrowing their
-credibility. This repository already has a defect of that shape and a rule
-against "a visual jump through fabricated zero".
+credibility. This repository already has a defect of that shape and a fix for
+it: `panel-props.ts: toMeterProps` (MOR-1409 A12) stopped fabricating a
+zero-meter reading for an unobserved receiver, because a real
+S0/zero-power/zero-SWR reading is indistinguishable from one that was never
+taken.
 
 ## Rules
 

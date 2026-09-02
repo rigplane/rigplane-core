@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
+from pathlib import Path
 from typing import NoReturn
 
 try:
@@ -96,7 +98,8 @@ def profile(a: np.ndarray, axis: str, smooth: int = 0) -> np.ndarray:
 
 
 def runs(p: np.ndarray, min_run: int) -> list[tuple[int, int]]:
-    """Contiguous stretches whose ink exceeds the midpoint of the profile.
+    """Contiguous stretches whose ink exceeds a threshold set just above the
+    profile's floor.
 
     The threshold sits just above the profile's own FLOOR, not at its midpoint.
     A midpoint fails on any image holding both a heavy element and a faint one:
@@ -165,6 +168,15 @@ def selftest() -> None:
     So one band here is LOW CONTRAST — close enough to the ground that only a
     correct threshold separates it. Break the threshold and this fails, which
     is the whole point of running it.
+
+    Every check below calls `load()` — the same function `bands`/`columns`
+    use — against a real file written to disk, rather than recomputing ink
+    and colour inline. An earlier version did the latter: a reviewer mutated
+    `load()` so `by="colour"` silently returned the ink field, and this
+    self-test still exited 0, because it never called the function it
+    claimed to check. Going through `load()` closes that gap and exercises
+    image loading and `--crop` along the way, which were exercised nowhere
+    else in this file.
     """
     H, W = 400, 200
     img = np.full((H, W, 3), 255, dtype=np.uint8)
@@ -175,32 +187,39 @@ def selftest() -> None:
     img[faint[0]:faint[1], :, :] = 150          # ~41% ink: needs a real midpoint
     img[210:240, 60:140] = (220, 40, 40)        # the only colour on the page
 
-    rgb = img.astype(np.float64) / 255.0
-    ink = 1.0 - rgb.mean(axis=2)
-    colour = rgb.max(axis=2) - rgb.min(axis=2)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "selftest.png")
+        Image.fromarray(img).save(path)
 
-    want = [strong[0], faint, strong[1]]
-    got = runs(profile(ink, "rows"), 4)
-    print("selftest — planted bands vs recovered (one is low-contrast):")
-    ok = len(got) == len(want)
-    for i, w in enumerate(want):
-        h = got[i] if i < len(got) else None
-        m = h == w
-        ok = ok and m
-        tag = " (low contrast)" if w == faint else ""
-        print(f"  planted {w}{tag}   recovered {h}   {'ok' if m else 'MISMATCH'}")
+        want = [strong[0], faint, strong[1]]
+        got = runs(profile(load(path, None, "ink"), "rows"), 4)
+        print("selftest — planted bands vs recovered (one is low-contrast):")
+        ok = len(got) == len(want)
+        for i, w in enumerate(want):
+            h = got[i] if i < len(got) else None
+            m = h == w
+            ok = ok and m
+            tag = " (low contrast)" if w == faint else ""
+            print(f"  planted {w}{tag}   recovered {h}   {'ok' if m else 'MISMATCH'}")
 
-    cruns = runs(profile(colour, "rows"), 4)
-    c_ok = cruns == [(210, 240)]
-    print(f"  colour profile finds {cruns} — expected [(210, 240)]"
-          f"   {'ok' if c_ok else 'MISMATCH'}")
+        cruns = runs(profile(load(path, None, "colour"), "rows"), 4)
+        c_ok = cruns == [(210, 240)]
+        print(f"  colour profile finds {cruns} — expected [(210, 240)]"
+              f"   {'ok' if c_ok else 'MISMATCH'}")
 
-    control = runs(profile(np.zeros((H, W)), "rows"), 4)
-    print(f"  flat image yields {len(control)} run(s) — expected 0"
-          f"   {'ok' if not control else 'MISMATCH'}")
+        crop_runs = runs(profile(load(path, "0,200,200,250", "colour"), "rows"), 4)
+        crop_ok = crop_runs == [(10, 40)]
+        print(
+            f"  --crop 0,200,200,250 colour profile finds {crop_runs} — "
+            f"expected [(10, 40)]   {'ok' if crop_ok else 'MISMATCH'}"
+        )
 
-    if not ok or not c_ok or control:
-        die("selftest failed — do not trust measurements from this build")
+        control = runs(profile(np.zeros((H, W)), "rows"), 4)
+        print(f"  flat image yields {len(control)} run(s) — expected 0"
+              f"   {'ok' if not control else 'MISMATCH'}")
+
+        if not ok or not c_ok or not crop_ok or control:
+            die("selftest failed — do not trust measurements from this build")
     print("\nselftest passed. The low-contrast band is the load-bearing case:")
     print("it is what makes a broken threshold visible, and an all-ideal")
     print("self-test would have reported the same green either way.")
