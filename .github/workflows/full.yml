@@ -21,9 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 3
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v8.1.0
-      - name: Exact exchange mutation controls
+      - name: Three-version focused gates and isolated mutations
         shell: bash
         run: bash .github/exchange-proof/run.sh
       - uses: actions/upload-artifact@v4

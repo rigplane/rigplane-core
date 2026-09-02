@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 kind, path = sys.argv[1:]
 root = ET.parse(path).getroot()
 cases = root.findall(".//testcase")
-assert len(cases) == 22, len(cases)
+assert len(cases) == (52 if kind == "focused" else 22), len(cases)
 assert not root.findall(".//error")
 assert not root.findall(".//skipped")
 phases = {
@@ -26,11 +26,12 @@ real_barriers = {
 }
 expected = {
     "control": set(),
+    "focused": set(),
     "positive": set(),
     "m1": phases | real_barriers | {"test_delayed_cancelled_rprt_cannot_complete_next_command"},
     "m2": replacements,
     "m3": phases | real_barriers,
-    "m4": phases | replacements,
+    "m4": phases,
     "m5": real_barriers,
 }[kind]
 failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
