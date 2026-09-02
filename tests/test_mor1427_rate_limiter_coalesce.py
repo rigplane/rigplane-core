@@ -111,7 +111,14 @@ async def test_burst_coalesces_to_last_value_not_dropped() -> None:
 
     n = 10
     base_freq = 14_000_000
-    for i in range(n):
+    key = _default_key("set_freq")
+
+    await handler._handle_command(
+        {"id": "0", "name": "set_freq", "params": {"freq": base_freq}}
+    )
+    handler._cmd_last[key] = time.monotonic()  # noqa: SLF001
+
+    for i in range(1, n):
         await handler._handle_command(
             {"id": str(i), "name": "set_freq", "params": {"freq": base_freq + i}}
         )
@@ -296,6 +303,7 @@ async def test_late_flush_gate_diverts_to_coalescing_when_frame_pending() -> Non
     )
 
     base_freq = 14_000_000
+    key = _default_key("set_freq")
 
     # F1: dispatched immediately -- opens the pacing window.
     await handler._handle_command(
@@ -303,28 +311,42 @@ async def test_late_flush_gate_diverts_to_coalescing_when_frame_pending() -> Non
     )
     assert len(queue.items) == 1
 
+    # Anchor the pacing window after F1's full dispatch/ACK path so cold-start
+    # work cannot move F2 outside the raw timing window under test.
+    handler._cmd_last[key] = time.monotonic()  # noqa: SLF001
+
     # F2: arrives inside the window -> coalesced, schedules the deferred
     # flush task for "set_freq".
     await handler._handle_command(
         {"id": "f2", "name": "set_freq", "params": {"freq": base_freq + 1}}
     )
-    assert _default_key("set_freq") in handler._cmd_pending  # noqa: SLF001
-    assert _default_key("set_freq") in handler._cmd_flush_tasks  # noqa: SLF001
+    pending = handler._cmd_pending.get(key)  # noqa: SLF001
+    assert pending is not None
+    assert pending[0] == "f2"
+    assert pending[2]["freq"] == base_freq + 1
+    flush_task = handler._cmd_flush_tasks.get(key)  # noqa: SLF001
+    assert flush_task is not None
+    assert not flush_task.done()
 
-    # Block the event loop SYNCHRONOUSLY past the flush deadline. Real
-    # wall-clock time now exceeds _CMD_MIN_INTERVAL since F1, but the
-    # sleeping flush task has not been resumed by the loop yet -- this is
-    # exactly the window the fix must close.
-    time.sleep(handler._CMD_MIN_INTERVAL + 0.02)  # noqa: SLF001
+    # Construct the late-flush state directly: the raw pacing window has
+    # elapsed while F2 and its deferred flush task are still pending.
+    handler._cmd_last[key] = (  # noqa: SLF001
+        time.monotonic() - handler._CMD_MIN_INTERVAL - 1.0  # noqa: SLF001
+    )
 
-    # F3: arrives after the raw window has elapsed by wall-clock time, while
-    # F2 is still the pending frame (flush task has not run). Must still be
-    # coalesced -- not dispatched immediately ahead of F2's queued flush.
+    # F3: arrives after the constructed raw window has elapsed, while F2 is
+    # still the pending frame (flush task has not run). Must still be coalesced
+    # -- not dispatched immediately ahead of F2's queued flush.
     await handler._handle_command(
         {"id": "f3", "name": "set_freq", "params": {"freq": base_freq + 2}}
     )
+    pending = handler._cmd_pending.get(key)  # noqa: SLF001
+    assert pending is not None
+    assert pending[0] == "f3"
+    assert pending[2]["freq"] == base_freq + 2
+    assert handler._cmd_flush_tasks[key] is flush_task  # noqa: SLF001
 
-    await _await_flush(handler, "set_freq")
+    await flush_task
 
     # The LAST physical enqueue carries F3's value -- never the stale F2.
     assert len(queue.items) == 2
