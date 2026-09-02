@@ -67,7 +67,27 @@ Output of this phase: per surface, the fields, their state sets, and whether
 this radio backs them. Say which are structurally absent and which are merely
 unobserved right now — they are different findings.
 
+**Verify what the extractor emits before building on it.** It is a script over
+source files, and it has been wrong twice — once reporting a named-reason union
+that exists on one type as the model-wide vocabulary, once reporting a feature
+that the profile disables in a comment. Both were caught by an agent that
+checked the output against the files rather than trusting it. Spot-check the
+claims you are about to design against: open the type, count the occurrences,
+parse the profile yourself. A generated contract is not evidence; it is a
+starting point that happens to be fast.
+
 ## Phase 2 — read the design reference for its reasoning, not its layout
+
+**Settle first what kind of thing the reference is.** A display shows state; a
+control surface is operated. The two have different ergonomics and the rules do
+not transfer between them: indicators are placed by how they are **read** —
+peripheral vision, deliberate search, once an hour — and controls by how they
+are **reached**. Reading a display as if it were a panel produces confident
+rules about adjacency and separation that describe nothing.
+
+A radio's own screen is a display, because the knobs are physical. An
+application with no knobs is both, and which elements carry the operating is a
+question for the owner rather than an assumption.
 
 Not pixels. A pixel comparison between a reference and a render is close to
 100% different and carries no signal — different data, different resolution,
@@ -145,6 +165,41 @@ Every block states: which fields it holds, which rule placed it, and whether
 that rule was **established** or **inferred**. A block placed by an inferred
 rule is a proposal; a block placed by an established one is closer to a
 finding.
+
+## Phase 5 — the state treatments, which are the hard half
+
+**A reference can draw states the radio cannot occupy, and this is an element
+grammar problem rather than a placement one.** Watch for independent indicators
+drawn over what is one multi-valued field. A row of separate flags where the
+contract carries a single three-valued field can express two of them lit at
+once, which is unrepresentable — and no amount of rearranging fixes it. The fix
+is one selector-shaped element per field. Check every group of adjacent flags
+against the field or fields behind it before placing any of them.
+
+**Two absences need two treatments.** A value that is momentarily unreadable and
+a value this radio does not have are different facts, and the operator acts on
+them differently. If the reference's convention is to dim rather than hide — as
+a segmented display must, since a segment occupies its cell lit or unlit — then
+dimming is right for the first and wrong for the second: a segment that can
+never light should not have been etched. Propose the second treatment; the
+reference will not have one.
+
+**Check the visual budget before spending it.** Measure what the reference has
+already allocated. If brightness is carrying on-versus-off, and an
+active-versus-inactive multiplier sits on top of that, then level is spent and a
+third state needs a change of **shape**. Count the levels and the multipliers
+before assuming there is headroom.
+
+**Freshness is not one horizon.** Per-field policies can differ by two orders of
+magnitude within one panel — a meter stale in under a second beside a control
+still authoritative after two minutes. A single "not fresh" treatment reads as
+the same event in both places and is wrong in both. Either vary it with the
+horizon or argue explicitly that it should not vary.
+
+**Expect the reference to be silent here.** A design reference shows working
+states. Stale, unsupported, contradictory and disconnected are usually drawn
+nowhere in it — which means everything proposed for them is new work rather than
+adaptation, and must be labelled that way when it lands.
 
 ## Rules
 
