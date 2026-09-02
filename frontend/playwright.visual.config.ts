@@ -28,6 +28,28 @@
 import { defineConfig } from '@playwright/test';
 
 const PORT = Number(process.env.RP_VISUAL_PORT ?? '5399');
+// MOR-2219 — second webServer for the "looks gallery" baselines
+// (gallery-baselines.spec.ts). The fixtures server above CAN technically
+// reach the real App.svelte demo route too — vite.fixtures.config.ts's
+// `root` stays the app root ("not a second project"), so `GET /` there
+// serves the real index.html, not a 404. It is deliberately not reused
+// here: App.svelte calls `provideAppTxControllerHost` from
+// `$lib/runtime/tx-controller/app-host` unconditionally, at script top
+// level, on EVERY load including the demo route — the file's four
+// `demoMode === 'control-buttons'` checks are two `$effect`/`onMount`
+// callbacks (run after the script's synchronous body) and two template
+// `{#if}` blocks outside `<script>` (gate markup, not script execution),
+// so none of them run before or in place of that call.
+// `fixtureStubs()` in vite.fixtures.config.ts re-points
+// `tx-controller/app-host.ts` (plus three other runtime modules) to
+// `fixtures/stubs/app-host.ts`, whose only export is
+// `getAppTxController` — not `provideAppTxControllerHost`. On the
+// fixtures server this import fails to resolve. A dedicated, unstubbed `vite` (no --config
+// override) runs the actual production entry instead, on a port that
+// doesn't collide with this fixtures port, the fixtures dev port (5199),
+// the app's own default dev port (5173), or capture-ptt.mjs's port
+// (5299).
+const GALLERY_PORT = Number(process.env.RP_GALLERY_PORT ?? '5499');
 // Exported so global-teardown.ts's manifest reports the SAME numbers this
 // config actually runs with — never a hand-copied, driftable duplicate.
 export const COMPARATOR = { threshold: 0.2, maxDiffPixelRatio: 0.001 };
@@ -60,10 +82,18 @@ export default defineConfig({
     launchOptions: process.env.MOR1090_CHROMIUM
       ? { executablePath: process.env.MOR1090_CHROMIUM } : {},
   },
-  webServer: {
-    command: `npx vite --config vite.fixtures.config.ts --port ${PORT} --strictPort --host 127.0.0.1`,
-    url: `http://127.0.0.1:${PORT}/fixtures/index.html?fixture=topology-2-main-sub&theme=v2`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
-  },
+  webServer: [
+    {
+      command: `npx vite --config vite.fixtures.config.ts --port ${PORT} --strictPort --host 127.0.0.1`,
+      url: `http://127.0.0.1:${PORT}/fixtures/index.html?fixture=topology-2-main-sub&theme=v2`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      command: `npx vite --port ${GALLERY_PORT} --strictPort --host 127.0.0.1`,
+      url: `http://127.0.0.1:${GALLERY_PORT}/?demo=control-buttons`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  ],
 });
