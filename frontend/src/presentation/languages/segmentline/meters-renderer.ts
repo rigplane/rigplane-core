@@ -55,6 +55,16 @@ export interface SegmentlineMeter {
    * token.
    */
   readonly segmentGapPx: number;
+  /**
+   * MOR-2250: `tokens.rx.active`/`tokens.tx.tuning`, the same token paths
+   * `studioline`/`fieldline` already read for their own tone fields —
+   * segmentline reads neither elsewhere, so this is a new read, not a reuse
+   * of an existing one within this file. The S9 crossover POSITION stays
+   * calibration-derived in `LinearSMeter` itself (owner ruling, MOR-2250) —
+   * this pair carries color only.
+   */
+  readonly toneBelowS9: string;
+  readonly toneAboveS9: string;
 }
 
 const finite = (fields: RendererViewModel['fields'], key: string): number | null => {
@@ -73,6 +83,7 @@ export function renderMeter(
     return {
       kind: 'segmentline-meter', unknown: true, hot: false,
       segmentCount: SEGMENTLINE_SEGMENT_COUNT, segmentGapPx,
+      toneBelowS9: tokens.rx.active, toneAboveS9: tokens.tx.tuning,
     };
   }
 
@@ -83,5 +94,7 @@ export function renderMeter(
     hot: fillFraction >= HOT_THRESHOLD,
     segmentCount: SEGMENTLINE_SEGMENT_COUNT,
     segmentGapPx,
+    toneBelowS9: tokens.rx.active,
+    toneAboveS9: tokens.tx.tuning,
   };
 }

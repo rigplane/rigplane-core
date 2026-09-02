@@ -25,9 +25,17 @@ describe('the meter is a continuous rail', () => {
     expect(m.segmentGapPx).toBe(1);
   });
 
-  it('fills as a fraction of the track and splits tone at S9', () => {
-    expect(render({ value: 9, max: 15, s9: 9 })).toMatchObject({ fill: 0.6, crossover: 0.6 });
+  it('fills as a fraction of the track', () => {
+    expect(render({ value: 9, max: 15, s9: 9 })).toMatchObject({ fill: 0.6 });
     expect(render({ value: 15, max: 15 }).fill).toBe(1);
+  });
+
+  it('MOR-2250: reports the tone split as toneBelowS9/toneAboveS9, reusing the same rx.active/tx.tuning reads as tone/overTone', () => {
+    const m = render({ value: 9, max: 15, s9: 9 });
+    expect(m.toneBelowS9).toBe(m.tone);
+    expect(m.toneAboveS9).toBe(m.overTone);
+    expect(m.toneBelowS9).toBe(STUDIOLINE_TOKENS.rx.active);
+    expect(m.toneAboveS9).toBe(STUDIOLINE_TOKENS.tx.tuning);
   });
 
   it('clamps an over-range reading to the track rather than overflowing it', () => {

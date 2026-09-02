@@ -71,6 +71,17 @@
     '#E57010', '#EB6210', '#F05418', '#F44820', '#F83C28',
   ];
 
+  // MOR-2250: a language-driven flat two-tone fill (IC-7300 look — one color
+  // below the S9 crossover, one at/above it) replaces the 20-step gradient
+  // below, but ONLY when the active design language actually supplied both
+  // tones. `DEFAULT_METER_DISPLAY` (no language, or a renderer whose
+  // descriptor didn't satisfy the widened `display` structural check) sets
+  // `toneBelowS9`/`toneAboveS9` to `''` for exactly this reason: an empty
+  // string is never a language's real tone, so `hasTone` is false and this
+  // falls straight through to the untouched gradient below — the pre-MOR-2250
+  // no-language render is byte-identical.
+  const hasTone = $derived(display.toneBelowS9 !== '' && display.toneAboveS9 !== '');
+
   // Samples the 20-entry ramp above by fraction of SEG_COUNT, so a non-20
   // segment count still walks the same color progression start-to-end.
   // MOR-2214: at SEG_COUNT === 1 there is no second segment to interpolate
@@ -81,11 +92,23 @@
   // still reports strong/over-range readings in the ramp's hot colors
   // rather than collapsing every reading to one fixed color.
   function activeColor(i: number): string {
+    if (hasTone) {
+      return i < s9SegmentIndex ? display.toneBelowS9 : display.toneAboveS9;
+    }
     const denom = SEG_COUNT - 1;
     const fraction = denom === 0 ? Math.min(1, Math.max(0, smoother.value / SEG_COUNT)) : i / denom;
     return ACTIVE_COLORS[Math.round(fraction * (ACTIVE_COLORS.length - 1))];
   }
 
+  // The unlit (dim) segment color is NOT wired to a language: no field on
+  // `DesignLanguageTokens` reaches this component for it. `rx.idle`/`tx.idle`
+  // exist on the token set, but the only channel from tokens to
+  // `LinearSMeter` is the flat `MeterDisplay` object `renderSlot` builds, and
+  // that object structurally carries only `segmentCount`/`segmentGapPx`/
+  // `toneBelowS9`/`toneAboveS9` — adding a fifth field to carry an idle tone
+  // was out of scope for MOR-2250 (rule of three: no machinery for a need
+  // this PR doesn't already have a caller for). So this stays the same two
+  // hex literals it was before, language active or not.
   function dimColor(i: number): string {
     return i < s9SegmentIndex ? '#0A2415' : '#1A1008';
   }

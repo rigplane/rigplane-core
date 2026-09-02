@@ -44,6 +44,9 @@ import {
   listDesignLanguageIds, registerDesignLanguage, RendererInputError,
 } from '../../presentation/languages/contract';
 import { validManifest } from '../../presentation/languages/__tests__/fixtures';
+import { STUDIOLINE_TOKENS } from '../../presentation/languages/studioline/tokens';
+import { FIELDLINE_TOKENS } from '../../presentation/languages/fieldline/tokens';
+import { SEGMENTLINE_TOKENS } from '../../presentation/languages/segmentline/tokens';
 import { renderSlot } from '../design-language-renderers';
 
 const VIEW: RadioViewModel = topologyFixtures['2/main_sub'];
@@ -373,11 +376,20 @@ describe('MOR-2214 — the meters slot supplies LinearSMeter\'s segment geometry
   it('renderSlot(\'meters\', ...) itself reports the differing MeterDisplay per language', () => {
     const reading = { value: 0.5, max: 1, s9: 0.6 };
     activate('studioline');
-    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 20, segmentGapPx: 1 });
+    expect(renderSlot('meters', reading)?.display).toEqual({
+      segmentCount: 20, segmentGapPx: 1,
+      toneBelowS9: STUDIOLINE_TOKENS.rx.active, toneAboveS9: STUDIOLINE_TOKENS.tx.tuning,
+    });
     activate('fieldline');
-    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 12, segmentGapPx: 3 });
+    expect(renderSlot('meters', reading)?.display).toEqual({
+      segmentCount: 12, segmentGapPx: 3,
+      toneBelowS9: FIELDLINE_TOKENS.rx.active, toneAboveS9: FIELDLINE_TOKENS.tx.tuning,
+    });
     activate('segmentline');
-    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 20, segmentGapPx: 3 });
+    expect(renderSlot('meters', reading)?.display).toEqual({
+      segmentCount: 20, segmentGapPx: 3,
+      toneBelowS9: SEGMENTLINE_TOKENS.rx.active, toneAboveS9: SEGMENTLINE_TOKENS.tx.tuning,
+    });
     activate(null);
     expect(renderSlot('meters', reading)).toBeNull();
   });
