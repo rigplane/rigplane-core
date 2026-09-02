@@ -50,13 +50,17 @@ VARIANCE = [False]
 # Chosen by measuring both sides on real fixtures, not by guessing a round
 # number first: median chroma on `/var/tmp/ftx1-reference.png` (a genuinely
 # single-hue amber panel, `ink` vs `colour` corrcoef -0.63) is 0.463; on two
-# fixtures where a real accent sits on a near-neutral ground — this file's
-# own `selftest` fixture (white ground, one red patch) and a constructed
-# dark-grey-ground-plus-red-accent image — it is 0.0 and 0.02 respectively.
-# 0.15 sits roughly a third of the way from the reference's value toward
-# zero, and 7-20x above either genuine-accent fixture: a real accent against
-# a neutral ground will not trip it, and any ground that is even moderately
-# tinted will.
+# WHOLE-IMAGE fixtures where a real accent sits on a near-neutral ground —
+# this file's own `selftest` fixture (white ground, one red patch) and a
+# constructed dark-grey-ground-plus-red-accent image — it is 0.0 and 0.02
+# respectively. 0.15 sits roughly a third of the way from the reference's
+# value toward zero, well above both of those two whole-image medians.
+#
+# This is a statistic over whatever box is measured, not a judgement about
+# "the ground": crop tightly enough around an accent and the accent IS most
+# of the box, and the same threshold fires on it. `selftest` only exercises
+# the whole-image case above; it does not claim the threshold behaves any
+# particular way on a crop.
 DEGENERATE_CHROMA = 0.15
 
 
@@ -85,8 +89,10 @@ def load(path: str, crop: str | None, by: str = "ink") -> np.ndarray:
     colour is reserved for one meaning — a transmit group, an alarm — this
     locates that meaning without being told where to look, and separates a
     dimmed indicator (same hue, less ink) from a differently-coloured one.
-    Warns (see DEGENERATE_CHROMA) when the measured box's ground itself is
-    tinted enough that this separation cannot hold.
+    Warns (see DEGENERATE_CHROMA) when the measured box's own median chroma
+    is high enough that this separation cannot hold — whether that is
+    because the ground itself is tinted, or because the box is cropped
+    tight enough that the accent IS most of the box.
     """
     try:
         img = Image.open(path).convert("RGB")
@@ -108,11 +114,16 @@ def load(path: str, crop: str | None, by: str = "ink") -> np.ndarray:
         degenerate = colour_degeneracy(colour)
         if degenerate is not None:
             print(
-                f"measure-reference: WARNING — median chroma {degenerate:.2f} "
-                f"exceeds {DEGENERATE_CHROMA}. The GROUND itself reads as "
-                "coloured here, not only an accent: --by colour cannot tell "
-                "'ground' from 'signal' on this image, and any run reported "
-                "below profiles the ground, not a colour-coded meaning."
+                f"measure-reference: WARNING — median chroma over the "
+                f"measured box is {degenerate:.2f}, above "
+                f"{DEGENERATE_CHROMA}: most of the box already reads as "
+                "coloured, not only a small accent within it. --by colour "
+                "separates an accent from what surrounds it by contrast "
+                "between the two; a box that is already mostly coloured has "
+                "none left to separate on. Check whether that is because "
+                "the ground itself is tinted or because this crop is "
+                "mostly the accent, before reporting the run below as a "
+                "colour-coded meaning."
             )
         return colour
     return 1.0 - rgb.mean(axis=2)
