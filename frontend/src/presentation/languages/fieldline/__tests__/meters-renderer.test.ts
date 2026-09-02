@@ -50,9 +50,14 @@ describe('the meter is a discrete segment ladder', () => {
 
   it('zones at S9: blocks below the crossover are RX-toned, above it are not', () => {
     const m = render({ value: 12, max: 15, s9: 9 });
-    expect(m.crossoverIndex).toBe(7);
     expect(m.segments.slice(0, 7).every((s) => s.zone === 'normal' && s.tone === FIELDLINE_TOKENS.rx.active)).toBe(true);
     expect(m.segments.slice(7).every((s) => s.zone === 'over' && s.tone === FIELDLINE_TOKENS.tx.tuning)).toBe(true);
+  });
+
+  it('MOR-2250: reports the tone split as toneBelowS9/toneAboveS9, the same rx.active/tx.tuning reads each segment already zones by', () => {
+    const m = render({ value: 12, max: 15, s9: 9 });
+    expect(m.toneBelowS9).toBe(FIELDLINE_TOKENS.rx.active);
+    expect(m.toneAboveS9).toBe(FIELDLINE_TOKENS.tx.tuning);
   });
 
   it('holds the peak as ONE segment, never as a second fill', () => {

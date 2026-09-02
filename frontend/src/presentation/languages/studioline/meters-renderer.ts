@@ -32,10 +32,17 @@ export interface StudiolineMeter {
   readonly segmentGapPx: number;
   /** 0..1 of the track; `null` when the reading is unobserved — never 0. */
   readonly fill: number | null;
-  /** Where the pre-S9 tone hands over to the post-S9 one, 0..1. */
-  readonly crossover: number;
   readonly tone: string;
   readonly overTone: string;
+  /**
+   * MOR-2250: the same `rx.active`/`tx.tuning` reads as `tone`/`overTone`
+   * above, exposed under the flat `MeterDisplay` field names `LinearSMeter`
+   * consumes for its two-tone fill. The S9 crossover POSITION stays
+   * calibration-derived in `LinearSMeter` itself (owner ruling, MOR-2250) —
+   * this pair carries color only.
+   */
+  readonly toneBelowS9: string;
+  readonly toneAboveS9: string;
   readonly peak: number | null;
   readonly peakWidthPx: number;
   readonly scaleTicks: readonly number[];
@@ -53,7 +60,6 @@ export function renderMeter(
   viewModel: RendererViewModel, tokens: DesignLanguageTokens,
 ): StudiolineMeter {
   const max = finiteNumber(viewModel.fields, 'max') ?? 15;
-  const s9 = finiteNumber(viewModel.fields, 's9') ?? 9;
   const value = finiteNumber(viewModel.fields, 'value');
   const peak = finiteNumber(viewModel.fields, 'peak');
   return {
@@ -63,9 +69,10 @@ export function renderMeter(
     segmentCount: 20,
     segmentGapPx: Number.parseFloat(tokens.meters.segmentGap),
     fill: value === null ? null : clampFraction(value, max),
-    crossover: clampFraction(s9, max),
     tone: tokens.rx.active,
     overTone: tokens.tx.tuning,
+    toneBelowS9: tokens.rx.active,
+    toneAboveS9: tokens.tx.tuning,
     peak: peak === null ? null : clampFraction(peak, max),
     peakWidthPx: PEAK_TICK_WIDTH_PX,
     scaleTicks: STUDIOLINE_SCALE_TICKS,

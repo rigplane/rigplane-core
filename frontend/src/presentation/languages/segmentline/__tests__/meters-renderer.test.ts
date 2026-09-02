@@ -46,6 +46,20 @@ describe('MOR-2214: reports MeterDisplay geometry from the token set', () => {
   });
 });
 
+describe('MOR-2250: reports the tone split as toneBelowS9/toneAboveS9', () => {
+  it('reads tokens.rx.active/tokens.tx.tuning on an observed reading', () => {
+    const m = render({ value: 0.5, max: 1, s9: 0.6 });
+    expect(m.toneBelowS9).toBe(SEGMENTLINE_TOKENS.rx.active);
+    expect(m.toneAboveS9).toBe(SEGMENTLINE_TOKENS.tx.tuning);
+  });
+
+  it('reports the same tones on the unobserved branch too', () => {
+    const m = render({ value: null, max: 1, s9: 0.6 });
+    expect(m.toneBelowS9).toBe(SEGMENTLINE_TOKENS.rx.active);
+    expect(m.toneAboveS9).toBe(SEGMENTLINE_TOKENS.tx.tuning);
+  });
+});
+
 describe('the renderer survives the MOR-1072 structural gate', () => {
   it('renders through invokeRenderer', () => {
     const viewModel = { kind: 'meter', fields: { value: 0.5, max: 1, s9: 0.6 } };

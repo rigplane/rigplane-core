@@ -49,8 +49,15 @@ export interface FieldlineMeter {
   readonly segments: readonly FieldlineSegment[];
   /** How many segments the reading lights; `null` when unobserved — never 0. */
   readonly litCount: number | null;
-  /** Index of the first `over` segment: the S9 boundary, quantised. */
-  readonly crossoverIndex: number;
+  /**
+   * MOR-2250: the same `rx.active`/`tx.tuning` reads each segment's own
+   * `tone` above already zones by, exposed flat under the `MeterDisplay`
+   * field names `LinearSMeter` consumes. The S9 crossover POSITION stays
+   * calibration-derived in `LinearSMeter` itself (owner ruling, MOR-2250) —
+   * this pair carries color only.
+   */
+  readonly toneBelowS9: string;
+  readonly toneAboveS9: string;
   readonly scaleTicks: readonly number[];
   readonly unknown: boolean;
 }
@@ -99,7 +106,8 @@ export function renderMeter(
     segmentGapPx: Number.parseFloat(tokens.meters.segmentGap),
     segments,
     litCount,
-    crossoverIndex,
+    toneBelowS9: tokens.rx.active,
+    toneAboveS9: tokens.tx.tuning,
     scaleTicks: FIELDLINE_SCALE_TICKS,
     unknown: value === null,
   };
