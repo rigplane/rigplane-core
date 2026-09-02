@@ -110,7 +110,7 @@
     { value: 'standard', label: 'Standard' },
     { value: 'lcd-cockpit', label: 'LCD Cockpit' },
     { value: 'lcd-scope', label: 'LCD Scope' },
-    { value: 'peer-split', label: 'Peer Split' },
+    { value: 'peer-split', label: 'LCD Peer Split' },
     { value: 'sdr-test', label: 'SDR Screen (test)' },
   ];
 
