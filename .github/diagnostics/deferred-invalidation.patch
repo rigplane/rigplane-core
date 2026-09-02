@@ -1,0 +1,19 @@
+diff --git a/src/rigplane/runtime/managed_tx_fence.py b/src/rigplane/runtime/managed_tx_fence.py
+index 6ab3a329..30519b47 100644
+--- a/src/rigplane/runtime/managed_tx_fence.py
++++ b/src/rigplane/runtime/managed_tx_fence.py
+@@ -57,12 +57,12 @@ class TxAbortFence:
+     def remove(self, token: TxAbortToken) -> bool:
+         return self._cancellations.pop(token, None) is not None
+ 
+-    def force_off(self) -> Coroutine[Any, Any, TxAbortResult]:
++    async def force_off(self) -> Coroutine[Any, Any, TxAbortResult]:
+         """Invalidate immediately; await the returned coroutine to finish cleanup."""
+         self._epoch += 1
+         cancellations = tuple(self._cancellations.items())
+         self._cancellations.clear()
+-        return self._cancel(self._epoch, cancellations)
++        return await self._cancel(self._epoch, cancellations)
+ 
+     @staticmethod
+     async def _cancel(
