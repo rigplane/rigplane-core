@@ -73,8 +73,17 @@
 
   // Samples the 20-entry ramp above by fraction of SEG_COUNT, so a non-20
   // segment count still walks the same color progression start-to-end.
+  // MOR-2214: at SEG_COUNT === 1 there is no second segment to interpolate
+  // `i / (SEG_COUNT - 1)` against (division by zero). `smoother.value` is
+  // already on the SEG_COUNT-wide domain (see its `.update()` call below),
+  // so `smoother.value / SEG_COUNT` is the reading's own fill fraction —
+  // the single segment samples the ramp by THAT instead of by index, so it
+  // still reports strong/over-range readings in the ramp's hot colors
+  // rather than collapsing every reading to one fixed color.
   function activeColor(i: number): string {
-    return ACTIVE_COLORS[Math.round((i / (SEG_COUNT - 1)) * (ACTIVE_COLORS.length - 1))];
+    const denom = SEG_COUNT - 1;
+    const fraction = denom === 0 ? Math.min(1, Math.max(0, smoother.value / SEG_COUNT)) : i / denom;
+    return ACTIVE_COLORS[Math.round(fraction * (ACTIVE_COLORS.length - 1))];
   }
 
   function dimColor(i: number): string {

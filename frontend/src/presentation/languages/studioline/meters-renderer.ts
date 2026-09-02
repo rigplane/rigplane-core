@@ -1,8 +1,7 @@
 /**
- * `studioline` meter renderer (MOR-1073, VFO slice) — MOR-977 §2.3's
- * "continuous bar rail": one full-width track at the token's `trackWidth`,
- * a two-tone fill split at S9, a 1px peak tick, and the scale rendered as
- * sparse text ticks BELOW the rail rather than as marks on it.
+ * `studioline` meter renderer (MOR-1073, VFO slice) — a two-tone fill split
+ * at S9, a 1px peak tick, and the scale rendered as sparse text ticks BELOW
+ * the rail rather than as marks on it.
  *
  * Pure geometry, expressed as fractions of the track so the consumer owns
  * the pixel width. Ballistics are NOT here: smoothing is a per-grammar
@@ -18,6 +17,19 @@ export interface StudiolineMeter {
   readonly kind: 'studioline-meter';
   readonly trackWidth: string;
   readonly segmentGap: string;
+  /**
+   * MOR-2214: `segmentCount: 20` together with `segmentGapPx` (below, sourced
+   * from studioline's own `segmentGap` token) restores the pre-PR default
+   * geometry, `{20, 1}` (`DEFAULT_METER_DISPLAY`) — segment count alone is
+   * not enough: at `segmentGapPx: 0` the same 20 segments render with no
+   * inter-segment gap, a visibly different, more solid-bar look. The real
+   * per-language S-meter design for `studioline` — matching the operator's
+   * IC-7300 reference photos (thin segments, blue-to-S9/red-beyond zoning,
+   * tick labels, a shared SWR/Po scale) — is tracked in a separate
+   * follow-up ticket, not this one (owner ruling, 2026-09-02 20:59 UTC).
+   */
+  readonly segmentCount: number;
+  readonly segmentGapPx: number;
   /** 0..1 of the track; `null` when the reading is unobserved — never 0. */
   readonly fill: number | null;
   /** Where the pre-S9 tone hands over to the post-S9 one, 0..1. */
@@ -48,6 +60,8 @@ export function renderMeter(
     kind: 'studioline-meter',
     trackWidth: tokens.meters.trackWidth,
     segmentGap: tokens.meters.segmentGap,
+    segmentCount: 20,
+    segmentGapPx: Number.parseFloat(tokens.meters.segmentGap),
     fill: value === null ? null : clampFraction(value, max),
     crossover: clampFraction(s9, max),
     tone: tokens.rx.active,

@@ -338,6 +338,70 @@ describe('MOR-1275 — the meters slot is wired through the same helper', () => 
   });
 });
 
+describe('MOR-2214 — the meters slot supplies LinearSMeter\'s segment geometry', () => {
+  const view = withMeters(VIEW, 'receiving');
+
+  /** Segment count actually reaching the DOM, via LinearSMeter's own
+   *  `data-segment` markers — one per visual segment (LinearSMeter.svelte's
+   *  `{#each Array(SEG_COUNT) as _, i}` loop tags only the dim rect of each
+   *  pair with `data-segment`, so this counts visual segments, not rects). */
+  function renderedSegmentCount(language: string | null): number {
+    activate(language);
+    let count = 0;
+    withMounted(MetersSurface, { view }, (root) => {
+      count = root.querySelectorAll('[data-segment]').length;
+    });
+    return count;
+  }
+
+  it('fieldline draws a different segment count than the shared 20-segment default, for the SAME reading', () => {
+    // Kill-mutation: MetersSurface always passing `display={undefined}` to
+    // LinearSMeter (i.e. the wiring never having happened) would make
+    // fieldline converge on LinearSMeter's own 20-segment default too,
+    // collapsing this distinction — see the mutation-and-revert proof in the
+    // PR body. studioline and segmentline both currently match that
+    // no-language default (20); only fieldline (12) differs.
+    expect(renderedSegmentCount('studioline')).toBe(20);
+    expect(renderedSegmentCount('fieldline')).toBe(12);
+    expect(renderedSegmentCount('segmentline')).toBe(20);
+  });
+
+  it('falls back to LinearSMeter\'s own 20-segment default with no language active', () => {
+    expect(renderedSegmentCount(null)).toBe(20);
+  });
+
+  it('renderSlot(\'meters\', ...) itself reports the differing MeterDisplay per language', () => {
+    const reading = { value: 0.5, max: 1, s9: 0.6 };
+    activate('studioline');
+    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 20, segmentGapPx: 1 });
+    activate('fieldline');
+    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 12, segmentGapPx: 3 });
+    activate('segmentline');
+    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 20, segmentGapPx: 3 });
+    activate(null);
+    expect(renderSlot('meters', reading)).toBeNull();
+  });
+
+  // MOR-2214 BLOCKED review: the visual baseline PNGs are blob-identical
+  // whether `segmentGapPx` is 0 or 1 (Playwright's comparator floor can't
+  // see a 1px difference in this frame), so a passing visual check does NOT
+  // prove the gap reached the DOM — only reading the rendered SVG geometry
+  // does. Same measurement `LinearSMeter.display.test.ts`'s
+  // 'honors segmentGapPx' test uses, applied here through the real wiring
+  // (MetersSurface under studioline activation) instead of a hand-built
+  // `display` prop.
+  it('studioline renders an actual 1px gap between segments 0 and 1 in the DOM, not just a descriptor value', () => {
+    activate('studioline');
+    withMounted(MetersSurface, { view }, (root) => {
+      const seg0 = root.querySelector<SVGRectElement>('[data-segment="0"]')!;
+      const seg1 = root.querySelector<SVGRectElement>('[data-segment="1"]')!;
+      const gap = Number(seg1.getAttribute('x'))
+        - (Number(seg0.getAttribute('x')) + Number(seg0.getAttribute('width')));
+      expect(gap).toBe(1);
+    });
+  });
+});
+
 // ── 4. The three doctrine pins (MOR-1275 review: F1, F2, F3) ───────────────
 //
 // Each of these guards a promise that was previously enforced by nothing: a

@@ -36,6 +36,16 @@ export interface FieldlineMeter {
   readonly kind: 'fieldline-meter';
   readonly trackWidth: string;
   readonly segmentGap: string;
+  /**
+   * MOR-2214: `FIELDLINE_SEGMENT_COUNT` is the same constant that already
+   * sizes the `segments` array above — reused, not redefined, so this field
+   * and that array can never disagree about how many segments fieldline
+   * draws. `segmentGapPx` is `tokens.meters.segmentGap` parsed to a number,
+   * the same parsing convention this file's own test already uses for its
+   * own assertion (`Number.parseFloat(m.segmentGap)`).
+   */
+  readonly segmentCount: number;
+  readonly segmentGapPx: number;
   readonly segments: readonly FieldlineSegment[];
   /** How many segments the reading lights; `null` when unobserved — never 0. */
   readonly litCount: number | null;
@@ -85,6 +95,8 @@ export function renderMeter(
     kind: 'fieldline-meter',
     trackWidth: tokens.meters.trackWidth,
     segmentGap: tokens.meters.segmentGap,
+    segmentCount: FIELDLINE_SEGMENT_COUNT,
+    segmentGapPx: Number.parseFloat(tokens.meters.segmentGap),
     segments,
     litCount,
     crossoverIndex,

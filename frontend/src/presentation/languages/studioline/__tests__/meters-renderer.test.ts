@@ -13,10 +13,16 @@ const render = (fields: Record<string, number | null>) =>
   renderMeter({ kind: 'meter', fields }, STUDIOLINE_TOKENS);
 
 describe('the meter is a continuous rail', () => {
-  it('takes its track geometry from the token set, with no segment gap', () => {
+  it('takes its track geometry from the token set', () => {
     const m = render({ value: 5 });
     expect(m.trackWidth).toBe(STUDIOLINE_TOKENS.meters.trackWidth);
-    expect(m.segmentGap).toBe('0px');
+    expect(m.segmentGap).toBe('1px');
+  });
+
+  it('MOR-2214: reports the default 20-segment geometry as MeterDisplay', () => {
+    const m = render({ value: 5 });
+    expect(m.segmentCount).toBe(20);
+    expect(m.segmentGapPx).toBe(1);
   });
 
   it('fills as a fraction of the track and splits tone at S9', () => {

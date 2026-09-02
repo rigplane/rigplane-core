@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -102,5 +102,87 @@ describe('LinearSMeter display prop', () => {
 
     expect(firstAboveS9).toBe(Math.round((11 / 20) * 12));
     expect(firstAboveS9).not.toBe(11);
+  });
+
+  // MOR-2214 fix cycle 2: at segmentCount: 1 the single segment's own fill
+  // color (the "Active" overlay rect, rendered as the dim rect's sibling —
+  // it carries no `data-segment` of its own, which is why `segmentRects()`
+  // above can't select it directly) used to come from
+  // `ACTIVE_COLORS[Math.round((i / (SEG_COUNT - 1)) * ...)]`, a division by
+  // zero at SEG_COUNT === 1 that dropped the `fill` attribute entirely. The
+  // fix samples the ramp by the reading's own fill fraction instead of by
+  // segment index, so a low reading and a strong/over-range one land on
+  // different points of the ramp. `ACTIVE_COLORS[ACTIVE_COLORS.length - 1]`
+  // ('#F83C28', LinearSMeter.svelte's own last ramp entry, read directly off
+  // that file — not a guessed hex string) is the value that would have
+  // caught the original `ACTIVE_COLORS[0]`-fixed-color mistake: under that
+  // mistake, both the low and high readings resolve to the same fixed color
+  // (`#0D633B`), so even a bare "low !== high" inequality check would have
+  // caught it too. Pinning the actual hot-end color is still the stronger
+  // assertion — it also catches a mistake that returns two *different*
+  // wrong colors (neither of them the ramp's actual top), which a bare
+  // inequality check would silently pass.
+  describe('segmentCount: 1 samples the color ramp by fill fraction, not by index', () => {
+    // Extends the module-level 2-knot CAL with a real over-S9 anchor so a
+    // "high" reading can land at the ramp's actual top, not just partway up
+    // it — same S9+60 anchor style as `LinearSMeter.test.ts`'s own 3-knot
+    // table (raw 241, actual 60).
+    const CAL_WITH_OVER_S9 = [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 130, actual: 0, label: 'S9' },
+      { raw: 241, actual: 60, label: 'S9+60' },
+    ];
+
+    let originalMatchMedia: typeof window.matchMedia | undefined;
+
+    // The fill color comes from `smoother.value` (createSmoother's
+    // exponential ballistics), which only snaps straight to its target
+    // under `prefers-reduced-motion: reduce` (smoothing.svelte.ts's
+    // `update`/`start`) — otherwise it approaches the target over real rAF
+    // frames, which this synchronous `flushSync()`-based mount can't wait
+    // out. Forcing `matches: true` here makes the read deterministic.
+    beforeAll(() => {
+      originalMatchMedia = window.matchMedia;
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: (query: string) => ({
+          matches: true,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+        }),
+      });
+    });
+
+    afterAll(() => {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    });
+
+    function activeFill(target: HTMLElement): string | null {
+      const [dim] = segmentRects(target);
+      const active = dim.nextElementSibling as SVGRectElement | null;
+      return active?.getAttribute('fill') ?? null;
+    }
+
+    it('a low reading and the S9+60 top-anchor reading render different, defined fill colors, and the high one is the ramp\'s actual hot end', () => {
+      setCapabilities(makeCaps({ meterCalibrations: { s_meter: CAL_WITH_OVER_S9 } }));
+
+      const low = mountMeter({ value: -50, display: { segmentCount: 1, segmentGapPx: 0 } });
+      const lowFill = activeFill(low);
+
+      const high = mountMeter({ value: 60, display: { segmentCount: 1, segmentGapPx: 0 } });
+      const highFill = activeFill(high);
+
+      expect(lowFill).not.toBeNull();
+      expect(highFill).toBe('#F83C28');
+      expect(highFill).not.toBe(lowFill);
+    });
   });
 });
