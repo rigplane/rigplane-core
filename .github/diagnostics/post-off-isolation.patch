@@ -1,0 +1,12 @@
+diff --git a/src/rigplane/runtime/managed_tx_effect_lane.py b/src/rigplane/runtime/managed_tx_effect_lane.py
+--- a/src/rigplane/runtime/managed_tx_effect_lane.py
++++ b/src/rigplane/runtime/managed_tx_effect_lane.py
+@@ -226,8 +226,6 @@
+             isolation_error = await self._await_isolation(
+                 claim.isolation, claim.deadline
+             )
+-            if isolation_error is None and isolation_pending:
+-                isolation_error = "release preceded ON isolation"
+             if isolation_error:
+                 result = ActuationResult.UNCERTAIN
+                 await self._finish(claim, _Outcome(result, isolation_error))

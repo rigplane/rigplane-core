@@ -1,0 +1,12 @@
+diff --git a/src/rigplane/runtime/managed_tx_authority.py b/src/rigplane/runtime/managed_tx_authority.py
+--- a/src/rigplane/runtime/managed_tx_authority.py
++++ b/src/rigplane/runtime/managed_tx_authority.py
+@@ -448,6 +448,8 @@
+     ) -> None:
+         while True:
+             self._start_abort_cleanup()
++            if full_force:
++                await self._finish_abort_cleanup()
+             deadline = self._clock() + self._attempt_timeout
+             events: list[ManagedTxEvent] = []
+             for effect in effects:
