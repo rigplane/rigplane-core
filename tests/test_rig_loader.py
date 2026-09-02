@@ -707,8 +707,8 @@ tx_state_map = { "0" = "rx", "1" = "tx_cat", "2" = "tx_other" }
 
     def test_refused_during_tx_entries_are_opaque(self, tmp_path):
         """No membership check against any family vocabulary (deliberate,
-        see the loader's `_parse_tx_policy` docstring): the vocabulary's
-        single source of truth lands separately in `core/tx_authority.py`.
+        see the loader's `_parse_tx_policy` docstring): the parser owns only
+        shape and uniqueness, so entries remain opaque profile metadata.
         """
         p = _write_toml(
             tmp_path,

@@ -1822,11 +1822,9 @@ def _parse_tx_policy(filename: str, raw: Any) -> TxPolicy:
     """Parse the measured per-radio ``[tx_policy]`` section (MOR-1912).
 
     ``refused_during_tx`` entries are validated for shape only — a list of
-    unique, non-empty strings — never against a fixed vocabulary. The
-    command-family vocabulary's single source of truth is
-    ``core/tx_authority.py``, which is not yet on ``main``; duplicating its
-    membership list here would create a second copy with no mechanism
-    keeping it in step with the first.
+    unique, non-empty strings — never against a fixed vocabulary. The parser
+    owns only shape and uniqueness; it does not couple profile loading to a
+    runtime command-family membership list.
     """
     if raw is None:
         return TxPolicy()
