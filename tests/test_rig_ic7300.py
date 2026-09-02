@@ -58,7 +58,6 @@ EXPECTED_BASELINE_CAPABILITIES = {
     "attenuator",
     "preamp",
     "ip_plus",
-    "antenna",
     "nb",
     "nr",
     "notch",
