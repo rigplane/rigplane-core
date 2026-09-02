@@ -206,11 +206,18 @@ either "no runs" or one run spanning nearly the whole image on a reference
 you know is not actually blank — that is the signature of a textured ground,
 not evidence the reference has no structure.
 
-**Known limit, found by the selftest and worth knowing before you trust a
-number:** the run detector thresholds just above the profile's floor, because a
-midpoint threshold loses faint bands whenever a heavy element is present in the
-same image — and these panels always contain both. If two elements sit with no
-gutter between them, they read as one run; crop to separate them.
+**Known limit, and worth knowing before you trust a number:** on a reference
+with a regular texture (this one has a fine scanline-style ground), the
+floor-relative threshold reads the texture itself as ink almost everywhere,
+so a whole-panel `bands` collapses to nearly one giant run instead of finding
+the real bands. Reproduced: `bands /var/tmp/ftx1-reference.png` on the
+2572×1100 reference returns exactly **one run spanning 98.0%** of the image
+(`22-1100`). **Cropping into that texture is not the cure and makes it
+worse**: three independent interior crops of pure background texture on the
+same reference gave 42, 35 and 34 runs respectively, each spaced at the
+texture's own roughly-12px row period rather than at anything the layout put
+there. Use `--smooth` or `--signal variation` (both above) first; crop only
+once one of those has shown there is a real boundary to crop to.
 
 **Report proportions of the panel box, never pixels**, and state the tolerance.
 The stage scales as one block, so a pixel figure is true only at one size,
