@@ -97,7 +97,7 @@ class RigctldTransport:
         if writer is None:
             return
         try:
-            await writer.wait_closed()
+            await asyncio.shield(writer.wait_closed())
         except OSError:
             pass
         if self._writer is writer:
