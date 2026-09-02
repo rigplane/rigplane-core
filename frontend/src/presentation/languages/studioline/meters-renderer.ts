@@ -18,8 +18,11 @@ export interface StudiolineMeter {
   readonly trackWidth: string;
   readonly segmentGap: string;
   /**
-   * MOR-2214: `segmentCount: 20` restores the pre-PR default look (the same
-   * 20-segment geometry every language had before this PR). The real
+   * MOR-2214: `segmentCount: 20` together with `segmentGapPx` (below, sourced
+   * from studioline's own `segmentGap` token) restores the pre-PR default
+   * geometry, `{20, 1}` (`DEFAULT_METER_DISPLAY`) — segment count alone is
+   * not enough: at `segmentGapPx: 0` the same 20 segments render with no
+   * inter-segment gap, a visibly different, more solid-bar look. The real
    * per-language S-meter design for `studioline` — matching the operator's
    * IC-7300 reference photos (thin segments, blue-to-S9/red-beyond zoning,
    * tick labels, a shared SWR/Po scale) — is tracked in a separate
