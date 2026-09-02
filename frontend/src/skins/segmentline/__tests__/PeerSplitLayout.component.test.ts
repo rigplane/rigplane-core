@@ -359,4 +359,19 @@ describe('the glass bezel keeps its own CSS after the chassis class it used to w
     const grid = declarationsFor('.peer-split-glass :global(.semantic-surfaces.semantic-surfaces)');
     expect(grid['grid-template-rows']).toContain('minmax(72px, 1fr)');
   });
+
+  // The receiver strips must occupy THIS chassis's own two column
+  // tracks (subgrid), not a separately-computed nested grid that only looks
+  // aligned at an even split — MEASURED live (`vite.fixtures.config.ts`,
+  // `peer-split-chassis` fixture): forcing the parent's `grid-template-
+  // columns` to `2fr 1fr` moved both `.channel-strip` elements to the exact
+  // same widths as `.rx-tx-zone`/`.tx-aux-surface` (826.66px / 413.34px);
+  // reverting `.channel-strips`'s own `grid-template-columns` to the
+  // wiring's un-overridden `repeat(auto-fit, minmax(0, 1fr))` kept both
+  // strips at an even 50/50 split regardless, which is exactly the
+  // collapse-back this pin catches.
+  it('subgrids the channel strips onto the chassis columns instead of a separately-computed split', () => {
+    const strips = declarationsFor('.peer-split-glass :global(.channel-strips.channel-strips)');
+    expect(strips['grid-template-columns']).toBe('subgrid');
+  });
 });
