@@ -110,12 +110,12 @@ from ..core.tx_target import (
     TxTarget,
     UnknownTxTarget,
 )
-from .._state_queries import (
+from ..profiles import RadioProfile, resolve_radio_profile
+from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
+    tx_target_max_age,
     wire_parts_for_query,
 )
-from ..profiles import RadioProfile, resolve_radio_profile
-from ..runtime._state_queries import tx_target_max_age
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,

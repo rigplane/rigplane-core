@@ -403,6 +403,19 @@ async def test_web_scope_receiver_rewrite_preserves_data_suffix() -> None:
 
 
 @pytest.mark.asyncio
+async def test_web_scope_receiver_none_radio_state_falls_back_to_main() -> None:
+    """Pins ``poller._radio_state is None`` -> substituted byte 0 == 0.
+
+    ``_send_through_web`` sets ``poller._radio_state = None`` when
+    ``scope_receiver`` is omitted (see its own default), so this exercises
+    the fallback branch directly rather than relying on an unexercised
+    default value.
+    """
+    query = acquisition_query(0x27, sub=0x14, data=b"\x00\xaa\xbb")
+    assert await _send_through_web(query) == (0x27, 0x14, b"\x00\xaa\xbb")
+
+
+@pytest.mark.asyncio
 async def test_all_senders_substitute_live_scope_receiver_on_0x27() -> None:
     query = acquisition_query(0x27, sub=0x14, data=b"\x00\xaa\xbb")
     expected = (0x27, 0x14, b"\x01\xaa\xbb")
