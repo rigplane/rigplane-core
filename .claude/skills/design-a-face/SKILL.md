@@ -446,15 +446,6 @@ does not announce itself.
 Every one of these was paid for. They are listed with the instance because an
 abstract warning does not survive contact.
 
-**A class styled by its own component answers to no design language.**
-`MetersSurface` emits `class="meter-unknown"` and its own `<style>` block sets
-`font-weight: 700` on it — a real rule, so this is not a case of a class
-styled by nobody. But none of the three design languages own that rule and no
-test pins it, so switching languages can never change how the class looks: it
-reads like a tier-one hook and is actually tier three. When a proposal names a
-class, confirm which file's `<style>` owns the rule — that direction has no
-automated check.
-
 **A skin's markup is invisible to the design-language check.** It mounts the
 semantic surfaces, not skin layouts. So a rule consumed only by a skin component
 reports as an orphan, correctly by the check's own scope and wrongly in fact.
