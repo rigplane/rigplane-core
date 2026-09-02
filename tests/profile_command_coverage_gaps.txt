@@ -8,9 +8,9 @@
 # via { absent = "<source>" } (plan §8.1 D2) or a real command-byte
 # entry in the profile's own TOML. Regenerate, do not hand-edit.
 census	civ_profiles	6
-census	distinct_gap_keys	146
-census	profile_key_gaps	298
-census	public_builders	243
+census	distinct_gap_keys	144
+census	profile_key_gaps	294
+census	public_builders	241
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	X6100,X6200
 gap	get_agc_time_constant	X6100,X6200
@@ -81,7 +81,6 @@ gap	get_tone_freq	X6100,X6200
 gap	get_tsql_freq	X6100,X6200
 gap	get_tuning_step	X6100,X6200
 gap	get_twin_peak_filter	X6100,X6200
-gap	get_tx_freq_monitor	X6100,X6200
 gap	get_usb_mod_level	X6100,X6200
 gap	get_utc_offset	X6100,X6200
 gap	get_various_squelch	X6100,X6200
@@ -150,7 +149,6 @@ gap	set_tone_freq	X6100,X6200
 gap	set_tsql_freq	X6100,X6200
 gap	set_tuning_step	X6100,X6200
 gap	set_twin_peak_filter	X6100,X6200
-gap	set_tx_freq_monitor	X6100,X6200
 gap	set_usb_mod_level	X6100,X6200
 gap	set_utc_offset	X6100,X6200
 gap	set_vox_delay	X6100,X6200

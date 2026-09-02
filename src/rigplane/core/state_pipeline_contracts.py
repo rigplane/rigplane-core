@@ -1237,7 +1237,6 @@ def _global_specs() -> tuple[FieldSpec, ...]:
         spec(FieldPath.global_("tx_state", "compressor_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "monitor_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "vox_on"), "bool", writable=True),
-        spec(FieldPath.global_("tx_state", "tx_freq_monitor"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "main_sub_tracking"), "bool", writable=True),
         spec(
             FieldPath.global_("operator_controls", "power_level"),

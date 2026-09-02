@@ -93,7 +93,6 @@ function makeState(overrides: Partial<ServerStateWithObservation> = {}): ServerS
     scanning: false,
     tuningStep: 0,
     overflow: false,
-    txFreqMonitor: false,
     ritFreq: 0,
     ritOn: false,
     ritTx: false,

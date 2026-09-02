@@ -31,7 +31,6 @@ export interface ServerStatePublic {
   tuningStep?: number;
   overflow?: boolean;
   tunerStatus: number;
-  txFreqMonitor?: boolean;
   ritFreq?: number;
   ritOn?: boolean;
   ritTx?: boolean;

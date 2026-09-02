@@ -17,10 +17,9 @@ is empty of ptt.py rows and stays that way.
 
 ``_CMD_PTT`` (0x1C) still survives in `commands/_frame.py`, past
 `commands/system.py`'s own migration (MOR-2008 batch 1), which deleted
-that module's ``get_tuner_status``/``set_tuner_status``/``get_xfc_status``/
-``set_xfc_status``/``get_tx_freq_monitor``/``set_tx_freq_monitor`` fallback
-branches (0x1C is the whole "transceiver status" CI-V command family, not
-just PTT): `tests/test_radio.py` imports ``_CMD_PTT`` directly (alongside
+that module's transceiver-status-family fallback branches (0x1C is the
+whole "transceiver status" CI-V command family, not just PTT):
+`tests/test_radio.py` imports ``_CMD_PTT`` directly (alongside
 ``_SUB_PTT``, 0x00) to build synthetic CivFrames for unrelated managed-TX/
 ACK-tracking tests, unconnected to either module's fallback -- the
 migration contract deletes a constant only when every reader, module

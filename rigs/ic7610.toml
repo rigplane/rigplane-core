@@ -1271,8 +1271,6 @@ set_ssb_tx_bandwidth = [0x16, 0x58]
 # ── Split ──
 get_xfc_status = [0x1C, 0x02]             # Transmit frequency monitor (XFC)
 set_xfc_status = [0x1C, 0x02]
-get_tx_freq_monitor = { absent = "IC-7610 CI-V Reference Guide (2021) pp.9,14: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
-set_tx_freq_monitor = { absent = "IC-7610 CI-V Reference Guide (2021) pp.9,14: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
 
 # ── CW ──
 send_cw = [0x17]

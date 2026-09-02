@@ -4163,7 +4163,7 @@ def test_update_radio_state_tuner_status(radio_with_state: IcomRadio) -> None:
     assert field.value == 2
 
 
-def test_update_radio_state_tx_freq_monitor_decodes_transmit_frequency_not_boolean(
+def test_update_radio_state_direct_tx_frequency_stamps_profile_declared_max_age(
     radio_with_state: IcomRadio,
 ) -> None:
     # Full directed IC-7610 response: 1C/03 + 7.100 MHz in five-byte BCD.
@@ -4185,8 +4185,6 @@ def test_update_radio_state_tx_freq_monitor_decodes_transmit_frequency_not_boole
         .freshness
         is FreshnessState.STALE
     )
-    with pytest.raises(KeyError):
-        snapshot.field("global.tx_state.tx_freq_monitor")
 
 
 def test_direct_tx_frequency_max_age_falls_back_without_state_acquisition(

@@ -689,19 +689,6 @@ class TestBuildStateQueries:
             profile
         )
 
-    @pytest.mark.parametrize("model", _shipped_civ_models())
-    def test_legacy_tx_freq_monitor_builders_fail_closed(self, model: str) -> None:
-        profile = resolve_radio_profile(model=model)
-        commands = BoundCommands(
-            profile.command_map or CommandMap({}),
-            profile.absent_command_sources,
-        )
-
-        with pytest.raises(CommandError, match="get_tx_freq_monitor is not supported"):
-            commands.get_tx_freq_monitor(to_addr=profile.civ_addr)
-        with pytest.raises(CommandError, match="set_tx_freq_monitor is not supported"):
-            commands.set_tx_freq_monitor(True, to_addr=profile.civ_addr)
-
     @pytest.mark.parametrize("model", ("IC-705", "IC-7300", "IC-7610", "IC-9700"))
     def test_xfc_builders_remain_bound_to_boolean_1c02(self, model: str) -> None:
         profile = resolve_radio_profile(model=model)
