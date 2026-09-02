@@ -58,15 +58,31 @@
  * there (production's own, only activation mechanism, MOR-1278), so running
  * the selector via `document.querySelectorAll` tests the TAIL, never the
  * prefix — with one exception `reachable()` handles explicitly, not
- * silently: a selector ending in a pseudo-element (`::before`, `:before`,
- * `::after`, `::first-line`, `::first-letter`, `::placeholder`) can never
- * match through `querySelectorAll`, in jsdom or any real browser, because a
- * pseudo-element is not a DOM node — every such selector would report as an
- * orphan regardless of whether its SUBJECT exists. `reachable()` strips a
- * trailing pseudo-element and judges the subject instead; the permanent
- * control below (`describe('reachable() judges a trailing pseudo-element…`)
- * is what a mutation cannot pass by treating every pseudo-element tail as
- * reachable rather than genuinely checking the subject.
+ * silently: a selector ending in a pseudo-element can never match through
+ * `querySelectorAll`, in jsdom or any real browser, because a pseudo-element
+ * is not a DOM node — every such selector would report as an orphan
+ * regardless of whether its SUBJECT exists. `reachable()` strips a trailing
+ * pseudo-element and judges the subject instead; see `TRAILING_PSEUDO_ELEMENT`
+ * below for exactly what "trailing pseudo-element" covers (stated precisely
+ * there, not repeated here to avoid a second copy that can go stale). The
+ * permanent control below (`describe('reachable() judges a trailing
+ * pseudo-element…`) is what a mutation cannot pass by treating every
+ * pseudo-element tail as reachable rather than genuinely checking the
+ * subject.
+ *
+ * KNOWN LIMITATION — `:focus-visible` IS ONLY TRUSTWORTHY FOR THE TWO
+ * ELEMENTS A SCENE ACTUALLY FOCUSES. `SCENES` calls `.focus()` exactly
+ * twice: once on `.rx-tx-key`, once on `.rx-tx-unkey`. A `:focus-visible`
+ * rule scoped to either is genuinely exercised. A `:focus-visible` rule
+ * scoped to anything else this file renders — `.vfo-select`, `.fact-toggle`,
+ * `.vfo-tile`, or any future focusable class — is NOT exercised: no scene
+ * ever focuses them, so `reachable()` would report such a rule as an orphan
+ * whether or not it truly is one. None of the three stylesheets currently
+ * writes a `:focus-visible` rule scoped that narrowly (studioline's and
+ * fieldline's own rule is the bare `[dl][dl] :focus-visible`, which any
+ * focused descendant satisfies — the two scenes above happen to be enough
+ * for it, not because it was designed around them), so this is a live gap
+ * in what a future rule could safely rely on, not a current false orphan.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -162,11 +178,33 @@ function extractSelectors(cssPath: string): readonly StyleRule[] {
 // regardless of whether the rule's real subject exists: a pseudo-element is
 // generated content, never a DOM node `querySelectorAll` can return. Found
 // in review: `.rx-tx-surface::before` (subject genuinely live) reported as
-// studioline's SOLE orphan under the un-fixed check. `TRAILING_PSEUDO_ELEMENT`
-// strips exactly the pseudo-element tail — both the modern double-colon form
-// and the CSS2.1 single-colon alias `:before`/`:after`/`:first-line`/
-// `:first-letter` share with it — so `reachable()` judges the SUBJECT.
-const TRAILING_PSEUDO_ELEMENT = /::?(before|after|first-line|first-letter)$|::placeholder$/i;
+// studioline's SOLE orphan under the first version of this check.
+//
+// COVERAGE, STATED PRECISELY rather than claimed as total (review finding:
+// an earlier version of this comment claimed "every pseudo-element form the
+// CSS files use or could," which a direct probe of `::marker`, `::selection`,
+// `::backdrop`, `::-webkit-scrollbar`, `::file-selector-button`, `::cue`,
+// `::part()`, `::slotted()` and `::target-text` showed false — none of those
+// nine were in the original keyword list). `TRAILING_PSEUDO_ELEMENT` strips
+// by SYNTACTIC FORM, not by an enumerated keyword list, so it is closed
+// against the CSS Selectors grammar rather than against today's vocabulary:
+//   - any trailing `::<identifier>`, bare or with ONE level of parenthesized
+//     arguments (`::part(button)`, `::slotted(.foo)`, `::cue(video)`) — the
+//     double colon is EXCLUSIVELY pseudo-element syntax in CSS, so this half
+//     covers every pseudo-element that syntax can ever name, including
+//     vendor-prefixed and future ones, not just the nine named above;
+//   - the four CSS2.1 single-colon legacy aliases — `:before`, `:after`,
+//     `:first-line`, `:first-letter` — the ONLY single-colon forms the
+//     Selectors spec recognises as pseudo-elements; every other single-colon
+//     form (`:hover`, `:focus-visible`, `:not()`, `:has()`, …) is a
+//     pseudo-CLASS and must NOT be stripped, and is not (verified below and
+//     by the permanent control).
+// KNOWN GAP: a functional pseudo-element whose OWN argument contains nested
+// parens (e.g. a hypothetical `::slotted(:not(.foo))`) is not handled — the
+// one-level `[^()]*` does not balance nested parens. None of the three
+// stylesheets uses a functional pseudo-element at all today, so this is a
+// documented limit, not a silent one.
+const TRAILING_PSEUDO_ELEMENT = /::[-\w]+(?:\([^()]*\))?$|:(?:before|after|first-line|first-letter)$/i;
 
 const subjectOf = (selector: string): string => selector.replace(TRAILING_PSEUDO_ELEMENT, '');
 
@@ -410,15 +448,31 @@ describe('MOR-2163 — every design-language stylesheet selector reaches real ma
 // the live-subject case proves the fix works, and the dead-subject case
 // proves it is not a blanket "pseudo-elements are always reachable" escape
 // hatch that would hide a real orphan wearing a pseudo-element tail.
-describe('reachable() judges a trailing pseudo-element by its subject, never by querySelectorAll on the whole string', () => {
+//
+// NAMED FORMS BELOW ARE A SAMPLE, NOT THE CLOSED SET (review finding: an
+// earlier version of this test's own name claimed "every pseudo-element form
+// the CSS files use or could," which was false — see the honest coverage
+// comment on `TRAILING_PSEUDO_ELEMENT` above for what is actually closed:
+// the double-colon form generally, by CSS grammar, plus the four CSS2.1
+// single-colon aliases). The list below exercises the two colon styles, a
+// hyphenated/vendor-prefixed identifier, and a functional form with an
+// argument — one representative of each SHAPE the regex distinguishes, not
+// an attempt to enumerate every pseudo-element CSS defines.
+describe('reachable() judges a trailing pseudo-element by its subject', () => {
   const LIVE = "[data-design-language='studioline'][data-design-language] .rx-tx-surface";
   const DEAD = "[data-design-language='studioline'][data-design-language] .rx-tx-surface-DOES-NOT-EXIST";
+  const SAMPLE_TAILS = [
+    ':before', '::before', '::after', '::first-line', '::first-letter', // legacy + double-colon core
+    '::placeholder', '::marker', '::selection', '::backdrop', // review-named, no arguments
+    '::-webkit-scrollbar', '::file-selector-button', // hyphenated / vendor-prefixed identifiers
+    '::cue', '::cue(video)', '::part(button)', '::slotted(.foo)', '::target-text', // functional forms
+  ];
 
-  it('reports a live subject reachable, and a dead one not, across every pseudo-element form the CSS files use or could', () => {
+  it('reports a live subject reachable, and a dead one not, for every sampled tail', () => {
     activate('studioline');
     const { cleanup } = mountInto(RxTxSurface, { view: topologyFixtures['2/main_sub'], tx: RX_IDLE });
     try {
-      for (const tail of [':before', '::before', '::after', '::first-line', '::first-letter', '::placeholder']) {
+      for (const tail of SAMPLE_TAILS) {
         expect(reachable(`${LIVE}${tail}`), `${LIVE}${tail} should be reachable`).toBe(true);
         expect(reachable(`${DEAD}${tail}`), `${DEAD}${tail} should NOT be reachable`).toBe(false);
       }
