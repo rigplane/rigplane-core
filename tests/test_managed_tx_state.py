@@ -193,10 +193,45 @@ def test_retry_force_receive_advances_epoch_for_force_release_debt() -> None:
 
 
 @pytest.mark.parametrize(
+    "settlement", [ActuationResult.REJECTED, ActuationResult.UNCERTAIN]
+)
+def test_retry_force_receive_preserves_ptt_release_debt(
+    settlement: ActuationResult,
+) -> None:
+    keyed_on = settle(keyed(), ActuationResult.ACCEPTED).state
+    releasing = reduce_managed_tx(keyed_on, PttUp("web-1", 7, "off")).state
+    debt = settle(releasing, settlement).state
+
+    result = reduce_managed_tx(debt, subject.RetryForceReceive(8, "retry"))
+
+    assert debt.release_plan is ReleasePlan.PTT_RELEASE
+    assert result.outcome is ManagedTxOutcome.ACCEPTED
+    assert result.state.release_plan is ReleasePlan.PTT_RELEASE
+    assert result.state.effect_epoch == debt.effect_epoch + 1
+    assert result.effects == (result.state.pending_effect,)
+    assert result.effects[0] == subject.ManagedTxEffect(
+        ActuationOperation.FORCE_RECEIVE,
+        subject.EffectToken(8, result.state.effect_epoch, "retry"),
+    )
+    assert result.state.current_abort_token is None
+    assert result.state.abort_errors == ()
+    assert (
+        settle(result.state, settlement).state.release_plan is ReleasePlan.PTT_RELEASE
+    )
+
+
+def test_accepted_ptt_release_retry_settlement_clears_debt() -> None:
+    keyed_on = settle(keyed(), ActuationResult.ACCEPTED).state
+    releasing = reduce_managed_tx(keyed_on, PttUp("web-1", 7, "off")).state
+    debt = settle(releasing, ActuationResult.REJECTED).state
+    retried = reduce_managed_tx(debt, subject.RetryForceReceive(8, "retry"))
+    assert settle(retried.state, ActuationResult.ACCEPTED).state.release_plan is None
+
+
+@pytest.mark.parametrize(
     "state",
     [
         ManagedTxState(),
-        ManagedTxState(release_plan=ReleasePlan.PTT_RELEASE),
         keyed(),
         reduce_managed_tx(ManagedTxState(), TransmitOn(7, "tx", 10, None)).state,
         force_off().state,
