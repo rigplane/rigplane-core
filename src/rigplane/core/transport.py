@@ -17,6 +17,7 @@ from typing import ClassVar
 
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core._queue_pressure import PRESSURE_THRESHOLD
+from .exceptions import CommandError
 from .exceptions import TimeoutError as _TimeoutError
 from .types import HEADER_SIZE, PacketType
 
@@ -119,6 +120,7 @@ class IcomTransport:
         self.send_seq: int = 0
         self.ping_seq: int = 0
         self.tx_buffer: OrderedDict[int, bytes] = OrderedDict()
+        self._tx_guards: dict[int, Callable[[], bool]] = {}
         self.rx_last_seq: int | None = None
         self.rx_missing: dict[int, int] = {}  # seq -> retry count
         self._udp_transport: asyncio.DatagramTransport | None = None
@@ -403,7 +405,9 @@ class IcomTransport:
         if self._retransmit_task is None or self._retransmit_task.done():
             self._retransmit_task = asyncio.create_task(self._retransmit_loop())
 
-    async def send_tracked(self, data: bytes) -> None:
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         """Send a packet with sequence tracking.
 
         The sequence number is written into the packet header at offset 6-7,
@@ -411,12 +415,20 @@ class IcomTransport:
 
         Args:
             data: Packet bytes (header already filled except seq).
+            is_current: Optional caller-owned synchronous, nonblocking,
+                read-only predicate, checked before sending and retransmitting.
+                False raises CommandError before an initial send; an initial
+                predicate exception propagates. Retransmits skip on either.
+
+        This guards local submission only, not delivery or radio execution.
         """
+        if is_current is not None and not is_current():
+            raise CommandError("Tracked write is no longer current")
         seq = self._next_send_seq()
         pkt = bytearray(data)
         struct.pack_into("<H", pkt, 6, seq)
         pkt_bytes = bytes(pkt)
-        self._track_sent(seq, pkt_bytes)
+        self._track_sent(seq, pkt_bytes, is_current=is_current)
         self._raw_send(pkt_bytes)
         self._last_tracked_send = time.monotonic()
 
@@ -471,18 +483,25 @@ class IcomTransport:
         self._raw_send(pkt)
         self.ping_seq = (self.ping_seq + 1) & 0xFFFF
 
-    def _track_sent(self, seq: int, data: bytes) -> None:
+    def _track_sent(
+        self, seq: int, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         """Store a sent packet for potential retransmission."""
         # Mirror wfview behavior: clear tracked TX buffer on sequence rollover.
         if seq == 0:
             self.tx_buffer.clear()
+            self._tx_guards.clear()
 
         if seq in self.tx_buffer:
             del self.tx_buffer[seq]
+        self._tx_guards.pop(seq, None)
 
         if len(self.tx_buffer) >= BUFSIZE:
-            self.tx_buffer.popitem(last=False)
+            evicted, _ = self.tx_buffer.popitem(last=False)
+            self._tx_guards.pop(evicted, None)
         self.tx_buffer[seq] = data
+        if is_current is not None:
+            self._tx_guards[seq] = is_current
 
     def _record_rx_seq(self, seq: int) -> None:
         """Record a received sequence number and detect gaps."""
@@ -556,23 +575,34 @@ class IcomTransport:
             return
         self._handle_data_packet(data, ptype, seq, sender_id)
 
+    def _retransmit(self, seq: int) -> None:
+        data = self.tx_buffer.get(seq)
+        if data is None:
+            return
+        is_current = self._tx_guards.get(seq)
+        if is_current is not None:
+            try:
+                if not is_current():
+                    return
+            except Exception:
+                logger.debug("Skipping retransmit with failed guard", exc_info=True)
+                return
+        self._raw_send(data)
+
     def _handle_retransmit_packet(
         self, data: bytes, length: int, seq: int, sender_id: int
     ) -> bool:
         """Handle ptype=0x01 retransmit requests (single or multi)."""
         if length == CONTROL_SIZE and len(data) == CONTROL_SIZE:
             # Single retransmit request from radio
-            if seq in self.tx_buffer:
-                logger.debug("Retransmitting seq 0x%04X", seq)
-                self._raw_send(self.tx_buffer[seq])
+            self._retransmit(seq)
             return True
 
         # Multi retransmit request
         for i in range(CONTROL_SIZE, len(data), 2):
             if i + 2 <= len(data):
                 rseq = struct.unpack_from("<H", data, i)[0]
-                if rseq in self.tx_buffer:
-                    self._raw_send(self.tx_buffer[rseq])
+                self._retransmit(rseq)
         return True
 
     def _handle_ping_packet(
