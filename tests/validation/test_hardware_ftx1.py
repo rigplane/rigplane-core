@@ -657,7 +657,7 @@ def test_rmvr_outcome_is_pinned() -> None:
 # Drives a REAL YaesuCatTransport + YaesuCatRadio (not a MagicMock(spec=Radio),
 # unlike the fixtures above) against a scripted serial wire, so the fix under
 # test -- YaesuCatTransport._drain_responses inspecting the drained line for
-# "?;" -- runs for real. tests/tx_authority_fakes.py: ScriptedCatTransport is
+# "?;" -- runs for real. tests/tx_observation_fakes.py: ScriptedCatTransport is
 # a pattern to copy, not an object to reuse here: it fakes the whole
 # transport and its write() never raises. The rejection below comes from
 # this fake's own scripting, independent of any shipped rigs/ftx1.toml entry
