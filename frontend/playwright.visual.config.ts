@@ -35,10 +35,11 @@ const PORT = Number(process.env.RP_VISUAL_PORT ?? '5399');
 // serves the real index.html, not a 404. It is deliberately not reused
 // here: App.svelte calls `provideAppTxControllerHost` from
 // `$lib/runtime/tx-controller/app-host` unconditionally, at script top
-// level, on EVERY load including the demo route — every
-// `demoMode === 'control-buttons'` bailout in that file runs inside an
-// `$effect`/`onMount` callback, which fires after the script's
-// synchronous body, so none of them run in time to skip that call.
+// level, on EVERY load including the demo route — the file's four
+// `demoMode === 'control-buttons'` checks are two `$effect`/`onMount`
+// callbacks (run after the script's synchronous body) and two template
+// `{#if}` blocks outside `<script>` (gate markup, not script execution),
+// so none of them run before or in place of that call.
 // `fixtureStubs()` in vite.fixtures.config.ts re-points
 // `tx-controller/app-host.ts` (plus three other runtime modules) to
 // `fixtures/stubs/app-host.ts`, whose only export is
