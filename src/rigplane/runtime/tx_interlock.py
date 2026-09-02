@@ -255,16 +255,6 @@ class DeferredTxCommandLane:
 _ALWAYS_PASS_TYPES = (PttOff, ScanStop)
 
 _DEFER_TYPES = (
-    # MOR-1940: FREQUENCY and RIT_XIT were removed (both bench radios accept
-    # and apply these writes while keyed; ADR
-    # docs/plans/2026-08-20-transmit-authority.md S3.3 groups them as
-    # manufacturer-permitted). They fall through to the TX_SAFE default
-    # below. MODE, BAND, VFO_SELECT, VFO_TOPOLOGY and MEMORY are untouched.
-    SetMode,
-    SetBand,
-    SelectVfo,
-    VfoSwap,
-    VfoEqualize,
     SetSplit,
     SetDualWatch,
     SetMainSubTracking,
@@ -274,6 +264,16 @@ _DEFER_TYPES = (
     QuickSplitTrigger,
     SetMemoryMode,
     MemoryToVfo,
+)
+
+_OBSERVED_RF_ADMISSION_FREE_FAMILIES = frozenset(
+    {
+        TxInterlockCommandFamily.FREQUENCY,
+        TxInterlockCommandFamily.MODE,
+        TxInterlockCommandFamily.BAND,
+        TxInterlockCommandFamily.VFO_SELECT,
+        TxInterlockCommandFamily.VFO_CONTENTS,
+    }
 )
 
 _HARD_BLOCK_TYPES = (
@@ -329,11 +329,11 @@ def get_tx_interlock_command_family_metadata(
         family = TxInterlockCommandFamily.BAND
     elif isinstance(command, SelectVfo):
         family = TxInterlockCommandFamily.VFO_SELECT
+    elif isinstance(command, (VfoSwap, VfoEqualize)):
+        family = TxInterlockCommandFamily.VFO_CONTENTS
     elif isinstance(
         command,
         (
-            VfoSwap,
-            VfoEqualize,
             SetSplit,
             SetDualWatch,
             SetMainSubTracking,
@@ -395,6 +395,8 @@ def _effective_tx_interlock_disposition(
             raise ValueError("invalid or loosening TX interlock override")
     metadata = get_tx_interlock_command_family_metadata(command)
     if metadata is None:
+        return base
+    if metadata.family in _OBSERVED_RF_ADMISSION_FREE_FAMILIES:
         return base
     return disposition_overrides.get(metadata.family, base)
 

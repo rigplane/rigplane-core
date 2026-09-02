@@ -4,10 +4,10 @@
 Standalone ``rigplane serve`` had no cadence poller at all: ``due_requests()``
 is called only by the web radio poller, so nothing ever sent a ``0x1C/0x00``
 read after connect, the strict resolver behind the MOR-1881 DEFER gate stayed
-UNKNOWN forever, and every frequency, mode, VFO and key-down command was
-refused with ``RPRT -9``. These tests pin the missing *request*, never new
-data: the value that clears the gate may only arrive through the existing CI-V
-ingress, from a real radio reply (MOR-1900).
+UNKNOWN forever, and every split and key-down command was refused with
+``RPRT -9``. These tests pin the missing *request*, never new data: the value
+that clears the gate may only arrive through the existing CI-V ingress, from a
+real radio reply (MOR-1900).
 """
 
 from __future__ import annotations
@@ -160,10 +160,7 @@ async def test_writes_succeed_after_the_radio_answers_the_reread(model: str) -> 
     server._client_count = 1  # noqa: SLF001
     server._start_ptt_reread_task()  # noqa: SLF001
     try:
-        # ``F`` is excluded here: MOR-1940 reclassified FREQUENCY as
-        # TX-SAFE, so it is never gated by the re-read and would already
-        # succeed before the radio has answered at all.
-        for wire in (b"M USB 2400", b"V VFOB", b"T 1"):
+        for wire in (b"S 1 VFOA", b"T 1"):
             refused = await handler.execute(parse_line(wire), session_id="s1")
             assert refused.error is not None and int(refused.error) == -9, wire
 
@@ -173,13 +170,12 @@ async def test_writes_succeed_after_the_radio_answers_the_reread(model: str) -> 
         await _deliver(radio, _ptt_reply(radio, transmitting=False))
         assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.RX  # noqa: SLF001
 
-        # ``V`` on a dual-RX rig (IC-9700) needs an ACK the stub cannot give:
-        # pin only that the interlock stopped refusing, and run it last — its
-        # ~1s stall would age the observation past its TTL for the next wire.
-        for wire in (b"F 14074000", b"M USB 2400", b"T 1", b"V VFOB"):
+        # Run split last: the stub cannot ACK it, so the write may time out
+        # after proving that the interlock no longer rejects it.
+        for wire in (b"T 1", b"S 1 VFOA"):
             got = await handler.execute(parse_line(wire), session_id="s1")
             code = 0 if got.error is None else int(got.error)
-            assert code == 0 or (wire == b"V VFOB" and code != -9), (wire, got)
+            assert code != -9, (wire, got)
     finally:
         handler.stop_key_down_backstop()
         await server._stop_ptt_reread_task()  # noqa: SLF001
@@ -209,10 +205,7 @@ async def test_unanswered_reread_never_produces_rf_truth(
             store.snapshot().field(_PTT_PATH)
         assert handler._resolve_rigctld_rf_state() is tx_interlock.RfState.UNKNOWN  # noqa: SLF001
 
-        # ``F`` is excluded here: MOR-1940 reclassified FREQUENCY as
-        # TX-SAFE, so an unresolved re-read never gates it in the first
-        # place.
-        for wire in (b"M USB 2400", b"V VFOB", b"T 1"):
+        for wire in (b"S 1 VFOA", b"T 1"):
             refused = await handler.execute(parse_line(wire), session_id="s1")
             assert refused.error is not None and int(refused.error) == -9, wire
     finally:
@@ -262,16 +255,13 @@ async def test_started_server_drives_reads_only_while_a_client_is_connected(
             await asyncio.sleep(PTT_REREAD_INTERVAL_SECONDS * 6.0)
             assert len(_ptt_read_calls(send_civ)) >= 2
 
-            # Unanswered so far: the seat is still fail-closed on the wire.
-            # ``M`` (mode), not ``F``: MOR-1940 reclassified FREQUENCY as
-            # TX-SAFE, so it would already succeed before any answer and
-            # could no longer demonstrate the fail-closed-then-clears shape.
-            writer.write(b"M USB 2400\n")
+            # Unanswered so far: key-down remains fail-closed on the wire.
+            writer.write(b"T 1\n")
             await writer.drain()
             assert await reader.readline() == b"RPRT -9\n"
 
             await _deliver(civ_radio, _ptt_reply(civ_radio, transmitting=False))
-            writer.write(b"M USB 2400\n")
+            writer.write(b"T 1\n")
             await writer.drain()
             assert await reader.readline() == b"RPRT 0\n"
         finally:
@@ -293,7 +283,7 @@ async def test_client_connecting_at_server_start_gets_known_state_before_first_w
     -- worst case, right after start, a full ``PTT_REREAD_INTERVAL_SECONDS``
     from the next scheduled tick -- left RF truth UNKNOWN for that whole
     window pre-fix, so a client that writes soon after connecting (as
-    WSJT-X's "Test CAT" does) got its first DEFER-classified write refused
+    WSJT-X's "Test CAT" does) got its first RF-gated write refused
     with ``RPRT -9``. Six connect-and-immediately-write runs on real
     hardware hit this in 2/6: first refusal ~0.06s after connect, first
     success only at ~0.26-0.277s -- essentially one whole tick later.
@@ -322,10 +312,7 @@ async def test_client_connecting_at_server_start_gets_known_state_before_first_w
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         try:
             await asyncio.sleep(0.01)
-            # ``M`` (mode), not ``F``: MOR-1940 reclassified FREQUENCY as
-            # TX-SAFE, so it would already succeed before any answer and
-            # could not demonstrate this race.
-            writer.write(b"M USB 2400\n")
+            writer.write(b"T 1\n")
             await writer.drain()
             response = await asyncio.wait_for(
                 reader.readline(), timeout=PTT_REREAD_INTERVAL_SECONDS * 0.5

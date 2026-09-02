@@ -24,10 +24,14 @@ from rigplane.runtime._poller_types import (
     SelectVfo,
     SendCiv,
     SetAntenna1,
+    SetBand,
     SetFreq,
     SetMode,
     SetPowerstat,
+    SetSplit,
     SetTunerStatus,
+    VfoEqualize,
+    VfoSwap,
 )
 from rigplane.runtime.tx_interlock import (
     RfState,
@@ -46,11 +50,7 @@ from rigplane.web.radio_poller import (
 
 
 _PTT = FieldPath.global_("tx_state", "ptt")
-# MOR-1940: still-DEFER exemplar for the deferred-lane mechanics below
-# (FREQUENCY was reclassified TX_SAFE -- see
-# test_frequency_now_dispatches_without_entering_the_deferred_lane, which
-# pins that contrast directly).
-_MODE = FieldPath.active("main", "freq_mode", "mode")
+_SPLIT = FieldPath.global_("tx_state", "split")
 
 
 def _radio() -> SimpleNamespace:
@@ -63,6 +63,7 @@ def _radio() -> SimpleNamespace:
         set_antenna_1=AsyncMock(),
         set_freq=AsyncMock(),
         set_mode=AsyncMock(),
+        set_split=AsyncMock(),
         set_tuner_status=AsyncMock(),
         set_powerstat=AsyncMock(),
         set_ptt=AsyncMock(),
@@ -105,22 +106,22 @@ async def _lifecycle_entry(
     service: CommandService,
     *,
     command_id: str,
-    mode: str,
+    on: bool,
 ) -> CommandQueueEntry:
     await service.execute(
         CommandIntent(
             id=command_id,
-            name="set_mode",
-            params={"mode": mode, "session_id": "ws-a"},
+            name="set_split",
+            params={"split": on, "session_id": "ws-a"},
             source="websocket",
-            target=_MODE,
+            target=_SPLIT,
             timeout=3.0,
             pending_policy="scoped",
-            expected_observations=(_MODE,),
+            expected_observations=(_SPLIT,),
         )
     )
     return CommandQueueEntry(
-        SetMode(mode),
+        SetSplit(on),
         future=asyncio.get_running_loop().create_future(),
         command_id=command_id,
         source="websocket",
@@ -226,11 +227,11 @@ async def test_deferred_entry_releases_once_with_its_original_future() -> None:
     poller = RadioPoller(radio, queue, state_store=store)
     _observe_ptt(store, True, observed_at=clock.now())
     future = asyncio.get_running_loop().create_future()
-    entry = CommandQueueEntry(SetMode("USB"), future=future)
+    entry = CommandQueueEntry(SetSplit(True), future=future)
 
     assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
     assert future.done() is False
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
     clock.advance(0.1)
     _observe_ptt(store, False, observed_at=clock.now())
@@ -244,9 +245,9 @@ async def test_deferred_entry_releases_once_with_its_original_future() -> None:
 
     await poller._execute_queued_entry(entry)  # noqa: SLF001
     assert future.result() is None
-    radio.set_mode.assert_awaited_once_with("USB", None)
+    radio.set_split.assert_awaited_once_with(True)
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
-    radio.set_mode.assert_awaited_once()
+    radio.set_split.assert_awaited_once()
 
 
 async def test_supersession_keeps_deadline_and_expiry_wins_over_release() -> None:
@@ -256,22 +257,22 @@ async def test_supersession_keeps_deadline_and_expiry_wins_over_release() -> Non
     poller = RadioPoller(radio, queue, state_store=store)
     _observe_ptt(store, True, observed_at=clock.now())
     old_future = asyncio.get_running_loop().create_future()
-    old = CommandQueueEntry(SetMode("LSB"), future=old_future)
+    old = CommandQueueEntry(SetSplit(False), future=old_future)
     assert poller._stage_tx_interlocked_entries([old]) == []  # noqa: SLF001
 
     clock.advance(2.5)
     _observe_ptt(store, False, observed_at=clock.now())
     new_future = asyncio.get_running_loop().create_future()
-    new = CommandQueueEntry(SetMode("USB"), future=new_future)
+    new = CommandQueueEntry(SetSplit(True), future=new_future)
     assert poller._stage_tx_interlocked_entries([new]) == []  # noqa: SLF001
     assert "superseded" in str(old_future.exception())
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
     clock.advance(0.5)
     _observe_ptt(store, False, observed_at=clock.now())
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert "expired" in str(new_future.exception())
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> None:
@@ -280,7 +281,7 @@ async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> 
     store.begin_provider_generation()
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     service = _service(clock, store)
-    entry = await _lifecycle_entry(service, command_id="unknown", mode="USB")
+    entry = await _lifecycle_entry(service, command_id="unknown", on=True)
     before = service.lifecycle_events()
 
     assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
@@ -289,29 +290,42 @@ async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> 
 
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert service.lifecycle_events() == before
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 async def test_fresh_rx_deferred_class_dispatches_immediately_once() -> None:
     poller, radio, store = _poller()
     _observe_ptt(store, False)
     future = asyncio.get_running_loop().create_future()
-    entry = CommandQueueEntry(SetMode("USB"), future=future)
+    entry = CommandQueueEntry(SetSplit(True), future=future)
 
     assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
     await poller._execute_queued_entry(entry)  # noqa: SLF001
 
     assert future.result() is None
-    radio.set_mode.assert_awaited_once_with("USB", None)
+    radio.set_split.assert_awaited_once_with(True)
 
 
-async def test_frequency_now_dispatches_without_entering_the_deferred_lane() -> None:
-    """MOR-1940: the exact contrast to the tests above. FREQUENCY was
-    reclassified DEFER -> tx-safe at this seat too (both bench radios accept
-    and apply it while keyed), so it no longer enters
-    ``_stage_tx_interlocked_entries`` at all -- not even under known TX --
-    unlike MODE (still DEFER) above.
-    """
+def test_authority_approved_commands_do_not_inspect_observed_rf() -> None:
+    commands = [
+        CommandQueueEntry(SetFreq(14_074_000)),
+        CommandQueueEntry(SetMode("USB")),
+        CommandQueueEntry(SetBand(5)),
+        CommandQueueEntry(SelectVfo("A")),
+        CommandQueueEntry(VfoSwap()),
+        CommandQueueEntry(VfoEqualize()),
+    ]
+    poller, _radio, _store = _poller()
+    poller._current_rf_state = lambda *_: pytest.fail(  # type: ignore[method-assign] # noqa: SLF001
+        "observed RF was inspected"
+    )
+
+    for entry in commands:
+        poller._enforce_tx_interlock(entry.command)  # type: ignore[arg-type] # noqa: SLF001
+    assert poller._stage_tx_interlocked_entries(commands) == commands  # noqa: SLF001
+
+
+async def test_frequency_dispatches_without_entering_the_deferred_lane() -> None:
     clock = FreshnessClock(start=10.0)
     radio, store, queue = _radio(), StateStore(freshness_clock=clock), CommandQueue()
     store.begin_provider_generation()
@@ -335,7 +349,7 @@ async def test_deferred_hold_lifecycle_is_single_and_release_stays_unconfirmed()
     store.begin_provider_generation()
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     service = _service(clock, store)
-    entry = await _lifecycle_entry(service, command_id="held", mode="USB")
+    entry = await _lifecycle_entry(service, command_id="held", on=True)
     _observe_ptt(store, True, observed_at=clock.now())
 
     assert poller._stage_tx_interlocked_entries([entry]) == []  # noqa: SLF001
@@ -344,7 +358,7 @@ async def test_deferred_hold_lifecycle_is_single_and_release_stays_unconfirmed()
         "held",
         "queued",
         "websocket",
-        _MODE,
+        _SPLIT,
     )
     assert held.details == {
         "heldBy": "tx_interlock",
@@ -365,7 +379,7 @@ async def test_deferred_hold_lifecycle_is_single_and_release_stays_unconfirmed()
 
     assert service.lifecycle_events()[-1] is held
     assert service.pending_overlays(source="websocket", session_id="ws-a")
-    radio.set_mode.assert_awaited_once_with("USB", None)
+    radio.set_split.assert_awaited_once_with(True)
 
 
 async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> None:
@@ -374,12 +388,12 @@ async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> 
     store.begin_provider_generation()
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     service = _service(clock, store)
-    first = await _lifecycle_entry(service, command_id="first", mode="LSB")
+    first = await _lifecycle_entry(service, command_id="first", on=False)
     _observe_ptt(store, True, observed_at=clock.now())
     assert poller._stage_tx_interlocked_entries([first]) == []  # noqa: SLF001
 
     clock.advance(2.5)
-    replacement = await _lifecycle_entry(service, command_id="replacement", mode="USB")
+    replacement = await _lifecycle_entry(service, command_id="replacement", on=True)
     _observe_ptt(store, True, observed_at=clock.now())
     snapshots: list[tuple[str, str, tuple[str, ...]]] = []
     service.subscribe_lifecycle(
@@ -419,7 +433,7 @@ async def test_deferred_replacement_and_expiry_emit_ordered_terminal_truth() -> 
     terminal_count = len(service.lifecycle_events())
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert len(service.lifecycle_events()) == terminal_count
-    radio.set_mode.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
 # ── MOR-1884 (MOR-1500 B1-e): the seat guards _execute itself ────────────────
@@ -431,36 +445,25 @@ async def test_direct_defer_family_emit_is_refused_at_the_execute_seat(
 ) -> None:
     """An uncommanded internal emit shares the queued commands' seat."""
     poller, radio, store = _poller()
-    radio.set_vfo_slot = AsyncMock()
     if ptt is not None:
         _observe_ptt(store, ptt)
 
     with pytest.raises(CommandError, match="RF state is (unknown|TX)"):
-        await poller._execute(SelectVfo(vfo="A"))  # noqa: SLF001
+        await poller._execute(SetSplit(on=True))  # noqa: SLF001
 
-    radio.set_vfo_slot.assert_not_awaited()
+    radio.set_split.assert_not_awaited()
 
 
-async def test_bootstrap_exemption_passes_the_seat_under_unknown_rf() -> None:
-    """At connection start RF is structurally UNKNOWN; the one exempted write
-    must reach the dispatch body instead of being refused (MOR-1443).
-
-    Discriminated by WHICH failure it hits: the same command without the
-    exemption never leaves the seat ("RF state is unknown"), while the
-    exempted one gets all the way into the SelectVfo dispatch and fails on
-    that command's own readback contract — proof it passed the interlock.
-    """
-    poller, _radio, _store = _poller()
-
-    with pytest.raises(CommandError, match="RF state is unknown"):
-        await poller._execute(SelectVfo(vfo="A"))  # noqa: SLF001
-
-    with pytest.raises(CommandError) as exempted:
-        await poller._execute(  # noqa: SLF001
-            SelectVfo(vfo="A"), connection_epoch_bootstrap=True
-        )
-    assert "RF state" not in str(exempted.value)
-    assert "VFO selection" in str(exempted.value)
+async def test_vfo_selection_is_not_observed_rf_gated_at_bootstrap() -> None:
+    for connection_epoch_bootstrap in (False, True):
+        poller, _radio, _store = _poller()
+        with pytest.raises(CommandError) as dispatched:
+            await poller._execute(  # noqa: SLF001
+                SelectVfo(vfo="A"),
+                connection_epoch_bootstrap=connection_epoch_bootstrap,
+            )
+        assert "RF state" not in str(dispatched.value)
+        assert "VFO selection" in str(dispatched.value)
 
 
 def test_bootstrap_exemption_has_exactly_one_production_call_site() -> None:

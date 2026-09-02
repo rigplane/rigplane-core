@@ -247,12 +247,12 @@ class _AsyncSupervisorFacade:
 class TestPin1RprtZeroDuringConfirmedTx:
     """A write withheld during confirmed TX renders as success on the wire.
 
-    Hamlib's own core answers OK without writing for mode/split during PTT
+    Hamlib's own core answers OK without writing for split during PTT
     (``rig.c``); a non-zero RPRT mid-sequence tears WSJT-X down. That
     *rendering* is what the cutover must preserve.
 
     **Divergence from the ADR, pinned as found.** §3.10 item 6 describes this
-    as "a refusal *by the radio itself* on mode/split renders as success".
+    as "a refusal *by the radio itself* on split renders as success".
     No such seat exists in the tree today. What exists is
     ``RigctldHandler._defer_write_gate`` (``src/rigplane/rigctld/handler.py:770-833``):
     a *policy* drop taken before ``CommandService`` is entered, so the radio
@@ -268,14 +268,14 @@ class TestPin1RprtZeroDuringConfirmedTx:
         # `return _ok()` with `return _err(HamlibError.ERJCTED)`
         # -> this test goes red.
         handler, radio, _routing = _rigctld_handler(_ptt_store(True))
-        command = parse_line(b"M USB 2400")
+        command = parse_line(b"S 1 VFOA")
 
         response = await handler.execute(command)
 
         assert response.ok
         assert response.error == HamlibError.OK
         assert format_response(command, response, ClientSession()) == b"RPRT 0\n"
-        radio.set_mode.assert_not_awaited()
+        radio.set_split.assert_not_awaited()
 
     async def test_unknown_rf_truth_is_not_laundered_into_the_same_success(
         self,
@@ -287,22 +287,22 @@ class TestPin1RprtZeroDuringConfirmedTx:
         self-clearing policy state, so it refuses honestly.
         """
         handler, radio, _routing = _rigctld_handler(_ptt_store(None))
-        command = parse_line(b"M USB 2400")
+        command = parse_line(b"S 1 VFOA")
 
         response = await handler.execute(command)
 
         assert response.error is HamlibError.ERJCTED
         assert format_response(command, response, ClientSession()) == b"RPRT -9\n"
-        radio.set_mode.assert_not_awaited()
+        radio.set_split.assert_not_awaited()
 
     async def test_fresh_rx_still_dispatches_the_write(self) -> None:
         """And the third arm: known RX writes normally."""
         handler, radio, _routing = _rigctld_handler(_ptt_store(False))
 
-        response = await handler.execute(parse_line(b"M USB 2400"))
+        response = await handler.execute(parse_line(b"S 1 VFOA"))
 
         assert response.ok
-        radio.set_mode.assert_awaited_once()
+        radio.set_split.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

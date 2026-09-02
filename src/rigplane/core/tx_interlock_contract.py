@@ -37,6 +37,7 @@ class TxInterlockCommandFamily(StrEnum):
     MODE = "mode"
     BAND = "band"
     VFO_SELECT = "vfo-select"
+    VFO_CONTENTS = "vfo-contents"
     VFO_TOPOLOGY = "vfo-topology"
     MEMORY = "memory"
     RIT_XIT = "rit-xit"
@@ -85,13 +86,16 @@ TX_INTERLOCK_COMMAND_FAMILY_METADATA = (
         TxInterlockCommandFamily.FREQUENCY, TxInterlockDisposition.TX_SAFE
     ),
     TxInterlockCommandFamilyMetadata(
-        TxInterlockCommandFamily.MODE, TxInterlockDisposition.DEFER
+        TxInterlockCommandFamily.MODE, TxInterlockDisposition.TX_SAFE
     ),
     TxInterlockCommandFamilyMetadata(
-        TxInterlockCommandFamily.BAND, TxInterlockDisposition.DEFER
+        TxInterlockCommandFamily.BAND, TxInterlockDisposition.TX_SAFE
     ),
     TxInterlockCommandFamilyMetadata(
-        TxInterlockCommandFamily.VFO_SELECT, TxInterlockDisposition.DEFER
+        TxInterlockCommandFamily.VFO_SELECT, TxInterlockDisposition.TX_SAFE
+    ),
+    TxInterlockCommandFamilyMetadata(
+        TxInterlockCommandFamily.VFO_CONTENTS, TxInterlockDisposition.TX_SAFE
     ),
     TxInterlockCommandFamilyMetadata(
         TxInterlockCommandFamily.VFO_TOPOLOGY, TxInterlockDisposition.DEFER
