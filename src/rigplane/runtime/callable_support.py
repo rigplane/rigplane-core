@@ -7,7 +7,7 @@ derived from those two sources rather than declared directly by a profile.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal, TypeAlias
@@ -197,3 +197,12 @@ def supports_callable(profile: RadioProfile, operation: str) -> bool:
     if relation is None:
         return False
     return _relation_supported(relation, profile, set(CALLABLE_RELATIONS))
+
+
+def supports_explicit_callable(
+    operation: str,
+    supported_operations: Collection[str],
+    executable: Callable[[str], bool],
+) -> bool:
+    """Evaluate an external provider's explicit support declaration safely."""
+    return operation in supported_operations and executable(operation)
