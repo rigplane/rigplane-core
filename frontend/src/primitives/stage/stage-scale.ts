@@ -33,3 +33,26 @@ export function computeStageScale(host: StageBox, native: StageBox): number {
   const fitHeight = host.height / native.height;
   return Math.min(fitWidth, fitHeight, MAX_STAGE_SCALE);
 }
+
+export interface StageOffset {
+  readonly x: number;
+  readonly y: number;
+}
+
+/**
+ * Returns the `translate()` offset (in host-box CSS pixels) that keeps a
+ * `scale`d `native` box centred inside `host`, for `ScaledStage`'s `anchor:
+ * 'center'` prop (see that component's file header). The stage element sits
+ * at `host`'s top-left corner before any transform, so — applied AFTER
+ * `scale` in the same `transform` list, per CSS's composition order — this
+ * offset shifts the already-shrunk box by half the leftover space on each
+ * axis, independent of the host's own layout mode (flex, grid, or plain
+ * flow): it depends only on the measured `host` box, not on how an ancestor
+ * positioned it.
+ */
+export function computeStageCenterOffset(host: StageBox, native: StageBox, scale: number): StageOffset {
+  return {
+    x: (host.width - native.width * scale) / 2,
+    y: (host.height - native.height * scale) / 2,
+  };
+}

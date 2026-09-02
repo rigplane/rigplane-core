@@ -18,6 +18,7 @@
  * `getBoundingClientRect`), so this file is named `*.isolated.test.ts` per
  * the pool-membership convention in `vite.config.ts`.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync, type Snippet } from 'svelte';
 import ScaledStage from '../ScaledStage.svelte';
@@ -125,12 +126,12 @@ const noopChildren = ((_anchor: unknown) => ({
 
 /** Mounts `ScaledStage` at the given native size inside the current
  *  `containerSize`, and captures the holder element for later resizes. */
-function mountStage(nativeW: number, nativeH: number): HTMLElement {
+function mountStage(nativeW: number, nativeH: number, opts?: { anchor?: 'top-left' | 'center' }): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
   const component = mount(ScaledStage, {
     target,
-    props: { nativeW, nativeH, children: noopChildren },
+    props: { nativeW, nativeH, anchor: opts?.anchor, children: noopChildren },
   });
   flushSync();
   components.push(component);
@@ -144,6 +145,14 @@ function readScale(target: HTMLElement): number {
   const transform = stage?.style.transform ?? '';
   const match = transform.match(/scale\(([-\d.]+)\)/);
   return match ? Number(match[1]) : NaN;
+}
+
+/** Reads the raw `transform` inline style, for tests that care about the
+ *  exact string (whether a `translate()` prefix is present at all), not
+ *  just the scale factor. */
+function readTransform(target: HTMLElement): string {
+  const stage = target.querySelector<HTMLElement>('.scaled-stage');
+  return stage?.style.transform ?? '';
 }
 
 /** Resizes the fake "parent" and, only if the holder's modeled box actually
@@ -187,5 +196,113 @@ describe('ScaledStage — measure/write regression (MOR-2147)', () => {
     resizeContainer(100, 20);
 
     expect(readScale(target)).toBeLessThan(0.5);
+  });
+});
+
+describe('ScaledStage — measure() does not self-trigger its own effect', () => {
+  // Regression pin: `measure()` used to read the `scale` `$state` binding as
+  // the third argument to `computeStageCenterOffset`, right after writing
+  // it. That read registers `scale` as a dependency of the enclosing
+  // `$effect`, and since the write just above just changed it, the effect
+  // invalidated and re-ran itself once per mount — tearing down the first
+  // `ResizeObserver` and constructing a second one. `FakeResizeObserver`
+  // (declared above, shared with the MOR-2147 describe block) already
+  // records every instance constructed; this test reuses that same list
+  // rather than adding a second stub.
+  it('constructs exactly one ResizeObserver per mount', () => {
+    containerSize = { width: 100, height: 100 };
+    mountStage(200, 200);
+
+    expect(FakeResizeObserver.instances.length).toBe(1);
+  });
+});
+
+describe('ScaledStage — anchor prop (MOR-2251)', () => {
+  it('defaults to top-left: the transform is exactly `scale(n)`, with no translate() prefix', () => {
+    // Exact-string check, not the `readScale` regex above: a regex match on
+    // `scale(...)` inside the string would still pass even if the default
+    // accidentally grew a `translate(0px, 0px)` prefix, which is exactly the
+    // "default preserves today's behaviour" claim this test exists to pin.
+    containerSize = { width: 100, height: 100 };
+    const target = mountStage(200, 200);
+    expect(readTransform(target)).toBe('scale(0.5)');
+  });
+
+  it('anchor="top-left" (explicit) matches the default: no translate() prefix', () => {
+    containerSize = { width: 100, height: 100 };
+    const target = mountStage(200, 200, { anchor: 'top-left' });
+    expect(readTransform(target)).toBe('scale(0.5)');
+  });
+
+  it('anchor="center" at scale 1 with a host that already matches native is a no-op translate (scale-1 control)', () => {
+    // Every other case here is below scale 1; without this control there is
+    // no evidence the offset formula also degrades correctly at scale 1.
+    containerSize = { width: 200, height: 200 };
+    const target = mountStage(200, 200, { anchor: 'center' });
+    expect(readTransform(target)).toBe('translate(0px, 0px) scale(1)');
+  });
+
+  it('anchor="center" centers a shrunk stage inside a larger host', () => {
+    // native 200x200, host 300x300 -> scale stays capped at 1 (host is
+    // bigger on both axes), so the 200x200 box has 100px of leftover space
+    // per axis to split evenly: translate(50px, 50px).
+    containerSize = { width: 300, height: 300 };
+    const target = mountStage(200, 200, { anchor: 'center' });
+    expect(readTransform(target)).toBe('translate(50px, 50px) scale(1)');
+  });
+
+  it('anchor="center" recomputes the translate as the host resizes asymmetrically', () => {
+    containerSize = { width: 100, height: 100 };
+    const target = mountStage(200, 200, { anchor: 'center' });
+    // scale 0.5 -> scaled box 100x100 exactly fills the 100x100 host.
+    expect(readTransform(target)).toBe('translate(0px, 0px) scale(0.5)');
+
+    resizeContainer(300, 100);
+    // scale = min(300/200, 100/200, 1) = 0.5 -> scaled box stays 100x100,
+    // now inside a 300x100 host: 200px leftover width (100 each side), 0
+    // leftover height.
+    expect(readTransform(target)).toBe('translate(100px, 0px) scale(0.5)');
+  });
+});
+
+describe('ScaledStage — .scaled-stage declares flex-shrink: 0 (MOR-2251)', () => {
+  // This is a TEXT pin on the component's own <style> block, the same
+  // idiom `PeerSplitLayout.component.test.ts`'s `declarationsFor` uses
+  // (read that file before touching this one). It verifies the
+  // declaration SURVIVES in source; it cannot verify the BEHAVIOUR the
+  // declaration produces, because jsdom computes no layout at all — a
+  // finding both this file's own `getBoundingClientRect`/`offsetWidth`
+  // probe and `PeerSplitLayout.component.test.ts`'s file header establish
+  // independently (that file: "this Vitest/jsdom config injects no
+  // component <style> during a mount ... every element's getComputedStyle
+  // reads the UA default regardless of what any <style> block declares").
+  // A comment claiming this test proves the stage cannot reflow would be
+  // false. What it does prove: the declaration is the ENTIRE mechanism —
+  // no other property makes `.scaled-stage` shrink-proof, and the grid
+  // case (see the property's own comment in ScaledStage.svelte) needs no
+  // second declaration — so deleting this line is the only regression path
+  // for this fix, and this pin fails exactly on that deletion.
+  const source = readFileSync('src/primitives/stage/ScaledStage.svelte', 'utf8');
+  const styleBlock = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  const css = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  function declarationsFor(selector: string): Record<string, string> {
+    for (const [, selectorList, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      for (const candidate of selectorList.split(',')) {
+        if (candidate.trim() !== selector) continue;
+        const declarations: Record<string, string> = {};
+        for (const declaration of body.split(';')) {
+          const colon = declaration.indexOf(':');
+          if (colon > 0) declarations[declaration.slice(0, colon).trim()] = declaration.slice(colon + 1).trim();
+        }
+        return declarations;
+      }
+    }
+    throw new Error(`no rule for selector "${selector}" in ScaledStage.svelte's <style> block`);
+  }
+
+  it('declares flex-shrink: 0', () => {
+    const stage = declarationsFor('.scaled-stage');
+    expect(stage['flex-shrink']).toBe('0');
   });
 });
