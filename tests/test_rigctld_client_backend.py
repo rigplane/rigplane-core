@@ -381,7 +381,9 @@ async def test_cancelled_lifecycle_preserves_real_stream_close_future(
         tasks[-1].cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(tasks[-1], 1)
-        assert not closed.cancelled(), "caller cancellation poisoned shared close Future"
+        assert not closed.cancelled(), (
+            "caller cancellation poisoned shared close Future"
+        )
         assert transport._writer is writer and not closed.done()
         entered.clear()
         tasks.append(asyncio.create_task(finish()))
