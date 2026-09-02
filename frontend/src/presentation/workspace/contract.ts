@@ -32,13 +32,19 @@ const LAYOUT_ALIASES: Readonly<Record<string, WorkspaceLayoutId>> = LEGACY_LAYOU
  *  see), so it maps to null — "defer", not "unknown". */
 const LAYOUT_MANIFEST_ID: Readonly<Record<WorkspaceLayoutId, string | null>> = { auto: null, 'lcd-cockpit': 'lcd-cockpit', 'lcd-scope': 'lcd-scope', standard: 'desktop-v2', 'sdr-test': 'sdr-test', 'peer-split': 'peer-split' };
 
-/** Decision 2: frozen by MOR-977 §4.6. */
-export const WORKSPACE_DESIGN_LANGUAGE_IDS = ['studioline', 'fieldline'] as const;
+/**
+ * Decision 2: frozen by MOR-977 §4.6 for `studioline`/`fieldline`.
+ * `segmentline` added by MOR-2154 — its `peer-split`-only `layoutCompatibility`
+ * (`../languages/declarations.ts`) is what keeps it from activating on any
+ * currently-shipped v2 skin, not exclusion from this set.
+ */
+export const WORKSPACE_DESIGN_LANGUAGE_IDS = ['studioline', 'fieldline', 'segmentline'] as const;
 export type WorkspaceDesignLanguageId = (typeof WORKSPACE_DESIGN_LANGUAGE_IDS)[number];
 /** Decision 4: each language's `DensityClamp.supported`; index 0 is that language's default. */
 export const WORKSPACE_DENSITY_CLAMP: Readonly<Record<WorkspaceDesignLanguageId, readonly DensityLevel[]>> = {
   studioline: ['comfortable', 'compact', 'dense'],
   fieldline: ['comfortable', 'compact'],
+  segmentline: ['comfortable', 'compact'],
 };
 
 /** Decision 3: the flat 21-id theme list, allow-list validated ON READ. */

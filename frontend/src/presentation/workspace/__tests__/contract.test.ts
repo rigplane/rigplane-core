@@ -19,7 +19,7 @@ import {
 // still matches the live declaration — never used by production code here.
 import * as layoutDeclarations from '../../layouts/declarations';
 import type { LayoutManifest } from '../../layouts/contract';
-import { fieldline, studioline } from '../../languages/declarations';
+import { fieldline, segmentline, studioline } from '../../languages/declarations';
 import { getAvailableThemes } from '../../../components-v2/theme/theme-switcher';
 // MOR-2059: the layout id space is a LIVE import now — `../contract` derives
 // `WORKSPACE_LAYOUT_IDS`/its alias table from this same module, so there is
@@ -52,14 +52,17 @@ describe('registry sync — the pinned id spaces still match their live owners',
   });
 
   it('design-language ids and their density clamps match the live manifests', () => {
-    expect([...WORKSPACE_DESIGN_LANGUAGE_IDS]).toEqual([studioline.id, fieldline.id]);
-    for (const manifest of [studioline, fieldline]) {
+    expect([...WORKSPACE_DESIGN_LANGUAGE_IDS]).toEqual([studioline.id, fieldline.id, segmentline.id]);
+    for (const manifest of [studioline, fieldline, segmentline]) {
       expect(manifest.density.kind).toBe('clamped');
       const supported = manifest.density.kind === 'clamped' ? manifest.density.supported : [];
       expect(WORKSPACE_DENSITY_CLAMP[manifest.id as 'studioline']).toEqual(supported);
     }
-    // fieldline clamps `dense` out at 0.6 relative density (MOR-977 §4.4).
+    // fieldline and segmentline both clamp `dense` out (0.6 relative density
+    // for fieldline, MOR-977 §4.4; segmentline's 7px meter pitch collides
+    // with the dense cell outline, `../../languages/declarations.ts`).
     expect(WORKSPACE_DENSITY_CLAMP.fieldline).not.toContain('dense');
+    expect(WORKSPACE_DENSITY_CLAMP.segmentline).not.toContain('dense');
   });
 
   it('theme ids are exactly the switcher\'s 21-id list, in order', () => {

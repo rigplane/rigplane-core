@@ -26,13 +26,7 @@
  * false`. Activation matches the resolved `SkinId`, not a
  * `presentation/layouts/` manifest id: `App.svelte` calls
  * `designLanguageActivation(language, skinId)` (`../workspace/activation.ts`),
- * whose parameter is merely *named* `layoutId`. `peer-split` is a
- * registered `SkinId` with a loadable shell (MOR-2155), but `resolveSkinId`
- * (`../../skins/registry.ts`) has no branch that returns it and no
- * `presentation/layouts/` manifest names it (MOR-2151), so segmentline
- * cannot activate in production yet — that routing is later in MOR-1162's
- * delivery order (`docs/plans/2026-09-01-segmentline-peer-split.md` §7:
- * MOR-2151, MOR-2152), not an oversight here. `unified-instrument` and
+ * whose parameter is merely *named* `layoutId`. `unified-instrument` and
  * `panadapter-first`, the handoff's other two proposed directions, are
  * named nowhere in this repository either — no `SkinId`, no layout
  * manifest — so they are absent from this list too. `desktop-v2: false`

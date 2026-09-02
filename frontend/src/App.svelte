@@ -11,7 +11,7 @@
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
   import { getAvailableThemes } from './components-v2/theme/theme-switcher';
-  import { getDesignLanguage } from './presentation/languages/contract';
+  import { getDesignLanguage, listDesignLanguageIds } from './presentation/languages/contract';
   // Side-effect import: populates the design-language registry the lookup
   // above resolves against, exactly as `semantic/design-language-renderers.ts`
   // does. Imported here too so the activation effect below cannot depend on a
@@ -89,8 +89,30 @@
   // rules arrive with the cutover — and it is absent entirely wherever the
   // language is not active, so no shipped v2 skin sees a new attribute.
   $effect(() => {
-    const language = getDesignLanguage(getWorkspace().designLanguage);
-    const activated = designLanguageActivation(language, skinId);
+    const stored = getDesignLanguage(getWorkspace().designLanguage);
+    let language = stored;
+    let activated = designLanguageActivation(stored, skinId);
+    if (activated === null) {
+      // MOR-2154: the stored preference cannot activate on the resolved skin
+      // (e.g. `segmentline` off `peer-split`, or the default `studioline` ON
+      // `peer-split`, which no v2 skin's default ever declared compatible).
+      // Falls back to the FIRST registered language whose `layoutCompatibility`
+      // declares this skin, in `presentation/languages/declarations.ts`
+      // registration order (studioline, fieldline, segmentline) — today that
+      // is `studioline` for every shipped v2 skin and `segmentline` for
+      // `peer-split`, the only language that declares it. The STORED
+      // preference itself is untouched here — only this render's activation
+      // falls back, so leaving `peer-split` restores it without a re-choice.
+      for (const id of listDesignLanguageIds()) {
+        const candidate = getDesignLanguage(id);
+        const candidateActivated = designLanguageActivation(candidate, skinId);
+        if (candidateActivated !== null) {
+          language = candidate;
+          activated = candidateActivated;
+          break;
+        }
+      }
+    }
     if (activated === null) {
       delete document.documentElement.dataset.designLanguage;
       delete document.documentElement.dataset.languageMode;
