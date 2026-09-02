@@ -60,9 +60,11 @@ line under each is a gloss, not a second ruling; times are UTC, 2026-09-02):
 
 ### Decided 2026-09-02 (owner, 20:46 UTC, MOR-2249)
 
-**Svelte 5 stays.** The framework question is closed for this program. It is
-reopened only if a concrete workspace need appears (tabs, edge docking — §6
-records that the target screen shows neither) AND a framework-agnostic library
+**Svelte 5 stays.** The framework question is closed for this program. Ruling
+8 above is the whole of the owner's words on it; the revisit condition that
+follows is this document's proposal, not a quotation. It is reopened only if a
+concrete workspace need appears (tabs, edge docking — §6 records that the
+target screen shows neither) AND a framework-agnostic library
 spike fails on DOM ownership under Svelte 5 — and then only with the rewrite
 cost measured first. The scale of that cost, established here by
 `find frontend/src -name "*.svelte" | wc -l` and the same for `*.ts` at
@@ -72,15 +74,21 @@ of mine. The 2026-03-07 scaffold PR #157 that chose Svelte recorded no
 rationale (coordinator's statement; not verified here), so there is no earlier
 argument to weigh against.
 
-**Faces are data.** A face author writes declarations — and possibly CSS —
-without touching `src/`, and never meets Svelte. Behaviour and the instruments
-stay code. This is the boundary sentence in §3 and a constraint on §5.
+**Faces are data.** The owner's words are «лица — данные»; the operational
+reading that follows is this document's gloss, for the owner to confirm — a
+face author writes declarations, and possibly CSS, without touching `src/` and
+never meets Svelte, while behaviour and the instruments stay code. §3's
+boundary sentence and §5's weighting of shape option (c) rest on that gloss and
+fall with it if the owner reads «данные» more narrowly.
 
 ## 2. Vocabulary
 
 Five things need names. Collision counts below are files under `frontend/src`
 matching the word case-insensitively, from `git grep -lni "\bWORD\b" --
-frontend/src | wc -l` at `b197b09a`.
+frontend/src | wc -l` at `b197b09a`. Every count in both tables is the output
+of exactly that command, re-run word by word on 2026-09-02: `face` 14, `panel`
+277, `rack` 0, `glass` 19, `group` 154, `card` 38, `instrument` 24, and
+`layout` 191 for the comparison the `panel` row makes.
 
 | Role | Set A ("keep the words we have") | Set B ("fewest collisions") |
 |---|---|---|
@@ -96,7 +104,7 @@ Costs, per candidate (files = the collision count above):
 |---|---|---|
 | `layout` | — | Already the manifest (`presentation/layouts/contract.ts: LayoutManifest`), a Svelte shell (`components-v2/layout/RadioLayout.svelte`) and a workspace field (`presentation/workspace/contract.ts: WorkspaceV1.layout`). Zero new vocabulary; "layout" keeps meaning both the manifest and the component, as it already does |
 | `face` | 14 | The owner's own word in MOR-2231/MOR-2232 ("SDR face", "LCD face", from the input file). Cost: a fourth word beside skin / layout / manifest, which already name overlapping things |
-| `panel` | 341 | The whole legacy tree `components-v2/panels/*`, plus `CollapsiblePanel.svelte`, `lib/runtime/props/panel-props.ts`, `lib/runtime/adapters/panel-adapters.ts`. Highest collision of any candidate, and it points at exactly the code the 2026-04-12 addendum says is to be removed: the word would mean "legacy widget box" and "declared reflow container" at once for the whole migration |
+| `panel` | 277 | The whole legacy tree `components-v2/panels/*`, plus `CollapsiblePanel.svelte`, `lib/runtime/props/panel-props.ts`, `lib/runtime/adapters/panel-adapters.ts`. Highest collision of any candidate — 277 against the 191 of `layout`, the next highest, both from the command above — and it points at exactly the code the 2026-04-12 addendum says is to be removed: the word would mean "legacy widget box" and "declared reflow container" at once for the whole migration |
 | `rack` | 0 | No collision at all; the cost is a word with no existing reader |
 | `glass` | 19 | `peer-split-glass` in `skins/segmentline/PeerSplitLayout.svelte`, the amber glass in `components-v2/layout/LcdLayout.svelte`. Already means the fixed-proportion instrument surface — the thing being named. Cost: it names a hand-written CSS class today, so class and concept would share a name |
 | `group` | 154 | Almost all unrelated senses (`role="group"`, "fact group", "choice group"). Closest to the ruling's own «группы». Cost: grepping the concept returns mostly noise, making future audits expensive |
@@ -110,7 +118,8 @@ its own row's cost.
 
 ## 3. Boundary sentence and guards
 
-**Boundary sentence** (owner decision, 2026-09-02, §1): a face author writes
+**Boundary sentence** (owner decision, 2026-09-02, as glossed in §1 — the
+owner's own words are «лица — данные»): a face author writes
 declarations and possibly CSS — which instruments appear, where each sits on a
 group's canvas, how that group scales, which design-language tokens paint it,
 which zone it mounts in — without touching `src/` and never meeting Svelte; and
@@ -125,7 +134,7 @@ because behaviour and the instruments themselves stay code.
 | Members come from a bounded vocabulary | Nothing. `SEMANTIC_SURFACE_NAMES` and `validateZones` bound *surfaces*, not instruments; there is no instrument registry at `b197b09a` | **Yes** — this is the ruling-5 guarantee and nothing checks it |
 | A skin imports no transport/audio/stores | `frontend/eslint.config.js: FORBIDDEN_SKINS_IMPORTS`, exercised in CI only through `frontend/src/__tests__/architecture-boundaries.test.ts` (`npm run lint` is not called by `quick.yml`'s frontend block) | No, if groups live under `skins/` or `presentation/`; `FORBIDDEN_PRESENTATION_IMPORTS` and `FORBIDDEN_PRIMITIVES_IMPORTS` cover those directories |
 | Python layer boundaries | `.importlinter`'s `root_packages = rigplane` — it does not see `frontend/` at all (read at `b197b09a`) | Not applicable; naming it as a frontend guard would be false |
-| Exactly one TX key authority | Construction, not a test of the declaration: `components-v2/wiring/SemanticRadioSurfaces.svelte` keeps exactly one `<RxTxSurface>` tag and one lease id (its module-scope `surfaceSeq`), against the App-owned controller (`lib/runtime/tx-controller/app-host: getAppTxController`); v3 invariant 11 | **Yes** if a group may name an `rxTx`-class instrument: a declaration could otherwise ask for two |
+| Exactly one TX key authority | Construction, not a test of the declaration: `components-v2/wiring/SemanticRadioSurfaces.svelte` keeps exactly one `<RxTxSurface>` tag and one TX *source* id per mounted instance — `sourceId`, built from the module-scope `surfaceSeq`, which is the identity the controller keys lease ownership by; the *lease* id passed to `tx.start` is `${sourceId}-${++leaseSeq}` and is fresh per key request — against the App-owned controller (`lib/runtime/tx-controller/app-host: getAppTxController`); v3 invariant 11 | **Yes** if a group may name an `rxTx`-class instrument: a declaration could otherwise ask for two |
 | Capability gating decides visibility | `lib/runtime/adapters/radio-view-model-adapter.ts: toRadioViewModel` plus the per-surface `{#if view?.…}` gates and `zoned(…, allowBare=false)` in the wiring (MOR-1069: a control-bearing surface never renders bare) | Yes for a group's own `requires` field — it must resolve through the same view model, never a second capability schema (v3 "Capability integration") |
 | Native size stays declaration-only outside `presentation/layouts/` | `presentation/layouts/__tests__/stage-sizing-boundary.test.ts` (`GUARDED_NAMES` = `stageSizing`, `fitsViewport`), a textual scan | No new guard, but see §4: a group carrying its own canvas field never names either identifier, which is why `skins/segmentline/PeerSplitLayout.svelte` passes today while duplicating the numbers |
 
@@ -226,17 +235,20 @@ MOR-2232's LCD face.
 
 | Shape | Files that change | Tests that change | Cannot express | One-line falsifier |
 |---|---|---|---|---|
-| **(a)** `LayoutZone` gains a stage/placement descriptor | `presentation/layouts/contract.ts`; every manifest file declaring a zone; `presentation/workspace/contract.ts` (`WORKSPACE_ZONE_IDS`) | The twelve `*-declarability.test.ts` files, the registration suites' manifest-shape assertions, `stage-sizing-boundary.test.ts` | Two scaling modes in one zone — the SDR deck's fluid spectrum beside a fixed meters strip needs two zones per visual area, or a per-member override | If a manifest can carry a grid template as data without becoming behaviour, `contract.ts`'s own "a declaration, never behaviour" header line is wrong |
-| **(b)** separate `InstrumentGroup` node + registry, referenced by zones | A new `presentation/groups/` module (contract + declarations); one reference line per manifest; the shells that mount groups | A new registry/validator suite mirroring `presentation/layouts/__tests__/registry.test.ts`; existing layout suites untouched | Nothing among the three targets that I can name — all three are a canvas with placed members | If the two validators end up sharing more than the marker lists, (b) has become (a) with extra files — the mechanism-duplication shape the Phase 1 audit exists to catch |
+| **(a)** `LayoutZone` gains a stage/placement descriptor | `presentation/layouts/contract.ts`; every manifest file declaring a zone; `presentation/workspace/contract.ts` (`WORKSPACE_ZONE_IDS`) | The twelve `*-declarability.test.ts` files, the registration suites' manifest-shape assertions, `stage-sizing-boundary.test.ts` | Two scaling modes in one zone — the SDR deck's fluid spectrum beside a fixed meters strip needs two zones per visual area, or a per-member override | If a manifest can carry a grid template as data without becoming behaviour, the sentence "A manifest is a DECLARATION, never behaviour" is wrong — it is the module header of `presentation/layouts/lcd-declarations.ts` and of `mobile-declarations.ts`, not of `contract.ts`, whose own header states the narrower "never executable radio behavior, capability objects, or component module paths" |
+| **(b)** separate `InstrumentGroup` node + registry, referenced by zones | A new `presentation/groups/` module (contract + declarations); one reference line per manifest; the shells that mount groups | A new registry/validator suite mirroring `presentation/layouts/__tests__/registry.test.ts`; existing layout suites untouched | Nothing among the three targets that I can name — all three are a canvas with placed members. The limitation is duplication, not expressiveness, and it is this row's own file list: a second registry with its own id policy, validator and fallback semantics, and an author who learns two vocabularies and keeps a member name in step across both | If the two validators end up sharing more than the marker lists, (b) has become (a) with extra files — the mechanism-duplication shape the Phase 1 audit exists to catch |
 | **(c)** hand-written Svelte groups registered by id | One `.svelte` per group plus a `Record<GroupId, loader>` beside `skins/registry.ts`'s `SKIN_LOADERS` | One component test per group, the shape `skins/segmentline/__tests__/PeerSplitLayout.component.test.ts` already has | Nothing a Svelte file cannot do — but nothing is *declared*, so ruling 5's bounded vocabulary is unenforceable and ruling 4's "easy for the community" means writing Svelte | If the third hand-written group repeats the second's structure, the loader table has become (b)'s registry without (b)'s validation |
 
-**What the owner decision constrains.** "Faces are data" (§1) requires a group
-declaration a community author can hand-write and a validator can check. Option
-(c) does not produce one — a Svelte component is not a declaration, so an
-author writes code and no validator can bound the vocabulary. That weighs
-against (c) *for the group itself*; the costs of (a) and (b) above are
-unchanged, and (c) remains a legitimate shape for a bespoke skin that declares
-no group.
+**What the owner decision constrains.** «Лица — данные» (§1), read through
+that section's gloss, requires a group declaration a community author can
+hand-write and a validator can check. Option (c) does not produce one — a
+Svelte component is not a declaration, so an author writes code and no
+validator can bound the vocabulary. That weighs against (c) *for the group
+itself*; the costs of (a) and (b) above are unchanged, and (c) remains a
+legitimate shape for a bespoke skin that declares no group. This whole
+paragraph rests on §1's gloss and not on the owner's five words: a narrower
+reading of «данные» lifts it and leaves the three shapes' own costs as the
+table states them.
 
 **What the Phase 1 audit's constraints exclude:** nothing outright. The audit's
 closing (input file §3) requires a group node to absorb F2 and F5, decide
@@ -254,8 +266,9 @@ members are placed. The framework question is closed (§1): all three options
 below are evaluated as things a Svelte 5 app would adopt.
 
 **What the workspace already does at `b197b09a`.** Persisted per-user state is
-`WorkspaceV1` in `presentation/workspace/contract.ts` (`visibleSurfaces`,
-`zoneOrder` — both per-zone, plus layout/language/theme/density), written
+`WorkspaceV1` in `presentation/workspace/contract.ts` — the whole interface is
+`version`, `layout`, `designLanguage`, `theme`, `density`, `visibleSurfaces`,
+`zoneOrder` (the last two per-zone) and `pinnedCommands` — written
 through `presentation/workspace/store.svelte.ts`'s `setZoneVisibleSurfaces` /
 `setZoneOrder`, surfaced to the operator by
 `components-v2/controls/WorkspaceSettingsPanel.svelte` (layout, language,
@@ -276,31 +289,20 @@ centre column, a bottom meters strip, and a CW console pull-out at bottom
 right. There are **no** tabs, no edge-docking affordances, no floating windows
 and no resize handles visible in that image. So the workspace gestures the
 target needs are: collapse per panel, and drag within and across the two side
-columns — both of which already exist in the two files named above.
+columns.
 
-**(1) Dockview core.** MIT, v8.2.0 (2026-08-19), framework-agnostic, full
-docking, JSON serialization, documented keyboard support, ~81 kB gzip (Phase 1
-survey, not re-verified here). **No Svelte binding**: use means a glue
-component that constructs the instance in `onMount`, tears it down in
-`onDestroy`, and mounts Svelte components into library-owned panes — roughly
-80–150 lines for a first working shell, inferred from the API's shape, not
-measured. Real risk is DOM ownership: the library moves the nodes our Svelte
-components live in, and Svelte 5 holds its own references to them. Brings
-docking, tabs and floating windows the target screen does not use.
+**The three options on the same five cells.** Figures marked *(survey)* come
+from the Phase 1 input file and were not re-verified here.
 
-**(2) Gridstack.js.** MIT, v13.2.0 (2026-08-20), vanilla, grid drag and resize
-with JSON persistence; generates random stylesheet ids (neutralise before any
-visual baseline) and treats accessibility as wontfix (Phase 1 survey). Same
-"no Svelte binding" glue and the same DOM-ownership risk as (1). Brings
-free-grid resize the target screen does not use.
+| Option | What it provides | Glue / integration cost | Deterministic DOM for baselines | Accessibility | Maintenance risk |
+|---|---|---|---|---|---|
+| **(1) Dockview core** — MIT, v8.2.0 (2026-08-19), framework-agnostic, ~81 kB gzip *(survey)* | Docking, tabs, floating windows, JSON serialization. Of these, the screen reading above names none | No Svelte binding: a glue component constructing the instance in `onMount`, tearing it down in `onDestroy` and mounting Svelte components into library-owned panes — roughly 80–150 lines for a first working shell, inferred from the API's shape, not measured | Unmeasured; the spike's first row below is what decides it | Documented keyboard support *(survey)* | DOM ownership — the library moves the nodes our Svelte components live in while Svelte 5 holds its own references to them (the spike's second row) — plus a release cadence we do not set |
+| **(2) Gridstack.js** — MIT, v13.2.0 (2026-08-20), vanilla *(survey)* | Grid drag and resize with JSON persistence. Of these, the screen reading above names drag only | The same "no Svelte binding" glue shell as (1) | Generates random stylesheet ids, to be neutralised by configuration before any visual baseline *(survey)* | Declared wontfix *(survey)* | The same DOM-ownership risk as (1), and the same third-party cadence |
+| **(3) No library** — extend `lib/drag-reorder.svelte.ts: createDragReorder` and `components-v2/controls/CollapsiblePanel.svelte` | Exactly the two gestures the screen reading names — per-panel collapse, and drag within and across the two side columns, cross-sidebar transfer included per that module's own header. Nothing beyond them | None; both files are already in the tree and already pass this repo's own boundaries | No library-generated ids, because there is no library: the DOM is the one we write | Ours to write — pointer capture, keyboard equivalents and touch. Nothing checks any of the three for these two files today; the keyboard-traversal row of the spike protocol below, which option (3) is measured against as well, is what would | Every gesture is ours to write, review and keep working; a missing one is an implementation, not a configuration flag |
 
-**(3) No library — own Svelte 5 implementation.** Keep `createDragReorder` and
-`CollapsiblePanel`, and extend them to whatever the group work needs. Cost: we
-own the gesture code, including pointer capture, keyboard equivalents and
-touch; benefit: no glue layer, no DOM-ownership question, no random ids, and
-the code already passes this repo's own boundaries. If a gesture is missing,
-one Svelte-native candidate is `svelte-dnd-action` — MIT, latest 0.9.79,
-312,698 downloads in the week 2026-08-23…29 (npm registry and
+If a gesture is missing under (3), one Svelte-native candidate is
+`svelte-dnd-action` — MIT, latest 0.9.79, 312,698 downloads in the week
+2026-08-23…29 (npm registry and
 `api.npmjs.org/downloads/point/last-week`, fetched 2026-09-02), and its README
 documents Svelte 5 event syntax (`onconsider`/`onfinalize`). Its most recent
 commit or release date is **unverified** — I could not read a date from the
@@ -366,14 +368,29 @@ against "no code" rather than the three options against each other.
 
 The claim under test is ruling 5's «они все у нас описаны». **Counting rule:**
 one row per element I can name in `docs/screenshots/hero.png` at 1280×672 that
-is a distinct visible control or readout group; a row counts as *found* when a
-file in the tree at `b197b09a` renders that element's function today, whether
-or not it looks the same as it did at 1.0.0. Rows counted this way: 18 —
-**16 found, 2 not found.**
+is a distinct visible control or readout group — a titled panel, a glass, a
+toolbar, a strip, the top bar, or a labelled cluster inside one of those. A row
+counts as *found* when a file in the tree at `b197b09a` renders that element's
+function today, whether or not it looks the same as it did at 1.0.0; a
+difference of appearance is recorded under the table, never in the
+found/not-found column. Three things sit deliberately outside the enumeration:
+single buttons and chips inside a cluster, carried by their container's row
+(the glass header's `TX`/`BW3.2K` chips, `TUNE`, `SPLIT TX`, `AGC SLOW`, and
+each glass's `ATT`/`P.AMP`/`IP+`/`NB`/`NR`/`NOTCH`/`DIGI-SEL`/`RFG` strip);
+per-panel chrome — the chevron and the drag handle — which §6 treats as a
+workspace gesture rather than an instrument; and the spectrum's own axis
+labels. Two rows sit finer than that level, `DUAL-W` and `CW CONSOLE`, and are
+kept at it because an earlier draft of this section scored both as absent.
+
+Rows enumerated this way: 22 — **22 found, 0 not found.** That number is a
+property of this enumeration, not of the screen: a finer reading of the same
+image, one row per labelled button, yields more rows, and I did not enumerate
+at that level.
 
 | Element in `hero.png` | Renders today |
 |---|---|
 | Top bar, DISCONNECT/OFF | `components-v2/layout/StatusBar.svelte` |
+| Connection-status indicator cluster, top left | `StatusBar.svelte`'s `status-indicators` block — five `role="status"` dots for radio, control, scope, audio and HTTP |
 | Skin picker "SDR SCREEN (TEST)" | `StatusBar.svelte`'s `skinOptions` |
 | RF FRONT END panel | `components-v2/panels/RfFrontEnd.svelte`; semantic twin `semantic/RfFrontEndSurface.svelte` |
 | MODE panel | `components-v2/panels/ModePanel.svelte` — no own semantic surface; `SEMANTIC_SURFACE_NAMES` has no `mode`, and mode facts reach `semantic/FilterSurface.svelte` through the view model's `modeFilter` group |
@@ -381,22 +398,29 @@ or not it looks the same as it did at 1.0.0. Rows counted this way: 18 —
 | MAIN VFO glass | `components-v2/layout/VfoHeader.svelte` → `components-v2/panels/vfo/DualVfoDisplay.svelte` → `components-v2/vfo/VfoPanel.svelte`; semantic twin `semantic/VfoSurface.svelte` |
 | SUB VFO glass | same components, `sub` tile |
 | S-meter inside each glass | `components-v2/meters/LinearSMeter.svelte`, mounted by `VfoPanel.svelte` |
+| `ANT1` chip in each glass | `components-v2/panels/AntennaPanel.svelte` (its `ANT1`/`ANT2` buttons); semantic twin `semantic/AntennaSurface.svelte`, which renders `ANT {port}` over `ANTENNA_PORTS` |
+| `RIT` / `XIT` rows in each glass (`+0.00 kHz`) | readout in `components-v2/vfo/VfoPanel.svelte` (its `rit-label` span); controls in `components-v2/panels/RitXitPanel.svelte`, semantic twin `semantic/RitXitScanSurface.svelte` |
 | Dual column (MAIN/SUB, A=B, A≠B, SPLIT, SPEAK) | `VfoHeader.svelte`'s bridge block plus `components-v2/vfo/VfoOps.svelte` and `components-v2/vfo/ActiveReceiverToggle.svelte` |
-| DUAL-W button in that column | **not found** — `git grep -n "DUAL-W"` over the whole repository at `b197b09a` returns nothing |
+| DUAL-W button in that column | **found** — `components-v2/vfo/VfoOps.svelte` renders it as the `data-op="dw"` bridge button labelled `DW`, pinned by `components-v2/vfo/__tests__/VfoOps.isolated.test.ts`, whose two double-click cases select the button by that trimmed text. The literal string `DUAL-W` is absent from `frontend/`: `git grep -n "DUAL-W" b197b09a` returns three hits — two in `docs/plans/`, one in `src/rigplane/runtime/_poller_types.py` — and none of them renders anything |
 | Scope toolbar | `components/spectrum/SpectrumToolbar.svelte`; semantic twin `semantic/ScopeControlsSurface.svelte` |
+| `BANDS` control in that toolbar | `SpectrumToolbar.svelte`'s band-plan toggle (`showBandPlan`, in its `bands-group`). No semantic twin, by that file's own header: `BANDS`/layers is one of the client-side view options with no wire field and no field-status entry, category (b) of the S10 boundary ruling, so `ScopeControlsSurface.svelte` contains no band vocabulary at all (`grep -cni band` over it returns 0) |
 | Spectrum + waterfall | `components/spectrum/SpectrumCanvas.svelte` and `WaterfallCanvas.svelte`, under `SpectrumPanel.svelte` |
 | RX AUDIO panel | `components-v2/panels/RxAudioPanel.svelte`; `semantic/RxAudioSurface.svelte` |
 | AUDIO SCOPE panel | `components-v2/panels/audio-scope/AudioSpectrumPanel.svelte` — no semantic surface name for it |
 | DSP panel | `components-v2/panels/DspPanel.svelte`; `semantic/DspSurface.svelte` |
 | TX panel (PTT, ATU, TUNE) | `components-v2/panels/TxPanel.svelte`; `semantic/RxTxSurface.svelte` plus `semantic/TxAuxSurface.svelte` |
 | STATION METERS strip | `components-v2/panels/MetersDockPanel.svelte`; `semantic/MetersSurface.svelte` over `LinearSMeter.svelte` / `BarGauge.svelte` |
-| CW CONSOLE pull-out | **not found** — case-insensitive `git grep -i "cw console"` over the whole repository returns nothing. `components-v2/panels/CwPanel.svelte` and `semantic/CwKeyerSurface.svelte` exist and carry CW controls, but neither is a console pull-out |
+| CW CONSOLE pull-out | **found** on function — `components-v2/panels/CwPanel.svelte` carries the CW controls and is mounted by `LeftSidebar.svelte`, `RightSidebar.svelte`, `RadioLayout.svelte` and `MobileRadioLayout.svelte`; `semantic/CwKeyerSurface.svelte` is its semantic twin, wired by `SemanticRadioSurfaces.svelte` and declared in `presentation/layouts/desktop-declarations.ts`. Neither is a pull-out — a difference of form, recorded below. The literal name is absent at that revision: `git grep -i "cw console" b197b09a` returns nothing, while at this PR's own head it matches this document |
 
-So the owner's claim holds for 16 of 18 rows as counted above. The two misses
-are both small: one button and one pull-out surface. Not established: whether
-either ever existed in the tree, or whether the 1.0.0 screenshot shows a
-mockup element — `docs/screenshots/hero.png` was committed at `24cb260c`
-(2026-05-01) per the input file, and I did not read that revision's source.
+So the owner's claim holds for every row as counted above. Two rows are found
+on function while differing in form from the 1.0.0 image, and neither
+difference is a missing instrument: the dual-watch toggle is labelled `DW`
+today rather than `DUAL-W`, and the CW console is a docked sidebar panel rather
+than a pull-out from the meters strip. A pull-out is a workspace gesture, which
+is §6's question, not a member the vocabulary would have to name. Not
+established: whether the 1.0.0 screenshot shows any mockup element —
+`docs/screenshots/hero.png` was committed at `24cb260c` (2026-05-01) per the
+input file, and I did not read that revision's source.
 
 ## 9. Migration order and deletions
 
@@ -446,7 +470,7 @@ says which one a group uses.
 ## 10. Decisions reserved for the owner
 
 1. **Vocabulary set** — Set A (`layout`/`panel`/`glass`/`instrument`): no new
-   words, but `panel` collides with 341 files including the tree being
+   words, but `panel` collides with 277 files including the tree being
    removed. Set B (`face`/`rack`/`group`/`instrument`): near-zero collisions,
    but three new words to teach.
 2. **Shape** — (a) zone extension: fewest new files, most existing tests
