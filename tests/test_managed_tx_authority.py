@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
 from rigplane.runtime.managed_tx_state import (
     AbortFailed,
@@ -87,12 +87,23 @@ class FakeLane:
         self.aborts: list[tuple[EffectToken, AbortOperation]] = []
         self.abort_results: dict[AbortOperation, ActuationResult] = {}
         self.stale_once = False
+        self.gates: deque[asyncio.Event | None] = deque()
+        self.started: asyncio.Queue[ManagedTxEffect] = asyncio.Queue()
+
+    def block_next(self) -> asyncio.Event:
+        gate = asyncio.Event()
+        self.gates.append(gate)
+        return gate
 
     async def settle(
         self, effect: ManagedTxEffect, *, deadline_monotonic: float
     ) -> ActuationSettled:
         self.effects.append(effect)
+        self.started.put_nowait(effect)
         result = self.results.popleft() if self.results else ActuationResult.ACCEPTED
+        gate = self.gates.popleft() if self.gates else None
+        if gate is not None:
+            await gate.wait()
         token = effect.token
         if self.stale_once:
             self.stale_once = False
@@ -192,16 +203,17 @@ async def test_transmit_is_latched_and_force_off_runs_one_abort_family() -> None
 
 
 @pytest.mark.asyncio
-async def test_offline_force_off_retries_when_provider_appears() -> None:
-    managed, _, wakeup, _, fence, lane = authority(generation=None)
+async def test_offline_force_off_retries_immediately_when_provider_appears() -> None:
+    managed, _, _, _, fence, lane = authority(generation=None)
     assert await managed.force_off() is ManagedTxOutcome.ACCEPTED
     assert (await managed.snapshot()).state.release_required
     assert lane.effects == [] and fence.calls == 1
-    revision = wakeup.revision
-    await managed.set_provider_generation(8)
-    await wakeup.wait_after(revision + 1)
+    await managed.provider_available(8)
     assert not (await managed.snapshot()).state.release_required
-    assert lane.effects[-1].operation is ActuationOperation.FORCE_RECEIVE
+    assert [effect.operation for effect in lane.effects] == [
+        ActuationOperation.FORCE_RECEIVE
+    ]
+    assert lane.effects[-1].token.provider_generation == 8
     await managed.close()
 
 
@@ -379,13 +391,321 @@ async def test_repeated_force_off_is_accepted_and_advances_epoch() -> None:
 
 @pytest.mark.asyncio
 async def test_generation_is_monotonic_and_wakes_debt() -> None:
-    managed, _, _, _, _, _ = authority(generation=7)
-    await managed.set_provider_generation(None)
+    managed, _, _, _, fence, lane = authority(generation=7)
+    await managed.provider_unavailable()
+    await managed.provider_unavailable()
+    assert fence.calls == 0 and lane.effects == []
     with pytest.raises(ValueError, match="increase"):
-        await managed.set_provider_generation(6)
-    await managed.set_provider_generation(8)
+        await managed.provider_available(6)
+    await managed.provider_available(8)
     assert (await managed.snapshot()).provider_generation == 8
+    with pytest.raises(RuntimeError, match="unavailable first"):
+        await managed.provider_available(9)
     await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_old_release_acceptance_cannot_clear_replacement_debt() -> None:
+    managed, _, _, _, _, lane = authority(generation=7)
+    lane.results.extend((ActuationResult.ACCEPTED, ActuationResult.REJECTED))
+    old_gate = lane.block_next()
+    old_release = asyncio.create_task(managed.force_off())
+    old_effect = await asyncio.wait_for(lane.started.get(), 0.2)
+    assert old_effect.token.provider_generation == 7
+
+    await managed.provider_unavailable()
+    await managed.provider_available(8)
+    current = lane.effects[-1]
+    assert current.operation is ActuationOperation.FORCE_RECEIVE
+    assert current.token.provider_generation == 8
+    assert (await managed.snapshot()).state.release_required
+
+    old_gate.set()
+    await old_release
+    projected = await managed.snapshot()
+    assert (
+        projected.state.release_required and projected.state.last_actuation is not None
+    )
+    assert projected.state.last_actuation.attempt_id == current.token.attempt_id
+
+    await managed.force_off()
+    await managed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ingress", "operation"),
+    [
+        ("ptt", ActuationOperation.PTT_ON),
+        ("transmit", ActuationOperation.TRANSMIT_ON),
+    ],
+)
+@pytest.mark.parametrize("shutdown", [False, True], ids=["replacement", "shutdown"])
+async def test_active_replacement_never_replays_on(
+    ingress: str, operation: ActuationOperation, shutdown: bool
+) -> None:
+    managed, _, _, _, fence, lane = authority(generation=7)
+    outcome = (
+        await managed.ptt_down("owner")
+        if ingress == "ptt"
+        else await managed.transmit_on()
+    )
+    assert outcome is ManagedTxOutcome.ACCEPTED
+
+    retired: list[int] = []
+    if shutdown:
+        assert (
+            await managed.shutdown(
+                retire_provider=lambda generation: _append_async(retired, generation),
+                termination=asyncio.Event(),
+            )
+            is ShutdownResult.DRAINED
+        )
+    else:
+        await managed.provider_unavailable()
+        assert (await managed.snapshot()).provider_generation is None
+        assert (await managed.snapshot()).state.release_required
+        await managed.provider_available(8)
+
+    assert [effect.operation for effect in lane.effects] == [
+        operation,
+        ActuationOperation.FORCE_RECEIVE,
+    ]
+    assert lane.effects[-1].token.provider_generation == (7 if shutdown else 8)
+    assert fence.calls == 1
+    assert retired == ([7] if shutdown else [])
+    assert not (await managed.snapshot()).state.release_required
+    if not shutdown:
+        await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_inflight_on_settlement_is_stale_after_replacement() -> None:
+    managed, _, _, _, fence, lane = authority(generation=7)
+    on_gate = lane.block_next()
+    pending_on = asyncio.create_task(managed.transmit_on())
+    old_on = await asyncio.wait_for(lane.started.get(), 0.2)
+    assert old_on.operation is ActuationOperation.TRANSMIT_ON
+
+    await managed.provider_unavailable()
+    await managed.provider_available(8)
+    on_gate.set()
+    assert await pending_on is ManagedTxOutcome.ACCEPTED
+
+    assert [effect.operation for effect in lane.effects] == [
+        ActuationOperation.TRANSMIT_ON,
+        ActuationOperation.FORCE_RECEIVE,
+    ]
+    assert lane.effects[-1].token.provider_generation == 8
+    assert fence.calls == 1
+    assert not (await managed.snapshot()).state.release_required
+    await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_arrival_wins_retry_tie_without_duplicate_effect() -> None:
+    managed, clock, _, _, _, lane = authority(generation=None)
+    await managed.force_off()
+    managed._retry_due = clock.now
+
+    await asyncio.gather(managed.provider_available(8), managed._process_due())
+
+    assert len(lane.effects) == 1
+    assert lane.effects[0].operation is ActuationOperation.FORCE_RECEIVE
+    assert lane.effects[0].token.provider_generation == 8
+    await managed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "first_result", [ActuationResult.REJECTED, ActuationResult.UNCERTAIN]
+)
+async def test_shutdown_retries_each_nonacceptance_before_retirement(
+    first_result: ActuationResult,
+) -> None:
+    managed, clock, wakeup, _, _, lane = authority(generation=7)
+    lane.results.extend((first_result, ActuationResult.ACCEPTED))
+    retired: list[int] = []
+
+    async def retire(generation: int) -> None:
+        retired.append(generation)
+
+    task = asyncio.create_task(
+        managed.shutdown(retire_provider=retire, termination=asyncio.Event())
+    )
+    await asyncio.wait_for(lane.started.get(), 0.2)
+    while managed._retry_due is None:
+        await asyncio.sleep(0)
+    assert retired == []
+    revision = wakeup.revision
+    clock.now = managed._retry_due
+    wakeup.wake()
+    await wakeup.wait_after(revision + 1)
+
+    assert await asyncio.wait_for(task, 0.2) is ShutdownResult.DRAINED
+    assert retired == [7]
+    assert [effect.operation for effect in lane.effects] == [
+        ActuationOperation.FORCE_RECEIVE,
+        ActuationOperation.FORCE_RECEIVE,
+    ]
+    assert not (await managed.snapshot()).state.release_required
+    assert managed._scheduler_task.done()
+
+
+@pytest.mark.asyncio
+async def test_offline_shutdown_drains_after_replacement_arrives() -> None:
+    managed, _, _, _, _, lane = authority(generation=None)
+    retired: list[int] = []
+
+    async def retire(generation: int) -> None:
+        retired.append(generation)
+
+    task = asyncio.create_task(
+        managed.shutdown(retire_provider=retire, termination=asyncio.Event())
+    )
+    await asyncio.sleep(0)
+    assert (await managed.snapshot()).state.release_required
+    assert retired == [] and not task.done()
+
+    await managed.provider_available(8)
+    assert await asyncio.wait_for(task, 0.2) is ShutdownResult.DRAINED
+    assert retired == [8]
+    assert [effect.operation for effect in lane.effects] == [
+        ActuationOperation.FORCE_RECEIVE
+    ]
+
+
+@pytest.mark.asyncio
+async def test_replacement_during_shutdown_stales_old_release() -> None:
+    managed, _, _, _, _, lane = authority(generation=7)
+    old_gate = lane.block_next()
+    shutdown = asyncio.create_task(
+        managed.shutdown(
+            retire_provider=lambda _generation: asyncio.sleep(0),
+            termination=asyncio.Event(),
+        )
+    )
+    old = await asyncio.wait_for(lane.started.get(), 0.2)
+    assert old.token.provider_generation == 7
+
+    await managed.provider_unavailable()
+    await managed.provider_available(8)
+    old_gate.set()
+
+    assert await asyncio.wait_for(shutdown, 0.2) is ShutdownResult.DRAINED
+    assert lane.effects[-1].token.provider_generation == 8
+    assert not (await managed.snapshot()).state.release_required
+
+
+@pytest.mark.asyncio
+async def test_termination_during_initial_release_skips_retirement() -> None:
+    managed, _, _, _, _, lane = authority(generation=7)
+    release_gate = lane.block_next()
+    termination = asyncio.Event()
+    retired: list[int] = []
+    shutdown = asyncio.create_task(
+        managed.shutdown(
+            retire_provider=lambda generation: _append_async(retired, generation),
+            termination=termination,
+        )
+    )
+    await asyncio.wait_for(lane.started.get(), 0.2)
+    termination.set()
+
+    try:
+        result = await asyncio.wait_for(asyncio.shield(shutdown), 0.2)
+    finally:
+        release_gate.set()
+        if not shutdown.done():
+            await shutdown
+
+    assert result is ShutdownResult.TERMINATED
+    assert retired == []
+    assert (await managed.snapshot()).state.release_required
+    assert managed._scheduler_task.done()
+
+
+@pytest.mark.asyncio
+async def test_termination_poisons_a_concurrent_arrival_settlement() -> None:
+    managed, _, _, _, _, lane = authority(generation=7)
+    lane.results.append(ActuationResult.REJECTED)
+    termination = asyncio.Event()
+    retired: list[int] = []
+    shutdown = asyncio.create_task(
+        managed.shutdown(
+            retire_provider=lambda generation: _append_async(retired, generation),
+            termination=termination,
+        )
+    )
+    await asyncio.wait_for(lane.started.get(), 0.2)
+    while managed._retry_due is None:
+        await asyncio.sleep(0)
+
+    await managed.provider_unavailable()
+    arrival_gate = lane.block_next()
+    arrival = asyncio.create_task(managed.provider_available(8))
+    current_release = await asyncio.wait_for(lane.started.get(), 0.2)
+    assert current_release.token.provider_generation == 8
+    termination.set()
+
+    assert await asyncio.wait_for(shutdown, 0.2) is ShutdownResult.TERMINATED
+    before = await managed.snapshot()
+    assert before.state.release_required and retired == []
+    assert managed._scheduler_task.done()
+    arrival_gate.set()
+    await arrival
+    assert await managed.snapshot() == before
+    with pytest.raises(RuntimeError, match="clean RX state"):
+        await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_retirement_failure_does_not_close_authority() -> None:
+    managed, _, _, _, _, _ = authority(generation=7)
+    failure = RuntimeError("retirement failed")
+
+    async def fail_retirement(_generation: int) -> None:
+        raise failure
+
+    with pytest.raises(RuntimeError, match="retirement failed") as raised:
+        await managed.shutdown(
+            retire_provider=fail_retirement, termination=asyncio.Event()
+        )
+    assert raised.value is failure
+    assert not managed._scheduler_task.done()
+    await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_is_shielded_idempotent_and_blocks_new_ingress() -> None:
+    managed, _, _, _, _, lane = authority(generation=7)
+    gate = lane.block_next()
+    retired: list[int] = []
+    termination = asyncio.Event()
+
+    async def retire(generation: int) -> None:
+        retired.append(generation)
+
+    first = asyncio.create_task(
+        managed.shutdown(retire_provider=retire, termination=termination)
+    )
+    await asyncio.wait_for(lane.started.get(), 0.2)
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
+
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await managed.ptt_down("owner")
+    second = asyncio.create_task(
+        managed.shutdown(retire_provider=retire, termination=termination)
+    )
+    gate.set()
+
+    assert await asyncio.wait_for(second, 0.2) is ShutdownResult.DRAINED
+    assert retired == [7]
+
+
+async def _append_async(values: list[int], value: int) -> None:
+    values.append(value)
 
 
 @pytest.mark.asyncio
