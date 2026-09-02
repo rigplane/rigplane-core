@@ -6,6 +6,8 @@ import pytest
 
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
+from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import (
     AbortFailed,
     AbortOperation,
@@ -863,3 +865,173 @@ async def test_ten_thousand_idempotent_commands_keep_one_scheduler() -> None:
     assert not hasattr(managed, "observed_ptt")
     await managed.force_off()
     await managed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["force_off", "shutdown", "offline_shutdown"])
+async def test_real_fence_releases_before_cleanup_and_shutdown_waits_for_cleanup(
+    entry: str,
+) -> None:
+    fence = TxAbortFence()
+    old = fence.issue()
+    cleanup_started, finish_cleanup = asyncio.Event(), asyncio.Event()
+    off_written = asyncio.Event()
+    writes: list[bool] = []
+    retired: list[int] = []
+
+    class Actuator:
+        async def actuate(self, token, operation):
+            assert not fence.is_current(old)
+            state = (await managed.snapshot()).state
+            assert state.intent.kind is ManagedTxIntentKind.RX
+            if operation is ActuationOperation.FORCE_RECEIVE:
+                writes.append(False)
+                off_written.set()
+            return ActuationResult.ACCEPTED
+
+    async def cleanup() -> None:
+        assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
+        cleanup_started.set()
+        await finish_cleanup.wait()
+
+    fence.register(old, cleanup)
+    managed = ManagedTxAuthority(
+        ManagedTxEffectLane(Actuator()),
+        FakeConfigStore(None),
+        fence,
+        provider_generation=None if entry == "offline_shutdown" else 7,
+    )
+    task = asyncio.create_task(
+        managed.force_off()
+        if entry == "force_off"
+        else managed.shutdown(
+            retire_provider=lambda generation: _append_async(retired, generation),
+            termination=asyncio.Event(),
+        )
+    )
+    try:
+        if entry == "offline_shutdown":
+            while not (await managed.snapshot()).state.release_required:
+                await asyncio.sleep(0)
+            assert not fence.is_current(old)
+            await managed.provider_available(8)
+        await asyncio.wait_for(cleanup_started.wait(), 1)
+        await asyncio.wait_for(off_written.wait(), 1)
+        assert writes == [False]
+        if entry == "force_off":
+            assert (
+                await asyncio.wait_for(asyncio.shield(task), 1)
+                is ManagedTxOutcome.ACCEPTED
+            )
+            assert not (await managed.snapshot()).state.release_required
+        else:
+            assert not task.done() and retired == []
+    finally:
+        finish_cleanup.set()
+        await task
+        await managed.close()
+    assert retired == (
+        [] if entry == "force_off" else [8 if entry == "offline_shutdown" else 7]
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_termination_cancels_owned_cleanup_without_waiting_for_gate() -> None:
+    fence = TxAbortFence()
+    started, stopped, never, termination = (asyncio.Event() for _ in range(4))
+
+    async def cleanup() -> None:
+        started.set()
+        try:
+            await never.wait()
+        finally:
+            stopped.set()
+
+    fence.register(fence.issue(), cleanup)
+    managed = ManagedTxAuthority(
+        FakeLane(), FakeConfigStore(None), fence, provider_generation=None
+    )
+    task = asyncio.create_task(
+        managed.shutdown(
+            retire_provider=lambda _: asyncio.sleep(0), termination=termination
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        termination.set()
+        assert (
+            await asyncio.wait_for(asyncio.shield(task), 1) is ShutdownResult.TERMINATED
+        )
+        assert stopped.is_set() and not never.is_set()
+        assert (await managed.snapshot()).state.release_required
+    finally:
+        never.set()
+        await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_isolation", [False, True])
+async def test_late_physical_on_retains_debt_until_a_fresh_off(
+    with_isolation: bool,
+) -> None:
+    clock, wakeup = FakeClock(), FakeWakeup()
+    started, allow_late_on, late_on, off_written = (
+        asyncio.Event() for _ in range(4)
+    )
+    writes: list[tuple[str, EffectToken]] = []
+
+    class Actuator:
+        async def actuate(self, token, operation):
+            if operation is ActuationOperation.TRANSMIT_ON:
+                started.set()
+                try:
+                    await allow_late_on.wait()
+                except asyncio.CancelledError:
+                    await allow_late_on.wait()
+                writes.append(("ON", token))
+                late_on.set()
+            elif operation is ActuationOperation.FORCE_RECEIVE:
+                writes.append(("OFF", token))
+                off_written.set()
+            return ActuationResult.ACCEPTED
+
+    async def isolate(generation: int) -> None:
+        await late_on.wait()
+
+    lane = ManagedTxEffectLane(
+        Actuator(), clock=clock, poison_generation=isolate if with_isolation else None
+    )
+    managed = ManagedTxAuthority(
+        lane,
+        FakeConfigStore(None),
+        TxAbortFence(),
+        provider_generation=7,
+        clock=clock,
+        wakeup=wakeup,
+        retry_delay_seconds=2,
+    )
+    await managed._stop_scheduler(managed._scheduler_task)
+    on = asyncio.create_task(managed.transmit_on())
+    await asyncio.wait_for(started.wait(), 1)
+    off = asyncio.create_task(managed.force_off())
+    try:
+        await asyncio.wait_for(off_written.wait(), 1)
+        allow_late_on.set()
+        await asyncio.wait_for(late_on.wait(), 1)
+        await asyncio.wait_for(asyncio.gather(on, off), 1)
+        state = (await managed.snapshot()).state
+        assert state.release_required
+        assert state.last_actuation.result is ActuationResult.UNCERTAIN
+        assert [value for value, _ in writes] == ["OFF", "ON"]
+        assert managed._retry_due is not None
+        clock.now = managed._retry_due
+        await managed._process_due()
+        assert [value for value, _ in writes] == ["OFF", "ON", "OFF"]
+        assert writes[0][1] != writes[-1][1]
+        assert not (await managed.snapshot()).state.release_required
+    finally:
+        allow_late_on.set()
+        await asyncio.gather(on, off)
+        if (await managed.snapshot()).state.release_required:
+            await managed.force_off()
+        await managed.close()
