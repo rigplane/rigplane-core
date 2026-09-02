@@ -201,7 +201,7 @@ class ManagedTxAuthority:
                 raise ValueError("provider generation must increase")
             self._generation_high_water = generation
             self._provider_generation = generation
-            if self._release_is_retryable_locked():
+            if False and self._release_is_retryable_locked():
                 transition = self._reduce_locked(
                     RetryForceReceive(generation, self._attempt_id_locked())
                 )
