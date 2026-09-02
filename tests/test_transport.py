@@ -16,6 +16,7 @@ from rigplane.transport import (
     PRESSURE_THRESHOLD,
 )
 from rigplane.core.transport import _UdpProtocol
+from rigplane.core.exceptions import CommandError
 from rigplane.types import HEADER_SIZE, PacketType
 
 
@@ -338,6 +339,166 @@ class TestTrackSent:
 # ---------------------------------------------------------------------------
 # RX sequence tracking and gap detection
 # ---------------------------------------------------------------------------
+
+
+class TestTrackedWriteGuard:
+    @staticmethod
+    def _request(*seqs: int) -> bytes:
+        if len(seqs) == 1:
+            return _build_control(ptype=0x01, seq=seqs[0])
+        packet = bytearray(_build_control(ptype=0x01))
+        packet.extend(struct.pack(f"<{len(seqs)}H", *seqs))
+        struct.pack_into("<I", packet, 0, len(packet))
+        return bytes(packet)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raises", [False, True])
+    async def test_initial_suppression_has_no_send_side_effects(
+        self, transport: IcomTransport, raises: bool
+    ) -> None:
+        sent = []
+        transport._raw_send = sent.append
+        transport.send_seq = 7
+        transport._track_sent(6, b"previous")
+        previous_time = transport._last_tracked_send
+        error = RuntimeError("guard unavailable")
+
+        def is_current() -> bool:
+            if raises:
+                raise error
+            return False
+
+        expected = RuntimeError if raises else CommandError
+        with pytest.raises(expected) as caught:
+            await transport.send_tracked(_build_data_packet(), is_current=is_current)
+        if raises:
+            assert caught.value is error
+        assert sent == []
+        assert transport.send_seq == 7
+        assert transport.tx_buffer == {6: b"previous"}
+        assert transport._last_tracked_send == previous_time
+
+    @pytest.mark.asyncio
+    async def test_current_send_and_replay_do_not_yield_before_raw_send(
+        self, transport: IcomTransport
+    ) -> None:
+        trace = []
+
+        def is_current() -> bool:
+            trace.append("guard")
+            return True
+
+        transport._raw_send = lambda data: trace.append("write")
+        loop = asyncio.get_running_loop()
+        callback = loop.call_soon(trace.append, "yielded")
+        try:
+            assert await transport.send_tracked(
+                _build_data_packet(), is_current=is_current
+            ) is None
+            transport._handle_packet(self._request(0))
+            assert trace == ["guard", "write", "guard", "write"]
+        finally:
+            callback.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("multi", [False, True])
+    async def test_stale_on_replay_after_current_off_is_suppressed(
+        self, transport: IcomTransport, multi: bool
+    ) -> None:
+        sent = []
+        current = True
+        transport._raw_send = sent.append
+        await transport.send_tracked(
+            _build_data_packet(payload=b"ON"), is_current=lambda: current
+        )
+        current = False
+        await transport.send_tracked(
+            _build_data_packet(payload=b"OFF"), is_current=lambda: True
+        )
+        off = sent[-1]
+        transport._handle_packet(self._request(0, 1) if multi else self._request(0))
+        assert [packet[CONTROL_SIZE:] for packet in sent] == (
+            [b"ON", b"OFF", b"OFF"] if multi else [b"ON", b"OFF"]
+        )
+        assert sent[-1] == off
+
+    @pytest.mark.asyncio
+    async def test_multi_replay_rechecks_each_entry(
+        self, transport: IcomTransport
+    ) -> None:
+        current = True
+        transport._raw_send = lambda data: None
+        for payload in (b"first", b"second"):
+            await transport.send_tracked(
+                _build_data_packet(payload=payload), is_current=lambda: current
+            )
+        sent = []
+
+        def write(data: bytes) -> None:
+            nonlocal current
+            sent.append(data)
+            current = False
+
+        transport._raw_send = write
+        transport._handle_packet(self._request(0, 1))
+        assert [packet[CONTROL_SIZE:] for packet in sent] == [b"first"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("multi", [False, True])
+    async def test_replay_guard_exception_is_suppressed(
+        self, transport: IcomTransport, multi: bool
+    ) -> None:
+        sent = []
+        broken = False
+
+        def is_current() -> bool:
+            if broken:
+                raise RuntimeError("guard unavailable")
+            return True
+
+        transport._raw_send = sent.append
+        await transport.send_tracked(_build_data_packet(), is_current=is_current)
+        await transport.send_tracked(_build_data_packet(payload=b"unguarded"))
+        broken = True
+        sent.clear()
+        transport._handle_packet(self._request(0, 1) if multi else self._request(0))
+        assert [packet[CONTROL_SIZE:] for packet in sent] == (
+            [b"unguarded"] if multi else []
+        )
+
+    def test_guard_metadata_follows_fifo_eviction(
+        self, transport: IcomTransport
+    ) -> None:
+        from rigplane.transport import BUFSIZE
+
+        for seq in range(1, BUFSIZE + 2):
+            transport._track_sent(seq, b"packet", is_current=lambda: True)
+        assert set(transport._tx_guards) == set(transport.tx_buffer)
+        assert len(transport._tx_guards) == BUFSIZE
+        assert 1 not in transport._tx_guards
+
+    def test_guard_metadata_clears_on_rollover(
+        self, transport: IcomTransport
+    ) -> None:
+        transport._track_sent(0xFFFF, b"old", is_current=lambda: False)
+        transport._track_sent(0, b"new")
+        assert transport.tx_buffer == {0: b"new"}
+        assert transport._tx_guards == {}
+
+    def test_duplicate_sequence_replaces_guard_and_keeps_bytes_compatible(
+        self, transport: IcomTransport
+    ) -> None:
+        sent = []
+        transport._raw_send = sent.append
+        transport._track_sent(7, b"old", is_current=lambda: False)
+        transport._track_sent(7, b"current", is_current=lambda: True)
+        transport._handle_packet(self._request(7))
+        assert sent == [b"current"]
+        transport._track_sent(7, b"unguarded")
+        transport._handle_packet(self._request(7))
+        assert sent == [b"current", b"unguarded"]
+        assert transport.tx_buffer == {7: b"unguarded"}
+        assert transport._tx_guards == {}
 
 
 class TestRxSequence:
