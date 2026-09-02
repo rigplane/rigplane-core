@@ -12,6 +12,7 @@ const {
 const HEAD = '1234567890abcdef1234567890abcdef12345678';
 const STALE = 'abcdef1234567890abcdef1234567890abcdef12';
 const COMMITTED_AT = new Date('2026-08-08T04:50:00Z');
+const AGENTS_PATH = path.join(__dirname, '..', '..', 'AGENTS.md');
 const WORKFLOW_PATH = path.join(__dirname, '..', 'workflows', 'agent-review-gate.yml');
 
 function directive(result, sha = HEAD) {
@@ -423,6 +424,20 @@ test('workflow preserves triggers, workflow revision checkout, pagination, and e
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /github\.paginate\(github\.rest\.issues\.listComments/);
   assert.doesNotMatch(workflow, /head_sha\s*=\s*['"]\$\{\{\s*github\.sha/);
+});
+
+test('AGENTS documents both exact head-bound directive forms', () => {
+  const instructions = fs.readFileSync(AGENTS_PATH, 'utf8');
+  assert.match(
+    instructions,
+    /^Agent Review: PASS <40-character-lowercase-head-sha>$/mu,
+  );
+  assert.match(
+    instructions,
+    /^Agent Review: BLOCKED <40-character-lowercase-head-sha>$/mu,
+  );
+  assert.match(instructions, /first non-blank line/u);
+  assert.match(instructions, /BLOCKED directive must put concrete findings[\s\S]*subsequent lines/u);
 });
 
 test('known head survives getCommit failure and receives exact-head FAILURE', async () => {
