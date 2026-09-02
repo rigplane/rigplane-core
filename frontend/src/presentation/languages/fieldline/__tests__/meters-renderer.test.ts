@@ -28,6 +28,12 @@ describe('the meter is a discrete segment ladder', () => {
     expect(Number.parseFloat(m.segmentGap)).toBeGreaterThan(0);
   });
 
+  it('MOR-2214: reports the same 12-segment count and gap as MeterDisplay', () => {
+    const m = render({ value: 5 });
+    expect(m.segmentCount).toBe(FIELDLINE_SEGMENT_COUNT);
+    expect(m.segmentGapPx).toBe(Number.parseFloat(FIELDLINE_TOKENS.meters.segmentGap));
+  });
+
   it('quantises the reading to a countable number of lit blocks', () => {
     expect(render({ value: 15, max: 15 }).litCount).toBe(12);
     expect(render({ value: 7.5, max: 15 }).litCount).toBe(6);

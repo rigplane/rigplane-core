@@ -338,6 +338,49 @@ describe('MOR-1275 — the meters slot is wired through the same helper', () => 
   });
 });
 
+describe('MOR-2214 — the meters slot supplies LinearSMeter\'s segment geometry', () => {
+  const view = withMeters(VIEW, 'receiving');
+
+  /** Segment count actually reaching the DOM, via LinearSMeter's own
+   *  `data-segment` markers — one per visual segment (LinearSMeter.svelte's
+   *  `{#each Array(SEG_COUNT) as _, i}` loop tags only the dim rect of each
+   *  pair with `data-segment`, so this counts visual segments, not rects). */
+  function renderedSegmentCount(language: string | null): number {
+    activate(language);
+    let count = 0;
+    withMounted(MetersSurface, { view }, (root) => {
+      count = root.querySelectorAll('[data-segment]').length;
+    });
+    return count;
+  }
+
+  it('renders a different segment count per language for the SAME reading', () => {
+    // Kill-mutation: MetersSurface always passing `display={undefined}` to
+    // LinearSMeter (i.e. the wiring never having happened) would make every
+    // language converge on LinearSMeter's own 20-segment default, collapsing
+    // this distinction — see the mutation-and-revert proof in the PR body.
+    expect(renderedSegmentCount('studioline')).toBe(1);
+    expect(renderedSegmentCount('fieldline')).toBe(12);
+    expect(renderedSegmentCount('segmentline')).toBe(20);
+  });
+
+  it('falls back to LinearSMeter\'s own 20-segment default with no language active', () => {
+    expect(renderedSegmentCount(null)).toBe(20);
+  });
+
+  it('renderSlot(\'meters\', ...) itself reports the differing MeterDisplay per language', () => {
+    const reading = { value: 0.5, max: 1, s9: 0.6 };
+    activate('studioline');
+    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 1, segmentGapPx: 0 });
+    activate('fieldline');
+    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 12, segmentGapPx: 3 });
+    activate('segmentline');
+    expect(renderSlot('meters', reading)?.display).toEqual({ segmentCount: 20, segmentGapPx: 3 });
+    activate(null);
+    expect(renderSlot('meters', reading)).toBeNull();
+  });
+});
+
 // ── 4. The three doctrine pins (MOR-1275 review: F1, F2, F3) ───────────────
 //
 // Each of these guards a promise that was previously enforced by nothing: a

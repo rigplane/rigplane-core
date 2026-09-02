@@ -140,14 +140,15 @@
     </p>
 
     {#if present(meters.signal)}
+      {@const display = signalDisplay(meters.signal)}
       <div
         class="meter-tile" data-meter-tile data-meter="signal" data-testid="meter-signal"
         data-relevant={meters.signal.relevant} data-observed={observed(meters.signal)}
         role="group" aria-label="S meter"
-        {...signalDisplay(meters.signal)?.attributes ?? {}}
+        {...display?.attributes ?? {}}
       >
         {#if observed(meters.signal)}
-          <LinearSMeter value={rawOf(meters.signal)} label="S" compact />
+          <LinearSMeter value={rawOf(meters.signal)} label="S" compact display={display?.display ?? undefined} />
         {:else}
           <span class="meter-unknown">S ?</span>
         {/if}

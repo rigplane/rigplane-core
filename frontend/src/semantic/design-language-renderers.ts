@@ -30,8 +30,8 @@
  * purpose — each family's descriptor is its own shape (studioline emits ranked
  * groups, fieldline emits digit cells). A semantic component therefore cannot
  * consume a descriptor structurally without learning that shape, which is the
- * per-language branch this ticket forbids. So exactly two language-agnostic
- * readings are taken, both display-only:
+ * per-language branch this ticket forbids. So exactly three language-agnostic
+ * readings are taken, all display-only:
  *
  *   `text`        — the descriptor's own flat rendering of the fact, used in
  *                   place of the component's default string when present.
@@ -41,12 +41,21 @@
  *                   assistive-tech-neutral tests can observe them. Nested
  *                   objects and arrays are skipped rather than serialised —
  *                   a family's private geometry stays private.
+ *   `display`     — MOR-2214: the same structural check as `text`/`attributes`,
+ *                   narrowed to the one shape a shipped gauge component
+ *                   (`LinearSMeter`) already knows how to consume: a
+ *                   `segmentCount`/`segmentGapPx` pair. A descriptor without
+ *                   both fields, numeric, yields `null` — this is not a
+ *                   `meters`-slot special case, it is the same "structural
+ *                   shape present or absent" test as the other two readings,
+ *                   applied to a different pair of field names.
  *
- * A descriptor that offers neither is not an error: the caller falls back.
+ * A descriptor that offers none of the three is not an error: the caller
+ * falls back.
  */
 import {
   getDesignLanguage, resolveRenderer,
-  type DesignLanguageManifest, type RendererSlotName, type RendererViewModel,
+  type DesignLanguageManifest, type MeterDisplay, type RendererSlotName, type RendererViewModel,
 } from '../presentation/languages/contract';
 // Side-effect import: the registry is populated by the declarations module,
 // which is otherwise imported only by its own tests. Importing the DECLARATIONS
@@ -75,6 +84,11 @@ export interface RendererDisplay {
   readonly text: string | null;
   /** `data-dl-*` display annotations, ready to spread onto an element. */
   readonly attributes: Readonly<Record<string, string>>;
+  /**
+   * MOR-2214: the descriptor's `segmentCount`/`segmentGapPx` pair, or `null`
+   * when either is absent or not a number. See the file doc comment above.
+   */
+  readonly display: MeterDisplay | null;
 }
 
 /** The manifest named by the activation attribute, or `undefined` when no language is active, the id is unregistered, or there is no DOM. */
@@ -117,5 +131,8 @@ export function renderSlot(slot: RendererSlotName, fields: RendererFields): Rend
   return {
     text: typeof descriptor.text === 'string' ? descriptor.text : null,
     attributes: annotate(descriptor),
+    display: typeof descriptor.segmentCount === 'number' && typeof descriptor.segmentGapPx === 'number'
+      ? { segmentCount: descriptor.segmentCount, segmentGapPx: descriptor.segmentGapPx }
+      : null,
   };
 }

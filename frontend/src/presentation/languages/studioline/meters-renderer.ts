@@ -18,6 +18,18 @@ export interface StudiolineMeter {
   readonly kind: 'studioline-meter';
   readonly trackWidth: string;
   readonly segmentGap: string;
+  /**
+   * MOR-2214: this file's own header and its test file's
+   * `describe('the meter is a continuous rail', ...)` document studioline as
+   * a continuous bar rail with no internal segment divisions — one undivided
+   * segment is the honest structural translation of "continuous" onto a
+   * segmented-rect renderer (`LinearSMeter`). `segmentGapPx` is the same
+   * `tokens.meters.segmentGap` used above, parsed to a number; a single
+   * segment has no internal gap to speak of, and the token is `'0px'` here,
+   * so the two facts agree.
+   */
+  readonly segmentCount: number;
+  readonly segmentGapPx: number;
   /** 0..1 of the track; `null` when the reading is unobserved — never 0. */
   readonly fill: number | null;
   /** Where the pre-S9 tone hands over to the post-S9 one, 0..1. */
@@ -48,6 +60,8 @@ export function renderMeter(
     kind: 'studioline-meter',
     trackWidth: tokens.meters.trackWidth,
     segmentGap: tokens.meters.segmentGap,
+    segmentCount: 1,
+    segmentGapPx: Number.parseFloat(tokens.meters.segmentGap),
     fill: value === null ? null : clampFraction(value, max),
     crossover: clampFraction(s9, max),
     tone: tokens.rx.active,
