@@ -122,6 +122,28 @@ async def test_transport_timeout_eof_malformed_and_negative_rprt() -> None:
             await transport.close()
 
 
+@pytest.mark.parametrize("code", [0, -1, -5, -6, -8, -37, 1])
+async def test_transport_command_accepts_only_rprt_zero_and_preserves_failure_code(
+    code: int,
+) -> None:
+    behavior = FakeRigctldBehavior(
+        malformed_responses={"F": f"RPRT {code}\n".encode("ascii")}
+    )
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        try:
+            if code == 0:
+                await transport.command("F 14074000")
+            else:
+                with pytest.raises(CommandError) as exc_info:
+                    await transport.command("F 14074000")
+                assert exc_info.value.command == "F 14074000"
+                assert exc_info.value.code == code
+        finally:
+            await transport.close()
+
+
 @pytest.mark.parametrize(
     "failure",
     "stale_eof stale_oserror resync_eof resync_oserror read_timeout "
