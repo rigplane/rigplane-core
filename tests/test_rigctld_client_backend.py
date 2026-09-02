@@ -351,9 +351,7 @@ async def test_old_exchange_interruption_does_not_retire_replacement(
             }[interruption]
             old.responses.put_nowait(response)
             expected = (
-                RadioTimeoutError
-                if interruption == "timeout"
-                else RadioConnectionError
+                RadioTimeoutError if interruption == "timeout" else RadioConnectionError
             )
         with pytest.raises(expected):
             await asyncio.wait_for(tasks[0], 1)
