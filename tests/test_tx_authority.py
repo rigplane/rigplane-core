@@ -25,18 +25,13 @@ from rigplane.core.tx_authority import (
     DECISION_LOG_CAPACITY,
     FAMILY_WRITE_CLASS,
     RAW_EXCLUDED,
-    TX_ARGUMENT_PREDICATES,
     TX_ENGINE_FAILURE_TAGS,
-    UNRESOLVED_ARGUMENT,
     TransmitAuthority,
-    TxArgumentContext,
     TxFamily,
     TxMethodEntry,
     TxRefusal,
     TxRefusalCode,
     TxWriteClass,
-    first_parameter_name,
-    short_circuit_family,
 )
 
 
@@ -80,8 +75,8 @@ def test_tx_observation_contract_is_canonical_and_authority_reexports_it() -> No
 
 
 METHOD_MAP: Mapping[str, TxMethodEntry] = {
-    "set_ptt": TxMethodEntry(TxFamily.PTT_ON, predicate="ptt"),
-    "set_powerstat": TxMethodEntry(TxFamily.POWER_ON, predicate="powerstat"),
+    "set_ptt": TxMethodEntry(family=TxFamily.PTT_ON),
+    "set_powerstat": TxMethodEntry(family=TxFamily.POWER_ON),
     "set_freq": TxMethodEntry(TxFamily.FREQUENCY),
     "set_mode": TxMethodEntry(TxFamily.MODE),
     "set_split": TxMethodEntry(TxFamily.VFO_TOPOLOGY),
@@ -246,12 +241,10 @@ def test_family_class_table_is_total_and_pinned() -> None:
     }
     keying = {f for f, c in FAMILY_WRITE_CLASS.items() if c is TxWriteClass.KEYING}
     assert keying == {TxFamily.PTT_ON, TxFamily.CW_TEXT}
-    unkey = {f for f, c in FAMILY_WRITE_CLASS.items() if c is TxWriteClass.UNKEY}
-    assert unkey == {TxFamily.PTT_OFF}
     assert FAMILY_WRITE_CLASS[TxFamily.FREQUENCY] is TxWriteClass.PASS
     assert FAMILY_WRITE_CLASS[TxFamily.MODE] is TxWriteClass.PASS
     assert FAMILY_WRITE_CLASS[TxFamily.VFO_TOPOLOGY] is TxWriteClass.PASS
-    assert FAMILY_WRITE_CLASS[TxFamily.POWER_OFF] is TxWriteClass.PASS
+    assert FAMILY_WRITE_CLASS[TxFamily.POWER_ON] is TxWriteClass.PASS
     assert FAMILY_WRITE_CLASS[TxFamily.CW_STOP] is TxWriteClass.PASS
 
 
@@ -302,6 +295,53 @@ def test_dormant_authority_watchdog_surface_is_absent() -> None:
     assert "own_transmit_hold" not in get_type_hints(tx_authority.TxEvidence)
 
 
+def test_dormant_argument_resolution_surface_is_absent() -> None:
+    for name in (
+        "_UnresolvedArgument",
+        "UNRESOLVED_ARGUMENT",
+        "SIGNATURE_CACHE_SIZE",
+        "_first_parameter_name",
+        "first_parameter_name",
+        "TxArgumentContext",
+        "ArgumentPredicate",
+        "ptt_family",
+        "powerstat_family",
+        "TX_ARGUMENT_PREDICATES",
+        "ARGUMENT_SHORT_CIRCUIT_METHODS",
+        "short_circuit_family",
+    ):
+        assert not hasattr(tx_authority, name)
+
+    assert [field.name for field in fields(TxMethodEntry)] == ["family"]
+    assert "target" not in inspect.signature(TransmitAuthority.admit).parameters
+    assert "UNKEY" not in TxWriteClass.__members__
+    assert "PTT_OFF" not in TxFamily.__members__
+    assert "POWER_OFF" not in TxFamily.__members__
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "kwargs", "family", "write_class"),
+    (
+        ("set_ptt", (False,), {}, TxFamily.PTT_ON, TxWriteClass.KEYING),
+        ("set_ptt", (), {"on": False}, TxFamily.PTT_ON, TxWriteClass.KEYING),
+        ("set_powerstat", (False,), {}, TxFamily.POWER_ON, TxWriteClass.PASS),
+        ("set_powerstat", (), {"on": False}, TxFamily.POWER_ON, TxWriteClass.PASS),
+    ),
+)
+async def test_fixed_ptt_and_powerstat_families_ignore_arguments(
+    method: str,
+    args: tuple[object, ...],
+    kwargs: Mapping[str, object],
+    family: TxFamily,
+    write_class: TxWriteClass,
+) -> None:
+    authority = build_authority(Clock(), PoisonedLink())
+
+    async with authority.admit(method, args, kwargs) as admission:
+        assert admission.family is family
+        assert admission.write_class is write_class
+
+
 def test_dormant_band_classification_surface_is_absent() -> None:
     """Frequency remains a PASS family without a second band classifier."""
     for name in (
@@ -311,11 +351,6 @@ def test_dormant_band_classification_surface_is_absent() -> None:
         "frequency_family",
     ):
         assert not hasattr(tx_authority, name)
-    assert "frequency" not in TX_ARGUMENT_PREDICATES
-
-    context_fields = {field.name for field in fields(TxArgumentContext)}
-    assert "current_frequency_hz" not in context_fields
-    assert "bands" not in context_fields
 
     parameters = inspect.signature(TransmitAuthority).parameters
     assert "bands" not in parameters
@@ -328,15 +363,6 @@ def test_dormant_band_classification_surface_is_absent() -> None:
     )
     assert not hasattr(authority, "_bands")
     assert not hasattr(authority, "_current_frequency_hz")
-
-
-def test_argument_predicate_registry_is_named_and_pure() -> None:
-    assert set(TX_ARGUMENT_PREDICATES) == {"ptt", "powerstat"}
-    ctx = TxArgumentContext(args=(True,), kwargs={})
-    assert TX_ARGUMENT_PREDICATES["ptt"](ctx) is TxFamily.PTT_ON
-    off = TxArgumentContext(args=(False,), kwargs={})
-    assert TX_ARGUMENT_PREDICATES["ptt"](off) is TxFamily.PTT_OFF
-    assert TX_ARGUMENT_PREDICATES["powerstat"](off) is TxFamily.POWER_OFF
 
 
 # --------------------------------------------------------------------------
@@ -513,42 +539,6 @@ async def test_every_refusal_carries_evidence(answer: TxStateReading | str) -> N
 
 
 # --------------------------------------------------------------------------
-# T5 / INV-5 / INV-6 — the unkey is never made harder
-# --------------------------------------------------------------------------
-
-
-#: A table that classifies all three T5 methods into HAZARD families. An empty
-#: map is not a poisoned one — it leaves the short-circuit as the only path and
-#: so cannot catch INV-6's mutation ("reorder the short-circuit after the
-#: table"). This map can: with the table consulted first, every de-key path
-#: becomes a hazard write and is refused at a scripted TX.
-POISONED_MAP: Mapping[str, TxMethodEntry] = {
-    "set_ptt": TxMethodEntry(TxFamily.TUNER),
-    "set_powerstat": TxMethodEntry(TxFamily.ANTENNA),
-    "stop_cw_text": TxMethodEntry(TxFamily.BAND),
-}
-
-
-async def test_unkey_is_never_refused_even_with_a_poisoned_table() -> None:
-    """INV-5/INV-6: the T5 short-circuit precedes the table and the wire."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(TX, TX, TX)
-    authority = build_authority(clock, link, method_map=POISONED_MAP)
-
-    for method, args in (
-        ("set_ptt", (False,)),
-        ("set_powerstat", (False,)),
-        ("stop_cw_text", ()),
-    ):
-        async with authority.admit(method, args):
-            pass
-
-    assert link.reads == []  # not one of the three consulted the radio
-    assert authority.view().records[-1].write_class is TxWriteClass.UNKEY
-
-
-# --------------------------------------------------------------------------
 # KEYING
 # --------------------------------------------------------------------------
 
@@ -721,158 +711,3 @@ async def test_raw_excluded_methods_are_not_classified() -> None:
             assert admission.family is None  # bytes are not classified
     assert authority.view().records == ()
     assert link.reads == []
-
-
-# --------------------------------------------------------------------------
-# MOR-1954 — classification never depends on how the call spelled the argument
-# --------------------------------------------------------------------------
-
-
-class SignatureMirror:
-    """The parameter names the shipping Icom bodies actually declare.
-
-    Not a radio stand-in: these pins need the *names* `runtime/radio.py`
-    declares (`on`, `freq_hz`, `value`).
-    ``test_first_parameter_names_mirror_the_shipping_bodies`` keeps this
-    class honest against the real methods.
-    """
-
-    async def set_ptt(self, on: bool) -> None: ...
-
-    async def set_powerstat(self, on: bool) -> None: ...
-
-    async def set_freq(self, freq_hz: int, receiver: int = 0) -> None: ...
-
-    async def set_tuner_status(self, value: int) -> None: ...
-
-
-def test_first_parameter_names_mirror_the_shipping_bodies() -> None:
-    """The resolver reads real signatures, and the mirror matches them."""
-    from rigplane.runtime.radio import IcomRadio
-
-    assert first_parameter_name(IcomRadio.set_ptt) == "on"
-    assert first_parameter_name(IcomRadio.set_powerstat) == "on"
-    assert first_parameter_name(IcomRadio.set_freq) == "freq_hz"
-    assert first_parameter_name(IcomRadio.set_tuner_status) == "value"
-
-    for method in ("set_ptt", "set_powerstat", "set_freq", "set_tuner_status"):
-        assert first_parameter_name(getattr(SignatureMirror, method)) == (
-            first_parameter_name(getattr(IcomRadio, method))
-        )
-    assert first_parameter_name(None) is None
-
-
-async def test_keyword_key_down_is_never_read_as_an_unkey() -> None:
-    """The load-bearing pin: ``set_ptt(on=True)`` keys, however it is spelled.
-
-    Before this fix the predicate read ``kwargs["value"]``; the Icom body
-    declares ``on``, so a keyword key-down resolved to ``None``, classified
-    PTT_OFF and was short-circuited past the gate.
-    No signature is supplied here on purpose — even with nothing to resolve
-    from, the engine must fail towards the key, never towards the unkey.
-    """
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_ptt", (), {"on": True}) as admission:
-        assert admission.family is TxFamily.PTT_ON
-        assert admission.write_class is TxWriteClass.KEYING
-
-    record = authority.view().records[-1]
-    assert record.method == "set_ptt"
-    assert record.write_class is TxWriteClass.KEYING
-
-
-@pytest.mark.parametrize(
-    ("method", "value", "expected"),
-    [
-        ("set_ptt", True, TxFamily.PTT_ON),
-        ("set_ptt", False, TxFamily.PTT_OFF),
-        ("set_powerstat", False, TxFamily.POWER_OFF),
-    ],
-)
-async def test_classification_is_independent_of_argument_spelling(
-    method: str, value: object, expected: TxFamily
-) -> None:
-    """Positional and keyword admissions of the same write agree, always."""
-    target = getattr(SignatureMirror, method)
-    name = first_parameter_name(target)
-    assert name is not None
-
-    families: list[TxFamily | None] = []
-    classes: list[TxWriteClass] = []
-    for args, kwargs in (((value,), {}), ((), {name: value})):
-        clock = Clock()
-        link = FakeTransmitStateLink(clock)
-        link.script(RX, RX)
-        authority = build_authority(clock, link)
-        async with authority.admit(method, args, kwargs, target=target) as admission:
-            families.append(admission.family)
-            classes.append(admission.write_class)
-
-    assert families == [expected, expected]
-    assert classes[0] is classes[1]
-
-
-@pytest.mark.parametrize("spelling", ["positional", "keyword", "unresolvable"])
-async def test_the_unkey_is_still_never_refused_in_any_spelling(
-    spelling: str,
-) -> None:
-    """INV-5 survives the fix: no spelling makes an unkey harder.
-
-    The poisoned table would refuse every de-key as a hazard at the scripted
-    TX if the T5 short-circuit stopped reaching it. The keyword unkey resolves
-    through the real signature and short-circuits; the unresolvable one may
-    not be *called* an unkey, but it must still not be refused — it lands on
-    the keying branch, which has no refusal path and consults no truth.
-    """
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(TX, TX)
-    authority = build_authority(clock, link, method_map=POISONED_MAP)
-
-    if spelling == "positional":
-        call = authority.admit("set_ptt", (False,))
-    elif spelling == "keyword":
-        call = authority.admit(
-            "set_ptt", (), {"on": False}, target=SignatureMirror.set_ptt
-        )
-    else:
-        call = authority.admit("set_ptt", (), {"on": False})
-
-    async with call as admission:
-        pass
-
-    assert link.reads == []  # no spelling made the unkey consult the radio
-    if spelling == "unresolvable":
-        assert admission.write_class is TxWriteClass.KEYING
-    else:
-        assert admission.family is TxFamily.PTT_OFF
-        assert admission.write_class is TxWriteClass.UNKEY
-
-
-def test_predicates_resolve_the_argument_by_signature_not_by_guess() -> None:
-    """Predicate-level twin of the admission pins, including the sentinel."""
-    keyed = TxArgumentContext(
-        args=(),
-        kwargs={"on": True},
-        target=SignatureMirror.set_ptt,
-    )
-    assert TX_ARGUMENT_PREDICATES["ptt"](keyed) is TxFamily.PTT_ON
-
-    unkeyed = TxArgumentContext(
-        args=(),
-        kwargs={"on": False},
-        target=SignatureMirror.set_ptt,
-    )
-    assert TX_ARGUMENT_PREDICATES["ptt"](unkeyed) is TxFamily.PTT_OFF
-    assert unkeyed.first() is False
-
-    blind = TxArgumentContext(args=(), kwargs={"on": False})
-    assert blind.first() is UNRESOLVED_ARGUMENT
-    assert TX_ARGUMENT_PREDICATES["ptt"](blind) is TxFamily.PTT_ON
-    assert TX_ARGUMENT_PREDICATES["powerstat"](blind) is TxFamily.POWER_ON
-    assert short_circuit_family("set_ptt", blind) is TxFamily.PTT_ON
-    assert short_circuit_family("set_powerstat", blind) is TxFamily.POWER_ON
-    assert short_circuit_family("stop_cw_text", blind) is TxFamily.CW_STOP
