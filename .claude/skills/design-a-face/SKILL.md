@@ -474,17 +474,6 @@ Measured: `components-v2/meters/LinearSMeter.svelte` has eighteen `var(--v2-*)`
 and zero `var(--dl-*)`; `primitives/frequency/FrequencyDisplayInteractive.svelte`
 has fourteen and zero.
 
-`LinearSMeter` draws SVG with `SEG_COUNT = 20` and a peak-decay constant, and
-takes `{value, compact, label, variant}` — a raw reading. The design language's
-meter renderer already computes `fillFraction`, `s9Fraction`, `segmentWidthPx`,
-`segmentGapPx`, `hot`, `unknown`; `MetersSurface` spreads those onto the
-wrapper as attributes and does **not** pass them into the component, which
-recomputes its own fill.
-
-So the producing side is built and the consuming side is not connected. That is
-the gap behind "the instruments do not listen": one missing prop, not a missing
-design.
-
 `FrequencyDisplayInteractive` emits one element per glyph — `.digit`, `.sep`,
 inside `.freq` — and mounts only when `onTuneFrequency` is supplied. The readout
 slot `studioline.css` targets is `.vfo-freq` on `VfoSurface`, which is a
