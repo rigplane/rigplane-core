@@ -126,17 +126,42 @@ So extract, in this order:
 
 ### Measuring the reference
 
-**Do not estimate proportions by eye.** Project the image onto each axis and
-read the boundaries off the profile: for every row of pixels, sum how dark it
-is; do the same per column. Elements are dark, gutters are light, so band
-boundaries and the vertical division appear as steps in the profile. Ten lines
-of PIL or numpy. The numbers are then reproducible — anyone can run the same
-script and get them.
+**Do not estimate proportions by eye. Run the script.**
+
+    ./measure-reference.py selftest
+    ./measure-reference.py bands   <image>
+    ./measure-reference.py columns <image>
+    ./measure-reference.py bands   <image> --crop L,T,R,B
+    ./measure-reference.py bands   <image> --by colour
+
+`bands` profiles rows and finds the horizontal bands; `columns` profiles
+columns and finds the vertical divisions. It reports every run as a **share of
+the measured box**, with the pixel range beside it, and the gaps between runs.
+
+**Run `selftest` first, every time, and read its output.** It plants three
+bands — one of them deliberately low-contrast — plus a coloured patch, and
+fails if any is not recovered exactly. The low-contrast band is the one that
+matters: an earlier version planted only strong bands, and deliberately
+breaking the threshold left it green, so it verified nothing. An ideal case
+survives being measured badly.
 
 **Two scales, same method.** A profile over the whole panel gives the bands and
 the divider. For a fine element — glyph cells, segment pitch, chip padding —
-crop that region and profile it in its own resolution. Precision comes from the
-crop, not from a better algorithm.
+`--crop` that region and profile it in its own resolution. Precision comes from
+the crop, not from a better algorithm.
+
+**`--by colour` profiles distance from grey rather than darkness.** On a panel
+that is monochrome except where colour carries a meaning — a transmit group, an
+alarm — this locates that meaning without being told where to look. It also
+separates a *dimmed* indicator, which is the same hue with less ink, from a
+*differently coloured* one: the ink profile confuses them, the colour profile
+does not.
+
+**Known limit, found by the selftest and worth knowing before you trust a
+number:** the run detector thresholds just above the profile's floor, because a
+midpoint threshold loses faint bands whenever a heavy element is present in the
+same image — and these panels always contain both. If two elements sit with no
+gutter between them, they read as one run; crop to separate them.
 
 **Report proportions of the panel box, never pixels**, and state the tolerance.
 The stage scales as one block, so a pixel figure is true only at one size,
