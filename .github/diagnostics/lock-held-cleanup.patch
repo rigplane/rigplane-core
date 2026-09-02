@@ -1,7 +1,8 @@
 diff --git a/src/rigplane/runtime/managed_tx_authority.py b/src/rigplane/runtime/managed_tx_authority.py
+index b9571011..20cf1fdc 100644
 --- a/src/rigplane/runtime/managed_tx_authority.py
 +++ b/src/rigplane/runtime/managed_tx_authority.py
-@@ -448,6 +448,9 @@
+@@ -448,6 +448,9 @@ class ManagedTxAuthority:
      ) -> None:
          while True:
              self._start_abort_cleanup()

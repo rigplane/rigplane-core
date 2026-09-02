@@ -1,7 +1,8 @@
 diff --git a/src/rigplane/runtime/managed_tx_effect_lane.py b/src/rigplane/runtime/managed_tx_effect_lane.py
+index 598f91d2..9a2ee999 100644
 --- a/src/rigplane/runtime/managed_tx_effect_lane.py
 +++ b/src/rigplane/runtime/managed_tx_effect_lane.py
-@@ -226,8 +226,6 @@
+@@ -226,8 +226,6 @@ class ManagedTxEffectLane:
              isolation_error = await self._await_isolation(
                  claim.isolation, claim.deadline
              )
