@@ -60,13 +60,14 @@ RigPlane capabilities through an external `rigctld` process.
 | Receivers | 2 (MAIN/SUB) | 1 (VFO A/B) |
 | VFO labels | MAIN / SUB | VFO A / VFO B |
 | DIGI-SEL | ✅ | ❌ |
-| IP+ | ✅ | ✅ |
+| IP+ | ✅ | ✅ (supported) |
 | LAN | ✅ | ❌ |
 | Scope | ✅ | ✅ |
 | USB Serial | ✅ | ✅ |
 
 The Web UI automatically hides the DIGI-SEL control when connected to an IC-7300
-(capability-based UI guards). VFO labels switch to "VFO A" / "VFO B" automatically.
+(capability-based UI guards), while the documented IP+ control is supported and
+visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 
 ### Yaesu FTX-1
 

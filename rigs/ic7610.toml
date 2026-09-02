@@ -711,7 +711,7 @@ ant_modes = ["off", "manual", "auto"]
 
 [apf]
 # CI-V 0x16 0x32: 0=OFF, 1=WIDE(320Hz), 2=MID(160Hz), 3=NAR(80Hz)
-# Note: IC-7300 only has ON/OFF (0/1)
+# IC-7300 does not declare APF; this four-value APF domain is IC-7610-specific.
 values = [0, 1, 2, 3]
 labels = { "0" = "OFF", "1" = "WIDE", "2" = "MID", "3" = "NAR" }
 

@@ -740,7 +740,7 @@ active radio profile doesn't support them:
 | Control | Capability flag | Visible on IC-7610 | Visible on IC-7300 |
 |---------|----------------|--------------------|--------------------|
 | DIGI-SEL toggle | `digisel` | ✅ | ❌ hidden |
-| IP+ toggle | `ip_plus` | ✅ | ❌ hidden |
+| IP+ toggle | `ip_plus` | ✅ | ✅ |
 | SUB receiver panel | `dual_rx` | ✅ | ❌ hidden |
 | TX controls, PTT | `tx` | ✅ | ✅ |
 | Audio RX/TX | `audio` | ✅ | ✅ |
