@@ -41,8 +41,15 @@ Read, and report what you actually read:
   — plus the capabilities it declares, for what this particular radio reports.
   A field existing in the view model does not mean this radio has it.
 
-The state vocabulary is the part designs get wrong, and there are **two
-mechanisms, not one**. Do not generalise either.
+The state vocabulary is the part designs get wrong, and there are **three
+mechanisms**. Do not generalise any of them.
+
+**The one that decides whether a block exists at all.** `RadioViewModel`
+declares its fourteen groups optional — `readonly meters?:`, `readonly dsp?:`.
+An absent group is not the same fact as every field in it being unsupported: a
+present group can hold nothing but unsupported fields, and a design reaching
+into an absent one throws. Each group's docstring names its own gate. This is
+the first question for any block, before any question about its contents.
 
 **General, carried by every field.** A reading is `{status:'known', value}` or
 `{status:'unknown'}`, and `Availability` carries `structural` and `operational`
@@ -67,14 +74,22 @@ Output of this phase: per surface, the fields, their state sets, and whether
 this radio backs them. Say which are structurally absent and which are merely
 unobserved right now — they are different findings.
 
-**Verify what the extractor emits before building on it.** It is a script over
-source files, and it has been wrong twice — once reporting a named-reason union
-that exists on one type as the model-wide vocabulary, once reporting a feature
-that the profile disables in a comment. Both were caught by an agent that
-checked the output against the files rather than trusting it. Spot-check the
-claims you are about to design against: open the type, count the occurrences,
-parse the profile yourself. A generated contract is not evidence; it is a
-starting point that happens to be fast.
+**The extractor is structurally incomplete, and spot-checking its output is not
+enough.** It reads `radio-view-model.ts` and the profile. Reason vocabularies
+declared in *imported* files are invisible to it no matter how its patterns are
+fixed — `FrequencyPermit` lives in `$lib/utils/tx-permit`, and
+`DisabledReasonCode` is carried by a by-name list rather than attached to any
+field's type. Reading what it printed will not surface either.
+
+So the check is not "read its output carefully". It is: **grep the model for
+every reason literal and follow each one to where it is declared.** Four
+vocabularies have been found this way where the extractor reported one, and the
+one it is furthest from reporting — the by-name disabled-reason list — is the
+one a design most needs, because it answers *why is this control not operable*.
+
+It has also been wrong twice in ways patterns did fix: reporting a union from
+one type as model-wide, and reporting a feature the profile disables in a
+comment. A generated contract is a fast starting point, never evidence.
 
 ## Phase 2 — read the design reference for its reasoning, not its layout
 
@@ -228,6 +243,103 @@ states. Stale, unsupported, contradictory and disconnected are usually drawn
 nowhere in it — which means everything proposed for them is new work rather than
 adaptation, and must be labelled that way when it lands.
 
+## Reference — how this is actually wired
+
+Established by reading and measuring, not by reasoning from the architecture
+document. Start here rather than rediscovering it; verify anything you are about
+to depend on, because the tree moves.
+
+### The path a value takes
+
+`rigs/<radio>.toml` declares features and per-field acquisition policies →
+capabilities → `semantic/radio-view-model.ts` (fourteen **optional** groups) →
+`lib/runtime/adapters/radio-view-model-adapter.ts` → the fourteen surfaces in
+`semantic/` → shared components in `components-v2/` and `primitives/`.
+
+A field existing in the view model does not mean the radio reports it, and a
+group being present does not mean its fields are supported. Both gates are
+separate and both are checkable.
+
+### The path an appearance takes
+
+A design language supplies three things and no markup: tokens, renderers, a
+stylesheet.
+
+- **Custom properties** carry values CSS must *consume* — a length, a colour.
+  Each family's root rule declares `--dl-<family>-*`; `tokens.ts` wraps them in
+  a local `tone()` helper with fallbacks.
+- **Data attributes** carry values CSS only *selects on*. `annotate()` in
+  `semantic/design-language-renderers.ts` copies **top-level primitives only**,
+  skips `text`, and `String()`s the value. Nested objects and arrays are
+  dropped with no `else` branch, so anything nested reaches no attribute in any
+  state.
+- The surfaces spread the result: `{...<slot>?.attributes ?? {}}` in
+  `RxTxSurface`, `MetersSurface`, `VfoSurface`.
+
+An attribute is a string. A length sent that way arrives as `"7"` and no rule
+can make a width of it.
+
+### Where the layout decides
+
+`presentation/layouts/contract.ts` holds `SEMANTIC_SURFACE_NAMES` — fourteen,
+closed. A manifest declares zones; `zoned()` in
+`components-v2/wiring/SemanticRadioSurfaces.svelte` mounts a surface into its
+zone. Nine surfaces in the dual composition pass `allowBare={false}` and vanish
+when undeclared; the rest render bare. `zoneShowsSurface`
+(`presentation/workspace/resolution.ts`) is fail-open.
+
+`presentation/workspace/contract.ts` gates what an operator can pick:
+`WORKSPACE_DESIGN_LANGUAGE_IDS` and `WORKSPACE_ZONE_IDS`. A language absent from
+that list cannot activate — `pickId` falls back — regardless of what any
+manifest says.
+
+### The instruments, and how far a design language reaches them
+
+The shared components read the **theme** vocabulary, not the design language's.
+Measured: `components-v2/meters/LinearSMeter.svelte` has fifteen `var(--v2-*)`
+and zero `var(--dl-*)`; `primitives/frequency/FrequencyDisplayInteractive.svelte`
+has fourteen and zero.
+
+`LinearSMeter` draws SVG with `SEG_COUNT = 20` and a peak-decay constant, and
+takes `{value, compact, label, variant}` — a raw reading. The design language's
+meter renderer already computes `fillFraction`, `s9Fraction`, `segmentWidthPx`,
+`segmentGapPx`, `hot`, `unknown`; `MetersSurface` spreads those onto the
+wrapper as attributes and does **not** pass them into the component, which
+recomputes its own fill.
+
+So the producing side is built and the consuming side is not connected. That is
+the gap behind "the instruments do not listen": one missing prop, not a missing
+design.
+
+`FrequencyDisplayInteractive` emits one element per glyph — `.digit`, `.sep`,
+inside `.freq` — and mounts only when `onTuneFrequency` is supplied. The readout
+slot `studioline.css` targets is `.vfo-freq` on `VfoSurface`, which is a
+different element from `.freq`.
+
+### The shared control layer, and how far adoption got
+
+It exists and works: `components-v2/controls/control-button.css` and
+`button-tokens.css`, `primitives/control-feedback/control-feedback-presentation.ts`,
+and helpers in `semantic/` — `pressed-of.ts`, `disabled-reason.ts`,
+`format-level.ts`, `pbt-presentation-continuity.ts`.
+
+Adoption by the fourteen v3 surfaces, measured: `pressedOf` **7 of 14**,
+`control-feedback-presentation` **1 of 14**, the shared button class **0 of 12**
+that render a `<button>`. `semantic/controls/` is named by an eslint boundary
+rule and does not exist.
+
+`pressed-of.ts`'s own header records four independent re-derivations of one
+rule, one of them unpinned. Assume a control behaviour you need already exists
+somewhere and look for it before proposing that a design introduce it.
+
+### Import boundaries
+
+`semantic/` may not import skins. It already imports from
+`components-v2/controls`, `panels` and `meters`, so reaching the shared control
+layer is allowed. `presentation/` may not import transport, stores or the
+runtime barrel. Rules are in `frontend/eslint.config.js`; `lint-imports` covers
+the Python side.
+
 ## Rules
 
 **The model proposes, the contract constrains, the owner decides.** Do not close
@@ -259,9 +371,19 @@ Before handing it over, for each backed element:
 
 - Name the surface it mounts on and confirm that surface is in
   `SEMANTIC_SURFACE_NAMES`.
-- Confirm the layout can mount it. In the dual composition most optional
-  surfaces render only through a declared zone; a manifest that declares no zone
-  for a surface mounts nothing, silently.
+- Confirm the layout can mount it, and **do not assume an undeclared surface
+  vanishes.** In the dual composition nine surfaces are mounted with
+  `allowBare={false}` and those do vanish silently when no zone declares them.
+  The rest render **bare** — visible, but with no wrapper and so no CSS hook.
+  And `zoneShowsSurface` is fail-**open**: `zone === undefined ||
+  zone.includes(surface)`, so a surface whose zone is not in the plan renders
+  rather than disappearing.
+
+  An earlier version of this sentence said an undeclared surface mounts nothing,
+  full stop. An agent reasoned from it, reached a wrong conclusion about which
+  strips render, and was corrected only by reading the code. Check the
+  `allowBare` argument at the call site for the specific surface; there is no
+  general answer.
 - Confirm the styling reaches it. `design-language-selector-reachability.component.test.ts`
   reports any selector that addresses markup nothing emits.
 
