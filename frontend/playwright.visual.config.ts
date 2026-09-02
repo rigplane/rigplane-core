@@ -28,6 +28,13 @@
 import { defineConfig } from '@playwright/test';
 
 const PORT = Number(process.env.RP_VISUAL_PORT ?? '5399');
+// MOR-2219 — second webServer for the "looks gallery" baselines
+// (gallery-baselines.spec.ts). The fixtures server above only ever serves
+// fixtures/index.html; the gallery captures the real App.svelte demo route
+// (?demo=control-buttons), so it needs its own `vite` (no --config override)
+// on a port that collides with neither this fixtures port nor the fixtures
+// dev port (5199) nor the app's own default dev port (5173).
+const GALLERY_PORT = Number(process.env.RP_GALLERY_PORT ?? '5299');
 // Exported so global-teardown.ts's manifest reports the SAME numbers this
 // config actually runs with — never a hand-copied, driftable duplicate.
 export const COMPARATOR = { threshold: 0.2, maxDiffPixelRatio: 0.001 };
@@ -60,10 +67,18 @@ export default defineConfig({
     launchOptions: process.env.MOR1090_CHROMIUM
       ? { executablePath: process.env.MOR1090_CHROMIUM } : {},
   },
-  webServer: {
-    command: `npx vite --config vite.fixtures.config.ts --port ${PORT} --strictPort --host 127.0.0.1`,
-    url: `http://127.0.0.1:${PORT}/fixtures/index.html?fixture=topology-2-main-sub&theme=v2`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
-  },
+  webServer: [
+    {
+      command: `npx vite --config vite.fixtures.config.ts --port ${PORT} --strictPort --host 127.0.0.1`,
+      url: `http://127.0.0.1:${PORT}/fixtures/index.html?fixture=topology-2-main-sub&theme=v2`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      command: `npx vite --port ${GALLERY_PORT} --strictPort --host 127.0.0.1`,
+      url: `http://127.0.0.1:${GALLERY_PORT}/?demo=control-buttons`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  ],
 });

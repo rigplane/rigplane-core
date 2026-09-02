@@ -4,7 +4,7 @@ Tracked, reviewed screenshots for a representative slice of the MOR-1070/1085 fi
 
 ## Why a slice, not the full 60+13 matrix
 
-`capture.mjs`/`capture-ptt.mjs` already run the deterministic manifest/assertion layer on every invocation — that is the correctness floor and needs no pixels to be meaningful. Pixel-diffing is a second, purely visual floor on top, so it only needs the combinations a token/CSS regression could plausibly hit differently: topology shape, RX/TX/fault state, design language, and light/dark mode. The 14 captures below span all four plus the MOR-1088 mobile PTT pair; the rest of the matrix is viewport/media/focus permutations of the same render paths.
+`capture.mjs`/`capture-ptt.mjs` already run the deterministic manifest/assertion layer on every invocation — that is the correctness floor and needs no pixels to be meaningful. Pixel-diffing is a second, purely visual floor on top, so it only needs the combinations a token/CSS regression could plausibly hit differently: topology shape, RX/TX/fault state, design language, and light/dark mode. The first 14 captures below (the `dual-*`/`topology-*`/`tx-phase-*`/`ptt-*` rows) span all four plus the MOR-1088 mobile PTT pair; the rest of that matrix is viewport/media/focus permutations of the same render paths. The 5 `gallery-*` rows are a separate axis — MOR-2219's per-component "looks gallery" for the Button family, pinning each instrument's visual identity on the demo gallery page rather than a cockpit-state permutation.
 
 | Capture | Spans |
 |---|---|
@@ -22,8 +22,13 @@ Tracked, reviewed screenshots for a representative slice of the MOR-1070/1085 fi
 | `tx-phase-fault--desktop--fieldline` | fault state × language (fault previously only appeared in the default language) |
 | `ptt-idle--mobile` | mobile PTT, idle |
 | `ptt-held--mobile` | mobile PTT, held (real pointerdown) |
+| `gallery-dotbutton` | MOR-2219 looks gallery — preserves DotButton's look, carried by `lib/Button/ControlButton.svelte` + `components-v2/controls/control-button.css` (DotButton itself has no `<style>`/SVG) |
+| `gallery-fillbutton` | MOR-2219 looks gallery — same carriers, FillButton's `indicatorStyle="fill"` variant |
+| `gallery-hardwarebutton` | MOR-2219 looks gallery — same carriers, HardwareButton's hardware-surface variant |
+| `gallery-hardwareplainbutton` | MOR-2219 looks gallery — same carriers, HardwarePlainButton's plain+warm-glow variant |
+| `gallery-statusindicator` | MOR-2219 looks gallery — preserves StatusIndicator's look, carried by the `.v2-status-indicator` rule set in `control-button.css` |
 
-The last two additions came from `verify-mor-1090.md`'s representative-set adequacy ranking (§4): of the gaps it found against the MOR-1085 axis matrix, these were the two ranked highest by "what a token/CSS regression could plausibly hit differently" that a 2-capture budget could close. Media variants (reduced-motion / forced-colors / contrast-more) stay out on purpose — animations are already disabled for every screenshot, and forced-colors is an OS-level render mode the assertion layer already pins.
+The `dual-main-sub--desktop--studioline--light` and `tx-phase-fault--desktop--fieldline` captures came from `verify-mor-1090.md`'s representative-set adequacy ranking (§4): of the gaps it found against the MOR-1085 axis matrix, these were the two ranked highest by "what a token/CSS regression could plausibly hit differently" that a 2-capture budget could close. Media variants (reduced-motion / forced-colors / contrast-more) stay out on purpose — animations are already disabled for every screenshot, and forced-colors is an OS-level render mode the assertion layer already pins.
 
 ## Comparator, threshold, calibration
 
