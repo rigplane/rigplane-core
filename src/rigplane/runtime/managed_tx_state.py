@@ -311,7 +311,7 @@ def reduce_managed_tx(
     if isinstance(event, RetryForceReceive):
         if (
             state.intent.kind is not ManagedTxIntentKind.RX
-            or state.release_plan is not ReleasePlan.FORCE_RELEASE
+            or state.release_plan is None
             or state.pending_effect is not None
         ):
             return ManagedTxTransition(state, ManagedTxOutcome.REJECTED)
