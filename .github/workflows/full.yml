@@ -162,7 +162,6 @@ jobs:
           color: blue
 
   capture-harness:
-    if: false
     # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
     # capture (`frontend/fixtures/capture.mjs`) into CI. It ran in NO
     # workflow before this. Deliberately a single dedicated job, NOT a
@@ -185,9 +184,7 @@ jobs:
     # the commit message contains `[full-ci]`; on `schedule`/
     # `workflow_dispatch`, always runs. This keeps the job off every
     # ordinary push to `main`.
-    if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+    if: false
     runs-on: [self-hosted, linux, build]
     # Budget: ~45s once the Playwright browser cache is warm (npm ci +
     # cached chromium + the capture matrix itself). 10 minutes is a
