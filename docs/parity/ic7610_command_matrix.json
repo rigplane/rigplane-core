@@ -2465,7 +2465,7 @@
       "test_patterns": [
         "tests/test_civ_rx_coverage.py::test_direct_tx_frequency_coexists_with_ic7300_derived_target"
       ],
-      "notes": "The official IC-7610 CI-V guide documents 1C 03 as a read-only five-byte transmit-frequency payload despite wfview marking set=true (same source text cited for the IC-7300 profile: 'IC-7300 Advanced Manual (11a) command table p.19-7: 1C 03 is Read transmit frequency, not transmit-frequency monitor; no SET form is documented'). Runtime still decodes it into the existing tx_target state with finite profile freshness (rigplane.runtime._civ_rx: the frame.command == 0x1C, frame.sub == 0x03 branch, model-agnostic). MOR-2246 deleted only the misnamed legacy boolean get_tx_freq_monitor/set_tx_freq_monitor builders, the RadioState.tx_freq_monitor field, and their now-pointless absent-declaration stubs in the rig profiles; the 1C 03 decode path itself was not touched. XFC boolean read/write remains 1C 02."
+      "notes": "The official IC-7610 CI-V guide documents 1C 03 as a read-only five-byte transmit-frequency payload despite wfview marking set=true. Runtime decodes it into the existing tx_target state with finite profile freshness (rigplane.runtime._civ_rx: the frame.command == 0x1C, frame.sub == 0x03 branch, model-agnostic). XFC boolean read/write remains 1C 02."
     },
     {
       "id": 110,

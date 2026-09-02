@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   export) with its `get_tx_freq_monitor`/`set_tx_freq_monitor` methods; the
   concrete `CoreRadio.get_tx_freq_monitor`/`CoreRadio.set_tx_freq_monitor`
   implementations; the `rigplane.commands.get_tx_freq_monitor`/
-  `set_tx_freq_monitor` builders (0x1C 0x03); the `tx_freq_monitor` key in
+  `set_tx_freq_monitor` builders (0x1C 0x03); the `get_tx_freq_monitor`/
+  `set_tx_freq_monitor` web command-API entries (`docs/api/command-catalog.md`);
+  the `tx_freq_monitor` key in
   `RadioState.to_dict()`; and the `txFreqMonitor` field on the JSON/WebSocket
   state API. `Radio` (the core `Protocol` consumers depend on) never declared
   `get_tx_freq_monitor`/`set_tx_freq_monitor` — they lived only on
