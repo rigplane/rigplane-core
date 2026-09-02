@@ -2,8 +2,8 @@
  * MOR-2031 — the design-language-agnostic half of TX state feedback.
  *
  * The `KEY_TREATMENT` ordering below — the F3/N3 fix that makes `keyBlocked`
- * lose to a louder session — was hand-duplicated into both files in a single
- * commit, MOR-1275.
+ * lose to a louder session — was hand-duplicated in a single commit,
+ * MOR-1275.
  *
  * Lives under `presentation/languages/`, not `semantic/`: the renderers
  * that consume it are `presentation/` modules, and the v3 ADR's one-way
