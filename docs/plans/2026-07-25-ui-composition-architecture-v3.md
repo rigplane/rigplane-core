@@ -77,6 +77,16 @@ Non-goals:
 - making an arbitrary JSON UI-tree editor;
 - faithfully cloning physical radio faceplates.
 
+Addendum 2026-09-02 (MOR-2249, draft pending owner decision): two of the
+non-goals above are proposed for replacement by
+`docs/plans/2026-09-02-instrument-group-adr.md`. The fourth, "making an
+arbitrary JSON UI-tree editor", would become *"a free-form widget tree: a face
+composes only the declared instrument vocabulary, never arbitrary components"*.
+The fifth, "faithfully cloning physical radio faceplates", would become
+*"cloning a manufacturer's trade dress one-for-one"* — the owner's own wording
+is «не копировать фирменный вид производителя один в один» (2026-09-02, 20:31
+UTC). The list above is unchanged until the owner decides.
+
 ## Independent presentation dimensions
 
 ### Semantic radio UI
