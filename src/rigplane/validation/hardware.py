@@ -808,15 +808,15 @@ async def _actuate_tx_ptt(
             # means ``set_ptt(True)`` did not raise) -- reporting
             # ``keyed: false`` from a measurement that never happened would
             # be a fabricated observation, and a false negative at that, not
-            # merely an unconfirmed positive. Note what this reasoning does
-            # and does not lean on: the transmit-authority ADR's rule that
-            # our own commands may source "transmitting" but never
-            # "receiving" licenses declining to say ``False`` here. It does
-            # not license claiming the value was verified, which is why the
-            # provenance tag below is not optional. So either failure falls
-            # back to trusting the accepted write (``ptt_state = True``),
-            # not to the mirror -- as fabricated a signal as a bare
-            # ``False`` would be.
+            # merely an unconfirmed positive. The canonical
+            # ``core.tx_observation.TxStateReading`` contract distinguishes
+            # an unavailable observation (``value is None``) from receiving
+            # (``False``), so declining to say ``False`` follows the read
+            # result. It does not license claiming the value was verified,
+            # which is why the provenance tag below is not optional. So
+            # either failure falls back to trusting the accepted write
+            # (``ptt_state = True``), not to the mirror -- as fabricated a
+            # signal as a bare ``False`` would be.
             #
             # A radio that does not implement ``TransmitStateReadable`` at
             # all is a distinct case: the mirror is reported (unchanged from

@@ -1003,9 +1003,9 @@ label = "6.0+"
 # because an absent section and an empty one load identically — only a
 # written section records that this was decided.
 # Nothing on this radio's path reads this map today: the CI-V reply is
-# decoded natively in runtime/radio.py, and core/tx_authority.py is handed
-# the read primitive, not the map. The section is declared so that a later
-# row consumes a stated ruling instead of an absence.
+# decoded natively in runtime/radio.py into the canonical
+# core/tx_observation.py TxStateReading contract. The section records the
+# profile ruling even though the current Icom read path does not consult it.
 # No write-during-transmit battery was run on this radio, so no radio-side
 # refusal is claimed. Empty means "nothing measured", not "nothing refuses".
 refused_during_tx = []
