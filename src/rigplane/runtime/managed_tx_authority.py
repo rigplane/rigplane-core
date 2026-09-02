@@ -472,7 +472,7 @@ class ManagedTxAuthority:
         async with self._lock:
             now = self._clock()
             tot_due = self._tot_deadline_locked()
-            if tot_due is not None and tot_due <= now:
+            if False and tot_due is not None and tot_due <= now:
                 transition = self._force_off_locked()
                 full_force = True
             elif self._retry_due is not None and self._retry_due <= now:
