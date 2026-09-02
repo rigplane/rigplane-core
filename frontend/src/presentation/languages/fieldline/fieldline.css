@@ -96,8 +96,7 @@
 /* High contrast pushes both label tones to the rail; the numeral weight is
    already 700 and has nowhere useful to go, so unlike studioline — which must
    bump 200 → 600 — this bundle changes colour only. */
-[data-design-language='fieldline'][data-design-language][data-theme='high-contrast'],
-[data-design-language='fieldline'][data-design-language] [data-theme='high-contrast'] {
+[data-design-language='fieldline'][data-design-language][data-theme='high-contrast'] {
   --dl-fieldline-text: #ffffff;
   --dl-fieldline-muted: #ffffff;
 }
