@@ -282,16 +282,6 @@ describe('the peer-split chassis mounts', () => {
   // applying is verified in a real browser: `npx vite --config
   // vite.fixtures.config.ts`, fixture `peer-split-chassis`,
   // `getComputedStyle(document.querySelector('.semantic-surfaces')).display`.
-  //
-  // This SAME environment gap is why the four tests in this describe block
-  // stayed green (MOR-2153 review) when the component's entire `<style>`
-  // block — including the bezel geometry that made the amber glass render
-  // at all — was deleted by a separate change (#2968) it had no way to
-  // detect. That gap is closed below, not here: the `the glass bezel...`
-  // describe block at the end of this file reads the component's raw
-  // SOURCE text rather than mounting it, the same technique
-  // `presentation/languages/segmentline/__tests__/stylesheet.test.ts`
-  // already uses for `segmentline.css`'s own rules.
 
   // MOR-2153: wall-clock time is not radio state — nothing to mock beyond
   // the system clock itself (`vi.setSystemTime(FROZEN_INSTANT)` above).
@@ -325,20 +315,6 @@ describe('the peer-split chassis mounts', () => {
   });
 });
 
-/**
- * MOR-2153 review: mounting `PeerSplitLayout` in Vitest/jsdom applies NO
- * `<style>` at all (see the `describe` block above), so no assertion made by
- * mounting the component can tell the bezel's CSS rule apart from it being
- * deleted outright — which is exactly what happened silently when #2968
- * retargeted every `.dl-glass` rule in `segmentline.css` onto `.rx-tx-surface`
- * and this component kept wearing the old, now-dead name. The fix moved the
- * bezel's own geometry into this component's `<style>` block instead of
- * depending on a design-language selector; the block below pins its
- * DECLARATIONS by parsing the component's raw source text, the same
- * technique `presentation/languages/segmentline/__tests__/stylesheet.test.ts`
- * already uses for `segmentline.css` — not by mounting and reading computed
- * style, which this environment cannot do.
- */
 describe('the glass bezel keeps its own CSS after the chassis class it used to wear died (#2968)', () => {
   const source = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
   const styleBlock = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
@@ -377,5 +353,10 @@ describe('the glass bezel keeps its own CSS after the chassis class it used to w
     expect(glass.border).toBe('2px solid var(--dl-segmentline-bezel-edge, #8a7020)');
     expect(glass['border-radius']).toBe('10px');
     expect(glass.background).toBe('var(--dl-segmentline-glass, #c8a030)');
+  });
+
+  it('keeps the meters/scope row from collapsing below its 72px floor', () => {
+    const grid = declarationsFor('.peer-split-glass :global(.semantic-surfaces.semantic-surfaces)');
+    expect(grid['grid-template-rows']).toContain('minmax(72px, 1fr)');
   });
 });
