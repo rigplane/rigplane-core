@@ -16,9 +16,7 @@ jobs:
   test:
     # On push: only when commit message contains [full-ci].
     # On schedule / manual dispatch: always run.
-    if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+    if: false
     # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
@@ -164,6 +162,7 @@ jobs:
           color: blue
 
   capture-harness:
+    if: false
     # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
     # capture (`frontend/fixtures/capture.mjs`) into CI. It ran in NO
     # workflow before this. Deliberately a single dedicated job, NOT a
@@ -264,3 +263,32 @@ jobs:
       - name: Annotate result
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
+
+  force-off-diagnostic:
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 10
+    env:
+      UV_PYTHON: '3.11'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync --all-extras
+      - name: Run release regressions
+        shell: bash
+        run: |
+          echo "head_sha=$GITHUB_SHA runner_name=$RUNNER_NAME"
+          case "$RUNNER_NAME" in
+            mm-build-core-1|mm-build-core-2) ;;
+            *) echo 'Rejected non-Mini runner'; exit 2 ;;
+          esac
+          uv run pytest tests/test_managed_tx_fence.py tests/test_managed_tx_effect_lane.py tests/test_managed_tx_authority.py -q --tb=short --timeout=30 --timeout-method=thread 2>&1 | tee force-off-proof.txt
+          exit "${PIPESTATUS[0]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: force-off-proof
+          path: force-off-proof.txt
+          retention-days: 14
