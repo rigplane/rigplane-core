@@ -13,6 +13,13 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-02 — ForceOff cleanup ordering (tree `7387c84e`)
+
+- [2026-09-02-mechanism-audit-force-off-cleanup.md](2026-09-02-mechanism-audit-force-off-cleanup.md)
+  — records the pending ForceOff ordering contract and the exact-tree evidence:
+  old-work invalidation must precede urgent OFF submission without waiting for
+  unrelated cleanup; the archive makes no installed-runtime or RF claim.
+
 ## 2026-08-30 — v3 pre-release audit (three tracts, tree `8c8a70d4`)
 
 Commissioned to close the pre-release fix list before the v2.12.0 release

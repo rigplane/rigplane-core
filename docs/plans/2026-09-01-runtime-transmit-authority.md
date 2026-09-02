@@ -176,6 +176,38 @@ in `abortErrors`; they never clear debt or replace ForceOff's final
 `force_receive ACCEPTED` remains the final release outcome while subordinate
 abort failures remain visible.
 
+### Urgent ForceOff ordering contract
+
+This section is normative for the pending implementation. It refines the
+ordering above; it is not a claim that the current runtime already enforces it.
+
+ForceOff has two separate duties. First, synchronously before yielding, the
+authority sets RX and release debt and advances the global fence. That fence
+invalidates old local TX work and prevents further old-epoch writes. Second,
+the authority submits the current urgent `force_receive` attempt. It must not
+await unrelated asynchronous cancellation, isolation, transport retirement, or
+provider cleanup before that urgent attempt. Callback bodies invoked on this
+path must not block.
+
+An epoch alone does not retract bytes already accepted by a transport or radio.
+If an old ON can escape after the fence, the implementation must submit a
+subsequent current-epoch `force_receive`; accepting a new OFF and only then
+awaiting old-work isolation does not establish final-OFF ordering. The release
+debt must not clear on an OFF whose ordering does not account for the last
+possible old ON write.
+
+`PTT_UP(owner)` remains owner-local: it invalidates only its matching PTT work
+and does not advance the global fence or cancel other owners. Managed local CW,
+tune, future chunks, and queued writes must register with and honor the same
+global fence. Provider stop semantics remain best effort for work already
+buffered inside a radio.
+
+Graceful shutdown still needs completion barriers for final resource retirement.
+Those barriers are separate from urgent ForceOff submission and must not delay
+the urgent OFF behind unrelated cleanup. This contract adds neither a watchdog,
+an authority phase, nor model-specific authority branches; it leaves the
+profile-to-backend producer chain unchanged.
+
 If a provider lacks stop-CW/tune semantics, cancellation or `force_receive`
 may not stop work already committed inside the radio; no stronger guarantee is
 made. A late ON that may have escaped causes another release attempt. Work
