@@ -18,6 +18,7 @@ import argparse
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import NoReturn
 
@@ -119,12 +120,20 @@ def radio_declares(radio: str) -> tuple[list[str], str]:
     if not path.is_file():
         available = sorted(p.stem for p in Path("rigs").glob("*.toml"))
         die(f"no profile {path}; available: {', '.join(available)}")
-    text = path.read_text(encoding="utf-8")
-    feats: list[str] = []
-    m = re.search(r"^features\s*=\s*\[(.*?)\]", text, re.S | re.M)
-    if m:
-        feats = re.findall(r'"([^"]+)"', m.group(1))
-    return feats, str(path)
+    # Parse it, do not scrape it. A regex over the text picks up features that
+    # are commented out — `ftx1.toml` disables `monitor` with the reason
+    # "rejected by FTX-1 (not supported via CAT)" and a text scan reports it as
+    # declared. A profile is TOML; read it as TOML.
+    try:
+        doc = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        die(f"{path} is not valid TOML: {exc}")
+    feats = doc.get("features")
+    if feats is None:
+        feats = doc.get("capabilities", {}).get("features")
+    if not isinstance(feats, list):
+        die(f"no `features` list in {path} — the profile shape moved")
+    return [str(f) for f in feats], str(path)
 
 
 def main() -> None:
