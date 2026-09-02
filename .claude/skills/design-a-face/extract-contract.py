@@ -290,13 +290,12 @@ def _later_return_undefined(stripped: str, after: int) -> str | None:
     `_classify_gate`'s own docstring assigns to `not-derivable`.
 
     Brace depth excludes a guard that belongs to a NESTED block — a local
-    helper function's own body, a `.map()`/`.filter()` callback — which is
-    not a second early return from the function this scan is reading,
-    however it reads as text. A `//` or `/* */` comment is skipped outright
-    for the same reason: text documenting a guard that used to exist is not
-    a guard that still runs. Called only from the static-pattern branches
-    below: `scattered` and `not-derivable` already read past the top guard
-    by construction, so a later guard there is not news."""
+    helper function's own body, a `.map()`/`.filter()` callback. A `//` or
+    `/* */` comment is skipped outright for the same reason: text
+    documenting a guard that used to exist is not a guard that still runs.
+    Called only from the static-pattern branches below: `scattered` and
+    `not-derivable` already read past the top guard by construction, so a
+    later guard there is not news."""
     depth = 0
     i = after
     n = len(stripped)
@@ -330,9 +329,7 @@ def _classify_gate(body: str) -> tuple[str, str]:
     at the top of the function, AND no other `if (...) return undefined;` —
     that exact, unbraced shape, the only one `_later_return_undefined`
     looks for — at the function's own top-level control flow (brace depth
-    0, outside a comment). A guard nested inside a local helper's own body
-    or a callback does not count: it is not a second early return from THIS
-    function no matter how it reads as text.
+    0, outside a comment).
     `scattered` — the only top-of-function guard is a generic `!caps`, and
     the real decision (an array length, an OR of several capability flags
     computed further down) is further into the body; read the function.
