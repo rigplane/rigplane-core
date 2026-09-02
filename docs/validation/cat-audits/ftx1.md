@@ -10,7 +10,7 @@
 - **Manual SHA-256:**
   `fbbd8eb6b12d1fec9474f3771f4b872ba4fd195dbe4b080cc2a1aae2b4ebc56c`.
 - **Runtime radio-fact SSOT:** `rigs/ftx1.toml`, SHA-256
-  `d81012e2d26cbe61ba1af86c97b0d28e630e4f8508733e4a4faab88792563c3c`.
+  `48c85ca98ec4b460f018c193e484a9379cef888713343f5b1f8ed67096ad203a`.
 - **Derived decision register:**
   [`ftx1-command-gaps.csv`](ftx1-command-gaps.csv).
 
@@ -40,11 +40,14 @@ acceptance gate.
   belong to the single parameterized `EX` menu-address grammar.
 - The current profile represents 50 documented families. Another 40 families
   are wholly absent, covering 488 evidence rows.
-- Fifteen of the 50 represented families have uncovered selector/domain rows,
-  covering 23 evidence rows.
-- Therefore the implementation-planning register is exactly
-  **40 wholly absent families / 488 rows + 15 existing-family extensions /
-  23 rows = 55 normalized decisions**.
+- Fourteen of the 50 represented families still have uncovered
+  selector/domain rows, covering 22 evidence rows.
+- One additional stable decision row is `OS`: its profile-owned MAIN/SUB
+  routing and observer coverage have landed, while caller-visible completion
+  remains with MOR-2161.
+- Therefore the stable implementation-planning register remains exactly
+  **40 wholly absent families / 488 rows + 14 still-uncovered existing-family
+  extensions / 22 rows + 1 landed-profile OS row = 55 normalized decisions**.
 - The profile has one additional undocumented family, `RC`, handled
   separately as provenance rather than as a manual gap.
 - Approved bulk additions: **0**.
@@ -112,9 +115,11 @@ are not evidence for a radio capability.
 - **`VD` and `VG` are intentionally not public.** The later MOR-2112 owner
   ruling supersedes the old VOX implementation request; MOR-674 is
   **Canceled**.
-- **`OS` ownership is exactly MOR-2111/MOR-2160/MOR-2161.** Its SUB
-  extension must preserve the FM admission rule and four-value direction
-  domain and must reach the active Yaesu executor.
+- **`OS` ownership is exactly MOR-2111/MOR-2160/MOR-2161.** MOR-2160 now
+  routes the official P1 selector through profile-owned `OS{receiver}`
+  templates and polls distinct MAIN/SUB readback with the same 30/120 policy.
+  The manual's FM-only rule and four-value direction domain remain unchanged;
+  MOR-2161 still owns caller-visible executor completion/refusal propagation.
 
 ## Reachability and safety gates
 
@@ -174,7 +179,10 @@ declaration-without-reachability failure.
 
 ## Out of scope
 
-This audit does not modify `rigs/ftx1.toml`, backend/runtime code, public API,
-or hardware state. Front-panel and menu-domain commands are not automatically
-browser controls, and a documented CAT command is not by itself a
-product-support or hardware-acceptance claim.
+The original normalization pass did not modify the profile, backend/runtime
+code, public API, or hardware state. This derived evidence now tracks bounded
+follow-up changes such as the landed OS receiver route; it does not itself
+authorize further implementation or claim live-radio acceptance. Front-panel
+and menu-domain commands are not automatically browser controls, and a
+documented CAT command is not by itself a product-support or hardware-
+acceptance claim.

@@ -912,7 +912,12 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition is not None
 
     assert acquisition.provider == "yaesu_cat"
-    assert len(acquisition.capabilities) == 54
-    assert len(acquisition.field_policies) == 47
+    assert len(acquisition.capabilities) == 55
+    assert len(acquisition.field_policies) == 48
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
+
+    sub_shift = FieldPath.receiver("sub", "operator_controls", "repeater_shift")
+    assert acquisition.capability_for(sub_shift).can_poll is True
+    assert acquisition.policy_for(sub_shift).cadence_seconds == 30.0
+    assert acquisition.policy_for(sub_shift).freshness_ttl_seconds == 120.0
