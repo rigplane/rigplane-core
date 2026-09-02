@@ -31,7 +31,7 @@ expected = {
     "m1": phases | real_barriers | {"test_delayed_cancelled_rprt_cannot_complete_next_command"},
     "m2": replacements,
     "m3": phases | real_barriers,
-    "m4": phases,
+    "m4": phases | replacements,
     "m5": real_barriers,
 }[kind]
 failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
