@@ -122,9 +122,10 @@
      which component's <style> the bundler places first — CONFIRMED live
      (`getComputedStyle(surfaces).display === 'grid'`), unlike the clock
      rule below, which needed the same measurement to find it does NOT win
-     this way. Every other override below only ADDS grid-row/grid-column,
-     properties nothing else sets on these elements, so no such doubling is
-     needed there. */
+     this way. Every other override below only adds grid-row/grid-column,
+     properties nothing else sets on these elements — except the
+     `.channel-strips` override further down, which is doubled for a
+     different, same-file reason (see its own comment). */
   .peer-split-glass :global(.semantic-surfaces.semantic-surfaces) {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -180,11 +181,20 @@
      columns. `subgrid` makes the receiver strips occupy THIS grid's column 1
      / column 2 tracks directly, the same tracks `.rx-tx-zone`/`.tx-aux-
      surface` and `.meters-surface`/`.scope-display-surface` already place
-     into above, rather than a separate track list an unrelated content
-     change could throw out of alignment. Doubled class for specificity,
-     same reason as the `.semantic-surfaces.semantic-surfaces` rule above:
-     this overrides a property (`grid-template-columns`) the base rule also
-     sets, so a single-class selector would tie and lose to source order. */
+     into, rather than a separate track list an unrelated content change
+     could throw out of alignment. Doubled class, same technique as the
+     `.semantic-surfaces.semantic-surfaces` rule above, but a different
+     reason: compiled (`svelte.compile(src, { css: 'external' })`), a
+     single-class `.peer-split-glass.s-xxx :global(.channel-strips)`
+     selector here is text-identical to the grid-row/grid-column rule
+     above — both 3 classes (0,3,0), already ahead of the wiring's base
+     rule (2 classes, 0,2,0) with no tie either way. The doubling isn't
+     about winning specificity; it keeps this rule's selector text distinct
+     from the grid-row/grid-column rule's, which this file's own test
+     depends on: `declarationsFor` reads the raw, uncompiled <style> block
+     and returns the FIRST rule matching a given selector string, so a
+     text-identical selector here would make it keep reading the other
+     rule's declarations and never see `grid-template-columns`. */
   .peer-split-glass :global(.channel-strips.channel-strips) {
     grid-template-columns: subgrid;
   }
