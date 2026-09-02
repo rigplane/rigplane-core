@@ -5,9 +5,8 @@
  * Extracted from `TxAuxSurface.svelte` (MOR-1265, slice 1B), which held the
  * correct shape from the start. Three later slices (`DspSurface` 5B,
  * `RitXitScanSurface` 8B, `CwKeyerSurface` 9B) independently re-derived and
- * pinned the same rule — `RfFrontEndSurface` (6B) has the same inline shape
- * unpinned — instead of importing one answer: on an UNOBSERVED reading,
- * `aria-pressed` must be OMITTED (`undefined`), never `"false"`.
+ * pinned the same rule instead of importing one answer: on an UNOBSERVED
+ * reading, `aria-pressed` must be OMITTED (`undefined`), never `"false"`.
  * `aria-pressed="false"` is not the absence of a claim, it is the claim
  * "this control is OFF" about a reading the radio never reported — the same
  * fail-closed-presentation doctrine every semantic surface in this directory
