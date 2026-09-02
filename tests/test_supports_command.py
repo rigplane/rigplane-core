@@ -95,8 +95,17 @@ def _without(profile: RadioProfile, name: str) -> RadioProfile:
     return dataclasses.replace(profile, command_names=profile.command_names - {name})
 
 
-def _command_calls(owner, name: str) -> set[str]:
-    tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(owner, name))))
+def _tree(owner, name, sources):
+    source = (
+        sources[(owner, name)]
+        if sources and (owner, name) in sources
+        else inspect.getsource(getattr(owner, name))
+    )
+    return ast.parse(textwrap.dedent(source))
+
+
+def _command_calls(owner, name: str, sources=None) -> set[str]:
+    tree = _tree(owner, name, sources)
     return {
         node.func.attr
         for node in ast.walk(tree)
@@ -109,34 +118,62 @@ def _command_calls(owner, name: str) -> set[str]:
     }
 
 
-def _assert_parity(relations) -> None:
+def _self_calls(owner, name, sources=None) -> set[str]:
+    return {
+        node.func.attr
+        for node in ast.walk(_tree(owner, name, sources))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    }
+
+
+def _named_calls(owner, name, sources=None) -> set[str]:
+    return {
+        node.func.id
+        for node in ast.walk(_tree(owner, name, sources))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+
+def _assert_parity(relations, sources=None) -> None:
     by_name = {relation.operation: relation for relation in relations}
     for name, owner in _ALIASES.items():
-        assert _command_calls(owner, name) == {
+        assert _command_calls(owner, name, sources) == {
             builder.__name__ for builder in by_name[name].builders
         }
     scope = by_name["enable_scope"].builders
     assert {b.__name__ for b in scope} == _command_calls(
-        ScopeRuntimeMixin, "enable_scope"
+        ScopeRuntimeMixin, "enable_scope", sources
     )
     assert by_name["capture_scope_frame"].builders == scope
     assert by_name["capture_scope_frames"].builders == scope
-    assert "capture_scope_frames" in inspect.getsource(
-        ScopeRuntimeMixin.capture_scope_frame
+    assert "capture_scope_frames" in _self_calls(
+        ScopeRuntimeMixin, "capture_scope_frame", sources
     )
-    assert "enable_scope" in inspect.getsource(ScopeRuntimeMixin.capture_scope_frames)
+    assert "enable_scope" in _self_calls(
+        ScopeRuntimeMixin, "capture_scope_frames", sources
+    )
     assert {b.__name__ for b in by_name["get_mode_info"].builders} == {"get_mode"}
-    assert _command_calls(CoreRadio, "_get_mode_info_main") == {"get_mode"}
-    assert _command_calls(CoreRadio, "_get_unselected_mode") == {"get_unselected_mode"}
+    assert {"_get_mode_info_main", "_get_unselected_mode"} <= _self_calls(
+        CoreRadio, "get_mode_info", sources
+    )
+    assert _command_calls(CoreRadio, "_get_mode_info_main", sources) == {"get_mode"}
+    assert _command_calls(CoreRadio, "_get_unselected_mode", sources) == {
+        "get_unselected_mode"
+    }
     dual_watch = by_name["set_dual_watch"].builders
     delegate_module = inspect.getmodule(dual_watch[0])
     assert delegate_module is not None
-    delegate = inspect.getsource(delegate_module.set_dual_watch)
+    assert _command_calls(CoreRadio, "set_dual_watch", sources) == {"set_dual_watch"}
     assert {b.__name__ for b in dual_watch} == {
         "set_dual_watch_on",
         "set_dual_watch_off",
     }
-    assert all(b.__name__ in delegate for b in dual_watch)
+    assert {b.__name__ for b in dual_watch} <= _named_calls(
+        delegate_module, "set_dual_watch", sources
+    )
 
 
 class TestProfileDerivedSupport:
@@ -277,6 +314,45 @@ class TestRelationMutations:
             _validate_relations((invalid,))
         missing_metadata.cmd_map_key = lambda command_map: "get_mode_info"
         assert not _relation_supported(invalid, ic7300_profile, set(CALLABLE_RELATIONS))
+
+    def test_disconnected_public_and_delegate_links_fail_ast_parity(self):
+        dual_watch = CALLABLE_RELATIONS["set_dual_watch"]
+        assert isinstance(dual_watch, BuilderAllOf)
+        delegate_module = inspect.getmodule(dual_watch.builders[0])
+        assert delegate_module is not None
+        mutants = (
+            (
+                (CoreRadio, "get_mode_info"),
+                'async def f(self):\n """_get_mode_info_main"""\n return await self._get_unselected_mode()',
+            ),
+            (
+                (CoreRadio, "get_mode_info"),
+                'async def f(self):\n """_get_unselected_mode"""\n return await self._get_mode_info_main()',
+            ),
+            (
+                (CoreRadio, "set_dual_watch"),
+                'async def f(self):\n """set_dual_watch"""\n return None',
+            ),
+            (
+                (ScopeRuntimeMixin, "capture_scope_frame"),
+                'async def f(self):\n """capture_scope_frames"""\n return None',
+            ),
+            (
+                (ScopeRuntimeMixin, "capture_scope_frames"),
+                'async def f(self):\n """enable_scope"""\n return []',
+            ),
+            (
+                (delegate_module, "set_dual_watch"),
+                'def f():\n """set_dual_watch_on"""\n return set_dual_watch_off()',
+            ),
+            (
+                (delegate_module, "set_dual_watch"),
+                'def f():\n """set_dual_watch_off"""\n return set_dual_watch_on()',
+            ),
+        )
+        for target, source in mutants:
+            with pytest.raises(AssertionError):
+                _assert_parity(BUILDER_RELATIONS, {target: source})
 
     def test_resolver_has_no_model_or_vendor_branch(self):
         module = inspect.getmodule(supports_callable)
