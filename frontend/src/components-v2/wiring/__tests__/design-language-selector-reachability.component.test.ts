@@ -55,11 +55,18 @@
  * COMPARING ON THE SELECTOR'S OWN TERMS. Every rule's mandatory
  * `[data-design-language='<id>'][data-design-language]` prefix trivially
  * matches `document.documentElement` once `activate()` sets the attribute
- * there (production's own, only activation mechanism, MOR-1278) — so
- * running the FULL selector via `document.querySelectorAll` tests exactly
- * the TAIL, never the prefix: a selector is an orphan only when its own
- * class/attribute tail addresses nothing, not because the harness forgot
- * the prefix.
+ * there (production's own, only activation mechanism, MOR-1278), so running
+ * the selector via `document.querySelectorAll` tests the TAIL, never the
+ * prefix — with one exception `reachable()` handles explicitly, not
+ * silently: a selector ending in a pseudo-element (`::before`, `:before`,
+ * `::after`, `::first-line`, `::first-letter`, `::placeholder`) can never
+ * match through `querySelectorAll`, in jsdom or any real browser, because a
+ * pseudo-element is not a DOM node — every such selector would report as an
+ * orphan regardless of whether its SUBJECT exists. `reachable()` strips a
+ * trailing pseudo-element and judges the subject instead; the permanent
+ * control below (`describe('reachable() judges a trailing pseudo-element…`)
+ * is what a mutation cannot pass by treating every pseudo-element tail as
+ * reachable rather than genuinely checking the subject.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -150,11 +157,25 @@ function extractSelectors(cssPath: string): readonly StyleRule[] {
   return rules;
 }
 
+// `document.querySelectorAll` — under jsdom exactly as in a real browser —
+// returns an empty NodeList for ANY selector ending in a pseudo-element,
+// regardless of whether the rule's real subject exists: a pseudo-element is
+// generated content, never a DOM node `querySelectorAll` can return. Found
+// in review: `.rx-tx-surface::before` (subject genuinely live) reported as
+// studioline's SOLE orphan under the un-fixed check. `TRAILING_PSEUDO_ELEMENT`
+// strips exactly the pseudo-element tail — both the modern double-colon form
+// and the CSS2.1 single-colon alias `:before`/`:after`/`:first-line`/
+// `:first-letter` share with it — so `reachable()` judges the SUBJECT.
+const TRAILING_PSEUDO_ELEMENT = /::?(before|after|first-line|first-letter)$|::placeholder$/i;
+
+const subjectOf = (selector: string): string => selector.replace(TRAILING_PSEUDO_ELEMENT, '');
+
 function reachable(selector: string): boolean {
+  const subject = subjectOf(selector);
   try {
-    return document.querySelectorAll(selector).length > 0;
+    return document.querySelectorAll(subject).length > 0;
   } catch (e) {
-    throw new Error(`selector "${selector}" failed to parse: ${(e as Error).message}`);
+    throw new Error(`selector "${selector}" (subject "${subject}") failed to parse: ${(e as Error).message}`);
   }
 }
 
@@ -167,14 +188,17 @@ function deactivate(): void {
   delete document.documentElement.dataset.designLanguage;
 }
 
-// ── A small RX/TX state vocabulary. Every member of
-// `TxAuthoritySnapshot['phase']` gets its own snapshot, so every
-// `[data-session=...]` value the CSS can select on gets rendered at least
-// once — the same phase-to-session table `rx-tx-surface.ts`'s
-// `SESSION_BY_PHASE` defines. `PENDING`'s `txRisk: 'uncertain'` and
-// `FAILED`'s `radioTx: 'unknown'` additionally give `[data-rf='uncertain']`/
-// `[data-rf='unknown']` coverage, and `FAILED`'s non-null `fault` is what
-// makes `.rx-tx-fault` render at all. ────────────────────────────────────
+// ── A small RX/TX state vocabulary. Five of the six `TxAuthoritySnapshot`
+// `['phase']` members get their own snapshot below — `audio-start-pending`
+// has none, because `SESSION_BY_PHASE` (rx-tx-surface.ts) already maps it to
+// the same `'pending'` session `key-confirm-pending` (`PENDING`) produces, so
+// every `[data-session=...]` value the CSS can select on is still rendered
+// at least once. `PENDING`'s `txRisk: 'uncertain'` gives `[data-rf='uncertain']`
+// coverage. `[data-rf='unknown']` coverage comes from `RF_UNKNOWN` below, NOT
+// from `FAILED`: `FAILED` also carries `txRisk: 'uncertain'`, and `rfState()`
+// checks that branch before it ever falls through to `'unknown'`, so `FAILED`
+// yields `rf='uncertain'` too, same as `PENDING`. `FAILED`'s non-null `fault`
+// is what makes `.rx-tx-fault` render at all. ─────────────────────────────
 
 const RX_IDLE: TxAuthoritySnapshot = {
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
@@ -256,11 +280,11 @@ const MINIMAL_CAPS = {
   txBands: [], scopeSource: null, audioFftAvailable: false,
 } as unknown as Capabilities;
 
-const rxTxScene = (name: string, tx: TxAuthoritySnapshot, focusKey = false): Scene => ({
+const rxTxScene = (name: string, tx: TxAuthoritySnapshot, focusSelector?: string): Scene => ({
   name: `rx-tx-surface (${name})`,
   render() {
     const { cleanup } = mountInto(RxTxSurface, { view: topologyFixtures['2/main_sub'], tx });
-    if (focusKey) (document.querySelector('.rx-tx-key') as HTMLButtonElement | null)?.focus();
+    if (focusSelector) document.querySelector<HTMLElement>(focusSelector)?.focus();
     return { cleanup };
   },
 });
@@ -297,13 +321,36 @@ const SCENES: readonly Scene[] = [
     }),
   },
   {
+    // `hasTunableFrequency` (VfoSurface.svelte) needs `vfo.isActiveSlot &&
+    // vfo.frequencyHz !== null && onTuneFrequency !== undefined`; `2/main_sub`'s
+    // M-A tile already satisfies the first two, so supplying `onTuneFrequency`
+    // is the one thing missing to mount `FrequencyDisplayInteractive` — and
+    // with it, the `.digit`/`.sep` spans that render the actual per-glyph
+    // frequency readout. No scene above ever supplies it, so without this one
+    // a selector targeting `.digit`/`.sep` would misreport as an orphan
+    // regardless of whether it is one. `grep -c '.digit\|\.sep\b'` over all
+    // three stylesheets returns 0 today (verified above), so this closes a
+    // latent coverage gap rather than changing any current orphan verdict.
+    name: 'vfo-surface (2/main_sub, tunable — FrequencyDisplayInteractive mounts)',
+    render: () => mountInto(VfoSurface, {
+      viewModel: topologyFixtures['2/main_sub'], hasDualReceiver: true,
+      onTuneFrequency: vi.fn(),
+    }),
+  },
+  {
     // Active tile, enabled select/fact-toggle, active-receiver readout.
     name: 'vfo-surface (2/main_sub, enabled)',
     render: () => mountInto(VfoSurface, {
       viewModel: topologyFixtures['2/main_sub'], hasDualReceiver: true, disabled: false,
     }),
   },
-  rxTxScene('idle — receiving, key enabled', RX_IDLE, true),
+  rxTxScene('idle — receiving, key enabled, key focused', RX_IDLE, '.rx-tx-key'),
+  // `.rx-tx-unkey` is never disabled (RxTxSurface.svelte: "Never gated: no
+  // `disabled`, no `{#if}`, no guard in the handler"), so it can always take
+  // focus. This is the only scene that ever focuses it — needed because
+  // `:focus-visible` on the unkey button was previously unexercised (the
+  // key-focus scene above never touches it).
+  rxTxScene('idle — unkey focused', RX_IDLE, '.rx-tx-unkey'),
   rxTxScene('pending — RF uncertain, key blocked', PENDING),
   rxTxScene('keyed — RF transmitting', KEYED),
   rxTxScene('releasing', RELEASING),
@@ -352,3 +399,33 @@ describe('MOR-2163 — every design-language stylesheet selector reaches real ma
     expect(orphans, `${orphans.length} orphaned selector(s) in ${cssPath}:\n${orphanReport}`).toEqual([]);
   });
 });
+
+// ── PERMANENT CONTROL (review finding, not optional). `reachable()` must
+// judge a pseudo-element-tailed selector by its SUBJECT, never by handing the
+// whole string to `document.querySelectorAll` — that call always returns an
+// empty NodeList for a pseudo-element tail, live subject or not, so a naive
+// implementation misreports every such rule as an orphan (this is exactly
+// what happened before this fix: `.rx-tx-surface::before`, subject genuinely
+// live, was studioline's SOLE false orphan). Both assertions matter equally:
+// the live-subject case proves the fix works, and the dead-subject case
+// proves it is not a blanket "pseudo-elements are always reachable" escape
+// hatch that would hide a real orphan wearing a pseudo-element tail.
+describe('reachable() judges a trailing pseudo-element by its subject, never by querySelectorAll on the whole string', () => {
+  const LIVE = "[data-design-language='studioline'][data-design-language] .rx-tx-surface";
+  const DEAD = "[data-design-language='studioline'][data-design-language] .rx-tx-surface-DOES-NOT-EXIST";
+
+  it('reports a live subject reachable, and a dead one not, across every pseudo-element form the CSS files use or could', () => {
+    activate('studioline');
+    const { cleanup } = mountInto(RxTxSurface, { view: topologyFixtures['2/main_sub'], tx: RX_IDLE });
+    try {
+      for (const tail of [':before', '::before', '::after', '::first-line', '::first-letter', '::placeholder']) {
+        expect(reachable(`${LIVE}${tail}`), `${LIVE}${tail} should be reachable`).toBe(true);
+        expect(reachable(`${DEAD}${tail}`), `${DEAD}${tail} should NOT be reachable`).toBe(false);
+      }
+    } finally {
+      cleanup();
+      deactivate();
+    }
+  });
+});
+
