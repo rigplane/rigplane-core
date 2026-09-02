@@ -28,6 +28,10 @@ const SECTIONS = [
   'gallery-hardwarebutton',
   'gallery-hardwareplainbutton',
   'gallery-statusindicator',
+  'gallery-valuecontrol-hbar',
+  'gallery-valuecontrol-bipolar',
+  'gallery-valuecontrol-knob',
+  'gallery-professionalknob',
 ];
 
 for (const testid of SECTIONS) {
