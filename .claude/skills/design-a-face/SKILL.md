@@ -166,6 +166,33 @@ that rule was **established** or **inferred**. A block placed by an inferred
 rule is a proposal; a block placed by an established one is closer to a
 finding.
 
+**Say who draws each element, because that is where the cost is.** A proposal
+that only says what an element looks like hides its price. Every element falls
+into one of three tiers, and the difference between them is one line in a
+document and weeks in the tree:
+
+- **The design language reaches it.** Its markup comes from a semantic surface
+  and its appearance is CSS over that markup. This is the cheap tier and the
+  only one a stylesheet change can deliver.
+- **Only the theme reaches it.** A shared component draws it and reads the
+  `--v2-*` theme vocabulary rather than the design language's `--dl-*`. A change
+  here lands in **every skin**, not just this one, so it is a different decision
+  with different reviewers.
+- **Nothing reaches it.** The form is code — SVG geometry, a segment count, a
+  decay constant. Changing the look means changing a shared component that every
+  skin renders.
+
+The worked example: `components-v2/meters/LinearSMeter.svelte` reads fifteen
+`--v2-*` variables, so its colours are theme-restylable — but `SEG_COUNT = 20`
+and its bar geometry are computed in code, and its peak decay is a constant. A
+design language declaring a meter track width and segment gap cannot move any of
+it. That is why segmentline's meter tokens could not have worked even with a
+functioning value channel: there was nothing on the other end reading them.
+
+Check the tier per element **before** proposing its appearance. An element in
+tier three whose proposed look differs from what the component draws is not a
+styling task and must not be listed as one.
+
 ## Phase 5 — the state treatments, which are the hard half
 
 **A reference can draw states the radio cannot occupy, and this is an element
