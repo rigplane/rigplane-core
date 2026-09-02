@@ -965,7 +965,7 @@
 
   <!-- ── HBar renderer ─────────────────────────────────────────────────────── -->
 
-  <section class="demo-card" data-testid="gallery-valuecontrol-hbar">
+  <section class="demo-card" data-testid="gallery-valuecontrol-hbar" style="opacity: 0">
     <h2>HBar / standard — accent colors <span class="hint">(real radio labels)</span></h2>
     <p class="lab-note">
       Real radio parameters with per-control accent colors matching current production convention.
@@ -1179,7 +1179,7 @@
 
   <!-- ── Bipolar renderer ──────────────────────────────────────────────────── -->
 
-  <section class="demo-card" data-testid="gallery-valuecontrol-bipolar">
+  <section class="demo-card" data-testid="gallery-valuecontrol-bipolar" style="opacity: 0">
     <h2>Bipolar / standard — real radio parameters <span class="hint">(center-origin bar)</span></h2>
     <p class="lab-note">
       Center-origin bar with +/- axis labels. Fill extends from center toward the active side.
@@ -1265,7 +1265,7 @@
 
   <!-- ── Knob renderer ─────────────────────────────────────────────────────── -->
 
-  <section class="demo-card" data-testid="gallery-valuecontrol-knob">
+  <section class="demo-card" data-testid="gallery-valuecontrol-knob" style="opacity: 0">
     <h2>Knob / standard — accent colors <span class="hint">(demo-only, not yet in production)</span></h2>
     <p class="lab-note">
       SVG rotary knob. Drag vertically to adjust (up = increase). Mouse wheel or keyboard arrows also work.
@@ -1343,7 +1343,7 @@
 
   <!-- ── ProfessionalKnob skin ─────────────────────────────────────────────── -->
 
-  <section class="demo-card" data-testid="gallery-professionalknob">
+  <section class="demo-card" data-testid="gallery-professionalknob" style="opacity: 0">
     <h2>ProfessionalKnob <span class="hint">(demo-only, not wired to any production caller)</span></h2>
     <p class="lab-note">
       <strong>ProfessionalKnob</strong> is a <code>KnobSkinRendererProps</code>-shaped skin
