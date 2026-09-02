@@ -18,14 +18,10 @@
  * `'segmentline'` would prove nothing about activation — this file proves the
  * attribute itself, end to end.
  *
- * Three properties, each naming the mutation it kills:
+ * Three properties:
  *
  *  A. STORABLE (change (a)). `segmentline` explicitly selected + `peer-split`
- *     resolved activates `segmentline`. Kill: reverting
- *     `WORKSPACE_DESIGN_LANGUAGE_IDS` to `['studioline', 'fieldline']` makes
- *     `setDesignLanguage('segmentline')` clamp to `'studioline'` (the real
- *     `pickId` in `contract.ts`), so the attribute becomes `'studioline'`,
- *     not `'segmentline'`.
+ *     resolved activates `segmentline`.
  *  B. THE LITERAL ACCEPTANCE. An operator who selects ONLY the `peer-split`
  *     layout, with no explicit design-language choice, still gets
  *     `segmentline` — `segmentline` is the only registered language whose

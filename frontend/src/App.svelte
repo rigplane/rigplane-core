@@ -98,9 +98,7 @@
       // `peer-split`, which no v2 skin's default ever declared compatible).
       // Falls back to the FIRST registered language whose `layoutCompatibility`
       // declares this skin, in `presentation/languages/declarations.ts`
-      // registration order (studioline, fieldline, segmentline) — today that
-      // is `studioline` for every shipped v2 skin and `segmentline` for
-      // `peer-split`, the only language that declares it. The STORED
+      // registration order (studioline, fieldline, segmentline). The STORED
       // preference itself is untouched here — only this render's activation
       // falls back, so leaving `peer-split` restores it without a re-choice.
       for (const id of listDesignLanguageIds()) {

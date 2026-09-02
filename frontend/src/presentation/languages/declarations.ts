@@ -28,8 +28,8 @@
  * `designLanguageActivation(language, skinId)` (`../workspace/activation.ts`),
  * whose parameter is merely *named* `layoutId`. `unified-instrument` and
  * `panadapter-first`, the handoff's other two proposed directions, are
- * named nowhere in this repository either — no `SkinId`, no layout
- * manifest — so they are absent from this list too. `desktop-v2: false`
+ * named nowhere in this repository — no `SkinId`, no layout
+ * manifest — so they are absent from this list. `desktop-v2: false`
  * is kept because segmentline's fixed-native glass and desktop-v2's fluid
  * chrome are a real, current incompatibility.
  */
