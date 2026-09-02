@@ -43,7 +43,6 @@ import {
 } from '../tx-feedback-state';
 import { SEGMENTLINE_INK, SEGMENTLINE_PALETTE } from './tokens';
 
-/** Matches `.dl-glass[data-tx='active']::after`'s box-shadow in `segmentline.css` exactly. */
 const FRAME_GLOW = 'inset 0 0 38px 2px rgba(214, 28, 8, 0.46), inset 0 0 11px rgba(255, 80, 40, 0.55)';
 
 export interface SegmentlinePerimeter {
@@ -62,7 +61,7 @@ export interface SegmentlineCell {
   readonly present: true;
   /** Segmentline never fills a control (`tokens.ts`: "every control is an
    *  outlined cell, never a filled button") — engagement is carried by ink
-   *  strength alone, via `segmentline.css`'s `[data-active='true']`. */
+   *  strength alone. */
   readonly active: boolean;
   readonly tone: string;
   readonly focusRing: string;
@@ -122,9 +121,7 @@ export function renderStateFeedback(
       treatment,
       present: true,
       active: treatment === 'keyed',
-      // Same hot+active CONCEPT as segmentline.css's `.dl-cell[data-tone=
-      // 'hot'][data-active='true']` rule — but `tone` holds a colour value
-      // here, not the keyword 'hot'; no rule currently reads this field.
+      // No rule currently reads this field.
       tone: treatment === 'blocked' ? SEGMENTLINE_INK.ghost
         : treatment === 'keyed' ? SEGMENTLINE_PALETTE.txMark
           : SEGMENTLINE_INK.soft,
