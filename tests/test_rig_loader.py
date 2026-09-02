@@ -2785,7 +2785,9 @@ class TestIc7300DeclaresAbsentCommands:
     MOR-2118 added ``get_antenna``/``set_antenna`` (no 0x12 row on this
     radio) and MOR-2117 added the bare ``set_dual_watch`` (dispatches to
     the two split names above, already absent, but was itself in neither
-    list) (+3, to 32 -- the current count, per ``len(_EXPECTED_ABSENT)``).
+    list) (+3, to 32), then MOR-2190 replaced six proven-wrong positive
+    bindings with direct official-manual absent entries (+6, to 38 -- the
+    current count, per ``len(_EXPECTED_ABSENT)``).
     Pinned by name, not just count, so a future D2 pass on another command
     can't silently swap one of these for a different one and still pass a
     bare-count check.
@@ -2826,6 +2828,9 @@ class TestIc7300DeclaresAbsentCommands:
             "get_powerstat",
             "get_quick_dual_watch",
             "set_quick_dual_watch",
+            # MOR-2190: direct IC-7300 Advanced Manual (11a) findings.
+            "get_ref_adjust",
+            "set_ref_adjust",
             # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
             # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
@@ -2834,6 +2839,10 @@ class TestIc7300DeclaresAbsentCommands:
             # (pp.19-7..19-8) runs 1E then 20 -- no 1F row.
             "get_scope_rbw",
             "set_scope_rbw",
+            "get_scope_marker_position",
+            "set_scope_marker_position",
+            "get_tx_freq_monitor",
+            "set_tx_freq_monitor",
         }
     )
 

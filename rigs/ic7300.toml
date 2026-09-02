@@ -1060,8 +1060,12 @@ get_ssb_tx_bandwidth = [0x16, 0x58]
 set_ssb_tx_bandwidth = [0x16, 0x58]
 
 # ── Split ──
-get_tx_freq_monitor = [0x1C, 0x03]
-set_tx_freq_monitor = [0x1C, 0x03]
+# MOR-2190 temporary fail-closed override: direct official-manual evidence,
+# not an inherited unsupported marker. Keep these names explicit while the
+# legacy CoreRadio._KNOWN_COMMANDS fallback still exists; replacement APIs are
+# deliberately outside this slice.
+get_tx_freq_monitor = { absent = "IC-7300 Advanced Manual (11a) command table p.19-7: 1C 03 is Read transmit frequency, not transmit-frequency monitor; no SET form is documented" }
+set_tx_freq_monitor = { absent = "IC-7300 Advanced Manual (11a) command table p.19-7: 1C 03 is Read transmit frequency, not transmit-frequency monitor; no SET form is documented" }
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
 
@@ -1368,10 +1372,14 @@ get_nb_width = [0x1A, 0x05, 0x01, 0x90]
 set_nb_width = [0x1A, 0x05, 0x01, 0x90]
 get_vox_delay = [0x1A, 0x05, 0x01, 0x91]     # 0-20 (0.0-2.0 sec)
 set_vox_delay = [0x1A, 0x05, 0x01, 0x91]     # 0-20 (0.0-2.0 sec)
-get_scope_marker_position = [0x1A, 0x05, 0x00, 0x40]  # 00=Filter Center, 01=Carrier Point
-set_scope_marker_position = [0x1A, 0x05, 0x00, 0x40]
-get_ref_adjust = [0x1A, 0x05, 0x00, 0x70]    # NOT_IMPLEMENTED — not listed in wfview IC-7300.rig
-set_ref_adjust = [0x1A, 0x05, 0x00, 0x70]    # NOT_IMPLEMENTED — not listed in wfview IC-7300.rig
+# MOR-2190 temporary fail-closed overrides: these are direct findings from the
+# official manual, not inherited unsupported markers. The explicit entries
+# keep the profile's negative knowledge inspectable while replacement APIs are
+# deliberately deferred.
+get_scope_marker_position = { absent = "IC-7300 Advanced Manual (11a) command table p.19-4: 1A 05 0040 is Speech Speed (00=Low, 01=High), not scope marker position" }
+set_scope_marker_position = { absent = "IC-7300 Advanced Manual (11a) command table p.19-4: 1A 05 0040 is Speech Speed (00=Low, 01=High), not scope marker position" }
+get_ref_adjust = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-5: 1A 05 0070 is external-keypad RTTY Memory; reference frequency is 0058 with 0000..0255 domain" }
+set_ref_adjust = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-5: 1A 05 0070 is external-keypad RTTY Memory; reference frequency is 0058 with 0000..0255 domain" }
 
 [protocol]
 type = "civ"
