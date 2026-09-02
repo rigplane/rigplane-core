@@ -269,7 +269,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
-      - name: Focused old-source RED
+      - name: Focused guarded-send GREEN
         shell: bash
         run: |
           set -euo pipefail
@@ -277,16 +277,14 @@ jobs:
           git rev-parse HEAD | tee tracked-write-proof/head.txt
           uv sync --all-extras
           uv run python --version | tee tracked-write-proof/python.txt
-          set +e
-          timeout 90s uv run pytest tests/test_transport.py -vv --tb=short --timeout=15 --timeout-method=thread --junitxml=tracked-write-proof/red.xml 2>&1 | tee tracked-write-proof/red.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          echo "pytest_rc=$rc" | tee tracked-write-proof/status.txt
-          test "$rc" -eq 1
-          uv run python -c 'import xml.etree.ElementTree as ET; r=ET.parse("tracked-write-proof/red.xml").getroot(); fs=r.findall(".//testcase[failure]"); assert len(fs)==11, len(fs); assert not r.findall(".//error"); assert all("unexpected keyword argument" in f.find("failure").text for f in fs)'
+          timeout 90s uv run pytest tests/test_transport.py -vv --tb=short --timeout=15 --timeout-method=thread --junitxml=tracked-write-proof/green.xml 2>&1 | tee tracked-write-proof/green.log
+          uv run ruff check src/ tests/ 2>&1 | tee tracked-write-proof/ruff.log
+          uv run ruff format --check --diff src/ tests/ 2>&1 | tee tracked-write-proof/format.log
+          uv run lint-imports 2>&1 | tee tracked-write-proof/imports.log
+          uv run mypy src/rigplane/core/transport.py 2>&1 | tee tracked-write-proof/mypy.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tracked-write-red
+          name: tracked-write-green
           path: tracked-write-proof/
           retention-days: 14
