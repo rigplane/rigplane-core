@@ -72,16 +72,26 @@ class FakeConfigStore:
         return self._config
 
 
+# Event log shared between FakeFence and FakeLane within one test. Each
+# entry is appended synchronously at the top of the corresponding fake
+# method, before any gate/await, so its position in the log reflects call
+# order rather than completion order -- what the fence-before-provider-I/O
+# rule is actually about.
+FenceOrderLog = list[tuple[str, object] | tuple[str]]
+
+
 class FakeFence:
-    def __init__(self) -> None:
+    def __init__(self, log: FenceOrderLog | None = None) -> None:
         self.calls = 0
+        self.log: FenceOrderLog = log if log is not None else []
 
     async def force_off(self) -> None:
         self.calls += 1
+        self.log.append(("fence",))
 
 
 class FakeLane:
-    def __init__(self) -> None:
+    def __init__(self, log: FenceOrderLog | None = None) -> None:
         self.results: deque[ActuationResult] = deque()
         self.effects: list[ManagedTxEffect] = []
         self.aborts: list[tuple[EffectToken, AbortOperation]] = []
@@ -89,6 +99,7 @@ class FakeLane:
         self.stale_once = False
         self.gates: deque[asyncio.Event | None] = deque()
         self.started: asyncio.Queue[ManagedTxEffect] = asyncio.Queue()
+        self.log: FenceOrderLog = log if log is not None else []
 
     def block_next(self) -> asyncio.Event:
         gate = asyncio.Event()
@@ -99,6 +110,7 @@ class FakeLane:
         self, effect: ManagedTxEffect, *, deadline_monotonic: float
     ) -> ActuationSettled:
         self.effects.append(effect)
+        self.log.append(("effect", effect.operation))
         self.started.put_nowait(effect)
         result = self.results.popleft() if self.results else ActuationResult.ACCEPTED
         gate = self.gates.popleft() if self.gates else None
@@ -125,6 +137,7 @@ class FakeLane:
         deadline_monotonic: float,
     ) -> AbortFailed | None:
         self.aborts.append((token, operation))
+        self.log.append(("abort", operation))
         result = self.abort_results.get(operation, ActuationResult.ACCEPTED)
         return (
             None
@@ -141,7 +154,8 @@ def authority(
     ManagedTxAuthority, FakeClock, FakeWakeup, FakeConfigStore, FakeFence, FakeLane
 ]:
     clock, wakeup = FakeClock(), FakeWakeup()
-    store, fence, lane = FakeConfigStore(seconds), FakeFence(), FakeLane()
+    log: FenceOrderLog = []
+    store, fence, lane = FakeConfigStore(seconds), FakeFence(log), FakeLane(log)
     managed = ManagedTxAuthority(
         lane,
         store,
@@ -155,6 +169,32 @@ def authority(
     return managed, clock, wakeup, store, fence, lane
 
 
+def _assert_force_off_precedes_provider_io(
+    log: FenceOrderLog, since: int, *, prefix: tuple[str, ...] = ()
+) -> None:
+    """Pin the ForceOff ordering rule: within one full-force pass, the fence
+    entry must be logged before the provider I/O (settle/settle_abort) that
+    pass performs, and nothing but `prefix` may precede the fence.
+
+    `since` bookmarks the log length right before the action that triggers
+    the pass. `prefix` names the tags permitted before the fence entry in
+    the window -- empty for a pass that starts with the fence, or
+    `("effect",)` for the UNCERTAIN-followup case, where the on-attempt
+    settle that itself decided to force off is logged first. Exactly one
+    fence entry is required, everything before it must equal `prefix`
+    exactly, and at least one provider-I/O entry must follow it.
+    """
+    window = log[since:]
+    tags = [entry[0] for entry in window]
+    assert tags.count("fence") == 1, f"expected exactly one fence entry, got {tags}"
+    index = tags.index("fence")
+    assert tuple(tags[:index]) == prefix, (
+        f"unexpected provider I/O before the fence: {tags}"
+    )
+    after = window[index + 1 :]
+    assert after, "expected provider I/O logged after the fence"
+
+
 @pytest.mark.asyncio
 async def test_ptt_owner_idempotency_and_disconnect_force_off() -> None:
     managed, clock, _, _, fence, lane = authority()
@@ -165,7 +205,9 @@ async def test_ptt_owner_idempotency_and_disconnect_force_off() -> None:
     assert await managed.ptt_down("owner-b") is ManagedTxOutcome.REJECTED
     assert await managed.ptt_up("owner-b") is ManagedTxOutcome.REJECTED
     assert (await managed.snapshot()).state == first.state
+    since = len(fence.log)
     assert await managed.owner_disconnect("owner-a") is ManagedTxOutcome.ACCEPTED
+    _assert_force_off_precedes_provider_io(fence.log, since)
     released = await managed.snapshot()
     assert released.state.intent.kind is ManagedTxIntentKind.RX
     assert not released.state.release_required
@@ -191,7 +233,9 @@ async def test_transmit_is_latched_and_force_off_runs_one_abort_family() -> None
     assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
     assert await managed.owner_disconnect("browser") is ManagedTxOutcome.REJECTED
     assert (await managed.snapshot()).state == started.state
+    since = len(fence.log)
     assert await managed.force_off() is ManagedTxOutcome.ACCEPTED
+    _assert_force_off_precedes_provider_io(fence.log, since)
     assert fence.calls == 1
     force = lane.effects[-1]
     assert force.operation is ActuationOperation.FORCE_RECEIVE
@@ -205,7 +249,13 @@ async def test_transmit_is_latched_and_force_off_runs_one_abort_family() -> None
 @pytest.mark.asyncio
 async def test_offline_force_off_retries_immediately_when_provider_appears() -> None:
     managed, _, _, _, fence, lane = authority(generation=None)
+    since = len(fence.log)
     assert await managed.force_off() is ManagedTxOutcome.ACCEPTED
+    # Provider offline: ForceOff's reducer emits no effect (see ForceOff
+    # handling in managed_tx_state.reduce_managed_tx), so this full-force
+    # pass has no provider I/O for the fence to precede -- only the fence
+    # call itself is logged.
+    assert fence.log[since:] == [("fence",)]
     assert (await managed.snapshot()).state.release_required
     assert lane.effects == [] and fence.calls == 1
     await managed.provider_available(8)
@@ -284,12 +334,14 @@ async def test_uncertain_on_immediately_runs_one_force_off_family(
 ) -> None:
     managed, _, _, _, fence, lane = authority()
     lane.results.extend((ActuationResult.UNCERTAIN, release))
+    since = len(fence.log)
     outcome = (
         await managed.ptt_down("owner")
         if ingress == "ptt"
         else await managed.transmit_on()
     )
     assert outcome is ManagedTxOutcome.ACCEPTED
+    _assert_force_off_precedes_provider_io(fence.log, since, prefix=("effect",))
     assert fence.calls == 1
     assert [effect.operation for effect in lane.effects] == [
         operation,
@@ -333,8 +385,10 @@ async def test_tot_expiry_uses_the_single_scheduler_and_force_off() -> None:
     revision = wakeup.revision
     assert (await managed.snapshot()).remaining_tot_seconds == 10
     clock.now = 110
+    since = len(fence.log)
     wakeup.wake()
     await wakeup.wait_after(revision + 1)
+    _assert_force_off_precedes_provider_io(fence.log, since)
     projected = await managed.snapshot()
     assert projected.state.intent.kind is ManagedTxIntentKind.RX
     assert projected.remaining_tot_seconds is None
@@ -366,7 +420,9 @@ async def test_live_tot_edit_at_or_below_elapsed_forces_off_immediately() -> Non
     managed, clock, _, store, fence, lane = authority(seconds=20)
     await managed.ptt_down("owner")
     clock.now = 105
+    since = len(fence.log)
     assert (await managed.set_tot_seconds(5)).timeout_seconds == 5
+    _assert_force_off_precedes_provider_io(fence.log, since)
     projected = await managed.snapshot()
     assert store.values == [5]
     assert projected.state.intent.kind is ManagedTxIntentKind.RX
@@ -397,7 +453,9 @@ async def test_simultaneous_tot_and_retry_due_chooses_force_off() -> None:
     await managed.ptt_down("owner")
     managed._retry_due = 110
     clock.now = 110
+    since = len(fence.log)
     await managed._process_due()
+    _assert_force_off_precedes_provider_io(fence.log, since)
     assert fence.calls == 1
     assert lane.effects[-1].operation is ActuationOperation.FORCE_RECEIVE
     await managed.close()
@@ -406,9 +464,13 @@ async def test_simultaneous_tot_and_retry_due_chooses_force_off() -> None:
 @pytest.mark.asyncio
 async def test_repeated_force_off_is_accepted_and_advances_epoch() -> None:
     managed, _, _, _, fence, lane = authority()
+    since = len(fence.log)
     assert await managed.force_off() is ManagedTxOutcome.ACCEPTED
+    _assert_force_off_precedes_provider_io(fence.log, since)
     first = lane.effects[-1].token.effect_epoch
+    since = len(fence.log)
     assert await managed.force_off() is ManagedTxOutcome.ACCEPTED
+    _assert_force_off_precedes_provider_io(fence.log, since)
     assert lane.effects[-1].token.effect_epoch == first + 1
     assert fence.calls == 2
     await managed.close()
