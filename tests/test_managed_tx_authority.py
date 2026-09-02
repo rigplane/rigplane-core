@@ -854,6 +854,38 @@ async def test_close_disposes_clean_scheduler_idempotently_without_effects() -> 
 
 
 @pytest.mark.asyncio
+async def test_cleanup_drain_reaps_done_task_before_queued_discard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    managed, _, _, _, fence, _ = authority()
+    await managed._stop_scheduler(managed._scheduler_task)
+    managed._pending_abort_cleanup.append(fence.force_off())
+    managed._start_abort_cleanup()
+    (cleanup,) = managed._abort_cleanup
+    gather = asyncio.gather
+
+    def bounded_gather(*tasks, **kwargs):
+        assert not tasks or not all(
+            isinstance(task, asyncio.Future) and task.done() for task in tasks
+        ), "drain awaited completed owned cleanup before queued discard"
+        return gather(*tasks, **kwargs)
+
+    async def drain() -> None:
+        assert cleanup.done() and cleanup in managed._abort_cleanup
+        with monkeypatch.context() as patch:
+            patch.setattr(asyncio, "gather", bounded_gather)
+            await managed._finish_abort_cleanup()
+        assert not managed._abort_cleanup
+
+    try:
+        await asyncio.create_task(drain())
+    finally:
+        cleanup.result()
+        managed._abort_cleanup.discard(cleanup)
+        await asyncio.wait_for(managed.close(), 1)
+
+
+@pytest.mark.asyncio
 async def test_ten_thousand_idempotent_commands_keep_one_scheduler() -> None:
     managed, _, _, _, _, lane = authority()
     scheduler = managed._scheduler_task
