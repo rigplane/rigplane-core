@@ -638,5 +638,5 @@ Before handing it over, for each backed element:
   above; a checklist reader does not go there, which is why it is repeated
   here).
 
-A proposal that passes all four is implementable. One that does not is a
-plan, and should say which it fails.
+A proposal that fails any of the four is a plan, not an implementable one,
+and should say which it fails.
