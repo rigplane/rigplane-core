@@ -1,11 +1,15 @@
 /**
  * MOR-2219 — per-section visual baselines for the "looks gallery" (PR A: the
- * Button family). Distinct from `visual-baselines.spec.ts`, which drives the
- * isolated `fixtures/index.html` harness — these captures load the real
- * `App.svelte` demo route (`?demo=control-buttons` → `ControlButtonDemo.svelte`)
- * via the second `webServer` entry in `playwright.visual.config.ts`, so the
- * navigation below uses that server's full absolute URL rather than the
- * shared `baseURL` (which still points at the fixtures server's port).
+ * Button family). Distinct from `visual-baselines.spec.ts`, whose 14 of 16
+ * tests drive the `fixtures/index.html` harness and 2 drive
+ * `ptt-harness.html` — both served under `vite.fixtures.config.ts`'s
+ * runtime-module stubs (see that config's own header). These captures
+ * instead load the real `App.svelte` demo route
+ * (`?demo=control-buttons` → `ControlButtonDemo.svelte`) via the second
+ * `webServer` entry in `playwright.visual.config.ts`, deliberately
+ * unstubbed — see that entry's own comment for why — so the navigation
+ * below uses that server's full absolute URL rather than the shared
+ * `baseURL` (which still points at the fixtures server's port).
  *
  * Each capture is element-scoped (`data-testid="gallery-*"` on the target
  * `<section class="demo-card">`), not full-page — a full-page screenshot
@@ -15,7 +19,7 @@
  */
 import { test, expect } from '@playwright/test';
 
-const GALLERY_PORT = Number(process.env.RP_GALLERY_PORT ?? '5299');
+const GALLERY_PORT = Number(process.env.RP_GALLERY_PORT ?? '5499');
 const GALLERY_URL = `http://127.0.0.1:${GALLERY_PORT}/?demo=control-buttons`;
 
 const SECTIONS = [

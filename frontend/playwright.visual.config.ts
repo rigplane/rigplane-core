@@ -29,12 +29,24 @@ import { defineConfig } from '@playwright/test';
 
 const PORT = Number(process.env.RP_VISUAL_PORT ?? '5399');
 // MOR-2219 — second webServer for the "looks gallery" baselines
-// (gallery-baselines.spec.ts). The fixtures server above only ever serves
-// fixtures/index.html; the gallery captures the real App.svelte demo route
-// (?demo=control-buttons), so it needs its own `vite` (no --config override)
-// on a port that collides with neither this fixtures port nor the fixtures
-// dev port (5199) nor the app's own default dev port (5173).
-const GALLERY_PORT = Number(process.env.RP_GALLERY_PORT ?? '5299');
+// (gallery-baselines.spec.ts). The fixtures server above CAN technically
+// reach the real App.svelte demo route too — vite.fixtures.config.ts's
+// `root` stays the app root ("not a second project"), so `GET /` there
+// serves the real index.html, not a 404. It is deliberately not reused
+// here anyway: fixtureStubs() in that config re-points four runtime
+// modules (runtime/index.ts, tx-controller/app-host.ts,
+// mod-input-tx-guard.svelte.ts, adapters/panel-adapters.ts). The demo
+// route (?demo=control-buttons) doesn't currently reach any of them
+// because of App.svelte's own early bailout on demoMode — but pinning a
+// visual baseline against a server whose config's entire stated purpose
+// is stubbing runtime seams, on the strength of a bailout in a 1806-line
+// demo file staying exactly where it is, is the kind of coincidental
+// coupling that breaks silently later. A dedicated, unstubbed `vite` (no
+// --config override) runs the actual production entry instead, on a
+// port that doesn't collide with this fixtures port, the fixtures dev
+// port (5199), the app's own default dev port (5173), or
+// capture-ptt.mjs's port (5299).
+const GALLERY_PORT = Number(process.env.RP_GALLERY_PORT ?? '5499');
 // Exported so global-teardown.ts's manifest reports the SAME numbers this
 // config actually runs with — never a hand-copied, driftable duplicate.
 export const COMPARATOR = { threshold: 0.2, maxDiffPixelRatio: 0.001 };

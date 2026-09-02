@@ -1,6 +1,6 @@
 # Approved pixel-diff baselines (MOR-1090)
 
-Tracked, reviewed screenshots for a representative slice of the MOR-1070/1085 fixture matrix, compared by `npm run test:e2e:visual` (`tests/e2e/visual/visual-baselines.spec.ts` + `playwright.visual.config.ts`). Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
+Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, and `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
 ## Why a slice, not the full 60+13 matrix
 
