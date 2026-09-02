@@ -19,9 +19,8 @@ never reports. This is not caught by taste, review, or types — it is caught by
 asking, per element, which field feeds it.
 
 **It draws only the happy state.** Every value in this system is a pair —
-a reading and an availability — and a reading that is not `known` carries one
-of four reasons. A design that shows a number and a dash has collapsed five
-states into two, and two of the collapsed ones are safety-relevant.
+a reading and an availability. A design that shows a number and a dash has collapsed three
+states into two.
 
 This skill exists to make both impossible to ship by accident.
 
@@ -376,13 +375,9 @@ document and weeks in the tree:
   skin renders.
 
 The worked example: `components-v2/meters/LinearSMeter.svelte` reads `--v2-*`
-variables — run `./extract-contract.py` and check its "What already draws each
-surface" section for the current count — so its colours are theme-restylable,
-but its segment count and bar geometry are computed in code, and its peak
-decay is a constant. A design language declaring a meter track width and
-segment gap cannot move any of it. That is why segmentline's meter tokens
-could not have worked even with a functioning value channel: there was
-nothing on the other end reading them.
+variables so its colours are theme-restylable,
+but bar geometry is computed in code, and its peak
+decay is a constant.
 
 Check the tier per element **before** proposing its appearance. An element in
 tier three whose proposed look differs from what the component draws is not a

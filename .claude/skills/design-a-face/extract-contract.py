@@ -661,8 +661,7 @@ class _SendSideIndex:
         helper rather than in the exposed handler; and `onVoxToggle:
         toggleVox` (`makeTxHandlers`/`makeVoxHandlers`), a BARE reference —
         the property's whole value text IS the function's name, no `(`
-        anywhere in it, so a call-only pattern silently drops it and the
-        surface that binds it prints as though it dispatches nothing. A
+        anywhere in it, so a call-only pattern silently drops it. A
         `name:` that is not a string literal (`onModInputChange`'s
         `modInputCommand(dataMode)` — the one dynamic call site inside THIS
         file; `adapters/mod-input-auto.svelte.ts` has a second, out of this
@@ -987,7 +986,18 @@ def _run_selftest() -> int:
     non-zero and name both. Both runs go through this script's own `argv`
     entry point via `subprocess` — not a direct call into
     `validate_checklist` — so a flag wired to nothing still fails this, the
-    same discipline `measure-reference.py`'s `selftest` uses."""
+    same discipline `measure-reference.py`'s `selftest` uses.
+
+    Also asserts `resolve_panel`'s bare-identifier case above (`onVoxToggle:
+    toggleVox`) still resolves."""
+    tx_aux = [
+        row for row in send_side(read(SURFACES_WIRING), read(PANEL_COMMANDS), read(PANEL_ADAPTERS))
+        if row["surface"] == "txAux"
+    ][0]
+    on_toggle = [cb for cb in tx_aux["callbacks"] if cb["prop"] == "onToggle"][0]
+    tracer_ok = "set_vox" in on_toggle["intents"]
+    print(f"selftest: txAux.onToggle intents include set_vox: {tracer_ok} (want True)")
+
     import tempfile
 
     field_keys, intent_keys = _checklist_keys()
@@ -1014,7 +1024,7 @@ def _run_selftest() -> int:
           f"exit={bad.returncode} (want non-zero)")
     if bad.stderr.strip():
         print(bad.stderr.strip())
-    ok = good.returncode == 0 and bad.returncode != 0
+    ok = tracer_ok and good.returncode == 0 and bad.returncode != 0
     print("selftest: PASS" if ok else "selftest: FAIL")
     return 0 if ok else 1
 
@@ -1230,8 +1240,8 @@ def main() -> None:
         "radio reading; `control-feedback-presentation` "
         "(`primitives/control-feedback/`) projects the in-flight command "
         "phase; a `pending*`/`*Feedback` prop on the mount tag (from the "
-        "'Send side' section above) is the pending/confirmation contract "
-        "where neither of those is adopted. None of the three is "
+        "'Send side' section above) is the pending/confirmation contract. "
+        "None of the three is "
         "universal — check per surface, not per intent.\n"
     )
     fa = data["feedbackAdoption"]
