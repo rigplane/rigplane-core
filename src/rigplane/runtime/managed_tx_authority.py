@@ -475,7 +475,7 @@ class ManagedTxAuthority:
             if tot_due is not None and tot_due <= now:
                 transition = self._force_off_locked()
                 full_force = True
-            elif self._retry_due is not None and self._retry_due <= now:
+            elif self._retry_due is not None and self._retry_due < now:
                 generation = self._provider_generation
                 self._retry_due = None
                 if generation is not None and self._release_is_retryable_locked():
