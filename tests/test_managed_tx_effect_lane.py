@@ -225,6 +225,7 @@ async def test_force_receive_bypasses_and_poisons_inflight_on() -> None:
         ("success", False),
         ("failure", False),
         ("success", True),
+        ("already_isolated", True),
         ("deadline", False),
         ("cancel", False),
     ],
@@ -235,6 +236,7 @@ async def test_force_receive_awaits_isolation_and_maps_failure(
     actuator = FakeActuator()
     on_started, on_release = asyncio.Event(), asyncio.Event()
     isolation_started, isolated = asyncio.Event(), asyncio.Event()
+    off_started = asyncio.Event()
 
     async def isolate(_: int) -> None:
         isolation_started.set()
@@ -244,45 +246,66 @@ async def test_force_receive_awaits_isolation_and_maps_failure(
             raise asyncio.CancelledError
         await isolated.wait()
 
+    async def force_receive() -> ActuationResult:
+        off_started.set()
+        return ActuationResult.ACCEPTED
+
     actuator.actions[ActuationOperation.PTT_ON] = blocking_action(
         on_started, on_release, resist_cancellation=True
     )
+    actuator.actions[ActuationOperation.FORCE_RECEIVE] = force_receive
     lane = ManagedTxEffectLane(actuator, poison_generation=isolate)
     on = asyncio.create_task(settle(lane, effect(attempt="on")))
-    await asyncio.wait_for(on_started.wait(), 0.2)
-    if preexisting:
-        on.cancel()
-        assert (await on).error == "attempt cancelled after dispatch"
-        await asyncio.wait_for(isolation_started.wait(), 0.2)
-    force = asyncio.create_task(
-        settle(
-            lane,
-            effect(ActuationOperation.FORCE_RECEIVE, attempt="off"),
-            0.01 if mode == "deadline" else 1,
+    force = None
+    try:
+        await asyncio.wait_for(on_started.wait(), 0.2)
+        if preexisting:
+            on.cancel()
+            assert (await on).error == "attempt cancelled after dispatch"
+            await asyncio.wait_for(isolation_started.wait(), 0.2)
+        if mode == "already_isolated":
+            isolated.set()
+            assert lane._isolation is not None
+            await asyncio.wait_for(asyncio.shield(lane._isolation[1]), 0.2)
+        force = asyncio.create_task(
+            settle(
+                lane,
+                effect(ActuationOperation.FORCE_RECEIVE, attempt="off"),
+                0.01 if mode == "deadline" else 1,
+            )
         )
-    )
-    await asyncio.wait_for(isolation_started.wait(), 0.2)
-    if mode == "success":
-        assert not force.done() and not on_release.is_set()
+        await asyncio.wait_for(isolation_started.wait(), 0.2)
+        if mode == "success":
+            await asyncio.wait_for(off_started.wait(), 0.2)
+            assert not force.done() and not on_release.is_set()
+            isolated.set()
+        forced = await asyncio.wait_for(force, 0.2)
+        assert forced.result is (
+            ActuationResult.ACCEPTED
+            if mode == "already_isolated"
+            else ActuationResult.UNCERTAIN
+        )
+        errors = {
+            "success": "release preceded ON isolation",
+            "failure": "isolation failed",
+            "deadline": "isolation deadline expired",
+            "cancel": "CancelledError",
+        }
+        assert forced.error == errors.get(mode)
+        if mode == "deadline":
+            assert lane._isolation is not None and not lane._isolation[1].cancelled()
         isolated.set()
-    forced = await asyncio.wait_for(force, 0.2)
-    assert forced.result is ActuationResult.UNCERTAIN
-    errors = {
-        "success": "release preceded ON isolation",
-        "failure": "isolation failed",
-        "deadline": "isolation deadline expired",
-        "cancel": "CancelledError",
-    }
-    assert forced.error == errors.get(mode)
-    if mode == "deadline":
-        assert lane._isolation is not None and not lane._isolation[1].cancelled()
-    isolated.set()
-    if not preexisting:
-        assert (await on).result is ActuationResult.UNCERTAIN
-    on_release.set()
-    if mode == "success":
-        retry = effect(ActuationOperation.FORCE_RECEIVE, epoch=4, attempt="retry")
-        assert (await settle(lane, retry)).result is ActuationResult.ACCEPTED
+        if not preexisting:
+            assert (await on).result is ActuationResult.UNCERTAIN
+        if mode in ("success", "already_isolated"):
+            retry = effect(ActuationOperation.FORCE_RECEIVE, epoch=4, attempt="retry")
+            assert (await settle(lane, retry)).result is ActuationResult.ACCEPTED
+    finally:
+        isolated.set()
+        on_release.set()
+        await asyncio.wait_for(
+            asyncio.gather(on, *(() if force is None else (force,))), 1
+        )
 
 
 @pytest.mark.asyncio

@@ -332,6 +332,10 @@ class ManagedTxAuthority:
     async def _finish_abort_cleanup(self) -> None:
         self._start_abort_cleanup()
         while self._abort_cleanup:
+            for task in tuple(self._abort_cleanup):
+                if task.done():
+                    self._abort_cleanup.discard(task)
+                    task.result()
             await asyncio.gather(
                 *(asyncio.shield(task) for task in tuple(self._abort_cleanup))
             )

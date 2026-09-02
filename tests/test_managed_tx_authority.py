@@ -1008,8 +1008,9 @@ async def test_shutdown_termination_cancels_owned_cleanup_without_waiting_for_ga
         assert stopped.is_set() and not never.is_set()
         assert (await managed.snapshot()).state.release_required
     finally:
+        termination.set()
         never.set()
-        await task
+        await asyncio.wait_for(task, 1)
 
 
 @pytest.mark.asyncio
@@ -1053,9 +1054,10 @@ async def test_late_physical_on_retains_debt_until_a_fresh_off(
     )
     await managed._stop_scheduler(managed._scheduler_task)
     on = asyncio.create_task(managed.transmit_on())
-    await asyncio.wait_for(started.wait(), 1)
-    off = asyncio.create_task(managed.force_off())
+    off = None
     try:
+        await asyncio.wait_for(started.wait(), 1)
+        off = asyncio.create_task(managed.force_off())
         await asyncio.wait_for(off_written.wait(), 1)
         allow_late_on.set()
         await asyncio.wait_for(late_on.wait(), 1)
@@ -1072,10 +1074,11 @@ async def test_late_physical_on_retains_debt_until_a_fresh_off(
         assert not (await managed.snapshot()).state.release_required
     finally:
         allow_late_on.set()
-        await asyncio.gather(on, off)
-        if (await managed.snapshot()).state.release_required:
-            await managed.force_off()
-        await managed.close()
+        await asyncio.wait_for(asyncio.gather(on, *(() if off is None else (off,))), 1)
+        state = (await managed.snapshot()).state
+        if state.release_required or state.intent.kind is not ManagedTxIntentKind.RX:
+            await asyncio.wait_for(managed.force_off(), 1)
+        await asyncio.wait_for(managed.close(), 1)
 
 
 @pytest.mark.asyncio
