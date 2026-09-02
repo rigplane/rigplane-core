@@ -27,6 +27,7 @@ import { desktopV2Layout, dualReceiverCockpitLayout } from '../src/presentation/
 import { readWorkspace } from '../src/presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../src/presentation/workspace/resolution';
 import DualReceiverCockpit from '../src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte';
+import PeerSplitLayout from '../src/skins/segmentline/PeerSplitLayout.svelte';
 import ReferenceLayout from './ReferenceLayout.svelte';
 import {
   runAssertions, styleProbe, tokenSnapshot, type AssertionOptions,
@@ -41,15 +42,23 @@ const fixture = fixtureById(id);
 if (!fixture) throw new Error(`MOR-1070 harness: unknown fixture id "${id}"`);
 
 /**
- * MOR-1085 — which of the two layouts this fixture mounts. The fixture ITSELF
+ * MOR-1085 — which of the layouts this fixture mounts. The fixture ITSELF
  * carries this (not a separate `&layout=` query param) so one fixture id is
  * one grid cell: `catalog.ts`'s `toReferenceFixture` derives every
  * `--reference` id from its `dual-receiver-cockpit` sibling, and the two
  * always mount the corresponding real component. See `ReferenceLayout.svelte`
  * for why that component, rather than the full `RadioLayout`, stands in for
  * "the reference current layout" here.
+ *
+ * MOR-2153 adds `'peer-split'`, rooted at `PeerSplitLayout.svelte`'s own
+ * `data-testid="peer-split-glass"` wrapper — the glass, not the stage holder
+ * around it, since the holder is chrome-adjacent plumbing (Lesson 4 in that
+ * file's header) rather than the composition `focusOrder()`/`activeControl()`
+ * below are describing.
  */
-const ROOT_TEST_ID = fixture.layout === 'reference' ? 'reference-layout' : 'dual-receiver-cockpit';
+const ROOT_TEST_ID = fixture.layout === 'reference' ? 'reference-layout'
+  : fixture.layout === 'peer-split' ? 'peer-split-glass'
+    : 'dual-receiver-cockpit';
 
 if ((params.get('theme') ?? 'v2') === 'v2') {
   await import('../src/components-v2/theme/index');
@@ -63,8 +72,17 @@ if ((params.get('theme') ?? 'v2') === 'v2') {
 const LANGUAGE_STYLESHEETS: Record<string, () => Promise<unknown>> = {
   studioline: () => import('../src/presentation/languages/studioline/studioline.css'),
   fieldline: () => import('../src/presentation/languages/fieldline/fieldline.css'),
+  segmentline: () => import('../src/presentation/languages/segmentline/segmentline.css'),
 };
-const language = params.get('language');
+/**
+ * MOR-2153 — `peer-split` is segmentline's OWN skin: with no language
+ * activated it renders as unstyled markup (no amber glass, no bezel colour,
+ * no cell/readout treatment), which defeats the point of looking at it. The
+ * explicit `&language=` param still wins when given (e.g. to inspect the
+ * bare DOM), matching how every other fixture already lets the query
+ * string override any default.
+ */
+const language = params.get('language') ?? (fixture.layout === 'peer-split' ? 'segmentline' : null);
 if (language) {
   const load = LANGUAGE_STYLESHEETS[language];
   if (!load) throw new Error(`MOR-1074 harness: unknown design language "${language}"`);
@@ -135,6 +153,18 @@ harness.calls = [];
  * unconditionally, not a per-fixture experiment — the same default-workspace
  * recipe as the cockpit's `dualReceiverCockpitLayout` resolution above.
  */
+/**
+ * MOR-2153 — `peer-split` fixtures never set `fixture.planned` (see
+ * `PEER_SPLIT_FIXTURES` in `catalog.ts`), so `plan` falls through to `null`
+ * for them here unchanged, on purpose: `PeerSplitLayout.svelte`'s single
+ * declared zone (`peer-columns`: vfo+rxTx) does not gate anything this
+ * chassis currently mounts — `.channel-strips`/`.cockpit-global-row`/
+ * `.rx-tx-zone` render unconditionally and `txAux`/`meters`/`scopeDisplay`
+ * render bare either way (their `allowBare` default is `true`) — so
+ * resolving a plan here would add plumbing with no observable effect. See
+ * `SemanticRadioSurfaces.svelte`'s MOR-2150 comment for the nine surfaces a
+ * plan WOULD matter for; none is declared for `peer-split` yet.
+ */
 const plan = fixture.layout === 'reference'
   ? resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace)
   : fixture.planned
@@ -145,10 +175,12 @@ const context = plan === null
   : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
 
 document.title = `MOR-1070 · ${fixture.id}`;
-mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, {
-  target: document.getElementById('app')!,
-  context,
-});
+mount(
+  fixture.layout === 'reference' ? ReferenceLayout
+    : fixture.layout === 'peer-split' ? PeerSplitLayout
+      : DualReceiverCockpit,
+  { target: document.getElementById('app')!, context },
+);
 flushSync();
 
 declare global {
@@ -174,8 +206,19 @@ declare global {
 window.__harness = {
   fixture: fixture.id,
   what: fixture.what,
-  assert: (options: AssertionOptions = {}) =>
-    runAssertions(fixture.expect, { ...options, rootTestId: ROOT_TEST_ID }),
+  // MOR-2153: `fixture.expect` is absent for `peer-split` fixtures —
+  // `runAssertions` (`assertions.ts`, lines 171-683 — 513 lines) is written
+  // against the cockpit/reference `zonedComposition` binary, which the
+  // five-band chassis is neither; see the field's own doc comment on
+  // `Fixture` in catalog.ts. Skip the pipeline rather than pass it a shape
+  // it cannot check.
+  assert: (options: AssertionOptions = {}) => (fixture.expect
+    ? runAssertions(fixture.expect, { ...options, rootTestId: ROOT_TEST_ID })
+    : [{
+      name: 'peer-split-no-assertion-pipeline', ok: true,
+      detail: 'peer-split fixtures carry no behavior-assertion pipeline yet (MOR-2153) — this '
+        + 'confirms the harness mounted, not that the composition is correct.',
+    }]),
   tokens: tokenSnapshot,
   paint: styleProbe,
   calls: () => harness.calls,
