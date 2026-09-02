@@ -404,6 +404,42 @@ layer is allowed. `presentation/` may not import transport, stores or the
 runtime barrel. Rules are in `frontend/eslint.config.js`; `lint-imports` covers
 the Python side.
 
+## Traps
+
+Every one of these was paid for. They are listed with the instance because an
+abstract warning does not survive contact.
+
+**A class in the markup with no rule anywhere.** The reachability check answers
+*does this selector find an element*. Nothing answers the mirror — *does this
+element have a rule* — so a class can be emitted, styled by nobody, and look
+deliberate. Two live instances: `PeerSplitLayout` wore `dl-glass` after those
+rules were renamed away, and the panel rendered as a black screen; and
+`MetersSurface` emits `class="meter-unknown"`, which **none** of the three
+design languages style and no test pins, so it renders in the browser's default
+type on a fully drawn panel. When a proposal names a class, confirm something
+styles it — that direction has no automated check.
+
+**A skin's markup is invisible to the design-language check.** It mounts the
+semantic surfaces, not skin layouts. So a rule consumed only by a skin component
+reports as an orphan, correctly by the check's own scope and wrongly in fact.
+That is exactly how `dl-glass` came to be deleted while it had a consumer. If
+you retarget or delete a rule, grep the skins too.
+
+**A component's own `<style>` block is invisible to its own tests.** Deleting
+the entire block from `PeerSplitLayout.svelte` left all four of its tests green
+— established by the builder and confirmed by the reviewer. A design change that
+lives in a component's styles cannot be verified by mounting it; a pin has to
+read the source text, the way the stylesheet tests already do.
+
+**A rendered value is a claim about the radio.** Do not draw a number you do not
+have. A meter at zero says *the signal is at the noise floor*, which is a
+statement about the world, and if the reading is merely absent that statement is
+false. The danger is narrower than it first appears: when everything is absent
+the panel is obviously dead and nobody is misled. It bites when the absence is
+**partial** — one stale value among a dozen live ones, borrowing their
+credibility. This repository already has a defect of that shape and a rule
+against "a visual jump through fabricated zero".
+
 ## Rules
 
 **The model proposes, the contract constrains, the owner decides.** Do not close
