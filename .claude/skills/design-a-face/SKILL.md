@@ -404,6 +404,36 @@ layer is allowed. `presentation/` may not import transport, stores or the
 runtime barrel. Rules are in `frontend/eslint.config.js`; `lint-imports` covers
 the Python side.
 
+## Ask, and here is exactly when
+
+The failure mode of this work is not confusion, it is **confident
+plausibility**. A misread element gets a sensible name, the name gets a
+rationale, the rationale becomes a constraint, and nothing downstream can tell
+it was invented. So "ask if unsure" is too weak to act on. These are the
+triggers, and at any of them stop and ask rather than pick the likely reading:
+
+- **You cannot say what an element is.** Name it as unidentified. Do not give it
+  a plausible name; a wrong name is inherited silently by everything after it.
+- **The measurement is ambiguous.** Two elements with no gutter read as one run.
+  Ask which it is rather than splitting it by eye.
+- **You cannot tell established from inferred.** The owner knows their own
+  intent, and one sentence from them converts a guess into a fact. That is the
+  cheapest question available.
+- **The reference shows something no field can fill.** Whether to widen the
+  contract or drop the element is a scope decision, not a design one.
+- **A rule you extracted cannot place an unshown field.** That is the signal it
+  described the picture rather than the reasoning — say so and ask, instead of
+  stretching it.
+
+The instance: this skill's own earlier pass read the reference as a control
+panel and derived placement rules about adjacency and reach. It is a display —
+every element is an indicator, there is nothing to operate. Half the reasoning
+was built on that before the owner corrected it in one sentence. The agent had
+no way to know; it also never asked.
+
+Asking costs one message. A wrong premise costs everything built on it, and it
+does not announce itself.
+
 ## Traps
 
 Every one of these was paid for. They are listed with the instance because an
