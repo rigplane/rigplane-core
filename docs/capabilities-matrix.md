@@ -5,7 +5,7 @@ robots: noindex, follow
 # Capabilities Matrix — Verified from CI-V Reference
 
 Sources:
-- IC-7300MK2 CI-V Reference Guide (PDF)
+- IC-7300 Advanced Manual (11a), §19 CONTROL COMMAND
 - IC-7610 wfview rig file (`.rig` format, verified against wfview 2.20)
 - Actual hardware testing (IC-7610 firmware 1.42, IC-7300)
 
@@ -80,7 +80,7 @@ has_ant_memory = false
 | Auto notch | 0x16 0x41 (0/1) | 0x16 0x41 (0/1) | Same | |
 | Manual notch | 0x16 0x48 (0/1) | 0x16 0x48 (0/1) | Same | |
 | Notch freq | 0x14 0x0D (0-255) | 0x14 0x0D (0-255) | Same | |
-| APF | 0x16 0x32 (0/1/2/3) | 0x16 0x32 (0/1) | Different! | IC-7610: OFF/WIDE/MID/NAR. IC-7300: ON/OFF |
+| APF | 0x16 0x32 (0/1/2/3) | ❌ | IC-7610 only | IC-7300 Manual 11a omits 0x16 0x32; live GET NAK'd twice with 0x16 0x22 DATA as control |
 | Twin Peak | 0x16 0x4F (0/1) | 0x16 0x4F (0/1) | Same | |
 
 **NR modes:** Both IC-7610 and IC-7300 have NR as simple ON/OFF via CI-V (0x16 0x40).
