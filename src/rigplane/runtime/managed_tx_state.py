@@ -227,7 +227,6 @@ def _settle(state: ManagedTxState, event: ActuationSettled) -> ManagedTxTransiti
     pending = state.pending_effect
     if (
         pending is None
-        or event.token != pending.token
         or event.operation is not pending.operation
     ):
         return ManagedTxTransition(state, ManagedTxOutcome.STALE)
