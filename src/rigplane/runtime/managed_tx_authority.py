@@ -346,7 +346,7 @@ class ManagedTxAuthority:
 
     async def _dispose_clean(self, *, from_shutdown: bool) -> None:
         async with self._lock:
-            if self._closed or self._closing:
+            if self._closed:
                 return
             if not self._state_is_clean_locked():
                 raise RuntimeError("managed TX disposal requires clean RX state")

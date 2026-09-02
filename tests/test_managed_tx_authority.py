@@ -930,9 +930,14 @@ async def test_real_fence_releases_before_cleanup_and_shutdown_waits_for_cleanup
             assert not task.done() and retired == []
     finally:
         finish_cleanup.set()
+        if entry == "force_off" and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await managed.force_off()
         if (await managed.snapshot()).provider_generation is None:
             await managed.provider_available(8)
-        await task
+        if not task.cancelled():
+            await task
         await managed.close()
     assert retired == (
         [] if entry == "force_off" else [8 if entry == "offline_shutdown" else 7]
@@ -1127,6 +1132,8 @@ async def test_cancelled_close_can_be_rejoined_until_cleanup_finishes(
         first.cancel()
         with pytest.raises(asyncio.CancelledError):
             await first
+        with pytest.raises(RuntimeError, match="closed"):
+            await managed.ptt_down("owner")
         second = asyncio.create_task(managed.close())
         await asyncio.sleep(0)
         assert not second.done()
