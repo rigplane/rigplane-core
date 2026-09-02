@@ -29,6 +29,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from rigplane.core.command_service import _is_yaesu_cat_readback, _yaesu_receiver_alias
+from rigplane.core.command_dispatch import execute_command_intent
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
@@ -895,6 +896,9 @@ class YaesuCatPoller:
         Commands come from the web UI CommandQueue.  The dispatcher handles
         all command types; unsupported commands fail truthfully.
         """
+        if isinstance(cmd, CommandIntent):
+            await execute_command_intent(self._radio, cmd)
+            return
         decision = evaluate_tx_interlock(
             cmd,
             rf_state=self._current_rf_state(),

@@ -52,6 +52,12 @@ from ..core.command_service import (
     CommandService,
     command_intent_from_request,
 )
+from ..core.command_dispatch import (
+    CommandUnsupportedError,
+    command_descriptor,
+    prepare_command_intent,
+)
+from ..core.exceptions import CommandError, CommandRejectedError
 from ..core.state_pipeline_contracts import (
     CommandIntent,
     CommandLifecycleEvent,
@@ -396,6 +402,16 @@ class _HttpCommandCollector:
         )
 
 
+def _command_error_code(exc: BaseException) -> str:
+    if isinstance(exc, CommandUnsupportedError):
+        return "unsupported_command"
+    if isinstance(exc, CommandRejectedError):
+        return "radio_nak"
+    if isinstance(exc, (RigplaneTimeoutError, TimeoutError)):
+        return "command_timeout"
+    return "command_failed"
+
+
 @dataclass(slots=True)
 class _HttpCommandExecutor:
     server: "WebServer"
@@ -431,16 +447,9 @@ class _SharedControlCommandExecutor:
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         params = dict(intent.params)
         control_server = params.pop("_control_server", None)
-        result = await self.server._control_handler_for(  # noqa: SLF001
+        return await self.server._control_handler_for(  # noqa: SLF001
             server=control_server,
-        )._enqueue_legacy_command(
-            intent.name,
-            params,
-            command_id=intent.id,
-            source=intent.source,
-            command_service=self.server.command_service,
-        )
-        return CommandExecutionResult(details=result)
+        )._execute_intent(intent)
 
 
 async def _read_capped_body(
@@ -4277,6 +4286,27 @@ class WebServer:
                 {"error": "read_only", "message": str(exc)},
             )
             return
+        except (
+            CommandUnsupportedError,
+            CommandRejectedError,
+            RigplaneTimeoutError,
+            TimeoutError,
+            CommandError,
+        ) as exc:
+            code = _command_error_code(exc)
+            if code == "command_timeout":
+                status, reason = 504, "Gateway Timeout"
+            elif code in {"unsupported_command", "radio_nak"}:
+                status, reason = 409, "Conflict"
+            else:
+                status, reason = 500, "Internal Server Error"
+            await self._send_json(
+                writer,
+                status,
+                reason,
+                {"error": code, "message": str(exc) or type(exc).__name__},
+            )
+            return
         except (ValueError, KeyError, TypeError) as exc:
             await self._send_json(
                 writer,
@@ -4340,6 +4370,28 @@ class WebServer:
             raise _HttpBatchValidationError(
                 "unsupported_in_batch",
                 f"command {raw_name!r} bypasses the command queue",
+            )
+
+        descriptor = command_descriptor(raw_name)
+        if descriptor is not None:
+            assert self._radio is not None
+            intent = prepare_command_intent(
+                self._radio,
+                raw_name,
+                raw_params,
+                source="http",
+                command_id=(
+                    None if raw_step.get("id") is None else str(raw_step["id"])
+                ),
+            )
+            return _HttpBatchStep(
+                index=index,
+                name=raw_name,
+                command=intent,
+                result=descriptor.result(intent),
+                command_id=intent.id,
+                source=intent.source,
+                command_service=self.command_service,
             )
 
         collector = _HttpCommandCollector()
@@ -4723,6 +4775,18 @@ class WebServer:
                     }
                 )
                 step = None
+            except CommandUnsupportedError as exc:
+                results.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "ok": False,
+                        "status": "failed_validation",
+                        "error": "unsupported_command",
+                        "message": str(exc),
+                    }
+                )
+                step = None
             except _HttpBatchValidationError as exc:
                 results.append(
                     {
@@ -4767,19 +4831,27 @@ class WebServer:
                 await self._send_batch_response(writer, payload, results)
                 return
 
-            loop = asyncio.get_running_loop()
-            future: asyncio.Future[None] = loop.create_future()
-            self._command_queue.put_ordered(
-                step.command,
-                future=future,
-                command_id=step.command_id,
-                source=step.source,
-                command_service=step.command_service,
-            )
             try:
-                await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
-            except TimeoutError as exc:
-                if step.command_service is not None and step.command_id is not None:
+                if isinstance(step.command, CommandIntent):
+                    await self.command_service.execute(step.command)
+                else:
+                    future: asyncio.Future[None] = (
+                        asyncio.get_running_loop().create_future()
+                    )
+                    self._command_queue.put_ordered(
+                        step.command,
+                        future=future,
+                        command_id=step.command_id,
+                        source=step.source,
+                        command_service=step.command_service,
+                    )
+                    await asyncio.wait_for(future, timeout=_COMMAND_BATCH_STEP_TIMEOUT)
+            except (RigplaneTimeoutError, TimeoutError) as exc:
+                if (
+                    not isinstance(step.command, CommandIntent)
+                    and step.command_service is not None
+                    and step.command_id is not None
+                ):
                     step.command_service.fail_command(
                         step.command_id,
                         message=str(exc) or type(exc).__name__,
@@ -4802,6 +4874,26 @@ class WebServer:
                             self._skipped_batch_result_for_raw_step(
                                 skip_index,
                                 raw_steps[skip_index],
+                            )
+                        )
+                    await self._send_batch_response(writer, payload, results)
+                    return
+            except CommandError as exc:
+                results.append(
+                    {
+                        "index": step.index,
+                        "name": step.name,
+                        "ok": False,
+                        "status": "failed_execution",
+                        "error": _command_error_code(exc),
+                        "message": str(exc) or type(exc).__name__,
+                    }
+                )
+                if not continue_on_error:
+                    for skip_index in range(step.index + 1, len(raw_steps)):
+                        results.append(
+                            self._skipped_batch_result_for_raw_step(
+                                skip_index, raw_steps[skip_index]
                             )
                         )
                     await self._send_batch_response(writer, payload, results)

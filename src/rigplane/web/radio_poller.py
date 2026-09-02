@@ -61,7 +61,6 @@ from ..capabilities import (
     CAP_NR,
     CAP_POWER_CONTROL,
     CAP_PREAMP,
-    CAP_REPEATER_SHIFT,
     CAP_REPEATER_TONE,
     CAP_RF_GAIN,
     CAP_RX_ANTENNA,
@@ -81,6 +80,7 @@ from ..commands.scope import SCOPE_RECEIVER_SELECTOR_SUBS
 from ..core.command_service import (
     CommandService,
 )
+from ..core.command_dispatch import execute_command_intent
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionPriority,
@@ -194,7 +194,6 @@ __all__ = [
     "SetNbDepth",
     "SetNbWidth",
     "SetDashRatio",
-    "SetRepeaterShift",
     "SetRepeaterTone",
     "SetRepeaterTsql",
     "SetRxAntenna",
@@ -443,7 +442,6 @@ from .._poller_types import (  # noqa: E402
     SetQuickDualWatch,
     SetQuickSplit,
     SetRefAdjust,
-    SetRepeaterShift,
     SetRepeaterTone,
     SetRepeaterTsql,
     SetRfGain,
@@ -2238,6 +2236,9 @@ class RadioPoller:
         command_service: CommandService | None = None,
         connection_epoch_bootstrap: bool = False,
     ) -> None:
+        if isinstance(cmd, CommandIntent):
+            await execute_command_intent(self._radio, cmd)
+            return
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
         # emits alike. The single exemption is the connection-epoch bootstrap
@@ -3447,15 +3448,6 @@ class RadioPoller:
                     await radio.set_dash_ratio(value)
                 if self._radio_state:
                     self._radio_state.dash_ratio = value
-            case SetRepeaterShift(direction=direction, receiver=rx):
-                self._ensure_receiver_supported(rx, operation="set_repeater_shift")
-                if CAP_REPEATER_SHIFT in self._caps:
-                    await radio.set_repeater_shift(direction, receiver=rx)
-                if self._radio_state:
-                    target = (
-                        self._radio_state.sub if rx != 0 else self._radio_state.main
-                    )
-                    target.repeater_shift = direction
             case SetRepeaterTone(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_repeater_tone")
                 if CAP_REPEATER_TONE in self._caps:

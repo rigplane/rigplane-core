@@ -178,6 +178,15 @@ class CommandService:
 
         try:
             executor_result = await self._executor.execute(intent)
+        except asyncio.CancelledError:
+            if self._active_commands.get(key) is sent_event:
+                self.expire_command(
+                    intent.id,
+                    source=intent.source,
+                    session_id=_session_id(intent),
+                )
+                self.emit_lifecycle(intent, "failed", message="command cancelled")
+            raise
         except (TimeoutError, RigplaneTimeoutError) as exc:
             if self._active_commands.get(key) is sent_event:
                 self.expire_command(
