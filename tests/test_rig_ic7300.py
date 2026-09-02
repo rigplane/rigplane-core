@@ -20,6 +20,36 @@ from rigplane.rig_loader import load_rig
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 IC7300_PATH = RIGS_DIR / "ic7300.toml"
 
+_WRONG_MANUAL_BINDINGS = {
+    "get_tx_freq_monitor": ((0x1C, 0x03), "1C 03 is Read transmit frequency"),
+    "set_tx_freq_monitor": ((0x1C, 0x03), "1C 03 is Read transmit frequency"),
+    "get_scope_marker_position": (
+        (0x1A, 0x05, 0x00, 0x40),
+        "1A 05 0040 is Speech Speed",
+    ),
+    "set_scope_marker_position": (
+        (0x1A, 0x05, 0x00, 0x40),
+        "1A 05 0040 is Speech Speed",
+    ),
+    "get_ref_adjust": (
+        (0x1A, 0x05, 0x00, 0x70),
+        "1A 05 0070 is external-keypad RTTY Memory",
+    ),
+    "set_ref_adjust": (
+        (0x1A, 0x05, 0x00, 0x70),
+        "1A 05 0070 is external-keypad RTTY Memory",
+    ),
+}
+_PUBLIC_FAIL_BEFORE_WIRE_CALLS = {
+    "get_tx_freq_monitor": (),
+    "set_tx_freq_monitor": (True,),
+    "get_ref_adjust": (),
+    "set_ref_adjust": (128,),
+}
+_PROFILE_ONLY_FAIL_BEFORE_WIRE_NAMES = frozenset(
+    {"get_scope_marker_position", "set_scope_marker_position"}
+)
+
 EXPECTED_BASELINE_CAPABILITIES = {
     "audio",
     "af_level",
@@ -287,6 +317,87 @@ class TestCapabilities:
 
     def test_capabilities_match_pre_speech_baseline(self, profile):
         assert profile.capabilities - {"speech"} == EXPECTED_BASELINE_CAPABILITIES
+
+
+class TestWrongManualBindingsFailClosed:
+    """MOR-2190: direct official-manual corrections, not inherited markers."""
+
+    def test_all_six_names_are_explicitly_absent_and_unbound(self, profile, cmdmap):
+        assert len(_WRONG_MANUAL_BINDINGS) == 6
+        for name, (wrong_wire, semantic) in _WRONG_MANUAL_BINDINGS.items():
+            assert name not in profile.command_names
+            assert name in profile.absent_command_names
+            source = profile.absent_command_sources[name]
+            assert source.startswith("IC-7300 Advanced Manual (11a)")
+            assert semantic in source
+            assert not cmdmap.has(name), f"{name} still serializes {wrong_wire!r}"
+
+    def test_all_six_names_are_unsupported_by_the_shipped_radio(self, profile):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        assert {
+            name for name in _WRONG_MANUAL_BINDINGS if not radio.supports_command(name)
+        } == set(_WRONG_MANUAL_BINDINGS)
+
+    @pytest.mark.asyncio
+    async def test_public_operations_refuse_before_any_wire_call(
+        self, profile, monkeypatch
+    ):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        send_raw = AsyncMock()
+        send_expect = AsyncMock()
+        send_fire_and_forget = AsyncMock()
+        get_bcd_level = AsyncMock()
+        monkeypatch.setattr(radio, "_check_connected", lambda: None)
+        monkeypatch.setattr(radio, "_send_civ_raw", send_raw)
+        monkeypatch.setattr(radio, "_send_civ_expect", send_expect)
+        monkeypatch.setattr(radio, "_send_fire_and_forget", send_fire_and_forget)
+        monkeypatch.setattr(radio, "_get_bcd_level", get_bcd_level)
+
+        visited: set[str] = set()
+        for name, args in _PUBLIC_FAIL_BEFORE_WIRE_CALLS.items():
+            visited.add(name)
+            with pytest.raises(CommandError, match="declared absent by this profile"):
+                await getattr(radio, name)(*args)
+
+        assert visited == set(_PUBLIC_FAIL_BEFORE_WIRE_CALLS)
+        send_raw.assert_not_awaited()
+        send_expect.assert_not_awaited()
+        send_fire_and_forget.assert_not_awaited()
+        get_bcd_level.assert_not_awaited()
+
+    def test_profile_only_operations_have_no_callable_wire_path(self, profile):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        visited: set[str] = set()
+        for name in _PROFILE_ONLY_FAIL_BEFORE_WIRE_NAMES:
+            visited.add(name)
+            assert not hasattr(CoreRadio, name)
+            with pytest.raises(AttributeError, match="no builder named"):
+                getattr(radio._commands, name)  # noqa: B009, SLF001
+
+        assert visited == set(_PROFILE_ONLY_FAIL_BEFORE_WIRE_NAMES)
+        assert visited | set(_PUBLIC_FAIL_BEFORE_WIRE_CALLS) == set(
+            _WRONG_MANUAL_BINDINGS
+        )
+
+    def test_unrelated_positive_bindings_and_tx_band_builders_remain(self, profile):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        for name in (
+            "get_freq",
+            "set_filter_width",
+            "get_tx_band_count",
+            "get_tx_band_edge",
+        ):
+            assert name in profile.command_names
+            assert name not in profile.absent_command_names
+            assert profile.command_map is not None and profile.command_map.has(name)
+
+        assert radio._commands.get_freq(to_addr=0x94)[4:-1] == b"\x03"  # noqa: SLF001
+        assert radio._commands.get_tx_band_count(to_addr=0x94)[4:-1] == (  # noqa: SLF001
+            b"\x1e\x00"
+        )
+        assert radio._commands.get_tx_band_edge(1, to_addr=0x94)[4:-1] == (  # noqa: SLF001
+            b"\x1e\x01\x01"
+        )
 
 
 # ── Command overrides ──────────────────────────────────────────
