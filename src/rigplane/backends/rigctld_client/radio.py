@@ -42,8 +42,6 @@ _SUPPORTED_COMMANDS = {
     "set_mode",
     "get_ptt",
     "set_ptt",
-    "get_vfo_slot",
-    "set_vfo_slot",
     "get_rf_gain",
     "set_rf_gain",
     "get_af_level",

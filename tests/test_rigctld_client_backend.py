@@ -21,6 +21,19 @@ from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.exceptions import TimeoutError as RadioTimeoutError
 
 
+def test_supports_command_gates_vfo_operations_on_observed_provider_support() -> None:
+    radio = RigctldClientRadio(host="127.0.0.1", port=4532)
+
+    assert radio.supports_command("get_freq")
+    assert not radio.supports_command("get_vfo_slot")
+    assert not radio.supports_command("set_vfo_slot")
+    assert not radio.supports_command("unknown_operation")
+
+    radio._vfo_supported = True
+    assert radio.supports_command("get_vfo_slot")
+    assert radio.supports_command("set_vfo_slot")
+
+
 async def test_transport_connect_query_and_close() -> None:
     async with FakeRigctldServer() as server:
         transport = RigctldTransport(host=server.host, port=server.port)
