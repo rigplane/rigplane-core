@@ -13,6 +13,13 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-02 — rigctld exchange boundary (tree `21814f3c0`)
+
+- [2026-09-02-mechanism-audit-rigctld-exchange.md](2026-09-02-mechanism-audit-rigctld-exchange.md)
+  — canonical external-rigctld transaction boundary. The report records a
+  missing response-isolation primitive for cancelled exchanges;
+  it does not claim adapter integration, final-OFF ordering, or RF proof.
+
 ## 2026-09-02 — ForceOff cleanup ordering (tree `7387c84e`)
 
 - [2026-09-02-mechanism-audit-force-off-cleanup.md](2026-09-02-mechanism-audit-force-off-cleanup.md)
