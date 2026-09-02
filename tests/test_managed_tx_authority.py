@@ -218,6 +218,31 @@ async def test_offline_force_off_retries_immediately_when_provider_appears() -> 
 
 
 @pytest.mark.asyncio
+async def test_ptt_up_without_provider_retains_owner_scoped_release_debt() -> None:
+    managed, _, _, _, fence, lane = authority(generation=7)
+    assert await managed.ptt_down("owner-a") is ManagedTxOutcome.ACCEPTED
+
+    async with managed._lock:
+        managed._provider_generation = None
+
+    assert await managed.ptt_up("owner-a") is ManagedTxOutcome.ACCEPTED
+    released = await managed.snapshot()
+    assert released.state.intent.kind is ManagedTxIntentKind.RX
+    assert released.state.release_plan is ReleasePlan.PTT_RELEASE
+    assert released.state.pending_effect is None
+    assert fence.calls == 0
+    assert [effect.operation for effect in lane.effects] == [ActuationOperation.PTT_ON]
+
+    await managed.provider_available(8)
+    assert [effect.operation for effect in lane.effects] == [
+        ActuationOperation.PTT_ON,
+        ActuationOperation.FORCE_RECEIVE,
+    ]
+    assert not (await managed.snapshot()).state.release_required
+    await managed.close()
+
+
+@pytest.mark.asyncio
 async def test_rejected_on_retries_release_with_new_epoch() -> None:
     managed, clock, wakeup, _, _, lane = authority()
     lane.results.extend((ActuationResult.REJECTED, ActuationResult.ACCEPTED))

@@ -353,7 +353,17 @@ class ManagedTxAuthority:
                     PttDown(owner, generation or 0, self._attempt_id_locked(), 0, None)
                 ), False
             if action == "ptt_up" and generation is None:
-                return self._force_off_locked(), True
+                state = replace(
+                    self._state,
+                    intent=ManagedTxIntent.rx(),
+                    tx_started_at_monotonic=None,
+                    tot_deadline_monotonic=None,
+                    pending_effect=None,
+                )
+                transition = ManagedTxTransition(state, ManagedTxOutcome.ACCEPTED)
+                self._state = state
+                self._release_drained.clear()
+                return transition, False
         if (
             action == "transmit_on"
             and self._state.intent.kind is ManagedTxIntentKind.TRANSMIT
