@@ -42,6 +42,7 @@ from ._frame import (
     _SUB_SWR_METER,
     build_civ_frame,
     build_cmd29_frame,
+    command_carries_sub,
     parse_ack_nak,
     parse_civ_frame,
 )
@@ -451,6 +452,7 @@ __all__ = [
     "filter_index_to_hz",
     "table_index_to_hz",
     "hz_to_table_index",
+    "command_carries_sub",
     "parse_civ_frame",
     # TOML canonical names (primary)
     "get_freq",

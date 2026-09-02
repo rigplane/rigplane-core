@@ -137,15 +137,17 @@ _CW_PITCH = FieldPath.global_("operator_controls", "cw_pitch")
 _BREAK_IN = FieldPath.global_("operator_controls", "break_in")
 _BREAK_IN_DELAY = FieldPath.global_("operator_controls", "break_in_delay")
 _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
-# Tone / CTCSS squelch-type (MOR-457). The FTX-1 CAT ``CT`` "SQL TYPE" command
-# (FTX-1_CAT_OM_ENG_2507) is a single MAIN-only read (CT0); its P2 code is
-# mapped onto the neutral, mutually-exclusive CTCSS booleans, matching the
-# Hamlib/Icom convention where ``repeater_tone`` = CTCSS tone ENCODE ("TONE")
-# and ``repeater_tsql`` = CTCSS tone SQUELCH (decode):
-#   P2 code 1 (ENC ON / DEC OFF, "TONE")  -> repeater_tone=True,  repeater_tsql=False
-#   P2 code 2 (ENC ON / DEC ON,  "TSQL")  -> repeater_tone=False, repeater_tsql=True
-#   P2 codes 0/3/4/5 (OFF / DCS / PR-FREQ / REV-TONE) -> both False (these have no
-#       neutral CTCSS-boolean representation, so they collapse to "neither on").
+# Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130). The FTX-1 CAT ``CT``
+# "SQL TYPE" command (FTX-1_CAT_OM_ENG_2508-C) is a single MAIN-only read
+# (CT0); its P2 code is mapped onto ``RepeaterControlCapable``'s two
+# independent axes: ``repeater_tone`` = CTCSS tone TX ENCODE, ``repeater_tsql``
+# = CTCSS tone RX SQUELCH (decode):
+#   P2 code 0 (OFF)                      -> repeater_tone=False, repeater_tsql=False
+#   P2 code 1 (ENC ON / DEC OFF, "TONE") -> repeater_tone=True,  repeater_tsql=False
+#   P2 code 2 (ENC ON / DEC ON,  "TSQL") -> repeater_tone=True,  repeater_tsql=True
+#   P2 codes 3/4/5 (DCS / PR-FREQ / REV-TONE) -> both False (the two-boolean
+#       vocabulary has no representation for them — a limit of the
+#       representation, not of this derivation).
 # Both paths are emitted every cycle (including the False derivations) so the
 # store always reflects current state. Per-receiver ``operator_toggles`` like
 # nb/nr/auto_notch, emitted in the slow-control lane. MAIN only (CT0): the SUB
@@ -156,7 +158,7 @@ _CW_SPOT = FieldPath.global_("slow_state", "cw_spot")
 _MAIN_REPEATER_TONE = FieldPath.receiver("main", "operator_toggles", "repeater_tone")
 _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_tsql")
 # CTCSS tone FREQUENCY (MOR-458). The FTX-1 CAT ``CN`` "CTCSS TONE FREQUENCY"
-# command (FTX-1_CAT_OM_ENG_2507) reports the MAIN tone as a 0-49 INDEX into
+# command (FTX-1_CAT_OM_ENG_2508-C) reports the MAIN tone as a 0-49 INDEX into
 # the standard 50-tone EIA chart (NOT an absolute frequency; cf. Icom 0x1B
 # BCD-Hz). The radio maps that index → Hz → centiHz (the index→Hz Tone Chart
 # is verbatim from the manual; see ``radio._CTCSS_TONE_CENTIHZ``). The neutral
@@ -171,6 +173,23 @@ _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_t
 # DCS (CN P2=1) is a documented limitation — NO neutral DCS path is emitted.
 _MAIN_TONE_FREQ = FieldPath.receiver("main", "operator_controls", "tone_freq")
 _MAIN_TSQL_FREQ = FieldPath.receiver("main", "operator_controls", "tsql_freq")
+# Repeater shift DIRECTION (MOR-2111). The FTX-1 CAT ``OS`` "OFFSET (REPEATER
+# SHIFT)" command (FTX-1_CAT_OM_ENG_2508-C) reports the MAIN P2 code directly
+# (0=Simplex, 1=Plus Shift, 2=Minus Shift, 3=ARS; see
+# ``core.types.RepeaterShiftDirection``) — no cross-vendor unification is
+# needed since the FTX-1 is the only implementer of ``RepeaterShiftCapable``
+# today, so the raw device code IS the neutral value. A dedicated ``OS`` read
+# is used rather than riding the ``IF;`` bulk-status P10 field: the manual
+# documents ``IF``'s P10 (and three sibling bulk-status commands sharing the
+# same position) with only 3 values, no ARS, against ``OS``'s own 4-value P2.
+# A bench measurement recorded in MOR-2125 found the radio itself reports all
+# 4 values through both ``IF`` (MAIN) and ``OI`` (SUB) — the mismatch is in
+# the manual, not the hardware. The reason to prefer ``OS`` is instead that
+# ``IF`` is MAIN-side only (SUB needs the differently-laid-out ``OI``), so a
+# dedicated ``OS``/``OS1`` read generalizes to both receivers where riding
+# ``IF`` would not. MAIN only (OS0) here; the SUB receiver would need OS1,
+# out of scope.
+_MAIN_REPEATER_SHIFT = FieldPath.receiver("main", "operator_controls", "repeater_shift")
 YAESU_PTT_PATH = _PTT
 
 
@@ -261,6 +280,8 @@ class YaesuObservationRadio(Protocol):
     async def read_sql_type(self, receiver: int = 0) -> int: ...
 
     async def read_ctcss_tone_index(self, receiver: int = 0) -> int: ...
+
+    async def read_repeater_shift(self, receiver: int = 0) -> int: ...
 
 
 @dataclass(slots=True)
@@ -772,13 +793,14 @@ class YaesuObservationAdapter:
                         native_id="read_manual_notch_freq",
                     )
                 )
-        # Tone / CTCSS squelch-type (MOR-457) — MAIN-only per-receiver
-        # ``operator_toggles``, grouped with the other receiver toggles
-        # (nb/nr/auto_notch/manual_notch) above. A SINGLE ``read_sql_type(0)``
-        # CAT ``CT`` read (FTX-1_CAT_OM_ENG_2507) yields the P2 "SQL TYPE" code,
-        # from which the two mutually-exclusive neutral CTCSS booleans are
-        # DERIVED (Hamlib/Icom convention; see the module-level mapping comment):
-        # code 1 → tone only, code 2 → tsql only, codes 0/3/4/5 → both False.
+        # Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130) — MAIN-only
+        # per-receiver ``operator_toggles``, grouped with the other receiver
+        # toggles (nb/nr/auto_notch/manual_notch) above. A SINGLE
+        # ``read_sql_type(0)`` CAT ``CT`` read (FTX-1_CAT_OM_ENG_2508-C) yields
+        # the P2 "SQL TYPE" code, from which the two independent neutral CTCSS
+        # booleans are DERIVED per ``RepeaterControlCapable``'s own docstrings
+        # (see the module-level mapping comment): code 1 -> encode only, code 2
+        # -> encode AND decode (both True), codes 0/3/4/5 -> both False.
         # Both paths are emitted every cycle (incl. the False derivations) so
         # the store always reflects current state. Gated on the ``sql_type``
         # runtime capability (``CAP_SQL_TYPE``), a dedicated readback capability:
@@ -798,7 +820,7 @@ class YaesuObservationAdapter:
                     observations.append(
                         adapter.observation(
                             _MAIN_REPEATER_TONE,
-                            sql_type == 1,
+                            sql_type in (1, 2),
                             native_id="read_sql_type",
                         )
                     )
@@ -813,7 +835,7 @@ class YaesuObservationAdapter:
         # CTCSS tone FREQUENCY (MOR-458) — MAIN-only per-receiver
         # ``operator_controls``, grouped with the CTCSS squelch-type toggles
         # above. A SINGLE ``read_ctcss_tone_index(0)`` CAT ``CN`` read
-        # (FTX-1_CAT_OM_ENG_2507) yields the 0-49 standard-EIA tone-chart index,
+        # (FTX-1_CAT_OM_ENG_2508-C) yields the 0-49 standard-EIA tone-chart index,
         # which ``_ctcss_index_to_centihz`` maps index → Hz → centiHz (the
         # index→Hz Tone Chart is verbatim from the manual). The neutral unit is
         # centiHz = round(Hz * 100), matching the Icom MOR-451 convention so
@@ -850,6 +872,30 @@ class YaesuObservationAdapter:
                             native_id="read_ctcss_tone_index",
                         )
                     )
+        # Repeater shift DIRECTION (MOR-2111) — MAIN-only per-receiver
+        # ``operator_controls``. A SINGLE ``read_repeater_shift(0)`` CAT
+        # ``OS`` read (FTX-1_CAT_OM_ENG_2508-C) yields the 0-3 P2 code
+        # directly; no derivation is needed, unlike ``sql_type`` immediately
+        # above, which derives a boolean pair from a six-way selector —
+        # ``RepeaterShiftDirection``'s wire values already are the neutral
+        # representation, so there is nothing to map (see the module-level
+        # ``_MAIN_REPEATER_SHIFT`` comment for why a dedicated ``OS`` read is
+        # used rather than the ``IF;`` bulk-status P10 field). Gated on the
+        # dedicated ``repeater_shift`` capability, distinct from ``sql_type``
+        # above: shift and tone/TSQL are different CAT commands with
+        # independent readback surfaces.
+        if self._has_runtime_capability("repeater_shift"):
+            ok, shift_code = await self._safe_read(
+                "main.repeater_shift", self.radio.read_repeater_shift(0)
+            )
+            if ok and shift_code is not None and self._can_poll(_MAIN_REPEATER_SHIFT):
+                observations.append(
+                    adapter.observation(
+                        _MAIN_REPEATER_SHIFT,
+                        shift_code,
+                        native_id="read_repeater_shift",
+                    )
+                )
         # active-slot (MOR-446) — the GLOBAL "which receiver is active" field.
         # Polled unconditionally (gated by policy only), mirroring the legacy
         # poller's always-on ``get_vfo_select`` read, like AGC/narrow. The

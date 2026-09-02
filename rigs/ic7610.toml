@@ -711,7 +711,7 @@ ant_modes = ["off", "manual", "auto"]
 
 [apf]
 # CI-V 0x16 0x32: 0=OFF, 1=WIDE(320Hz), 2=MID(160Hz), 3=NAR(80Hz)
-# Note: IC-7300 only has ON/OFF (0/1)
+# IC-7300 does not declare APF; this four-value APF domain is IC-7610-specific.
 values = [0, 1, 2, 3]
 labels = { "0" = "OFF", "1" = "WIDE", "2" = "MID", "3" = "NAR" }
 
@@ -1273,6 +1273,7 @@ scope_on = [0x27, 0x10]
 scope_off = [0x27, 0x10]
 scope_data_output = [0x27, 0x11]
 get_scope_main_sub = [0x27, 0x12]         # 0=MAIN, 1=SUB
+set_scope_main_sub = [0x27, 0x12]         # source: IC-7610 CI-V Reference Guide (A7380-7EX-2, May.2021) p.9, Cmd 27 Sub 12 "Main or Sub scope setting (00=Main, 01=Sub)" -- same [cmd, sub] as get_scope_main_sub above; command 27 itself carries the guide's own "*" (Send/read data) marker, and the IC-7610 is a genuine dual-receiver (MAIN/SUB) transceiver (MOR-2106)
 get_scope_single_dual = [0x27, 0x13]
 get_scope_mode = [0x27, 0x14]
 get_scope_span = [0x27, 0x15]

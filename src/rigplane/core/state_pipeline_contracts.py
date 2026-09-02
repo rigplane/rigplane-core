@@ -1145,6 +1145,11 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             unit="centihz",
         ),
         spec(
+            FieldPath.receiver(receiver_id, "operator_controls", "repeater_shift"),
+            "int",
+            writable=True,
+        ),
+        spec(
             FieldPath.receiver(receiver_id, "operator_controls", "audio_peak_filter"),
             "int",
             writable=True,

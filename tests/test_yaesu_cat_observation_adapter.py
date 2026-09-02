@@ -546,8 +546,10 @@ class _SideEffectingYaesuRadio:
     async def read_sql_type(self, receiver: int = 0) -> int:
         # CAT ``CT`` P2 code 1 = "TONE" (ENC ON / DEC OFF). Pure read: the
         # derived neutral booleans must come from the observation pipeline, not
-        # from any legacy-state write (the pre-seeded main.repeater_tone/tsql=True
-        # is the impossible-via-CT combination that proves no mutation).
+        # from any legacy-state write. The pre-seeded main.repeater_tone/tsql
+        # (True, True) differs from what code 1 actually derives (True, False,
+        # MOR-2130), so a leak into legacy state would flip repeater_tsql and
+        # be caught.
         return 1
 
     async def get_sql_type(self, receiver: int = 0) -> int:
@@ -1342,7 +1344,9 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
     assert radio.radio_state.break_in_delay == 888
     assert radio.radio_state.cw_spot is False
     # Tone/CTCSS read_sql_type must not mutate legacy state (MOR-457). The
-    # pre-seeded impossible-via-CT combination (both True) is preserved.
+    # pre-seeded sentinel pair (True, True) differs from what the fixture's
+    # fixed code 1 actually derives (True, False, MOR-2130), so it is
+    # preserved rather than overwritten.
     assert radio.radio_state.main.repeater_tone is True
     assert radio.radio_state.main.repeater_tsql is True
     # CTCSS tone freq read_ctcss_tone_index must not mutate legacy state
@@ -1494,19 +1498,26 @@ async def test_read_sql_type_is_a_pure_read() -> None:
     It delegates to the same ``CT0`` query/parse path as ``get_sql_type`` but
     must NOT write ``self._state`` — only the ``read_*`` variant feeds the
     observation pipeline (MOR-434 pattern). It returns the raw FTX-1 ``CT`` P2
-    "SQL TYPE" code (FTX-1_CAT_OM_ENG_2507); the neutral-boolean derivation
+    "SQL TYPE" code (FTX-1_CAT_OM_ENG_2508-C); the neutral-boolean derivation
     happens in the adapter, never here.
+
+    Pre-seeds ``(repeater_tone=False, repeater_tsql=True)`` — the one pair no
+    ``CT`` code can produce (MOR-2130's corrected mapping only reaches
+    (F,F)/(T,F)/(T,T)) — and feeds code 2, which derives (T,T). A leak of that
+    derived value into legacy state would flip ``repeater_tone`` to True,
+    which the assertion below catches; a pre-seed of (T,T) would not, since
+    code 2's derivation and the pre-seed would then be identical.
     """
     radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
-    radio.radio_state.main.repeater_tone = True
+    radio.radio_state.main.repeater_tone = False
     radio.radio_state.main.repeater_tsql = True
     state_before = radio.radio_state
 
     radio._query = AsyncMock(return_value={"type": "02"})  # type: ignore[method-assign]
     assert await radio.read_sql_type() == 2
     assert radio.radio_state is state_before
-    # The impossible-via-CT pre-seeded combination is untouched.
-    assert radio.radio_state.main.repeater_tone is True
+    # The pre-seeded, not-representable-via-CT pair is untouched.
+    assert radio.radio_state.main.repeater_tone is False
     assert radio.radio_state.main.repeater_tsql is True
 
     # get_sql_type delegates to the same pure read.
@@ -1517,11 +1528,13 @@ async def test_read_sql_type_is_a_pure_read() -> None:
 @pytest.mark.parametrize(
     ("code", "expected_tone", "expected_tsql"),
     [
-        # CAT ``CT`` P2 "SQL TYPE" codes (FTX-1_CAT_OM_ENG_2507) → neutral
-        # mutually-exclusive CTCSS booleans (Hamlib/Icom convention):
+        # CAT ``CT`` P2 "SQL TYPE" codes (FTX-1_CAT_OM_ENG_2508-C) → the two
+        # independent axes defined by ``RepeaterControlCapable``: repeater_tone
+        # is TX tone ENCODE, repeater_tsql is RX tone-squelch DECODE. Code 2 has
+        # encode ON *and* decode ON, so both booleans are True (MOR-2130).
         (0, False, False),  # CTCSS OFF
         (1, True, False),  # CTCSS ENC ON / DEC OFF ("TONE")
-        (2, False, True),  # CTCSS ENC ON / DEC ON ("TSQL")
+        (2, True, True),  # CTCSS ENC ON / DEC ON ("TSQL")
         (3, False, False),  # DCS — no neutral CTCSS-boolean representation
         (4, False, False),  # PR FREQ — no neutral CTCSS-boolean representation
         (5, False, False),  # REV TONE — no neutral CTCSS-boolean representation
@@ -1571,6 +1584,52 @@ async def test_sql_type_skipped_without_ctcss_capability() -> None:
     assert "receiver.main.operator_toggles.repeater_tone" not in paths
     assert "receiver.main.operator_toggles.repeater_tsql" not in paths
     radio.read_sql_type.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "code",
+    [0, 1, 2, 3],  # Simplex, Plus Shift, Minus Shift, ARS
+)
+@pytest.mark.asyncio
+async def test_repeater_shift_code_emits_directly(code: int) -> None:
+    """MOR-2111: each ``OS`` P2 code emits as-is onto the neutral path.
+
+    Unlike sql_type's boolean-pair derivation, RepeaterShiftDirection's own
+    wire values ARE the neutral representation (FTX-1 is the only
+    implementer of RepeaterShiftCapable today) -- no mapping happens here.
+    """
+    radio = _make_radio()
+    radio.capabilities = radio.capabilities | {"repeater_shift"}
+    radio.read_repeater_shift = AsyncMock(return_value=code)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert by_path["receiver.main.operator_controls.repeater_shift"] == code
+    assert radio.read_repeater_shift.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_repeater_shift_skipped_without_capability() -> None:
+    """MOR-2111: shift direction does not emit when the ``repeater_shift`` cap is absent."""
+    radio = _make_radio()
+    radio.read_repeater_shift = AsyncMock(return_value=1)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = {str(item.path) for item in observations}
+
+    assert "receiver.main.operator_controls.repeater_shift" not in paths
+    radio.read_repeater_shift.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

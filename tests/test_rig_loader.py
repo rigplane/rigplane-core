@@ -2114,6 +2114,61 @@ class TestWriteOnlyControls:
         assert {"rit", "xit", "notch", "nr", "nb", "compressor"} <= caps
 
 
+class TestFixedValueChecks:
+    """[validation.fixed_value] parsing and propagation (MOR-2105 part 2).
+
+    Only for a fact with no other home in ``RadioProfile`` (F1/F2, owner
+    ruling): ``scope_receiver.set`` (IC-7300's single-receiver fact) is NOT
+    declared here -- ``receiver_count``/``supports_receiver`` already say
+    so, and ``validation/hardware.py: _run_one_check`` derives it from that
+    directly instead of restating it. Only ``scope_dual.set`` (single-scope;
+    no ``receiver_count``-like field exists for "scope count") uses this
+    table.
+    """
+
+    def test_fixed_value_checks_parsed(self, tmp_path):
+        toml = (
+            _MINIMAL_TOML
+            + '\n[validation.fixed_value]\n"scope_dual.set" = "some source"\n'
+        )
+        rig = load_rig(_write_toml(tmp_path, toml))
+        assert rig.fixed_value_checks == {"scope_dual.set": "some source"}
+        assert rig.to_profile().fixed_value_checks == {"scope_dual.set": "some source"}
+
+    def test_fixed_value_checks_defaults_empty(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
+        assert rig.fixed_value_checks == {}
+        assert rig.to_profile().fixed_value_checks == {}
+
+    def test_fixed_value_checks_source_must_be_nonempty_string(self, tmp_path):
+        toml = _MINIMAL_TOML + '\n[validation.fixed_value]\n"scope_dual.set" = ""\n'
+        with pytest.raises(RigLoadError, match="non-empty string"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_ic7300_fixed_value_checks_is_exactly_scope_dual(self):
+        """MOR-2105 part 2, F1: after deriving scope_receiver.set from
+        receiver_count, rigs/ic7300.toml's [validation.fixed_value] table
+        must hold exactly one entry -- a second entry reappearing here
+        (e.g. a future edit re-adding scope_receiver.set) would silently
+        reinstate the two-sources-of-truth defect F1 removed.
+        """
+        profile = load_rig(RIGS_DIR / "ic7300.toml").to_profile()
+        assert profile.fixed_value_checks == {
+            "scope_dual.set": (
+                "IC-7300 Advanced Manual (11a) command table p.19-7: "
+                "27 13 data column = 00 (Single only)"
+            )
+        }
+
+    # The cross-check against the live validation registry
+    # (test_every_shipped_profiles_fixed_value_check_ids_are_real_registry_
+    # check_ids) lives below, parametrized over _SHIPPED_RIG_TOMLS rather
+    # than hardcoded to ic7300.toml here, per the directory-driven idiom
+    # TestAgcDomainDeclaredOrCapabilityAbsent's docstring states just below
+    # this class -- _SHIPPED_RIG_TOMLS is defined after this class, so the
+    # parametrize can't reference it from inside this class body.
+
+
 # ── AGC domain declaration, table-driven over every shipped profile ──────
 # (MOR-1522). "Shipped profile" = every rigs/*.toml except the UI-only
 # _keyboard-default.toml, taken from the directory listing itself rather
@@ -2123,6 +2178,29 @@ class TestWriteOnlyControls:
 _SHIPPED_RIG_TOMLS = sorted(
     p for p in RIGS_DIR.glob("*.toml") if p.name != "_keyboard-default.toml"
 )
+
+
+@pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)
+def test_every_shipped_profiles_fixed_value_check_ids_are_real_registry_check_ids(
+    toml_path,
+):
+    """[validation.fixed_value] check_id existence, cross-checked against the
+    live validation registry, over every shipped profile (MOR-2105 part 2) --
+    directory-driven like TestAgcDomainDeclaredOrCapabilityAbsent just below,
+    so a future profile adding this table lands under the same cross-check
+    without a hand-written addition here. Most profiles declare no
+    [validation.fixed_value] table at all (empty dict, trivially a subset);
+    today only rigs/ic7300.toml (scope_dual.set) is non-empty.
+    `rigplane.profiles` may not import `rigplane.validation`
+    (`.importlinter`'s validation-leaf contract), so `load_rig` itself
+    cannot raise on an unknown check_id at parse time -- this test is where
+    that guarantee is exercised instead, by a caller (this test file) that
+    may legally import both.
+    """
+    from rigplane.validation.registry import REGISTRY_BY_ID
+
+    profile = load_rig(toml_path).to_profile()
+    assert set(profile.fixed_value_checks) <= set(REGISTRY_BY_ID)
 
 
 class TestAgcDomainDeclaredOrCapabilityAbsent:
@@ -2702,15 +2780,26 @@ class TestIc7300DeclaresAbsentCommands:
     (+1, to 28), then MOR-2008 batch 1 deleted the dead bare
     ``quick_dual_watch`` entry alongside the bare ``quick_split`` row it
     was declared next to (-1, back to 27 -- a different 27 than D2's, not
-    the same set reverted). Pinned by name, not just count, so a future D2
-    pass on another command can't silently swap one of these for a
-    different one and still pass a bare-count check.
+    the same set reverted), then MOR-2105 part 1 (2026-09-01) added
+    ``get_scope_rbw``/``set_scope_rbw`` (+2, to 29), then the same day
+    MOR-2118 added ``get_antenna``/``set_antenna`` (no 0x12 row on this
+    radio) and MOR-2117 added the bare ``set_dual_watch`` (dispatches to
+    the two split names above, already absent, but was itself in neither
+    list) (+3, to 32), then MOR-2190 replaced six proven-wrong positive
+    bindings with direct official-manual absent entries (+6, to 38 -- the
+    current count, per ``len(_EXPECTED_ABSENT)``).
+    Pinned by name, not just count, so a future D2 pass on another command
+    can't silently swap one of these for a different one and still pass a
+    bare-count check.
     """
 
     _EXPECTED_ABSENT = frozenset(
         {
             "get_af_mute",
             "set_af_mute",
+            # MOR-2118: no 0x12 antenna-select command on this radio.
+            "get_antenna",
+            "set_antenna",
             "get_apf_type_level",
             "set_apf_type_level",
             "get_data2_mod_input",
@@ -2724,11 +2813,13 @@ class TestIc7300DeclaresAbsentCommands:
             "get_drive_gain",
             "set_drive_gain",
             "get_dual_watch",
-            # set_dual_watch_off/set_dual_watch_on, not the bare
-            # set_dual_watch the pre-migration fallback used to resolve
-            # (MOR-2007 ruling 1 split the setter key).
             "set_dual_watch_off",
             "set_dual_watch_on",
+            # MOR-2117: bare "set_dual_watch" dispatches to the two split
+            # names above (MOR-2007 ruling 1 split the setter key), which
+            # were already absent -- the bare name itself was in neither
+            # list, so supports_command answered True for it.
+            "set_dual_watch",
             "get_lan_mod_level",
             "set_lan_mod_level",
             "get_main_sub_band",
@@ -2737,10 +2828,21 @@ class TestIc7300DeclaresAbsentCommands:
             "get_powerstat",
             "get_quick_dual_watch",
             "set_quick_dual_watch",
+            # MOR-2190: direct IC-7300 Advanced Manual (11a) findings.
+            "get_ref_adjust",
+            "set_ref_adjust",
             # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
             # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
+            # MOR-2105: IC-7300 Advanced Manual (11a) 0x27 sub-command table
+            # (pp.19-7..19-8) runs 1E then 20 -- no 1F row.
+            "get_scope_rbw",
+            "set_scope_rbw",
+            "get_scope_marker_position",
+            "set_scope_marker_position",
+            "get_tx_freq_monitor",
+            "set_tx_freq_monitor",
         }
     )
 
@@ -2814,10 +2916,11 @@ class TestIc9700DeclaresAbsentCommands:
 
 class TestIc705DeclaresAbsentCommands:
     """MOR-2016 (D2): IC-705 is filled with the ``{ absent = "<source>" }``
-    spelling for 25 commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
+    spelling for 26 commands the IC-705 CI-V Reference Guide (A7560-8EX-1,
     Jul.2020) confirms have no row on this radio (24 at D2 time; MOR-2007
     ruling 1 later split ``set_dual_watch`` into
-    ``set_dual_watch_off``/``set_dual_watch_on``, +1 net). Pinned by name,
+    ``set_dual_watch_off``/``set_dual_watch_on``, +1 net; MOR-2143 added the
+    bare ``set_dual_watch`` name, +1, for the current 26). Pinned by name,
     not just count, so a future D2 pass on another command can't silently
     swap one of these for a different one and still pass a bare-count
     check.
@@ -2838,6 +2941,7 @@ class TestIc705DeclaresAbsentCommands:
             "get_digisel",
             "set_digisel",
             "get_dual_watch",
+            "set_dual_watch",
             "set_dual_watch_off",
             "set_dual_watch_on",
             "get_ip_plus",

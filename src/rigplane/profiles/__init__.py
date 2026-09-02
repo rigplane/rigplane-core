@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Never, NotRequired, Required, TypedDict
 
-from rigplane.commands.command_map import CommandMap
+from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
@@ -337,6 +337,16 @@ class RadioProfile:
     # treats both the same way: it binds an empty `CommandMap` rather than
     # raising.
     command_map: CommandMap | None = None
+    # Reverse of ``command_map`` above (MOR-1993 Z2, `docs/plans/
+    # 2026-09-01-reverse-command-index.md`): resolves an incoming
+    # ``(command, sub, data)`` frame back to a declared command name.
+    # ``None`` under the same rule as ``command_map`` -- a hand-built
+    # ``RadioProfile`` constructed outside ``profiles/rig_loader.py`` with
+    # no map supplied at all. Built from this profile's own
+    # ``command_map`` and only ever consulted for it -- never a union
+    # across profiles (`commands/command_map.py: ReverseCommandIndex`'s
+    # own module docstring has the per-radio-menu evidence for why).
+    reverse_index: ReverseCommandIndex | None = None
     filter_width_min: int = 50
     filter_width_max: int = 9999
     filter_width_encoding: str = "segmented_bcd_index"
@@ -417,6 +427,24 @@ class RadioProfile:
     # driven from ``[validation].write_only_controls`` in the rig TOML (MOR-208).
     # Empty by default: every control uses the standard RMVR path.
     write_only_controls: frozenset[str] = frozenset()
+    # Validation check_id -> source establishing that this radio has only one
+    # legal value for that control (MOR-2105 part 2): a check_id-grained
+    # sibling to ``write_only_controls`` above, needed because a capability
+    # like "scope" mixes fixed-value checks with genuinely multi-valued ones
+    # on the same radio (scope_span.set). A check_id named here makes the
+    # RMVR read-modify-verify-restore harness (`validation/hardware.py:
+    # _run_one_check`) report SKIP, quoting the source, instead of flipping
+    # to a value the radio can never report back and reporting a false FAIL.
+    # Data-driven from ``[validation.fixed_value]`` in the rig TOML -- but
+    # only for a fact with no other home. IC-7300's scope_dual.set (single
+    # scope) lives here because nothing else in this dataclass says so;
+    # scope_receiver.set (single receiver) does NOT, even though it is
+    # fixed-value for the same reason, because ``receiver_count``/
+    # ``supports_receiver`` above already say so and the harness derives it
+    # from that instead of restating it as a second, independently-editable
+    # source of truth (F1, MOR-2105 part 2 owner ruling). Empty by default:
+    # every control uses the standard RMVR path.
+    fixed_value_checks: dict[str, str] = field(default_factory=dict)
     # Provider-specific state acquisition metadata (MOR-344). This is profile
     # data only; future schedulers/adapters consume it instead of Web or
     # rigctld delivery code branching on radio model.
@@ -424,9 +452,7 @@ class RadioProfile:
     tx_interlock_disposition_overrides: dict[
         TxInterlockCommandFamily, TxInterlockDisposition
     ] = field(default_factory=dict)
-    # Measured per-radio transmit policy (MOR-1912). Parsed and carried
-    # here; nothing reads it yet — the transmit-authority engine that will
-    # consume it lands in a later row of the same epic.
+    # Measured per-radio transmit policy (MOR-1912).
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
 
     def supports_capability(self, capability: str) -> bool:

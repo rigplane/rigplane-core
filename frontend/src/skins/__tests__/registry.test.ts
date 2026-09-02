@@ -28,6 +28,7 @@ const entrypoints = vi.hoisted(() => {
     'lcd-cockpit': { name: 'lcd-cockpit' },
     'lcd-scope': { name: 'lcd-scope' },
     'mobile': { name: 'mobile' },
+    'peer-split': { name: 'peer-split' },
     'sdr-test': { name: 'sdr-test' },
     'dual-receiver-cockpit': { name: 'dual-receiver-cockpit' },
   };
@@ -40,6 +41,7 @@ const lazyImports = vi.hoisted(() => {
     'lcd-cockpit': vi.fn(() => ({ default: entrypoints['lcd-cockpit'] })),
     'lcd-scope': vi.fn(() => ({ default: entrypoints['lcd-scope'] })),
     'mobile': vi.fn(() => ({ default: entrypoints['mobile'] })),
+    'peer-split': vi.fn(() => ({ default: entrypoints['peer-split'] })),
     'sdr-test': vi.fn(() => ({ default: entrypoints['sdr-test'] })),
     'dual-receiver-cockpit': vi.fn(() => ({ default: entrypoints['dual-receiver-cockpit'] })),
   };
@@ -50,6 +52,7 @@ vi.mock('../desktop-v2/DesktopSkin.svelte', () => lazyImports['desktop-v2']());
 vi.mock('../lcd-cockpit/LcdCockpitSkin.svelte', () => lazyImports['lcd-cockpit']());
 vi.mock('../lcd-scope/LcdScopeSkin.svelte', () => lazyImports['lcd-scope']());
 vi.mock('../mobile/MobileSkin.svelte', () => lazyImports['mobile']());
+vi.mock('../segmentline/PeerSplitLayout.svelte', () => lazyImports['peer-split']());
 vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports['sdr-test']());
 vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports['dual-receiver-cockpit']());
 
@@ -66,7 +69,7 @@ const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =
 
 describe('skin registry', () => {
   it('gives mobile precedence over every forced layout preference', () => {
-    for (const layoutPreference of ['auto', 'lcd', 'lcd-cockpit', 'lcd-scope', 'standard', 'sdr-test'] as const) {
+    for (const layoutPreference of ['auto', 'lcd', 'lcd-cockpit', 'lcd-scope', 'standard', 'sdr-test', 'peer-split'] as const) {
       expect(resolve({ isMobile: true, layoutPreference, hasAnyScope: true })).toBe('mobile');
     }
   });
@@ -77,6 +80,9 @@ describe('skin registry', () => {
     ['lcd-cockpit', 'lcd-cockpit'],
     ['lcd-scope', 'lcd-scope'],
     ['sdr-test', 'sdr-test'],
+    // MOR-2152: peer-split becomes a forced, selectable preference — the
+    // resolveSkinId branch this ticket adds.
+    ['peer-split', 'peer-split'],
   ] as const)('resolves forced %s preference to %s', (layoutPreference, skinId) => {
     expect(resolve({ layoutPreference, hasAnyScope: false })).toBe(skinId);
   });
@@ -111,6 +117,7 @@ describe('skin registry', () => {
     ['lcd-cockpit', entrypoints['lcd-cockpit'], lazyImports['lcd-cockpit']],
     ['lcd-scope', entrypoints['lcd-scope'], lazyImports['lcd-scope']],
     ['mobile', entrypoints['mobile'], lazyImports['mobile']],
+    ['peer-split', entrypoints['peer-split'], lazyImports['peer-split']],
     ['sdr-test', entrypoints['sdr-test'], lazyImports['sdr-test']],
   ] as const;
 
@@ -214,6 +221,7 @@ describe('presentation resource plan', () => {
   const EXPECTED_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
     'desktop-v2': ['audio-fft', 'hardware-scope'],
     'dual-receiver-cockpit': [],
+    'peer-split': [],
     'sdr-test': ['audio-fft', 'hardware-scope'],
     'lcd-cockpit': ['audio-fft'],
     'lcd-scope': ['audio-fft'],

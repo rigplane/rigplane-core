@@ -38,6 +38,7 @@ import pytest
 from rigplane.commands._codec import bcd_encode_value
 from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.command_map import CommandMap
+from rigplane.core.exceptions import CommandError
 from rigplane.core.types import CivFrame, bcd_encode
 from rigplane.runtime.radio import CoreRadio
 
@@ -107,7 +108,7 @@ MATCHER_BACKED_GETTERS: tuple[_GetterSpec, ...] = (
     _GetterSpec("get_vox_delay", "_get_bcd_level"),
     # commands/vfo.py's matcher-backed getters (MOR-2007 Steps 5..N,
     # module 3). get_dual_watch is NOT included: 0x07 carries no CI-V
-    # sub-command (_frame.py: _COMMANDS_WITH_SUB excludes it, unlike
+    # sub-command (_frame.py: command_carries_sub excludes it, unlike
     # 0x1A here), so its reply marker lands in data[0] rather than
     # .sub -- it cannot route through _get_bcd_level/_get_bool_value at
     # all, and is instead pinned directly by
@@ -255,28 +256,24 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
 ) -> None:
     """Keystone case for ``get_dual_watch``, which cannot register in
     ``MATCHER_BACKED_GETTERS`` above: 0x07 carries no CI-V sub-command
-    (``_frame.py: _COMMANDS_WITH_SUB`` excludes it, unlike 0x1A/0x16 for
+    (``_frame.py: command_carries_sub`` excludes it, unlike 0x1A/0x16 for
     the getters above), so its reply marker is echoed in ``data[0]``
     rather than landing in ``.sub`` -- it cannot route through
     ``_get_bcd_level``/``_get_bool_value`` at all, and
     ``runtime/radio.py: CoreRadio.get_dual_watch`` handles both wire
-    shapes itself instead.
+    shapes itself instead, resolving its shape via
+    ``BoundCommands.expect`` directly rather than ``self._expect_shape``
+    (which asserts a non-``None`` ``sub``, wrong for IC-7610's row).
 
     Proven against two profiles whose ``get_dual_watch`` commands are
-    wire-incompatible -- IC-7610's ``[0x07, 0xC2]`` (marker in data[0])
-    and IC-9700's ``[0x16, 0x59]`` (marker in .sub, since 0x16 IS in
-    ``_COMMANDS_WITH_SUB``) -- so a marker hardcoded to either family's
-    byte answers the OTHER family's reply wrongly regardless of the
-    actual on/off value: exactly the "requests moved, replies not"
-    failure mode this file exists to make impossible (plan §7).
-
-    Manually confirmed red for the half-done shape: reverting
-    ``get_dual_watch`` to its pre-migration check (literal
-    ``resp.data[0] == 0xC2``, ignoring ``resp.sub``/the map) makes
-    ``test_ic9700`` below fail -- IC-9700's real reply is
-    ``command=0x16, sub=0x59, data=[value]``, which never contains
-    ``0xC2`` anywhere, so the reverted check would always return
-    ``False`` regardless of the actual toggle state.
+    wire-incompatible -- IC-7610's ``[0x07, 0xC2]`` (marker in data[0],
+    ``sub=None``, so ``BoundCommands.expect`` puts the marker byte at
+    ``prefix[0]`` instead) and IC-9700's ``[0x16, 0x59]`` (marker in
+    .sub, since 0x16 IS in ``command_carries_sub``) -- so a marker
+    hardcoded to either family's byte answers the OTHER family's reply
+    wrongly regardless of the actual on/off value: exactly the "requests
+    moved, replies not" failure mode this file exists to make impossible
+    (plan §7).
     """
 
     async def _get_dual_watch_answering(radio: CoreRadio, frame) -> bool:
@@ -290,7 +287,7 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
     # IC-7610: [0x07, 0xC2] -- 0x07 has no CI-V sub-command, marker in data[0].
     ic7610 = _civ_rig_configs()["IC-7610"].to_profile()
     command, sub, prefix = decode_wire_tuple(ic7610.command_map.get("get_dual_watch"))
-    assert (command, sub, prefix) == (0x07, 0xC2, b"")
+    assert (command, sub, prefix) == (0x07, None, b"\xc2")
     radio_7610 = CoreRadio("198.51.100.1", profile=ic7610)
 
     on_reply = CivFrame(
@@ -310,7 +307,7 @@ async def test_get_dual_watch_reply_marker_comes_from_the_map(
     )
     assert await _get_dual_watch_answering(radio_7610, wrong_marker) is False
 
-    # IC-9700: [0x16, 0x59] -- 0x16 IS in _COMMANDS_WITH_SUB, marker in .sub.
+    # IC-9700: [0x16, 0x59] -- 0x16 IS in command_carries_sub, marker in .sub.
     ic9700 = _civ_rig_configs()["IC-9700"].to_profile()
     command9700, sub9700, prefix9700 = decode_wire_tuple(
         ic9700.command_map.get("get_dual_watch")
@@ -674,3 +671,100 @@ async def test_set_scope_fixed_edge_reply_shape_comes_from_the_map(
     # its own request's echo; deriving the shape from the same map instead
     # (this call site's retrofit) must not raise here.
     await radio.set_scope_fixed_edge(edge=1, start_hz=1_000_000, end_hz=2_000_000)
+
+
+# MOR-2106: `commands/scope.py: scope_main_sub` (the WRITE builder) used to
+# resolve "get_scope_main_sub" -- the READ key -- through `_build_from_map`,
+# so a profile that declared only the getter (or declared the setter
+# explicitly absent) could not refuse the write: the getter's declared bytes
+# went out regardless. The two tests below build a profile explicitly missing
+# `set_scope_main_sub` (never relying on any shipped `rigs/*.toml` staying
+# that way -- sibling ticket MOR-2105 is editing `rigs/ic7300.toml`) and
+# assert both that `CoreRadio.set_scope_receiver` raises `CommandError`
+# naming the setter key AND that no frame reaches the transport.
+def _drop_command_map_key(cmd_map: CommandMap, key: str) -> CommandMap:
+    return CommandMap({k: cmd_map.get(k) for k in cmd_map if k != key})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+async def test_scope_main_sub_setter_refuses_when_only_getter_declared(
+    model: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile declaring `get_scope_main_sub` but NOT `set_scope_main_sub`
+    must refuse `set_scope_receiver` before any CI-V bytes are sent.
+
+    Pre-fix, this was false: `scope_main_sub` (the write builder) resolved
+    "get_scope_main_sub" through `_build_from_map`, so the getter's declared
+    wire bytes went out on write too, unconditionally.
+    """
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None
+    if not cmd_map.has("get_scope_main_sub"):
+        pytest.skip(f"{model} does not declare get_scope_main_sub")
+
+    mutated_map = _drop_command_map_key(cmd_map, "set_scope_main_sub")
+    mutated_profile = dataclasses.replace(profile, command_map=mutated_map)
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    frames: list[bytes] = []
+
+    async def _record_send_civ_raw(civ: bytes, **kwargs: Any) -> None:
+        frames.append(civ)
+        return None
+
+    monkeypatch.setattr(radio, "_send_civ_raw", _record_send_civ_raw)
+
+    with pytest.raises(CommandError, match="set_scope_main_sub"):
+        await radio.set_scope_receiver(1)
+
+    assert frames == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", sorted(_civ_rig_configs()))
+async def test_scope_main_sub_setter_refuses_when_declared_absent(
+    model: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stronger form of the test above: `set_scope_main_sub` is declared
+    ABSENT (D1 state 2, `commands/bound.py: BoundCommands._refusal_for`)
+    rather than merely missing (state 3) -- this cannot pass by accident
+    off a KeyError from an unrelated typo, because the refusal message must
+    quote the declared source.
+    """
+    config = _civ_rig_configs()[model]
+    profile = config.to_profile()
+    cmd_map = profile.command_map
+    assert cmd_map is not None
+    if not cmd_map.has("get_scope_main_sub"):
+        pytest.skip(f"{model} does not declare get_scope_main_sub")
+
+    mutated_map = _drop_command_map_key(cmd_map, "set_scope_main_sub")
+    source = "test fixture (MOR-2106): scope MAIN/SUB write declared absent"
+    mutated_profile = dataclasses.replace(
+        profile,
+        command_map=mutated_map,
+        absent_command_sources={
+            **profile.absent_command_sources,
+            "set_scope_main_sub": source,
+        },
+    )
+    monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
+    radio = CoreRadio("198.51.100.1", profile=mutated_profile)
+
+    frames: list[bytes] = []
+
+    async def _record_send_civ_raw(civ: bytes, **kwargs: Any) -> None:
+        frames.append(civ)
+        return None
+
+    monkeypatch.setattr(radio, "_send_civ_raw", _record_send_civ_raw)
+
+    with pytest.raises(CommandError, match="set_scope_main_sub") as excinfo:
+        await radio.set_scope_receiver(1)
+
+    assert source in str(excinfo.value)
+    assert frames == []

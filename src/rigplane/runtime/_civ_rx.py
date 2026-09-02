@@ -1754,22 +1754,6 @@ class CivRuntime:
                 # the identical sub→TX-antenna and data-byte→RX-ANT decode. This
                 # command is NOT safe to poll, so the fields are ingress-gated.
                 pass
-            elif (
-                frame.command == 0x14
-                and frame.data
-                and len(frame.data) >= 2
-                and _rx is not None
-            ):
-                # Level response (plain CI-V, no cmd29). rf_gain (0x02), squelch
-                # (0x03), nr_level (0x06) and nb_level (0x12) are now
-                # observation-backed (MOR-437); only af_level (0x01) still
-                # mirrors into legacy RadioState here.
-                sub = frame.sub or 0
-                raw = ((frame.data[0] >> 4) & 0x0F) * 100 + (frame.data[0] & 0x0F) * 10
-                if len(frame.data) > 1:
-                    raw += (frame.data[1] >> 4) & 0x0F
-                if sub == 0x01:
-                    _rx.af_level = raw
             elif frame.command == 0x16:
                 data = frame.data
                 sub = frame.sub or 0

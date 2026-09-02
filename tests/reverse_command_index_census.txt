@@ -1,0 +1,23 @@
+# Reverse-command-index per-profile census baseline (MOR-1993 Z2,
+# docs/plans/2026-09-01-reverse-command-index.md). Tab separated:
+#   <model>  <names>  <keys>  <colliding>
+# names      = entries in that profile's CommandMap (== len(command_map)).
+# keys       = distinct (command, sub, prefix) groups -- the same grouping
+#              `commands/command_map.py: ReverseCommandIndex` builds, i.e.
+#              NOT collapsed to (command, sub) (see that class's docstring
+#              for why collapsing would be wrong).
+# colliding  = names that share an exact group of size > 1. Incoming lookup
+#              preserves every compatible exact or shorter prefix, so this
+#              count alone does not determine whether a frame resolves or is
+#              ambiguous. See
+#              test_all_profile_probe_census_returns_exact_viable_names.
+# Measured by test_census_matches_baseline; regenerate with:
+#   RIGPLANE_REGEN_REVERSE_COMMAND_INDEX_CENSUS=1 uv run pytest tests/test_reverse_command_index.py
+# Regenerate the same way after an intentional profile/command change --
+# do not hand-edit.
+IC-705	246	128	231
+IC-7300	322	181	279
+IC-7610	217	129	171
+IC-9700	230	137	183
+X6100	67	42	50
+X6200	68	43	50

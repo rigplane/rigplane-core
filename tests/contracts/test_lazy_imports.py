@@ -42,6 +42,7 @@ TIER1_NAMES = [
     "ReceiverBankCapable",
     "RecoverableConnection",
     "RepeaterControlCapable",
+    "RepeaterShiftCapable",
     "RigctldRoutable",
     "RitXitCapable",
     "ScopeCapable",
@@ -70,6 +71,7 @@ TIER1_NAMES = [
     "Mode",
     "AudioCodec",
     "BreakInMode",
+    "RepeaterShiftDirection",
     # --- Public state types ---
     "RadioState",
     "RadioProfile",

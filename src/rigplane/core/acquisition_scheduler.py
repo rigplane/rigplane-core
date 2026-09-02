@@ -36,9 +36,11 @@ from rigplane.core.state_store import (
 
 __all__ = [
     "AcquisitionMethod",
+    "AcquisitionQuery",
     "AcquisitionExecutionResult",
     "AcquisitionExecutor",
     "AcquisitionPriority",
+    "AcquisitionQueryResolver",
     "AcquisitionRequest",
     "AcquisitionScheduler",
     "AcquisitionStatus",
@@ -48,38 +50,26 @@ __all__ = [
     "RadioStateModelService",
     "StateFreshnessService",
     "civ_acquisition_executor_for_provider",
-    "split_ctl_mem_sub",
+    "provider_uses_civ_acquisition",
 ]
 
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
-# ``sub`` is normally a single CI-V sub-command byte (or ``None`` for a
-# no-sub-byte read). It is ``bytes`` only for multi-byte ctl-mem
-# sub-addressing (0x1A/0x05 "quick set" reads, e.g. voxDelay's 2-byte control
-# number, MOR-1483): the first byte is the CI-V sub-command byte and any
-# remaining bytes are additional payload data that must follow it in the
-# frame. Both ``AcquisitionQuerySender`` implementations (web radio_poller,
-# rigctld) must split it via ``split_ctl_mem_sub`` before building the frame.
-AcquisitionQuerySender = Callable[
-    [int, int | bytes | None, int | None], Awaitable[None]
-]
+
+
+@dataclass(frozen=True, slots=True)
+class AcquisitionQuery:
+    """Lossless semantic envelope for one CI-V acquisition query."""
+
+    command: int
+    sub: int | None = None
+    data: bytes = b""
+    receiver: int | None = None
+
+
+AcquisitionQuerySender = Callable[[AcquisitionQuery], Awaitable[None]]
+AcquisitionQueryResolver = Callable[[FieldPath], AcquisitionQuery | None]
 CivCmd29Support = Callable[[int, int | None], bool]
-
-
-def split_ctl_mem_sub(sub: int | bytes | None) -> tuple[int | None, bytes]:
-    """Split an ``AcquisitionQuerySender`` ``sub`` element into CI-V parts.
-
-    Returns ``(civ_sub, extra_data)`` where ``civ_sub`` is the single byte to
-    pass as the CI-V frame's sub-command field and ``extra_data`` is any
-    additional payload bytes that must follow it (empty for the common
-    single-byte-or-none case). Shared by both backend executors so the
-    multi-byte ctl-mem representation (see ``AcquisitionQuerySender``) is
-    decoded identically everywhere.
-    """
-
-    if isinstance(sub, (bytes, bytearray)):
-        return (sub[0] if sub else None), bytes(sub[1:])
-    return sub, b""
 
 
 class AcquisitionPriority(StrEnum):
@@ -237,118 +227,22 @@ class _PendingMeterSample:
     policy: MeterCoalescingPolicy
 
 
-_RECEIVER_IDS: dict[str, int] = {
-    "0": 0,
-    "main": 0,
-    "1": 1,
-    "sub": 1,
-}
-_RECEIVER_LEVEL_QUERY_SUBS: dict[str, int] = {
-    "af_level": 0x01,
-    "rf_gain": 0x02,
-    "squelch": 0x03,
-    "apf_type_level": 0x05,
-    "nr_level": 0x06,
-    "pbt_inner": 0x07,
-    "pbt_outer": 0x08,
-    # notch_filter (MOR-1548): reclassified from global to receiver-scoped,
-    # matching the ic7610.toml cmd29 route's own per-receiver rationale.
-    "notch_filter": 0x0D,
-    "nb_level": 0x12,
-    "digisel_shift": 0x13,
-}
-_RECEIVER_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
-    "att": (0x11, None),
-    "preamp": (0x16, 0x02),
-    "agc": (0x16, 0x12),
-    "audio_peak_filter": (0x16, 0x32),
-    # filter_shape (MOR-1491) / manual_notch_width (MOR-1492): documented
-    # BCD-nibble 0x16 value reads, same query shape as audio_peak_filter/agc
-    # above.
-    "filter_shape": (0x16, 0x56),
-    "manual_notch_width": (0x16, 0x57),
-    "agc_time_constant": (0x1A, 0x04),
-    "tone_freq": (0x1B, 0x00),
-    "tsql_freq": (0x1B, 0x01),
-}
-_GLOBAL_TX_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
-    "compressor_on": (0x16, 0x44),
-    "monitor_on": (0x16, 0x45),
-    "vox_on": (0x16, 0x46),
-    "split": (0x0F, None),
-    "dual_watch": (0x07, 0xC2),
-}
-_RECEIVER_TOGGLE_QUERIES: dict[str, tuple[int, int | None]] = {
-    "digisel": (0x16, 0x4E),
-    "ipplus": (0x16, 0x65),
-    "nb": (0x16, 0x22),
-    "nr": (0x16, 0x40),
-    "auto_notch": (0x16, 0x41),
-    "manual_notch": (0x16, 0x48),
-    "twin_peak_filter": (0x16, 0x4F),
-    "repeater_tone": (0x16, 0x42),
-    "repeater_tsql": (0x16, 0x43),
-}
-_GLOBAL_LEVEL_QUERY_SUBS: dict[str, int] = {
-    "power_level": 0x0A,
-    "mic_gain": 0x0B,
-    "cw_pitch": 0x09,
-    "key_speed": 0x0C,
-    "compressor_level": 0x0E,
-    "break_in_delay": 0x0F,
-    "drive_gain": 0x14,
-    "monitor_gain": 0x15,
-    "vox_gain": 0x16,
-    "anti_vox_gain": 0x17,
-}
-# Global operator-control reads that are NOT 0x14 levels. tuner_status is a
-# 0x1C 0x01 read with NO data byte; the set form (0x1C 0x01 + 0x00/0x01/0x02)
-# is never used here, so a poll only READS ATU status and can never turn the
-# tuner on or start a tune (MOR-488 batch 5).
-_GLOBAL_NONLEVEL_QUERIES: dict[str, tuple[int, int | None]] = {
-    "tuner_status": (0x1C, 0x01),
-    # break_in (MOR-1493): documented BCD-nibble 0x16 value read (OFF/SEMI/
-    # FULL), same query shape as compressor_on/monitor_on/vox_on above but
-    # 3-valued rather than a plain toggle.
-    "break_in": (0x16, 0x47),
-}
-# Global operator-control reads that need the 0x1A ctl-mem ("quick set")
-# multi-byte sub-address (MOR-1483): the CI-V sub-command byte (0x05)
-# followed by a 2-byte per-model control number, packed together as
-# ``bytes`` (see ``AcquisitionQuerySender``'s docstring for the split
-# convention). Pinned to IC-7300's control number -- the live reference
-# profile (``rigs/ic7300.toml``'s ``get_vox_delay`` = ``1A 05 01 91``). This
-# mapping is shared across every icom_civ/xiegu_civ profile and has no
-# per-instance radio-model injection, so it cannot vary the control number
-# per model; IC-7610 is retired hardware
-# (docs/validation/cat-audits/ic7610.md: ``1A 05 0292``) and unverifiable on
-# real hardware, so a primed voxDelay read routed through this mapping on an
-# IC-7610 profile would address the wrong ctl-mem register.
-_GLOBAL_CTL_MEM_QUERIES: dict[str, bytes] = {
-    "vox_delay": b"\x05\x01\x91",
-}
-_GLOBAL_METER_QUERY_SUBS: dict[str, int] = {
-    "power": 0x11,
-    "swr": 0x12,
-    "alc": 0x13,
-    "comp": 0x14,
-    "vd": 0x15,
-    "id": 0x16,
-}
 _CIV_ACQUISITION_PROVIDERS = frozenset(("icom_civ", "xiegu_civ"))
 
 
 class IcomCivAcquisitionExecutor:
     """CI-V path-to-query executor for compatible CI-V acquisition profiles."""
 
-    __slots__ = ("_send_query", "_supports_cmd29")
+    __slots__ = ("_resolve_query", "_send_query", "_supports_cmd29")
 
     def __init__(
         self,
         send_query: AcquisitionQuerySender,
         *,
+        resolve_query: AcquisitionQueryResolver,
         supports_cmd29: CivCmd29Support | None = None,
     ) -> None:
+        self._resolve_query = resolve_query
         self._send_query = send_query
         self._supports_cmd29 = supports_cmd29
 
@@ -369,20 +263,17 @@ class IcomCivAcquisitionExecutor:
                 failed.append(path)
                 failure_reason = failure_reason or "no_civ_query_mapping"
                 continue
-            command, sub, receiver = query
             if (
-                receiver is not None
-                and command not in (0x25, 0x26)
+                query.receiver is not None
                 and self._supports_cmd29 is not None
-                and not isinstance(sub, (bytes, bytearray))
-                and not self._supports_cmd29(command, sub)
+                and not self._supports_cmd29(query.command, query.sub)
             ):
-                if receiver != 0:
+                if query.receiver != 0:
                     failed.append(path)
                     failure_reason = failure_reason or "no_civ_receiver_route"
                     continue
-                receiver = None
-            await self._send_query(command, sub, receiver)
+                query = replace(query, receiver=None)
+            await self._send_query(query)
             sent.append(path)
         return AcquisitionExecutionResult(
             sent_paths=tuple(sent),
@@ -393,100 +284,30 @@ class IcomCivAcquisitionExecutor:
     def query_for_path(
         self,
         path: FieldPath,
-    ) -> tuple[int, int | bytes | None, int | None] | None:
-        receiver = _RECEIVER_IDS.get(path.receiver_id or "")
-        if path.scope.value == "receiver" and receiver is None:
-            return None
-        if path.scope.value == "receiver" and path.family.value == "freq_mode":
-            slot = None if path.slot is None else path.slot.value
-            if slot in {"A", "B"}:
-                return None
-            selector = 1 if slot == "unselected" else receiver
-            if slot == "unselected" and receiver != 0:
-                return None
-            if path.name == "freq_hz":
-                return (0x25, None, selector)
-            if path.name == "mode":
-                return (0x26, None, selector)
-            if path.name == "filter_width":
-                if slot == "unselected":
-                    return None
-                return (0x1A, 0x03, receiver)
-            if path.name == "filter_num":
-                # MOR-1546: no dedicated CI-V read for the filter-selection
-                # fact -- it rides the SAME 0x26 selected/unselected mode
-                # readback as ``mode`` above (``frame.data[3]``, see
-                # ``parse_selected_mode_response`` / ``_civ_rx.py``'s cmd
-                # 0x26 observation branch, which already emits a
-                # ``filter_num`` observation alongside ``mode``/``data_mode``
-                # from that one response). Same selector, same command --
-                # this is an observation-side mapping, not a new query.
-                return (0x26, None, selector)
-            if path.name == "data_mode":
-                # MOR-1546: unlike filter_num, DATA mode has its own
-                # dedicated read (CI-V 0x1A 0x06, ``get_data_mode`` in every
-                # profile's ``[commands]`` table) -- no VFO-selector variant,
-                # so (like filter_width) only the selected/active slot is
-                # queryable.
-                if slot == "unselected":
-                    return None
-                return (0x1A, 0x06, receiver)
-            return None
-        if path.scope.value == "receiver" and path.family.value == "meters":
-            if path.name == "s_meter":
-                return (0x15, 0x02, receiver)
-            return None
-        if path.scope.value == "receiver" and path.family.value == "operator_toggles":
-            toggle = _RECEIVER_TOGGLE_QUERIES.get(path.name)
-            return None if toggle is None else (toggle[0], toggle[1], receiver)
-        if path.scope.value == "receiver" and path.family.value == "operator_controls":
-            nonlevel = _RECEIVER_NONLEVEL_QUERIES.get(path.name)
-            if nonlevel is not None:
-                return (nonlevel[0], nonlevel[1], receiver)
-            sub = _RECEIVER_LEVEL_QUERY_SUBS.get(path.name)
-            return None if sub is None else (0x14, sub, receiver)
-        if path.scope.value == "global" and path.family.value == "meters":
-            sub = _GLOBAL_METER_QUERY_SUBS.get(path.name)
-            return None if sub is None else (0x15, sub, None)
-        if path.scope.value == "global" and path.family.value == "slow_state":
-            if path.name == "active":
-                return (0x07, 0xD2, None)
-            return None
-        if path.scope.value == "global" and path.family.value == "tx_state":
-            if path.name == "ptt":
-                return (0x1C, 0x00, None)
-            if path.name == "rit_on":
-                return (0x21, 0x01, None)
-            if path.name == "rit_tx":
-                return (0x21, 0x02, None)
-            toggle = _GLOBAL_TX_TOGGLE_QUERIES.get(path.name)
-            return None if toggle is None else (toggle[0], toggle[1], None)
-        if path.scope.value == "global" and path.family.value == "operator_controls":
-            if path.name == "rit_freq":
-                return (0x21, 0x00, None)
-            ctl_mem = _GLOBAL_CTL_MEM_QUERIES.get(path.name)
-            if ctl_mem is not None:
-                return (0x1A, ctl_mem, None)
-            nonlevel = _GLOBAL_NONLEVEL_QUERIES.get(path.name)
-            if nonlevel is not None:
-                return (nonlevel[0], nonlevel[1], None)
-            sub = _GLOBAL_LEVEL_QUERY_SUBS.get(path.name)
-            return None if sub is None else (0x14, sub, None)
-        return None
+    ) -> AcquisitionQuery | None:
+        return self._resolve_query(path)
+
+
+def provider_uses_civ_acquisition(provider: str) -> bool:
+    """Return whether *provider* uses the shared CI-V query envelope."""
+
+    return provider in _CIV_ACQUISITION_PROVIDERS
 
 
 def civ_acquisition_executor_for_provider(
     provider: str,
     send_query: AcquisitionQuerySender,
     *,
+    resolve_query: AcquisitionQueryResolver,
     supports_cmd29: CivCmd29Support | None = None,
 ) -> AcquisitionExecutor | None:
     """Return the shared CI-V executor for providers using this query envelope."""
 
-    if provider not in _CIV_ACQUISITION_PROVIDERS:
+    if not provider_uses_civ_acquisition(provider):
         return None
     return IcomCivAcquisitionExecutor(
         send_query,
+        resolve_query=resolve_query,
         supports_cmd29=supports_cmd29,
     )
 

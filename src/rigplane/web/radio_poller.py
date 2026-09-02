@@ -61,6 +61,7 @@ from ..capabilities import (
     CAP_NR,
     CAP_POWER_CONTROL,
     CAP_PREAMP,
+    CAP_REPEATER_SHIFT,
     CAP_REPEATER_TONE,
     CAP_RF_GAIN,
     CAP_RX_ANTENNA,
@@ -83,11 +84,11 @@ from ..core.command_service import (
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionPriority,
+    AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
     MeterObservationCoalescer,
     civ_acquisition_executor_for_provider,
-    split_ctl_mem_sub,
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -110,7 +111,10 @@ from ..core.tx_target import (
     TxTarget,
     UnknownTxTarget,
 )
-from .._state_queries import build_state_queries
+from .._state_queries import (
+    acquisition_query_resolver_for_profile,
+    build_state_queries,
+)
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.tx_interlock import (
@@ -190,6 +194,7 @@ __all__ = [
     "SetNbDepth",
     "SetNbWidth",
     "SetDashRatio",
+    "SetRepeaterShift",
     "SetRepeaterTone",
     "SetRepeaterTsql",
     "SetRxAntenna",
@@ -438,6 +443,7 @@ from .._poller_types import (  # noqa: E402
     SetQuickDualWatch,
     SetQuickSplit,
     SetRefAdjust,
+    SetRepeaterShift,
     SetRepeaterTone,
     SetRepeaterTsql,
     SetRfGain,
@@ -703,6 +709,7 @@ class RadioPoller:
             self._acquisition_executor = civ_acquisition_executor_for_provider(
                 self._acquisition_scheduler.provider,
                 self._send_one_state_query,
+                resolve_query=acquisition_query_resolver_for_profile(self._profile),
                 supports_cmd29=self._profile.supports_cmd29,
             )
         # Set by default — cleared at _run() start, re-set after initial fetch.
@@ -1285,8 +1292,8 @@ class RadioPoller:
             f"{self._profile.model} (receivers={self._profile.receiver_count})"
         )
 
-    def _build_state_queries(self) -> list[tuple[int, int | bytes | None, int | None]]:
-        result: list[tuple[int, int | bytes | None, int | None]] = build_state_queries(
+    def _build_state_queries(self) -> list[AcquisitionQuery]:
+        result: list[AcquisitionQuery] = build_state_queries(
             self._profile,
             self._caps,
             is_serial=self._is_serial,
@@ -1295,9 +1302,7 @@ class RadioPoller:
 
     async def _send_one_state_query(
         self,
-        cmd_byte: int,
-        sub_byte: int | bytes | None,
-        receiver: int | None,
+        query: AcquisitionQuery,
         *,
         priority: Priority = Priority.BACKGROUND,
     ) -> None:
@@ -1310,44 +1315,30 @@ class RadioPoller:
         does not park the poll loop on the commander future (MOR-497ii); the
         response still arrives via the CI-V RX path.
 
-        ``sub_byte`` is ``bytes`` where the read carries payload of its own:
-        multi-byte ctl-mem sub-addressing (0x1A/0x05 "quick set" reads, e.g.
-        voxDelay, MOR-1483) and the 0x27 scope reads that take a Main/Sub
-        selector (MOR-1981). Both are global (``receiver is None``) reads
-        today, which is what the cmd29 branch below asserts.
+        The lossless query envelope keeps the CI-V sub-command, payload data,
+        and optional cmd29 receiver route separate.
         """
-        civ_sub, extra_data = split_ctl_mem_sub(sub_byte)
-        if (
-            receiver is None
-            and cmd_byte in (0x25, 0x26)
-            and civ_sub == 0x01
-            and self._profile.vfo_readback == "selected_unselected"
-        ):
-            await self._civ(
-                cmd_byte,
-                data=b"\x01",
-                priority=priority,
-                wait_dispatch=False,
-            )
-        elif receiver is not None:
-            assert not isinstance(sub_byte, (bytes, bytearray)), (
-                "a sub element carrying payload is global-only (receiver=None)"
-            )
-            if cmd_byte in (0x25, 0x26):
+        if query.receiver is not None:
+            inner = bytes([query.receiver, query.command])
+            if query.sub is None:
                 await self._civ(
-                    cmd_byte,
-                    data=bytes([receiver]),
+                    0x29,
+                    data=inner + query.data,
                     priority=priority,
                     wait_dispatch=False,
                 )
             else:
-                inner = bytes([receiver, cmd_byte])
-                if sub_byte is not None:
-                    inner += bytes([sub_byte])
                 await self._civ(
-                    0x29, data=inner, priority=priority, wait_dispatch=False
+                    0x29,
+                    data=inner + bytes([query.sub]) + query.data,
+                    priority=priority,
+                    wait_dispatch=False,
                 )
-        elif cmd_byte == 0x27 and civ_sub in SCOPE_RECEIVER_SELECTOR_SUBS:
+        elif (
+            query.command == 0x27
+            and query.sub in SCOPE_RECEIVER_SELECTOR_SUBS
+            and query.data
+        ):
             # Scope control queries need receiver prefix (00=MAIN, 01=SUB).
             # ``build_state_queries`` emits MAIN because it runs at connect,
             # before the radio has said which scope is selected; where the
@@ -1357,17 +1348,25 @@ class RadioPoller:
             if self._radio_state:
                 scope_rx = self._radio_state.scope_controls.receiver
             await self._civ(
-                cmd_byte,
-                sub=civ_sub,
-                data=bytes([scope_rx]),
+                query.command,
+                sub=query.sub,
+                data=bytes([scope_rx]) + query.data[1:],
+                priority=priority,
+                wait_dispatch=False,
+            )
+        elif query.sub is None:
+            await self._civ(
+                query.command,
+                sub=None,
+                data=query.data,
                 priority=priority,
                 wait_dispatch=False,
             )
         else:
             await self._civ(
-                cmd_byte,
-                sub=civ_sub,
-                data=extra_data,
+                query.command,
+                sub=query.sub,
+                data=query.data,
                 priority=priority,
                 wait_dispatch=False,
             )
@@ -3133,22 +3132,30 @@ class RadioPoller:
                     await self.restore_scope_session()
                     logger.info("radio-poller: scope session state restored")
             case SwitchScopeReceiver(receiver=receiver):
-                # Fire-and-forget scope receiver select (0x27 0x12)
+                # Fire-and-forget scope receiver select (0x27 0x12), routed
+                # through the profile-bound command map (self._cmd_map) via
+                # ``_send_cmd`` instead of a hardcoded literal -- a profile
+                # that doesn't declare set_scope_main_sub can now refuse
+                # this write (MOR-2106). ``_send_cmd`` returns False, sending
+                # nothing, on a miss; the mirror/reconfirm/log below are
+                # gated on that return the same way the MOR-2004 SetAgc
+                # branch above gates its state event on ``agc_sent``.
                 self._ensure_receiver_supported(
                     receiver,
                     operation="switch_scope_receiver",
                 )
-                await self._civ(0x27, sub=0x12, data=bytes([receiver]))
-                if self._radio_state:
-                    self._radio_state.scope_controls.receiver = receiver
-                if CAP_SCOPE in self._caps:
-                    await self._reconfirm_scope_field(
-                        "get_scope_receiver", radio.get_scope_receiver
+                sent = await self._send_cmd("set_scope_main_sub", bytes([receiver]))
+                if sent:
+                    if self._radio_state:
+                        self._radio_state.scope_controls.receiver = receiver
+                    if CAP_SCOPE in self._caps:
+                        await self._reconfirm_scope_field(
+                            "get_scope_receiver", radio.get_scope_receiver
+                        )
+                    logger.info(
+                        "radio-poller: scope receiver → %s",
+                        "SUB" if receiver else "MAIN",
                     )
-                logger.info(
-                    "radio-poller: scope receiver → %s",
-                    "SUB" if receiver else "MAIN",
-                )
             case SetScopeDuringTx(on=on):
                 if CAP_SCOPE in self._caps:
                     await radio.set_scope_during_tx(on)
@@ -3440,6 +3447,15 @@ class RadioPoller:
                     await radio.set_dash_ratio(value)
                 if self._radio_state:
                     self._radio_state.dash_ratio = value
+            case SetRepeaterShift(direction=direction, receiver=rx):
+                self._ensure_receiver_supported(rx, operation="set_repeater_shift")
+                if CAP_REPEATER_SHIFT in self._caps:
+                    await radio.set_repeater_shift(direction, receiver=rx)
+                if self._radio_state:
+                    target = (
+                        self._radio_state.sub if rx != 0 else self._radio_state.main
+                    )
+                    target.repeater_shift = direction
             case SetRepeaterTone(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_repeater_tone")
                 if CAP_REPEATER_TONE in self._caps:
@@ -3648,9 +3664,8 @@ class RadioPoller:
     _LOW_STRIDE: int = 5
 
     # State queries interleaved on odd cycles.
-    # Tuple: (cmd, sub, receiver) where receiver=None means global query.
     # Populated per instance from runtime profile/capabilities.
-    _STATE_QUERIES: list[tuple[int, int | bytes | None, int | None]] = []
+    _STATE_QUERIES: list[AcquisitionQuery] = []
 
     def _pick_high_meter(self, high_idx: int) -> tuple[int, int | None]:
         """Choose HIGH-tier meter based on PTT state."""
@@ -3941,21 +3956,16 @@ class RadioPoller:
                 self._poll_index += 1
                 return
             state_idx = (self._poll_index // 2) % len(self._STATE_QUERIES)
-            cmd_byte, state_sub, receiver = self._STATE_QUERIES[state_idx]
-            # ``sub`` reports the CI-V sub-command byte; a query that also
-            # carries payload in its sub element (see
-            # ``_send_one_state_query``) has that payload split off here
-            # rather than formatted as part of the byte.
-            diag_sub, _ = split_ctl_mem_sub(state_sub)
+            query = self._STATE_QUERIES[state_idx]
             self._record_state_diagnostic(
                 "backend_read",
                 "web.radio_poller",
                 family="state",
-                command=f"0x{cmd_byte:02x}",
-                sub=None if diag_sub is None else f"0x{diag_sub:02x}",
-                receiver=receiver,
+                command=f"0x{query.command:02x}",
+                sub=None if query.sub is None else f"0x{query.sub:02x}",
+                receiver=query.receiver,
             )
-            await self._send_one_state_query(cmd_byte, state_sub, receiver)
+            await self._send_one_state_query(query)
         self._poll_index += 1
 
     # Issue #2303: passive observation must never select or exchange a VFO.

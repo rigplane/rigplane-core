@@ -47,7 +47,7 @@ RigPlane capabilities through an external `rigctld` process.
 - **Rig profile:** `rigs/ic7300.toml`
 - **Features verified:** frequency, mode, power, S-meter, SWR, ALC, PTT, CW keying,
   VFO A/B select, attenuator, preamp, NB, NR, scope/waterfall, audio RX/TX
-- **Not available:** DIGI-SEL, IP+, LAN, dual receiver
+- **Not available:** DIGI-SEL, LAN, dual receiver
 
 !!! tip "Setup Guide"
     **[IC-7300 USB Serial Backend Setup](ic7300-usb-setup.md)** — Complete USB configuration guide
@@ -60,13 +60,14 @@ RigPlane capabilities through an external `rigctld` process.
 | Receivers | 2 (MAIN/SUB) | 1 (VFO A/B) |
 | VFO labels | MAIN / SUB | VFO A / VFO B |
 | DIGI-SEL | ✅ | ❌ |
-| IP+ | ✅ | ❌ |
+| IP+ | ✅ | ✅ (supported) |
 | LAN | ✅ | ❌ |
 | Scope | ✅ | ✅ |
 | USB Serial | ✅ | ✅ |
 
-The Web UI automatically hides DIGI-SEL and IP+ controls when connected to an IC-7300
-(capability-based UI guards). VFO labels switch to "VFO A" / "VFO B" automatically.
+The Web UI automatically hides the DIGI-SEL control when connected to an IC-7300
+(capability-based UI guards), while the documented IP+ control is supported and
+visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 
 ### Yaesu FTX-1
 

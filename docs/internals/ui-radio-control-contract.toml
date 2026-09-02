@@ -274,20 +274,20 @@ gap_owner = "MOR-1407,MOR-1408,MOR-1409"
 
 [[families]]
 id = "repeater_tones"
-capabilities = ["tones"]
-intents = ["set_tone_freq", "set_tsql_freq", "set_repeater_tone", "set_repeater_tsql"]
+capabilities = ["tones", "repeater_shift"]
+intents = ["set_tone_freq", "set_tsql_freq", "set_repeater_tone", "set_repeater_tsql", "set_repeater_shift"]
 command_route = "existing tone command/ACK/readback route"
 observation_route = "existing provider tone observation/acquisition"
-field_paths = ["receiver.main.operator_toggles.repeater_tone", "receiver.main.operator_toggles.repeater_tsql", "receiver.main.operator_controls.tone_freq", "receiver.main.operator_controls.tsql_freq", "receiver.sub.operator_toggles.repeater_tone", "receiver.sub.operator_toggles.repeater_tsql", "receiver.sub.operator_controls.tone_freq", "receiver.sub.operator_controls.tsql_freq"]
+field_paths = ["receiver.main.operator_toggles.repeater_tone", "receiver.main.operator_toggles.repeater_tsql", "receiver.main.operator_controls.tone_freq", "receiver.main.operator_controls.tsql_freq", "receiver.main.operator_controls.repeater_shift", "receiver.sub.operator_toggles.repeater_tone", "receiver.sub.operator_toggles.repeater_tsql", "receiver.sub.operator_controls.tone_freq", "receiver.sub.operator_controls.tsql_freq", "receiver.sub.operator_controls.repeater_shift"]
 field_path_gaps = []
-public_fields = ["receiver.repeaterTone", "receiver.repeaterTsql", "receiver.toneFreq", "receiver.tsqlFreq"]
+public_fields = ["receiver.repeaterTone", "receiver.repeaterTsql", "receiver.toneFreq", "receiver.tsqlFreq", "receiver.repeaterShift"]
 ws_property = "state_update receiver tone fields"
 selector = "shared mode/repeater selector"
 pending = "control lifecycle only"
 surfaces = ["frontend/src/components-v2/panels/ModePanel.svelte"]
 automated_proof = "tone family matrix"
-hardware_proof = "profile fixture; hardware when supported"
-gap_owner = "MOR-1407,MOR-1408,MOR-1409"
+hardware_proof = "profile fixture; hardware when supported; shift direction bench run pending (MOR-2111)"
+gap_owner = "MOR-1407,MOR-1408,MOR-1409,MOR-2125"
 
 [[families]]
 id = "antenna_routing"

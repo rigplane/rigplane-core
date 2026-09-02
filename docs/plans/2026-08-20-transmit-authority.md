@@ -1,11 +1,9 @@
 # Transmit Authority — Command-Ingress Filter ADR
 
 **Date:** 2026-08-20
-**Status:** Proposed (design only — no code changes in *this document's own*
-commit; rows 0a–6 of §4 have since merged, listed with their commits in §1.6,
-and rows 7 onward are unbuilt);
-§9 owner decisions settled 2026-08-20, with three later questions — Q13 ruled
-2026-08-21, **Q14 and Q15 open**
+**Status:** **Superseded 2026-09-01.** Historical record only; do not implement
+this document's target architecture or reopen its pending questions. Replaced
+by [Runtime Transmit Authority ADR](2026-09-01-runtime-transmit-authority.md).
 **Base commit:** `769bfc71` (main; re-anchored 2026-08-20 from the authoring
 base `fb7a86da` — three merges landed in between, see §1.6)
 **Format model:** `docs/plans/2026-06-09-target-audio-architecture.md`

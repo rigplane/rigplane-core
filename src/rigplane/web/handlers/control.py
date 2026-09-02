@@ -119,6 +119,7 @@ from ..radio_poller import (  # noqa: TID251
     SetNbDepth,
     SetNbWidth,
     SetDashRatio,
+    SetRepeaterShift,
     SetRepeaterTone,
     SetRepeaterTsql,
     SetRxAntenna,
@@ -424,6 +425,7 @@ class ControlHandler:
             "set_nb_depth",
             "set_nb_width",
             "set_dash_ratio",
+            "set_repeater_shift",
             "set_repeater_tone",
             "set_repeater_tsql",
             "set_rx_antenna",
@@ -2727,6 +2729,13 @@ class ControlHandler:
                 self._ensure_receiver_supported(rx)
                 q.put(SetTsqlFreq(freq, receiver=rx))
                 return {"freq": freq, "receiver": rx}
+            case "set_repeater_shift":
+                direction = int(params["direction"])
+                rx = int(params.get("receiver", 0))
+                self._ensure_capability("repeater_shift", "set_repeater_shift")
+                self._ensure_receiver_supported(rx)
+                q.put(SetRepeaterShift(direction, receiver=rx))
+                return {"direction": direction, "receiver": rx}
             case "set_ref_adjust":
                 value = int(params["value"])
                 q.put(SetRefAdjust(value))

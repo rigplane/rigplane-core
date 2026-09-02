@@ -53,7 +53,6 @@ features = [
     "nb",
     "nr",
     "notch",
-    "apf",
     "twin_peak",
     # Filter
     "pbt",
@@ -107,6 +106,24 @@ features = [
 # guess rather than a data-driven fact.
 rf_sql_control_model = "combined"
 
+# Per-check_id validation classification (MOR-2105 part 2), a check_id-grained
+# sibling to a future [validation].write_only_controls list (IC-7300 does not
+# need one today). scope_dual.set (27 13, p.19-7) is documented and the radio
+# answers it, but IC-7300 has only one scope, so 00 (Single only) is the only
+# legal value it can ever hold -- the RMVR read-modify-verify-restore harness
+# would flip to a value the radio can never report back, not because
+# anything is broken. The source is the manual page and data-column fact
+# establishing that.
+#
+# scope_receiver.set (27 12, same page, live bench 2026-08-30: 27 12 00, see
+# get_scope_main_sub below) is fixed-value for the SAME reason -- one
+# receiver -- but is deliberately NOT declared here: receiver_count above
+# already states that fact, and validation/hardware.py derives
+# scope_receiver.set's fixed-value status from it instead of restating it as
+# a second, independently-editable source of truth (MOR-2105 part 2, F1).
+[validation.fixed_value]
+"scope_dual.set" = "IC-7300 Advanced Manual (11a) command table p.19-7: 27 13 data column = 00 (Single only)"
+
 [state_acquisition]
 provider = "icom_civ"
 default_cadence_seconds = 1.5
@@ -142,20 +159,20 @@ polling_only = [
     "global.tx_state.split",
     # MOR-1452: documented-readable §19 0x14 sub-commands (0x0B/0x15/0x16/0x17,
     # see docs/validation/cat-audits/ic7300.md) that the poller never queried —
-    # the TX-aux panel showed them as an honest but permanent "?". Same
-    # provider-generic `_GLOBAL_LEVEL_QUERY_SUBS` mapping IC-7610 already
-    # polls these 4 fields through; slow field_policies below, not the
-    # freq/mode/keep-alive fast tier.
+    # the TX-aux panel showed them as an honest but permanent "?".
+    # The active profile declares getters for these 4 controls. The acquisition
+    # scheduler resolves their canonical getter names through the profile-bound
+    # resolver and this profile's CommandMap, not a hardcoded scheduler table;
+    # slow field_policies below, not the freq/mode/keep-alive fast tier.
     "global.operator_controls.mic_gain",
     "global.operator_controls.monitor_gain",
     "global.operator_controls.vox_gain",
     "global.operator_controls.anti_vox_gain",
     # MOR-1485: TX/PA meters (0x15 0x11-0x16). ``[commands]`` already declares
     # get_power_meter/get_swr/get_alc/get_comp_meter/get_vd_meter/get_id_meter
-    # below and the scheduler's query mapping
-    # (``_GLOBAL_METER_QUERY_SUBS``/``IcomCivAcquisitionExecutor``) already
-    # handles the whole "global.meters.*" family generically — nothing there
-    # was IC-7300-specific or missing. The gap was purely acquisition
+    # below. The acquisition scheduler resolves those canonical getter names
+    # through the profile-bound resolver and this active profile's CommandMap,
+    # not a hardcoded scheduler table. The gap was purely acquisition
     # membership: no field_policies entry meant due_requests() never touched
     # these paths, so rigctld's own one-shot reads (proven healthy —
     # ``_OBSERVABLE_CMD15_FIELDS``, ``_civ_rx.py``) were the only thing that
@@ -198,12 +215,10 @@ command_response_observable = [
     "global.tx_state.vox_on",
     "global.tx_state.monitor_on",
     # MOR-1483 (leg 2): voxDelay (1A-05 ctl-mem 01-91, this radio's control
-    # number — see docs/validation/cat-audits/ic7300.md) is now addable:
-    # AcquisitionQuerySender's ``sub`` element can carry the CI-V sub-command
-    # byte plus the 2-byte ctl-mem control number as ``bytes``
-    # (IcomCivAcquisitionExecutor._GLOBAL_CTL_MEM_QUERIES), and the ingress
-    # decode already matches this prefix too. Non-polling, same
-    # prime_unobserved mechanism as the toggles above.
+    # number — see docs/validation/cat-audits/ic7300.md) is now addable as
+    # sub=0x05 with data=01 91. The ingress decode already matches this
+    # prefix too. Non-polling, same prime_unobserved mechanism as the toggles
+    # above.
     "global.operator_controls.vox_delay",
     # MOR-1491 (field-policy membership wave, leg 2): filter/PBT facts.
     "receiver.main.active.freq_mode.filter_width",
@@ -241,7 +256,6 @@ command_response_observable = [
     "global.operator_controls.break_in_delay",
     "global.operator_controls.key_speed",
     "global.operator_controls.cw_pitch",
-    "receiver.main.operator_controls.audio_peak_filter",
     "receiver.main.operator_toggles.twin_peak_filter",
 ]
 supported_controls = [
@@ -624,12 +638,6 @@ freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
-[state_acquisition.field_policies."receiver.main.operator_controls.audio_peak_filter"]
-cadence_seconds = 25.0
-freshness_ttl_seconds = 25.0
-reconciliation_priority = "command_response"
-adaptive_decay = false
-
 [state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
@@ -667,15 +675,8 @@ values = [0x01, 0x02, 0x03, 0x12, 0x13, 0x22, 0x23]
 values = [0xD0, 0xD3]
 
 [antenna]
-# CI-V 0x12: single antenna, no RX antenna
 tx_count = 1
 has_rx_ant = false
-
-[apf]
-# CI-V 0x16 0x32: 0=OFF, 1=ON (simple toggle, no WIDE/MID/NAR)
-# Different from IC-7610 which has 0-3!
-values = [0, 1]
-labels = { "0" = "OFF", "1" = "ON" }
 
 [notch]
 # CI-V 0x16 0x57: Manual notch width
@@ -949,6 +950,10 @@ get_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3:
 # pre-migration fallback resolved -- MOR-2007 ruling 1 split the setter key)
 set_dual_watch_off = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
 set_dual_watch_on = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
+# MOR-2117: the bare name dispatches to set_dual_watch_on/set_dual_watch_off
+# above, both already absent for the same reason -- without this row,
+# supports_command answered True for a name the profile otherwise denies.
+set_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only; dispatches to set_dual_watch_on/set_dual_watch_off, both declared absent above" }
 get_main_sub_band = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table has no 0xD2" }
 get_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
 set_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
@@ -970,8 +975,15 @@ get_digisel_shift = { absent = "IC-7300 Advanced Manual (11a) command table pp.1
 set_digisel_shift = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x13" }
 
 # ── Antenna ──
-get_antenna = [0x12]                      # Single antenna
-set_antenna = [0x12]
+# MOR-2118: no 0x12 antenna-select command on this radio.
+# - Manual: IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8 --
+#   no 0x12 row (table runs 11* attenuator then 13 speech); no ANT1/ANT2/
+#   "antenna select" anywhere in the document; one physical [ANT] connector.
+# - Bench, 2026-09-01, remote testbed, /dev/cu.usbserial-143310 @115200, addr
+#   0x94: 12 00, 12, and 12 01 each NAK'd (fe fe e0 94 fa fd); 03 answered
+#   fe fe e0 94 03 00 80 23 07 00 fd (DATA) before and after.
+get_antenna = { absent = "IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8: no 0x12 row, no ANT1/ANT2 selection documented, one physical [ANT] connector; bench 2026-09-01 addr 0x94: 12 00/12/12 01 each NAK'd, 03 answered DATA before and after" }
+set_antenna = { absent = "IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8: no 0x12 row, no ANT1/ANT2 selection documented, one physical [ANT] connector; bench 2026-09-01 addr 0x94: 12 00/12/12 01 each NAK'd, 03 answered DATA before and after" }
 get_rx_antenna_ant2 = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 0x16 0x53 row; single antenna jack" }
 set_rx_antenna_ant2 = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 0x16 0x53 row; single antenna jack" }
 
@@ -1002,12 +1014,6 @@ get_notch_filter = [0x14, 0x0D]           # Notch position 0-255
 set_notch_filter = [0x14, 0x0D]
 get_manual_notch_width = [0x16, 0x57]     # 0=WIDE, 1=MID, 2=NAR
 set_manual_notch_width = [0x16, 0x57]
-get_audio_peak_filter = [0x16, 0x32]      # IC-7300: 0=OFF, 1=ON only
-set_audio_peak_filter = [0x16, 0x32]
-# The 7300 APF is a plain 0x16 0x32 ON/OFF toggle (above); there is no 0x14 0x05
-# APF position like the IC-7610's WIDE/MID/NAR 3-level control. The dead 0x14
-# 0x05 command string was removed (MOR-681) so it cannot be emitted to a radio
-# that ignores it.
 get_apf_type_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family skips 04/05" }
 set_apf_type_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family skips 04/05" }
 get_twin_peak_filter = [0x16, 0x4F]
@@ -1054,8 +1060,12 @@ get_ssb_tx_bandwidth = [0x16, 0x58]
 set_ssb_tx_bandwidth = [0x16, 0x58]
 
 # ── Split ──
-get_tx_freq_monitor = [0x1C, 0x03]
-set_tx_freq_monitor = [0x1C, 0x03]
+# MOR-2190 temporary fail-closed override: direct official-manual evidence,
+# not an inherited unsupported marker. Keep these names explicit while the
+# legacy CoreRadio._KNOWN_COMMANDS fallback still exists; replacement APIs are
+# deliberately outside this slice.
+get_tx_freq_monitor = { absent = "IC-7300 Advanced Manual (11a) command table p.19-7: 1C 03 is Read transmit frequency, not transmit-frequency monitor; no SET form is documented" }
+set_tx_freq_monitor = { absent = "IC-7300 Advanced Manual (11a) command table p.19-7: 1C 03 is Read transmit frequency, not transmit-frequency monitor; no SET form is documented" }
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
 
@@ -1121,7 +1131,7 @@ scope_data_output = [0x27, 0x11]
 # (11a) command table p.19-7; live bench 2026-08-30 replied 27 12 00 (D2,
 # MOR-2014). Refutes the earlier "no scope_main_sub" note.
 get_scope_main_sub = [0x27, 0x12]         # source: IC-7300 Advanced Manual (11a) p.19-7 (fixed value 00 = Main only); live bench 2026-08-30 reply 27 12 00
-get_scope_single_dual = [0x27, 0x13]
+get_scope_single_dual = [0x27, 0x13]      # source: IC-7300 Advanced Manual (11a) p.19-7 (data column 00 = Single only); bench 2026-09-01: 27 13 -> fe fe e0 94 27 13 00 fd (27 12 -> fe fe e0 94 27 12 00 fd alongside it, 03 answering either side, 0x27 0x00 scope frames filtered out)
 get_scope_mode = [0x27, 0x14]
 get_scope_span = [0x27, 0x15]
 get_scope_edge = [0x27, 0x16]
@@ -1132,7 +1142,11 @@ get_scope_during_tx = [0x27, 0x1B]
 get_scope_center_type = [0x27, 0x1C]
 get_scope_vbw = [0x27, 0x1D]
 get_scope_fixed_edge = [0x27, 0x1E]
-get_scope_rbw = [0x27, 0x1F]
+# MOR-2105: the 0x27 sub-command table (IC-7300 Advanced Manual (11a)
+# pp.19-7..19-8) runs 1E then 20 -- no 1F row. Live bench: scope_rbw.set
+# timed out with no answer, consistent with an unimplemented command.
+get_scope_rbw = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-7..19-8: 0x27 sub-command table runs 1E then 20, no 1F row" }
+set_scope_rbw = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-7..19-8: 0x27 sub-command table runs 1E then 20, no 1F row" }
 
 # ── Scan ──
 scan_start = [0x0E]
@@ -1323,8 +1337,21 @@ get_data3_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.
 set_data3_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
 get_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 set_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
-get_civ_output_ant = [0x1A, 0x05, 0x00, 0x61]
-set_civ_output_ant = [0x1A, 0x05, 0x00, 0x61]
+# MOR-2118: measured 2026-09-01 14:39-14:41 UTC, remote testbed. Owner
+# toggled the front-panel "CI-V Output (for ANT)" setting OFF->ON between
+# two passes, changing nothing else:
+#   1A 05 00 61 -> 00     / 00        did NOT move
+#   1A 05 01 57 -> 00 14  / 00 14     unchanged (level-shaped, not a toggle)
+#   1A 05 00 73 -> 00     / 01        moved with the setting
+# The manual disagrees with itself on the address: p.19-5 assigns 1A 05
+# 0073 to "CI-V Output (for ANT) capability"; three notes on p.19-7 (under
+# 1C 00 and 1C 03) instead name 1A 05 0157 for the same setting, but p.19-6
+# assigns 0157 to "present number" (0001 to 9999), an unrelated counter --
+# the bench measurement above resolves the contradiction in favor of 0073.
+# Independent corroboration: docs/validation/cat-audits/ic7300.md (a
+# different manual extraction) also lists 1A 05 0073 for this setting.
+get_civ_output_ant = [0x1A, 0x05, 0x00, 0x73]  # source: IC-7300 Advanced Manual (11a) p.19-5
+set_civ_output_ant = [0x1A, 0x05, 0x00, 0x73]
 get_system_date = [0x1A, 0x05, 0x00, 0x94]
 set_system_date = [0x1A, 0x05, 0x00, 0x94]
 get_system_time = [0x1A, 0x05, 0x00, 0x95]
@@ -1345,10 +1372,14 @@ get_nb_width = [0x1A, 0x05, 0x01, 0x90]
 set_nb_width = [0x1A, 0x05, 0x01, 0x90]
 get_vox_delay = [0x1A, 0x05, 0x01, 0x91]     # 0-20 (0.0-2.0 sec)
 set_vox_delay = [0x1A, 0x05, 0x01, 0x91]     # 0-20 (0.0-2.0 sec)
-get_scope_marker_position = [0x1A, 0x05, 0x00, 0x40]  # 00=Filter Center, 01=Carrier Point
-set_scope_marker_position = [0x1A, 0x05, 0x00, 0x40]
-get_ref_adjust = [0x1A, 0x05, 0x00, 0x70]    # NOT_IMPLEMENTED — not listed in wfview IC-7300.rig
-set_ref_adjust = [0x1A, 0x05, 0x00, 0x70]    # NOT_IMPLEMENTED — not listed in wfview IC-7300.rig
+# MOR-2190 temporary fail-closed overrides: these are direct findings from the
+# official manual, not inherited unsupported markers. The explicit entries
+# keep the profile's negative knowledge inspectable while replacement APIs are
+# deliberately deferred.
+get_scope_marker_position = { absent = "IC-7300 Advanced Manual (11a) command table p.19-4: 1A 05 0040 is Speech Speed (00=Low, 01=High), not scope marker position" }
+set_scope_marker_position = { absent = "IC-7300 Advanced Manual (11a) command table p.19-4: 1A 05 0040 is Speech Speed (00=Low, 01=High), not scope marker position" }
+get_ref_adjust = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-5: 1A 05 0070 is external-keypad RTTY Memory; reference frequency is 0058 with 0000..0255 domain" }
+set_ref_adjust = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-5: 1A 05 0070 is external-keypad RTTY Memory; reference frequency is 0058 with 0000..0255 domain" }
 
 [protocol]
 type = "civ"

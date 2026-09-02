@@ -5,18 +5,52 @@ TDD: these tests were written FIRST, then the TOML was created to pass them.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from rigplane.commands._codec import filter_hz_to_index, filter_index_to_hz
+from rigplane.core.exceptions import CommandError
 from rigplane.meter_cal import interpolate_meter
+from rigplane.radio import CoreRadio
 from rigplane.rig_loader import load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 IC7300_PATH = RIGS_DIR / "ic7300.toml"
 
-EXPECTED_41_BASELINE = {
+_WRONG_MANUAL_BINDINGS = {
+    "get_tx_freq_monitor": ((0x1C, 0x03), "1C 03 is Read transmit frequency"),
+    "set_tx_freq_monitor": ((0x1C, 0x03), "1C 03 is Read transmit frequency"),
+    "get_scope_marker_position": (
+        (0x1A, 0x05, 0x00, 0x40),
+        "1A 05 0040 is Speech Speed",
+    ),
+    "set_scope_marker_position": (
+        (0x1A, 0x05, 0x00, 0x40),
+        "1A 05 0040 is Speech Speed",
+    ),
+    "get_ref_adjust": (
+        (0x1A, 0x05, 0x00, 0x70),
+        "1A 05 0070 is external-keypad RTTY Memory",
+    ),
+    "set_ref_adjust": (
+        (0x1A, 0x05, 0x00, 0x70),
+        "1A 05 0070 is external-keypad RTTY Memory",
+    ),
+}
+_PUBLIC_FAIL_BEFORE_WIRE_CALLS = {
+    "get_tx_freq_monitor": (),
+    "set_tx_freq_monitor": (True,),
+    "get_ref_adjust": (),
+    "set_ref_adjust": (128,),
+}
+_PROFILE_ONLY_FAIL_BEFORE_WIRE_NAMES = frozenset(
+    {"get_scope_marker_position", "set_scope_marker_position"}
+)
+
+EXPECTED_BASELINE_CAPABILITIES = {
     "audio",
     "af_level",
     "rf_gain",
@@ -28,7 +62,6 @@ EXPECTED_41_BASELINE = {
     "nb",
     "nr",
     "notch",
-    "apf",
     "twin_peak",
     "pbt",
     "filter_width",
@@ -197,7 +230,7 @@ class TestVFOScheme:
 
 
 class TestCapabilities:
-    """IC-7300 capabilities: no dual_rx, digisel; includes ip_plus per wfview."""
+    """IC-7300 capabilities follow the radio-specific profile evidence."""
 
     def test_has_audio(self, profile):
         assert "audio" in profile.capabilities
@@ -213,6 +246,56 @@ class TestCapabilities:
 
     def test_has_nb(self, profile):
         assert "nb" in profile.capabilities
+
+    def test_no_apf_declarations_while_nb_remains_supported(self, profile, cmdmap):
+        raw = tomllib.loads(IC7300_PATH.read_text())
+        acquisition = raw["state_acquisition"]
+        apf_path = "receiver.main.operator_controls.audio_peak_filter"
+
+        assert "apf" not in profile.capabilities
+        assert "apf" not in raw
+        assert not cmdmap.has("get_audio_peak_filter")
+        assert not cmdmap.has("set_audio_peak_filter")
+        assert (
+            apf_path not in acquisition["capabilities"]["command_response_observable"]
+        )
+        assert apf_path not in acquisition["field_policies"]
+
+        assert "nb" in profile.capabilities
+        assert "nb" in raw
+        assert cmdmap.has("get_nb")
+        assert cmdmap.has("set_nb")
+
+    def test_apf_support_is_profile_driven(self, profile):
+        ic7300 = CoreRadio("127.0.0.1", profile=profile)
+        ic7610_profile = load_rig(RIGS_DIR / "ic7610.toml").to_profile()
+        ic7610 = CoreRadio("127.0.0.1", profile=ic7610_profile)
+
+        for command in ("get_audio_peak_filter", "set_audio_peak_filter"):
+            assert command not in CoreRadio._KNOWN_COMMANDS
+            assert command not in profile.command_names
+            assert not ic7300.supports_command(command)
+
+            assert command in ic7610_profile.command_names
+            assert ic7610.supports_command(command)
+
+    @pytest.mark.asyncio
+    async def test_apf_calls_fail_before_wire_when_profile_omits_commands(
+        self, profile
+    ):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        get_wire = AsyncMock()
+        set_wire = AsyncMock()
+        radio._get_bcd_level = get_wire
+        radio._send_fire_and_forget = set_wire
+
+        with pytest.raises(CommandError, match="not declared by this profile"):
+            await radio.get_audio_peak_filter()
+        with pytest.raises(CommandError, match="not declared by this profile"):
+            await radio.set_audio_peak_filter(1)
+
+        get_wire.assert_not_awaited()
+        set_wire.assert_not_awaited()
 
     def test_has_nr(self, profile):
         assert "nr" in profile.capabilities
@@ -233,7 +316,88 @@ class TestCapabilities:
         assert "ip_plus" in profile.capabilities
 
     def test_capabilities_match_pre_speech_baseline(self, profile):
-        assert profile.capabilities - {"speech"} == EXPECTED_41_BASELINE
+        assert profile.capabilities - {"speech"} == EXPECTED_BASELINE_CAPABILITIES
+
+
+class TestWrongManualBindingsFailClosed:
+    """MOR-2190: direct official-manual corrections, not inherited markers."""
+
+    def test_all_six_names_are_explicitly_absent_and_unbound(self, profile, cmdmap):
+        assert len(_WRONG_MANUAL_BINDINGS) == 6
+        for name, (wrong_wire, semantic) in _WRONG_MANUAL_BINDINGS.items():
+            assert name not in profile.command_names
+            assert name in profile.absent_command_names
+            source = profile.absent_command_sources[name]
+            assert source.startswith("IC-7300 Advanced Manual (11a)")
+            assert semantic in source
+            assert not cmdmap.has(name), f"{name} still serializes {wrong_wire!r}"
+
+    def test_all_six_names_are_unsupported_by_the_shipped_radio(self, profile):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        assert {
+            name for name in _WRONG_MANUAL_BINDINGS if not radio.supports_command(name)
+        } == set(_WRONG_MANUAL_BINDINGS)
+
+    @pytest.mark.asyncio
+    async def test_public_operations_refuse_before_any_wire_call(
+        self, profile, monkeypatch
+    ):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        send_raw = AsyncMock()
+        send_expect = AsyncMock()
+        send_fire_and_forget = AsyncMock()
+        get_bcd_level = AsyncMock()
+        monkeypatch.setattr(radio, "_check_connected", lambda: None)
+        monkeypatch.setattr(radio, "_send_civ_raw", send_raw)
+        monkeypatch.setattr(radio, "_send_civ_expect", send_expect)
+        monkeypatch.setattr(radio, "_send_fire_and_forget", send_fire_and_forget)
+        monkeypatch.setattr(radio, "_get_bcd_level", get_bcd_level)
+
+        visited: set[str] = set()
+        for name, args in _PUBLIC_FAIL_BEFORE_WIRE_CALLS.items():
+            visited.add(name)
+            with pytest.raises(CommandError, match="declared absent by this profile"):
+                await getattr(radio, name)(*args)
+
+        assert visited == set(_PUBLIC_FAIL_BEFORE_WIRE_CALLS)
+        send_raw.assert_not_awaited()
+        send_expect.assert_not_awaited()
+        send_fire_and_forget.assert_not_awaited()
+        get_bcd_level.assert_not_awaited()
+
+    def test_profile_only_operations_have_no_callable_wire_path(self, profile):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        visited: set[str] = set()
+        for name in _PROFILE_ONLY_FAIL_BEFORE_WIRE_NAMES:
+            visited.add(name)
+            assert not hasattr(CoreRadio, name)
+            with pytest.raises(AttributeError, match="no builder named"):
+                getattr(radio._commands, name)  # noqa: B009, SLF001
+
+        assert visited == set(_PROFILE_ONLY_FAIL_BEFORE_WIRE_NAMES)
+        assert visited | set(_PUBLIC_FAIL_BEFORE_WIRE_CALLS) == set(
+            _WRONG_MANUAL_BINDINGS
+        )
+
+    def test_unrelated_positive_bindings_and_tx_band_builders_remain(self, profile):
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        for name in (
+            "get_freq",
+            "set_filter_width",
+            "get_tx_band_count",
+            "get_tx_band_edge",
+        ):
+            assert name in profile.command_names
+            assert name not in profile.absent_command_names
+            assert profile.command_map is not None and profile.command_map.has(name)
+
+        assert radio._commands.get_freq(to_addr=0x94)[4:-1] == b"\x03"  # noqa: SLF001
+        assert radio._commands.get_tx_band_count(to_addr=0x94)[4:-1] == (  # noqa: SLF001
+            b"\x1e\x00"
+        )
+        assert radio._commands.get_tx_band_edge(1, to_addr=0x94)[4:-1] == (  # noqa: SLF001
+            b"\x1e\x01\x01"
+        )
 
 
 # ── Command overrides ──────────────────────────────────────────
@@ -358,7 +522,13 @@ class TestCommandOverrides:
         assert cmdmap.get("get_scope_edge3_6mhz") == (0x1A, 0x05, 0x01, 0x20)
 
     def test_get_civ_output_ant(self, cmdmap):
-        assert cmdmap.get("get_civ_output_ant") == (0x1A, 0x05, 0x00, 0x61)
+        """MOR-2118: bench 2026-09-01 toggled front-panel "CI-V Output (for
+        ANT)" OFF->ON between two passes; 0073 moved with it, 0061 did not.
+        The manual is internally inconsistent about the address (IC-7300
+        Advanced Manual (11a) p.19-5 names 0073; three notes on p.19-7 name
+        0157, which p.19-6 identifies as an unrelated counter) -- see
+        rigs/ic7300.toml's own citation on this row for the resolution."""
+        assert cmdmap.get("get_civ_output_ant") == (0x1A, 0x05, 0x00, 0x73)
 
     def test_agc_time_constant(self, cmdmap):
         assert cmdmap.get("get_agc_time_constant") == (0x1A, 0x04)
@@ -403,6 +573,12 @@ class TestRemovedCommands:
     def test_no_drive_gain(self, cmdmap):
         assert not cmdmap.has("get_drive_gain")
         assert not cmdmap.has("set_drive_gain")
+
+    def test_no_scope_rbw(self, cmdmap):
+        """MOR-2105: IC-7300 Advanced Manual (11a) 0x27 sub-command table
+        (pp.19-7..19-8) runs 1E then 20 -- no 1F row."""
+        assert not cmdmap.has("get_scope_rbw")
+        assert not cmdmap.has("set_scope_rbw")
 
 
 # ── Spectrum params ────────────────────────────────────────────

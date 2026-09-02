@@ -20,6 +20,11 @@ from rigplane.core.state_acquisition_policy import (
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.profiles import get_radio_profile
 from rigplane.rig_loader import RigLoadError, discover_rigs, load_rig
+from _acquisition_query_helpers import (
+    AcquisitionQueryCase,
+    civ_frame_parts,
+    recording_executor,
+)
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 
@@ -764,7 +769,7 @@ def _table_backed_ingress_spec(command: int, sub: int) -> tuple[str, str, str] |
 def _round_trip_observes(
     radio: Any,
     path: FieldPath,
-    query: tuple[int, int | bytes | None, int | None],
+    query: AcquisitionQueryCase,
 ) -> None:
     """Push a synthetic response for ``query`` through the REAL ingress
     decode and assert ``path`` comes out the other side.
@@ -778,20 +783,18 @@ def _round_trip_observes(
     could paper over.
     """
 
-    from rigplane.core.acquisition_scheduler import split_ctl_mem_sub
     from rigplane.commands import CONTROLLER_ADDR
     from rigplane.types import CivFrame
 
-    command, sub_raw, receiver = query
-    civ_sub, prefix = split_ctl_mem_sub(sub_raw)
+    parts = civ_frame_parts(query)
     payload = _HARDCODED_SYNTHETIC_PAYLOAD[path.name]
     frame = CivFrame(
         to_addr=CONTROLLER_ADDR,
         from_addr=0x94,  # IC-7300's civ_addr (rigs/ic7300.toml)
-        command=command,
-        sub=civ_sub,
-        data=prefix + payload,
-        receiver=receiver,
+        command=parts.command,
+        sub=parts.sub,
+        data=parts.data + payload,
+        receiver=parts.receiver,
     )
 
     observations = radio._civ_runtime._observations_from_frame(frame)  # noqa: SLF001
@@ -807,8 +810,9 @@ def _round_trip_observes(
         == expected
     ]
     assert matched, (
-        f"{path}: synthetic response (command=0x{command:02x}, sub={civ_sub!r}, "
-        f"data={(prefix + payload).hex()}) produced no matching observation -- "
+        f"{path}: synthetic response (command=0x{parts.command:02x}, "
+        f"sub={parts.sub!r}, data={(parts.data + payload).hex()}) produced no "
+        "matching observation -- "
         "either the ingress branch doesn't match what query_for_path actually "
         "sends, or a primed read for this path would never leave UNKNOWN"
     )
@@ -846,19 +850,13 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
     test either way.
     """
 
-    from rigplane.core.acquisition_scheduler import IcomCivAcquisitionExecutor
     from rigplane.radio import IcomRadio
 
     profile = get_radio_profile("IC-7300")
     acquisition = profile.state_acquisition
     assert acquisition is not None
 
-    async def _noop_send(
-        command: int, sub: int | bytes | None, receiver: int | None
-    ) -> None:
-        return None
-
-    executor = IcomCivAcquisitionExecutor(_noop_send)
+    executor, _sent = recording_executor(profile)
     radio = IcomRadio(host="192.168.1.100", model="IC-7300")
 
     non_polling_paths = [
@@ -889,15 +887,19 @@ def test_ic7300_non_polling_field_policies_have_full_acquisition_chain() -> None
             _round_trip_observes(radio, path, query)
             continue
 
-        command, sub = query[0], query[1]
+        parts = civ_frame_parts(query)
+        sub = parts.sub
         assert isinstance(sub, int), (
             f"{path}: table-backed field must query with a plain int sub, "
             f"got {sub!r} -- extend _HARDCODED_OBSERVABLE_FIELDS if this is "
             "actually a new branch-shaped ingress mapping"
         )
-        resolved = _table_backed_ingress_spec(command, sub)
+        assert parts.data == b"", (
+            f"{path}: table-backed field must not carry data, got {parts.data!r}"
+        )
+        resolved = _table_backed_ingress_spec(parts.command, sub)
         assert resolved == key, (
-            f"{path}: query sends command=0x{command:02x} sub=0x{sub:02x}, "
+            f"{path}: query sends command=0x{parts.command:02x} sub=0x{sub:02x}, "
             f"but the ingress table at that exact key resolves to {resolved} "
             f"instead of {key} -- a primed read for this path would never "
             "leave UNKNOWN"
@@ -910,7 +912,7 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     assert acquisition is not None
 
     assert acquisition.provider == "yaesu_cat"
-    assert len(acquisition.capabilities) == 53
-    assert len(acquisition.field_policies) == 46
+    assert len(acquisition.capabilities) == 54
+    assert len(acquisition.field_policies) == 47
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0

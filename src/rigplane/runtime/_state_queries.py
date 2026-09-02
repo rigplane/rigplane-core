@@ -1,36 +1,184 @@
 """Shared state query list for populating RadioState.
 
 Used by RadioPoller (periodic polling) and by the one-shot sweep run at
-connect (``runtime/radio_initial_state.py: fetch_initial_state``).  Each
-query is a 3-tuple::
-
-    (cmd_byte, sub_byte | None, receiver | None)
-
-``receiver=None`` means the query is global (not per-receiver).
-``receiver=0`` or ``receiver=1`` targets a specific receiver and will
-be wrapped in cmd29 when the profile supports it.
-
-``sub_byte`` is ``bytes`` when the read needs payload of its own: the
-first byte is the CI-V sub-command and the rest follow it in the frame.
-Both senders decode that shape with
-``core/acquisition_scheduler.py: split_ctl_mem_sub``.  The scope reads
-below are the only queries built here that use it.
+connect (``runtime/radio_initial_state.py: fetch_initial_state``). Each query
+keeps its CI-V command, semantic sub-command, payload data, and optional
+cmd29 receiver route distinct.
 """
 
 from __future__ import annotations
 
 import logging
 
+from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.scope import (
     SCOPE_RECEIVER_SELECTOR_SUBS,
     SCOPE_SELECTOR_MAIN,
 )
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionQuery,
+    AcquisitionQueryResolver,
+)
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.profiles import RadioProfile
 
 logger = logging.getLogger(__name__)
 
-# Type alias for a single state query: (cmd, sub, receiver).
-StateQuery = tuple[int, int | bytes | None, int | None]
+_RECEIVER_IDS = {"0": 0, "main": 0, "1": 1, "sub": 1}
+_RECEIVER_TOGGLE_GETTERS = {
+    "digisel": "get_digisel",
+    "ipplus": "get_ip_plus",
+    "nb": "get_nb",
+    "nr": "get_nr",
+    "auto_notch": "get_auto_notch",
+    "manual_notch": "get_manual_notch",
+    "twin_peak_filter": "get_twin_peak_filter",
+    "repeater_tone": "get_repeater_tone",
+    "repeater_tsql": "get_repeater_tsql",
+}
+_RECEIVER_CONTROL_GETTERS = {
+    "af_level": "get_af_level",
+    "rf_gain": "get_rf_gain",
+    "squelch": "get_squelch",
+    "apf_type_level": "get_apf_type_level",
+    "nr_level": "get_nr_level",
+    "pbt_inner": "get_pbt_inner",
+    "pbt_outer": "get_pbt_outer",
+    "notch_filter": "get_notch_filter",
+    "nb_level": "get_nb_level",
+    "digisel_shift": "get_digisel_shift",
+    "att": "get_attenuator",
+    "preamp": "get_preamp",
+    "agc": "get_agc",
+    "audio_peak_filter": "get_audio_peak_filter",
+    "filter_shape": "get_filter_shape",
+    "manual_notch_width": "get_manual_notch_width",
+    "agc_time_constant": "get_agc_time_constant",
+    "tone_freq": "get_tone_freq",
+    "tsql_freq": "get_tsql_freq",
+}
+_GLOBAL_METER_GETTERS = {
+    "power": "get_power_meter",
+    "swr": "get_swr",
+    "alc": "get_alc",
+    "comp": "get_comp_meter",
+    "vd": "get_vd_meter",
+    "id": "get_id_meter",
+}
+_GLOBAL_TX_STATE_GETTERS = {
+    "ptt": "get_transceiver_status",
+    "rit_on": "get_rit_status",
+    "rit_tx": "get_rit_tx_status",
+    "compressor_on": "get_compressor",
+    "monitor_on": "get_monitor",
+    "vox_on": "get_vox",
+    "split": "get_split",
+    "dual_watch": "get_dual_watch",
+}
+_GLOBAL_CONTROL_GETTERS = {
+    "rit_freq": "get_rit_frequency",
+    "vox_delay": "get_vox_delay",
+    "tuner_status": "get_tuner_status",
+    "break_in": "get_break_in",
+    "power_level": "get_rf_power",
+    "mic_gain": "get_mic_gain",
+    "cw_pitch": "get_cw_pitch",
+    "key_speed": "get_key_speed",
+    "compressor_level": "get_compressor_level",
+    "break_in_delay": "get_break_in_delay",
+    "drive_gain": "get_drive_gain",
+    "monitor_gain": "get_monitor_gain",
+    "vox_gain": "get_vox_gain",
+    "anti_vox_gain": "get_anti_vox_gain",
+}
+
+
+def acquisition_query_from_wire_tuple(
+    wire: tuple[int, ...],
+    *,
+    receiver: int | None = None,
+) -> AcquisitionQuery:
+    """Decode a command-map wire tuple into a lossless acquisition query."""
+
+    command, sub, data = decode_wire_tuple(wire)
+    return AcquisitionQuery(command, sub=sub, data=data, receiver=receiver)
+
+
+def acquisition_query_resolver_for_profile(
+    profile: RadioProfile,
+) -> AcquisitionQueryResolver:
+    """Bind acquisition FieldPaths to one profile's declared getter bytes."""
+
+    command_map = profile.command_map
+
+    def from_getter(
+        getter: str | None,
+        *,
+        receiver: int | None = None,
+    ) -> AcquisitionQuery | None:
+        if getter is None or command_map is None or not command_map.has(getter):
+            return None
+        return acquisition_query_from_wire_tuple(
+            command_map.get(getter),
+            receiver=receiver,
+        )
+
+    def resolve_freq_mode(path: FieldPath, receiver: int) -> AcquisitionQuery | None:
+        slot = None if path.slot is None else path.slot.value
+        if slot in {"A", "B"} or (slot == "unselected" and receiver != 0):
+            return None
+        selected = receiver == 0 and slot != "unselected"
+        if path.name == "freq_hz":
+            getter = "get_selected_freq" if selected else "get_unselected_freq"
+        elif path.name in {"mode", "filter_num"}:
+            getter = "get_selected_mode" if selected else "get_unselected_mode"
+        elif path.name == "filter_width":
+            return from_getter(
+                "get_filter_width" if slot != "unselected" else None,
+                receiver=receiver,
+            )
+        elif path.name == "data_mode":
+            return from_getter(
+                "get_data_mode" if slot != "unselected" else None,
+                receiver=receiver,
+            )
+        else:
+            getter = None
+        return from_getter(getter)
+
+    def resolve(path: FieldPath) -> AcquisitionQuery | None:
+        scope = path.scope.value
+        family = path.family.value
+        if scope == "receiver":
+            receiver = _RECEIVER_IDS.get(path.receiver_id or "")
+            if receiver is None or not profile.supports_receiver(receiver):
+                return None
+            if family == "freq_mode":
+                return resolve_freq_mode(path, receiver)
+            if family == "meters":
+                getter = "get_s_meter" if path.name == "s_meter" else None
+            elif family == "operator_toggles":
+                getter = _RECEIVER_TOGGLE_GETTERS.get(path.name)
+            elif family == "operator_controls":
+                getter = _RECEIVER_CONTROL_GETTERS.get(path.name)
+            else:
+                getter = None
+            return from_getter(getter, receiver=receiver)
+        if scope != "global":
+            return None
+        if family == "meters":
+            getter = _GLOBAL_METER_GETTERS.get(path.name)
+        elif family == "slow_state":
+            getter = "get_main_sub_band" if path.name == "active" else None
+        elif family == "tx_state":
+            getter = _GLOBAL_TX_STATE_GETTERS.get(path.name)
+        elif family == "operator_controls":
+            getter = _GLOBAL_CONTROL_GETTERS.get(path.name)
+        else:
+            getter = None
+        return from_getter(getter)
+
+    return resolve
 
 
 def build_state_queries(
@@ -38,7 +186,7 @@ def build_state_queries(
     capabilities: set[str],
     *,
     is_serial: bool = False,
-) -> list[StateQuery]:
+) -> list[AcquisitionQuery]:
     """Build the full list of CI-V state queries for the given profile.
 
     Parameters
@@ -52,25 +200,23 @@ def build_state_queries(
 
     Returns
     -------
-    list[StateQuery]
-        Ordered list of ``(cmd_byte, sub_byte, receiver)`` tuples.
+    list[AcquisitionQuery]
+        Ordered list of lossless acquisition queries.
     """
     receivers = [0]
     if profile.receiver_count > 1:
         receivers.append(1)
 
-    queries: list[StateQuery] = []
+    queries: list[AcquisitionQuery] = []
 
     for receiver in receivers:
         # Freq/mode — needed even on serial for initial state and to pick up
         # filter/attenuator/preamp that don't come via transceive.
-        queries.append((0x25, None, receiver))  # frequency
-        queries.append((0x26, None, receiver))  # mode
+        queries.append(AcquisitionQuery(0x25, data=bytes([receiver])))  # frequency
+        queries.append(AcquisitionQuery(0x26, data=bytes([receiver])))  # mode
         if receiver == 0 and profile.vfo_readback == "selected_unselected":
-            # ``sub=1`` is an internal selector consumed by the senders below;
-            # receiver remains 0/None so it never invents a SUB topology.
-            queries.append((0x25, 0x01, None))  # unselected frequency
-            queries.append((0x26, 0x01, None))  # unselected mode
+            queries.append(AcquisitionQuery(0x25, data=b"\x01"))
+            queries.append(AcquisitionQuery(0x26, data=b"\x01"))
 
         # Per-receiver state queries.  On dual-receiver radios these use
         # cmd29 wrapping.  On single-receiver radios without cmd29 we send
@@ -111,10 +257,12 @@ def build_state_queries(
                 continue
             if profile.supports_cmd29(cmd_byte, sub_byte):
                 # Dual-receiver: cmd29-wrapped with receiver byte
-                queries.append((cmd_byte, sub_byte, receiver))
+                queries.append(
+                    AcquisitionQuery(cmd_byte, sub=sub_byte, receiver=receiver)
+                )
             elif receiver == 0:
                 # Single-receiver: plain CI-V query (only once, not per-rx)
-                queries.append((cmd_byte, sub_byte, None))
+                queries.append(AcquisitionQuery(cmd_byte, sub=sub_byte))
 
         # Per-receiver feature queries that use cmd29 wrapping.
         # Added for any radio whose profile declares cmd29 support for these.
@@ -128,31 +276,35 @@ def build_state_queries(
             (0x1A, 0x04),  # AGC time constant
         ):
             if profile.supports_cmd29(cmd_byte, sub_byte):
-                queries.append((cmd_byte, sub_byte, receiver))
+                queries.append(
+                    AcquisitionQuery(cmd_byte, sub=sub_byte, receiver=receiver)
+                )
 
     # Global queries (not per-receiver)
     queries.extend(
         [
-            (0x18, None, None),  # Power status (on/off)
-            (0x1C, 0x00, None),  # PTT (global)
-            (0x1C, 0x01, None),  # Tuner/ATU status
-            (0x1C, 0x03, None),  # TX frequency monitor
-            (0x14, 0x0A, None),  # Power level (global)
-            (0x14, 0x0B, None),  # Mic gain (global)
-            (0x14, 0x0E, None),  # Compressor level (global)
-            (0x14, 0x15, None),  # Monitor gain (global)
-            (0x14, 0x09, None),  # CW pitch (global)
-            (0x14, 0x0C, None),  # Key speed (global)
-            (0x0F, None, None),  # Split (global)
-            (0x21, 0x00, None),  # RIT frequency
-            (0x21, 0x01, None),  # RIT status
-            (0x21, 0x02, None),  # RIT TX status
+            AcquisitionQuery(0x18),  # Power status (on/off)
+            AcquisitionQuery(0x1C, sub=0x00),  # PTT (global)
+            AcquisitionQuery(0x1C, sub=0x01),  # Tuner/ATU status
+            AcquisitionQuery(0x1C, sub=0x03),  # TX frequency monitor
+            AcquisitionQuery(0x14, sub=0x0A),  # Power level (global)
+            AcquisitionQuery(0x14, sub=0x0B),  # Mic gain (global)
+            AcquisitionQuery(0x14, sub=0x0E),  # Compressor level (global)
+            AcquisitionQuery(0x14, sub=0x15),  # Monitor gain (global)
+            AcquisitionQuery(0x14, sub=0x09),  # CW pitch (global)
+            AcquisitionQuery(0x14, sub=0x0C),  # Key speed (global)
+            AcquisitionQuery(0x0F),  # Split (global)
+            AcquisitionQuery(0x21, sub=0x00),  # RIT frequency
+            AcquisitionQuery(0x21, sub=0x01),  # RIT status
+            AcquisitionQuery(0x21, sub=0x02),  # RIT TX status
         ]
     )
     if profile.receiver_count > 1:
-        queries.append((0x07, 0xD2, None))  # Active receiver
+        queries.append(AcquisitionQuery(0x07, data=b"\xd2"))
     if "dual_watch" in capabilities:
-        queries.append((0x07, 0xC2, None))  # Dual Watch status
+        queries.append(
+            acquisition_query_from_wire_tuple(profile.command_map.get("get_dual_watch"))
+        )
 
     # Common feature queries (data-driven: if radio has the command, poll it)
     _COMMON_FEATURE_QUERIES: list[tuple[int, int]] = [
@@ -184,13 +336,13 @@ def build_state_queries(
         )
 
     for cmd, sub in _COMMON_FEATURE_QUERIES:
-        queries.append((cmd, sub, None))
+        queries.append(AcquisitionQuery(cmd, sub=sub))
 
     # Capability-gated optional queries
     if "meters" in capabilities:
-        queries.append((0x15, 0x07, None))  # Overflow status
+        queries.append(AcquisitionQuery(0x15, sub=0x07))  # Overflow status
     if "ssb_tx_bw" in capabilities:
-        queries.append((0x16, 0x58, None))  # SSB TX bandwidth
+        queries.append(AcquisitionQuery(0x16, sub=0x58))  # SSB TX bandwidth
     if "scope" in capabilities:
         # 0x27 reads come in two shapes.  The sub-commands in
         # SCOPE_RECEIVER_SELECTOR_SUBS carry a one-byte Main/Sub scope
@@ -219,8 +371,14 @@ def build_state_queries(
             0x1F,  # Scope RBW
         ):
             if scope_sub in SCOPE_RECEIVER_SELECTOR_SUBS:
-                queries.append((0x27, bytes([scope_sub, SCOPE_SELECTOR_MAIN]), None))
+                queries.append(
+                    AcquisitionQuery(
+                        0x27,
+                        sub=scope_sub,
+                        data=bytes([SCOPE_SELECTOR_MAIN]),
+                    )
+                )
             else:
-                queries.append((0x27, scope_sub, None))
+                queries.append(AcquisitionQuery(0x27, sub=scope_sub))
 
     return queries

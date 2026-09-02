@@ -3,18 +3,41 @@
  * (reference) and `fieldline` (proof). RX/TX namespace chosen here
  * (MOR-1231 note): `--dl-rx-*`/`--dl-tx-*`, distinct from the legacy
  * `--v2-tx-*` family. Registering here does not hardcode "two families":
- * contract.test.ts registers a third the same way.
+ * `segmentline` below is the real third.
  *
  * MOR-1073 landed studioline's real token set and its three renderers
  * (`./studioline`); MOR-1074 does the same for `fieldline` (`./fieldline`),
  * which retires the shared placeholder bundle that used to stand in for it.
- * Both families now supply their own contrast-proven ring tone, so nothing
- * here inherits `var(--accent)` — which carries no such guarantee — any more.
  * The contract's `var(--accent)` default is deliberately left untouched.
  *
- * The two bundles are imported under family-qualified aliases because they
- * export the same three renderer names: that symmetry IS the proof — the
- * second language plugs into identical slots with no contract change.
+ * Each bundle is imported under family-qualified aliases because all three
+ * export the same three renderer names: that symmetry IS the proof — every
+ * language plugs into identical slots with no contract change. Below,
+ * studioline and fieldline (MOR-1073/1074) illustrate the pattern first;
+ * segmentline (MOR-2148/2149) follows it identically further down.
+ *
+ * MOR-2148 registered `segmentline`, the amber-LCD instrument family, as
+ * tokens + stylesheet + manifest only (`renderers: {}`, which
+ * `resolveRenderer` (`./contract.ts`) fell back on safely). MOR-2149 fills
+ * its three renderer slots below, the same way MOR-1073/1074 filled
+ * studioline's and fieldline's.
+ *
+ * `layoutCompatibility` declares `peer-split: true` and `desktop-v2:
+ * false`. Activation matches the resolved `SkinId`, not a
+ * `presentation/layouts/` manifest id: `App.svelte` calls
+ * `designLanguageActivation(language, skinId)` (`../workspace/activation.ts`),
+ * whose parameter is merely *named* `layoutId`. `peer-split` is a
+ * registered `SkinId` with a loadable shell (MOR-2155), but `resolveSkinId`
+ * (`../../skins/registry.ts`) has no branch that returns it and no
+ * `presentation/layouts/` manifest names it (MOR-2151), so segmentline
+ * cannot activate in production yet — that routing is later in MOR-1162's
+ * delivery order (`docs/plans/2026-09-01-segmentline-peer-split.md` §7:
+ * MOR-2151, MOR-2152), not an oversight here. `unified-instrument` and
+ * `panadapter-first`, the handoff's other two proposed directions, are
+ * named nowhere in this repository either — no `SkinId`, no layout
+ * manifest — so they are absent from this list too. `desktop-v2: false`
+ * is kept because segmentline's fixed-native glass and desktop-v2's fluid
+ * chrome are a real, current incompatibility.
  */
 import { registerDesignLanguage, type DesignLanguageManifest } from './contract';
 import { renderFrequency as studiolineFrequency } from './studioline/frequency-renderer';
@@ -25,6 +48,10 @@ import { renderFrequency as fieldlineFrequency } from './fieldline/frequency-ren
 import { renderMeter as fieldlineMeter } from './fieldline/meters-renderer';
 import { renderStateFeedback as fieldlineStateFeedback } from './fieldline/state-feedback-renderer';
 import { FIELDLINE_TOKENS } from './fieldline/tokens';
+import { renderFrequency as segmentlineFrequency } from './segmentline/frequency-renderer';
+import { renderMeter as segmentlineMeter } from './segmentline/meters-renderer';
+import { renderStateFeedback as segmentlineStateFeedback } from './segmentline/state-feedback-renderer';
+import { SEGMENTLINE_TOKENS } from './segmentline/tokens';
 
 export const studioline: DesignLanguageManifest = {
   id: 'studioline',
@@ -67,5 +94,28 @@ export const fieldline: DesignLanguageManifest = {
   },
 };
 
+export const segmentline: DesignLanguageManifest = {
+  id: 'segmentline',
+  displayName: 'Segmentline',
+  tokens: SEGMENTLINE_TOKENS,
+  // Clamped out at dense — the outlined cells collide with the 7px meter
+  // pitch (tokens.ts `meters`).
+  density: { kind: 'clamped', supported: ['comfortable', 'compact'] },
+  layoutCompatibility: [
+    { layoutId: 'peer-split', compatible: true },
+    {
+      layoutId: 'desktop-v2',
+      compatible: false,
+      reason: 'segmentline assumes a fixed-native instrument glass; desktop-v2 is fluid chrome.',
+    },
+  ],
+  renderers: {
+    frequencyDisplay: segmentlineFrequency,
+    meters: segmentlineMeter,
+    stateFeedback: segmentlineStateFeedback,
+  },
+};
+
 registerDesignLanguage(studioline);
 registerDesignLanguage(fieldline);
+registerDesignLanguage(segmentline);

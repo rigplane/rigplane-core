@@ -15,9 +15,9 @@ from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
-from ...core.tx_authority import TxStateReading
-from ...types import AudioCodec, BreakInMode
-from ...exceptions import AudioFormatError, CommandError
+from ...core.tx_observation import TxStateReading
+from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
+from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...radio_state import RadioState
 from .parser import CatCommandParser, CatParseError, format_command
@@ -50,7 +50,7 @@ _RIGS_DIR = Path(__file__).parents[4] / "rigs"
 # command reports the tone as a 0-49 INDEX into the standard 50-tone EIA CTCSS
 # set, NOT as an absolute frequency (unlike the Icom 0x1B BCD-Hz encoding). The
 # index → Hz chart is verbatim from the official FTX-1 CAT manual
-# (``FTX-1_CAT_OM_ENG_2507``). Values are stored directly in centiHz
+# (``FTX-1_CAT_OM_ENG_2508-C``). Values are stored directly in centiHz
 # (round(Hz * 100)) so the neutral emission matches the Icom convention
 # (``round(_decode_tone_freq(...) * 100)``, MOR-451) with no float rounding
 # ambiguity at the call site. There is no shared cross-vendor CTCSS table in
@@ -788,14 +788,32 @@ class YaesuCatRadio:
         return parser.parse(raw + ";")
 
     async def _write(self, cmd_name: str, **kwargs: Any) -> None:
-        """Format and send a write command (no response expected)."""
+        """Format and send a write command (no response expected).
+
+        Raises:
+            CommandRejectedError: If the radio rejects the command with
+                ``?;`` (MOR-2103), translated from the transport's
+                :class:`~.transport.CatCommandRejected` — a plain
+                ``Exception`` subclass, not :class:`~...exceptions.RigplaneError`,
+                so it would otherwise escape ``validation/hardware.py``'s
+                ``_guard`` uncaught. A dedicated subclass of
+                :class:`~...exceptions.CommandError` (not a plain
+                ``CommandError``) so a caller that needs to know the radio
+                positively refused the command — as opposed to, say, a local
+                encoder rejecting an out-of-range value before anything was
+                sent — can identify it structurally, by type, instead of
+                re-deriving it from the exception's message text.
+        """
         self._require_connected()
         spec = self._get_spec(cmd_name)
         if spec.write is None:
             raise CommandError(f"Command {cmd_name!r} has no write template")
 
         cmd = format_command(spec.write, **kwargs)
-        await self._transport.write(cmd)
+        try:
+            await self._transport.write(cmd)
+        except CatCommandRejected as exc:
+            raise CommandRejectedError(str(exc)) from exc
 
     # -- IF Bulk Query ------------------------------------------------------
 
@@ -1097,28 +1115,11 @@ class YaesuCatRadio:
         return ptt
 
     async def read_transmit_state(self) -> TxStateReading:
-        """One solicited transmit-state read (ADR row 5).
+        """One solicited transmit-state observation.
 
-        Implements :class:`~rigplane.core.radio_protocol.TransmitStateReadable`
-        on :meth:`read_ptt_token` and :meth:`_interpret_ptt_token` -- the
-        same fail-closed mapping :meth:`read_ptt` uses, not a second copy of
-        it -- plus the per-vendor attribution (``tx_cat`` / ``tx_other``)
-        §3.7 requires be carried, not discarded.
-
-        The real :class:`~.transport.YaesuCatTransport` raises a typed
-        exception per outcome rather than returning a sentinel string, so
-        this never trusts a raw ``"?"`` token -- it catches the transport's
-        own vocabulary instead. A rejected, unanswered, or malformed-but-
-        delivered read is never raised -- it comes back as a
-        :class:`TxStateReading` with a ``failure`` tag -- but a
-        precondition failure ahead of the wire (``read_ptt_token`` ->
-        ``_query`` -> ``_require_connected``, not connected at all) still
-        raises, the same convention every other read on this class
-        follows. A malformed reply that gets past ``query()``'s ``?``-
-        prefix rejection but fails the response template (a noisy serial
-        line) raises :class:`~.parser.CatParseError`, a ``ValueError``
-        subclass outside the ``transport.py`` ``Cat*Error`` family -- also
-        caught here, not a precondition failure.
+        It uses the same token interpretation as :meth:`read_ptt` and carries
+        the profile's attribution. Transport outcomes return a ``failure``
+        tag; connection preconditions still raise.
         """
         try:
             token = await self.read_ptt_token()
@@ -2278,7 +2279,7 @@ class YaesuCatRadio:
         Pure CAT read used by the observation pipeline. Returns the FTX-1
         ``CT`` P2 code (0=CTCSS OFF, 1=ENC ON/DEC OFF "TONE", 2=ENC ON/DEC ON
         "TSQL", 3=DCS, 4=PR FREQ, 5=REV TONE) per the FTX-1 CAT Operation
-        Reference Manual (``FTX-1_CAT_OM_ENG_2507``). MAIN only (CT0).
+        Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``). MAIN only (CT0).
         """
         result = await self._query("get_sql_type")
         return int(result["type"])
@@ -2296,7 +2297,7 @@ class YaesuCatRadio:
 
         Sends ``CN00;`` (P1=0 MAIN, P2=0 CTCSS) and parses the ``CN00nnn;``
         answer, returning the 000-049 tone-chart index per the FTX-1 CAT
-        Operation Reference Manual (``FTX-1_CAT_OM_ENG_2507``). Pure CAT read
+        Operation Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``). Pure CAT read
         used by the observation pipeline: it does NOT mutate ``radio_state``.
         MAIN only (CN P1=0); the SUB receiver would need CN10, out of scope.
         """
@@ -2312,6 +2313,49 @@ class YaesuCatRadio:
         by both TONE (encode) and TSQL (decode).
         """
         return _ctcss_index_to_centihz(await self.read_ctcss_tone_index(receiver))
+
+    async def read_repeater_shift(self, receiver: int = 0) -> int:
+        """Read the MAIN repeater shift direction (OS0) — pure read.
+
+        Sends ``OS0;`` (P1=0 MAIN) and parses the ``OS0n;`` answer per the
+        FTX-1 CAT Operation Reference Manual (``FTX-1_CAT_OM_ENG_2508-C``),
+        OS OFFSET (REPEATER SHIFT). Returns the raw 0-3 P2 code (0=Simplex,
+        1=Plus Shift, 2=Minus Shift, 3=ARS) — shift magnitude is not covered
+        by this command (see :class:`RepeaterShiftCapable`). Pure CAT read
+        used by the observation pipeline: it does NOT mutate ``radio_state``.
+        MAIN only (OS0); the SUB receiver would need OS1, out of scope.
+        """
+        result = await self._query("get_repeater_shift")
+        return int(result["shift"])
+
+    async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
+        """Get the MAIN repeater shift direction (OS0 command)."""
+        return RepeaterShiftDirection(await self.read_repeater_shift(receiver))
+
+    async def set_repeater_shift(
+        self, direction: RepeaterShiftDirection | int, receiver: int = 0
+    ) -> None:
+        """Set the MAIN repeater shift direction (OS0 command).
+
+        Args:
+            direction: Target shift direction.
+            receiver: Ignored (FTX-1 writes MAIN only via OS0). Present for
+                protocol compat. As with other MAIN-only FTX-1 setters,
+                passing ``receiver=1`` still writes the MAIN frame, and the
+                poller then records the result under SUB — a pre-existing
+                convention across this file, not specific to this method.
+
+        The manual's own footnote says this command "can be activated only
+        with an FM mode" — nothing more; the manual documents no error
+        response for any command. Separately, a bench measurement recorded
+        in MOR-2125 found that with MAIN in a non-FM mode the radio refuses
+        with ``?;``, while in FM all four direction values are accepted.
+        ``transport.py`` documents ``?;`` as meaning "unrecognized command"
+        (see its module docstring); here the command is recognized and
+        refused only for the current mode — a different failure wearing the
+        same reply.
+        """
+        await self._write("set_repeater_shift", shift=int(direction))
 
     # -- D10: System --------------------------------------------------------
 

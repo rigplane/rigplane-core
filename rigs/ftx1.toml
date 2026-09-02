@@ -70,6 +70,7 @@ features = [
     "meters",
     "dial_lock",
     "sql_type",
+    "repeater_shift",
 ]
 
 [state_acquisition]
@@ -131,6 +132,7 @@ polling_only = [
     "receiver.main.operator_toggles.repeater_tsql",
     "receiver.main.operator_controls.tone_freq",
     "receiver.main.operator_controls.tsql_freq",
+    "receiver.main.operator_controls.repeater_shift",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -358,11 +360,11 @@ freshness_ttl_seconds = 120.0
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
-# Tone / CTCSS squelch-type (MOR-457). The MAIN-only CAT ``CT`` "SQL TYPE" read
-# (FTX-1_CAT_OM_ENG_2507) is mapped onto the neutral, mutually-exclusive CTCSS
-# booleans repeater_tone (CTCSS ENC, "TONE") and repeater_tsql (CTCSS ENC+DEC,
-# "TSQL"). Slow-changing per-receiver operator toggles, so they use the
-# slow-control cadence, matching the other receiver DSP toggles above.
+# Tone / CTCSS squelch-type (MOR-457, corrected MOR-2130). The MAIN-only CAT
+# ``CT`` "SQL TYPE" read (FTX-1_CAT_OM_ENG_2508-C) is mapped onto the neutral
+# CTCSS booleans repeater_tone (CTCSS ENC, "TONE") and repeater_tsql (CTCSS
+# ENC+DEC, "TSQL"). Slow-changing per-receiver operator toggles, so they use
+# the slow-control cadence, matching the other receiver DSP toggles above.
 [state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
@@ -372,7 +374,7 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 # CTCSS tone frequency (MOR-458). The MAIN-only CAT ``CN`` "CTCSS TONE
-# FREQUENCY" read (FTX-1_CAT_OM_ENG_2507) maps a 0-49 tone-chart index → Hz →
+# FREQUENCY" read (FTX-1_CAT_OM_ENG_2508-C) maps a 0-49 tone-chart index → Hz →
 # centiHz onto the neutral tone_freq/tsql_freq paths. The FTX-1 has a single
 # CTCSS tone shared by TONE (encode) and TSQL (decode), so both paths receive
 # the same centiHz value from one read. Slow-changing per-receiver operator
@@ -383,6 +385,16 @@ cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
 [state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+cadence_seconds = 30.0
+freshness_ttl_seconds = 120.0
+
+# Repeater shift DIRECTION (MOR-2111). The MAIN-only CAT ``OS`` "OFFSET
+# (REPEATER SHIFT)" read (FTX-1_CAT_OM_ENG_2508-C) reports the P2 code
+# (0=Simplex, 1=Plus Shift, 2=Minus Shift, 3=ARS) directly onto the neutral
+# repeater_shift path — no derivation, unlike the tone/TSQL booleans above.
+# Slow-changing per-receiver operator control, so it uses the slow-control
+# cadence like the other receiver controls above.
+[state_acquisition.field_policies."receiver.main.operator_controls.repeater_shift"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
@@ -897,14 +909,25 @@ set_clarifier_freq = { cat = { write = "CF001{sign}{offset:04d};" } }
 
 # ── Tone / CTCSS ──
 # MOR-473: the live FTX-1 answers ``CT0;`` with a SINGLE-digit P2 ("CT00;"),
-# so the READ parse takes one digit. The write width is left as ``{type:02d}``
-# (an unconfirmed residual) until a live write capture confirms otherwise.
+# so the READ parse takes one digit.
 get_sql_type   = { cat = { read = "CT0;", parse = "CT0{type};" } }
-set_sql_type   = { cat = { write = "CT0{type:02d};" } }
+# FTX-1_CAT_OM_ENG_2508-C, CT SQL TYPE: P2 is a single digit.
+set_sql_type   = { cat = { write = "CT0{type};" } }
 # CTCSS TONE FREQUENCY (MOR-458). CN P1=0 MAIN, P2=0 CTCSS; the answer's P3
 # (000-049) is the standard 50-tone EIA tone-chart index. Read-only here (the
 # observation pipeline maps the index → centiHz onto tone_freq/tsql_freq).
 get_ctcss_tone = { cat = { read = "CN00;", parse = "CN00{code:03d};" } }
+
+# ── Repeater Shift (MOR-2111) ──
+# FTX-1_CAT_OM_ENG_2508-C, OS OFFSET (REPEATER SHIFT): P1=0 MAIN/1 SUB (MAIN
+# only here, matching CT0/CN00 above); P2 direction 0=Simplex, 1=Plus Shift,
+# 2=Minus Shift, 3=ARS (RepeaterShiftDirection). Manual footnote: this
+# command works only in FM mode. Magnitude is a separate, not-yet-built
+# surface (MOR-2125) — OS carries direction only. Reuses the existing
+# ``shift`` CAT placeholder (single char) already registered for the ``IF;``
+# bulk-status P10 field — same wire shape, no parser change needed.
+get_repeater_shift = { cat = { read = "OS0;", parse = "OS0{shift};" } }
+set_repeater_shift = { cat = { write = "OS0{shift};" } }
 
 # ── Bulk Status ──
 # IF; response layout: P1 chan(5, may be alphanumeric) + P2 freq(9 digits)

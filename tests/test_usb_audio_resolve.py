@@ -90,8 +90,11 @@ IOREG_THREE_RADIOS = textwrap.dedent("""\
 """)
 
 
-# Yaesu FTX-1 ("USB Audio Device") alongside Icom IC-7610 ("USB Audio CODEC")
-# FTX-1: audio @ 0x20132200, serial HRI @ 0x20131000 (same hub prefix 0x2013)
+# Synthetic Yaesu-style shape (audio and serial share hub prefix 0x2013 by
+# construction). This is NOT the FTX-1's real IORegistry layout — the real
+# layout is IOREG_FTX1_REAL_TOPOLOGY below, where the CAT bridge and audio
+# device do NOT share a hub prefix. A same-prefix fixture like this one
+# cannot exercise the MOR-2107 defect (see TestResolveFtx1RealTopology).
 IOREG_YAESU_AND_ICOM = textwrap.dedent("""\
     | +-o USB Audio Device@20132200  <class IOUSBHostDevice, id 0x1000d4711>
     | |   "locationID" = 538124800
@@ -112,8 +115,8 @@ IOREG_YAESU_AND_ICOM = textwrap.dedent("""\
     | |   | "IOCalloutDevice" = "/dev/cu.usbserial-111120"
 """)
 
-# Yaesu FTX-1 only (no Icom)
-# audio @ 0x20132200, serial HRI @ 0x20131000 (same hub prefix 0x2013)
+# Synthetic Yaesu-style shape, no Icom (see IOREG_YAESU_AND_ICOM above for
+# why this does not model real FTX-1 hardware).
 IOREG_YAESU_ONLY = textwrap.dedent("""\
     | +-o USB Audio Device@20132200  <class IOUSBHostDevice, id 0x1000d4711>
     | |   "locationID" = 538124800
@@ -123,6 +126,77 @@ IOREG_YAESU_ONLY = textwrap.dedent("""\
     | | +-o AppleUSBSLCOM
     | |   | "IOTTYSuffix" = "01AE340D0"
     | |   | "IOCalloutDevice" = "/dev/cu.usbserial-01AE340D0"
+""")
+
+# FTX-1 REAL IORegistry topology (MOR-2107): the CAT bridge and the audio
+# device are siblings under an internal hub, at DIFFERENT hub prefixes
+# (0x0011 vs 0x0012) — this is the shape that reproduces the defect, unlike
+# the synthetic same-prefix fixtures above. "YAESU HRI USB I/F" is a third
+# sibling present on real hardware; it is neither the CAT port nor an audio
+# device, so it is inert for resolution and included only for topology
+# fidelity.
+IOREG_FTX1_REAL_TOPOLOGY = textwrap.dedent("""\
+    | +-o CP2105 Dual USB to UART Bridge Controller@00110000
+    | |   "locationID" = 1114112
+    | | +-o AppleUSBSLCOM
+    | |   | "IOTTYSuffix" = "FTX1CAT01"
+    | |   | "IOCalloutDevice" = "/dev/cu.usbserial-FTX1CAT01"
+    | +-o USB Audio Device@00120000  <class IOUSBHostDevice, id 0x1000f7101>
+    | |   "locationID" = 1179648
+    | |   "USB Product Name" = "USB Audio Device"
+    | +-o YAESU HRI USB I/F@00130000  <class IOUSBHostDevice, id 0x1000f7102>
+    | |   "locationID" = 1245184
+""")
+
+# FTX-1 real topology (as above) alongside an IC-7300 on a separate hub —
+# proves the longest-prefix match still picks each radio's own audio device
+# when a second, unrelated radio is present.
+IOREG_FTX1_REAL_AND_ICOM = textwrap.dedent("""\
+    | +-o CP2105 Dual USB to UART Bridge Controller@00110000
+    | |   "locationID" = 1114112
+    | | +-o AppleUSBSLCOM
+    | |   | "IOTTYSuffix" = "FTX1CAT01"
+    | |   | "IOCalloutDevice" = "/dev/cu.usbserial-FTX1CAT01"
+    | +-o USB Audio Device@00120000  <class IOUSBHostDevice, id 0x1000f7101>
+    | |   "locationID" = 1179648
+    | |   "USB Product Name" = "USB Audio Device"
+    | +-o YAESU HRI USB I/F@00130000  <class IOUSBHostDevice, id 0x1000f7102>
+    | |   "locationID" = 1245184
+    | +-o USB Audio CODEC@20144000  <class IOUSBHostDevice, id 0x1000045f6>
+    | |   "locationID" = 538198016
+    | |   "USB Product Name" = "USB Audio CODEC"
+    | +-o CP2102 USB to UART Bridge Controller@20141000
+    | |   "locationID" = 538185728
+    | | +-o AppleUSBSLCOM
+    | |   | "IOTTYSuffix" = "201410"
+    | |   | "IOCalloutDevice" = "/dev/cu.usbserial-201410"
+""")
+
+# Two DIFFERENT radios (A, B) on sibling ports of one EXTERNAL USB hub
+# (0x14100000) — unlike the FTX-1's internal-hub siblings above, A and B
+# are separate physical radios. Pins why an adaptive longest-shared-component
+# match is needed instead of any fixed-width shift: resolving radio B's
+# CAT port (0x14121000), a >>20 mask also matches radio A's audio device
+# (0x14114000) — a silent mis-route — while >>16 and the longest-prefix
+# scorer both correctly match radio B's own audio (0x14124000). Verified
+# in TestResolveExternalHubDisambiguation below (MOR-2107 review, B5).
+IOREG_EXTERNAL_HUB_TWO_RADIOS = textwrap.dedent("""\
+    | +-o USB Audio CODEC@14114000  <class IOUSBHostDevice, id 0x1000e1a01>
+    | |   "locationID" = 336674816
+    | |   "USB Product Name" = "USB Audio CODEC"
+    | +-o CP2102 USB to UART Bridge Controller@14111000
+    | |   "locationID" = 336662528
+    | | +-o AppleUSBSLCOM
+    | |   | "IOTTYSuffix" = "RADIOA01"
+    | |   | "IOCalloutDevice" = "/dev/cu.usbserial-RADIOA01"
+    | +-o USB Audio Device@14124000  <class IOUSBHostDevice, id 0x1000e1a02>
+    | |   "locationID" = 336740352
+    | |   "USB Product Name" = "USB Audio Device"
+    | +-o CP2102 USB to UART Bridge Controller@14121000
+    | |   "locationID" = 336728064
+    | | +-o AppleUSBSLCOM
+    | |   | "IOTTYSuffix" = "RADIOB01"
+    | |   | "IOCalloutDevice" = "/dev/cu.usbserial-RADIOB01"
 """)
 
 
@@ -447,6 +521,86 @@ class TestResolveYaesu:
 
         # Different devices
         assert result_yaesu.rx_device_index != result_icom.rx_device_index
+
+
+class TestResolveFtx1RealTopology:
+    """MOR-2107: the FTX-1's real IORegistry shape does not share an upper-16-bit
+    hub prefix between its CAT bridge (0x0011) and its audio device (0x0012) —
+    see IOREG_FTX1_REAL_TOPOLOGY. A fixed hub-prefix mask fails to resolve this;
+    the longest-shared-component-prefix match must still find the CAT port's
+    own audio device.
+    """
+
+    def test_ftx1_alone_resolves_to_its_own_audio(self) -> None:
+        sd = _make_mock_sd_mixed(usb_codec_count=0, usb_device_count=1)
+        result = _resolve_macos(
+            "/dev/cu.usbserial-FTX1CAT01",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_FTX1_REAL_TOPOLOGY,
+        )
+        assert result is not None
+        assert result.serial_port == "/dev/cu.usbserial-FTX1CAT01"
+        assert result.location_prefix == 0x0011
+        assert result.rx_device_index == 2
+        assert result.tx_device_index == 1
+
+    def test_ftx1_alongside_another_radio_resolves_to_its_own_audio(self) -> None:
+        sd = _make_mock_sd_mixed(usb_codec_count=1, usb_device_count=1)
+        result_ftx1 = _resolve_macos(
+            "/dev/cu.usbserial-FTX1CAT01",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_FTX1_REAL_AND_ICOM,
+        )
+        assert result_ftx1 is not None
+        assert result_ftx1.location_prefix == 0x0011
+
+        result_ic7300 = _resolve_macos(
+            "/dev/cu.usbserial-201410",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_FTX1_REAL_AND_ICOM,
+        )
+        assert result_ic7300 is not None
+        assert result_ic7300.location_prefix == 0x2014
+
+        # Each radio must resolve to its own audio device, never the other's.
+        assert result_ftx1.rx_device_index != result_ic7300.rx_device_index
+        assert result_ftx1.tx_device_index != result_ic7300.tx_device_index
+
+
+class TestResolveExternalHubDisambiguation:
+    """MOR-2107 review (B5): two DIFFERENT radios (A, B) on sibling ports of
+    one EXTERNAL hub — the scenario a fixed-width prefix mask exists to
+    avoid mis-routing, as opposed to the FTX-1's own internal-hub CAT/audio
+    pair. Resolving radio B's CAT port under a >>20 fixed mask also matches
+    radio A's audio device (see IOREG_EXTERNAL_HUB_TWO_RADIOS); the
+    longest-shared-component-prefix scorer must not.
+    """
+
+    def test_radio_b_resolves_to_its_own_audio_not_radio_as(self) -> None:
+        sd = _make_mock_sd_mixed(usb_codec_count=1, usb_device_count=1)
+        result = _resolve_macos(
+            "/dev/cu.usbserial-RADIOB01",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_EXTERNAL_HUB_TWO_RADIOS,
+        )
+        assert result is not None
+        assert result.location_prefix == 0x1412
+        # Radio B's own audio is "USB Audio Device" (rx=2, tx=1), not
+        # radio A's "USB Audio CODEC" (rx=4, tx=3).
+        assert result.rx_device_index == 2
+        assert result.tx_device_index == 1
+
+    def test_radio_a_resolves_to_its_own_audio(self) -> None:
+        sd = _make_mock_sd_mixed(usb_codec_count=1, usb_device_count=1)
+        result = _resolve_macos(
+            "/dev/cu.usbserial-RADIOA01",
+            sounddevice_module=sd,
+            ioreg_output=IOREG_EXTERNAL_HUB_TWO_RADIOS,
+        )
+        assert result is not None
+        assert result.location_prefix == 0x1411
+        assert result.rx_device_index == 4
+        assert result.tx_device_index == 3
 
 
 class TestResolvePlatformDispatch:
@@ -851,7 +1005,7 @@ class TestNameFallbackXiegu:
 # parent device (instance path like USB\VID_xxxx&PID_yyyy\serial) whose
 # children are the CDC/serial function (exposing a COMx name) and the USB
 # Audio Class function (exposing an audio endpoint name). The shared *parent*
-# instance path is the topology anchor, mirroring the macOS hub-prefix anchor.
+# instance path is the topology anchor, mirroring the macOS topology anchor.
 #
 # Modelled set:
 #   - Xiegu X6200: C-Media composite parent, COM3 serial + "USB Audio Device"

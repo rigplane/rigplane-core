@@ -17,11 +17,12 @@
  * `antiVoxGain`, `voxDelay`, `cwPitch`, `keySpeed`, `breakIn`,
  * `breakInDelay`, `main.apfTypeLevel`, `main.twinPeakFilter`, `dashRatio` —
  * all `fieldStatus.*.observed === false`), even though every base
- * capability the family needs (`tx`, `vox`, `cw`, `break_in`, `apf`,
- * `twin_peak`) IS declared on this profile — the same MOR-988 §3.2
- * fail-closed shape MOR-1560's DSP walk already established: capability
- * present, sub-parameter never confirmed on the bench, so the handler
- * refuses. `cw_auto_tune` is the sole exception: it is an empty-params RX
+ * capabilities needed by the applicable IC-7300 paths (`tx`, `vox`, `cw`,
+ * `break_in`, `twin_peak`) are declared on this profile. IC-7300 does not
+ * declare `apf`; its APF handler therefore remains fail-closed — the same MOR-988 §3.2
+ * fail-closed shape MOR-1560's DSP walk already established: where a
+ * capability is present, its sub-parameter must still be confirmed on the
+ * bench; otherwise the handler refuses. `cw_auto_tune` is the sole exception: it is an empty-params RX
  * frequency-correction intent. Its gate requires `cw` and `audio` tags,
  * `audioFftAvailable === true`, and an observed active receiver frequency.
  * The IC-7300 fixture satisfies those RX-analysis prerequisites: its single
@@ -254,9 +255,9 @@ describe('IC-7300 fixture — VOX/CW family conformance (MOR-1565)', () => {
     }
   });
 
-  it("set_apf: REFUSES — main.apfTypeLevel is unobserved (onApfChange is the only dispatch site; mode is a binary toggle in CwPanel.svelte's own handler, not a range slider)", () => {
+  it("set_apf: REFUSES — APF is not declared on the IC-7300 fixture and main.apfTypeLevel is unobserved (onApfChange is the only dispatch site; mode is a binary toggle in CwPanel.svelte's own handler, not a range slider)", () => {
     expect(IC7300_CAPABILITIES.capabilities).toContain('cw');
-    expect(IC7300_CAPABILITIES.capabilities).toContain('apf');
+    expect(IC7300_CAPABILITIES.capabilities).not.toContain('apf');
     expect(IC7300_STATE.fieldStatus?.['main.apfTypeLevel']?.observed).toBe(false);
     expectRefusal(() => makeCwPanelHandlers().onApfChange(1));
   });

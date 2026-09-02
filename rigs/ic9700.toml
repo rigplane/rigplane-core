@@ -681,6 +681,7 @@ scope_data_output = [0x27, 0x11]
 # is a dual-receiver (MAIN/SUB) radio; that reasoning was evidently ported
 # unchanged from IC-7300 (genuinely single-receiver) (D2, MOR-2015).
 get_scope_main_sub = [0x27, 0x12]         # source: IC-9700 CI-V Reference Guide p.12
+set_scope_main_sub = [0x27, 0x12]         # source: IC-9700 CI-V Reference Guide p.12 (Cmd 27 Sub 12* "Send/read the Main or Sub scope setting (00=Main, 01=Sub)" -- MOR-2106)
 get_scope_single_dual = [0x27, 0x13]
 get_scope_mode = [0x27, 0x14]
 get_scope_span = [0x27, 0x15]

@@ -508,6 +508,7 @@ set_vfo = [0x07]
 get_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 # set_dual_watch_off/set_dual_watch_on (not the bare set_dual_watch the
 # pre-migration fallback resolved -- MOR-2007 ruling 1 split the setter key)
+set_dual_watch = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 set_dual_watch_off = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 set_dual_watch_on = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table is 00/01/A0/B0 only" }
 get_main_sub_band = { absent = "IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.3: cmd 0x07 table has no D0/D1/D2" }

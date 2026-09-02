@@ -30,7 +30,7 @@ from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
     TxInterlockDisposition,
 )
-from rigplane.commands.command_map import CommandMap
+from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 
 __all__ = [
     "RigConfig",
@@ -581,6 +581,11 @@ class RigConfig:
     # average with a silent R loses 6 dB).
     rx_audio_channel: str = "mix"
     write_only_controls: tuple[str, ...] = ()
+    # Per-check_id fixed-value declarations (MOR-2105 part 2): check_id ->
+    # source establishing that this radio has only one legal value for that
+    # control. See ``RadioProfile.fixed_value_checks`` (profiles/__init__.py)
+    # for the full rationale.
+    fixed_value_checks: dict[str, str] = field(default_factory=dict)
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_interlock_disposition_overrides: dict[
         TxInterlockCommandFamily, TxInterlockDisposition
@@ -690,6 +695,8 @@ class RigConfig:
                 published_controls[name] = cast(ControlDomainSpec, published_domain)
             controls = published_controls
 
+        command_map = self.to_command_map()
+
         return RadioProfile(
             id=self.id,
             model=self.model,
@@ -724,7 +731,8 @@ class RigConfig:
                 for name, spec in self.commands.items()
                 if isinstance(spec, AbsentCommandSpec)
             },
-            command_map=self.to_command_map(),
+            command_map=command_map,
+            reverse_index=ReverseCommandIndex(command_map),
             filter_width_min=self.filter_width_min,
             filter_width_max=self.filter_width_max,
             filter_width_encoding=self.filter_width_encoding,
@@ -782,6 +790,7 @@ class RigConfig:
             browser_rx_transport=self.browser_rx_transport,
             browser_rx_transcode_to_opus=self.browser_rx_transcode_to_opus,
             write_only_controls=frozenset(self.write_only_controls),
+            fixed_value_checks=dict(self.fixed_value_checks),
             state_acquisition=self.state_acquisition,
             tx_interlock_disposition_overrides=self.tx_interlock_disposition_overrides,
             tx_policy=self.tx_policy,
@@ -1934,6 +1943,34 @@ def load_rig(path: Path) -> RigConfig:
             )
     write_only_controls = tuple(write_only_raw)
 
+    # Validate [validation.fixed_value] — a check_id-grained sibling to
+    # write_only_controls above (MOR-2105 part 2), for a fact with no other
+    # home in RadioProfile: some controls genuinely have only one legal
+    # value on this radio (e.g. IC-7300's single scope), so the RMVR harness
+    # must SKIP the flip instead of reporting a false FAIL for a value
+    # nothing on the radio can ever report back. Keyed by check_id, finer
+    # than write_only_controls' per-capability grain -- a capability like
+    # "scope" mixes fixed-value checks with genuinely multi-valued ones
+    # (e.g. scope_span.set). Each source is required non-empty, in the
+    # spirit of the `{ absent = "<source>" }` convention in [commands].
+    # check_id existence cannot be cross-checked here against the live
+    # registry (`validation/registry/_assembly.py: REGISTRY_BY_ID`) --
+    # `rigplane.profiles` may not import `rigplane.validation`, per
+    # `.importlinter`'s validation-leaf contract -- so that cross-check is
+    # a test (`tests/test_rig_loader.py:
+    # test_every_shipped_profiles_fixed_value_check_ids_are_real_registry_
+    # check_ids`), not a parameter here (F4, MOR-2105 part 2 owner ruling:
+    # an unused ``known_check_ids`` parameter with no production caller was
+    # an orphan).
+    fixed_value_raw = data.get("validation", {}).get("fixed_value", {})
+    for check_id, source in fixed_value_raw.items():
+        if not isinstance(source, str) or not source.strip():
+            raise RigLoadError(
+                f"{filename}: [validation.fixed_value].{check_id!r} must be "
+                f"a non-empty string naming the source, got {source!r}"
+            )
+    fixed_value_checks = dict(fixed_value_raw)
+
     # Validate [vfo]
     vfo = data["vfo"]
     scheme = vfo.get("scheme", "")
@@ -2426,6 +2463,7 @@ def load_rig(path: Path) -> RigConfig:
         browser_rx_transcode_to_opus=browser_rx_transcode_to_opus,
         rx_audio_channel=rx_audio_channel,
         write_only_controls=write_only_controls,
+        fixed_value_checks=fixed_value_checks,
         state_acquisition=state_acquisition,
         tx_interlock_disposition_overrides=tx_interlock_disposition_overrides,
         tx_policy=tx_policy,
