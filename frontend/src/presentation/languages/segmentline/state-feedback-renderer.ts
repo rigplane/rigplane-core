@@ -61,7 +61,7 @@ export interface SegmentlineCell {
   readonly present: true;
   /** Segmentline never fills a control (`tokens.ts`: "every control is an
    *  outlined cell, never a filled button") — engagement is carried by ink
-   *  strength alone, via `segmentline.css`'s `[data-active='true']`. */
+   *  strength alone. */
   readonly active: boolean;
   readonly tone: string;
   readonly focusRing: string;
@@ -121,9 +121,7 @@ export function renderStateFeedback(
       treatment,
       present: true,
       active: treatment === 'keyed',
-      // Same hot+active CONCEPT as segmentline.css's `.dl-cell[data-tone=
-      // 'hot'][data-active='true']` rule — but `tone` holds a colour value
-      // here, not the keyword 'hot'; no rule currently reads this field.
+      // No rule currently reads this field.
       tone: treatment === 'blocked' ? SEGMENTLINE_INK.ghost
         : treatment === 'keyed' ? SEGMENTLINE_PALETTE.txMark
           : SEGMENTLINE_INK.soft,
