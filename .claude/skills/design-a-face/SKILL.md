@@ -503,18 +503,20 @@ rationale, the rationale becomes a constraint, and nothing downstream can tell
 it was invented. So "ask if unsure" is too weak to act on. These are the
 triggers, and at any of them stop and ask rather than pick the likely reading:
 
-- **You cannot say what an element is.** Name it as unidentified. Do not give it
-  a plausible name; a wrong name is inherited silently by everything after it.
-- **The measurement is ambiguous.** Two elements with no gutter read as one run.
-  Ask which it is rather than splitting it by eye.
-- **You cannot tell established from inferred.** The owner knows their own
-  intent, and one sentence from them converts a guess into a fact. That is the
+- **You cannot say what an element is.** Ask the owner. Name it as unidentified
+  in the meantime; do not give it a plausible name — a wrong name is inherited
+  silently by everything after it.
+- **The measurement is ambiguous.** Ask the owner. Two elements with no gutter
+  read as one run; ask which it is rather than splitting it by eye.
+- **You cannot tell established from inferred.** Ask the owner. They know their
+  own intent, and one sentence from them converts a guess into a fact — the
   cheapest question available.
-- **The reference shows something no field can fill.** Whether to widen the
-  contract or drop the element is a scope decision, not a design one.
-- **A rule you extracted cannot place an unshown field.** That is the signal it
-  described the picture rather than the reasoning — say so and ask, instead of
-  stretching it.
+- **The reference shows something no field can fill.** Ask the owner. Whether
+  to widen the contract or drop the element is a scope decision, not a design
+  one.
+- **A rule you extracted cannot place an unshown field.** Ask the owner. That
+  is the signal it described the picture rather than the reasoning — say so,
+  instead of stretching it.
 
 The instance: this skill's own earlier pass read the reference as a control
 panel and derived placement rules about adjacency and reach. It is a display —
@@ -524,6 +526,13 @@ no way to know; it also never asked.
 
 Asking costs one message. A wrong premise costs everything built on it, and it
 does not announce itself.
+
+**If no answer arrives** — a one-shot task, nobody to ask back — do not read
+that as licence to produce nothing. Name the assumption you are making
+explicitly (which trigger fired, and the reading you picked), mark everything
+downstream of it as resting on that assumption rather than a finding, and
+continue. An unanswered question is not permission to guess silently; it is
+permission to guess out loud and label the guess.
 
 ## Traps
 
