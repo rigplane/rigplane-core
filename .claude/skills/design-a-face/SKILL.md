@@ -198,19 +198,24 @@ separates a *dimmed* indicator, which is the same hue with less ink, from a
 *differently coloured* one: the ink profile confuses them, the colour profile
 does not.
 
-**That assumes the ground itself is neutral, and warns when it is not.**
-"Distance from grey" only isolates an accent if the ground has none to
-compete with. On a reference whose ground itself carries a tint — this one's
-amber LCD, not a neutral panel with one coloured accent — most of the box
-already reads as "coloured", and `--by colour` profiles the ground, not any
-meaning: `bands /var/tmp/ftx1-reference.png --by colour` gives one run at
-~94%, and colour-distance there is *anti-correlated* with ink
-(`corrcoef ≈ -0.63` — the mode sits over the LEAST-inked pixels, i.e. the
-ground). The script now detects this itself: `load()` prints a WARNING when
-the measured box's median chroma exceeds a threshold (`DEGENERATE_CHROMA` in
-`measure-reference.py`), proven in `selftest` to fire on a tinted ground and
-stay silent on a genuine accent against a neutral one. Do not report a
-`--by colour` run as a colour-based finding if that warning fired.
+**This is a statistic over the measured box, not a judgement about "the
+ground."** "Distance from grey" only isolates an accent if the ground has
+none to compete with — but the median chroma is taken over whatever box is
+measured, so the same warning fires whether the ground itself is tinted or a
+crop is simply tight enough that the accent IS most of the box. On a
+reference whose ground itself carries a tint — this one's amber LCD, not a
+neutral panel with one coloured accent — most of the box already reads as
+"coloured", and `--by colour` profiles the ground, not any meaning: `bands
+/var/tmp/ftx1-reference.png --by colour` gives one run at ~94%, and
+colour-distance there is *anti-correlated* with ink (`corrcoef ≈ -0.63` —
+the mode sits over the LEAST-inked pixels, i.e. the ground). The script
+detects this itself: `load()` prints a WARNING when the measured box's
+median chroma exceeds a threshold (`DEGENERATE_CHROMA` in
+`measure-reference.py`). `selftest` only exercises the whole-image case; it
+does not claim the threshold behaves any particular way on a crop. If that
+warning fires on a `--by colour` run, check whether it is because the ground
+itself is tinted or because the crop is mostly the accent, before reporting
+the run as a colour-based finding.
 
 **`--smooth <window>` flattens a regular texture before profiling.** Design
 references often carry one — scanlines on an LCD imitation, a dot grid —
