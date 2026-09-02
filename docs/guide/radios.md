@@ -60,7 +60,7 @@ RigPlane capabilities through an external `rigctld` process.
 | Receivers | 2 (MAIN/SUB) | 1 (VFO A/B) |
 | VFO labels | MAIN / SUB | VFO A / VFO B |
 | DIGI-SEL | ✅ | ❌ |
-| IP+ | ✅ | ✅ |
+| IP+ | ✅ | ✅ (supported) |
 | LAN | ✅ | ❌ |
 | Scope | ✅ | ✅ |
 | USB Serial | ✅ | ✅ |
