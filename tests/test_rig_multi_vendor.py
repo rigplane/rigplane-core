@@ -366,13 +366,15 @@ class TestMultiVendorProfiles:
             .capabilities
         )
 
-    def test_ic7300_speech_is_the_42nd_profile_capability(self):
-        """MOR-1609: speech is the sole post-A0 IC-7300 capability."""
+    def test_ic7300_speech_remains_after_unsupported_apf_is_removed(self):
+        """MOR-1609/MOR-2144: remove only APF, not supported capabilities."""
         rig = load_rig(RIGS_DIR / "ic7300.toml")
         profile = rig.to_profile()
 
         assert "speech" in profile.capabilities
-        assert len(profile.capabilities) == 42
+        assert "nb" in profile.capabilities
+        assert "apf" not in profile.capabilities
+        assert len(profile.capabilities) == 41
         assert rig.commands["set_speech"].bytes == (0x13,)
 
     def test_ftx1_without_announcement_routes_does_not_advertise_speech(self):
