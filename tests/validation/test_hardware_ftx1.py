@@ -645,8 +645,7 @@ async def test_ctcss_tone_read_unsupported_without_getter():
 
 
 def test_rmvr_outcome_is_pinned() -> None:
-    """A fourth outcome must not appear unnoticed (mirrors
-    tests/test_tx_authority.py: test_engine_failure_tag_set_is_pinned)."""
+    """A fourth outcome must not appear unnoticed."""
     assert {member.value for member in RmvrOutcome} == {
         "rejected",
         "ignored",

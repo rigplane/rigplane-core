@@ -19,13 +19,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Literal, NoReturn
+from typing import NoReturn
 
 from .tx_observation import (
     RADIO_READBACK_SOURCES,  # noqa: F401
@@ -34,23 +33,6 @@ from .tx_observation import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-#: Decision records retained per radio.
-DECISION_LOG_CAPACITY: int = 256
-
-#: Every ``TxEvidence.failure`` tag this engine produces itself. A backend's
-#: read primitive may supply its own through ``TxStateReading.failure`` (for
-#: example ``"no-capability"``); those pass through untouched.
-TX_ENGINE_FAILURE_TAGS: frozenset[str] = frozenset(
-    {"timeout", "transport", "read-error", "unverifiable-provenance", "unclassified"}
-)
-
-#: Raw byte writes, excluded by name. Bytes cannot be classified, so the
-#: authority does not classify them; the totality test covers map ∪ this set,
-#: so an unmapped method can never hide as "raw".
-RAW_EXCLUDED: frozenset[str] = frozenset(
-    {"send_civ", "send_civ_transaction", "send_civ_raw_fire_and_forget"}
-)
 
 
 class TxWriteClass(StrEnum):
@@ -131,20 +113,6 @@ class TxEvidence:
     failure: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class TxDecisionRecord:
-    """One record per non-PASS admission."""
-
-    monotonic: float
-    provider_generation: int
-    method: str
-    family: str
-    write_class: TxWriteClass
-    action: Literal["sent", "refused"]
-    code: TxRefusalCode | None
-    evidence: TxEvidence | None
-
-
 class TxRefusal(Exception):
     """The one exception consumers of the authority handle."""
 
@@ -164,22 +132,11 @@ class TxMethodEntry:
     family: TxFamily
 
 
-@dataclass(frozen=True, slots=True)
-class TxAuthorityView:
-    """Read-only debuggability surface: why did it decide that."""
-
-    records: tuple[TxDecisionRecord, ...]
-
-
 @dataclass
 class TxAdmission:
-    """Handed to the caller for the duration of an admitted write.
+    """Handed to the caller for the duration of an admitted write."""
 
-    ``family`` is ``None`` only for a ``RAW_EXCLUDED`` method: bytes are not
-    classified, and the admission says so rather than borrowing a family.
-    """
-
-    family: TxFamily | None
+    family: TxFamily
     write_class: TxWriteClass
     evidence: TxEvidence | None = None
 
@@ -193,17 +150,14 @@ class TransmitAuthority:
         read_transmit_state: Callable[[], Awaitable[TxStateReading]],
         method_map: Mapping[str, TxMethodEntry],
         clock: Callable[[], float] = time.monotonic,
-        provider_generation: Callable[[], int] | None = None,
         read_deadline_seconds: float = TX_READ_DEADLINE_SECONDS,
     ) -> None:
         self._read_transmit_state = read_transmit_state
         self._method_map = dict(method_map)
         self._clock = clock
-        self._provider_generation = provider_generation
         self._read_deadline_seconds = read_deadline_seconds
 
         self._lock = asyncio.Lock()
-        self._records: deque[TxDecisionRecord] = deque(maxlen=DECISION_LOG_CAPACITY)
         self._transmit_epoch = 0
 
     # -- intake ------------------------------------------------------------
@@ -219,13 +173,6 @@ class TransmitAuthority:
         if transmitting:
             self._transmit_epoch += 1
 
-    # -- inspection --------------------------------------------------------
-
-    def view(self) -> TxAuthorityView:
-        return TxAuthorityView(
-            records=tuple(self._records),
-        )
-
     # -- admission ---------------------------------------------------------
 
     @asynccontextmanager
@@ -236,10 +183,6 @@ class TransmitAuthority:
         kwargs: Mapping[str, object] | None = None,
     ) -> AsyncIterator[TxAdmission]:
         """Gate one write. The body performs the write; the lock spans both."""
-        if method in RAW_EXCLUDED:
-            yield TxAdmission(None, TxWriteClass.PASS)
-            return
-
         family = self._classify(method)
         if family is None:
             # INV-1's fail direction: nothing defaults to PASS by omission.
@@ -262,12 +205,7 @@ class TransmitAuthority:
                 ticket = self._admit_keying(family)
             else:
                 ticket = await self._admit_hazard(method, family)
-            try:
-                yield ticket
-            finally:
-                # A write that raised may already have reached the radio, so
-                # the decision record lands either way.
-                self._commit(method, ticket)
+            yield ticket
 
     # -- internals ---------------------------------------------------------
 
@@ -325,11 +263,6 @@ class TransmitAuthority:
 
         return TxAdmission(family, TxWriteClass.HAZARD, evidence=evidence)
 
-    def _commit(self, method: str, ticket: TxAdmission) -> None:
-        """Called once the caller's write has been handed off."""
-        family = str(ticket.family)
-        self._record(method, family, ticket.write_class, "sent", None, ticket.evidence)
-
     def _refuse(
         self,
         method: str,
@@ -338,7 +271,6 @@ class TransmitAuthority:
         code: TxRefusalCode,
         evidence: TxEvidence,
     ) -> NoReturn:
-        self._record(method, family, write_class, "refused", code, evidence)
         _LOGGER.warning(
             "transmit authority refused write",
             extra={
@@ -350,27 +282,3 @@ class TransmitAuthority:
             },
         )
         raise TxRefusal(code, evidence)
-
-    def _record(
-        self,
-        method: str,
-        family: TxFamily | str,
-        write_class: TxWriteClass,
-        action: Literal["sent", "refused"],
-        code: TxRefusalCode | None,
-        evidence: TxEvidence | None,
-    ) -> None:
-        self._records.append(
-            TxDecisionRecord(
-                monotonic=self._clock(),
-                provider_generation=(
-                    self._provider_generation() if self._provider_generation else 0
-                ),
-                method=method,
-                family=str(family),
-                write_class=write_class,
-                action=action,
-                code=code,
-                evidence=evidence,
-            )
-        )
