@@ -25,6 +25,26 @@ states into two, and two of the collapsed ones are safety-relevant.
 
 This skill exists to make both impossible to ship by accident.
 
+## Phase 0 — check whether a design language for this reference already exists
+
+**Search before you write, before anything else here.** This can change what
+the rest of the exercise even is, which is why it comes before Phase 1 rather
+than alongside it. Read `frontend/src/presentation/languages/` — every shipped
+design language lives there. Checked: `segmentline` is on `main` in full —
+three renderers (`frequency-renderer.ts`, `meters-renderer.ts`,
+`state-feedback-renderer.ts`), `tokens.ts`, a stylesheet (`segmentline.css`)
+and five test files (`find frontend/src/presentation/languages/segmentline
+-type f`). Skipping this step lets a proposal read as greenfield work when it
+is half-built — exactly the omission CLAUDE.md's "search before you write" and
+"close enough is reuse" scope rules exist to prevent.
+
+A hit is not "reuse it" and stop. Establish three things: what the existing
+language already covers, what it does not, and whether closing the gap is a
+stylesheet change (`tokens.ts` / the family's `.css`, the cheap tier Phase 4
+names) or new markup (a change to the shared semantic-surface layer, not to
+this design language). Only then does deriving a fresh contract in Phase 1
+make sense to run.
+
 ## Phase 1 — derive the data contract
 
 **Never write this by hand.** A hand-maintained contract at a layer boundary
