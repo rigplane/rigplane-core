@@ -43,7 +43,6 @@ import {
 } from '../tx-feedback-state';
 import { SEGMENTLINE_INK, SEGMENTLINE_PALETTE } from './tokens';
 
-/** Matches `.dl-glass[data-tx='active']::after`'s box-shadow in `segmentline.css` exactly. */
 const FRAME_GLOW = 'inset 0 0 38px 2px rgba(214, 28, 8, 0.46), inset 0 0 11px rgba(255, 80, 40, 0.55)';
 
 export interface SegmentlinePerimeter {
