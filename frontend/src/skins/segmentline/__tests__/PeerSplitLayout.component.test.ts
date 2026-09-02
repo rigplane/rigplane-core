@@ -6,9 +6,9 @@
  * zone-mount mechanics are already covered exhaustively elsewhere (the
  * `semantic-*-wiring.component.test.ts` family); what this file is the ONLY
  * place that proves is PeerSplitLayout's own additions on top of that wiring:
- * the `ScaledStage` native size, the `.dl-glass` chrome class, the wall-clock
- * (not radio state), and that the real DOM elements the dual composition
- * emits today (`.channel-strips`, `.cockpit-global-row`, `.rx-tx-zone`,
+ * the `ScaledStage` native size, the `.peer-split-glass` chrome class, the
+ * wall-clock (not radio state), and that the real DOM elements the dual
+ * composition emits today (`.channel-strips`, `.cockpit-global-row`, `.rx-tx-zone`,
  * `.tx-aux-surface`, `.meters-surface`, `.scope-display-surface`) land as
  * DESCENDANTS of the glass.
  *
@@ -32,6 +32,7 @@
  * carry this mock shape. No shared helper wraps it: `find src -iname
  * "*test-helper*" -o -iname "*test-util*"` returns nothing.
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -239,7 +240,7 @@ describe('the peer-split chassis mounts', () => {
     expect(() => render()).not.toThrow();
     const glass = q('[data-testid="peer-split-glass"]');
     expect(glass).not.toBeNull();
-    expect(glass!.classList.contains('dl-glass')).toBe(true);
+    expect(glass!.classList.contains('peer-split-glass')).toBe(true);
   });
 
   // MUTATION TARGET: swapping ScaledStage's nativeW/nativeH kills this — the
@@ -277,14 +278,20 @@ describe('the peer-split chassis mounts', () => {
   // therefore be permanently RED here — 'block' never equals 'grid' — not
   // unfalsifiably green; still worth removing, since a pin that can only
   // ever fail is exactly as useless as one that can only ever pass, and
-  // either shape reads as coverage that is not there. The wider fact this
-  // environment gap implies: NONE of this file's CSS has coverage in this
-  // test file, not only `display: grid` — deleting the component's entire
-  // `<style>` block leaves all four tests in this file green (verified:
-  // mutation applied and reverted for the MOR-2153 review round, not kept
-  // in the tree). The grid actually applying is verified in a real
-  // browser; see the MOR-2153 build report for the exact command and what
-  // it showed.
+  // either shape reads as coverage that is not there. The grid actually
+  // applying is verified in a real browser: `npx vite --config
+  // vite.fixtures.config.ts`, fixture `peer-split-chassis`,
+  // `getComputedStyle(document.querySelector('.semantic-surfaces')).display`.
+  //
+  // This SAME environment gap is why the four tests in this describe block
+  // stayed green (MOR-2153 review) when the component's entire `<style>`
+  // block — including the bezel geometry that made the amber glass render
+  // at all — was deleted by a separate change (#2968) it had no way to
+  // detect. That gap is closed below, not here: the `the glass bezel...`
+  // describe block at the end of this file reads the component's raw
+  // SOURCE text rather than mounting it, the same technique
+  // `presentation/languages/segmentline/__tests__/stylesheet.test.ts`
+  // already uses for `segmentline.css`'s own rules.
 
   // MOR-2153: wall-clock time is not radio state — nothing to mock beyond
   // the system clock itself (`vi.setSystemTime(FROZEN_INSTANT)` above).
@@ -315,5 +322,60 @@ describe('the peer-split chassis mounts', () => {
     const local = clock!.querySelector('[data-testid="peer-split-clock-local"]');
     expect(utc!.textContent).toBe('14:32Z');
     expect(local!.textContent).toBe(expectedLocal());
+  });
+});
+
+/**
+ * MOR-2153 review: mounting `PeerSplitLayout` in Vitest/jsdom applies NO
+ * `<style>` at all (see the `describe` block above), so no assertion made by
+ * mounting the component can tell the bezel's CSS rule apart from it being
+ * deleted outright — which is exactly what happened silently when #2968
+ * retargeted every `.dl-glass` rule in `segmentline.css` onto `.rx-tx-surface`
+ * and this component kept wearing the old, now-dead name. The fix moved the
+ * bezel's own geometry into this component's `<style>` block instead of
+ * depending on a design-language selector; the block below pins its
+ * DECLARATIONS by parsing the component's raw source text, the same
+ * technique `presentation/languages/segmentline/__tests__/stylesheet.test.ts`
+ * already uses for `segmentline.css` — not by mounting and reading computed
+ * style, which this environment cannot do.
+ */
+describe('the glass bezel keeps its own CSS after the chassis class it used to wear died (#2968)', () => {
+  const source = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
+  const styleBlock = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+  // Comments name the very rule this pin is about, so they are stripped
+  // first — same reason `stylesheet.test.ts` strips them from `segmentline
+  // .css` before parsing.
+  const css = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  /** Exact-selector match against a `{ declarations }` block, mirroring
+   *  `stylesheet.test.ts`'s `parseRules`/`findExact` at the scale this file
+   *  needs (one selector). Throws — rather than returning `undefined` for an
+   *  `it()` block to silently pass past — when the `<style>` block is
+   *  missing or the selector renamed, so this test cannot go quietly green
+   *  as coverage that stopped existing. */
+  function declarationsFor(selector: string): Record<string, string> {
+    for (const [, selectorList, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      for (const candidate of selectorList.split(',')) {
+        if (candidate.trim() !== selector) continue;
+        const declarations: Record<string, string> = {};
+        for (const declaration of body.split(';')) {
+          const colon = declaration.indexOf(':');
+          if (colon > 0) declarations[declaration.slice(0, colon).trim()] = declaration.slice(colon + 1).trim();
+        }
+        return declarations;
+      }
+    }
+    throw new Error(`no rule for selector "${selector}" in PeerSplitLayout.svelte's <style> block`);
+  }
+
+  it('declares the bezel geometry #2968 orphaned, as its own rule rather than a design-language one', () => {
+    const glass = declarationsFor('.peer-split-glass');
+    expect(glass.position).toBe('relative');
+    expect(glass.overflow).toBe('hidden');
+    expect(glass['box-sizing']).toBe('border-box');
+    expect(glass.padding).toBe('14px');
+    expect(glass.border).toBe('2px solid var(--dl-segmentline-bezel-edge, #8a7020)');
+    expect(glass['border-radius']).toBe('10px');
+    expect(glass.background).toBe('var(--dl-segmentline-glass, #c8a030)');
   });
 });

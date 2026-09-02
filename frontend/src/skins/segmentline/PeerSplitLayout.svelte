@@ -5,12 +5,9 @@
   brief for this ticket assumed the layout manifest already declared the
   full five-band zone set (status/DSP/memory rails, offsets, mode/filter
   cells). It does not — `presentation/layouts/segmentline-declarations.ts`
-  currently declares exactly one zone (`peer-columns`: vfo+rxTx), and
-  `docs/plans/2026-09-01-segmentline-peer-split.md` §7 sequences "the
-  manifest's remaining zones" (row 7) BEFORE "compose the glass" (row 9,
-  this ticket) — an order the brief itself violated. That work is
-  MOR-2151(cont.), under review elsewhere, and this file does not touch it
-  (`presentation/layouts/**` and every `*-declarability.test.ts` are
+  currently declares exactly one zone (`peer-columns`: vfo+rxTx). That work
+  is MOR-2151(cont.), under review elsewhere, and this file does not touch
+  it (`presentation/layouts/**` and every `*-declarability.test.ts` are
   explicitly out of scope here).
 
   What this file builds instead is the CHASSIS: everything that does not
@@ -101,20 +98,23 @@
      `flex: 1` lives one level down, on `ScaledStage`'s own
      `.scaled-stage-holder` root (reached via `:global()`, see the
      `<style>` block). Verified against the real `ScaledStage` in a
-     browser (jsdom does no grid/flex sizing — see
-     `ScaledStage.svelte`'s own header, and the MOR-2153 build report for
-     the exact render command and what it showed).
+     browser (jsdom implements neither layout nor `ResizeObserver` — see
+     `primitives/stage/__tests__/ScaledStage.isolated.test.ts`'s own
+     header, not `ScaledStage.svelte`'s, which never mentions jsdom).
 
-  TX PERIMETER: `.dl-glass` (segmentline.css) already carries the whole
-  mechanism — `.dl-glass[data-tx='active']` is the hot-bezel-plus-glow
-  rule the tokens/renderer describe as "frame, not wash". This file
-  applies the `dl-glass` class but does NOT set `data-tx` from live TX
-  state: `AppGlobalHost.svelte`'s own header is explicit that "layouts and
-  skins must not host" the TX/fault indication — mounting a second
+  TX PERIMETER: no hot-bezel/glow mechanism exists for this element. Before
+  #2968, segmentline.css declared `.dl-glass[data-tx='active']` and its
+  `::after` glow; that retarget renamed `.dl-glass` to `.rx-tx-surface`
+  everywhere, INCLUDING that rule, and this file no longer wears either
+  class (see the `<style>` block below) — there is nothing left in
+  segmentline.css for this element to inherit even if the rule had
+  survived. This file's own `.peer-split-glass` rule does not add a
+  replacement, and does not set a `data-tx` attribute either:
+  `AppGlobalHost.svelte`'s own header is explicit that "layouts and skins
+  must not host" the TX/fault indication — mounting a second
   `getAppTxController()` subscription here to drive a border color would
-  cross that boundary, not stay inside "all chrome, none zone-dependent"
-  as the brief characterized it. Recorded as a real gap, not silently
-  wired around: `data-tx` is unset, so the bezel currently never lights.
+  cross that boundary. Recorded as a real, currently-unaddressed gap: the
+  bezel has no TX-active treatment.
 
   WALL CLOCK: UTC/local time is not radio state — nothing in
   `semantic/radio-view-model.ts` or the segmentline renderers carries it
@@ -160,7 +160,7 @@
 
 <div class="peer-split-holder">
   <ScaledStage nativeW={NATIVE_W} nativeH={NATIVE_H}>
-    <div class="dl-glass peer-split-glass" data-testid="peer-split-glass">
+    <div class="peer-split-glass" data-testid="peer-split-glass">
       <div class="peer-split-clock" data-testid="peer-split-clock" aria-label="Clock">
         <span data-testid="peer-split-clock-utc">{clock.utc}</span>
         <span data-testid="peer-split-clock-local">{clock.local}</span>
@@ -191,32 +191,46 @@
     min-height: 0;
   }
 
+  /* The chassis bezel. Before #2968 (MOR-2163) this came from
+     segmentline.css's `.dl-glass` rule — that retarget renamed `.dl-glass`
+     to `.rx-tx-surface` everywhere, and this element never wore the new
+     name, so nothing styled it at all (MOR-2153 review: dead-class
+     finding). Restored here as the skin's OWN rule instead of re-adding a
+     design-language selector nothing else in this file's markup matches
+     — a `.dl-glass`/`.rx-tx-surface` re-add would be reported as an orphan
+     by the same guardrail that caught the original deletion and would get
+     deleted again. Colour and border tone come from segmentline.css's
+     `[data-design-language='segmentline']` root rule, which still declares
+     them; geometry (14px padding, 2px border, 10px radius) has no matching
+     custom property there — `tokens.ts`'s own comment calls 2px "the
+     chassis bezel" but declares no CSS variable for it — so it stays a
+     literal, matching what `.rx-tx-surface` still declares today. The
+     fallback literals below match segmentline.css's own declared values
+     for the same custom properties, the same pattern
+     `--dl-segmentline-ink-soft`'s fallback two rules down already uses. */
   .peer-split-glass {
     height: 100%;
+    position: relative;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 14px;
+    border: 2px solid var(--dl-segmentline-bezel-edge, #8a7020);
+    border-radius: 10px;
+    background: var(--dl-segmentline-glass, #c8a030);
+    color: var(--dl-segmentline-ink-strong, rgba(26, 16, 0, 1));
   }
 
   /* Lesson 3: the clock is instrument face, inside the scaled stage, never
-     app chrome. `.dl-glass > *` (segmentline.css) already promotes every
-     direct child to `position: relative; z-index: 2` — MEASURED (real
-     browser, `getComputedStyle`) to be an exact specificity TIE with the
-     rule below, not the win the first draft of this comment assumed:
-     segmentline.css's full selector is
-     `[data-design-language='segmentline'][data-design-language] .dl-glass
-     > *` (two attributes + one class = 0,3,0), and Svelte compiles this
-     component's own scoping hash onto the second half of a `>` chain
-     wrapped in `:where()` — zero specificity — so `.peer-split-glass
-     .s-xxx > .peer-split-clock:where(.s-xxx)` also lands at exactly 0,3,0.
-     A tie falls back to stylesheet ORDER, and segmentline.css loads AFTER
-     this component's own compiled style (dynamic `import()` in
-     `fixtures/main.ts`, versus this file's static import), so it won —
-     confirmed live (clock rendered in-flow at the top of the glass,
-     `getComputedStyle(...).position === 'relative'`) before this
-     `!important` was added. `!important` is scoped to the one property two
-     components' stylesheets both set on the same element with no reliable
-     load-order guarantee (production's real activation timing is no more
-     ordered than this harness's), not a general escape hatch. */
+     app chrome. Positioned absolute against `.peer-split-glass` itself,
+     which sets `position: relative` above. No `!important` needed: the
+     specificity tie a previous draft of this rule fought (MOR-2153 review)
+     existed only because this element wore the `dl-glass` class, so
+     segmentline.css's `.dl-glass > *` / `.rx-tx-surface > *` promotion rule
+     could reach it — it no longer wears that class (see the glass rule
+     above and the markup below), so that rule cannot match this element at
+     all and there is nothing left to out-rank. */
   .peer-split-glass > .peer-split-clock {
-    position: absolute !important;
+    position: absolute;
     top: 14px;
     right: 14px;
     height: 34px;
