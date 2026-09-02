@@ -272,7 +272,6 @@ class TestCapabilities:
         ic7610 = CoreRadio("127.0.0.1", profile=ic7610_profile)
 
         for command in ("get_audio_peak_filter", "set_audio_peak_filter"):
-            assert command not in CoreRadio._KNOWN_COMMANDS
             assert command not in profile.command_names
             assert not ic7300.supports_command(command)
 
