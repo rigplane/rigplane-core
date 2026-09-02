@@ -389,12 +389,11 @@ freshness_ttl_seconds = 120.0
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
-# Repeater shift DIRECTION (MOR-2111). The MAIN-only CAT ``OS`` "OFFSET
-# (REPEATER SHIFT)" read (FTX-1_CAT_OM_ENG_2508-C) reports the P2 code
-# (0=Simplex, 1=Plus Shift, 2=Minus Shift, 3=ARS) directly onto the neutral
-# repeater_shift path — no derivation, unlike the tone/TSQL booleans above.
-# Slow-changing per-receiver operator control, so it uses the slow-control
-# cadence like the other receiver controls above.
+# Repeater shift DIRECTION (MOR-2111/MOR-2160). The CAT ``OS`` "OFFSET
+# (REPEATER SHIFT)" read (FTX-1_CAT_OM_ENG_2508-C) uses P1=0 for MAIN and P1=1
+# for SUB and reports P2 (0=Simplex, 1=Plus Shift, 2=Minus Shift, 3=ARS)
+# directly onto each neutral repeater_shift path. Both are slow-changing
+# per-receiver controls with the same 30-second cadence and 120-second TTL.
 [state_acquisition.field_policies."receiver.main.operator_controls.repeater_shift"]
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0

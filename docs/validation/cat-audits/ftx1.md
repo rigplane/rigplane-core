@@ -10,7 +10,7 @@
 - **Manual SHA-256:**
   `fbbd8eb6b12d1fec9474f3771f4b872ba4fd195dbe4b080cc2a1aae2b4ebc56c`.
 - **Runtime radio-fact SSOT:** `rigs/ftx1.toml`, SHA-256
-  `a18d0026302b9f76f331090894f773207a60a626d4333e748b074220c10d3b63`.
+  `48c85ca98ec4b460f018c193e484a9379cef888713343f5b1f8ed67096ad203a`.
 - **Derived decision register:**
   [`ftx1-command-gaps.csv`](ftx1-command-gaps.csv).
 
@@ -40,11 +40,14 @@ acceptance gate.
   belong to the single parameterized `EX` menu-address grammar.
 - The current profile represents 50 documented families. Another 40 families
   are wholly absent, covering 488 evidence rows.
-- Fifteen of the 50 represented families have uncovered selector/domain rows,
-  covering 23 evidence rows.
-- Therefore the implementation-planning register is exactly
-  **40 wholly absent families / 488 rows + 15 existing-family extensions /
-  23 rows = 55 normalized decisions**.
+- Fourteen of the 50 represented families still have uncovered
+  selector/domain rows, covering 22 evidence rows.
+- One additional stable decision row is `OS`: its profile-owned MAIN/SUB
+  routing and observer coverage have landed, while caller-visible completion
+  remains with MOR-2161.
+- Therefore the stable implementation-planning register remains exactly
+  **40 wholly absent families / 488 rows + 14 still-uncovered existing-family
+  extensions / 22 rows + 1 landed-profile OS row = 55 normalized decisions**.
 - The profile has one additional undocumented family, `RC`, handled
   separately as provenance rather than as a manual gap.
 - Approved bulk additions: **0**.
@@ -176,7 +179,10 @@ declaration-without-reachability failure.
 
 ## Out of scope
 
-This audit does not modify `rigs/ftx1.toml`, backend/runtime code, public API,
-or hardware state. Front-panel and menu-domain commands are not automatically
-browser controls, and a documented CAT command is not by itself a
-product-support or hardware-acceptance claim.
+The original normalization pass did not modify the profile, backend/runtime
+code, public API, or hardware state. This derived evidence now tracks bounded
+follow-up changes such as the landed OS receiver route; it does not itself
+authorize further implementation or claim live-radio acceptance. Front-panel
+and menu-domain commands are not automatically browser controls, and a
+documented CAT command is not by itself a product-support or hardware-
+acceptance claim.
