@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -25,6 +26,12 @@ from typing import NoReturn
 VIEW_MODEL = Path("frontend/src/semantic/radio-view-model.ts")
 LAYOUT_CONTRACT = Path("frontend/src/presentation/layouts/contract.ts")
 ADAPTER = Path("frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts")
+PANEL_COMMANDS = Path("frontend/src/lib/runtime/commands/panel-commands.ts")
+PANEL_ADAPTERS = Path("frontend/src/lib/runtime/adapters/panel-adapters.ts")
+RADIO_INTENTS = Path("frontend/src/lib/runtime/commands/radio-intents.ts")
+SURFACES_WIRING = Path("frontend/src/components-v2/wiring/SemanticRadioSurfaces.svelte")
+SEMANTIC_DIR = Path("frontend/src/semantic")
+LANGUAGES_DIR = Path("frontend/src/presentation/languages")
 
 
 def die(msg: str) -> NoReturn:
@@ -480,17 +487,583 @@ def surface_components() -> dict[str, dict]:
     return out
 
 
+def radio_intent_names(text: str) -> list[str]:
+    """The closed set `dispatchRadioIntent` accepts — `radio-intents.ts`'s
+    own `intentSpecs` table. PTT is excluded by that module's own contract
+    ("Only a known non-PTT radio intent may be dispatched"); a callback that
+    keys or unkeys the radio reaches no name in this set by construction,
+    not by an omission of this parser."""
+    m = re.search(r"const intentSpecs = \[(.*?)\]\s*as const satisfies", text, re.S)
+    if m is None:
+        die(f"intentSpecs not found in {RADIO_INTENTS}")
+    names: list[str] = []
+    for block in re.finditer(r"names:\s*\[(.*?)\]", m.group(1), re.S):
+        names += re.findall(r"'([a-z_0-9]+)'", block.group(1))
+    if not names:
+        die("intentSpecs parsed to zero intent names")
+    return sorted(set(names))
+
+
+def _strip_comments(text: str) -> str:
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def _balanced(text: str, i: int, open_ch: str, close_ch: str) -> int:
+    """Index just past the `close_ch` matching the `open_ch` at `text[i]`,
+    or -1 if the text runs out unbalanced."""
+    depth = 0
+    n = len(text)
+    while i < n:
+        if text[i] == open_ch:
+            depth += 1
+        elif text[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _decl_body(text: str, name: str) -> str | None:
+    """Body of `function <name>(...) {...}`, found anywhere in `text` —
+    module scope or nested inside another function — by paren- then
+    brace-balancing from the parameter list. None if no such declaration
+    exists. Matches the FIRST occurrence only; two same-named `function`
+    declarations in one file would make this ambiguous, and none exist in
+    any of the three source files this is run against today —
+    `panel-commands.ts`, `panel-adapters.ts`, `SemanticRadioSurfaces.svelte`
+    (checked by grepping `function \\w+` in each and diffing against its own
+    `sort | uniq -c`)."""
+    m = re.search(rf"\bfunction {re.escape(name)}\s*\(", text)
+    if m is None:
+        return None
+    paren_open = text.index("(", m.end() - 1)
+    paren_end = _balanced(text, paren_open, "(", ")")
+    if paren_end < 0:
+        return None
+    brace_open = text.find("{", paren_end)
+    if brace_open < 0:
+        return None
+    brace_end = _balanced(text, brace_open, "{", "}")
+    if brace_end < 0:
+        return None
+    return text[brace_open + 1 : brace_end - 1]
+
+
+def _value_span(text: str, i: int) -> str:
+    """From index `i`, the value text up to the next top-level `,`/`;` or
+    the enclosing bracket's own close. Bracket-depth-aware over `(){}[]`
+    only — deliberately not a JS-grammar parser — so it finds where one
+    object property or `const` value ends whether that value is an arrow
+    function, a bare reference, or an IIFE (`onFilterWidthChange`'s
+    debounce wrapper in `panel-commands.ts`, which a stricter "(params) =>
+    body" pattern does not match at all)."""
+    n = len(text)
+    while i < n and text[i] in " \t\r\n":
+        i += 1
+    start = i
+    depth = 0
+    while i < n:
+        c = text[i]
+        if c in "({[":
+            depth += 1
+        elif c in ")}]":
+            if depth == 0:
+                break
+            depth -= 1
+        elif c in ",;" and depth == 0:
+            break
+        i += 1
+    return text[start:i].strip()
+
+
+def _prop_value(text: str, prop: str) -> str | None:
+    """Value text of the first `<prop>: <value>` in `text`. The negative
+    lookbehind excludes `x.<prop>:` (a property ACCESS, not a definition)
+    and a longer identifier ending in `<prop>`."""
+    m = re.search(rf"(?<![\w.]){re.escape(prop)}\s*:\s*", text)
+    return None if m is None else _value_span(text, m.end())
+
+
+def _const_value(text: str, name: str) -> str | None:
+    m = re.search(rf"\bconst {re.escape(name)}\s*=\s*", text)
+    return None if m is None else _value_span(text, m.end())
+
+
+class _SendSideIndex:
+    """The svelte-wiring and panel-commands symbol tables needed to trace a
+    surface's callback prop to the `RADIO_INTENT_NAMES` it can reach — built
+    once from the three files that actually wire surfaces to commands, never
+    hand-typed. See `send_side()`."""
+
+    def __init__(self, svelte_text: str, panel_text: str, panel_adapters_text: str) -> None:
+        self.panel_text = panel_text
+        self.aliases: dict[str, list[str]] = {}
+        for m in re.finditer(r"const (\w+) = semanticHandlers\.(\w+);", svelte_text):
+            self.aliases[m.group(1)] = [m.group(2)]
+        for m in re.finditer(
+            r"const (\w+) = \{\s*\.\.\.semanticHandlers\.(\w+),\s*\.\.\.semanticHandlers\.(\w+)\s*\};",
+            svelte_text,
+        ):
+            self.aliases[m.group(1)] = [m.group(2), m.group(3)]
+
+        self.records: dict[str, str] = {}
+        for m in re.finditer(r"const ([A-Z][A-Z0-9_]+):\s*Record<", svelte_text):
+            eq = svelte_text.index("=", m.end())
+            brace = svelte_text.index("{", eq)
+            end = _balanced(svelte_text, brace, "{", "}")
+            self.records[m.group(1)] = svelte_text[brace + 1 : end - 1]
+
+        self.local_fns: dict[str, str] = {}
+        for m in re.finditer(r"\bfunction (\w+)\s*\(", svelte_text):
+            body = _decl_body(svelte_text, m.group(1))
+            if body is not None:
+                self.local_fns.setdefault(m.group(1), body)
+        for m in re.finditer(r"\bconst (\w+)\s*=\s*\(", svelte_text):
+            name = m.group(1)
+            if name in self.local_fns:
+                continue
+            value = _const_value(svelte_text, name)
+            if value is not None and "=>" in value[:200]:
+                self.local_fns[name] = value
+
+        self.panel_fns: dict[str, str] = {}
+        for m in re.finditer(r"\bfunction (\w+)\s*\(", panel_text):
+            name = m.group(1)
+            if name not in self.panel_fns:
+                body = _decl_body(panel_text, name)
+                if body is not None:
+                    self.panel_fns[name] = body
+
+        bind_body = _decl_body(panel_adapters_text, "bindSemanticSurfaceHandlers")
+        if bind_body is None:
+            die(f"bindSemanticSurfaceHandlers not found in {PANEL_ADAPTERS}")
+        self.family_factory: dict[str, str] = dict(re.findall(r"(\w+):\s*(make\w+)\(\)", bind_body))
+        if not self.family_factory:
+            die(f"bindSemanticSurfaceHandlers parsed to zero families in {PANEL_ADAPTERS}")
+        self._factory_body_cache: dict[str, str | None] = {}
+
+    def _factory_body(self, factory: str) -> str | None:
+        if factory not in self._factory_body_cache:
+            self._factory_body_cache[factory] = _decl_body(self.panel_text, factory)
+        return self._factory_body_cache[factory]
+
+    def resolve_panel(
+        self, text: str, visited: set[tuple], unresolved: list[str], depth: int = 0
+    ) -> set[str]:
+        """Radio intents reachable from `text` (panel-commands.ts territory):
+        literal `dispatchRadioIntent({name: '<x>', ...})` calls, plus one
+        level of recursion per reference — call OR bare identifier — to a
+        `function` declared anywhere in `panel-commands.ts` that `text`
+        names. Two distinct shapes need this: `tuningAccumulator()` /
+        `activateReceiver()`, a CALL where the literal dispatch sits in a
+        helper rather than in the exposed handler; and `onVoxToggle:
+        toggleVox` (`makeTxHandlers`/`makeVoxHandlers`), a BARE reference —
+        the property's whole value text IS the function's name, no `(`
+        anywhere in it, so a call-only pattern silently drops it. A
+        `name:` that is not a string literal (`onModInputChange`'s
+        `modInputCommand(dataMode)` — the one dynamic call site inside THIS
+        file; `adapters/mod-input-auto.svelte.ts` has a second, out of this
+        function's reach) is reported via `unresolved`, never guessed."""
+        intents: set[str] = set()
+        if depth > 12:
+            unresolved.append("resolution depth exceeded 12 — likely a reference cycle")
+            return intents
+        text = _strip_comments(text)
+        for m in re.finditer(r"dispatchRadioIntent\(\{\s*name:\s*", text):
+            i = m.end()
+            if i < len(text) and text[i] == "'":
+                j = text.index("'", i + 1)
+                intents.add(text[i + 1 : j])
+                continue
+            unresolved.append(
+                "dispatchRadioIntent's name is computed, not a literal: `"
+                + _value_span(text, i) + "`"
+            )
+        for name, body in self.panel_fns.items():
+            if re.search(rf"\b{re.escape(name)}\b", text) is None:
+                continue
+            key = ("panel", name)
+            if key in visited:
+                continue
+            visited.add(key)
+            intents |= self.resolve_panel(body, visited, unresolved, depth + 1)
+        return intents
+
+    def resolve_svelte(
+        self, text: str, visited: set[tuple], unresolved: list[str], depth: int = 0
+    ) -> set[str]:
+        """Radio intents reachable from `text` (svelte-wiring territory):
+        follows `alias.method` / `semanticHandlers.<family>.<method>`
+        references into their factory in `panel-commands.ts`, `RECORD[field]`
+        maps (unioned over every field, since the field is chosen at
+        runtime), and local wrapper functions — recursively, since one
+        wrapper can call another (`selectBand` -> `tuneFrequency`)."""
+        intents: set[str] = set()
+        if depth > 12:
+            unresolved.append("resolution depth exceeded 12 — likely a reference cycle")
+            return intents
+        text = _strip_comments(text)
+
+        def follow(family: str, method: str) -> bool:
+            """True if `method` was located (and resolved) in `family`'s
+            factory. A merged alias (`txAuxIntents` = vox + tx) means only
+            ONE of several tried families is expected to declare a given
+            method — so the caller decides whether to report `unresolved`,
+            only once no family in the whole set found it."""
+            factory = self.family_factory.get(family)
+            if factory is None:
+                return False
+            body = self._factory_body(factory)
+            if body is None:
+                return False
+            value = _prop_value(body, method)
+            if value is None:
+                return False
+            intents.update(self.resolve_panel(value, visited, unresolved, depth + 1))
+            return True
+
+        for alias, families in self.aliases.items():
+            for m in re.finditer(rf"\b{re.escape(alias)}\.(\w+)", text):
+                method = m.group(1)
+                key = ("alias", alias, method)
+                if key in visited:
+                    continue
+                visited.add(key)
+                # Not `any(...)`: a short-circuiting generator would skip
+                # calling `follow` for the second family once the first
+                # resolves, silently dropping that family's intents if the
+                # method existed (rarely) in both.
+                if not any([follow(family, method) for family in families]):
+                    unresolved.append(
+                        f"`{alias}.{method}` — no `{method}:` property found in any of "
+                        + ", ".join(self.family_factory.get(f, f"<no factory for {f}>") for f in families)
+                    )
+        for m in re.finditer(r"\bsemanticHandlers\.(\w+)\.(\w+)", text):
+            family, method = m.group(1), m.group(2)
+            key = ("direct", family, method)
+            if key in visited:
+                continue
+            visited.add(key)
+            if not follow(family, method):
+                factory = self.family_factory.get(family)
+                unresolved.append(
+                    f"`semanticHandlers.{family}.{method}` — "
+                    + (f"no factory registered for family `{family}`" if factory is None
+                       else f"no `{method}:` property found in `{factory}`")
+                )
+        for rname, rbody in self.records.items():
+            if re.search(rf"\b{re.escape(rname)}\b", text) is None:
+                continue
+            key = ("record", rname)
+            if key in visited:
+                continue
+            visited.add(key)
+            intents |= self.resolve_svelte(rbody, visited, unresolved, depth + 1)
+        for fname, fbody in self.local_fns.items():
+            if re.search(rf"\b{re.escape(fname)}\b", text) is None:
+                continue
+            key = ("localfn", fname)
+            if key in visited:
+                continue
+            visited.add(key)
+            intents |= self.resolve_svelte(fbody, visited, unresolved, depth + 1)
+        return intents
+
+
+def _extract_open_tag(block: str, tag_name: str) -> str | None:
+    """The attribute text of the first `<tag_name ...>` or `<tag_name .../>`
+    in `block`, brace-depth-aware so a `>` inside a `{...}` expression prop
+    does not end the tag early."""
+    m = re.search(rf"<{re.escape(tag_name)}\b", block)
+    if m is None:
+        return None
+    i = m.end()
+    n = len(block)
+    depth = 0
+    j = i
+    while j < n:
+        c = block[j]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        elif c == ">" and depth == 0:
+            break
+        j += 1
+    tag_text = block[i:j]
+    return tag_text[:-1] if tag_text.endswith("/") else tag_text
+
+
+def _parse_tag_props(tag_text: str) -> dict[str, str]:
+    """`name={expr}`, `name="literal"` and svelte shorthand `{name}` props,
+    as a name -> value-text dict. `{name}` shorthand stores the same text as
+    both key and value, matching how `<VfoSurface ... {pendingFrequencyHz}
+    />` binds a prop whose name equals the variable it carries."""
+    props: dict[str, str] = {}
+    i = 0
+    n = len(tag_text)
+    while i < n:
+        while i < n and tag_text[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            break
+        if tag_text[i] == "{":
+            end = _balanced(tag_text, i, "{", "}")
+            if end < 0:
+                break
+            content = tag_text[i + 1 : end - 1].strip()
+            props[content] = content
+            i = end
+            continue
+        m = re.match(r"[A-Za-z][\w-]*", tag_text[i:])
+        if m is None:
+            i += 1
+            continue
+        name = m.group(0)
+        i += len(name)
+        while i < n and tag_text[i] in " \t\r\n":
+            i += 1
+        if i < n and tag_text[i] == "=":
+            i += 1
+            while i < n and tag_text[i] in " \t\r\n":
+                i += 1
+            if i < n and tag_text[i] == "{":
+                end = _balanced(tag_text, i, "{", "}")
+                if end < 0:
+                    break
+                props[name] = tag_text[i + 1 : end - 1].strip()
+                i = end
+            elif i < n and tag_text[i] in "\"'":
+                q = tag_text[i]
+                j = i + 1
+                while j < n and tag_text[j] != q:
+                    j += 1
+                props[name] = tag_text[i + 1 : j]
+                i = j + 1
+            else:
+                i += 1
+        else:
+            props[name] = "true"
+    return props
+
+
+def send_side(svelte_text: str, panel_text: str, panel_adapters_text: str) -> list[dict]:
+    """Per surface, in `SEMANTIC_SURFACE_NAMES` order (all 14 — a surface
+    with no callback props reports zero `callbacks`; a surface whose mount
+    site cannot be found reports `notDerivable` — never silently dropped):
+    every callback prop `SemanticRadioSurfaces.svelte` binds on its mount
+    tag, the `RADIO_INTENT_NAMES` it can reach, and — when the trace cannot
+    resolve part of the chain — exactly why not, in `unresolved`."""
+    index = _SendSideIndex(svelte_text, panel_text, panel_adapters_text)
+    out: list[dict] = []
+    for surface in surfaces():
+        tag = surface[0].upper() + surface[1:] + "Surface"
+        tag_path = SEMANTIC_DIR / f"{tag}.svelte"
+        if not tag_path.is_file():
+            die(f"{tag_path} does not exist — the surface-name-to-tag convention broke")
+        snippet = surface + "Surface"
+        m = re.search(rf"\{{#snippet {re.escape(snippet)}\(\)\}}(.*?)\{{/snippet\}}", svelte_text, re.S)
+        if m is None:
+            out.append({
+                "surface": surface, "tag": tag, "callbacks": [],
+                "notDerivable": f"no `{{#snippet {snippet}()}}` block found in {SURFACES_WIRING}",
+            })
+            continue
+        tag_text = _extract_open_tag(m.group(1), tag)
+        if tag_text is None:
+            out.append({
+                "surface": surface, "tag": tag, "callbacks": [],
+                "notDerivable": f"no `<{tag}` mount found inside `{{#snippet {snippet}()}}`",
+            })
+            continue
+        props = _parse_tag_props(tag_text)
+        callback_props = {k: v for k, v in props.items() if re.match(r"^on[A-Z]", k)}
+        # `pending*` (e.g. `pendingFrequencyHz`) and `*Feedback` (e.g.
+        # `breakInDelayFeedback`, `cwKeyer`'s prop for
+        # `getBreakInDelayControlFeedback()`) — a naming check over the
+        # props this specific surface's mount tag actually receives, not a
+        # hand-typed per-surface list.
+        pending_props = sorted(
+            k for k in props if re.match(r"^pending[A-Za-z]*$", k) or k.endswith("Feedback")
+        )
+        callbacks = []
+        for prop, value in sorted(callback_props.items()):
+            visited: set[tuple] = set()
+            unresolved: list[str] = []
+            intents = index.resolve_svelte(value, visited, unresolved)
+            callbacks.append({
+                "prop": prop, "expression": value,
+                "intents": sorted(intents), "unresolved": unresolved,
+            })
+        out.append({
+            "surface": surface, "tag": tag, "callbacks": callbacks, "pendingProps": pending_props,
+        })
+    return out
+
+
+def feedback_adoption() -> dict[str, dict]:
+    """Per surface: does its own component file adopt `pressedOf`
+    (`semantic/pressed-of.ts`) or `control-feedback-presentation`
+    (`primitives/control-feedback/`), does it render a `<button>`, and with
+    the shared `v2-control-button` class (`components-v2/controls/
+    control-button.css`) or its own markup. Replaces the hand-typed counts
+    the SKILL.md's deleted Reference section used to carry."""
+    out: dict[str, dict] = {}
+    for surface in surfaces():
+        tag = surface[0].upper() + surface[1:] + "Surface"
+        path = SEMANTIC_DIR / f"{tag}.svelte"
+        if not path.is_file():
+            die(f"{path} does not exist — the surface-name-to-tag convention broke")
+        text = path.read_text(encoding="utf-8")
+        out[surface] = {
+            "pressedOf": "pressed-of'" in text or 'pressed-of"' in text,
+            "controlFeedbackPresentation": "control-feedback-presentation" in text,
+            "rendersButton": bool(re.search(r"<button\b", text)),
+            "sharedButtonClass": "v2-control-button" in text,
+        }
+    return out
+
+
+def stylesheet_dl_selectors() -> dict[str, bool]:
+    """Which design-language stylesheets under `LANGUAGES_DIR` select on
+    `data-dl-*` (the attribute channel `annotate()` in `semantic/design-
+    language-renderers.ts` writes) — distinct from merely consuming
+    `--dl-*` custom properties, which `surface_components()` already
+    reports per component."""
+    paths = sorted(LANGUAGES_DIR.glob("*/*.css"))
+    if not paths:
+        die(f"no stylesheets found under {LANGUAGES_DIR}")
+    return {str(p): "data-dl-" in p.read_text(encoding="utf-8") for p in paths}
+
+
+def _checklist_keys() -> tuple[list[str], list[str]]:
+    """(field keys, intent keys) a face-design proposal must account for —
+    every field of every `*ViewModel` interface, and every name in
+    `RADIO_INTENT_NAMES`. Radio-agnostic by design: the checklist is filled
+    out per-proposal, and a proposal may legitimately draw a field or an
+    intent the CURRENT `--radio` does not declare, marking it `unavailable`."""
+    field_keys = sorted(
+        f"{name}.{f['name']}" for name, fields in view_models(read(VIEW_MODEL)).items() for f in fields
+    )
+    intent_keys = radio_intent_names(read(RADIO_INTENTS))
+    return field_keys, intent_keys
+
+
+def checklist_skeleton() -> str:
+    field_keys, intent_keys = _checklist_keys()
+    lines = [
+        "# Buildability checklist (MOR-2217) — fill every line; do not delete any.",
+        "# FIELD <name>: the drawn element, or `unavailable: <reason>`.",
+        "# INTENT <name>: the feedback mechanism, or `display-only`.",
+    ]
+    lines += [f"FIELD {k}: TODO" for k in field_keys]
+    lines += [f"INTENT {k}: TODO" for k in intent_keys]
+    return "\n".join(lines) + "\n"
+
+
+def validate_checklist(path: Path) -> list[str]:
+    """`FIELD <key>`/`INTENT <key>` entries the filled proposal at `path` is
+    missing — present with an empty value counts as missing too. Empty list
+    means every field and every intent this contract knows about was named."""
+    field_keys, intent_keys = _checklist_keys()
+    text = path.read_text(encoding="utf-8")
+    found: dict[str, set[str]] = {"FIELD": set(), "INTENT": set()}
+    for m in re.finditer(r"^(FIELD|INTENT) ([\w.]+):[ \t]*(.*)$", text, re.M):
+        kind, key, value = m.group(1), m.group(2), m.group(3).strip()
+        if value:
+            found[kind].add(key)
+    missing = [f"FIELD {k}" for k in field_keys if k not in found["FIELD"]]
+    missing += [f"INTENT {k}" for k in intent_keys if k not in found["INTENT"]]
+    return missing
+
+
+def _run_selftest() -> int:
+    """Proves the checklist validator discriminates: a good proposal (every
+    expected key present with a non-empty value) must exit 0; the same
+    proposal with one FIELD line and one INTENT line struck must exit
+    non-zero and name both. Both runs go through this script's own `argv`
+    entry point via `subprocess` — not a direct call into
+    `validate_checklist` — so a flag wired to nothing still fails this, the
+    same discipline `measure-reference.py`'s `selftest` uses.
+
+    Also asserts `resolve_panel`'s bare-identifier case above (`onVoxToggle:
+    toggleVox`) still resolves."""
+    tx_aux = [
+        row for row in send_side(read(SURFACES_WIRING), read(PANEL_COMMANDS), read(PANEL_ADAPTERS))
+        if row["surface"] == "txAux"
+    ][0]
+    on_toggle = [cb for cb in tx_aux["callbacks"] if cb["prop"] == "onToggle"][0]
+    tracer_ok = "set_vox" in on_toggle["intents"]
+    print(f"selftest: txAux.onToggle intents include set_vox: {tracer_ok} (want True)")
+
+    import tempfile
+
+    field_keys, intent_keys = _checklist_keys()
+    good_lines = [f"FIELD {k}: backed by <element>" for k in field_keys]
+    good_lines += [f"INTENT {k}: display-only" for k in intent_keys]
+    bad_lines = good_lines[1:-1]  # drops the first FIELD line and the last INTENT line
+
+    script = str(Path(__file__).resolve())
+    with tempfile.TemporaryDirectory() as tmp:
+        good_path = Path(tmp) / "good.txt"
+        bad_path = Path(tmp) / "bad.txt"
+        good_path.write_text("\n".join(good_lines) + "\n", encoding="utf-8")
+        bad_path.write_text("\n".join(bad_lines) + "\n", encoding="utf-8")
+        good = subprocess.run(
+            [sys.executable, script, "--checklist", "--validate", str(good_path)],
+            capture_output=True, text=True,
+        )
+        bad = subprocess.run(
+            [sys.executable, script, "--checklist", "--validate", str(bad_path)],
+            capture_output=True, text=True,
+        )
+    print(f"selftest: good proposal ({len(good_lines)} lines) exit={good.returncode} (want 0)")
+    print(f"selftest: bad proposal ({len(bad_lines)} lines, one FIELD + one INTENT dropped) "
+          f"exit={bad.returncode} (want non-zero)")
+    if bad.stderr.strip():
+        print(bad.stderr.strip())
+    ok = tracer_ok and good.returncode == 0 and bad.returncode != 0
+    print("selftest: PASS" if ok else "selftest: FAIL")
+    return 0 if ok else 1
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--radio", default="ftx1")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--checklist", action="store_true",
+                     help="emit a buildability-checklist skeleton instead of the contract")
+    ap.add_argument("--validate", metavar="PATH",
+                     help="with --checklist: check a filled-in checklist file instead of emitting one")
+    ap.add_argument("--selftest", action="store_true",
+                     help="prove the checklist validator discriminates, then exit")
     args = ap.parse_args()
+
+    if args.selftest:
+        raise SystemExit(_run_selftest())
+
+    if args.checklist:
+        if args.validate:
+            missing = validate_checklist(Path(args.validate))
+            if missing:
+                for line in missing:
+                    print(f"missing: {line}", file=sys.stderr)
+                raise SystemExit(1)
+            print("checklist: complete")
+            return
+        print(checklist_skeleton(), end="")
+        return
 
     vm_text = read(VIEW_MODEL)
     view_models_data = view_models(vm_text)
     optional_groups = [
         f["name"] for f in view_models_data.get("RadioViewModel", []) if f["optional"]
     ]
+    panel_text = read(PANEL_COMMANDS)
+    panel_adapters_text = read(PANEL_ADAPTERS)
+    svelte_text = read(SURFACES_WIRING)
     data = {
         "surfaces": surfaces(),
         "absence": absence_model(vm_text),
@@ -500,8 +1073,12 @@ def main() -> None:
         "radioFeatures": radio_declares(args.radio)[0],
         "surfaceComponents": surface_components(),
         "presenceGates": presence_gates(read(ADAPTER), optional_groups),
+        "sendSide": send_side(svelte_text, panel_text, panel_adapters_text),
+        "feedbackAdoption": feedback_adoption(),
+        "stylesheetDlSelectors": stylesheet_dl_selectors(),
         "sources": [
             str(VIEW_MODEL), str(LAYOUT_CONTRACT), str(ADAPTER), radio_declares(args.radio)[1],
+            str(PANEL_COMMANDS), str(PANEL_ADAPTERS), str(RADIO_INTENTS), str(SURFACES_WIRING),
         ],
     }
 
@@ -624,6 +1201,77 @@ def main() -> None:
     print(f"## What `{args.radio}` declares ({len(feats)} features)\n")
     print("A field in the view model does not mean this radio reports it.\n")
     print(", ".join(f"`{f}`" for f in feats) if feats else "_none parsed_")
+    print()
+
+    print(f"## Send side: what each surface can dispatch ({len(data['sendSide'])} surfaces)\n")
+    print(
+        "Per surface: every callback prop `SemanticRadioSurfaces.svelte` binds "
+        "on its mount tag, traced to the names in `RADIO_INTENT_NAMES` "
+        f"(`{RADIO_INTENTS}`) it can reach. A surface with no callback props "
+        "is display-only; where the trace cannot resolve part of the chain, "
+        "the reason is printed instead of a guess.\n"
+    )
+    pending_by_surface = {row["surface"]: row.get("pendingProps", []) for row in data["sendSide"]}
+    for row in data["sendSide"]:
+        print(f"### `{row['surface']}` (`{row['tag']}`)\n")
+        if row.get("notDerivable"):
+            print(f"**not derivable from source**: {row['notDerivable']}\n")
+            continue
+        if row["pendingProps"]:
+            print("Pending/confirmation props on its mount tag: "
+                  + ", ".join(f"`{p}`" for p in row["pendingProps"]) + "\n")
+        if not row["callbacks"]:
+            print("_display only — no callback props on its mount tag._\n")
+            continue
+        for cb in row["callbacks"]:
+            if cb["unresolved"]:
+                for reason in cb["unresolved"]:
+                    print(f"- `{cb['prop']}` — **not derivable from source**: {reason}")
+            if cb["intents"]:
+                print(f"- `{cb['prop']}` -> " + ", ".join(f"`{i}`" for i in cb["intents"]))
+            elif not cb["unresolved"]:
+                print(f"- `{cb['prop']}` — no `RADIO_INTENT_NAMES` intent reached "
+                      f"(expression: `{cb['expression']}`)")
+        print()
+
+    print("## Feedback adoption per surface\n")
+    print(
+        "`pressedOf` (`semantic/pressed-of.ts`) reflects the last OBSERVED "
+        "radio reading; `control-feedback-presentation` "
+        "(`primitives/control-feedback/`) projects the in-flight command "
+        "phase; a `pending*`/`*Feedback` prop on the mount tag (from the "
+        "'Send side' section above) is the pending/confirmation contract. "
+        "None of the three is "
+        "universal — check per surface, not per intent.\n"
+    )
+    fa = data["feedbackAdoption"]
+    pressed_n = sum(1 for v in fa.values() if v["pressedOf"])
+    cfp_n = sum(1 for v in fa.values() if v["controlFeedbackPresentation"])
+    button_n = sum(1 for v in fa.values() if v["rendersButton"])
+    shared_button_n = sum(1 for v in fa.values() if v["sharedButtonClass"])
+    pending_n = sum(1 for p in pending_by_surface.values() if p)
+    print(f"`pressedOf`: {pressed_n} of {len(fa)}. "
+          f"`control-feedback-presentation`: {cfp_n} of {len(fa)}. "
+          f"Shared `v2-control-button` class: {shared_button_n} of {button_n} "
+          f"surfaces that render a `<button>`. Pending/confirmation props: "
+          f"{pending_n} of {len(fa)}.\n")
+    for name, info in sorted(fa.items()):
+        marks = []
+        if info["pressedOf"]:
+            marks.append("pressedOf")
+        if info["controlFeedbackPresentation"]:
+            marks.append("control-feedback-presentation")
+        if info["rendersButton"]:
+            marks.append("shared button class" if info["sharedButtonClass"] else "own button markup")
+        pending = pending_by_surface.get(name, [])
+        if pending:
+            marks.append("pending props: " + ", ".join(f"`{p}`" for p in pending))
+        print(f"- `{name}` — " + (", ".join(marks) if marks else "none of the above"))
+    print()
+
+    print("## Design-language stylesheets selecting on `data-dl-*`\n")
+    for path, selects in sorted(data["stylesheetDlSelectors"].items()):
+        print(f"- `{path}` — {'selects on `data-dl-*`' if selects else 'does not'}")
     print()
 
 
