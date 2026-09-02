@@ -1226,6 +1226,7 @@ def _global_specs() -> tuple[FieldSpec, ...]:
 
     return (
         spec(FieldPath.global_("tx_state", "tx_target"), "object"),
+        spec(FieldPath.global_("tx_state", "observed_ptt"), "str"),
         spec(FieldPath.global_("tx_state", "ptt"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "power_on"), "bool", writable=True),
         spec(FieldPath.global_("tx_state", "rit_on"), "bool", writable=True),
