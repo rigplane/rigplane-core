@@ -1,8 +1,8 @@
-"""Scripted transmit-state fakes for the transmit-authority conformance matrix.
+"""Scripted transmit-state fakes for the transmit-observation conformance matrix.
 
 ADR row 4, ``docs/plans/2026-08-20-transmit-authority.md`` §3.10 item 1: the
 existing fake harnesses, extended with a **scripted transmit-state answer** so
-the hazard gate's solicited read exercises the real code path rather than a
+the observation primitive exercises the real code path rather than a
 hand-written stub of it.
 
 One vocabulary, three wires. Each backend family answers the same six scripted
@@ -26,7 +26,7 @@ reply -- see ``_build_rigctld_client``'s ``script`` function below for why
 (the socket is shared with every later read). The genuine wire-level-timeout
 path is a different scenario, covered separately by
 ``test_the_rigctld_client_primitive_reports_a_real_timeout_as_timeout`` in
-``tests/contracts/test_tx_authority_conformance.py``, which is deliberately
+``tests/contracts/test_tx_observation_conformance.py``, which is deliberately
 not driven through this harness.
 
 The CI-V column additionally scripts three shapes that must **never** satisfy a
@@ -270,7 +270,7 @@ class ScriptedCatTransport:
 
 
 @dataclass
-class TxConformanceHarness:
+class TxObservationHarness:
     """One backend column of the matrix: a real radio on a scripted wire."""
 
     name: str
@@ -279,26 +279,17 @@ class TxConformanceHarness:
     read_transmit_state: Callable[[], Awaitable[TxStateReading]]
     wire: Callable[[], Sequence[str]]
     is_read: Callable[[str], bool]
-    hazard_method: str
-    hazard_args: tuple[Any, ...]
-    hazard: Callable[[], Awaitable[None]]
     key: Callable[[], Awaitable[None]]
     unkey: Callable[[], Awaitable[None]]
     close: Callable[[], Awaitable[None]]
-    #: rigctld-client answers from an upstream cache, never the radio (§3.7).
-    verified_readback: bool = True
     #: Only the ``ObservationPollable`` backends have the queue ingress the
     #: facade design missed (the D1 lesson, §3.2 item 2).
-    queue_command: Any | None = None
     queue_unkey: Any | None = None
     drain: Callable[[], Awaitable[None]] | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def writes(self) -> list[str]:
         return [entry for entry in self.wire() if not self.is_read(entry)]
-
-    def reads(self) -> list[str]:
-        return [entry for entry in self.wire() if self.is_read(entry)]
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +322,7 @@ CONFORMANCE_BACKENDS: tuple[str, ...] = (
 QUEUE_PATH_BACKENDS: tuple[str, ...] = ("yaesu-ftx1", "rigctld-client")
 
 
-async def _build_lan_icom() -> TxConformanceHarness:
+async def _build_lan_icom() -> TxObservationHarness:
     transport = ScriptedLanTransport()
     radio = IcomRadio("192.168.99.1", timeout=0.2, model="IC-7610")
     radio._civ_transport = transport
@@ -353,16 +344,13 @@ async def _build_lan_icom() -> TxConformanceHarness:
         radio._civ_transport = None
         radio._ctrl_transport = None
 
-    return TxConformanceHarness(
+    return TxObservationHarness(
         name="lan-icom",
         radio=radio,
         script=lambda answer: setattr(transport, "answer", answer),
         read_transmit_state=radio.read_transmit_state,
         wire=lambda: [payload.hex() for payload in transport.civ_wire()],
         is_read=_is_hex_civ_read,
-        hazard_method="set_tuner_status",
-        hazard_args=(2,),
-        hazard=lambda: radio.set_tuner_status(2),
         key=lambda: radio.set_ptt(True),
         unkey=lambda: radio.set_ptt(False),
         close=close,
@@ -373,29 +361,26 @@ def _is_hex_civ_read(entry: str) -> bool:
     return _is_civ_transmit_state_read(bytes.fromhex(entry))
 
 
-async def _build_icom_serial(name: str) -> TxConformanceHarness:
+async def _build_icom_serial(name: str) -> TxObservationHarness:
     link = ScriptedCivLink()
     radio = _ICOM_SERIAL_CLASSES[name](device="/dev/ttyUSB0", civ_link=link)
     await radio.connect()
     link.radio_addr = radio._radio_addr
 
-    return TxConformanceHarness(
+    return TxObservationHarness(
         name=name,
         radio=radio,
         script=lambda answer: setattr(link, "answer", answer),
         read_transmit_state=radio.read_transmit_state,
         wire=lambda: [payload.hex() for payload in link.sent_frames],
         is_read=_is_hex_civ_read,
-        hazard_method="set_tuner_status",
-        hazard_args=(2,),
-        hazard=lambda: radio.set_tuner_status(2),
         key=lambda: radio.set_ptt(True),
         unkey=lambda: radio.set_ptt(False),
         close=radio.disconnect,
     )
 
 
-async def _build_yaesu() -> TxConformanceHarness:
+async def _build_yaesu() -> TxObservationHarness:
     radio = YaesuCatRadio("/dev/null", profile="ftx1")
     cat = ScriptedCatTransport(radio)
 
@@ -405,7 +390,7 @@ async def _build_yaesu() -> TxConformanceHarness:
     # not a harness-local reimplementation -- so a regression in that shared
     # predicate (the MOR-1905 inversion class) reddens this column the same
     # way the MOR-1941 review pin wanted the matrix to catch it (BLOCKED-2).
-    from rigplane.runtime._poller_types import CommandQueue, PttOff, SetTunerStatus
+    from rigplane.runtime._poller_types import CommandQueue, PttOff
 
     queue = CommandQueue()
     seen: list[Any] = []
@@ -414,30 +399,23 @@ async def _build_yaesu() -> TxConformanceHarness:
     async def close() -> None:
         return None
 
-    return TxConformanceHarness(
+    return TxObservationHarness(
         name="yaesu-ftx1",
         radio=radio,
         script=lambda answer: setattr(cat, "answer", answer),
         read_transmit_state=radio.read_transmit_state,
         wire=lambda: list(cat.wire),
         is_read=lambda entry: entry.startswith("?"),
-        # The alias chain's innermost body: ``set_tuner_status`` is a pure
-        # alias onto ``set_tuner`` (§3.2), and the queue drain calls the
-        # latter directly (``yaesu_cat/poller.py:1099-1100``).
-        hazard_method="set_tuner",
-        hazard_args=(1,),
-        hazard=lambda: radio.set_tuner(1),
         key=lambda: radio.set_ptt(True),
         unkey=lambda: radio.set_ptt(False),
         close=close,
-        queue_command=SetTunerStatus(1),
         queue_unkey=PttOff(),
         drain=poller._drain_commands,
         extras={"queue": queue, "poller": poller, "cat": cat, "observations": seen},
     )
 
 
-async def _build_rigctld_client() -> TxConformanceHarness:
+async def _build_rigctld_client() -> TxObservationHarness:
     server = FakeRigctldServer(state=FakeRigctldState(), behavior=FakeRigctldBehavior())
     await server.start()
     radio = RigctldClientRadio(host=server.host, port=server.port)
@@ -454,9 +432,9 @@ async def _build_rigctld_client() -> TxConformanceHarness:
         elif answer == "silence":
             # Realised as the upstream dropping the connection rather than a
             # bare delay: this socket is shared with every later read, and a
-            # late line arriving after the gate cancelled its ``wait_for``
+            # late line arriving after the read timed out its ``wait_for``
             # would answer the *next* read. Same fail direction either way —
-            # no answer, so the hazard gate refuses ``tx-truth-unavailable``.
+            # no answer, so the observation primitive reports no value.
             server.behavior.disconnect_commands.add("t")
         elif answer == "refusal":
             server.behavior.malformed_responses["t"] = b"RPRT -1\n"
@@ -465,7 +443,7 @@ async def _build_rigctld_client() -> TxConformanceHarness:
         else:  # pragma: no cover - guards a typo in a new row
             raise AssertionError(f"unscripted transmit-state answer {answer!r}")
 
-    from rigplane.runtime._poller_types import CommandQueue, PttOff, SelectVfo
+    from rigplane.runtime._poller_types import CommandQueue, PttOff
 
     queue = CommandQueue()
     seen: list[Any] = []
@@ -475,22 +453,16 @@ async def _build_rigctld_client() -> TxConformanceHarness:
         await radio.disconnect()
         await server.stop()
 
-    return TxConformanceHarness(
+    return TxObservationHarness(
         name="rigctld-client",
         radio=radio,
         script=script,
         read_transmit_state=radio.read_transmit_state,
         wire=lambda: list(server.commands_seen),
         is_read=lambda entry: entry.split(" ")[0] in ("t", r"\get_ptt"),
-        # External rigctld ships no tuner; VFO select is its hazard family.
-        hazard_method="set_vfo_slot",
-        hazard_args=("B",),
-        hazard=lambda: radio.set_vfo_slot("B"),
         key=lambda: radio.set_ptt(True),
         unkey=lambda: radio.set_ptt(False),
         close=close,
-        verified_readback=False,
-        queue_command=SelectVfo("B"),
         queue_unkey=PttOff(),
         drain=poller._drain_commands,
         extras={
@@ -502,7 +474,7 @@ async def _build_rigctld_client() -> TxConformanceHarness:
     )
 
 
-async def build_harness(name: str) -> TxConformanceHarness:
+async def build_harness(name: str) -> TxObservationHarness:
     """Build one backend column. Explicit dispatch, never a registry lookup."""
     if name == "lan-icom":
         return await _build_lan_icom()

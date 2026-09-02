@@ -8,17 +8,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import fields
+from pathlib import Path
 
 import pytest
 from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
-from tx_authority_fakes import (
+from tx_observation_fakes import (
     CIV_NON_ANSWERS,
     CONFORMANCE_BACKENDS,
     NON_RECEIVING_ANSWERS,
     QUEUE_PATH_BACKENDS,
     TRANSMITTING_ANSWERS,
     TX_ANSWER_VOCABULARY,
-    TxConformanceHarness,
+    TxObservationHarness,
     build_harness,
     civ_transmit_state_reply,
 )
@@ -59,7 +61,7 @@ CIV_BACKENDS: tuple[str, ...] = (
 @pytest.fixture
 async def harness(
     request: pytest.FixtureRequest,
-) -> AsyncIterator[TxConformanceHarness]:
+) -> AsyncIterator[TxObservationHarness]:
     built = await build_harness(request.param)
     try:
         yield built
@@ -81,6 +83,29 @@ def test_backend_columns_are_an_explicit_literal() -> None:
     assert CONFORMANCE_BACKENDS == EXPECTED_BACKENDS
     assert set(CIV_BACKENDS) | {"yaesu-ftx1", "rigctld-client"} == set(
         EXPECTED_BACKENDS
+    )
+
+
+def test_observation_harness_surface_is_named_for_its_surviving_contract() -> None:
+    assert (
+        Path(__file__).name,
+        tuple(field.name for field in fields(TxObservationHarness)),
+    ) == (
+        "test_tx_observation_conformance.py",
+        (
+            "name",
+            "radio",
+            "script",
+            "read_transmit_state",
+            "wire",
+            "is_read",
+            "key",
+            "unkey",
+            "close",
+            "queue_unkey",
+            "drain",
+            "extras",
+        ),
     )
 
 
@@ -121,7 +146,7 @@ def test_scripted_answer_vocabulary_pin() -> None:
 @every_backend()
 @pytest.mark.parametrize("answer", TX_ANSWER_VOCABULARY)
 async def test_every_backend_answers_every_scripted_answer(
-    harness: TxConformanceHarness, answer: str
+    harness: TxObservationHarness, answer: str
 ) -> None:
     """Every column produces each declared answer through its real read path."""
     harness.script(answer)
@@ -137,7 +162,7 @@ async def test_every_backend_answers_every_scripted_answer(
 
 @every_backend()
 async def test_a_confirmed_rx_and_a_keyed_radio_read_their_values(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """The scripted answers are distinguishable on the wire, not merely named."""
     harness.script("rx")
@@ -151,7 +176,7 @@ async def test_a_confirmed_rx_and_a_keyed_radio_read_their_values(
 @pytest.mark.parametrize("harness", CIV_BACKENDS, indirect=True)
 @pytest.mark.parametrize("shape", CIV_NON_ANSWERS)
 async def test_a_civ_read_is_not_satisfied_by_an_ack_echo_or_misaddressed_frame(
-    harness: TxConformanceHarness, shape: str
+    harness: TxObservationHarness, shape: str
 ) -> None:
     """INV-13 on the CI-V family: the read is directed and exact.
 
@@ -193,7 +218,7 @@ async def test_a_civ_read_is_not_satisfied_by_an_ack_echo_or_misaddressed_frame(
 
 @pytest.mark.parametrize("harness", CIV_BACKENDS, indirect=True)
 async def test_the_civ_unmapped_shape_would_read_receiving_if_the_check_lapsed(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """The unmapped CI-V answer is a fail-open canary, not junk.
 
@@ -217,7 +242,7 @@ async def test_the_civ_unmapped_shape_would_read_receiving_if_the_check_lapsed(
 
 @every_backend()
 async def test_an_unmapped_transmit_state_value_is_never_receiving(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """INV-9 / §3.7: RX is only ever produced by a positive mapping.
 
@@ -244,7 +269,7 @@ async def test_an_unmapped_transmit_state_value_is_never_receiving(
 @every_backend()
 @pytest.mark.parametrize("answer", NON_RECEIVING_ANSWERS)
 async def test_no_failing_answer_ever_resolves_to_receiving(
-    harness: TxConformanceHarness, answer: str
+    harness: TxObservationHarness, answer: str
 ) -> None:
     """Silence, a refusal and an unmapped value all fail closed (§3.3 table)."""
     harness.script(answer)
@@ -258,7 +283,7 @@ async def test_no_failing_answer_ever_resolves_to_receiving(
 
 @pytest.mark.parametrize("harness", QUEUE_PATH_BACKENDS, indirect=True)
 async def test_the_queue_drain_reaches_the_backend_write_method(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """The D1 ingress is real, and this file can drive it.
 
@@ -279,7 +304,7 @@ async def test_the_queue_drain_reaches_the_backend_write_method(
 
 @pytest.mark.parametrize("harness", QUEUE_PATH_BACKENDS, indirect=True)
 async def test_a_set_ptt_write_alone_produces_no_observation(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """§3.10 item 3, row 7 / INV-8: a write outcome is never evidence of RF.
 
@@ -350,7 +375,7 @@ async def test_a_set_ptt_write_alone_produces_no_observation(
 
 @pytest.mark.parametrize("harness", CIV_BACKENDS, indirect=True)
 async def test_an_icom_self_write_leaves_the_store_silent_on_transmit_truth(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """The same row on the CI-V columns, read off the canonical store."""
     await harness.key()
@@ -365,7 +390,7 @@ async def test_an_icom_self_write_leaves_the_store_silent_on_transmit_truth(
 
 @every_backend()
 async def test_a_backend_exposes_the_row_five_read_primitive(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """INV-13's home: one primitive, per backend, returning typed evidence.
 
@@ -380,7 +405,7 @@ async def test_a_backend_exposes_the_row_five_read_primitive(
 
 @pytest.mark.parametrize("harness", ["rigctld-client"], indirect=True)
 async def test_the_rigctld_client_primitive_marks_its_readback_unverified(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     harness.script("rx")
     reading = await harness.radio.read_transmit_state()
@@ -394,7 +419,7 @@ async def test_the_rigctld_client_primitive_reports_a_real_timeout_as_timeout() 
     Deliberately not driven through the shared ``rigctld-client`` harness:
     that harness's ``"silence"`` answer is realised as the upstream
     dropping the connection (``server.behavior.disconnect_commands``, by
-    design -- see its own comment in ``tx_authority_fakes.py`` -- to avoid a
+    design -- see its own comment in ``tx_observation_fakes.py`` -- to avoid a
     late line answering the *next* read on the shared socket), which the
     transport reports as ``RadioConnectionError``, not a timeout. That
     exercises a different exception path than the one this pin is about.
@@ -437,12 +462,12 @@ async def test_the_rigctld_client_primitive_reports_a_real_timeout_as_timeout() 
 
 @pytest.mark.parametrize("harness", ["rigctld-client"], indirect=True)
 async def test_the_vocabulary_table_does_not_claim_a_delay_it_does_not_deliver(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """MOR-1953: the vocabulary table's own words must match what its
     ``script`` function does, not what would be convenient to believe.
 
-    A prior version of the module docstring's table (``tx_authority_fakes.py``
+    A prior version of the module docstring's table (``tx_observation_fakes.py``
     top) described the rigctld-client ``silence`` answer as "delayed past
     the deadline". ``_build_rigctld_client``'s ``script`` does something
     else: it makes the upstream *drop the connection*
@@ -466,13 +491,13 @@ async def test_the_vocabulary_table_does_not_claim_a_delay_it_does_not_deliver(
     above -- deliberately not driven through this harness; see that test's
     own docstring for why.
 
-    # MUTATION: in `tests/tx_authority_fakes.py`, revert the rigctld-client
+    # MUTATION: in `tests/tx_observation_fakes.py`, revert the rigctld-client
     # `silence` cell in the module docstring's table back to "delayed past
     # the deadline" -> this row goes red on the docstring assertion below.
     """
-    import tx_authority_fakes
+    import tx_observation_fakes
 
-    doc = tx_authority_fakes.__doc__ or ""
+    doc = tx_observation_fakes.__doc__ or ""
     assert "delayed past" not in doc and "the deadline" not in doc, (
         "the vocabulary table still claims the rigctld-client 'silence' "
         "answer is a delay past the deadline -- it is not; "
@@ -541,7 +566,7 @@ async def test_the_yaesu_primitive_reports_a_malformed_reply_as_read_error() -> 
 
 @pytest.mark.parametrize("harness", ["yaesu-ftx1"], indirect=True)
 async def test_yaesu_attribution_reaches_the_evidence(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """§3.7: attribution is a per-vendor capability, carried not discarded.
 
@@ -557,7 +582,7 @@ async def test_yaesu_attribution_reaches_the_evidence(
 
 @pytest.mark.parametrize("harness", ["yaesu-ftx1"], indirect=True)
 async def test_a_yaesu_self_write_leaves_no_transmit_truth_claim_anywhere(
-    harness: TxConformanceHarness,
+    harness: TxObservationHarness,
 ) -> None:
     """The self-write launder, at its last surviving Yaesu address.
 

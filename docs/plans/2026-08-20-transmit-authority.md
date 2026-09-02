@@ -619,8 +619,7 @@ admission there would gate reads that INV-1 pins to the non-write allow-list
 and would make PASS writes consult transmit truth, which INV-3 forbids
 outright. The method's own docstring (`runtime/radio.py:3948-3954`) enumerates
 only `select_receiver`, `_run_with_receiver_vfo_fallback`, `swap_vfo_ab` and
-`equalize_vfo_ab`, and the merged conformance map pins `"set_vfo_slot"`, never
-`_set_vfo_wire` (`tests/contracts/test_tx_authority_conformance.py:109-114`).
+`equalize_vfo_ab`.
 One residual follows from placing the admissions outside and is named rather
 than hidden: the cross-module profile-restore path calls `_set_vfo_wire`
 directly (`runtime/radio_state_snapshot.py:105`) and no outer-method admission
@@ -1302,8 +1301,9 @@ Designed before any component ships (rows 1–6 precede every cutover):
    no-`freq_ranges` profile), the own-transmit hold (the **B6 golden**: a
    scripted RX answer during an in-progress own CW message must not admit a
    hazard write), and decision log contents.
-3. **Conformance matrix** (`tests/contracts/test_tx_authority_conformance.py`)
-   over **every shipping backend class** with its fake link — the audio
+3. **Conformance matrix** (historical authority rows; the surviving observation
+   subset is `tests/contracts/test_tx_observation_conformance.py`) over **every
+   shipping backend class** with its fake link — the audio
    precedent (`test_audio_lifecycle_conformance.py`): a HAZARD write at
    scripted TX is refused and **no wire write occurs**; at scripted RX the
    read precedes the write on the wire; **the same rows driven through
