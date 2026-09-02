@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from rigplane.core.state_store import StateSnapshot, StateStore
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH
 from rigplane.core.tx_target import (
     KnownTxTarget,
     UnknownTxTarget,
@@ -331,6 +332,16 @@ def test_tx_target_registry_and_observation_contract() -> None:
 
     with pytest.raises(ValueError, match="canonical fields"):
         _store_observation(path, {**target.to_dict(), "backend": "icom"}, at=3.0)
+
+
+def test_observed_ptt_registry_contract_is_read_only_string_state() -> None:
+    spec = DEFAULT_FIELD_REGISTRY.require(OBSERVED_PTT_PATH)
+
+    assert spec.path == FieldPath.global_("tx_state", "observed_ptt")
+    assert spec.family is FieldFamily.TX_STATE
+    assert spec.value_type == "str"
+    assert spec.readable is True
+    assert spec.writable is False
 
 
 def test_global_dial_lock_registered_as_tx_state_bool() -> None:
