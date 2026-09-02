@@ -593,6 +593,7 @@ async def test_inflight_on_settlement_is_stale_after_replacement() -> None:
 @pytest.mark.asyncio
 async def test_provider_arrival_wins_retry_tie_without_duplicate_effect() -> None:
     managed, clock, _, _, _, lane = authority(generation=None)
+    await managed._stop_scheduler(managed._scheduler_task)
     await managed.force_off()
     managed._retry_due = clock.now
 
