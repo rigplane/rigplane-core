@@ -97,7 +97,11 @@ The official Yaesu **FTX-1 Series CAT Operation Reference Manual 2508-C** is the
 command authority; `rigs/ftx1.toml` is the runtime radio-fact SSOT. The companion
 [family/domain gap CSV](ftx1-command-gaps.csv) is a dated derived audit snapshot,
 not an implementation source or a second profile SSOT. It does not approve a bulk
-profile/API update and it does not alter the active IC-7300 MOR-2158 profile HOLD.
+profile/API update. The IC-7300 MOR-2158 hold applied during this census and review;
+this census PR did not change that profile. It was released after MOR-2158/MOR-2133
+closure at main `bf66038c8b0ac74020d9f985677542cc3aba167d` (PR #2975 merge and
+post-merge PASS). Any future implementation must re-read current ownership and
+re-anchor from fresh main; this history does not make the profile permanently free.
 
 This snapshot is pinned to census ref
 `8cc5471dbb60f246ccb7a17a5e29f75fd6f20a00`, manual SHA-256
