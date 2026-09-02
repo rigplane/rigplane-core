@@ -31,6 +31,7 @@ Covers missing lines:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from collections.abc import Generator
 from typing import Any
@@ -4186,6 +4187,26 @@ def test_update_radio_state_tx_freq_monitor_decodes_transmit_frequency_not_boole
     )
     with pytest.raises(KeyError):
         snapshot.field("global.tx_state.tx_freq_monitor")
+
+
+def test_direct_tx_frequency_max_age_falls_back_without_state_acquisition(
+    radio_with_state: IcomRadio,
+) -> None:
+    """MOR-2223: with no [state_acquisition] block on the profile, the
+    directed 1C/03 response still gets a finite max_age on tx_target — the
+    shared fallback — instead of aging forever (StateStore.mark_stale_due
+    only ages entries with max_age set)."""
+    radio_with_state._profile = dataclasses.replace(
+        radio_with_state._profile, state_acquisition=None
+    )
+    frame = parse_civ_frame(bytes.fromhex("FE FE E0 98 1C 03 00 00 10 07 00 FD"))
+    radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
+
+    field = radio_with_state._state_store.snapshot().field("global.tx_state.tx_target")
+    assert field.value == KnownTxTarget(
+        receiver="MAIN", slot=None, frequency_hz=7_100_000
+    )
+    assert field.max_age == 3.0
 
 
 def test_direct_tx_frequency_coexists_with_ic7300_derived_target() -> None:
