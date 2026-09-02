@@ -40,12 +40,14 @@
  *
  * `lcd-cockpit`/`lcd-scope`/`peer-split` get a real mount pin for the first
  * time here. All three wrappers are zero-prop and hardcode a `variant`
- * literal into `LcdLayout`; the `variant` prop's shape
- * (`variant?: 'cockpit' | 'scope' | 'peer-split'`) is already pinned on
- * LcdLayout itself by
+ * literal into `LcdLayout`; LcdLayout's own handling of the `cockpit`/`scope`
+ * members is already pinned by
  * `components-v2/layout/__tests__/LcdLayout.command-bus-migration.isolated.test.ts`
- * and `...autostep-lifecycle.isolated.test.ts` — nothing here duplicates
- * that. This file pins only each wrapper's half: that it forwards its own
+ * and `...autostep-lifecycle.isolated.test.ts` (neither mounts `peer-split`)
+ * — nothing here duplicates that. LcdLayout's `peer-split` handling is
+ * pinned separately, by `skins/lcd-peer-split/__tests__/
+ * LcdPeerSplitSkin.component.test.ts` (cited again below). This file pins
+ * only each wrapper's half: that it forwards its own
  * literal down, not LcdLayout's behavior for any value. `peer-split`
  * (MOR-2153 PR-1) moved into this bucket from a standalone
  * `SemanticRadioSurfaces`-mount pin once its entry component became

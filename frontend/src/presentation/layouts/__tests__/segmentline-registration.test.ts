@@ -47,11 +47,11 @@ describe('the peer-split entrypoint is registered in the real registry', () => {
   // `segmentline/PeerSplitLayout.svelte` to the LCD-shell wrapper
   // `lcd-peer-split/LcdPeerSplitSkin.svelte` — the manifest declares no
   // opinion on which component sits behind the SkinId, only that one does.
-  // `PeerSplitLayout.svelte`'s own reachability is covered by the next test
-  // below (`declares a compiled loader`), which pins `peerSplitLayout.loader`
-  // — a real function built from `segmentline-declarations.ts`'s own
-  // `import()` of that file — so dropping the direct-loader claim here is
-  // not a loss of coverage.
+  // `PeerSplitLayout.svelte`'s own reachability is pinned separately, by
+  // `loader-identity-inventory.test.ts`'s `EXPECTED_LOADER_SPECIFIER['peer-split']`
+  // — not by the next test below (`declares a compiled loader`), which only
+  // asserts `typeof peerSplitLayout.loader === 'function'` and cannot tell
+  // that loader from one pointing at any other loadable module.
   it('keeps a `peer-split` key in the skin registry loader table', () => {
     const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
     expect(registrySource).toMatch(/'peer-split':\s*\(\)\s*=>\s*import\(/);

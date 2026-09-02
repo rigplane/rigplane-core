@@ -237,7 +237,7 @@
      means the frame hits `ScaledStage`'s max-scale-1 clamp on both axes at
      once instead of one axis being starved by a mismatched frame shape,
      which minimises the dead space the fixed-native model already produces
-     (see the centring rule below) rather than adding to it. */
+     rather than adding to it. */
   .lcd-slot[data-lcd-variant='peer-split'] {
     aspect-ratio: 1280 / 540;
   }
@@ -251,26 +251,4 @@
     border: 1px solid var(--v2-border-darker);
     border-radius: 4px;
   }
-
-  /* Centres `PeerSplitLayout`'s ScaledStage-wrapped glass inside `.lcd-frame`.
-     `ScaledStage`'s own `.scaled-stage-holder` (primitives/stage/
-     ScaledStage.svelte) never centres its child — read directly: no
-     display:flex/align-items/justify-content on that class — so this reaches
-     in via :global() rather than editing the shared primitive. It only
-     changes how the holder lays out its OWN child; the holder's own box is
-     untouched, so ScaledStage's ResizeObserver measurement is unaffected.
-
-     Exact only when the computed scale is 1 (native fits inside the frame —
-     the common desktop case this rule targets, given the aspect-ratio match
-     above): ScaledStage's `transform-origin: top left` means a scale < 1
-     still leaves a bottom-right-skewed remainder, because the transform
-     shrinks the (now flex-centred) box toward its own corner, not its
-     centre. Fixing that fully needs a centred transform-origin inside
-     ScaledStage itself — a separate decision, out of scope here. */
-  .lcd-frame[data-lcd-variant='peer-split'] :global(.scaled-stage-holder) {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
 </style>
