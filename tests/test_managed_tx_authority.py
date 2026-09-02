@@ -206,14 +206,9 @@ async def test_offline_force_off_retries_when_provider_appears() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "failure", [ActuationResult.REJECTED, ActuationResult.UNCERTAIN]
-)
-async def test_failed_on_retries_release_with_new_epoch(
-    failure: ActuationResult,
-) -> None:
+async def test_rejected_on_retries_release_with_new_epoch() -> None:
     managed, clock, wakeup, _, _, lane = authority()
-    lane.results.extend((failure, ActuationResult.ACCEPTED))
+    lane.results.extend((ActuationResult.REJECTED, ActuationResult.ACCEPTED))
     assert await managed.ptt_down("owner") is ManagedTxOutcome.ACCEPTED
     failed = await managed.snapshot()
     assert failed.state.intent.kind is ManagedTxIntentKind.RX
@@ -225,6 +220,60 @@ async def test_failed_on_retries_release_with_new_epoch(
     await wakeup.wait_after(revision + 1)
     assert lane.effects[-1].token.effect_epoch == retry_epoch
     assert not (await managed.snapshot()).state.release_required
+    await managed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ingress", "operation"),
+    [
+        ("ptt", ActuationOperation.PTT_ON),
+        ("transmit", ActuationOperation.TRANSMIT_ON),
+    ],
+)
+@pytest.mark.parametrize(
+    ("release", "cleared"),
+    [
+        (ActuationResult.ACCEPTED, True),
+        (ActuationResult.REJECTED, False),
+        (ActuationResult.UNCERTAIN, False),
+    ],
+)
+async def test_uncertain_on_immediately_runs_one_force_off_family(
+    ingress: str,
+    operation: ActuationOperation,
+    release: ActuationResult,
+    cleared: bool,
+) -> None:
+    managed, _, _, _, fence, lane = authority()
+    lane.results.extend((ActuationResult.UNCERTAIN, release))
+    outcome = (
+        await managed.ptt_down("owner")
+        if ingress == "ptt"
+        else await managed.transmit_on()
+    )
+    assert outcome is ManagedTxOutcome.ACCEPTED
+    assert fence.calls == 1
+    assert [effect.operation for effect in lane.effects] == [
+        operation,
+        ActuationOperation.FORCE_RECEIVE,
+    ]
+    force = lane.effects[-1]
+    assert force.token.effect_epoch == lane.effects[0].token.effect_epoch + 1
+    assert lane.aborts == [(force.token, operation) for operation in AbortOperation]
+    assert (await managed.snapshot()).state.release_required is not cleared
+    if not cleared:
+        await managed.force_off()
+    await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_on_settlement_does_not_run_force_off() -> None:
+    managed, _, _, _, fence, lane = authority()
+    lane.stale_once = True
+    await managed.ptt_down("owner")
+    assert fence.calls == 0 and len(lane.effects) == 1
+    await managed.force_off()
     await managed.close()
 
 

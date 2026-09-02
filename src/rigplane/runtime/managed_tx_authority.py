@@ -15,6 +15,9 @@ from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    ActuationSettled,
     ForceOff,
     ManagedTxEffect,
     ManagedTxEvent,
@@ -255,29 +258,46 @@ class ManagedTxAuthority:
     async def _execute(
         self, effects: tuple[ManagedTxEffect, ...], *, full_force: bool
     ) -> None:
-        deadline = self._clock() + self._attempt_timeout
-        events: list[ManagedTxEvent] = []
-        if full_force:
-            await self._abort_fence.force_off()
-        for effect in effects:
+        while True:
+            deadline = self._clock() + self._attempt_timeout
+            events: list[ManagedTxEvent] = []
             if full_force:
-                aborts = [
-                    asyncio.create_task(
-                        self._lane.settle_abort(
-                            effect.token, operation, deadline_monotonic=deadline
+                await self._abort_fence.force_off()
+            for effect in effects:
+                if full_force:
+                    aborts = [
+                        asyncio.create_task(
+                            self._lane.settle_abort(
+                                effect.token, operation, deadline_monotonic=deadline
+                            )
                         )
+                        for operation in AbortOperation
+                    ]
+                if settled := await self._lane.settle(
+                    effect, deadline_monotonic=deadline
+                ):
+                    events.append(settled)
+                if full_force:
+                    events.extend(
+                        item for item in await asyncio.gather(*aborts) if item
                     )
-                    for operation in AbortOperation
-                ]
-            if settled := await self._lane.settle(effect, deadline_monotonic=deadline):
-                events.append(settled)
-            if full_force:
-                events.extend(item for item in await asyncio.gather(*aborts) if item)
-        async with self._lock:
-            for event in events:
-                self._reduce_locked(event)
-            self._refresh_retry_locked()
-            self._wakeup.wake()
+            followup = None
+            async with self._lock:
+                for event in events:
+                    transition = self._reduce_locked(event)
+                    if (
+                        transition.outcome is ManagedTxOutcome.APPLIED
+                        and isinstance(event, ActuationSettled)
+                        and event.operation
+                        in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON)
+                        and event.result is ActuationResult.UNCERTAIN
+                    ):
+                        followup = self._force_off_locked()
+                self._refresh_retry_locked()
+                self._wakeup.wake()
+            if followup is None:
+                return
+            effects, full_force = followup.effects, True
 
     async def _scheduler(self) -> None:
         while True:
