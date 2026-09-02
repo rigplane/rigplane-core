@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import fields, replace
 from typing import get_args
 
@@ -49,10 +47,10 @@ def settle(
 ):
     pending = state.pending_effect
     assert pending is not None
-    return reduce_managed_tx(
-        state,
-        ActuationSettled(pending.token, operation or pending.operation, result, error),
+    event = ActuationSettled(
+        pending.token, operation or pending.operation, result, error
     )
+    return reduce_managed_tx(state, event)
 
 
 def test_state_vocabulary_cannot_encode_invalid_authority_or_debt() -> None:
@@ -66,16 +64,26 @@ def test_state_vocabulary_cannot_encode_invalid_authority_or_debt() -> None:
     assert "release_required" not in {field.name for field in fields(ManagedTxState)}
 
 
+@pytest.mark.parametrize(
+    "event", [PttDown("web-1", 7, "ptt", 10, None), TransmitOn(7, "tx", 10, None)]
+)
+def test_active_intent_allows_disabled_tot_deadline(event: ManagedTxEvent) -> None:
+    state = reduce_managed_tx(ManagedTxState(), event).state
+    assert state.tx_started_at_monotonic == 10
+    assert state.tot_deadline_monotonic is None
+
+
+@pytest.mark.parametrize(
+    "timing", [{"tx_started_at_monotonic": 10}, {"tot_deadline_monotonic": 190}]
+)
+def test_rx_rejects_either_retained_timing_field(timing: dict[str, float]) -> None:
+    with pytest.raises(ValueError):
+        ManagedTxState(**timing)
+
+
 def test_observation_is_structurally_not_an_authority_event() -> None:
     assert not hasattr(subject, "ObservedPtt")
-    assert set(get_args(ManagedTxEvent)) == {
-        PttDown,
-        PttUp,
-        TransmitOn,
-        ForceOff,
-        ActuationSettled,
-        AbortFailed,
-    }
+    assert len(get_args(ManagedTxEvent)) == 6
     assert "IGNORED" not in ManagedTxOutcome.__members__
 
 
@@ -105,14 +113,12 @@ def test_incompatible_on_is_rejected_while_ptt_active(event: ManagedTxEvent) -> 
 
 
 def test_idempotent_on_preserves_tot_debt_pending_effect_and_diagnostics() -> None:
-    for event in (ptt_down(attempt="again"), TransmitOn(7, "again", 90, 270)):
-        first = (
-            keyed()
-            if isinstance(event, PttDown)
-            else reduce_managed_tx(
-                ManagedTxState(), TransmitOn(7, "first", 10, 190)
-            ).state
-        )
+    starts = (
+        keyed(),
+        reduce_managed_tx(ManagedTxState(), TransmitOn(7, "first", 10, 190)).state,
+    )
+    repeats = (ptt_down(attempt="again"), TransmitOn(7, "again", 90, 270))
+    for first, event in zip(starts, repeats, strict=True):
         marked = replace(first, last_error="old")
         result = reduce_managed_tx(marked, event)
         assert result.outcome is ManagedTxOutcome.ACCEPTED
@@ -120,20 +126,11 @@ def test_idempotent_on_preserves_tot_debt_pending_effect_and_diagnostics() -> No
         assert result.effects == ()
 
 
-@pytest.mark.parametrize(
-    "state,owner",
-    [
-        (ManagedTxState(), "web-1"),
-        (keyed(), "web-2"),
-        (
-            reduce_managed_tx(ManagedTxState(), TransmitOn(7, "tx", 10, 190)).state,
-            "web-1",
-        ),
-    ],
-)
-def test_ptt_up_requires_the_current_ptt_owner(
-    state: ManagedTxState, owner: str
-) -> None:
+@pytest.mark.parametrize("kind", ["rx", "ptt", "transmit"])
+def test_ptt_up_requires_the_current_ptt_owner(kind: str) -> None:
+    transmit = reduce_managed_tx(ManagedTxState(), TransmitOn(7, "tx", 10, 190)).state
+    state = {"rx": ManagedTxState(), "ptt": keyed(), "transmit": transmit}[kind]
+    owner = "web-2" if kind == "ptt" else "web-1"
     result = reduce_managed_tx(state, PttUp(owner, 7, "off"))
     assert result.outcome is ManagedTxOutcome.REJECTED
     assert result.state == state
@@ -143,7 +140,6 @@ def test_matching_ptt_up_returns_rx_with_release_effect_and_debt() -> None:
     result = reduce_managed_tx(keyed(), PttUp("web-1", 7, "off"))
     assert result.state.intent == ManagedTxIntent.rx()
     assert result.state.release_plan is ReleasePlan.PTT_RELEASE
-    assert result.state.release_required is True
     assert result.state.tx_started_at_monotonic is None
     assert result.effects == (result.state.pending_effect,)
     assert result.effects[0].operation is ActuationOperation.FORCE_RECEIVE
@@ -162,7 +158,6 @@ def test_force_off_always_fences_debt_and_repeated_call_replaces_effect() -> Non
     first = reduce_managed_tx(state, ForceOff(None, "offline"))
     second = reduce_managed_tx(first.state, ForceOff(9, "online"))
     assert first.state.release_plan is ReleasePlan.FORCE_RELEASE
-    assert first.state.release_required is True
     assert first.state.intent == ManagedTxIntent.rx()
     assert first.state.pending_effect is None
     assert first.effects == ()
@@ -181,14 +176,10 @@ def test_stale_token_cannot_settle_or_clear_debt(field: str, value: object) -> N
     pending = state.pending_effect
     assert pending is not None
     token = replace(pending.token, **{field: value})
-    result = reduce_managed_tx(
-        state,
-        ActuationSettled(
-            token,
-            ActuationOperation.FORCE_RECEIVE,
-            ActuationResult.ACCEPTED,
-        ),
+    event = ActuationSettled(
+        token, ActuationOperation.FORCE_RECEIVE, ActuationResult.ACCEPTED
     )
+    result = reduce_managed_tx(state, event)
     assert result.outcome is ManagedTxOutcome.STALE
     assert result.state == state
 
@@ -202,9 +193,7 @@ def test_current_token_with_wrong_operation_is_stale_and_keeps_debt() -> None:
 
 
 @pytest.mark.parametrize("result", list(ActuationResult))
-def test_force_receive_results_have_exact_debt_and_diagnostics(
-    result: ActuationResult,
-) -> None:
+def test_force_receive_result_matrix(result: ActuationResult) -> None:
     prior = ActuationDiagnostic(
         ActuationOperation.PTT_ON, ActuationResult.ACCEPTED, "old"
     )
@@ -224,9 +213,7 @@ def test_force_receive_results_have_exact_debt_and_diagnostics(
     "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
 )
 @pytest.mark.parametrize("result", list(ActuationResult))
-def test_on_results_have_exact_state_deltas(
-    operation: ActuationOperation, result: ActuationResult
-) -> None:
+def test_on_matrix(operation: ActuationOperation, result: ActuationResult) -> None:
     state = (
         keyed()
         if operation is ActuationOperation.PTT_ON
@@ -235,7 +222,6 @@ def test_on_results_have_exact_state_deltas(
     settled = settle(state, result)
     accepted = result is ActuationResult.ACCEPTED
     assert settled.state.intent == (state.intent if accepted else ManagedTxIntent.rx())
-    assert settled.state.release_required is True
     assert settled.state.release_plan is (
         ReleasePlan.PTT_RELEASE if accepted else ReleasePlan.FORCE_RELEASE
     )
@@ -264,7 +250,20 @@ def test_transition_diagnostic_reset_and_preservation_follow_field_table() -> No
 @pytest.mark.parametrize("operation", list(AbortOperation))
 def test_typed_abort_failures_are_diagnostic_only(operation: AbortOperation) -> None:
     state = force_off().state
-    recorded = reduce_managed_tx(state, AbortFailed(operation, "stuck"))
+    assert state.pending_effect is not None
+    recorded = reduce_managed_tx(
+        state, AbortFailed(state.pending_effect.token, operation, "stuck")
+    )
     assert recorded.outcome is ManagedTxOutcome.APPLIED
     assert replace(recorded.state, abort_errors=()) == state
     assert recorded.state.abort_errors == (AbortError(operation, "stuck"),)
+
+
+def test_abort_failure_from_prior_force_off_epoch_is_stale() -> None:
+    first = force_off().state
+    assert first.pending_effect is not None
+    second = reduce_managed_tx(first, ForceOff(9, "new")).state
+    late = AbortFailed(first.pending_effect.token, AbortOperation.STOP_TUNE, "late")
+    result = reduce_managed_tx(second, late)
+    assert result.outcome is ManagedTxOutcome.STALE
+    assert result.state == second

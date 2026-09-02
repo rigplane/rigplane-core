@@ -102,13 +102,14 @@ class ManagedTxState:
 
     def __post_init__(self) -> None:
         active = self.intent.kind is not ManagedTxIntentKind.RX
-        has_times = (
+        if active and (
+            self.release_plan is None or self.tx_started_at_monotonic is None
+        ):
+            raise ValueError("active intent requires release debt and a start time")
+        if not active and (
             self.tx_started_at_monotonic is not None
-            and self.tot_deadline_monotonic is not None
-        )
-        if active and (self.release_plan is None or not has_times):
-            raise ValueError("active intent requires release debt and TOT times")
-        if not active and has_times:
+            or self.tot_deadline_monotonic is not None
+        ):
             raise ValueError("RX state cannot retain TOT times")
 
     @property
@@ -122,7 +123,7 @@ class PttDown:
     provider_generation: int
     attempt_id: str
     tx_started_at_monotonic: float
-    tot_deadline_monotonic: float
+    tot_deadline_monotonic: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +138,7 @@ class TransmitOn:
     provider_generation: int
     attempt_id: str
     tx_started_at_monotonic: float
-    tot_deadline_monotonic: float
+    tot_deadline_monotonic: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +157,7 @@ class ActuationSettled:
 
 @dataclass(frozen=True, slots=True)
 class AbortFailed:
+    token: EffectToken
     operation: AbortOperation
     error: str
 
@@ -317,6 +319,8 @@ def reduce_managed_tx(
         return _settle(state, event)
 
     if isinstance(event, AbortFailed):
+        if event.token.effect_epoch != state.effect_epoch:
+            return ManagedTxTransition(state, ManagedTxOutcome.STALE)
         error = AbortError(event.operation, event.error)
         return ManagedTxTransition(
             replace(state, abort_errors=(*state.abort_errors, error)),
