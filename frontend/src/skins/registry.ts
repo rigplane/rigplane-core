@@ -70,9 +70,9 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
  * Skins are code-split — only the active skin is loaded.
  *
  * Each LCD variant has its own wrapper that mounts `LcdLayout` with the
- * appropriate `variant` prop — this is how the cockpit/scope selection
- * reaches LcdLayout (registry → skin wrapper → LcdLayout). The legacy
- * `amber-lcd` alias is accepted via `normalizeLayoutMode`'s
+ * appropriate `variant` prop — this is how the cockpit/scope/peer-split
+ * selection reaches LcdLayout (registry → skin wrapper → LcdLayout). The
+ * legacy `amber-lcd` alias is accepted via `normalizeLayoutMode`'s
  * `LEGACY_LAYOUT_ALIASES` table.
  */
 const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
@@ -88,8 +88,12 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   'mobile': () => import('./mobile/MobileSkin.svelte'),
   // MOR-2155 made `peer-split` addressable and loadable; MOR-2152 (see the
   // `resolveSkinId` branch below) is what makes a forced 'peer-split'
-  // preference actually resolve to it.
-  'peer-split': () => import('./segmentline/PeerSplitLayout.svelte'),
+  // preference actually resolve to it. MOR-2153 PR-1 retargeted the loader
+  // from the bare glass (`segmentline/PeerSplitLayout.svelte`) to the LCD
+  // shell wrapper: `lcd-peer-split/LcdPeerSplitSkin.svelte` mounts
+  // `LcdLayout` with `variant="peer-split"`, which renders the glass inside
+  // the shell rather than loading it standalone.
+  'peer-split': () => import('./lcd-peer-split/LcdPeerSplitSkin.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
 };
 
@@ -107,9 +111,13 @@ export async function loadSkin(id: SkinId): Promise<Component> {
  *
  * Read off the actual component trees:
  * - `hardware-scope` — `SpectrumPanel`, mounted by the desktop/sdr-test and
- *   mobile layouts; the LCD layouts have none.
- * - `audio-fft` — `AudioSpectrumPanel` (right sidebar, desktop/sdr-test/LCD)
- *   and `AmberCockpit` / `AmberScope` (LCD); the mobile layout has none.
+ *   mobile layouts; the LCD layouts (including `peer-split`, MOR-2153 PR-1)
+ *   have none.
+ * - `audio-fft` — `AudioSpectrumPanel` (right sidebar, desktop/sdr-test/LCD,
+ *   `RightSidebar.svelte` behind `hasAudioFft()`) and `AmberCockpit` /
+ *   `AmberScope` (LCD `cockpit`/`scope`); `peer-split` demands it purely
+ *   through the same `RightSidebar` it now shares with `cockpit`/`scope` —
+ *   its own glass mounts no audio-FFT surface. The mobile layout has none.
  *
  * `rx-audio` is deliberately absent: its lease is held by the runtime
  * (`setRxLive`), not by a presentation subtree, so it already survives a swap.
@@ -128,12 +136,14 @@ const SKIN_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
   'lcd-cockpit': ['audio-fft'],
   'lcd-scope': ['audio-fft'],
   'mobile': ['hardware-scope'],
-  // Empty by construction, same reasoning as `dual-receiver-cockpit` above:
-  // the dual composition mounts neither SpectrumPanel nor AudioSpectrumPanel,
-  // and membership only permits bridging, so naming a resource this tree
-  // cannot consume would be a presentation manufacturing a live service (v3
-  // ADR invariant 12).
-  'peer-split': [],
+  // MOR-2153 PR-1: `peer-split` now mounts the LCD shell (`LcdLayout`
+  // variant="peer-split"), which reuses `RightSidebar` unmodified — the
+  // same `AudioSpectrumPanel`-behind-`hasAudioFft()` producer `lcd-cockpit`/
+  // `lcd-scope` already demand `audio-fft` for. No component in the tree
+  // mounts `SpectrumPanel`, so `hardware-scope` stays absent. Matches
+  // `lcd-cockpit`/`lcd-scope` below, re-derived from this shared shell
+  // rather than copied from them.
+  'peer-split': ['audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
 };
 

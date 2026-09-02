@@ -38,27 +38,30 @@
  *    `?raw`-imported it as a text fixture — so it now gets a real mount pin
  *    instead (below), the same way `lcd-cockpit`/`lcd-scope` do.
  *
- * `lcd-cockpit`/`lcd-scope` get a real mount pin for the first time here.
- * Both wrappers are zero-prop and hardcode a `variant` literal into
- * `LcdLayout`; the `variant` prop's shape
- * (`variant?: 'cockpit' | 'scope'`) is already pinned on LcdLayout itself by
+ * `lcd-cockpit`/`lcd-scope`/`peer-split` get a real mount pin for the first
+ * time here. All three wrappers are zero-prop and hardcode a `variant`
+ * literal into `LcdLayout`; LcdLayout's own handling of the `cockpit`/`scope`
+ * members is already pinned by
  * `components-v2/layout/__tests__/LcdLayout.command-bus-migration.isolated.test.ts`
- * and `...autostep-lifecycle.isolated.test.ts` — nothing here duplicates
- * that. This file pins only the two wrappers' half: that each forwards its
- * own literal down, not LcdLayout's behavior for either value.
+ * and `...autostep-lifecycle.isolated.test.ts` (neither mounts `peer-split`)
+ * — nothing here duplicates that. LcdLayout's `peer-split` handling is
+ * pinned separately, by `skins/lcd-peer-split/__tests__/
+ * LcdPeerSplitSkin.component.test.ts` (cited again below). This file pins
+ * only each wrapper's half: that it forwards its own
+ * literal down, not LcdLayout's behavior for any value. `peer-split`
+ * (MOR-2153 PR-1) moved into this bucket from a standalone
+ * `SemanticRadioSurfaces`-mount pin once its entry component became
+ * `lcd-peer-split/LcdPeerSplitSkin.svelte` — a wrapper of the same shape as
+ * `LcdCockpitSkin.svelte`/`LcdScopeSkin.svelte` — rather than
+ * `skins/segmentline/PeerSplitLayout.svelte` directly; the duplicate-surface
+ * risk that move creates is pinned separately, in
+ * `skins/lcd-peer-split/__tests__/LcdPeerSplitSkin.component.test.ts`.
  *
  * `mobile` gets a real mount pin the same way: `MobileSkin.svelte` is a
  * zero-prop delegate straight to `MobileRadioLayout`, so its pin mocks
  * `MobileRadioLayout.svelte` (the same technique as the `RadioLayout`/
  * `LcdLayout` mocks above) and asserts that loading `mobile` actually
  * mounts it.
- *
- * `peer-split` (MOR-2155) gets the same real-mount treatment: its entry
- * component (`skins/segmentline/PeerSplitLayout.svelte`) is a zero-prop
- * delegate straight to `SemanticRadioSurfaces` with `strips="dual"`, so its
- * pin mocks `SemanticRadioSurfaces.svelte` and asserts the `strips` value
- * actually forwarded — the same `variant`-forwarding shape the LCD wrappers
- * pin above, one prop earlier in the chain.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { mount, unmount } from 'svelte';
@@ -66,9 +69,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SkinId } from '../registry';
 
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
-const mountedLcdVariants = vi.hoisted(() => [] as Array<'cockpit' | 'scope'>);
+const mountedLcdVariants = vi.hoisted(() => [] as Array<'cockpit' | 'scope' | 'peer-split'>);
 const mobileLayoutMounts = vi.hoisted(() => ({ count: 0 }));
-const mountedStrips = vi.hoisted(() => [] as Array<'single' | 'dual'>);
 
 vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
   default: (_anchor: unknown, props: { skinId?: SkinId }) => {
@@ -77,7 +79,7 @@ vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
 }));
 
 vi.mock('../../components-v2/layout/LcdLayout.svelte', () => ({
-  default: (_anchor: unknown, props: { variant?: 'cockpit' | 'scope' }) => {
+  default: (_anchor: unknown, props: { variant?: 'cockpit' | 'scope' | 'peer-split' }) => {
     if (props.variant) mountedLcdVariants.push(props.variant);
   },
 }));
@@ -90,14 +92,6 @@ vi.mock('../../components-v2/layout/MobileRadioLayout.svelte', () => ({
   },
 }));
 
-// PeerSplitLayout takes no props (`<SemanticRadioSurfaces strips="dual" />`);
-// what is worth pinning is the `strips` literal it forwards.
-vi.mock('../../components-v2/wiring/SemanticRadioSurfaces.svelte', () => ({
-  default: (_anchor: unknown, props: { strips?: 'single' | 'dual' }) => {
-    mountedStrips.push(props.strips ?? 'single');
-  },
-}));
-
 import { loadSkin } from '../registry';
 
 const components: Record<string, unknown>[] = [];
@@ -107,14 +101,12 @@ afterEach(() => {
   mountedSkinIds.length = 0;
   mountedLcdVariants.length = 0;
   mobileLayoutMounts.count = 0;
-  mountedStrips.length = 0;
 });
 
 type EntrypointCoverage =
   | { readonly kind: 'radio-layout' }
-  | { readonly kind: 'lcd-layout'; readonly variant: 'cockpit' | 'scope' }
+  | { readonly kind: 'lcd-layout'; readonly variant: 'cockpit' | 'scope' | 'peer-split' }
   | { readonly kind: 'mobile-layout' }
-  | { readonly kind: 'semantic-radio-surfaces'; readonly strips: 'single' | 'dual' }
   | { readonly kind: 'covered-elsewhere'; readonly testFile: string; readonly entryComponentFile: string };
 
 /**
@@ -132,7 +124,7 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
     entryComponentFile: 'DualReceiverCockpit.svelte',
   },
   mobile: { kind: 'mobile-layout' },
-  'peer-split': { kind: 'semantic-radio-surfaces', strips: 'dual' },
+  'peer-split': { kind: 'lcd-layout', variant: 'peer-split' },
 };
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
@@ -145,11 +137,6 @@ const lcdLayoutCases = allSkinIds.flatMap((id) => {
 });
 
 const mobileLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout');
-
-const semanticRadioSurfacesCases = allSkinIds.flatMap((id) => {
-  const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
-  return coverage.kind === 'semantic-radio-surfaces' ? [[id, coverage.strips] as const] : [];
-});
 
 const coveredElsewhereCases = allSkinIds.flatMap((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
@@ -169,9 +156,9 @@ describe('desktop skin entrypoints', () => {
 });
 
 describe('LCD skin entrypoints', () => {
-  // Kills: LcdCockpitSkin/LcdScopeSkin forwarding the wrong `variant`
-  // literal to LcdLayout, forwarding the other skin's literal, or dropping
-  // the prop entirely (the guard in the mock above then leaves
+  // Kills: LcdCockpitSkin/LcdScopeSkin/LcdPeerSplitSkin forwarding the wrong
+  // `variant` literal to LcdLayout, forwarding a different wrapper's literal,
+  // or dropping the prop entirely (the guard in the mock above then leaves
   // mountedLcdVariants empty, which also fails the equality below).
   it.each(lcdLayoutCases)('forwards variant to LcdLayout (%s -> %s)', async (skinId, variant) => {
     const Component = await loadSkin(skinId);
@@ -189,21 +176,6 @@ describe('mobile skin entrypoint', () => {
     const target = document.createElement('div');
     components.push(mount(Component, { target }));
     expect(mobileLayoutMounts.count).toBe(1);
-  });
-});
-
-describe('semantic-radio-surfaces skin entrypoint', () => {
-  // Kills: PeerSplitLayout mounting SemanticRadioSurfaces with the wrong
-  // `strips` literal, forwarding a different skin's value, or dropping the
-  // prop (the mock's `?? 'single'` fallback then makes the equality fail for
-  // this table's `'dual'` case).
-  it.each(semanticRadioSurfacesCases)('mounts SemanticRadioSurfaces with its own strips value (%s -> %s)', async (
-    skinId, strips,
-  ) => {
-    const Component = await loadSkin(skinId);
-    const target = document.createElement('div');
-    components.push(mount(Component, { target }));
-    expect(mountedStrips).toEqual([strips]);
   });
 });
 

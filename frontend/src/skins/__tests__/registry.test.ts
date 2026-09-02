@@ -52,7 +52,7 @@ vi.mock('../desktop-v2/DesktopSkin.svelte', () => lazyImports['desktop-v2']());
 vi.mock('../lcd-cockpit/LcdCockpitSkin.svelte', () => lazyImports['lcd-cockpit']());
 vi.mock('../lcd-scope/LcdScopeSkin.svelte', () => lazyImports['lcd-scope']());
 vi.mock('../mobile/MobileSkin.svelte', () => lazyImports['mobile']());
-vi.mock('../segmentline/PeerSplitLayout.svelte', () => lazyImports['peer-split']());
+vi.mock('../lcd-peer-split/LcdPeerSplitSkin.svelte', () => lazyImports['peer-split']());
 vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports['sdr-test']());
 vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports['dual-receiver-cockpit']());
 
@@ -221,7 +221,11 @@ describe('presentation resource plan', () => {
   const EXPECTED_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
     'desktop-v2': ['audio-fft', 'hardware-scope'],
     'dual-receiver-cockpit': [],
-    'peer-split': [],
+    // MOR-2153 PR-1: `peer-split` mounts the LCD shell (`LcdLayout`
+    // variant="peer-split"), which reuses `RightSidebar`'s
+    // `AudioSpectrumPanel`-behind-`hasAudioFft()` — same producer
+    // `lcd-cockpit`/`lcd-scope` already demand `audio-fft` for.
+    'peer-split': ['audio-fft'],
     'sdr-test': ['audio-fft', 'hardware-scope'],
     'lcd-cockpit': ['audio-fft'],
     'lcd-scope': ['audio-fft'],

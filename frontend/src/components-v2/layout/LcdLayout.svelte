@@ -18,6 +18,7 @@
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
   import AmberCockpit from '../panels/lcd/AmberCockpit.svelte';
   import AmberScope from '../panels/lcd/AmberScope.svelte';
+  import PeerSplitLayout from '../../skins/segmentline/PeerSplitLayout.svelte';
   import LcdContrastControl from '../panels/lcd/LcdContrastControl.svelte';
   import LcdDisplayModeControl from '../panels/lcd/LcdDisplayModeControl.svelte';
   import { getLcdDisplayMode } from '$lib/stores/lcd-display-mode.svelte';
@@ -30,10 +31,10 @@
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
   import { getKeyboardHandlers } from '$lib/runtime/adapters/panel-adapters';
 
-  // Twin-skin variant selector (#887). Default preserves today's behavior.
-  // `scope` currently falls through to cockpit until C-PR1 (#895) delivers
-  // a dedicated AmberScope component.
-  let { variant = 'cockpit' }: { variant?: 'cockpit' | 'scope' } = $props();
+  // Twin-skin variant selector (#887), widened to three by MOR-2153 PR-1.
+  // Default preserves today's behavior. `scope` currently falls through to
+  // cockpit until C-PR1 (#895) delivers a dedicated AmberScope component.
+  let { variant = 'cockpit' }: { variant?: 'cockpit' | 'scope' | 'peer-split' } = $props();
 
   let radioState = $derived(runtime.state);
   let keyboardConfig = $derived(getKeyboardConfig());
@@ -82,7 +83,7 @@
     </div>
 
     <main class="content-center">
-      <div class="lcd-slot">
+      <div class="lcd-slot" data-lcd-variant={variant}>
         <div
           class="lcd-frame lcd-mode-{displayMode}"
           data-lcd-variant={variant}
@@ -90,6 +91,8 @@
         >
           {#if variant === 'scope'}
             <AmberScope />
+          {:else if variant === 'peer-split'}
+            <PeerSplitLayout />
           {:else}
             <AmberCockpit />
           {/if}
@@ -102,15 +105,25 @@
     </main>
 
     <!-- MOR-1092: the LCD's VFO facts and TX action are owned by the semantic
-         surfaces (MOR-1063/1064), wired exactly once by SemanticRadioSurfaces
-         — no new TX path. The legacy TX panel is suppressed on BOTH sidebars
-         (a cross-sidebar drag can move it), and VfoControlPanel drops the two
-         facts the surface now presents. The amber glass keeps its legacy
-         presentation for this slice; MOR-1162 redesigns it. -->
+         surfaces (MOR-1063/1064). For `cockpit`/`scope`, wired exactly once
+         here by SemanticRadioSurfaces — no new TX path. `peer-split`'s glass
+         (`PeerSplitLayout.svelte`) mounts its own `SemanticRadioSurfaces
+         strips="dual"` instead, so this slot is suppressed for that variant
+         (MOR-2153 PR-1) — each SemanticRadioSurfaces instance takes a
+         distinct TX-lease `sourceId` from its own module-level counter
+         (`components-v2/wiring/SemanticRadioSurfaces.svelte`), so two
+         mounted instances would not crash, just silently duplicate the TX
+         affordance. The legacy TX panel is suppressed on BOTH sidebars for
+         every variant (a cross-sidebar drag can move it), and
+         VfoControlPanel drops the two facts the surface now presents. The
+         amber glass (`cockpit`/`scope`) keeps its legacy presentation for
+         this slice; MOR-1162 redesigns it. -->
     <div class="content-right">
-      <div class="semantic-slot">
-        <SemanticRadioSurfaces />
-      </div>
+      {#if variant !== 'peer-split'}
+        <div class="semantic-slot">
+          <SemanticRadioSurfaces />
+        </div>
+      {/if}
       <VfoControlPanel hideVfoFacts />
       <RightSidebar hideTxPanel />
     </div>
@@ -217,6 +230,18 @@
     max-height: 100%;
   }
 
+  /* `peer-split`'s glass (`PeerSplitLayout.svelte`) is a fixed 1280x540
+     native stage (`ScaledStage nativeW={1280} nativeH={540}`), not the
+     fluid 16/7.5 the amber cockpit/scope variants were tuned for — 1280/540
+     ≈ 2.370 vs 16/7.5 ≈ 2.133. Matching the slot to the glass's own ratio
+     means the frame hits `ScaledStage`'s max-scale-1 clamp on both axes at
+     once instead of one axis being starved by a mismatched frame shape,
+     which minimises the dead space the fixed-native model already produces
+     rather than adding to it. */
+  .lcd-slot[data-lcd-variant='peer-split'] {
+    aspect-ratio: 1280 / 540;
+  }
+
   .lcd-frame {
     flex: 1;
     min-height: 0;
@@ -226,5 +251,4 @@
     border: 1px solid var(--v2-border-darker);
     border-radius: 4px;
   }
-
 </style>
