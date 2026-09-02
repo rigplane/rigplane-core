@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import MISSING, FrozenInstanceError, fields
 from typing import get_type_hints
 
@@ -29,7 +28,6 @@ from rigplane.core.tx_authority import (
     TX_ARGUMENT_PREDICATES,
     TX_ENGINE_FAILURE_TAGS,
     UNRESOLVED_ARGUMENT,
-    BandRelation,
     TransmitAuthority,
     TxArgumentContext,
     TxFamily,
@@ -37,9 +35,7 @@ from rigplane.core.tx_authority import (
     TxRefusal,
     TxRefusalCode,
     TxWriteClass,
-    band_relation,
     first_parameter_name,
-    resolve_band,
     short_circuit_family,
 )
 
@@ -83,16 +79,10 @@ def test_tx_observation_contract_is_canonical_and_authority_reexports_it() -> No
     assert tx_authority.RADIO_READBACK_SOURCES is tx_observation.RADIO_READBACK_SOURCES
 
 
-BANDS: tuple[tuple[int, int], ...] = (
-    (14_000_000, 14_350_000),
-    (21_000_000, 21_450_000),
-    (28_000_000, 29_700_000),
-)
-
 METHOD_MAP: Mapping[str, TxMethodEntry] = {
     "set_ptt": TxMethodEntry(TxFamily.PTT_ON, predicate="ptt"),
     "set_powerstat": TxMethodEntry(TxFamily.POWER_ON, predicate="powerstat"),
-    "set_freq": TxMethodEntry(TxFamily.FREQUENCY, predicate="frequency"),
+    "set_freq": TxMethodEntry(TxFamily.FREQUENCY),
     "set_mode": TxMethodEntry(TxFamily.MODE),
     "set_split": TxMethodEntry(TxFamily.VFO_TOPOLOGY),
     "set_power": TxMethodEntry(TxFamily.LEVELS),
@@ -203,15 +193,11 @@ def build_authority(
     link: FakeTransmitStateLink | PoisonedLink,
     *,
     method_map: Mapping[str, TxMethodEntry] | None = None,
-    bands: Sequence[tuple[int, int]] = BANDS,
-    current_frequency_hz: float | None = 14_200_000,
 ) -> TransmitAuthority:
     return TransmitAuthority(
         read_transmit_state=link.read,
         method_map=METHOD_MAP if method_map is None else method_map,
         clock=clock,
-        bands=tuple(bands),
-        current_frequency_hz=lambda: current_frequency_hz,
     )
 
 
@@ -316,89 +302,41 @@ def test_dormant_authority_watchdog_surface_is_absent() -> None:
     assert "own_transmit_hold" not in get_type_hints(tx_authority.TxEvidence)
 
 
+def test_dormant_band_classification_surface_is_absent() -> None:
+    """Frequency remains a PASS family without a second band classifier."""
+    for name in (
+        "BandRelation",
+        "resolve_band",
+        "band_relation",
+        "frequency_family",
+    ):
+        assert not hasattr(tx_authority, name)
+    assert "frequency" not in TX_ARGUMENT_PREDICATES
+
+    context_fields = {field.name for field in fields(TxArgumentContext)}
+    assert "current_frequency_hz" not in context_fields
+    assert "bands" not in context_fields
+
+    parameters = inspect.signature(TransmitAuthority).parameters
+    assert "bands" not in parameters
+    assert "current_frequency_hz" not in parameters
+
+    authority = TransmitAuthority(
+        read_transmit_state=PoisonedLink().read,
+        method_map=METHOD_MAP,
+        clock=Clock(),
+    )
+    assert not hasattr(authority, "_bands")
+    assert not hasattr(authority, "_current_frequency_hz")
+
+
 def test_argument_predicate_registry_is_named_and_pure() -> None:
-    assert set(TX_ARGUMENT_PREDICATES) == {"ptt", "powerstat", "frequency"}
-    ctx = TxArgumentContext(
-        args=(True,), kwargs={}, current_frequency_hz=None, bands=()
-    )
+    assert set(TX_ARGUMENT_PREDICATES) == {"ptt", "powerstat"}
+    ctx = TxArgumentContext(args=(True,), kwargs={})
     assert TX_ARGUMENT_PREDICATES["ptt"](ctx) is TxFamily.PTT_ON
-    off = TxArgumentContext(
-        args=(False,), kwargs={}, current_frequency_hz=None, bands=()
-    )
+    off = TxArgumentContext(args=(False,), kwargs={})
     assert TX_ARGUMENT_PREDICATES["ptt"](off) is TxFamily.PTT_OFF
     assert TX_ARGUMENT_PREDICATES["powerstat"](off) is TxFamily.POWER_OFF
-
-
-# --------------------------------------------------------------------------
-# Band relation arithmetic (§3.3)
-# --------------------------------------------------------------------------
-
-
-def test_resolve_band_hits_gap_and_missing_data() -> None:
-    assert resolve_band(14_200_000, BANDS) == 0
-    assert resolve_band(21_100_000, BANDS) == 1
-    assert resolve_band(18_100_000, BANDS) is None  # gap between declared bands
-    assert resolve_band(None, BANDS) is None
-    assert resolve_band(14_200_000, ()) is None
-
-
-@pytest.mark.parametrize(
-    ("current", "target", "bands", "expected"),
-    [
-        (14_200_000, 14_300_000, BANDS, BandRelation.SAME_BAND),
-        (14_200_000, 21_100_000, BANDS, BandRelation.CROSS_BAND),
-        (14_200_000, 18_100_000, BANDS, BandRelation.UNRESOLVED),
-        (18_100_000, 21_100_000, BANDS, BandRelation.UNRESOLVED),
-        (None, 21_100_000, BANDS, BandRelation.UNRESOLVED),
-        (14_200_000, 21_100_000, (), BandRelation.UNRESOLVED),
-    ],
-)
-def test_band_relation(
-    current: float | None,
-    target: float,
-    bands: tuple[tuple[int, int], ...],
-    expected: BandRelation,
-) -> None:
-    assert band_relation(current, target, bands) is expected
-
-
-@pytest.mark.parametrize(
-    ("current", "target", "bands", "family"),
-    [
-        (14_200_000, 14_300_000, BANDS, TxFamily.FREQUENCY),
-        (14_200_000, 21_100_000, BANDS, TxFamily.BAND),
-        (14_200_000, 18_100_000, BANDS, TxFamily.FREQUENCY),
-        (None, 21_100_000, BANDS, TxFamily.FREQUENCY),
-        (14_200_000, 21_100_000, (), TxFamily.FREQUENCY),
-    ],
-)
-def test_frequency_predicate_only_gates_a_resolved_crossing(
-    current: float | None,
-    target: float,
-    bands: tuple[tuple[int, int], ...],
-    family: TxFamily,
-) -> None:
-    ctx = TxArgumentContext(
-        args=(target,), kwargs={}, current_frequency_hz=current, bands=bands
-    )
-    assert TX_ARGUMENT_PREDICATES["frequency"](ctx) is family
-
-
-async def test_cross_band_set_freq_is_gated_and_in_band_is_not() -> None:
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(TX)
-    authority = build_authority(clock, link)
-
-    async with authority.admit("set_freq", (14_250_000,)):
-        pass
-    assert link.reads == []  # in-band frequency never consults truth
-
-    with pytest.raises(TxRefusal) as excinfo:
-        async with authority.admit("set_freq", (21_100_000,)):
-            pytest.fail("cross-band write must not reach the wire")
-    assert excinfo.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
-    assert len(link.reads) == 1
 
 
 # --------------------------------------------------------------------------
@@ -754,7 +692,6 @@ async def test_view_reports_keying_decisions() -> None:
         read_transmit_state=link.read,
         method_map=METHOD_MAP,
         clock=clock,
-        bands=BANDS,
     )
     async with authority.admit("set_ptt", (True,)):
         pass
@@ -795,10 +732,9 @@ class SignatureMirror:
     """The parameter names the shipping Icom bodies actually declare.
 
     Not a radio stand-in: these pins need the *names* `runtime/radio.py`
-    declares (`on`, `freq_hz`, `value`), because the defect being closed was
-    the engine guessing them (`"value"`, `"frequency"`) in the predicate table.
-    ``test_first_parameter_names_mirror_the_shipping_bodies`` keeps this class
-    honest against the real methods.
+    declares (`on`, `freq_hz`, `value`).
+    ``test_first_parameter_names_mirror_the_shipping_bodies`` keeps this
+    class honest against the real methods.
     """
 
     async def set_ptt(self, on: bool) -> None: ...
@@ -854,8 +790,6 @@ async def test_keyword_key_down_is_never_read_as_an_unkey() -> None:
         ("set_ptt", True, TxFamily.PTT_ON),
         ("set_ptt", False, TxFamily.PTT_OFF),
         ("set_powerstat", False, TxFamily.POWER_OFF),
-        ("set_freq", 14_250_000, TxFamily.FREQUENCY),
-        ("set_freq", 21_100_000, TxFamily.BAND),
     ],
 )
 async def test_classification_is_independent_of_argument_spelling(
@@ -879,41 +813,6 @@ async def test_classification_is_independent_of_argument_spelling(
 
     assert families == [expected, expected]
     assert classes[0] is classes[1]
-
-
-async def test_keyword_retune_reads_the_real_frequency_argument() -> None:
-    """A same-band keyword retune stays PASS only if ``freq_hz`` resolved."""
-    clock = Clock()
-    link = PoisonedLink()
-    authority = build_authority(clock, link)
-
-    async with authority.admit(
-        "set_freq",
-        (),
-        {"freq_hz": 14_250_000, "receiver": 1},
-        target=SignatureMirror.set_freq,
-    ) as admission:
-        assert admission.write_class is TxWriteClass.PASS
-        assert admission.family is TxFamily.FREQUENCY
-
-
-async def test_an_unresolvable_keyword_argument_fails_closed_and_is_loud(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """No signature to resolve from must never mean a silent permissive PASS."""
-    clock = Clock()
-    link = FakeTransmitStateLink(clock)
-    link.script(TX)
-    authority = build_authority(clock, link)
-
-    with caplog.at_level(logging.WARNING, logger="rigplane.core.tx_authority"):
-        with pytest.raises(TxRefusal) as refusal:
-            async with authority.admit("set_freq", (), {"freq_hz": 14_250_000}):
-                pass  # pragma: no cover - the admission refuses first
-
-    assert refusal.value.code is TxRefusalCode.REFUSED_WHILE_TRANSMITTING
-    assert authority.view().records[-1].family == str(TxFamily.BAND)
-    assert any("could not resolve" in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.parametrize("spelling", ["positional", "keyword", "unresolvable"])
@@ -958,8 +857,6 @@ def test_predicates_resolve_the_argument_by_signature_not_by_guess() -> None:
     keyed = TxArgumentContext(
         args=(),
         kwargs={"on": True},
-        current_frequency_hz=None,
-        bands=(),
         target=SignatureMirror.set_ptt,
     )
     assert TX_ARGUMENT_PREDICATES["ptt"](keyed) is TxFamily.PTT_ON
@@ -967,20 +864,15 @@ def test_predicates_resolve_the_argument_by_signature_not_by_guess() -> None:
     unkeyed = TxArgumentContext(
         args=(),
         kwargs={"on": False},
-        current_frequency_hz=None,
-        bands=(),
         target=SignatureMirror.set_ptt,
     )
     assert TX_ARGUMENT_PREDICATES["ptt"](unkeyed) is TxFamily.PTT_OFF
     assert unkeyed.first() is False
 
-    blind = TxArgumentContext(
-        args=(), kwargs={"on": False}, current_frequency_hz=None, bands=()
-    )
+    blind = TxArgumentContext(args=(), kwargs={"on": False})
     assert blind.first() is UNRESOLVED_ARGUMENT
     assert TX_ARGUMENT_PREDICATES["ptt"](blind) is TxFamily.PTT_ON
     assert TX_ARGUMENT_PREDICATES["powerstat"](blind) is TxFamily.POWER_ON
-    assert TX_ARGUMENT_PREDICATES["frequency"](blind) is TxFamily.BAND
     assert short_circuit_family("set_ptt", blind) is TxFamily.PTT_ON
     assert short_circuit_family("set_powerstat", blind) is TxFamily.POWER_ON
     assert short_circuit_family("stop_cw_text", blind) is TxFamily.CW_STOP
