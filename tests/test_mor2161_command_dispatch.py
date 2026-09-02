@@ -19,6 +19,7 @@ from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
+from rigplane.core.tx_interlock_contract import TxInterlockDisposition
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import RadioPoller
@@ -246,6 +247,149 @@ async def test_all_three_drains_execute_the_same_neutral_intent() -> None:
         radio.set_repeater_shift.assert_awaited_once_with(direction=3, receiver=1)
 
 
+@pytest.mark.parametrize(
+    "policy",
+    [
+        TxInterlockDisposition.DEFER,
+        TxInterlockDisposition.BLOCK,
+        cast(Any, None),
+    ],
+)
+def test_descriptor_admission_rejects_policy_without_shared_seat(
+    monkeypatch: pytest.MonkeyPatch,
+    policy: TxInterlockDisposition,
+) -> None:
+    from rigplane.core import command_dispatch
+    from rigplane.core.command_dispatch import prepare_command_intent
+
+    descriptor = command_dispatch.command_descriptor("set_repeater_shift")
+    assert descriptor is not None
+    mutated = replace(descriptor, tx_interlock_disposition=policy)
+    monkeypatch.setattr(
+        command_dispatch, "_COMMAND_DESCRIPTORS", {mutated.name: mutated}
+    )
+
+    with pytest.raises(CommandError, match="has no shared enforcement seat"):
+        prepare_command_intent(_radio(), mutated.name, {"direction": 1}, source="http")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "policy", [TxInterlockDisposition.DEFER, TxInterlockDisposition.BLOCK]
+)
+async def test_all_three_drains_reject_unsafe_descriptor_before_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+    policy: TxInterlockDisposition,
+) -> None:
+    from rigplane.core import command_dispatch
+    from rigplane.core.command_dispatch import prepare_command_intent
+
+    radio = _radio()
+    intent = prepare_command_intent(
+        radio, "set_repeater_shift", {"direction": 3}, source="http"
+    )
+    descriptor = command_dispatch.command_descriptor(intent.name)
+    assert descriptor is not None
+    mutated = replace(descriptor, tx_interlock_disposition=policy)
+    monkeypatch.setattr(
+        command_dispatch, "_COMMAND_DESCRIPTORS", {mutated.name: mutated}
+    )
+
+    for drain in ("icom", "yaesu", "rigctld"):
+        with pytest.raises(CommandError, match="has no shared enforcement seat"):
+            if drain == "icom":
+                poller = SimpleNamespace(
+                    _radio=radio,
+                    _enforce_tx_interlock=lambda command: None,
+                    _provider_generation=lambda: 0,
+                )
+                await RadioPoller._execute(poller, intent)  # type: ignore[arg-type] # noqa: SLF001
+            elif drain == "yaesu":
+                poller = YaesuCatPoller.__new__(YaesuCatPoller)
+                poller._radio = radio  # type: ignore[attr-defined]
+                await poller._execute_command(intent)  # noqa: SLF001
+            else:
+                poller = RigctldClientObservationPoller.__new__(
+                    RigctldClientObservationPoller
+                )
+                poller._radio = radio  # type: ignore[attr-defined]
+                await poller._execute_command(intent)  # noqa: SLF001
+    radio.set_repeater_shift.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_descriptor_enqueue_preserves_queue_lifecycle_metadata() -> None:
+    from rigplane.core.command_dispatch import prepare_command_intent
+
+    radio = _radio()
+    server = WebServer(radio, WebConfig())
+    intent = prepare_command_intent(
+        radio,
+        "set_repeater_shift",
+        {"direction": 2},
+        source="websocket",
+        command_id="metadata-shift",
+        session_id="ws-metadata",
+    )
+    execution = asyncio.create_task(server.command_service.execute(intent))
+    await asyncio.sleep(0)
+
+    entries = server.command_queue.drain_entries()
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.command is intent
+    assert entry.command_id == intent.id
+    assert entry.source == intent.source
+    assert entry.session_id == "ws-metadata"
+    assert entry.command_service is server.command_service
+    assert entry.future is not None
+    assert entry.command.timeout == intent.timeout == 10.0
+
+    entry.future.set_result(None)
+    await execution
+    terminal = [
+        event.state
+        for event in server.command_service.lifecycle_events()
+        if event.command_id == intent.id
+        and event.state in {"acknowledged", "failed", "timed_out"}
+    ]
+    assert terminal == ["acknowledged"]
+
+
+@pytest.mark.asyncio
+async def test_descriptor_queue_failure_completes_lifecycle_exactly_once() -> None:
+    from rigplane.core.command_dispatch import prepare_command_intent
+
+    radio = _radio()
+    server = WebServer(radio, WebConfig())
+    intent = prepare_command_intent(
+        radio,
+        "set_repeater_shift",
+        {"direction": 2},
+        source="websocket",
+        command_id="failed-shift",
+        session_id="ws-failure",
+    )
+    execution = asyncio.create_task(server.command_service.execute(intent))
+    await asyncio.sleep(0)
+    (entry,) = server.command_queue.drain_entries()
+
+    error = CommandError("radio write failed")
+    YaesuCatPoller._mark_queued_command_failed(entry, error)  # noqa: SLF001
+    assert entry.future is not None
+    entry.future.set_exception(error)
+    with pytest.raises(CommandError, match="radio write failed"):
+        await execution
+
+    terminal = [
+        event.state
+        for event in server.command_service.lifecycle_events()
+        if event.command_id == intent.id
+        and event.state in {"acknowledged", "failed", "timed_out"}
+    ]
+    assert terminal == ["failed"]
+
+
 @pytest.mark.asyncio
 async def test_descriptor_timeout_and_cancellation_cleanup_is_exact_once() -> None:
     from rigplane.core.command_dispatch import prepare_command_intent
@@ -371,12 +515,22 @@ async def test_batch_preparation_is_capture_only_then_executes_once() -> None:
 
 
 def test_descriptor_is_the_only_migrated_name_source() -> None:
-    from rigplane.core.command_dispatch import command_descriptors
+    from dataclasses import MISSING, fields
+
+    from rigplane.core.command_dispatch import CommandDescriptor, command_descriptors
     from rigplane import _poller_types
     from rigplane.runtime import _poller_types as runtime_types
     from rigplane.web import radio_poller
 
     assert set(command_descriptors()) == {"set_repeater_shift"}
+    descriptor = command_descriptors()["set_repeater_shift"]
+    assert descriptor.tx_interlock_disposition is TxInterlockDisposition.TX_SAFE
+    policy_field = next(
+        field
+        for field in fields(CommandDescriptor)
+        if field.name == "tx_interlock_disposition"
+    )
+    assert policy_field.default is MISSING
     assert "set_repeater_shift" in ControlHandler._COMMANDS  # noqa: SLF001
     assert not hasattr(runtime_types, "SetRepeaterShift")
     assert not hasattr(_poller_types, "SetRepeaterShift")

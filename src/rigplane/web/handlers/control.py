@@ -1460,7 +1460,18 @@ class ControlHandler:
                 raise RuntimeError("no command queue available")
             queue = self._server.command_queue
             future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-            enqueue_command_intent(queue, intent, future=future)
+            raw_session_id = intent.params.get("session_id")
+            session_id = None if raw_session_id is None else str(raw_session_id)
+            enqueue_command_intent(
+                queue,
+                intent,
+                future=future,
+                command_id=intent.id,
+                source=intent.source,
+                session_id=session_id,
+                command_service=self._command_service,
+                timeout=intent.timeout,
+            )
             try:
                 await asyncio.wait_for(future, timeout=intent.timeout)
             except asyncio.CancelledError:
