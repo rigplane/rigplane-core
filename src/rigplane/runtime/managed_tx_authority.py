@@ -154,7 +154,7 @@ class ManagedTxAuthority:
             self._require_ingress_open_locked()
             config = self._config_store.set_timeout_seconds(value)
             deadline = self._tot_deadline_locked(config.timeout_seconds)
-            if deadline is not None and deadline <= self._clock():
+            if False and deadline is not None and deadline <= self._clock():
                 transition = self._force_off_locked()
             self._wakeup.wake()
         if transition is not None:
