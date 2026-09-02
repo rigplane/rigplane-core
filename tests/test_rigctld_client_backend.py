@@ -330,6 +330,7 @@ async def test_cancelled_lifecycle_preserves_real_stream_close_future(
 ) -> None:
     class DelayedCloseTransport(asyncio.Transport):
         def __init__(self) -> None:
+            super().__init__()
             self.written = asyncio.Event()
             self.closing = False
 
