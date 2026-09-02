@@ -390,7 +390,7 @@ at that level.
 | Element in `hero.png` | Renders today |
 |---|---|
 | Top bar, DISCONNECT/OFF | `components-v2/layout/StatusBar.svelte` |
-| Connection-status indicator cluster, top left | `StatusBar.svelte`'s `status-indicators` block — five `role="status"` dots for radio, control, scope, audio and HTTP |
+| Connection-status indicator cluster, top left | `StatusBar.svelte`'s `status-indicators` block — `role="status"` spans for radio, control, scope, audio and HTTP. How many render is capability-gated, not fixed: the scope span is behind `hasAnyScope()` and an undeclared `scopeDisplay`, the audio span behind `hasAudio()`, so the five in the image are what this capability set yields |
 | Skin picker "SDR SCREEN (TEST)" | `StatusBar.svelte`'s `skinOptions` |
 | RF FRONT END panel | `components-v2/panels/RfFrontEnd.svelte`; semantic twin `semantic/RfFrontEndSurface.svelte` |
 | MODE panel | `components-v2/panels/ModePanel.svelte` — no own semantic surface; `SEMANTIC_SURFACE_NAMES` has no `mode`, and mode facts reach `semantic/FilterSurface.svelte` through the view model's `modeFilter` group |
