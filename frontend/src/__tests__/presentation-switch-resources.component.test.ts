@@ -212,9 +212,10 @@ const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
   'lcd-cockpit': ['audio-fft'],
   'lcd-scope': ['audio-fft'],
   'mobile': ['hardware-scope'],
-  // MOR-2155: same reasoning as `dual-receiver-cockpit` above — the minimal
-  // shell mounts no scope panel of either kind.
-  'peer-split': [],
+  // MOR-2153 PR-1: `peer-split` now mounts the LCD shell, reusing
+  // `RightSidebar`'s `AudioSpectrumPanel` — the same `audio-fft` producer
+  // `lcd-cockpit`/`lcd-scope` already demand it for.
+  'peer-split': ['audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
 };
 

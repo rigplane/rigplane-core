@@ -41,12 +41,20 @@ describe('the peer-split entrypoint is registered in the real registry', () => {
     expect(peerSplitLayout.id).toBe('peer-split');
   });
 
-  // Kills: a manifest id that drifts from the SkinId PeerSplitLayout.svelte
-  // actually loads under. The manifest is only an entrypoint declaration if
-  // the two agree.
-  it('shares its id with the skin registry loader PeerSplitLayout.svelte resolves under', () => {
+  // Kills: removing or renaming the 'peer-split' key in SKIN_LOADERS — the
+  // manifest id would then have no addressable skin to activate under. Not
+  // pinned: which module the key imports. MOR-2153 PR-1 retargeted it from
+  // `segmentline/PeerSplitLayout.svelte` to the LCD-shell wrapper
+  // `lcd-peer-split/LcdPeerSplitSkin.svelte` — the manifest declares no
+  // opinion on which component sits behind the SkinId, only that one does.
+  // `PeerSplitLayout.svelte`'s own reachability is covered by the next test
+  // below (`declares a compiled loader`), which pins `peerSplitLayout.loader`
+  // — a real function built from `segmentline-declarations.ts`'s own
+  // `import()` of that file — so dropping the direct-loader claim here is
+  // not a loss of coverage.
+  it('keeps a `peer-split` key in the skin registry loader table', () => {
     const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
-    expect(registrySource).toMatch(/'peer-split':\s*\(\)\s*=>\s*import\(['"]\.\/segmentline\/PeerSplitLayout\.svelte['"]\)/);
+    expect(registrySource).toMatch(/'peer-split':\s*\(\)\s*=>\s*import\(/);
   });
 
   // Kills: a manifest that declares no compiled loader at all.
