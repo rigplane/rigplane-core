@@ -33,19 +33,21 @@ const PORT = Number(process.env.RP_VISUAL_PORT ?? '5399');
 // reach the real App.svelte demo route too — vite.fixtures.config.ts's
 // `root` stays the app root ("not a second project"), so `GET /` there
 // serves the real index.html, not a 404. It is deliberately not reused
-// here anyway: fixtureStubs() in that config re-points four runtime
-// modules (runtime/index.ts, tx-controller/app-host.ts,
-// mod-input-tx-guard.svelte.ts, adapters/panel-adapters.ts). The demo
-// route (?demo=control-buttons) doesn't currently reach any of them
-// because of App.svelte's own early bailout on demoMode — but pinning a
-// visual baseline against a server whose config's entire stated purpose
-// is stubbing runtime seams, on the strength of a bailout in a 1806-line
-// demo file staying exactly where it is, is the kind of coincidental
-// coupling that breaks silently later. A dedicated, unstubbed `vite` (no
-// --config override) runs the actual production entry instead, on a
-// port that doesn't collide with this fixtures port, the fixtures dev
-// port (5199), the app's own default dev port (5173), or
-// capture-ptt.mjs's port (5299).
+// here: App.svelte (src/App.svelte:199) calls
+// `provideAppTxControllerHost` from `$lib/runtime/tx-controller/app-host`
+// unconditionally, at script top level, on EVERY load including the demo
+// route — the `demoMode === 'control-buttons'` bailouts are all later
+// (lines 139, 230, 293, 324), so they never run in time to skip that
+// call. `fixtureStubs()` in vite.fixtures.config.ts re-points
+// `tx-controller/app-host.ts` (plus three other runtime modules) to
+// `fixtures/stubs/`, so on the fixtures server the demo route is
+// currently, actively rendered through a stubbed app-host, not the real
+// one (confirmed by requesting the served App.svelte source and reading
+// its resolved import). A dedicated, unstubbed `vite` (no --config
+// override) runs the actual production entry instead, on a port that
+// doesn't collide with this fixtures port, the fixtures dev port (5199),
+// the app's own default dev port (5173), or capture-ptt.mjs's port
+// (5299).
 const GALLERY_PORT = Number(process.env.RP_GALLERY_PORT ?? '5499');
 // Exported so global-teardown.ts's manifest reports the SAME numbers this
 // config actually runs with — never a hand-copied, driftable duplicate.

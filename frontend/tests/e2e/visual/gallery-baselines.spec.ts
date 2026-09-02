@@ -1,8 +1,8 @@
 /**
  * MOR-2219 — per-section visual baselines for the "looks gallery" (PR A: the
- * Button family). Distinct from `visual-baselines.spec.ts`, whose 14 of 16
- * tests drive the `fixtures/index.html` harness and 2 drive
- * `ptt-harness.html` — both served under `vite.fixtures.config.ts`'s
+ * Button family). Distinct from `visual-baselines.spec.ts`, whose 14 tests
+ * split 12 (the `COCKPIT` array) driving `fixtures/index.html` and 2
+ * driving `ptt-harness.html` — both served under `vite.fixtures.config.ts`'s
  * runtime-module stubs (see that config's own header). These captures
  * instead load the real `App.svelte` demo route
  * (`?demo=control-buttons` → `ControlButtonDemo.svelte`) via the second
