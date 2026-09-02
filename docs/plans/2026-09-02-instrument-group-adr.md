@@ -1,8 +1,8 @@
 # The instrument group — Phase 2 ADR draft
 
-**Status: Draft for owner decision, 2026-09-02.** Two owner decisions are
-already recorded, in §1 under "Decided 2026-09-02"; everything else is an
-option set for the owner to pick from, collected in §10.
+**Status: Decided, 2026-09-02.** All decisions are recorded: the Svelte-5 and
+faces-are-data decisions in §1 under "Decided 2026-09-02", and the eight items
+of §10 in its "Decided 2026-09-02 (owner, 22:26 UTC, MOR-2249)" subsection.
 
 ## 1. Status and provenance
 
@@ -390,7 +390,7 @@ at that level.
 | Element in `hero.png` | Renders today |
 |---|---|
 | Top bar, DISCONNECT/OFF | `components-v2/layout/StatusBar.svelte` |
-| Connection-status indicator cluster, top left | `StatusBar.svelte`'s `status-indicators` block — `role="status"` spans for radio, control, scope, audio and HTTP. How many render is capability-gated, not fixed: the scope span is behind `hasAnyScope()` and an undeclared `scopeDisplay`, the audio span behind `hasAudio()`, so the five in the image are what this capability set yields |
+| Connection-status indicator cluster, top left | `StatusBar.svelte`'s `status-indicators` block — six `role="status"` spans, for radio, control, scope, audio, a TX-codec-fallback badge, and HTTP. How many render is capability-gated, not fixed: the scope span is behind `hasAnyScope()` and an undeclared `scopeDisplay`, the audio span behind `hasAudio()`, and the TX-codec-fallback badge behind `txCodecFallback` nested inside that same `hasAudio()` block, so the five in the image are what this capability set yields |
 | Skin picker "SDR SCREEN (TEST)" | `StatusBar.svelte`'s `skinOptions` |
 | RF FRONT END panel | `components-v2/panels/RfFrontEnd.svelte`; semantic twin `semantic/RfFrontEndSurface.svelte` |
 | MODE panel | `components-v2/panels/ModePanel.svelte` — no own semantic surface; `SEMANTIC_SURFACE_NAMES` has no `mode`, and mode facts reach `semantic/FilterSurface.svelte` through the view model's `modeFilter` group |
@@ -401,7 +401,7 @@ at that level.
 | `ANT1` chip in each glass | `components-v2/panels/AntennaPanel.svelte` (its `ANT1`/`ANT2` buttons); semantic twin `semantic/AntennaSurface.svelte`, which renders `ANT {port}` over `ANTENNA_PORTS` |
 | `RIT` / `XIT` rows in each glass (`+0.00 kHz`) | readout in `components-v2/vfo/VfoPanel.svelte` (its `rit-label` span); controls in `components-v2/panels/RitXitPanel.svelte`, semantic twin `semantic/RitXitScanSurface.svelte` |
 | Dual column (MAIN/SUB, A=B, A≠B, SPLIT, SPEAK) | `VfoHeader.svelte`'s bridge block plus `components-v2/vfo/VfoOps.svelte` and `components-v2/vfo/ActiveReceiverToggle.svelte` |
-| DUAL-W button in that column | **found** — `components-v2/vfo/VfoOps.svelte` renders it as the `data-op="dw"` bridge button labelled `DW`, pinned by `components-v2/vfo/__tests__/VfoOps.isolated.test.ts`, whose two double-click cases select the button by that trimmed text. The literal string `DUAL-W` is absent from `frontend/`: `git grep -n "DUAL-W" b197b09a` returns three hits — two in `docs/plans/`, one in `src/rigplane/runtime/_poller_types.py` — and none of them renders anything |
+| DUAL-W button in that column | **found** — `components-v2/vfo/VfoOps.svelte` renders it as the `data-op="dw"` bridge button labelled `DW`, pinned by `components-v2/vfo/__tests__/VfoOps.isolated.test.ts`, whose two cases (one double-click, one single-click) select the button by that trimmed text. The literal string `DUAL-W` is absent from `frontend/`: `git grep -n "DUAL-W" b197b09a` returns three hits — two in `docs/plans/`, one in `src/rigplane/runtime/_poller_types.py` — and none of them renders anything |
 | Scope toolbar | `components/spectrum/SpectrumToolbar.svelte`; semantic twin `semantic/ScopeControlsSurface.svelte` |
 | `BANDS` control in that toolbar | `SpectrumToolbar.svelte`'s band-plan toggle (`showBandPlan`, in its `bands-group`). No semantic twin, by that file's own header: `BANDS`/layers is one of the client-side view options with no wire field and no field-status entry, category (b) of the S10 boundary ruling, so `ScopeControlsSurface.svelte` contains no band vocabulary at all (`grep -cni band` over it returns 0) |
 | Spectrum + waterfall | `components/spectrum/SpectrumCanvas.svelte` and `WaterfallCanvas.svelte`, under `SpectrumPanel.svelte` |
@@ -458,9 +458,12 @@ rather than being rewritten:
 `contract.ts` — `fitsViewport`, `resolveLayoutForViewport`,
 `resolveLayoutForTopology`, `supportsTopology`, `resolveFallback`,
 `listLayoutIds` — has no caller outside `presentation/layouts/` and its own
-tests (`git grep` for the four exported names over `frontend/src` excluding
-`__tests__` at `b197b09a` returns only their definitions and their internal
-uses inside `contract.ts`). Keep it awaiting its consumer, or delete and re-add
+tests (`git grep` for the five exported names — `resolveFallback` is
+module-private, not exported — over `frontend/src` excluding `__tests__` at
+`b197b09a` returns their definitions, their uses inside `contract.ts`, and
+comment mentions in `desktop-declarations.ts`, `mobile-declarations.ts`
+(`fitsViewport`) and `dual-receiver-cockpit.ts` (`resolveLayoutForTopology`),
+all under `presentation/layouts/`). Keep it awaiting its consumer, or delete and re-add
 when a group needs it. D3 (`minScale`): make the group declaration its reader,
 or delete it with D1. D4 (`LayoutManifest.loader` invoked only in one test,
 while `SKIN_LOADERS` is the real load path — from the input file's audit, not
@@ -498,3 +501,16 @@ says which one a group uses.
 8. **Migration entry point** — start on peer-split (smallest, but its file is
    in flight under MOR-2243) or on the SDR deck (the default face, larger, and
    what the owner actually looks at).
+
+### Decided 2026-09-02 (owner, 22:26 UTC, MOR-2249: «все восемь по рекомендации»)
+
+All eight as recommended by the coordinator, recorded verbatim on MOR-2249:
+
+1. Vocabulary — Set B: `face` / `rack` / `group` / `instrument` / `design language`. `panel` is not used for the new concept.
+2. Shape — (b): a separate `InstrumentGroup` node with its own registry and validator under `presentation/groups/`, referenced from zones; layout manifests and their declarability suites unchanged. The §5 falsifier stands.
+3. Workspace library — (3) no library. Dockview/Gridstack only if a requirement absent from the target screen appears, and then only after the §6 spike. `svelte-dnd-action` is the fallback for a missing gesture.
+4. Non-goal amendments — §3's two replacement bullets adopted as written (applied to the v3 plan in the same commit as this block).
+5. Public contract — internal until the third face exists (peer-split, SDR deck, LCD face).
+6. Scaling — the `scaling` field is required; the validator rejects a group that omits it. If a default is ever needed it is `fixed-native`; a reflow container is a `rack`, not a group.
+7. D1 delete (MOR-2254, blocked by slice 1); D3 keep — the group's `minScale` becomes its reader; D4 defer to the first migration slice, which reports which loader a group goes through.
+8. Migration entry — peer-split first (MOR-2253), then the SDR deck (MOR-2231), then the LCD face (MOR-2232). The caveat in §9 item 1 that peer-split's file is in flight under MOR-2243 no longer applies: #3048 (2de582f3) and #3051 (21814f3c) are merged.

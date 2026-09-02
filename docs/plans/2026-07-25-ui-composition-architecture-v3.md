@@ -74,18 +74,13 @@ Non-goals:
 - replacing Svelte or Vite;
 - changing backend capability or radio protocol ownership;
 - moving transport, audio, scope, state, or commands into skins;
-- making an arbitrary JSON UI-tree editor;
-- faithfully cloning physical radio faceplates.
+- a free-form widget tree: a face composes only the declared instrument
+  vocabulary, never arbitrary components;
+- cloning a manufacturer's trade dress one-for-one.
 
-Addendum 2026-09-02 (MOR-2249, draft pending owner decision): two of the
-non-goals above are proposed for replacement by
-`docs/plans/2026-09-02-instrument-group-adr.md`. The fourth, "making an
-arbitrary JSON UI-tree editor", would become *"a free-form widget tree: a face
-composes only the declared instrument vocabulary, never arbitrary components"*.
-The fifth, "faithfully cloning physical radio faceplates", would become
-*"cloning a manufacturer's trade dress one-for-one"* — the owner's own wording
-is «не копировать фирменный вид производителя один в один» (2026-09-02, 20:31
-UTC). The list above is unchanged until the owner decides.
+Replaced 2026-09-02 per the owner's decision 4 on MOR-2249 («все восемь по
+рекомендации»); the previous wording was «making an arbitrary JSON UI-tree
+editor» and «faithfully cloning physical radio faceplates».
 
 ## Independent presentation dimensions
 
