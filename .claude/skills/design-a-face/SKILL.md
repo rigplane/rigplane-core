@@ -158,6 +158,8 @@ So extract, in this order:
     ./measure-reference.py columns <image>
     ./measure-reference.py bands   <image> --crop L,T,R,B
     ./measure-reference.py bands   <image> --by colour
+    ./measure-reference.py bands   <image> --smooth 8
+    ./measure-reference.py bands   <image> --signal variation
 
 `bands` profiles rows and finds the horizontal bands; `columns` profiles
 columns and finds the vertical divisions. It reports every run as a **share of
@@ -183,6 +185,26 @@ alarm — this locates that meaning without being told where to look. It also
 separates a *dimmed* indicator, which is the same hue with less ink, from a
 *differently coloured* one: the ink profile confuses them, the colour profile
 does not.
+
+**`--smooth <window>` flattens a regular texture before profiling.** Design
+references often carry one — scanlines on an LCD imitation, a dot grid —
+whose period is small and whose amplitude rivals a real element's. Untreated,
+the detector can return one run per texture stripe and bury the bands.
+Measure the stripe spacing in the raw (unsmoothed) profile first, then choose
+a window a few times that period: wide enough to flatten the stripes, narrow
+enough to leave a genuine band's boundary where it is.
+
+**`--signal variation` profiles spread instead of level, and is not a
+nicety — it is what makes a textured reference measurable at all.** A
+scanline ground inks every row about equally, so the *mean* ink per row
+(`level`, the default) cannot tell a band from a gutter — both read as
+inked. The *spread* of ink within a row can: a row that is part of a real
+band varies across its width (edges, glyphs, a filled meter segment sitting
+beside empty ones), while a row that is only texture does not vary beyond the
+texture's own period. Reach for `--signal variation` whenever `level` reports
+either "no runs" or one run spanning nearly the whole image on a reference
+you know is not actually blank — that is the signature of a textured ground,
+not evidence the reference has no structure.
 
 **Known limit, found by the selftest and worth knowing before you trust a
 number:** the run detector thresholds just above the profile's floor, because a
