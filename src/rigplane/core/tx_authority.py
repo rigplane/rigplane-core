@@ -167,52 +167,6 @@ class TxRefusal(Exception):
         self.evidence = evidence
 
 
-# Band relation — data in, no profile import
-
-
-class BandRelation(StrEnum):
-    """How a target frequency relates to the current one."""
-
-    SAME_BAND = "same-band"
-    CROSS_BAND = "cross-band"
-    UNRESOLVED = "unresolved"
-
-
-def resolve_band(
-    frequency_hz: float | None, bands: Sequence[tuple[int, int]]
-) -> int | None:
-    """Index of the declared band holding ``frequency_hz``, else ``None``.
-
-    ``bands`` arrives as plain ``(low_hz, high_hz)`` tuples built by the
-    backend from its profile — this module imports nothing from ``profiles``.
-    """
-    if frequency_hz is None:
-        return None
-    for index, (low, high) in enumerate(bands):
-        if low <= frequency_hz <= high:
-            return index
-    return None
-
-
-def band_relation(
-    current_hz: float | None,
-    target_hz: float | None,
-    bands: Sequence[tuple[int, int]],
-) -> BandRelation:
-    """Cross-band detection is best-effort extra strictness, never a new gate.
-
-    A gap value, a missing current frequency or a profile with no band data
-    resolves to :attr:`BandRelation.UNRESOLVED` — the manufacturer-permitted
-    floor, because a rule that re-refused whenever the relation is murky would
-    re-enter fail-closed through the back door.
-    """
-    current = resolve_band(current_hz, bands)
-    target = resolve_band(target_hz, bands)
-    if current is None or target is None:
-        return BandRelation.UNRESOLVED
-    return BandRelation.SAME_BAND if current == target else BandRelation.CROSS_BAND
-
-
 # Argument predicates — named and pure
 
 
@@ -226,9 +180,7 @@ class _UnresolvedArgument:
 
 
 #: Returned by :meth:`TxArgumentContext.first` when the engine cannot say what
-#: the caller passed. Every predicate that meets it must fail *closed*: the
-#: permissive branch — the unkey short-circuit, a PASS retune — is exactly what
-#: a mis-spelled admission must never reach (MOR-1954).
+#: the caller passed, distinct from a supplied falsey argument.
 #:
 UNRESOLVED_ARGUMENT: Final = _UnresolvedArgument()
 
@@ -286,8 +238,6 @@ class TxArgumentContext:
 
     args: tuple[object, ...]
     kwargs: Mapping[str, object]
-    current_frequency_hz: float | None
-    bands: tuple[tuple[int, int], ...]
     target: Callable[..., object] | None = None
 
     def first(self) -> object:
@@ -339,28 +289,10 @@ def powerstat_family(context: TxArgumentContext) -> TxFamily:
     return TxFamily.POWER_ON if bool(value) else TxFamily.POWER_OFF
 
 
-def frequency_family(context: TxArgumentContext) -> TxFamily:
-    """HAZARD only when both endpoints resolve to declared bands and differ.
-
-    An unresolved *argument* is a hazard: a retune whose target the engine
-    cannot read may be the cross-band one. An unresolved *band relation* is
-    not — a gap, a missing current frequency or a profile with no band data
-    stays PASS, or the fail-closed direction would re-enter through the back
-    door (see :func:`band_relation`).
-    """
-    target = context.first()
-    if target is UNRESOLVED_ARGUMENT:
-        return TxFamily.BAND
-    target_hz = float(target) if isinstance(target, (int, float)) else None
-    relation = band_relation(context.current_frequency_hz, target_hz, context.bands)
-    return TxFamily.BAND if relation is BandRelation.CROSS_BAND else TxFamily.FREQUENCY
-
-
 TX_ARGUMENT_PREDICATES: Mapping[str, ArgumentPredicate] = MappingProxyType(
     {
         "ptt": ptt_family,
         "powerstat": powerstat_family,
-        "frequency": frequency_family,
     }
 )
 
@@ -388,13 +320,6 @@ def short_circuit_family(method: str, context: TxArgumentContext) -> TxFamily | 
     readable de-key, or an unreadable ``set_ptt`` / ``set_powerstat`` argument
     into a refusal.
 
-    It says nothing about any other method, and the general rule runs the
-    other way: everywhere else an unreadable argument fails **closed** and may
-    well refuse. ``set_freq`` becomes BAND and is refused at TX where the
-    readable in-band value would have passed — pinned by
-    ``test_an_unresolvable_keyword_argument_fails_closed_and_is_loud`` — and
-    an unreadable ``set_tuner_status`` is refused at TX like any other hazard.
-    Omitting ``target`` is never free; :data:`UNRESOLVED_ARGUMENT` prices it.
     """
     if method == "stop_cw_text":
         return TxFamily.CW_STOP
@@ -460,16 +385,12 @@ class TransmitAuthority:
         read_transmit_state: Callable[[], Awaitable[TxStateReading]],
         method_map: Mapping[str, TxMethodEntry],
         clock: Callable[[], float] = time.monotonic,
-        bands: Sequence[tuple[int, int]] = (),
-        current_frequency_hz: Callable[[], float | None] | None = None,
         provider_generation: Callable[[], int] | None = None,
         read_deadline_seconds: float = TX_READ_DEADLINE_SECONDS,
     ) -> None:
         self._read_transmit_state = read_transmit_state
         self._method_map = dict(method_map)
         self._clock = clock
-        self._bands = tuple(bands)
-        self._current_frequency_hz = current_frequency_hz
         self._provider_generation = provider_generation
         self._read_deadline_seconds = read_deadline_seconds
 
@@ -533,10 +454,6 @@ class TransmitAuthority:
         context = TxArgumentContext(
             args=tuple(args),
             kwargs=dict(kwargs or {}),
-            current_frequency_hz=(
-                self._current_frequency_hz() if self._current_frequency_hz else None
-            ),
-            bands=self._bands,
             target=target,
         )
         if self._consults_argument(method) and context.first() is UNRESOLVED_ARGUMENT:
