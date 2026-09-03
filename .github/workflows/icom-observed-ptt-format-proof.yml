@@ -8,7 +8,7 @@ jobs:
   format-proof:
     runs-on: [self-hosted, linux, build]
     env:
-      SOURCE_SHA: 4e8a0f9d5c4d746149d67db870a569e1b92f655c
+      SOURCE_SHA: 04bb81d6255b8f7b0d89e7338852d07b3abed437
     steps:
       - uses: actions/checkout@v6
         with:
