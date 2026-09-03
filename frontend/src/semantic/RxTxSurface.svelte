@@ -12,13 +12,35 @@
   may restyle any of this; it may not change which facts appear.
 -->
 <script lang="ts">
+  import '../components-v2/controls/control-button.css';
   import { renderSlot } from './design-language-renderers';
   import type { RadioViewModel } from './radio-view-model';
   import {
     RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, faultMessage, keyBlockedReasons, nextSurfaceId,
     rfState, targetUnknownMessage, txDisabledReasons, txOrigin, txSessionState,
-    type TxAuthoritySnapshot,
+    type RfState, type TxAuthoritySnapshot,
   } from './rx-tx-surface';
+
+  /** The `.v2-status-indicator` badge treatment per RF state (the shared
+   *  `control-button.css` vocabulary, applied as classes on the existing label
+   *  span rather than through `StatusIndicator.svelte` — that component renders
+   *  an extra span, and `semantic-tx-aux-wiring.component.test.ts`'s
+   *  `DEFAULT_PATH_OUTLINE` pins this subtree's element sequence).
+   *
+   *  Colour is a SECOND channel only: `RF_LABEL` and `RF_MARK` still carry the
+   *  state as text and shape, which `rx-tx-surface.component.test.ts`'s
+   *  'encodes RX/TX structurally, not by colour or class alone' case pins.
+   *
+   *  Every state is `active: true`. The base (non-active) `.v2-status-indicator`
+   *  rule paints text in `--v2-badge-inactive-text` over a transparent
+   *  background, which fails the fixture harness's 4.5:1
+   *  `contrast-text-rx-tx-rf-label` check (`fixtures/assertions.ts`). */
+  const RF_BADGE: Record<RfState, { color: 'green' | 'red' | 'amber' | 'muted'; active: boolean }> = {
+    receiving: { color: 'green', active: true },
+    transmitting: { color: 'red', active: true },
+    uncertain: { color: 'amber', active: true },
+    unknown: { color: 'muted', active: true },
+  };
 
   interface Props {
     view: RadioViewModel;
@@ -70,7 +92,10 @@
     data-rf={rf} data-session={session} data-origin={txOrigin(tx)} data-intent={tx.intent ?? undefined}
   >
     <span class="rx-tx-mark" data-testid="rx-tx-rf-mark" aria-hidden="true">{RF_MARK[rf]}</span>
-    <span class="rx-tx-label" data-testid="rx-tx-rf-label">{RF_LABEL[rf]}</span>
+    <span
+      class="rx-tx-label v2-status-indicator" data-testid="rx-tx-rf-label"
+      data-color={RF_BADGE[rf].color} data-active={RF_BADGE[rf].active}
+    >{RF_LABEL[rf]}</span>
     <span class="rx-tx-session">{SESSION_LABEL[session]}</span>
     {#if tx.intent}<span class="rx-tx-intent">· {tx.intent}</span>{/if}
     <span class="rx-tx-origin">· {txOrigin(tx)}</span>
@@ -97,14 +122,20 @@
   {/if}
 
   <div class="rx-tx-actions">
+    <!-- The `v2-*` classes and `data-surface`/`data-indicator-*` attributes are
+         the shared `control-button.css` vocabulary, applied to this existing
+         button; they add no gate and change no handler. `data-active` restates
+         `pressed`, the same value `aria-pressed` already carries. -->
     <button
-      type="button" class="rx-tx-key" data-testid="rx-tx-key"
+      type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
+      data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
       disabled={blocked.length > 0} aria-pressed={pressed} aria-describedby={blockedId}
       onclick={() => onRequestKey?.()}
     >Key transmitter</button>
     <!-- Never gated: no `disabled`, no `{#if}`, no guard in the handler. -->
     <button
-      type="button" class="rx-tx-unkey" data-testid="rx-tx-unkey"
+      type="button" class="rx-tx-unkey v2-control-button v2-control-button--pill" data-testid="rx-tx-unkey"
+      data-surface="hardware"
       onclick={() => onRequestUnkey?.()}
     >Unkey transmitter</button>
   </div>
