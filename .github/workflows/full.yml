@@ -5,11 +5,13 @@ on:
 
 jobs:
   mutation-proof:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/icom-observed-ptt-mutation-proof'
     runs-on: [self-hosted, linux, build]
     env:
+      UV_PYTHON: '3.11'
       SOURCE_SHA: 04bb81d6255b8f7b0d89e7338852d07b3abed437
       SOURCE_TREE: 150c3865a35c984a2bcb9c1d9a83d7574bcedb78
-      DIAG_BASE_SHA: 4d8fc0c24fd927dfd7c8fb94418b427303aab314
+      DIAG_BASE_SHA: 25d4c9608b01732ad1f4e881a23a07d7091ea375
       DIAG_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@v6
@@ -25,15 +27,148 @@ jobs:
           test "$(git rev-parse "$DIAG_SHA^")" = "$DIAG_BASE_SHA"
 
       - name: Prove mutation and restoration structurally
+        shell: bash
         env:
           PYTHONDONTWRITEBYTECODE: "1"
+          SUPERVISOR_CODE: |
+            import json
+            import os
+            from pathlib import Path
+            import signal
+            import subprocess
+            import sys
+            import time
+
+            record_path = Path(os.environ["PROOF_SUPERVISION_RECORD"])
+            marker = Path(str(record_path) + ".quiescent")
+            if record_path.exists() or marker.exists():
+                raise SystemExit("INVALID: supervision evidence path already exists")
+            state = {"status": "UNKNOWN", "command": sys.argv[1:], "pid": None,
+                     "group_absent": False, "leader_reaped": False, "signals": [],
+                     "deadline_seconds": 180, "reap_seconds": 10, "group_wait_seconds": 5,
+                     "phase": os.environ.get("PROOF_PHASE", "bootstrap"),
+                     "supervisor_python": sys.executable, "supervisor_version": sys.version}
+
+            def save():
+                record_path.write_text(json.dumps(state, indent=2) + "\n")
+
+            def interrupted(signum, _frame):
+                state["signals"].append(signum)
+
+            def group_exists(pgid):
+                try:
+                    os.killpg(pgid, 0)
+                except ProcessLookupError:
+                    return False
+                return True
+
+            signal.signal(signal.SIGINT, interrupted)
+            signal.signal(signal.SIGTERM, interrupted)
+            save()
+            process = None
+            returncode = 125
+            try:
+                deadline = time.monotonic() + 180
+                process = subprocess.Popen(sys.argv[1:], start_new_session=True)
+                state["pid"] = state["pgid"] = process.pid
+                save()
+                while True:
+                    if state["signals"]:
+                        raise RuntimeError("INVALID: catchable signal interrupted command")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(sys.argv[1:], 180)
+                    try:
+                        returncode = process.wait(timeout=min(0.2, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                state["status"] = "COMPLETED"
+            except BaseException as error:
+                state.update(status="INVALID", error=repr(error))
+                returncode = 125
+            finally:
+                try:
+                    if process is not None:
+                        alive = group_exists(process.pid)
+                        state["group_alive_after_wait"] = alive
+                        if alive:
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        process.wait(timeout=10)
+                        state["leader_reaped"] = True
+                        deadline = time.monotonic() + 5
+                        while group_exists(process.pid) and time.monotonic() < deadline:
+                            time.sleep(0.05)
+                        state["returncode"] = process.returncode
+                        state["group_absent"] = not group_exists(process.pid)
+                        if alive or state["signals"]:
+                            state["status"] = "INVALID"
+                            returncode = 125
+                        if not state["group_absent"]:
+                            raise RuntimeError("INVALID: process group cleanup unconfirmed")
+                        save()
+                        marker.write_text(str(record_path) + "\n")
+                    else:
+                        state["status"] = "INVALID"
+                        save()
+                except BaseException as error:
+                    state.update(status="INVALID", cleanup_error=repr(error))
+                    returncode = 125
+                    try:
+                        save()
+                    except OSError:
+                        pass
+            raise SystemExit(returncode)
         run: |
           set -eu
+          proof_python=$(command -v python3)
+          proof_containment=$(mktemp -d "$RUNNER_TEMP/icom-observed-ptt-containment.XXXXXX")
+          export PROOF_CONTAINMENT_DIR="$proof_containment"
+          printf 'PROOF_CONTAINMENT_DIR=%s\n' "$proof_containment" >> "$GITHUB_ENV"
+          proof_quiescent=yes
+          proof_interrupt=0
+          proof_sequence=0
+          trap 'proof_interrupt=130' INT
+          trap 'proof_interrupt=143' TERM
+          require_quiescent() {
+            if [ "$proof_sequence" -eq 0 ]; then return 0; fi
+            if [ "$proof_quiescent" != yes ] ||
+               [ "$(cat "$PROOF_SUPERVISION_RECORD.quiescent" 2>/dev/null)" != "$PROOF_SUPERVISION_RECORD" ]; then
+              printf 'UNKNOWN: current child cleanup unconfirmed; source write forbidden\n' > "$proof_containment/unconfirmed.txt"
+              return 125
+            fi
+          }
+          supervised() {
+            require_quiescent || return 125
+            if [ "$proof_interrupt" -ne 0 ]; then exit "$proof_interrupt"; fi
+            proof_quiescent=no
+            proof_sequence=$((proof_sequence + 1))
+            export PROOF_SUPERVISION_RECORD="$proof_containment/$proof_sequence.json"
+            "$proof_python" -c "$SUPERVISOR_CODE" "$@" <&0 &
+            proof_supervisor_pid=$!
+            while :; do
+              if [ "$proof_interrupt" -ne 0 ]; then
+                kill -TERM "$proof_supervisor_pid" 2>/dev/null || true
+              fi
+              wait "$proof_supervisor_pid" && proof_rc=0 || proof_rc=$?
+              if ! kill -0 "$proof_supervisor_pid" 2>/dev/null; then break; fi
+            done
+            printf 'supervisor_pid=%s\nwait_exit=%s\n' "$proof_supervisor_pid" "$proof_rc" > "$PROOF_SUPERVISION_RECORD.shell.txt"
+            if [ "$(cat "$PROOF_SUPERVISION_RECORD.quiescent" 2>/dev/null)" = "$PROOF_SUPERVISION_RECORD" ]; then
+              proof_quiescent=yes
+            fi
+            require_quiescent || return 125
+            if [ "$proof_interrupt" -ne 0 ]; then exit "$proof_interrupt"; fi
+            return "$proof_rc"
+          }
           source_file=src/rigplane/runtime/_civ_rx.py
           original_sha="$(git rev-parse HEAD)"
           record_manifest() {
-            test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-            test "$(git hash-object tests/test_civ_rx_coverage.py)" = "$(git rev-parse "$SOURCE_SHA:tests/test_civ_rx_coverage.py")"
+            test "$(git rev-parse HEAD)" = "$SOURCE_SHA" || return 125
+            test "$(git hash-object tests/test_civ_rx_coverage.py)" = "$(git rev-parse "$SOURCE_SHA:tests/test_civ_rx_coverage.py")" || return 125
             {
               printf 'phase=%s\nsource_sha=%s\nsource_tree=%s\n' "$1" "$SOURCE_SHA" "$SOURCE_TREE"
               printf 'diag_sha=%s\ndiag_parent=%s\ndiag_tree=%s\n' "$DIAG_SHA" "$DIAG_BASE_SHA" "$(git rev-parse "$DIAG_SHA^{tree}")"
@@ -44,33 +179,60 @@ jobs:
           }
           restore_source() {
             label="$1"
-            git restore --source="$SOURCE_SHA" --worktree -- "$source_file"
-            test "$(git rev-parse HEAD)" = "$original_sha"
-            test -z "$(git diff --name-only -- "$source_file")"
+            require_quiescent || return 125
+            if [ "$proof_sequence" -eq 0 ]; then return 0; fi
+            git restore --source="$SOURCE_SHA" --worktree -- "$source_file" || return 125
+            test "$(git rev-parse HEAD)" = "$original_sha" || return 125
+            test -z "$(git diff --name-only -- "$source_file")" || return 125
             {
               printf 'source_sha=%s\n' "$SOURCE_SHA"
               printf 'head_sha=%s\n' "$(git rev-parse HEAD)"
               printf 'source_diff=clean\n'
-            } > "$label-restoration.txt"
+            } > "$label-restoration.txt" || return 125
             record_manifest "$label-restoration"
           }
-          trap 'restore_source final' EXIT
+          finish() {
+            proof_exit=$?
+            trap - EXIT
+            trap '' INT TERM
+            printf 'shell_exit=%s\ncatchable_signal_exit=%s\nquiescent=%s\n' "$proof_exit" "$proof_interrupt" "$proof_quiescent" > "$proof_containment/shell-exit.txt"
+            require_quiescent || exit 125
+            restore_source final || exit 125
+            if [ "$proof_interrupt" -ne 0 ]; then exit "$proof_interrupt"; fi
+            exit "$proof_exit"
+          }
+          trap finish EXIT
 
           mutation_cache="$(mktemp -d)"
           export UV_CACHE_DIR="$mutation_cache/uv"
           export PYTHONPYCACHEPREFIX="$mutation_cache/pycache"
-          uv sync --all-extras --frozen
+          export PROOF_PHASE=bootstrap
+          supervised uv sync --all-extras --frozen
+          supervised uv run python - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          Path(os.environ["PROOF_CONTAINMENT_DIR"]).joinpath("project-python.json").write_text(
+              json.dumps({"executable": sys.executable, "version": sys.version,
+                          "version_info": list(sys.version_info), "requested": os.environ["UV_PYTHON"]}, indent=2) + "\n"
+          )
+          if sys.version_info[:2] != (3, 11):
+              raise SystemExit("INVALID: project interpreter is not Python 3.11")
+          PY
 
           run_selected() {
             label="$1"
+            export PROOF_PHASE="$label"
             record_manifest "$label"
             proof_cache="$(mktemp -d)"
             export UV_CACHE_DIR="$proof_cache/uv"
             export PYTHONPYCACHEPREFIX="$proof_cache/pycache"
-            uv sync --all-extras --frozen
+            supervised uv sync --all-extras --frozen
             export phases_file="$label-phases.json"
             set +e
-            uv run python - -q --junitxml="$label.xml" \
+            supervised uv run python - -q --junitxml="$label.xml" \
               tests/test_civ_rx_coverage.py::test_civ_ptt_readback_emits_canonical_observed_state \
               tests/test_civ_rx_coverage.py::test_unsolicited_civ_ptt_readback_has_unsolicited_provenance \
               tests/test_civ_rx_coverage.py::test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames \
@@ -115,7 +277,7 @@ jobs:
           }
 
           assert_selected_green() {
-          uv run python - <<'PY'
+          supervised uv run python - <<'PY'
           import json
           import os
           import xml.etree.ElementTree as ET
@@ -170,7 +332,8 @@ jobs:
           run_selected baseline
           assert_selected_green
 
-          uv run python - <<'PY'
+          export PROOF_PHASE=negative-mutation
+          supervised uv run python - <<'PY'
           from pathlib import Path
 
           path = Path("src/rigplane/runtime/_civ_rx.py")
@@ -191,7 +354,7 @@ jobs:
           PY
           git diff -- "$source_file" > negative.patch
           run_selected negative
-          uv run python - <<'PY'
+          supervised uv run python - <<'PY'
           import json
           import os
           import xml.etree.ElementTree as ET
@@ -286,7 +449,8 @@ jobs:
           run_selected restored
           assert_selected_green
 
-          uv run python - <<'PY'
+          export PROOF_PHASE=positive-mutation
+          supervised uv run python - <<'PY'
           from pathlib import Path
 
           path = Path("src/rigplane/runtime/_civ_rx.py")
@@ -315,7 +479,7 @@ jobs:
           PY
           git diff -- "$source_file" > positive.patch
           run_selected positive
-          uv run python - <<'PY'
+          supervised uv run python - <<'PY'
           import os
           import xml.etree.ElementTree as ET
 
@@ -378,3 +542,4 @@ jobs:
             negative-restoration.txt
             positive-restoration.txt
             final-restoration.txt
+            ${{ env.PROOF_CONTAINMENT_DIR }}
