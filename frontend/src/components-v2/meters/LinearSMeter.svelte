@@ -27,15 +27,13 @@
     readonly valueFraction: number;
     readonly fault: boolean;
     /**
-     * MOR-2250 fix cycle: this row's OWN relevance (the field's own
-     * fact-layer `relevant`, e.g. `meters.swr.relevant`) — NOT the S-meter
-     * tile's `data-relevant` (driven by `meters.signal.relevant`, a
-     * different field). The two were conflated before this fix: the row
-     * dimmed with the tile, so SWR read at full opacity while receiving
-     * (irrelevant) and at 40% while transmitting (the only state it has a
-     * reading, including a fault fill, at all). `relevant: false` dims only
-     * this row's own DOM group — see `data-lower-relevant` on the `<g>`
-     * below.
+     * MOR-2250 fix cycle 2: this row's OWN relevance (the field's own
+     * fact-layer `relevant`, e.g. `meters.swr.relevant`) — independent of
+     * the `relevant` PROP below, which dims the main bar. The two drive two
+     * SIBLING `<g>` groups (`data-lower-relevant` here, `data-main-relevant`
+     * on the main-bar group), neither an ancestor of the other, so their
+     * opacities can never compound: each renders at exactly its own fact's
+     * value, never the product of both.
      */
     readonly relevant: boolean;
   }
@@ -72,10 +70,25 @@
      * different claim: this instrument has no second scale at all.
      */
     lowerScale?: LowerScaleDescriptor;
+    /**
+     * MOR-2250 fix cycle 2: independent dim for the MAIN bar content — the
+     * label, scale labels, ticks, segments, peak line and value readout;
+     * everything in this component that is NOT the `lowerScale` row.
+     * Defaults to `true` so every caller that does not pass it (VfoPanel,
+     * MobileRadioLayout, MetersDockPanel — none of them pass this prop)
+     * keeps rendering at full opacity, unchanged. `MetersSurface.svelte` is
+     * the only caller that passes `false`, sourced from
+     * `meters.signal.relevant`: the S-meter tile's own dimming moved from
+     * that tile's CSS into this prop so it can never compound with
+     * `lowerScale.relevant`'s independent dim — see the sibling
+     * `data-main-relevant` / `data-lower-relevant` groups below.
+     */
+    relevant?: boolean;
   }
 
   let {
     value, compact = false, label, variant, display = DEFAULT_METER_DISPLAY, lowerScale,
+    relevant = true,
   }: Props = $props();
 
   const isVfoVariant = $derived(variant === 'vfo' || variant === 'vfo-wide');
@@ -189,9 +202,11 @@
   const LOWER_ACTIVE_COLOR = 'var(--v2-accent-green-medium)';
   const LOWER_DIM_COLOR = '#141414';
   // Matches `MetersSurface.svelte`'s own `.meter-tile[data-relevant='false']
-  // { opacity: 0.4 }` CSS rule — same dim-not-hide value (MOR-977), applied
-  // here to the lower row's own DOM group instead of the enclosing tile.
-  const LOWER_ROW_DIM_OPACITY = 0.4;
+  // { opacity: 0.4 }` CSS rule — same dim-not-hide value (MOR-977). Shared by
+  // BOTH independent groups below (`data-main-relevant` and
+  // `data-lower-relevant`) so the two dims can never drift apart into two
+  // different literals.
+  const DIM_OPACITY = 0.4;
 
   function lowerTickX(fraction: number): number {
     return BAR_X + fraction * BAR_WIDTH;
@@ -437,6 +452,13 @@
   data-variant={variant}
   data-lower-fault={lowerScale ? (lowerScale.fault ? 'true' : 'false') : undefined}
 >
+  <!-- Main-bar content (MOR-2250 fix cycle 2): everything that is NOT the
+       lower-scale row lives in this `<g>` (and its sibling further below,
+       split only because the lower row sits between them in the markup) —
+       dimmed by the `relevant` PROP, independent of `lowerScale.relevant`.
+       This group is never an ancestor of `data-lower-relevant` below (nor
+       the reverse), so the two opacities cannot compose. -->
+  <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
   <!-- Container background -->
   <rect
     x="0" y="0" width="600" height={TOTAL_HEIGHT}
@@ -526,6 +548,7 @@
       />
     {/if}
   {/each}
+  </g>
 
   <!-- Lower scale row (MOR-2250, PR 2 of 2): label + ticks are structural —
        they render whenever `lowerScale` is present at all, independent of
@@ -533,16 +556,18 @@
        RX/TX. Only the fill segments below (and their color) vary with the
        reading. -->
   {#if lowerScale}
-    <!-- MOR-2250 fix cycle: the row's OWN dim, scoped to this `<g>` only —
-         independent of the S-meter tile's `data-relevant` (which dims the
-         WHOLE tile, including this row, via CSS on the enclosing
-         `.meter-tile` in MetersSurface.svelte). Structural elements below
+    <!-- MOR-2250 fix cycle 2: the row's OWN dim, scoped to this `<g>` only —
+         a SIBLING of the main-bar `<g data-main-relevant>` above/below, never
+         its ancestor or descendant. `lowerScale.relevant` and the `relevant`
+         prop are independent facts (`meters.swr.relevant` vs
+         `meters.signal.relevant`); each group reads only its own, so the two
+         opacities can never multiply together. Structural elements below
          still render unconditionally on `lowerScale`'s presence per the
          layout-stability note above `lowerScale` in Props; only their
          opacity, not their presence, depends on `relevant`. -->
     <g
       data-lower-relevant={lowerScale.relevant ? 'true' : 'false'}
-      opacity={lowerScale.relevant ? 1 : LOWER_ROW_DIM_OPACITY}
+      opacity={lowerScale.relevant ? 1 : DIM_OPACITY}
     >
       <text
         data-lower-row-label
@@ -619,6 +644,12 @@
     </g>
   {/if}
 
+  <!-- Main-bar content, part 2 (MOR-2250 fix cycle 2): the peak line and
+       value readout are main-bar content too — split from the group above
+       only because `lowerScale`'s own `<g>` sits between them in the
+       markup. Same `relevant` prop, same sibling relationship to
+       `data-lower-relevant`. -->
+  <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
   <!-- Peak hold indicator -->
   {#if showPeak}
     <line
@@ -651,6 +682,7 @@
     text-anchor="middle"
     dominant-baseline="central"
   >{displayDbm}</text>
+  </g>
 </svg>
 
 <style>

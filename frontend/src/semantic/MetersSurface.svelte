@@ -137,19 +137,17 @@
    * branch on TX state here.
    *
    * `relevant` is passed through unchanged as its own descriptor field —
-   * NOT translated into a dim here. Fix cycle note: this row used to dim
-   * with the S-meter tile's OWN `data-relevant` (`meters.signal.relevant`,
-   * set on the mount below), which is a different field and was backwards
-   * for SWR: `meters.signal.relevant` is roughly `!onTx`-shaped (see the
-   * adapter's fail-closed TX-relevance doctrine, `deriveMeters` in
-   * `radio-view-model-adapter.ts`), while `meters.swr.relevant` fails
-   * CLOSED the other way — true in every rfState except a positively
-   * observed RX, which is also every state SWR has a reading (including a
-   * fault) at all. So the tile's relevance dimmed the row exactly when it
-   * mattered most, and left it bright when SWR isn't even observed.
-   * `LinearSMeter` now dims the lower row's own DOM group off THIS field
-   * instead — see `LowerScaleDescriptor.relevant` and the
-   * `<g data-lower-relevant>` wrapper in `LinearSMeter.svelte`.
+   * NOT translated into a dim here. Fix cycle 2: `meters.swr.relevant` and
+   * `meters.signal.relevant` are DIFFERENT facts (`meters.signal.relevant`
+   * is roughly `!onTx`-shaped per the adapter's fail-closed TX-relevance
+   * doctrine, `deriveMeters` in `radio-view-model-adapter.ts`, while
+   * `meters.swr.relevant` fails CLOSED the other way), and each now drives
+   * its own independent, non-nested `<g>` inside `LinearSMeter`: this field
+   * feeds `LowerScaleDescriptor.relevant` → `<g data-lower-relevant>`, while
+   * `meters.signal.relevant` feeds the separate `relevant` prop →
+   * `<g data-main-relevant>` (see the `<LinearSMeter>` mount below). Neither
+   * group is an ancestor of the other, so the two opacities can never
+   * compound — each field's dim reaches exactly its own row.
    */
   function swrLowerScale(f: MeterField): LowerScaleDescriptor {
     const isObserved = observed(f);
@@ -231,6 +229,7 @@
             value={rawOf(meters.signal)} label="S" compact
             display={display?.display ?? undefined}
             lowerScale={present(meters.swr) ? swrLowerScale(meters.swr) : undefined}
+            relevant={meters.signal.relevant}
           />
         {:else}
           <span class="meter-unknown">S ?</span>
@@ -269,7 +268,15 @@
   .meter-tile { display: block; }
   /* Dim, never hide: an irrelevant meter keeps its box so the dock cannot
      reflow across an RX/TX transition. Opacity survives forced-colors, and it
-     is a second channel beside `data-relevant`, never the only one. */
-  .meter-tile[data-relevant='false'] { opacity: 0.4; }
+     is a second channel beside `data-relevant`, never the only one.
+     MOR-2250 fix cycle 2: `data-meter="signal"` is EXCLUDED here. That tile
+     wraps `LinearSMeter`, which nests its own independently-relevant lower
+     row (`meters.swr.relevant`) inside the same tile — dimming the tile via
+     this ancestor rule would compound with the row's own opacity (CSS
+     opacity multiplies down the DOM). The S-meter tile still carries
+     `data-relevant` (read by tests and tooling below), but the fact now
+     drives opacity through the `relevant` prop `LinearSMeter` applies to its
+     own sibling `<g>` groups instead of through this CSS rule. */
+  .meter-tile[data-relevant='false']:not([data-meter='signal']) { opacity: 0.4; }
   .meter-unknown { font-weight: 700; }
 </style>

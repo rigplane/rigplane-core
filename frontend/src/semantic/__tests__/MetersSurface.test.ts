@@ -874,3 +874,128 @@ describe('SWR relevance drives the shared row\'s own dim (MOR-2250 fix cycle)', 
     });
   });
 });
+
+// ── 14. Fix cycle 2: the main bar and the SWR row dim through independent, ──
+//        non-compounding sibling groups (verifier-diagnosed compounding bug)
+//
+// The verifier proved (pixel measurement on real baseline PNGs, plus a
+// compiled-CSS-selector check) that nesting the SWR row's own `<g opacity>`
+// INSIDE the S-meter tile — while that tile ALSO carried the shared
+// `.meter-tile[data-relevant='false'] { opacity: 0.4 }` rule — composes
+// multiplicatively: RX landed at tile(1.0) * row(0.4) = 0.4, TX landed at
+// tile(0.4) * row(1.0) = 0.4. The row could never reach full opacity in ANY
+// state, in both the pre-fix code AND the first fix attempt (ae09a6b1),
+// whose own tests asserted each group's attribute correctly IN ISOLATION —
+// each group's own `opacity` attribute was already right in ae09a6b1, so an
+// attribute-only test stays green through the still-broken composed result;
+// only the composed/effective state (CSS on an ancestor PLUS opacity on a
+// descendant) exposes the bug, and that is the state proving this fix cycle
+// covers.
+//
+// jsdom does not apply a mounted Svelte component's own scoped `<style>`
+// block to `getComputedStyle` (confirmed empirically here, and already
+// documented as a known limitation by the F4 pattern in
+// `mor1536-armed-adoption.test.ts`), so block (A) below injects the file's
+// REAL `<style>` text as a literal `<style>` tag — the same technique — to
+// get a genuine cascade computation rather than reading one group's own
+// attribute in isolation.
+describe('main-bar and SWR-row opacity are independent, non-compounding channels (MOR-2250 fix cycle 2)', () => {
+  // ── (A) The composed/effective state: does the shared ancestor CSS rule ──
+  //     actually reach the S-meter tile? This is the one jsdom CAN answer
+  //     with a genuine cascade, because it is a real CSS rule (unlike the
+  //     `<g opacity>` SVG presentation attributes below, which jsdom's
+  //     computed style does not resolve at all — verified empirically).
+  describe('the shared .meter-tile CSS rule (real cascade, F4-pattern injection)', () => {
+    let styleEl: HTMLStyleElement;
+    beforeEach(() => {
+      const raw = readFileSync('src/semantic/MetersSurface.svelte', 'utf8');
+      const start = raw.indexOf('<style>') + '<style>'.length;
+      const end = raw.indexOf('</style>');
+      styleEl = document.createElement('style');
+      styleEl.textContent = raw.slice(start, end);
+      document.head.appendChild(styleEl);
+    });
+    afterEach(() => { styleEl.remove(); });
+
+    // Positive control: an ordinary bar tile (not excluded) still dims from
+    // this rule — proves the injected CSS and selector matching are real,
+    // so the negative result below is not just "nothing ever matches".
+    it('dims an ordinary irrelevant bar tile (power) through the shared rule', () => {
+      const view = withField(base(), 'power', { relevant: false });
+      withSurface(view, (s) => {
+        expect(s.tile('power')!.dataset.relevant).toBe('false');
+        expect(getComputedStyle(s.tile('power')!).opacity).toBe('0.4');
+      });
+    });
+
+    // MUTATION KILLED: reverting the CSS selector to
+    // `.meter-tile[data-relevant='false']` (dropping the
+    // `:not([data-meter='signal'])` qualifier) — the S-meter tile's computed
+    // opacity becomes '0.4' again, reinstating the ancestor half of the
+    // compounding bug. Verified by hand: with the qualifier removed, this
+    // assertion observes '0.4' instead of the empty string below.
+    it('does not dim the S-meter tile through the shared rule any more, even though data-relevant is false', () => {
+      withSurface(base('transmitting'), (s) => {
+        const tile = s.tile('signal')!;
+        expect(tile.dataset.relevant).toBe('false'); // block 3's pin still holds: the fact reaches the DOM
+        expect(getComputedStyle(tile).opacity).not.toBe('0.4');
+      });
+    });
+  });
+
+  // ── (B) Each group's own opacity attribute reads off the CORRECT fact ───
+  //     (`getAttribute`, not `getComputedStyle` — jsdom does not resolve SVG
+  //     presentation attributes into computed style, verified empirically:
+  //     `getComputedStyle(g).opacity` returns '' for every `<g opacity=...>`
+  //     here regardless of the actual attribute).  Combined with (C) below
+  //     (the two groups are siblings, never nested), a correct value on each
+  //     group's OWN attribute plus no nesting is the full non-compounding
+  //     guarantee: nothing else remains that COULD multiply them.
+  //
+  // MUTATION KILLED: feeding `meters.swr.relevant` into the main-bar group
+  // or `meters.signal.relevant` into the lower-row group (a field swap) —
+  // `base('transmitting')` gives them opposite values (signal.relevant=
+  // false, swr.relevant=true; `withMeters` in fixtures/topologies.ts), so a
+  // swap flips both assertions below.
+  it('drives each group\'s own opacity attribute from its own fact, never the other one\'s', () => {
+    const view = base('transmitting');
+    expect(view.meters!.signal.relevant).toBe(false);
+    expect(view.meters!.swr.relevant).toBe(true);
+    withSurface(view, (s) => {
+      const mainGroup = s.signalSvg()!.querySelector('[data-main-relevant]')!;
+      const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
+      expect(mainGroup.getAttribute('data-main-relevant')).toBe('false');
+      expect(mainGroup.getAttribute('opacity')).toBe('0.4');
+      expect(lowerGroup.getAttribute('data-lower-relevant')).toBe('true');
+      expect(lowerGroup.getAttribute('opacity')).toBe('1');
+    });
+  });
+
+  it('reverses correctly while receiving (the complementary fact assignment)', () => {
+    const view = base('receiving');
+    expect(view.meters!.signal.relevant).toBe(true);
+    expect(view.meters!.swr.relevant).toBe(false);
+    withSurface(view, (s) => {
+      const mainGroup = s.signalSvg()!.querySelector('[data-main-relevant]')!;
+      const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
+      expect(mainGroup.getAttribute('opacity')).toBe('1');
+      expect(lowerGroup.getAttribute('opacity')).toBe('0.4');
+    });
+  });
+
+  // ── (C) Structural guarantee: neither group is an ancestor of the other ──
+  // MUTATION KILLED: nesting the lower-row `<g>` back inside the main-bar
+  // `<g>` (or vice versa) — `Node.contains()` would then report one group
+  // containing the other, which this test forbids in both directions. This
+  // is the property the fix is actually built on: with no ancestor
+  // relationship between the two, CSS opacity compounding is structurally
+  // impossible, not just avoided by the current attribute values.
+  it('renders data-main-relevant and data-lower-relevant as siblings, neither containing the other', () => {
+    withSurface(base('transmitting'), (s) => {
+      const mainGroup = s.signalSvg()!.querySelector('[data-main-relevant]')!;
+      const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
+      expect(mainGroup.contains(lowerGroup)).toBe(false);
+      expect(lowerGroup.contains(mainGroup)).toBe(false);
+    });
+  });
+});
