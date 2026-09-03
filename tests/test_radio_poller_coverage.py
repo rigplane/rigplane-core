@@ -35,6 +35,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
@@ -47,6 +48,7 @@ from rigplane.core.command_service import (
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.exceptions import CommandError
+from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.runtime._state_queries import build_state_queries
@@ -950,6 +952,119 @@ async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() 
         rid in {r.id for r in scheduler.pending_requests()}
         for rid in poller._acquisition_healthy_grace_started  # noqa: SLF001
     )
+
+
+class _SwitchableAcquisitionExecutor:
+    """Sends one path per pass, or raises once armed with an error."""
+
+    def __init__(self) -> None:
+        self.error: BaseException | None = None
+        self.calls = 0
+
+    async def execute(
+        self,
+        request: object,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> object:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        unsent = [p for p in getattr(request, "paths") if p not in already_sent_paths]
+        return SimpleNamespace(
+            sent_paths=(unsent[0],),
+            failed_paths=(),
+            failure_reason="",
+        )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ConnectionError("link down"), ConnectionError),
+        (RadioConnectionError("link down"), RadioConnectionError),
+        (TimeoutError("civ response timed out"), TimeoutError),
+        (
+            RigplaneTimeoutError("CI-V transport recovery timed out"),
+            RigplaneTimeoutError,
+        ),
+        (RuntimeError("something nobody listed"), RuntimeError),
+    ],
+    ids=[
+        "builtin-connection",
+        "rigplane-connection",
+        "builtin-timeout",
+        "rigplane-timeout",
+        "outside-any-list",
+    ],
+)
+@pytest.mark.asyncio
+async def test_send_query_still_raises_any_executor_failure_out_of_the_drain(
+    error: BaseException, expected: type[BaseException]
+) -> None:
+    """An executor failure must still reach ``_run``, whatever its type.
+
+    ``_run`` has no other way to learn the link is down: the
+    ``(ConnectionError, RadioConnectionError)`` branch that raises ``_backoff``,
+    MOR-1440's dead-serial-link branch (any exception plus a disconnected
+    radio), and the reconnection probe that clears ``_backoff`` and logs
+    ``connection restored`` all key off whether ``_send_query()`` raised. Once a
+    scheduler is attached ``_send_query`` has no other body, so a drain that
+    swallowed these would make the probe always succeed and announce a restored
+    connection to a dead radio.
+
+    The ``outside-any-list`` case is the criterion, not a bonus: what must
+    propagate is *an executor failure*, not four enumerated types. A type list
+    here would be a hand-maintained list at a boundary that nothing derives and
+    nothing reddens when a new raise site appears downstream.
+
+    Deliberately does NOT mock ``_send_query``: the two existing backoff tests
+    replace it with an ``AsyncMock``, so they pin ``_run``'s handlers and cannot
+    see it stop raising.
+    """
+
+    radio = _healthy_radio(last_civ=300.0)
+    first = FieldPath.receiver("main", "meters", "s_meter")
+    second = FieldPath.receiver("main", "meters", "po_meter")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(first, second))
+    radio._acquisition_scheduler = scheduler
+    executor = _SwitchableAcquisitionExecutor()
+    recorder = StateDiagnosticsRecorder(enabled=True)
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+        diagnostics=recorder,
+    )
+
+    with patch("rigplane.web.radio_poller.time.monotonic", return_value=300.0):
+        # Pass 1 leaves a real, partially-sent ledger entry -- written by the
+        # drain, not seeded here, so the state under test is one production
+        # can reach.
+        _tick_cadence(poller, now=300.0)
+        await poller._send_query()  # noqa: SLF001
+        ledger = dict(poller._acquisition_in_flight)  # noqa: SLF001
+        assert ledger, "pass 1 dispatched nothing, so pass 2 proves nothing"
+
+        executor.error = error
+        with pytest.raises(expected):
+            await poller._send_query()  # noqa: SLF001
+
+    # Recorded on the way out -- the migration's addition -- and the ledger
+    # entry survives, because raising skips the drain's forget step exactly as
+    # the pre-change code left it untouched.
+    reported = [
+        event.details
+        for event in recorder.events()
+        if event.details.get("reason") == "acquisition_executor_error"
+    ]
+    assert [d["error_type"] for d in reported] == [type(error).__name__]
+    assert [d["error"] for d in reported] == [str(error)]
+    assert scheduler.diagnostics()["failureCountByReason"] == {
+        "acquisition_executor_error": 1
+    }
+    assert poller._acquisition_in_flight == ledger  # noqa: SLF001
 
 
 @pytest.mark.asyncio

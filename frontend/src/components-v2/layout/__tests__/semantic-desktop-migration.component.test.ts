@@ -292,8 +292,12 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
     expect(t.querySelector('.content-right .right-sidebar')).not.toBeNull();
     expect(t.querySelector('.center-column .spectrum-slot')).not.toBeNull();
     expect(t.querySelector('.spectrum-panel-stub')).not.toBeNull();
-    // Non-TX sidebar panels are untouched by the TX suppression.
-    expect(t.querySelector('[data-panel-id="rx-audio"]')).not.toBeNull();
+    // A non-TX sidebar panel is untouched by the TX suppression. `rx-audio`
+    // used to stand here beside `memory` and left the list in MOR-2231 batch 3,
+    // which declares that surface: the panel now retires on the `declared`
+    // channel, so it can no longer witness anything about `hideTxPanel`.
+    // `memory` still can — neither sidebar puts any `declared.has(...)` guard
+    // on it, so no manifest can retire it.
     expect(t.querySelector('[data-panel-id="memory"]')).not.toBeNull();
   });
 
@@ -301,9 +305,16 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
   // branch, which also guards CW. The suppression is TX-panel-scoped by
   // construction, but nothing pinned it — `hasCapability` is mocked false
   // everywhere else in this file, so the CW block never renders to be checked.
+  //
+  // Runs on the `vfo`-only probe, not on `sdr-test`: MOR-2231 batch 3 declares
+  // `cwKeyer` there, so `CwPanel` now retires on the `declared` channel and
+  // `sdr-test` can no longer separate the two suppressions. The probe restores
+  // exactly the configuration the mutation needs — `semanticDeck` true, so
+  // `hideTxPanel` is on, and no `cw-keyer` zone, so only the TX branch could
+  // remove the CW panel.
   it('keeps the CW panel, which shares the sidebar\'s TX branch', () => {
     vi.mocked(hasCapability).mockImplementation((tag: string) => tag === 'cw');
-    const t = render('sdr-test');
+    const t = render(VFO_ONLY);
     expect(t.querySelector('[data-panel-id="cw"]')).not.toBeNull();
     expect(t.querySelector('[data-panel-id="tx"]')).toBeNull();
   });
@@ -724,6 +735,446 @@ describe("the SDR face's five control families are zone-owned (MOR-2231, batch 2
     expect([...t.querySelectorAll('.band-tab')].filter((b) => b.textContent?.trim() === 'HAM').length)
       .toBe(0);
     expect(t.querySelectorAll('[data-testid="band-choices"]').length).toBe(1);
+  });
+});
+
+/**
+ * MOR-2231 (step 1, batch 3) — the SDR face's RIGHT-COLUMN families, at the
+ * RENDER level. Same two effects and the same shape as the batch-2 describe
+ * above; only the families and the odd-one-out differ.
+ *
+ * `sdrTestLayout` declares `rx-audio`, `dsp`, `cw-keyer` and `tx-aux`.
+ *
+ *   1. ZONE HOSTS. All four already mounted on this face BARE, through the
+ *      single composition's `zoned()` calls (each takes the default
+ *      `allowBare`), so the declaration moves each inside a `[data-zone-id]`
+ *      element. Read against a resolved plan — `zoneOwning()` reads the PLAN.
+ *   2. SUPPRESSION, for THREE of the four. `declared.has(<surface>)` retires
+ *      ten legacy hosts, which reads the MANIFEST and so needs no plan.
+ *
+ * `txAux` IS THE ODD ONE OUT, and more sharply than `band` was in batch 2:
+ * `band` at least flips a prop, while no `declared.has('txAux')` predicate
+ * exists on any host, so declaring `tx-aux` retires nothing whatever. That is
+ * a negative, so it gets a row that can actually fail: the last case reads the
+ * whole panel inventory before and after and asserts the delta is EXACTLY the
+ * ten hosts below — an eleventh retirement, from a `txAux` guard added later,
+ * reddens it. The inventory covers the two sidebars and the settings modal,
+ * which with `StatusBar` (it reads only `scopeDisplay`) and `SpectrumPanel`
+ * (only `scopeControls`) are every consumer `RadioLayout` hands `declared` to.
+ *
+ * THE CONTROL IS A REGISTERED MANIFEST, for the reason the batch-2 describe
+ * states: suppression derives from `getLayout(skinId)`, so only a separately
+ * registered id can produce the "before" state.
+ */
+describe("the SDR face's right-column families are zone-owned (MOR-2231, batch 3)", () => {
+  const LEFT_ALL = ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band',
+    'antenna', 'scan', 'rx-audio', 'dsp', 'tx', 'cw', 'memory'];
+  const RIGHT_ALL = ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'];
+
+  /** `sdr-test`'s zones as they stood BEFORE this batch — the "before" half of
+   *  every row below, registered so it is a real mount. */
+  const PRE_BATCH_3 = 'sdr-pre-batch-3-probe' as SkinId;
+  const PRE_BATCH_3_MANIFEST = probeManifest(PRE_BATCH_3, [
+    { id: 'receiver-deck', surfaces: ['vfo'] },
+    { id: 'rx-tx', surfaces: ['rxTx'] },
+    { id: 'meters', surfaces: ['meters'] },
+    { id: 'filter', surfaces: ['filter'] },
+    { id: 'rf-front-end', surfaces: ['rfFrontEnd'] },
+    { id: 'band', surfaces: ['band'] },
+    { id: 'antenna', surfaces: ['antenna'] },
+    { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
+  ], ['vfo', 'rxTx']);
+  registerLayout(PRE_BATCH_3_MANIFEST);
+
+  /** zone id → the surface testid it must own. */
+  const FOUR = [
+    ['rx-audio', 'rx-audio-surface'],
+    ['dsp', 'dsp-surface'],
+    ['cw-keyer', 'cw-keyer-surface'],
+    ['tx-aux', 'tx-aux-surface'],
+  ] as const;
+
+  /**
+   * The ten legacy hosts these declarations UNMOUNT on this face, as
+   * [label, container, panelId] so the selector and the inventory key below are
+   * both DERIVED from one list rather than hand-written twice. `tx-aux` is
+   * deliberately absent: it retires nothing, and the delta row is its pin.
+   *
+   * `AgcPanel` and the modal's `desktop-agc` are here under `dsp`, not a zone
+   * of their own: `DspSurface` owns the AGC leaf (5A/MOR-1290).
+   */
+  const RETIRED = [
+    ['left sidebar RX AUDIO', '.left-sidebar', 'rx-audio'],
+    ['right sidebar RX AUDIO', '.right-sidebar', 'rx-audio'],
+    ['left sidebar AGC', '.left-sidebar', 'agc'],
+    ['left sidebar DSP', '.left-sidebar', 'dsp'],
+    ['right sidebar DSP', '.right-sidebar', 'dsp'],
+    ['left sidebar CW', '.left-sidebar', 'cw'],
+    ['right sidebar CW', '.right-sidebar', 'cw'],
+    ['settings modal DSP', '.settings-modal', 'desktop-dsp'],
+    ['settings modal AGC', '.settings-modal', 'desktop-agc'],
+    ['settings modal CW', '.settings-modal', 'desktop-cw'],
+  ] as const;
+
+  const sel = (scope: string, panelId: string) => `${scope} [data-panel-id="${panelId}"]`;
+
+  /** Every legacy panel on screen, scoped by the container that owns it —
+   *  `rx-audio`/`dsp`/`cw` exist in BOTH sidebars, so a bare id set would
+   *  collapse the two halves of each pair into one entry. */
+  const inventory = (t: HTMLElement): string[] =>
+    ['.left-sidebar', '.right-sidebar', '.settings-modal']
+      .flatMap((scope) => [...t.querySelectorAll(`${scope} [data-panel-id]`)]
+        .map((el) => `${scope} ${el.getAttribute('data-panel-id')}`))
+      .sort();
+
+  /** Opens the settings modal — three of the ten retired hosts live there. */
+  function renderAll(skinId: SkinId): HTMLElement {
+    const target = render(skinId);
+    (target.querySelector('.settings-btn') as HTMLElement | null)?.click();
+    flushSync();
+    return target;
+  }
+
+  /** The zone-ELEMENT half needs the resolved plan in context — see the S8
+   *  describe's `renderWithPlan`. Takes the manifest, so the control resolves
+   *  ITS OWN plan. */
+  function renderWithPlan(skinId: SkinId, manifest: LayoutManifest): HTMLElement {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const plan = resolveSurfacePlan(manifest, DEFAULT_WORKSPACE);
+    mounted.push(mount(RadioLayout, {
+      target, props: { skinId },
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    }));
+    flushSync();
+    return target;
+  }
+
+  beforeEach(() => {
+    // A radio that fires all four evidence gates. Every tag is here because a
+    // NAMED gate in `radio-view-model-adapter.ts` reads it; a fixture that
+    // missed one would make this whole describe pass vacuously, which is the
+    // failure the batch-2 draft nearly shipped:
+    //   `deriveRxAudio` — a non-null audio snapshot (the harness's fixed
+    //                     `runtime.audio`) AND one of af_level / audio /
+    //                     dual_rx / MOD-input routing;
+    //   `deriveDsp`     — any of nr / nb / notch / agc;
+    //   `deriveCwKeyer` — the `cw` tag, and nothing else (break_in and apf
+    //                     only populate leaves once that gate has opened);
+    //   `deriveTxAux`   — the `tx` tag `capsFor` already supplies, PLUS
+    //                     evidence: any of tuner / vox / compressor / monitor
+    //                     / drive_gain, or an observed TX-aux state field.
+    h.caps = {
+      ...(capsFor('2/main_sub') as object),
+      capabilities: [
+        'scope', 'audio', 'tx', 'dual_rx',
+        'af_level',
+        'nr', 'nb', 'notch', 'agc',
+        'cw', 'break_in', 'apf',
+        'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
+      ],
+    } as Capabilities;
+    // The legacy CW panels read the capabilities STORE, not `runtime.caps`;
+    // without this they never mount and their two rows would assert nothing.
+    vi.mocked(hasCapability).mockImplementation((tag: string) => tag === 'cw');
+    localStorage.setItem('rigplane:panel-order', JSON.stringify(LEFT_ALL));
+    localStorage.setItem('rigplane:right-panel-order', JSON.stringify(RIGHT_ALL));
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  // NON-VACUITY, half one: under this fixture the "before" face really does
+  // render all four surfaces AND all ten legacy hosts. Presence is asserted
+  // FIRST, so a dead evidence gate fails here rather than passing silently
+  // through every suppression row below.
+  it('the pre-batch manifest renders all four surfaces and all ten legacy hosts', () => {
+    const t = renderAll(PRE_BATCH_3);
+    for (const [, testid] of FOUR) {
+      expect(t.querySelector(`[data-testid="${testid}"]`), testid).not.toBeNull();
+    }
+    for (const [host, scope, panelId] of RETIRED) {
+      expect(t.querySelector(sel(scope, panelId)), host).not.toBeNull();
+    }
+  });
+
+  // NON-VACUITY, half two: on the "before" face those four surfaces mount BARE.
+  // This is the state the declaration replaces, and the row that makes the zone
+  // assertions below a change rather than a restatement.
+  it.each(FOUR)('%s: the pre-batch manifest mounts its surface bare, in no zone', (zoneId, testid) => {
+    const t = renderWithPlan(PRE_BATCH_3, PRE_BATCH_3_MANIFEST);
+    const el = t.querySelector(`[data-testid="${testid}"]`);
+    expect(el, testid).not.toBeNull();
+    expect(el!.closest('.surface-zone')).toBeNull();
+    expect(t.querySelector(`[data-zone-id="${zoneId}"]`)).toBeNull();
+  });
+
+  // EFFECT 1 — each declared zone binds a real element that OWNS its surface,
+  // and there is no second bare mount beside it.
+  it.each(FOUR)('%s: sdr-test hosts its surface inside the declared zone element', (zoneId, testid) => {
+    const t = renderWithPlan('sdr-test', sdrTestLayout);
+    const el = t.querySelector(`[data-testid="${testid}"]`);
+    expect(el, `${testid} on screen`).not.toBeNull();
+    // Containment read from the SURFACE upward, not "some element with this id
+    // exists somewhere": the surface's own wrapper must be the declared zone.
+    const zone = el!.closest('.surface-zone');
+    expect(zone, `${testid} inside a zone element`).not.toBeNull();
+    expect(zone!.getAttribute('data-zone-id')).toBe(zoneId);
+    expect(t.querySelectorAll(`[data-testid="${testid}"]`).length).toBe(1);
+  });
+
+  // EFFECT 2 — the batch's principal effect. Each of the ten legacy hosts is
+  // gone on `sdr-test`, under the identical fixture that renders all ten on the
+  // pre-batch face. `CwKeyerSurface` becoming the SOLE break-in affordance is
+  // the safety-critical half (MOR-1310), so its presence is pinned separately
+  // below rather than left to follow from `CwPanel`'s absence.
+  it.each(RETIRED)('[%s] is unmounted on sdr-test', (host, scope, panelId) => {
+    expect(renderAll('sdr-test').querySelector(sel(scope, panelId)), host).toBeNull();
+  });
+
+  // THE TX-AUX ASYMMETRY — the family that retires NOTHING, given a row that
+  // can fail. The panel inventory loses exactly the ten hosts above and gains
+  // none, so a `declared.has('txAux')` guard added to either sidebar or to the
+  // settings modal would redden this even though every row above stays green.
+  it('declaring tx-aux retires nothing: the inventory delta is exactly the ten', () => {
+    const before = inventory(renderAll(PRE_BATCH_3));
+    const after = inventory(renderAll('sdr-test'));
+    expect(before.length).toBeGreaterThan(RETIRED.length);
+    expect(before.filter((p) => !after.includes(p)))
+      .toEqual(RETIRED.map(([, scope, panelId]) => `${scope} ${panelId}`).sort());
+    expect(after.filter((p) => !before.includes(p))).toEqual([]);
+    // ...and the surface it DOES place is on screen exactly once, which is the
+    // whole of what this declaration buys.
+    expect(after.filter((p) => p.endsWith(' tx-aux'))).toEqual([]);
+    expect(renderAll('sdr-test').querySelectorAll('[data-testid="tx-aux-surface"]').length).toBe(1);
+  });
+
+  // SAFETY-CRITICAL (MOR-1310), stated positively. `CwPanel` is gone from both
+  // sidebars and the modal, so `CwKeyerSurface` is now the only break-in
+  // affordance on this face — zero would be worse than the double it replaces.
+  it('leaves CwKeyerSurface as the sole break-in affordance, and one key authority', () => {
+    const t = renderAll('sdr-test');
+    expect(t.querySelectorAll('[data-testid="cw-keyer-surface"]').length).toBe(1);
+    expect(t.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+  });
+});
+
+/**
+ * MOR-2231 (step 1, batch 4) — the SDR face's CENTRE-TOP pair, at the RENDER
+ * level, and the last two of the fourteen. Same two effects as the batch-2 and
+ * batch-3 describes above, but here BOTH families depart from that shape.
+ *
+ * `sdrTestLayout` declares `scope-display` and `scope-controls`.
+ *
+ *   1. ZONE HOSTS. Both already mounted on this face BARE, through the single
+ *      composition's `zoned()` calls — both take the default `allowBare` on
+ *      THAT path (the dual composition passes `false` for `scopeControls`,
+ *      which is the cockpit's path, not this one). Read against a resolved
+ *      plan: `zoneOwning()` reads the PLAN.
+ *   2. SUPPRESSION for ONE of the two, and a PROP for the other.
+ *
+ * `scopeDisplay` retires exactly ONE host: `StatusBar`'s scope indicator,
+ * `!declared.has('scopeDisplay')`. Its own
+ * render gate is `hasAnyScope()`, which this file mocks FALSE by default — so
+ * the fixture below turns it on. Without that the suppression row would pass
+ * on an absence it did not cause.
+ *
+ * `scopeControls` unmounts NOTHING. Unlike `txAux` a predicate does exist, but
+ * it is a PROP: `RadioLayout` forwards
+ * `hideScopeControls={declared.has('scopeControls')}` to `SpectrumPanel`, which
+ * keeps rendering. That is batch 2's `band` shape, reached through the CENTRE
+ * column's `{#if hasSpectrum()}` rather than a sidebar's `drag.order`. WHICH
+ * toolbar controls that prop removes is proved in
+ * `SpectrumToolbar.component.test.ts`'s S6b-1 pins, not here: this file mocks
+ * `SpectrumPanel` with a stub that only records the prop.
+ *
+ * THE FIXTURE NAMES THE GATE THAT READS EACH FIELD — and the two gates read
+ * DIFFERENT fields of the same capabilities object, which is why one fixture
+ * satisfying one of them proves nothing about the other:
+ *   `deriveScopeControls` — `hasCap(caps, 'scope')`, the `capabilities` ARRAY;
+ *   `deriveScopeDisplay`  — `hasAnyScopeCap(caps)`, the `scope` BOOLEAN (or
+ *                           `scopeSource === 'audio_fft'`), AND a non-null
+ *                           scope-display snapshot.
+ * `capsFor('2/main_sub')` supplies both capability shapes and the harness's
+ * fixed `runtime.defaultScopeStatus` supplies the snapshot, so no extra caps
+ * fixture is needed here. Presence is still asserted FIRST, because a fixture
+ * that satisfied only one gate would leave half this describe vacuous.
+ *
+ * THE CONTROL IS A REGISTERED MANIFEST, for the reason the batch-2 describe
+ * states: suppression derives from `getLayout(skinId)`, so only a separately
+ * registered id can produce the "before" state.
+ */
+describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () => {
+  /** `sdr-test`'s zones as they stood BEFORE this batch — the "before" half of
+   *  every row below, registered so it is a real mount. */
+  const PRE_BATCH_4 = 'sdr-pre-batch-4-probe' as SkinId;
+  const PRE_BATCH_4_MANIFEST = probeManifest(PRE_BATCH_4, [
+    { id: 'receiver-deck', surfaces: ['vfo'] },
+    { id: 'rx-tx', surfaces: ['rxTx'] },
+    { id: 'meters', surfaces: ['meters'] },
+    { id: 'filter', surfaces: ['filter'] },
+    { id: 'rf-front-end', surfaces: ['rfFrontEnd'] },
+    { id: 'band', surfaces: ['band'] },
+    { id: 'antenna', surfaces: ['antenna'] },
+    { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
+    { id: 'rx-audio', surfaces: ['rxAudio'] },
+    { id: 'dsp', surfaces: ['dsp'] },
+    { id: 'cw-keyer', surfaces: ['cwKeyer'] },
+    { id: 'tx-aux', surfaces: ['txAux'] },
+  ], ['vfo', 'rxTx']);
+  registerLayout(PRE_BATCH_4_MANIFEST);
+
+  /** zone id → the surface testid it must own. */
+  const TWO = [
+    ['scope-display', 'scope-display-surface'],
+    ['scope-controls', 'scope-controls-surface'],
+  ] as const;
+
+  /** The `scopeDisplay` twin: the status bar's own scope indicator. */
+  const SCOPE_INDICATOR = '.status-indicators [title^="Scope WebSocket"]';
+  /** The `scopeControls` twin's host — mocked by `SpectrumPanelStub`. */
+  const SPECTRUM = '.content-center .spectrum-panel-stub';
+
+  /**
+   * FIVE selectors, and no more: `[data-panel-id]` inside each of the two
+   * sidebars and the settings modal (scoped per container, since
+   * `rx-audio`/`dsp`/`cw` exist in both sidebars), plus this batch's own two
+   * hosts, which carry no `data-panel-id`. It is NOT an inventory of
+   * everywhere `declared` reaches: it does not scan `.bottom-dock`
+   * (`MetersDockPanel`, retired on `declared.has('meters')`), the legacy VFO
+   * header (`declared.has('vfo')`), the status bar's other indicators, or
+   * `BandSelector`'s `hamBands={!declared.has('band')}` prop. `BEFORE_HOSTS`
+   * below pins what it does find.
+   */
+  const hosts = (t: HTMLElement): string[] => [
+    ...['.left-sidebar', '.right-sidebar', '.settings-modal'].flatMap(
+      (scope) => [...t.querySelectorAll(`${scope} [data-panel-id]`)]
+        .map((el) => `${scope} ${el.getAttribute('data-panel-id')}`),
+    ),
+    ...(t.querySelector(SCOPE_INDICATOR) ? ['status-bar scope-indicator'] : []),
+    ...(t.querySelector(SPECTRUM) ? ['content-center spectrum-panel'] : []),
+  ].sort();
+
+  /** Opens the settings modal — the inventory above reads it. */
+  function renderAll(skinId: SkinId): HTMLElement {
+    const target = render(skinId);
+    (target.querySelector('.settings-btn') as HTMLElement | null)?.click();
+    flushSync();
+    return target;
+  }
+
+  /** The zone-ELEMENT half needs the resolved plan in context. Takes the
+   *  manifest, so the control resolves ITS OWN plan. */
+  function renderWithPlan(skinId: SkinId, manifest: LayoutManifest): HTMLElement {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const plan = resolveSurfacePlan(manifest, DEFAULT_WORKSPACE);
+    mounted.push(mount(RadioLayout, {
+      target, props: { skinId },
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    }));
+    flushSync();
+    return target;
+  }
+
+  beforeEach(() => {
+    // The status bar's scope indicator gates on `hasAnyScope()` BEFORE it
+    // consults `declared`, and this file mocks that false by default. Without
+    // this line the indicator is absent on both faces and its suppression row
+    // asserts an absence this batch did not cause.
+    vi.mocked(hasAnyScope).mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.mocked(hasAnyScope).mockReturnValue(false);
+  });
+
+  // NON-VACUITY, half one: under this fixture the "before" face really renders
+  // both surfaces AND both legacy hosts. Presence FIRST, so a dead view-model
+  // gate fails here rather than passing silently through the rows below.
+  it('the pre-batch manifest renders both surfaces and both legacy hosts', () => {
+    const t = renderAll(PRE_BATCH_4);
+    for (const [, testid] of TWO) {
+      expect(t.querySelector(`[data-testid="${testid}"]`), testid).not.toBeNull();
+    }
+    expect(t.querySelector(SCOPE_INDICATOR), 'status bar scope indicator').not.toBeNull();
+    expect(t.querySelector(SPECTRUM), 'spectrum panel').not.toBeNull();
+    expect(t.querySelector(SPECTRUM)!.getAttribute('data-hide-scope-controls')).toBe('false');
+  });
+
+  // NON-VACUITY, half two: on the "before" face both surfaces mount BARE. This
+  // is the state the declaration replaces, and what makes the zone assertions
+  // below a change rather than a restatement.
+  it.each(TWO)('%s: the pre-batch manifest mounts its surface bare, in no zone', (zoneId, testid) => {
+    const t = renderWithPlan(PRE_BATCH_4, PRE_BATCH_4_MANIFEST);
+    const el = t.querySelector(`[data-testid="${testid}"]`);
+    expect(el, testid).not.toBeNull();
+    expect(el!.closest('.surface-zone')).toBeNull();
+    expect(t.querySelector(`[data-zone-id="${zoneId}"]`)).toBeNull();
+  });
+
+  // EFFECT 1 — each declared zone binds a real element that OWNS its surface,
+  // and there is no second bare mount beside it.
+  it.each(TWO)('%s: sdr-test hosts its surface inside the declared zone element', (zoneId, testid) => {
+    const t = renderWithPlan('sdr-test', sdrTestLayout);
+    const el = t.querySelector(`[data-testid="${testid}"]`);
+    expect(el, `${testid} on screen`).not.toBeNull();
+    // Containment read from the SURFACE upward, not "some element with this id
+    // exists somewhere": the surface's own wrapper must be the declared zone.
+    const zone = el!.closest('.surface-zone');
+    expect(zone, `${testid} inside a zone element`).not.toBeNull();
+    expect(zone!.getAttribute('data-zone-id')).toBe(zoneId);
+    expect(t.querySelectorAll(`[data-testid="${testid}"]`).length).toBe(1);
+  });
+
+  // EFFECT 2a — the batch's ONE unmount, under the identical fixture that
+  // renders the indicator on the pre-batch face.
+  it('[status bar scope indicator] is unmounted on sdr-test', () => {
+    expect(renderAll('sdr-test').querySelector(SCOPE_INDICATOR)).toBeNull();
+  });
+
+  // EFFECT 2b — the other mechanism. `scope-controls` unmounts nothing: its
+  // host keeps rendering and only the prop flips. A mutation turning that prop
+  // into a mount gate reddens the first assertion; one dropping the forward
+  // reddens the second.
+  it('keeps the spectrum panel mounted on sdr-test and flips hideScopeControls', () => {
+    const t = renderAll('sdr-test');
+    expect(t.querySelectorAll(SPECTRUM).length).toBe(1);
+    expect(t.querySelector(SPECTRUM)!.getAttribute('data-hide-scope-controls')).toBe('true');
+  });
+
+  // THE ASYMMETRY, given a row that can fail — and given an explicit statement
+  // of how far it can see, because the reach is much smaller than "everywhere
+  // `declared` goes". Under this fixture `hosts()` finds exactly the seven
+  // entries below: batches 2 and 3 already retired most sidebar panels, and
+  // the rest of each sidebar's DEFAULT order never mounts here. So the first
+  // assertion pins the reachable set itself. A `declared.has('scopeControls')`
+  // mount gate placed on one of these seven reddens the delta; one placed
+  // anywhere else — the status bar's other indicators, `.bottom-dock`, the
+  // legacy VFO header, or a sidebar panel this fixture never renders — is
+  // INVISIBLE to this row. Both directions are measured, not argued.
+  const BEFORE_HOSTS = [
+    '.left-sidebar band',
+    '.right-sidebar memory',
+    '.settings-modal desktop-language',
+    '.settings-modal desktop-vfo-ops',
+    '.settings-modal desktop-workspace',
+    'content-center spectrum-panel',
+    'status-bar scope-indicator',
+  ];
+
+  it('the host delta is exactly the status bar scope indicator', () => {
+    const before = hosts(renderAll(PRE_BATCH_4));
+    const after = hosts(renderAll('sdr-test'));
+    expect(before).toEqual(BEFORE_HOSTS);
+    expect(before.filter((p) => !after.includes(p))).toEqual(['status-bar scope-indicator']);
+    expect(after.filter((p) => !before.includes(p))).toEqual([]);
+  });
+
+  // R9: the last two zones in the vocabulary add no key/unkey authority.
+  it('adds no key authority with the centre-top pair declared', () => {
+    expect(renderAll('sdr-test').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
 });
 
