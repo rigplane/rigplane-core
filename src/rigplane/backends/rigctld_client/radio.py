@@ -25,7 +25,10 @@ from ...core.state_pipeline_contracts import (
 )
 from ...core.tx_observation import TxStateReading
 from ...radio_state import RadioState
-from ...runtime._poller_types import canonicalize_level_command
+from ...runtime._poller_types import (
+    canonicalize_level_command,
+    execute_command_queue_entry,
+)
 from ...runtime.callable_support import supports_explicit_callable
 from ...runtime.managed_tx_state import (
     AbortOperation,
@@ -234,14 +237,9 @@ class RigctldClientObservationPoller:
             return ()
 
         successful: list["CommandQueueEntry"] = []
-        for entry in self._command_queue.drain_entries():
+
+        async def execute_entry(entry: "CommandQueueEntry") -> None:
             cmd = entry.command
-            if entry.future is not None and entry.future.cancelled():
-                logger.debug(
-                    "rigctld-client observation poller: skipping cancelled command %s",
-                    type(cmd).__name__,
-                )
-                continue
             capture = self._capture_provider_generation
             correlation = _readback_correlation_for_entry(
                 entry,
@@ -250,16 +248,28 @@ class RigctldClientObservationPoller:
             )
             try:
                 await self._execute_command(cmd)
-                successful.append(entry)
-                self._track_readback_entry(cmd, correlation)
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_result(None)
             except Exception as exc:
                 if correlation is not None:
                     self._finish_readbacks((correlation,), "rejected")
                 self._mark_queued_command_failed(entry, exc)
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_exception(exc)
+                raise
+            successful.append(entry)
+            self._track_readback_entry(cmd, correlation)
+
+        for _ in range(self._command_queue.pending_count):
+            entry = self._command_queue.take_entry()
+            if entry is None:
+                break
+            cmd = entry.command
+            if entry.future is not None and entry.future.cancelled():
+                logger.debug(
+                    "rigctld-client observation poller: skipping cancelled command %s",
+                    type(cmd).__name__,
+                )
+                continue
+            try:
+                await execute_command_queue_entry(entry, execute_entry)
+            except Exception:
                 logger.warning(
                     "rigctld-client observation poller: command %s failed",
                     type(cmd).__name__,
