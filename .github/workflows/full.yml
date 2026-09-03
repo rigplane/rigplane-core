@@ -273,10 +273,6 @@ jobs:
     timeout-minutes: 15
     env:
       UV_PYTHON: '3.13'
-      PROOF_ROOT: ${{ runner.temp }}/rigctld-observation-${{ github.run_id }}-${{ github.run_attempt }}
-      UV_CACHE_DIR: ${{ runner.temp }}/rigctld-observation-${{ github.run_id }}-${{ github.run_attempt }}/uv-cache
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/rigctld-observation-${{ github.run_id }}-${{ github.run_attempt }}/venv
-      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/rigctld-observation-${{ github.run_id }}-${{ github.run_attempt }}/setup-bytecode
     defaults:
       run:
         shell: bash
@@ -293,6 +289,13 @@ jobs:
           ref: 9b1a008441245057c60e73dd4ac3e846be8dd6d8
           fetch-depth: 0
           persist-credentials: false
+      - name: Set isolated paths from runner environment
+        run: |
+          proof_temp="$RUNNER_TEMP/rigctld-observation-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "PROOF_ROOT=$proof_temp" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$proof_temp/uv-cache" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$proof_temp/venv" >> "$GITHUB_ENV"
+          echo "PYTHONPYCACHEPREFIX=$proof_temp/setup-bytecode" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: false
