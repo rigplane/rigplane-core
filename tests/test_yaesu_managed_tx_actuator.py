@@ -11,6 +11,7 @@ import pytest
 from rigplane.backends.yaesu_cat.parser import format_command
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.command_spec import CatCommandSpec
+from rigplane.core.priority_exchange import ExchangeTier
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
@@ -69,7 +70,7 @@ async def test_managed_on_uses_profile_ptt_and_propagates_currency(
     radio._transport.write.assert_awaited_once_with(
         format_command(_PROFILE_TEMPLATES["set_ptt"].write, state="1"),
         is_current=current,
-        urgent=False,
+        tier=ExchangeTier.ORDINARY,
     )
     assert radio.radio_state.ptt is False
 
@@ -92,7 +93,7 @@ async def test_force_receive_uses_urgent_profile_ptt_without_claiming_observatio
     radio._transport.write.assert_awaited_once_with(
         format_command(_PROFILE_TEMPLATES["set_ptt"].write, state="0"),
         is_current=current,
-        urgent=True,
+        tier=ExchangeTier.FORCE_RELEASE,
     )
     assert radio.radio_state.ptt is True
 
@@ -126,7 +127,7 @@ async def test_managed_abort_uses_urgent_profile_command(
     radio._transport.write.assert_awaited_once_with(
         format_command(_PROFILE_TEMPLATES[profile_key].write, **params),
         is_current=current,
-        urgent=True,
+        tier=ExchangeTier.ABORT,
     )
 
 

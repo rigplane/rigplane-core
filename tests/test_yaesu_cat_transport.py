@@ -15,6 +15,7 @@ from rigplane.backends.yaesu_cat import (
     YaesuCatTransport,
 )
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected
+from rigplane.core.priority_exchange import ExchangeTier
 
 
 class FakeStreamReader:
@@ -60,8 +61,9 @@ class FakeStreamWriter:
 class BlockingFirstDrainWriter(FakeStreamWriter):
     """Hold the first frame on the wire while later exchanges queue."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, fail_first: bool = False) -> None:
         super().__init__()
+        self._fail_first = fail_first
         self.first_drain_entered = asyncio.Event()
         self.release_first_drain = asyncio.Event()
         self._drain_count = 0
@@ -71,6 +73,8 @@ class BlockingFirstDrainWriter(FakeStreamWriter):
         if self._drain_count == 1:
             self.first_drain_entered.set()
             await self.release_first_drain.wait()
+            if self._fail_first:
+                raise OSError("first provider write failed")
 
 
 @pytest.fixture
@@ -251,8 +255,12 @@ class TestYaesuCatTransport:
         ordinary_query = asyncio.create_task(transport.query("MD0;"))
         ordinary_write = asyncio.create_task(transport.write("FB000000002;"))
         await asyncio.sleep(0)
-        urgent_off = asyncio.create_task(transport.write("TX0;", urgent=True))
-        urgent_on = asyncio.create_task(transport.write("TX1;", urgent=True))
+        urgent_off = asyncio.create_task(
+            transport.write("TX0;", tier=ExchangeTier.URGENT)
+        )
+        urgent_on = asyncio.create_task(
+            transport.write("TX1;", tier=ExchangeTier.URGENT)
+        )
         await asyncio.sleep(0)
 
         assert writer.written == [b"FA000000001;"]
@@ -288,21 +296,78 @@ class TestYaesuCatTransport:
 
         active = asyncio.create_task(transport.write("FA000000001;"))
         await asyncio.wait_for(writer.first_drain_entered.wait(), 1)
-        cancelled = asyncio.create_task(transport.write("TX0;", urgent=True))
+        cancelled = asyncio.create_task(
+            transport.write("TX0;", tier=ExchangeTier.FORCE_RELEASE)
+        )
+        abort = asyncio.create_task(
+            transport.write("KY;", tier=ExchangeTier.ABORT)
+        )
         ordinary = asyncio.create_task(transport.write("FB000000002;"))
         await asyncio.sleep(0)
         cancelled.cancel()
         with pytest.raises(asyncio.CancelledError):
             await cancelled
+        await asyncio.sleep(0)
+
+        # Cancelling a queued higher-tier waiter must not release the active
+        # exchange or let any later waiter interleave with its wire frame.
+        assert writer.written == [b"FA000000001;"]
 
         writer.release_first_drain.set()
-        await asyncio.wait_for(asyncio.gather(active, ordinary), 1)
+        await asyncio.wait_for(asyncio.gather(active, abort, ordinary), 1)
         await asyncio.wait_for(transport.write("FC000000003;"), 1)
 
         assert writer.written == [
             b"FA000000001;",
+            b"KY;",
             b"FB000000002;",
             b"FC000000003;",
+        ]
+
+    async def test_force_release_overtakes_queued_aborts_after_provider_failure(
+        self,
+        mock_serial_connection: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        reader = FakeStreamReader([])
+        writer = BlockingFirstDrainWriter(fail_first=True)
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+        monkeypatch.setattr(transport, "_drain_responses", AsyncMock(return_value=0))
+
+        active = asyncio.create_task(transport.write("FA000000001;"))
+        await asyncio.wait_for(writer.first_drain_entered.wait(), 1)
+        stop_cw = asyncio.create_task(
+            transport.write("KY;", tier=ExchangeTier.ABORT)
+        )
+        stop_tune = asyncio.create_task(
+            transport.write("AC000;", tier=ExchangeTier.ABORT)
+        )
+        late_on = asyncio.create_task(transport.write("TX1;"))
+        await asyncio.sleep(0)
+        force_off = asyncio.create_task(
+            transport.write("TX0;", tier=ExchangeTier.FORCE_RELEASE)
+        )
+        await asyncio.sleep(0)
+
+        assert writer.written == [b"FA000000001;"]
+        writer.release_first_drain.set()
+        with pytest.raises(CatTransportError, match="first provider write failed"):
+            await active
+        await asyncio.wait_for(
+            asyncio.gather(force_off, stop_cw, stop_tune, late_on),
+            1,
+        )
+
+        assert writer.written == [
+            b"FA000000001;",
+            b"TX0;",
+            b"KY;",
+            b"AC000;",
+            b"TX1;",
         ]
 
     async def test_final_currency_check_suppresses_stale_write(

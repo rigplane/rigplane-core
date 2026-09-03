@@ -13,6 +13,8 @@ __all__ = ["IcomCommander", "Priority"]
 
 
 class Priority(IntEnum):
+    FORCE_RELEASE = -20
+    ABORT = -10
     IMMEDIATE = 0
     NORMAL = 10
     BACKGROUND = 20
@@ -26,7 +28,7 @@ T = TypeVar("T")
 # against pathological growth, not a normal-operation limit.  When the cap is
 # reached, the newest BACKGROUND fire-and-forget send is dropped (its future is
 # resolved with ``None`` so the caller still returns immediately).  The cap
-# NEVER applies to NORMAL/IMMEDIATE sends or to ``wait_dispatch=True`` sends.
+# NEVER applies to non-background sends or to ``wait_dispatch=True`` sends.
 _MAX_BG_INFLIGHT = 64
 
 

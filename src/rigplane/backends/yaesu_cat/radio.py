@@ -22,6 +22,7 @@ from ...runtime.managed_tx_state import (
     EffectToken,
 )
 from ...commands import hz_to_table_index, table_index_to_hz
+from ...core.priority_exchange import ExchangeTier
 from ...core.tx_observation import TxStateReading
 from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
 from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
@@ -831,7 +832,7 @@ class YaesuCatRadio:
         cmd_name: str,
         *,
         is_current: Callable[[], bool] | None = None,
-        urgent: bool = False,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
         **kwargs: Any,
     ) -> None:
         """Format and send a write command (no response expected).
@@ -857,10 +858,10 @@ class YaesuCatRadio:
 
         cmd = format_command(spec.write, **kwargs)
         try:
-            if is_current is None and not urgent:
+            if is_current is None and tier is ExchangeTier.ORDINARY:
                 await self._transport.write(cmd)
             else:
-                await self._transport.write(cmd, is_current=is_current, urgent=urgent)
+                await self._transport.write(cmd, is_current=is_current, tier=tier)
         except CatCommandRejected as exc:
             raise CommandRejectedError(str(exc)) from exc
 
@@ -1077,22 +1078,30 @@ class YaesuCatRadio:
         """Execute one profile-backed runtime-managed transmit operation."""
         del token
         if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
-            command, params, urgent = "set_ptt", {"state": "1"}, False
+            command, params, tier = "set_ptt", {"state": "1"}, ExchangeTier.ORDINARY
         elif operation is ActuationOperation.FORCE_RECEIVE:
-            command, params, urgent = "set_ptt", {"state": "0"}, True
+            command, params, tier = (
+                "set_ptt",
+                {"state": "0"},
+                ExchangeTier.FORCE_RELEASE,
+            )
         elif operation is AbortOperation.STOP_CW:
-            command, params, urgent = "send_cw", {"type": " ", "mem": ""}, True
+            command, params, tier = (
+                "send_cw",
+                {"type": " ", "mem": ""},
+                ExchangeTier.ABORT,
+            )
         elif operation is AbortOperation.STOP_TUNE:
-            command, params, urgent = (
+            command, params, tier = (
                 "set_tuner",
                 {"src": "0", "type": "0", "state": "0"},
-                True,
+                ExchangeTier.ABORT,
             )
         else:
             return ActuationResult.REJECTED
 
         try:
-            await self._write(command, is_current=is_current, urgent=urgent, **params)
+            await self._write(command, is_current=is_current, tier=tier, **params)
         except CommandError:
             return ActuationResult.REJECTED
         return ActuationResult.ACCEPTED

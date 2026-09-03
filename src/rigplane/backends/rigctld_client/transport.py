@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
-from ...core.priority_exchange import PriorityExchangeGate
+from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
@@ -140,7 +140,8 @@ class RigctldTransport:
     async def _exchange(
         self, *, urgent: bool = False
     ) -> AsyncIterator[tuple[asyncio.StreamReader | None, asyncio.StreamWriter | None]]:
-        async with self._exchange_gate.exchange(urgent=urgent):
+        tier = ExchangeTier.FORCE_RELEASE if urgent else ExchangeTier.ORDINARY
+        async with self._exchange_gate.exchange(tier=tier):
             reader, writer = self._reader, self._writer
             try:
                 yield reader, writer

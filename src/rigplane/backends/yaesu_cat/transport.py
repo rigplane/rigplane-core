@@ -37,7 +37,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ...core.priority_exchange import PriorityExchangeGate
+from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
 
 __all__ = [
     "YaesuCatTransport",
@@ -356,7 +356,7 @@ class YaesuCatTransport:
         command: str,
         *,
         is_current: Callable[[], bool] | None = None,
-        urgent: bool = False,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
     ) -> None:
         """Send a SET command and drain echo / auto-info.
 
@@ -371,7 +371,7 @@ class YaesuCatTransport:
             CatCommandRejected: If the radio returns ``?;`` (MOR-2103).
             CatTransportError: On serial I/O failure.
         """
-        async with self._exchange_gate.exchange(urgent=urgent):
+        async with self._exchange_gate.exchange(tier=tier):
             await self.flush_rx()
             self._require_write_currency(is_current)
             await self._raw_write(command, is_current=is_current)

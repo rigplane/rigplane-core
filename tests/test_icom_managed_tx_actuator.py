@@ -96,16 +96,21 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("operation", "expected"),
+    ("operation", "expected", "priority"),
     [
-        (ActuationOperation.FORCE_RECEIVE, (0x31, 0x01, b"\xa0")),
-        (AbortOperation.STOP_CW, (0x32, 0x02, b"\xff")),
-        (AbortOperation.STOP_TUNE, (0x33, 0x03, b"\x00")),
+        (
+            ActuationOperation.FORCE_RECEIVE,
+            (0x31, 0x01, b"\xa0"),
+            Priority.FORCE_RELEASE,
+        ),
+        (AbortOperation.STOP_CW, (0x32, 0x02, b"\xff"), Priority.ABORT),
+        (AbortOperation.STOP_TUNE, (0x33, 0x03, b"\x00"), Priority.ABORT),
     ],
 )
-async def test_release_and_abort_operations_use_profile_bytes_at_immediate_priority(
+async def test_release_and_abort_operations_use_profile_bytes_at_strict_priority(
     operation: ActuationOperation | AbortOperation,
     expected: tuple[int, int | None, bytes],
+    priority: Priority,
 ) -> None:
     radio = _profile_bound_radio()
     radio._send_civ_raw = AsyncMock(return_value=None)
@@ -120,10 +125,60 @@ async def test_release_and_abort_operations_use_profile_bytes_at_immediate_prior
     frame = parse_civ_frame(call.args[0])
     assert (frame.command, frame.sub, frame.data) == expected
     assert call.kwargs == {
-        "priority": Priority.IMMEDIATE,
+        "priority": priority,
         "wait_response": False,
         "is_current": current,
     }
+
+
+@pytest.mark.asyncio
+async def test_force_release_overtakes_queued_abort_without_preempting_active() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    executed: list[bytes] = []
+
+    async def execute(payload: bytes, _wait_response: bool) -> None:
+        executed.append(payload)
+        if payload == b"active":
+            entered.set()
+            await release.wait()
+
+    commander = IcomCommander(execute, min_interval=0.0)
+    commander.start()
+    active = asyncio.create_task(
+        commander.send(b"active", priority=Priority.NORMAL)
+    )
+    abort = None
+    late_on = None
+    force = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        abort = asyncio.create_task(
+            commander.send(b"stop-cw", priority=Priority.ABORT)
+        )
+        late_on = asyncio.create_task(
+            commander.send(b"late-on", priority=Priority.IMMEDIATE)
+        )
+        await asyncio.sleep(0)
+        force = asyncio.create_task(
+            commander.send(b"force-off", priority=Priority.FORCE_RELEASE)
+        )
+        await asyncio.sleep(0)
+
+        assert executed == [b"active"]
+        release.set()
+        await asyncio.wait_for(asyncio.gather(active, force, abort, late_on), 1)
+        assert executed == [b"active", b"force-off", b"stop-cw", b"late-on"]
+    finally:
+        release.set()
+        for task in (active, force, abort, late_on):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (active, force, abort, late_on) if task is not None),
+            return_exceptions=True,
+        )
+        await commander.stop()
 
 
 @pytest.mark.asyncio

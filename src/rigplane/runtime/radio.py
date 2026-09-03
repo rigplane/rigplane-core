@@ -3499,19 +3499,23 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ActuationOperation.TRANSMIT_ON,
             ):
                 civ = self._commands.ptt_on(to_addr=self._radio_addr)
+                priority = Priority.IMMEDIATE
             elif operation is ActuationOperation.FORCE_RECEIVE:
                 civ = self._commands.ptt_off(to_addr=self._radio_addr)
+                priority = Priority.FORCE_RELEASE
             elif operation is AbortOperation.STOP_CW:
                 civ = self._commands.stop_cw(to_addr=self._radio_addr)
+                priority = Priority.ABORT
             elif operation is AbortOperation.STOP_TUNE:
                 civ = self._commands.set_tuner_status(0, to_addr=self._radio_addr)
+                priority = Priority.ABORT
             else:
                 return ActuationResult.REJECTED
         except CommandError:
             return ActuationResult.REJECTED
         await self._send_civ_raw(
             civ,
-            priority=Priority.IMMEDIATE,
+            priority=priority,
             wait_response=False,
             is_current=is_current,
         )
