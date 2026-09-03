@@ -911,6 +911,31 @@ async def test_att_web_projection_uses_provider_native_expectation() -> None:
     assert intent.params["att"] == 1
     assert type(intent.params["att"]) is int
     assert radio.projection_calls == [20]
+    service = handler._command_service  # noqa: SLF001
+    session_id = intent.params.get("session_id")
+    assert intent.source == "websocket"
+    assert session_id is None
+    assert intent.target == FieldPath.receiver("0", "operator_controls", "att")
+    overlays = service.pending_overlays(
+        source=intent.source,
+        session_id=session_id,
+        command_id=intent.id,
+        path=intent.target,
+    )
+    expectations = service.readback_expectations(
+        source=intent.source,
+        session_id=session_id,
+        command_id=intent.id,
+    )
+    assert len(overlays) == 1
+    assert len(expectations) == 1
+    for item in (*overlays, *expectations):
+        assert item.source == intent.source
+        assert item.session_id == session_id
+        assert item.command_id == intent.id
+        assert item.path == intent.target
+        assert type(item.value) is int
+        assert item.value == 1
 
 
 @pytest.mark.asyncio
@@ -931,6 +956,7 @@ async def test_att_web_refuses_missing_or_non_integer_projection(projection: obj
         await handler._enqueue_command("set_att", {"db": 20})
 
     assert queue.items == []
+    assert handler._command_service.lifecycle_events() == ()  # noqa: SLF001
 
 
 @pytest.mark.asyncio
