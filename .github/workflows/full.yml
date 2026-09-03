@@ -298,7 +298,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: source
-          ref: 75926544cb9ca0ffd25e5f6504306d5f9afdf1b3
+          ref: 7fabe1c2014888663389696b13b00a007694435a
           fetch-depth: 0
           persist-credentials: false
       - name: Establish isolated evidence and dependency paths
@@ -556,9 +556,10 @@ jobs:
           import xml.etree.ElementTree as ET
           import pytest
 
-          SOURCE = '75926544cb9ca0ffd25e5f6504306d5f9afdf1b3'
+          SOURCE = '7fabe1c2014888663389696b13b00a007694435a'
+          SOURCE_TREE = 'ee3497a2dac9012e15fb6f5877abd25e973c39bf'
+          SOURCE_PARENT = '9cdb9faa585bde6fcf8255794530e80b8b51a8a3'
           BASE = 'e2ef93420cf4359f08781754db65ca08bd2288d3'
-          FINAL = '1e5a5fc0566caf0dc963ef17042ef5976869d25c'
           QSRC = 'src/rigplane/runtime/_poller_types.py'
           WSRC = 'src/rigplane/web/radio_poller.py'
           QFILE = 'tests/test_command_queue_execution.py'
@@ -600,6 +601,8 @@ jobs:
           HTTP = HFILE + '::test_http_command_batch_timeout_cancels_unconsumed_step'
           SCOPE = SFILE + '::test_scope_health_monitor_disconnected_and_reenable'
           FROZEN += [HTTP, IFILE + '::test_teardown_drain_unkey_stays_outside_the_execute_seat', SCOPE]
+          COMPOSITION = W + 'test_finite_command_turn_composes_with_acquisition_error_backoff'
+          FROZEN += [COMPOSITION]
           SUPPLEMENTAL = [P + 'test_' + name for name in ('outer_no_child', 'caller_cancel_closed_release', 'prior_owner_cancel', 'cleanup_error_observed')]
           PENDING = [P + f'test_pending_operations[{operation}-{kind}]' for operation in ('take', 'remove') for kind in ('ordered', 'ptt-off', 'coalesced')]
           QUOTA = [P + f'test_nonexecuted_claim_quota[{kind}]' for kind in ('cancelled', 'defer')]
@@ -697,7 +700,7 @@ jobs:
               edit(QSRC, 'if reply.cancelled() and not isinstance(entry.command, PttOff):', 'if reply.cancelled():'),
           ], {
               Q + UNKEY + '[ptt-off]': qcheck(418, 'assert [entry.command for entry in entries] == expected, ('),
-              W + 'test_shutdown_drain_executes_cancelled_unkey_after_callback_turn': checkpoint(WFILE, 'assert radio.calls == ["set_ptt(False)", *_TEARDOWN]', line=6523),
+              W + 'test_shutdown_drain_executes_cancelled_unkey_after_callback_turn': checkpoint(WFILE, 'assert radio.calls == ["set_ptt(False)", *_TEARDOWN]', line=6732),
           }, [Q + UNKEY + '[ordinary]', Q + UNKEY + '[ptt-on]'])
           fault('08-removal-completes-reply', [
               edit(QSRC, REMOVE_CLEAR, REMOVE_CLEAR.replace(
@@ -781,7 +784,10 @@ jobs:
           ))
           fault('24-quota-refill', [
               edit(WSRC, '            for _ in range(self._queue.pending_count):', '            while self._queue.has_commands:'),
-          ], kills(live_nodes, qcheck(377, 'assert seen == expected, "turn must use live pending claims, not a snapshot"')))
+          ], {
+              **kills(live_nodes, qcheck(377, 'assert seen == expected, "turn must use live pending claims, not a snapshot"')),
+              COMPOSITION: checkpoint(WFILE, 'assert boundary["leaves"] == (14_074_000,), "arrival must not refill initial quota"', line=1923),
+          })
           refund = '''        def entries_for_turn() -> Iterator[CommandQueueEntry]:
                       remaining = self._queue.pending_count
                       while remaining:
@@ -802,11 +808,33 @@ jobs:
           ], {
               W + 'test_web_loop_releases_held_entry_after_finite_current_turn': checkpoint(WFILE, 'assert seen == [SetFreq(1), SetFreq(2), held]'),
           })
+          fault('27-swallowed-acquisition-error', [
+              edit(WSRC, '        raise error\n\n    def _report_acquisition_sent(',
+                  '        return\n\n    def _report_acquisition_sent('),
+          ], {
+              COMPOSITION: checkpoint(WFILE, 'assert sleep.await_args_list.count(call(0.5)) == 1', line=1930),
+          })
+          FAILED_PATHS = '''        failed_paths = (
+                      tuple(path for path in request.paths if path not in sent_paths)
+                      or request.paths
+                  )
+          '''
+          ACQUISITION_ALTERNATIVE = '''        if not sent_paths:
+                      failed_paths = request.paths
+                  else:
+                      failed_paths = (
+                          tuple(path for path in request.paths if path not in sent_paths)
+                          or request.paths
+                      )
+          '''
           legitimate = [
               ('L1-queue-alternative', [edit(QSRC, '                entry = segment.dedup.pop(next(iter(segment.dedup)))', '                key = next(iter(segment.dedup))\n                entry = segment.dedup.pop(key)'), edit(QSRC, RETURN, RETURN.replace('return entry', 'return self._segments[-1].ordered[0]'))]),
               ('L2-kernel-result', [edit(QSRC, '        result = await asyncio.shield(child)', '        await asyncio.shield(child)\n        result = child.result()')]),
               ('L3-web-counter', [edit(WSRC, '            for _ in range(self._queue.pending_count):', '            remaining = self._queue.pending_count\n            while remaining:\n                remaining -= 1')]),
               ('L4-producer-order', [edit(QSRC, '        self._segments.append(_CommandQueueSegment.ordered_entry(entry))\n        self._notify.set()\n        if future is not None:', '        self._segments.append(_CommandQueueSegment.ordered_entry(entry))\n        if future is not None:'), edit(QSRC, '            future.add_done_callback(remove_cancelled)\n        return entry', '            future.add_done_callback(remove_cancelled)\n        self._notify.set()\n        return entry')]),
+              ('L5-acquisition-empty-sent-paths', [
+                  edit(WSRC, FAILED_PATHS, ACQUISITION_ALTERNATIVE),
+              ]),
           ]
           PLAN = [{'label': 'baseline', 'kind': 'green', 'edits': [], 'expected': dict.fromkeys(ALL)}, *variants]
           PLAN += [{'label': label, 'kind': 'legitimate', 'edits': edits, 'expected': dict.fromkeys(ALL)} for label, edits in legitimate]
@@ -1009,9 +1037,9 @@ jobs:
           proof = Path(os.environ['PROOF_ROOT']).resolve()
           artifacts = proof / 'evidence'
           save(artifacts / 'verdict.json', {'status': 'INVALID', 'reason': 'proof has not completed'})
-          assert len(FROZEN) == len(set(FROZEN)) == 46
-          assert len(SUPPLEMENTAL) == len(set(SUPPLEMENTAL)) == 12 and len(ALL) == 58
-          assert len(variants) == 26 and len(legitimate) == 4 and len(PLAN) == 32
+          assert len(FROZEN) == len(set(FROZEN)) == 47
+          assert len(SUPPLEMENTAL) == len(set(SUPPLEMENTAL)) == 12 and len(ALL) == 59
+          assert len(variants) == 27 and len(legitimate) == 5 and len(PLAN) == 34
           assert sys.version_info[:3] == (3, 11, 16)
           uv_version = subprocess.check_output(['uv', '--version'], text=True).strip()
           assert uv_version.split()[1] == '0.12.9', uv_version
@@ -1021,11 +1049,13 @@ jobs:
           for signum in (signal.SIGTERM, signal.SIGINT):
               signal.signal(signum, interrupted)
           assert git(seed, 'rev-parse', 'HEAD').decode().strip() == SOURCE and not status(seed)
+          assert git(seed, 'rev-parse', 'HEAD^{tree}').decode().strip() == SOURCE_TREE
+          assert git(seed, 'rev-parse', 'HEAD^').decode().strip() == SOURCE_PARENT
           names = git(seed, 'ls-files', '-z').decode().split('\0')[:-1]
           originals = {name: tracked_bytes(seed / name) for name in names}
           hashes = {name: sha(value) for name, value in originals.items()}
           assert all(git(seed, 'show', f'{SOURCE}:{name}') == originals[name] for name in (QSRC, WSRC, *TESTS, 'pyproject.toml', 'uv.lock', '.github/workflows/full.yml'))
-          assert git(seed, 'diff', '--name-only', SOURCE, FINAL).decode().splitlines() == ['.claude/audits/2026-09-03-mechanism-audit-command-queue-web.md', '.claude/audits/README.md']
+          assert git(seed, 'diff', '--name-only', SOURCE_PARENT, SOURCE).decode().splitlines() == [WFILE]
           diagnostic = seed.parent / 'diagnostic'
           assert git(diagnostic, 'rev-parse', 'HEAD').decode().strip() == os.environ['GITHUB_SHA'] and not status(diagnostic)
           git(diagnostic, 'merge-base', '--is-ancestor', BASE, 'HEAD')
@@ -1132,7 +1162,7 @@ jobs:
                   records.append(record)
                   save(evidence / 'verdict.json', {'status': 'PASS', **record})
                   print(json.dumps(record), flush=True)
-              assert len(records) == len(prepared) == 32
+              assert len(records) == len(prepared) == 34
           finally:
               save(artifacts / 'completed.json', records)
               save(artifacts / 'seed-final-hashes.json', snapshot(seed, names))
