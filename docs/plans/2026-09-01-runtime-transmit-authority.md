@@ -19,10 +19,10 @@ details. The authority covers only managed commands of this runtime, not the
 physical radio or unmanaged callers.
 
 This replaces rather than extends the 2026-08-20 backend hazard gate. The
-approved observed-TX admission removal is limited to band/frequency, mode, and
-VFO commands. Split, tuner, and antenna policy remains a separate open
-implementation-policy decision. Raw/direct paths are outside this authority;
-this ADR makes no new observed-admission ruling for them.
+accepted runtime-intent admission policy is stated in
+[Relay-family admission policy](#relay-family-admission-policy). Raw/direct
+paths are outside this authority; this ADR makes no new observed-admission
+ruling for them.
 
 ## Scope and glossary
 
@@ -55,7 +55,7 @@ Command names describe semantics; the UI continues to present an ON/OFF switch.
 |---|---|---|
 | Browser | gestures, audio/presentation, local countdown interpolation | authority, timers, retries, RF truth |
 | Server app composition root | exactly one configured radio, managed runtime, and authority | a second managed radio/runtime in the same instance |
-| Managed runtime | intent, debt, TOT, `TxAbortFence`, tokens, retry, API state | manufacturer wire vocabulary |
+| `ManagedTxAuthority` | intent, debt, TOT, `TxAbortFence`, tokens, retry, API state, managed admission | manufacturer wire vocabulary |
 | Provider adapter | execution of one tokened attempt, priority lane, normalized result | its own generation, epoch, attempt IDs, or product intent |
 | Rig profile + canonical backend | documented manufacturer vocabulary, provenance, semantic-to-wire mapping | runtime retry/deadline lifecycle |
 | State observer | canonical tri-state observation | authority transitions or admission |
@@ -64,11 +64,14 @@ The composition root constructs the authority once and reuses it across
 provider replacement. An assembly test must reject or make impossible a second
 managed runtime/radio in the same server instance.
 
-The stateful owner is attached to `runtime/managed_radio_runtime.py:
-ManagedRadioRuntime`. `core/tx_safety.py: TxSafetySupervisor` may be replaced or
-reduced to pure policy, but its observation-driven clearing/gating must not
-survive beside the new owner. `core/tx_authority.py: TransmitAuthority` must not
-remain as a parallel backend hazard authority.
+In the accepted architecture, `runtime/managed_tx_authority.py:
+ManagedTxAuthority` is the sole stateful owner. A
+`runtime/managed_radio_runtime.py: ManagedRadioRuntime` composition surface may
+delegate to it but must not retain authority state. `core/tx_safety.py:
+TxSafetySupervisor` may be replaced or reduced to pure policy, but its
+observation-driven clearing/gating must not survive beside the authority.
+`core/tx_authority.py: TransmitAuthority` must not remain as a parallel backend
+hazard authority.
 
 ## Authority and diagnostic state
 
@@ -297,10 +300,10 @@ canonical `ON`, `false` for both `OFF` and `UNKNOWN`. Consumers needing the
 difference must use the tri-state field.
 
 Observation never changes intent, owner, debt, TOT, retry, or admission. The
-approved admission removal covers band/frequency, mode, and VFO. Split, tuner,
-and antenna remain separate/open; raw/direct paths remain out of scope. Front
-panel, VOX, direct `Radio.set_ptt`, raw CI-V, CW, tune, and external processes
-may update observation but create no authority ownership or debt.
+accepted relay-family policy is intent-based and does not consult observation;
+raw/direct paths remain out of scope. Front panel, VOX, direct
+`Radio.set_ptt`, raw CI-V, CW, tune, and external processes may update
+observation but create no authority ownership or debt.
 
 Local server-runtime CW/tune likewise creates no authority intent, ownership,
 or TOT, but it must register with and honor the instance's `TxAbortFence` and
@@ -312,6 +315,26 @@ Migration removes observer-driven clearing/gating from
 transition, including ON/OFF/UNKNOWN and generation replacement, leaves every
 authority field unchanged. RigPlane may serialize only its own incompatible
 operations to prevent an ordering race; that is not observed-RF admission.
+
+## Relay-family admission policy
+
+This is an accepted design policy, not a statement that current command paths
+implement it or that any provider accepts a requested operation.
+
+- Band, frequency, mode, VFO, and split mutations are admitted regardless of
+  observed RF state.
+- `ManagedTxAuthority` refuses antenna switching and tuner ON, engage, or
+  start only while it holds managed `PTT(owner)` or `TRANSMIT` intent.
+  `observed_ptt` does not participate in that decision.
+- Tuner OFF and `FORCE_OFF` are always admitted by this policy, regardless of
+  managed intent or observed RF state.
+- The policy creates no deferred queue. A refused request is not retained for
+  later execution.
+
+Provider capability, a documented provider rejection, and transport failure
+remain separate from this runtime admission policy. Local server-runtime CW
+and tune remain fence participants without acquiring authority intent,
+ownership, or software TOT.
 
 ## Failure boundaries and compatibility
 
@@ -329,11 +352,14 @@ operations to prevent an ordering race; that is not observed-RF admission.
   software-TOT guarantees do not apply.
 
 Migration must converge existing managed TX ownership into
-`ManagedRadioRuntime`, replace the old hazard authority rather than wrap it,
+`ManagedTxAuthority`, replace the old hazard authority rather than wrap it,
 add the composition-root cardinality test, establish the profile-backed
-actuator, then route every managed Web/runtime TX ingress through it. Remove
-observed-TX admission for band/frequency, mode, and VFO only. Do not decide
-split/tuner/antenna or raw/direct policy incidentally.
+actuator, then route every managed Web/runtime TX ingress through it. A
+`ManagedRadioRuntime` composition surface may delegate but must not retain
+intent, debt, TOT, fence, or admission ownership. Remove the old observed-RF
+admission machinery rather than create another gate. Apply the accepted
+relay-family policy through managed intent only; raw/direct paths remain out of
+scope.
 
 ## Explicitly superseded decisions
 
@@ -342,8 +368,8 @@ Superseded from the 2026-08-20 ADR: backend-per-radio authority placement;
 `TransmitTruth` as admission input; CW/tune as authority intent or TOT source;
 per-delivery deadline drivers; a public target/provider generation; and the
 requirement that unmanaged beta callers share the Web authority. Its broad
-observed-TX matrix is not inherited: only the approved band/frequency, mode,
-and VFO removal is decided here.
+observed-TX matrix is not inherited. The prior open split/tuner/antenna
+question is superseded by the relay-family policy above.
 
 The surviving principles are narrower: provider acceptance is not RF proof,
 observation is separate truth, OFF debt precedes uncertain work, and stale
@@ -373,8 +399,10 @@ provider effects are fenced.
 10. State/API tests pin the field-delta table, `lastActuation`, `abortErrors`,
     and tri-state to deprecated-bool projection; assembly and profile
     conformance pin singular ownership and the normalized actuator surface.
-11. Observed ON/OFF/UNKNOWN never blocks band/frequency, mode, or VFO. Tests
-    make no new assertion for split/tuner/antenna or raw/direct policy.
+11. Observed ON/OFF/UNKNOWN never blocks band/frequency, mode, VFO, or split.
+    Only managed `PTT(owner)` or `TRANSMIT` intent may refuse antenna switching
+    and tuner ON, engage, or start; tuner OFF and ForceOff are always admitted.
+    No refused request is deferred. Raw/direct paths remain out of scope.
 12. Local server-runtime CW/tune creates no authority intent/ownership/TOT but
     registers with and honors `TxAbortFence` and receives best-effort ForceOff
     cancellation. Only explicitly unmanaged callers outside this app instance
