@@ -287,6 +287,7 @@ describe('the dsp surface mounts only when the view model carries the group', ()
     'vfo-receiver-indicators',
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-shared-indicators',
     'vfo-ops', 'vfo-split-digest',
     'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
     'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',

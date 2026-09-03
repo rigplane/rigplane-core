@@ -936,11 +936,13 @@ describe('VFO ops (MOR-1321) — structural gating', () => {
   // The non-vacuous half: the same assertions must NOT hold for a multi-VFO
   // radio, or "absent" above would be passing for the trivial reason.
   it.each(['1/ab', '2/ab_shared', '2/main_sub'] as const)(
-    'renders all four ops on the %s topology', (id) => {
-      const target = mountSurface({ viewModel: topologyFixtures[id] });
+    'renders the explicitly admitted seven-action block on the %s topology', (id) => {
+      const target = mountSurface({ viewModel: withRadioWide(id) });
       expect(target.querySelector('[data-testid="vfo-ops"]')).not.toBeNull();
-      for (const op of ['equalize', 'swap', 'quick-split', 'quick-dual-watch']) {
-        expect(target.querySelector(`[data-vfo-${op}]`), op).not.toBeNull();
+      for (const action of [
+        'main', 'sub', 'equalize', 'swap', 'quick-split', 'quick-dual-watch', 'speak',
+      ]) {
+        expect(target.querySelector(`[data-dual-action="${action}"]`), action).not.toBeNull();
       }
     },
   );
@@ -954,9 +956,10 @@ describe('VFO ops (MOR-1321) — structural gating', () => {
       vfos: topologyFixtures['2/ab_shared'].vfos.filter((v) => v.receiver === 'MAIN'),
     };
     expect(mountSurface({ viewModel: sliced }).querySelector('[data-testid="vfo-ops"]')).toBeNull();
-    expect(
-      mountSurface({ viewModel: sliced, selectionPoolSize: 2 }).querySelector('[data-testid="vfo-ops"]'),
-    ).not.toBeNull();
+    const fallback = mountSurface({ viewModel: sliced, selectionPoolSize: 2 });
+    expect(fallback.querySelector('[data-testid="vfo-ops"]')).not.toBeNull();
+    expect(fallback.querySelector('[data-vfo-quick-split]')).toBeNull();
+    expect(fallback.querySelector('[data-vfo-quick-dual-watch]')).toBeNull();
   });
 
   // Kills: emitting the ops from a per-receiver strip. They are radio-wide
@@ -979,7 +982,7 @@ describe('VFO ops (MOR-1321) — intents', () => {
       onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
       onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
     };
-    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'], ...spies });
+    const target = mountSurface({ viewModel: withRadioWide(), ...spies });
     target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!.click();
     flushSync();
     // Exactly one intent fired, and it was this button's — a cross-wired
@@ -989,26 +992,24 @@ describe('VFO ops (MOR-1321) — intents', () => {
     }
   });
 
-  // R9. The ops surface must not grow a key path: none of these four intents
+  // R9. The ops surface must not grow a key path: none of these seven intents
   // is a TX action, and the surface carries no key/unkey affordance at all.
   it('R9: the ops row emits no TX intent and mounts no key affordance', () => {
-    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'] });
+    const target = mountSurface({ viewModel: withRadioWide() });
     expect(target.querySelector('[data-testid="rx-tx-surface"]')).toBeNull();
     const ops = target.querySelector<HTMLElement>('[data-testid="vfo-ops"]')!;
-    expect(ops.querySelectorAll('button')).toHaveLength(4);
+    expect(ops.querySelectorAll('[data-dual-action]')).toHaveLength(7);
     // Actions, not facts: no switch semantics on any of them.
     expect(ops.querySelectorAll('[role="switch"]')).toHaveLength(0);
   });
 });
 
 describe('VFO ops (MOR-1321) — unknown honesty on the quick triggers', () => {
-  const base = topologyFixtures['2/main_sub'];
-
   // Kills: dropping the `disabled` gate on quick-split. The composite trigger
   // ends with SPLIT ON — firing it while split is unobserved asks for a state
   // this surface cannot see reached. Same gate its fact toggle carries.
   it('quick split is disabled, and inert, while split is unknown', () => {
-    const model = validateRadioViewModel({ ...base, split: { status: 'unknown' } });
+    const model = validateRadioViewModel({ ...withRadioWide(), split: { status: 'unknown' } });
     const onQuickSplit = vi.fn();
     const target = mountSurface({ viewModel: model, onQuickSplit });
     const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
@@ -1021,7 +1022,7 @@ describe('VFO ops (MOR-1321) — unknown honesty on the quick triggers', () => {
   });
 
   it('quick dual watch is disabled, and inert, while dualWatch is unknown', () => {
-    const model = validateRadioViewModel({ ...base, dualWatch: { status: 'unknown' } });
+    const model = validateRadioViewModel({ ...withRadioWide(), dualWatch: { status: 'unknown' } });
     const onQuickDualWatch = vi.fn();
     const target = mountSurface({ viewModel: model, onQuickDualWatch });
     const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-dual-watch]')!;
@@ -1052,7 +1053,7 @@ describe('VFO ops (MOR-1321) — unknown honesty on the quick triggers', () => {
     'even if the native disabled gate is bypassed',
     (op, fact, prop) => {
       const spy = vi.fn();
-      const model = validateRadioViewModel({ ...base, [fact]: { status: 'unknown' } });
+      const model = validateRadioViewModel({ ...withRadioWide(), [fact]: { status: 'unknown' } });
       const target = mountSurface({ viewModel: model, [prop]: spy });
       const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
       button.disabled = false;
@@ -1070,7 +1071,7 @@ describe('VFO ops (MOR-1321) — unknown honesty on the quick triggers', () => {
     ['quick-dual-watch', 'onQuickDualWatch'],
   ] as const)('%s emits normally once its fact is known', (op, prop) => {
     const spy = vi.fn();
-    const target = mountSurface({ viewModel: base, [prop]: spy });
+    const target = mountSurface({ viewModel: withRadioWide(), [prop]: spy });
     target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!.click();
     flushSync();
     expect(spy).toHaveBeenCalledOnce();
@@ -1081,7 +1082,7 @@ describe('VFO ops (MOR-1321) — unknown honesty on the quick triggers', () => {
   // invent a dependency the radio does not have.
   it('equalize and swap stay live while both toggle facts are unknown', () => {
     const model = validateRadioViewModel({
-      ...base, split: { status: 'unknown' }, dualWatch: { status: 'unknown' },
+      ...withRadioWide(), split: { status: 'unknown' }, dualWatch: { status: 'unknown' },
     });
     const onEqualizeVfos = vi.fn();
     const onSwapVfos = vi.fn();
@@ -1110,7 +1111,11 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
   }
 
   it('carries no reason text on hover or for screen readers on any op button once every fact is known', () => {
-    const target = mountSurface({ viewModel: base });
+    const target = mountSurface({
+      viewModel: withRadioWide(),
+      onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
+      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
+    });
     for (const op of ['equalize', 'swap', 'quick-split', 'quick-dual-watch'] as const) {
       const button = target.querySelector<HTMLButtonElement>(`[data-vfo-${op}]`)!;
       expect(button.title, op).toBe('');
@@ -1119,9 +1124,10 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
   });
 
   it('keeps quick operations identity-gated while caller-admitted equalize and swap remain live', () => {
+    const admitted = withRadioWide('1/ab');
     const model: RadioViewModel = validateRadioViewModel({
-      ...topologyFixtures['1/ab'],
-      vfos: topologyFixtures['1/ab'].vfos.map((vfo, index) => ({
+      ...admitted,
+      vfos: admitted.vfos.map((vfo, index) => ({
         ...vfo,
         slot: { kind: 'relative', role: index === 0 ? 'selected' : 'unselected' },
         label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
@@ -1131,7 +1137,10 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     });
     const onEqualizeVfos = vi.fn();
     const onSwapVfos = vi.fn();
-    const target = mountSurface({ viewModel: model, onEqualizeVfos, onSwapVfos });
+    const target = mountSurface({
+      viewModel: model, onEqualizeVfos, onSwapVfos,
+      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
+    });
     // MOR-1481 rework (R2): the ops row is not a resolver button — no button
     // here "selects a VFO", so its reason must NOT be the resolver buttons'
     // `relativeSelectionHelp` literal (false here: it is a different claim,
@@ -1168,6 +1177,8 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
       expect(button.disabled, op).toBe(true);
       button.click();
     }
+    expect(target.querySelector('[data-vfo-quick-split]')).toBeNull();
+    expect(target.querySelector('[data-vfo-quick-dual-watch]')).toBeNull();
   });
 
   // MOR-1481 rework (R2): the catalog key resolves per-locale, not just an
@@ -1175,9 +1186,10 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
   // back to a hardcoded (English-only) string is caught even if it happens
   // to read as plausible prose in English.
   it('resolves the ops-row identity reason from the i18n catalog and renders Russian under ru-RU', () => {
+    const admitted = withRadioWide('1/ab');
     const model: RadioViewModel = validateRadioViewModel({
-      ...topologyFixtures['1/ab'],
-      vfos: topologyFixtures['1/ab'].vfos.map((vfo, index) => ({
+      ...admitted,
+      vfos: admitted.vfos.map((vfo, index) => ({
         ...vfo,
         slot: { kind: 'relative', role: index === 0 ? 'selected' : 'unselected' },
         label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
@@ -1187,7 +1199,7 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
     });
     setLocale('ru-RU');
     try {
-      const target = mountSurface({ viewModel: model });
+      const target = mountSurface({ viewModel: model, onQuickSplit: vi.fn() });
       const expectedRu = 'Радио ещё не подтвердило, какой VFO — A, а какой — B. Сначала нажмите Select VFO A или Select VFO B.';
       const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
       expect(button.title).toBe(expectedRu);
@@ -1198,8 +1210,8 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
   });
 
   it('puts a split-specific reason on quick split (and the split fact-toggle) while identity is known but split is unknown', () => {
-    const model = validateRadioViewModel({ ...base, split: { status: 'unknown' } });
-    const target = mountSurface({ viewModel: model });
+    const model = validateRadioViewModel({ ...withRadioWide(), split: { status: 'unknown' } });
+    const target = mountSurface({ viewModel: model, onQuickSplit: vi.fn() });
     const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
     expect(button.disabled).toBe(true);
     expect(button.title).toBe('The radio has not confirmed the split state yet.');
@@ -1214,8 +1226,8 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
   });
 
   it('puts a dual-watch-specific reason on quick dual watch (and the dual-watch fact-toggle) while identity is known but dualWatch is unknown', () => {
-    const model = validateRadioViewModel({ ...base, dualWatch: { status: 'unknown' } });
-    const target = mountSurface({ viewModel: model });
+    const model = validateRadioViewModel({ ...withRadioWide(), dualWatch: { status: 'unknown' } });
+    const target = mountSurface({ viewModel: model, onQuickDualWatch: vi.fn() });
     const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-dual-watch]')!;
     expect(button.disabled).toBe(true);
     expect(button.title).toBe('The radio has not confirmed the dual watch state yet.');
@@ -1317,9 +1329,10 @@ describe('VFO ops disabled reasons (MOR-1481)', () => {
   // Two independently mounted surfaces (the dual-receiver cockpit's real
   // shape) must not collide on `aria-describedby` target ids.
   it('reason ids stay unique across two mounted surfaces', () => {
+    const admitted = withRadioWide('1/ab');
     const model: RadioViewModel = validateRadioViewModel({
-      ...topologyFixtures['1/ab'],
-      vfos: topologyFixtures['1/ab'].vfos.map((vfo, index) => ({
+      ...admitted,
+      vfos: admitted.vfos.map((vfo, index) => ({
         ...vfo,
         slot: { kind: 'relative', role: index === 0 ? 'selected' : 'unselected' },
         label: index === 0 ? 'Selected VFO' : 'Unselected VFO',
