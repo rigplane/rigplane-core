@@ -220,22 +220,31 @@ async def test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "reading", [TxStateReading(1, "tx_cat"), TxStateReading(True, "rx")]
+    ("reading", "expected"),
+    [
+        (TxStateReading(1, "tx_cat"), ObservedPtt.UNKNOWN),
+        (TxStateReading(True, "tx_cat"), ObservedPtt.ON),
+        (TxStateReading(0, "rx"), ObservedPtt.UNKNOWN),
+        (TxStateReading(False, "rx"), ObservedPtt.OFF),
+    ],
+    ids=["integer-one", "valid-on", "integer-zero", "valid-off"],
 )
-async def test_canonical_ptt_rejects_malformed_or_conflicting_typed_reading(
-    monkeypatch: pytest.MonkeyPatch, reading: TxStateReading
+async def test_canonical_ptt_typed_reading_requires_strict_value(
+    monkeypatch: pytest.MonkeyPatch, reading: TxStateReading, expected: ObservedPtt
 ) -> None:
     radio, poller, store, _, emitted = _canonical_ptt_path(monkeypatch)
+    reading = replace(reading, source="yaesu_poll_response", verified_readback=True)
     radio.read_transmit_state = AsyncMock(return_value=reading)
     await poller._emit_medium_observations()  # noqa: SLF001
     assert radio.read_transmit_state.await_args_list == [mock_call()], "PTT_TYPED_READER"
     radio._transport.query.assert_not_awaited()  # noqa: SLF001
     assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
-        ObservedPtt.UNKNOWN
-    ], "PTT_TYPED_UNKNOWN_PUBLICATION"
-    assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+        expected
+    ], "PTT_TYPED_VALUE_PUBLICATION"
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is expected
+    assert project_observed_ptt(store.snapshot()) is expected
     legacy = [item.value for item in emitted if str(item.path) == "global.tx_state.ptt"]
-    assert legacy == ([True] if type(reading.value) is bool else [])
+    assert legacy == ([reading.value] if type(reading.value) is bool else [])
 
 
 @pytest.mark.asyncio
