@@ -84,8 +84,8 @@ from ..core.acquisition_scheduler import (
     AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
-    MeterObservationCoalescer,
     civ_acquisition_executor_for_provider,
+    derive_tx_active,
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -3430,19 +3430,6 @@ class RadioPoller:
 
         self._request_post_write_readback(cmd)
 
-    def _flush_due_meter_observations(self) -> None:
-        coalescer = getattr(self._radio, "_meter_observation_coalescer", None)
-        if not isinstance(coalescer, MeterObservationCoalescer):
-            return
-        runtime = getattr(self._radio, "_civ_runtime", None)
-        flush_due = getattr(runtime, "flush_due_meter_observations", None)
-        if not callable(flush_due):
-            return
-        try:
-            flush_due(now=time.monotonic())
-        except Exception:
-            logger.debug("radio-poller: meter coalescer flush failed", exc_info=True)
-
     def _acquisition_request_expired(
         self,
         request: AcquisitionRequest,
@@ -3492,30 +3479,22 @@ class RadioPoller:
         if scheduler is None:
             return
         now = time.monotonic()
-        # MOR-1525: gate tx_only cadence membership (TX/PA meters: power, SWR,
-        # ALC, comp) on the CANONICAL ``global.tx_state.ptt`` observation, not
-        # the legacy RadioState.ptt mirror the MOR-1485 comment above used to
-        # justify. The mirror was live-proven to desync from the canonical
-        # fact: after a TX it stayed True while the StateStore's own
-        # observation had already flipped False in RX, so the tx_only group
-        # kept polling at ~1s cadence during confirmed RX (operator-visible
-        # as the SWR readout flapping 0<->1, MOR-1525). Read the same field
-        # ``build_public_state_payload_from_snapshot`` serves to the UI, so
-        # this can never disagree with what the operator is shown. Fail
-        # closed: unobserved/stale/unknown ptt -> tx_active False, so
-        # tx_only meters stay idle rather than spuriously poll — the honest
-        # direction when the fact isn't known.
-        try:
-            ptt_field = self._state_store.snapshot().field(
-                FieldPath.global_("tx_state", "ptt")
-            )
-        except KeyError:
-            tx_active = False
-        else:
-            tx_active = ptt_field.freshness is FreshnessState.FRESH and bool(
-                ptt_field.value
-            )
-        scheduler.due_requests(now=now, tx_active=tx_active)
+        # MOR-2280: this drain no longer calls ``due_requests`` -- the
+        # profile's cadence is emitted by ``StateFreshnessService.tick``, and
+        # this method dispatches what it finds queued.
+        #
+        # It must still refresh the cached transmit fact, which that call used
+        # to keep current. This loop drains every 0.025 s (LAN) against a
+        # 0.05 s tick, so most drains land BETWEEN ticks; gating on the fact
+        # the last tick left would miss a de-key by up to one tick and send
+        # the tx_only group (power/SWR/ALC/comp) during confirmed RX -- the
+        # MOR-1525 SWR-flap loop. Same ``derive_tx_active`` over the same
+        # canonical store as the tick's own cadence call and as
+        # ``RigctldServer._drain_state_acquisition_once``, so the writers
+        # cannot disagree about one store state. See note_tx_active()'s
+        # docstring, and
+        # test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain.
+        scheduler.note_tx_active(derive_tx_active(self._state_store))
         # MOR-1533: dispatch must use the tx_active-gated view. Crediting an
         # already-sent answer (runtime._civ_rx) uses the unfiltered
         # pending_requests() instead, so an answer landing after de-key is
@@ -3658,7 +3637,6 @@ class RadioPoller:
                 )
 
     async def _send_query(self) -> None:
-        self._flush_due_meter_observations()
         if self._acquisition_scheduler is not None:
             await self._send_scheduler_requests()
             return

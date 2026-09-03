@@ -77,6 +77,30 @@ describe('declared semantic zones (what the migrated entrypoint actually mounts)
     expect(sdrTestLayout.zones).toContainEqual({ id: 'meters', surfaces: ['meters'] });
     expect(sdrTestLayout.requiredSemanticSurfaces).not.toContain('meters');
   });
+
+  // MOR-2231 (step 1, batch 2) — the five control families, each alone in a
+  // zone carrying the id `desktop-declarations.ts` already uses.
+  //
+  // Kills: declaring one of the five under a DRIFTED zone id, folding two of
+  // them into one zone, dropping one, or making one `required`. The id drift
+  // is the mutation worth a dedicated pin, because it is the one the
+  // suppression channel cannot catch: `LeftSidebar`/`RadioLayout` retire the
+  // legacy twins on `declared.has(<surface>)`, which reads the SURFACE name
+  // and never the zone id — so a drifted id would still retire the twin while
+  // naming a host no arrangement can bind, and the face would lose the panel
+  // without gaining a placed surface.
+  it.each([
+    ['filter', 'filter'],
+    ['rfFrontEnd', 'rf-front-end'],
+    ['band', 'band'],
+    ['antenna', 'antenna'],
+    ['ritXitScan', 'rit-xit-scan'],
+  ] as const)('mounts %s alone in the stable `%s` zone, not required', (surface, zoneId) => {
+    const owning = sdrTestLayout.zones.filter((z) => z.surfaces.includes(surface));
+    expect(owning).toHaveLength(1);
+    expect(owning[0]).toEqual({ id: zoneId, surfaces: [surface] });
+    expect(sdrTestLayout.requiredSemanticSurfaces).not.toContain(surface);
+  });
 });
 
 describe('MOR-1160 sizing axis — sdr-test stays fluid', () => {
