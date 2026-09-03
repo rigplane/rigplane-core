@@ -109,6 +109,24 @@ async def test_ptt_registration_ack_settles_on_pre_registration_cancel(
 
 
 @pytest.mark.asyncio
+async def test_ptt_registration_ack_settles_when_submission_never_starts() -> None:
+    managed, _, _, _, _, _ = authority()
+    registered = asyncio.get_running_loop().create_future()
+    pending = managed.submit_ptt(True, "owner", _registered=registered)
+    submission = (
+        pending if isinstance(pending, asyncio.Task) else asyncio.create_task(pending)
+    )
+    submission.cancel()
+    try:
+        await asyncio.gather(submission, return_exceptions=True)
+        assert registered.cancelled()
+    finally:
+        if not registered.done():
+            registered.cancel()
+        await finish(managed)
+
+
+@pytest.mark.asyncio
 async def test_ptt_receipt_waits_for_predecessor_and_not_provider_settlement() -> None:
     managed, _, _, _, _, lane = authority()
     predecessor = asyncio.get_running_loop().create_future()
