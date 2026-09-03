@@ -25,13 +25,13 @@ import { registerLayout, type LayoutManifest } from './contract';
  * names the area the sidebars' legacy `<TxPanel>` used to occupy. Since
  * MOR-1313 both declarations are what actually decides the rendered tree.
  *
- * Neither is bound to a `data-zone-id` element in the single composition —
- * unlike the dual-receiver-cockpit's `rx-tx` zone, which IS
- * (`SemanticRadioSurfaces.svelte`, `strips="dual"`). That stays deliberate:
- * MOR-1069 established that a zone element exists only where an arrangement
- * must place it, and the single composition places nothing. The zone ids are
- * read here as DECLARATIONS — what this layout mounts where — which is exactly
- * what per-zone suppression consumes.
+ * Neither is bound to a `data-zone-id` element on THIS layout: the single
+ * composition builds those two wrappers only when its `regions` prop is set,
+ * and `RadioLayout.svelte` sets it for `sdr-test` alone (MOR-2231). MOR-1069
+ * is why — a zone element exists only where an arrangement must place it, and
+ * nothing here places these yet. The zone ids are read here as DECLARATIONS —
+ * what this layout mounts where — which is exactly what per-zone suppression
+ * consumes.
  */
 const DESKTOP_V2_ZONES = [
   { id: 'receiver-deck', surfaces: ['vfo'] },

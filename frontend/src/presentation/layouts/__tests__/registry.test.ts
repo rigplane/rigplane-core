@@ -15,7 +15,8 @@ describe('the sdr-test real registration proof', () => {
   // Kills: declarations.ts never actually calling registerLayout.
   it('registers sdr-test, mounting the live vfo + rxTx zones, with no change to SdrTestSkin.svelte behavior', () => {
     expect(getLayout('sdr-test')).toBe(sdrTestLayout);
-    expect(sdrTestLayout.zones).toContainEqual({ id: 'main', surfaces: ['vfo', 'rxTx'] });
+    expect(sdrTestLayout.zones).toContainEqual({ id: 'receiver-deck', surfaces: ['vfo'] });
+    expect(sdrTestLayout.zones).toContainEqual({ id: 'rx-tx', surfaces: ['rxTx'] });
     expect(typeof sdrTestLayout.loader).toBe('function');
   });
 });

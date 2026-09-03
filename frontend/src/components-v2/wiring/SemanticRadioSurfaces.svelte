@@ -72,8 +72,8 @@
   import { guardRadioViewModel } from './radio-view-model-guard';
 
   /**
-   * `'single'` (default) is the exact pre-MOR-1067 markup — sdr-test's
-   * behavior is untouched. `'dual'` is the dual-receiver-cockpit's per-
+   * `'single'` (default) is the pre-MOR-1067 composition, wrapped per zone
+   * when `regions` says so. `'dual'` is the dual-receiver-cockpit's per-
    * receiver channel strips (MOR-1067): still ONE shared RxTxSurface and
    * ONE TX lease below — ONLY the VFO half splits, so there is still exactly
    * one authoritative key/unkey action surface regardless of `strips`.
@@ -89,8 +89,21 @@
    */
   interface Props {
     strips?: 'single' | 'dual';
+    regions?: boolean;
   }
-  let { strips = 'single' }: Props = $props();
+  /**
+   * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
+   * path in the SINGLE composition, so each gains the zone element its
+   * layout's plan names. `false` renders both exactly as before: no wrapper,
+   * no `data-zone-id`. Only `RadioLayout.svelte` passes it; the four other
+   * mount sites (`LcdLayout`, `MobileRadioLayout`, `DualReceiverCockpit`,
+   * `PeerSplitLayout`) take the default.
+   *
+   * A PROP rather than a plan lookup because the plan cannot answer the
+   * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
+   * `zoneOwning()` returns non-null on both faces.
+   */
+  let { strips = 'single', regions = false }: Props = $props();
 
   /**
    * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
@@ -854,8 +867,8 @@
     the dual composition, where it is a real, bound zone element the
     cockpit's responsive rules can place — an inert wrapper cannot be a
     grid/flex item, so "leave it inert" was not an option once the zone had
-    to move between arrangements. The single/default path (sdr-test / LCD /
-    mobile) renders the surface bare again, and that element shape is
+    to move between arrangements. The single/default path renders the surface
+    bare wherever `regions` is unset (MOR-2231), and that element shape is
     re-pinned in `__tests__/semantic-rx-tx-wiring.component.test.ts`.
 
     The snippet is deliberate: it keeps exactly ONE `<RxTxSurface>` tag in
@@ -967,11 +980,12 @@
     the layout's arrangement can place; undeclared → bare by default, exactly
     as before — unless the caller passes `allowBare={false}` (MOR-2150 below).
 
-    Deliberately NOT applied to `vfo`/`rxTx`: those carry per-receiver slicing,
-    the `showVfoList`/`showRadioWideFacts` split and the R6 TX-adjacent alerts,
-    none of which a uniform wrapper can express. Genericity is applied where it
-    is honest; the two bespoke arrangements stay bespoke and are documented as
-    such rather than forced through this path.
+    `vfo`/`rxTx` reach it only through the single composition's `regions`
+    branch (MOR-2231), and only for the WRAPPER. Their bodies stay bespoke
+    snippets — per-receiver slicing, the `showVfoList`/`showRadioWideFacts`
+    split and the R6 TX-adjacent alerts are arrangements no uniform wrapper can
+    express, which is why the DUAL composition still builds its own
+    `.rx-tx-zone` rather than calling this.
 
     `present` is the surface's OWN structural gate, hoisted to the wrap
     decision. Without it a declared zone would render as an empty `<div>` for a
@@ -1437,20 +1451,31 @@
     {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, false)}
   {:else}
     <!--
-      Single/default path (sdr-test / LCD / mobile): no bound zone exists
-      here (MOR-1069), so containment is not possible — the alerts keep
-      their pre-MOR-1258 position and order, unchanged.
+      Single/default path (sdr-test / LCD / mobile). No zone CONTAINS the
+      alerts here (MOR-1069 — the dual composition's `.rx-tx-zone` has no twin
+      on this path), so they keep their pre-MOR-1258 position and order,
+      unchanged.
 
-      MOR-1082: the layout's single zone mounts both `vfo` and `rxTx`
-      (sdr-test `main`, LCD `control-column`, mobile `portrait-deck`), so this
-      is where a per-zone reorder actually lands. `singleOrder` is the plan
-      flattened in zone-declaration order and falls back to the composed order
-      whenever no plan is resolved — an unresolved plan renders exactly the
-      sequence this path renders today.
+      MOR-1082: `singleOrder` is the plan flattened in zone-declaration order,
+      falling back to the composed order whenever no plan is resolved — so an
+      unresolved plan renders exactly the sequence this path renders today, and
+      a per-zone reorder lands here. On a layout whose zones hold one surface
+      each that flattening is what ORDERS the zones; on one whose single zone
+      mounts both (LCD `control-column`, mobile `portrait-deck`) it is what
+      reorders within it.
+
+      MOR-2231: `regions` decides whether each of the two gets the zone element
+      its plan names. Unset — every mount that predates that ticket — renders
+      them exactly as before: no wrapper, no `data-zone-id`.
     -->
     {#each singleOrder as surface (surface)}
-      {#if surface === 'vfo'}{@render vfoSurface()}
-      {:else if surface === 'rxTx'}{@render rxTxSurface()}{/if}
+      {#if surface === 'vfo'}
+        {#if regions}{@render zoned('vfo', view !== null, vfoSurface)}
+        {:else}{@render vfoSurface()}{/if}
+      {:else if surface === 'rxTx'}
+        {#if regions}{@render zoned('rxTx', view !== null, rxTxSurface)}
+        {:else}{@render rxTxSurface()}{/if}
+      {/if}
     {/each}
     <!-- MOR-1784: `singleOrder` ends in `rxTx` in every shipped layout
          (`SINGLE_COMPOSITION`, and a plan can only reorder or subtract), so
