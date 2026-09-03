@@ -43,7 +43,11 @@ config/
 .firecrawl/
 .playwright-mcp/
 .copilot-tmp/
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/release/
+!.agents/skills/audit-code-comments/
 
 # Backups (local safety copies, not for repo)
 .backups/
