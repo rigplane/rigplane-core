@@ -472,10 +472,11 @@ def _assert_mutant_killed(result: dict[str, Any], mutation: _Mutation) -> None:
 
 
 def _emit(terminal: Any, evidence: dict[str, Any]) -> None:
-    terminal.write_line(
-        "MUTATION_EVIDENCE "
-        + json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+    line = "MUTATION_EVIDENCE " + json.dumps(
+        evidence, separators=(",", ":"), sort_keys=True
     )
+    terminal.write_line(line)
+    print(line, file=sys.__stdout__, flush=True)
 
 
 @pytest.mark.parametrize(
