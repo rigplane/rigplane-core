@@ -260,10 +260,22 @@ nothing prompts for them; each drop has a cost paid later:
   PLAN, before EXECUTE, in the run's own working notes — not a tracked file:
   `.gitignore` excludes everything under `.claude/` except `agents/`,
   `audits/`, `commands/`, and `skills/` — and `audits/` is a published
-  archive (see its README), never a place for working notes.
+  archive (see its README), never a place for working notes. The baseline
+  is the most recent `quick.yml` run on `main` whose commit changed the tree
+  being compared (`src/`+`tests/` for pytest, `frontend/` for vitest) — a
+  run whose path filter skipped that block is green without numbers — and
+  it stays valid only while `git diff --name-only <that sha>..<your base>
+  -- <tree>` is empty; a PR's `quick` run tests the merge with the `main` of
+  that moment, so compare against the `main` run of that moment, not the
+  branch point. One tree state, one instrument: the full suite is not run
+  on the laptop or the remote testbed for a head that CI has run.
 - **TEST is the four gates `solve-issue.md` Phase 6 enumerates**: the
   standard pytest suite, `ruff check`, `ruff format`, and `mypy`, run by the
-  coordinator.
+  coordinator. The suite's record is the `quick.yml` run on the PR head —
+  `quick.yml` triggers only on push/PR to `main`, so a pushed branch gets no
+  run until a PR exists: push, open the PR as a draft, let `quick` run,
+  then `gh pr ready` before review. Single test files may run locally;
+  the full suite may not.
 
 Dropping a phase is the owner's call, not the coordinator's. Announce the drop
 and why, before the work, rather than reporting it afterwards.
