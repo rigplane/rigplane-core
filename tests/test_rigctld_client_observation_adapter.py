@@ -1375,3 +1375,18 @@ async def test_cancelled_ptt_read_does_not_publish_unknown(
                 release.set()
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+
+def test_observed_ptt_profile_declares_polling_without_write_controls() -> None:
+    profile = build_external_rigctld_acquisition_profile(vfo_supported=True)
+    capability = profile.capability_for(OBSERVED_PTT_PATH)
+
+    assert capability.path == OBSERVED_PTT_PATH
+    assert capability.availability is FieldAvailability.SUPPORTED, (
+        "canonical observed PTT is missing supported capability metadata"
+    )
+    assert capability.polling is True
+    assert capability.can_poll is True
+    assert OBSERVED_PTT_PATH in profile.pollable_paths()
+    assert capability.supported_controls == ()
+    assert capability.command_response_observable is False
