@@ -32,6 +32,7 @@ from rigplane.core.acquisition_scheduler import (
     IcomCivAcquisitionExecutor,
     RadioStateModelService,
     StateFreshnessService,
+    derive_tx_active,
 )
 from rigplane.core.radio_state import RadioState
 from rigplane.core.state_acquisition_policy import (
@@ -46,7 +47,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.rigctld.contract import (
     ClientSession,
     HamlibError,
@@ -193,6 +194,42 @@ class _CivProfiledStandaloneRadio(_ProfiledStandaloneRadio):
                 "wait_response": wait_response,
             }
         )
+
+
+class _CadenceRecordingRadio(_ProfiledStandaloneRadio):
+    """Standalone CI-V radio double that timestamps every ``send_civ``.
+
+    Owns the ``StateStore`` (so ``RigctldServer`` adopts it instead of a
+    fallback) and stamps each send with the store's manual clock, which is
+    the same clock the cadence under test is driven on.
+    """
+
+    def __init__(
+        self,
+        *,
+        profile: object,
+        store: StateStore,
+        clock: FreshnessClock,
+    ) -> None:
+        super().__init__(profile=profile)
+        self._store = store
+        self._clock = clock
+        self.civ_sends: list[tuple[float, int, int | None]] = []
+
+    @property
+    def state_store(self) -> StateStore:
+        return self._store
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        wait_response: bool = True,
+        **_ignored: Any,
+    ) -> None:
+        self.civ_sends.append((self._clock.now(), command, sub))
 
 
 class _ApplyingAcquisitionExecutor:
@@ -658,6 +695,161 @@ class TestLifecycle:
         gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:])]
         assert min(gaps) >= interval * 0.9, f"ticks overlapped: gaps={gaps}"
 
+    async def test_standalone_rigctld_cadence_polls_ptt_at_the_profile_declared_interval(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """``0x1C/0x00`` reaches the wire at the interval the profile declares.
+
+        ``rigs/ic7300.toml`` declares ``cadence_seconds = 0.3`` for
+        ``global.tx_state.ptt``; the interval asserted below is read from
+        that profile in this test, not written down here. Standalone
+        rigctld had no cadence driver at all before this change -- a
+        hardcoded re-read loop stood in for one.
+
+        Driven synchronously: the server's own freshness and drain tasks
+        are never started, so every tick and every drain in the loop below
+        is one this test issued, on one manual clock.
+        """
+
+        profile = resolve_radio_profile(model="IC-7300")
+        acquisition = profile.state_acquisition
+        assert acquisition is not None
+        ptt = FieldPath.global_("tx_state", "ptt")
+        declared_cadence = acquisition.policy_for(ptt).cadence_seconds
+        assert declared_cadence is not None
+
+        # Ahead of real ``time.monotonic()`` so the drain's own real-clock
+        # expiry check can never fire on a request stamped in this domain.
+        clock = FreshnessClock(start=time.monotonic() + 60.0)
+        store = StateStore(freshness_clock=clock)
+        radio = _CadenceRecordingRadio(profile=profile, store=store, clock=clock)
+
+        srv = RigctldServer(radio, cfg)
+        srv._bootstrap_state_acquisition()
+        service = srv._state_freshness_service
+        scheduler = srv._acquisition_scheduler
+        assert service is not None
+        assert scheduler is not None
+
+        tick_interval = 0.05
+        window = 1.2
+        steps = round(window / tick_interval)
+        for _ in range(steps):
+            service.tick(now=clock.now())
+            await srv._drain_state_acquisition_once()
+            # Stand in for the CI-V ingress that credits an answered read;
+            # without it the request stays queued and the cadence group is
+            # deduped out forever, so only the first poll would ever show.
+            for request in scheduler.pending_requests():
+                if ptt not in request.paths:
+                    continue
+                change_set = store.apply(
+                    Observation(
+                        path=ptt,
+                        value=False,
+                        source=SourceMetadata(
+                            source="poll_response",
+                            provider=request.provider,
+                            native_id="cadence-test",
+                        ),
+                        timestamp_monotonic=clock.now(),
+                        max_age=request.policy.freshness_ttl_seconds,
+                        provider_generation=store.provider_generation,
+                    )
+                )
+                scheduler.record_acquisition_result(request, change_set)
+            clock.advance(tick_interval)
+
+        ptt_sends = [
+            at for at, command, sub in radio.civ_sends if (command, sub) == (0x1C, 0x00)
+        ]
+        gaps = [
+            round(later - earlier, 6)
+            for earlier, later in zip(ptt_sends, ptt_sends[1:])
+        ]
+        assert gaps, f"no repeated 0x1C/0x00 poll on the wire: sends={ptt_sends}"
+        assert set(gaps) == {declared_cadence}, (
+            f"PTT poll cadence {gaps} does not follow the profile's declared "
+            f"{declared_cadence}s"
+        )
+        assert len(ptt_sends) == round(window / declared_cadence)
+
+    async def test_external_cat_session_stands_the_cadence_down_but_not_a_user_read(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """The deleted PTT re-read's external-CAT stand-down survives the move.
+
+        ``RigctldServer._send_ptt_reread_once`` returned early while
+        ``external_cat_session_active is True`` so a Hamlib bridge owning the
+        byte stream saw no traffic from that read. The cadence that replaces
+        it stands down on the same flag.
+
+        Three things are asserted, each of which a plausible guard gets
+        wrong. The cadence quiesces. A client read of the same field still
+        reaches the wire, whether it was queued before the tick or -- the
+        only ordering reachable once a session is under way -- after it, by
+        which time it can only coalesce into the standing cadence request.
+        And non-cadence background work still reaches the wire: the tick's
+        own ``prime_unobserved`` queues at ``BACKGROUND`` too, so a guard
+        selecting on priority rather than on the reason would silence it.
+        """
+
+        ptt = FieldPath.global_("tx_state", "ptt")
+
+        async def _drive(
+            *, external_cat: bool, user_read: str | None
+        ) -> tuple[int, int]:
+            profile = resolve_radio_profile(model="IC-7300")
+            clock = FreshnessClock(start=time.monotonic() + 60.0)
+            store = StateStore(freshness_clock=clock)
+            radio = _CadenceRecordingRadio(profile=profile, store=store, clock=clock)
+            radio.external_cat_session_active = external_cat
+            srv = RigctldServer(radio, cfg)
+            srv._bootstrap_state_acquisition()
+            scheduler = srv._acquisition_scheduler
+            service = srv._state_freshness_service
+            assert scheduler is not None
+            assert service is not None
+
+            def _client_read() -> None:
+                queued = scheduler.ensure_fresh(
+                    (ptt,),
+                    max_age=1.0,
+                    priority=AcquisitionPriority.USER,
+                    reason="user_read",
+                )
+                assert queued.status is AcquisitionStatus.QUEUED
+
+            if user_read == "before":
+                _client_read()
+            service.tick(now=clock.now())
+            if user_read == "after":
+                _client_read()
+            await srv._drain_state_acquisition_once()
+            ptt_reads = sum(
+                1
+                for _at, command, sub in radio.civ_sends
+                if (command, sub) == (0x1C, 0x00)
+            )
+            return ptt_reads, len(radio.civ_sends)
+
+        ptt_reads, total = await _drive(external_cat=False, user_read=None)
+        assert (ptt_reads, total > 0) == (1, True)
+
+        ptt_reads, total = await _drive(external_cat=True, user_read=None)
+        assert ptt_reads == 0, "the cadence did not stand down for external CAT"
+        assert total > 0, (
+            "everything went quiet, not just the cadence -- a guard that "
+            "also silences prime_unobserved is wider than the one it replaced"
+        )
+
+        for ordering in ("before", "after"):
+            ptt_reads, _total = await _drive(external_cat=True, user_read=ordering)
+            assert ptt_reads == 1, (
+                f"a client read queued {ordering} the tick was swallowed by "
+                "the external-CAT stand-down"
+            )
+
     async def test_standalone_fallback_store_begin_and_detach_each_advance_once(
         self, cfg: RigctldConfig
     ) -> None:
@@ -941,11 +1133,12 @@ class TestLifecycle:
         self, cfg: RigctldConfig
     ) -> None:
         """MOR-1532: combined (`rigplane web --rigctld`) mode shares one
-        scheduler. Both ``due_requests()`` (driven by the web poller) and
-        rigctld's own drain derive ``tx_active`` from the identical
-        canonical ``global.tx_state.ptt`` fact, so rigctld's drain must
-        never spuriously flip the cached value the web poller just set --
-        same source, same value, no fight.
+        scheduler. Both ``due_requests()`` (driven by the shared freshness
+        tick) and rigctld's own drain derive ``tx_active`` through
+        ``derive_tx_active`` over the identical canonical
+        ``global.tx_state.ptt`` fact, so rigctld's drain must never
+        spuriously flip the cached value the tick just set -- same source,
+        same value, no fight.
         """
 
         swr = FieldPath.global_("meters", "swr")
@@ -988,13 +1181,13 @@ class TestLifecycle:
         assert result.status is AcquisitionStatus.QUEUED
         assert len(scheduler.pending_requests()) == 1
 
-        # Web poller's drain runs first: due_requests() caches
-        # tx_active=False.
+        # The freshness tick's cadence call runs first: due_requests()
+        # caches tx_active=False.
         scheduler.due_requests(now=0.0, tx_active=False)
 
         # rigctld's own drain runs next, deriving tx_active from the same
         # canonical fact -- must not flip the cache.
-        derived = srv._derive_tx_active()
+        derived = derive_tx_active(store)
         assert derived is False
         scheduler.note_tx_active(derived)
 
@@ -1004,11 +1197,11 @@ class TestLifecycle:
         )
 
         # TX leg: canonical PTT flips FRESH True -- both due_requests()
-        # (web) and _derive_tx_active() (rigctld) must agree, and the
-        # still-queued request must now be dispatchable.
+        # (tick) and derive_tx_active() (rigctld's drain) must agree, and
+        # the still-queued request must now be dispatchable.
         _apply_store_value(store, ptt, True, max_age=1000.0)
         scheduler.due_requests(now=1.0, tx_active=True)
-        derived = srv._derive_tx_active()
+        derived = derive_tx_active(store)
         assert derived is True
         scheduler.note_tx_active(derived)
 

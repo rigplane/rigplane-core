@@ -55,8 +55,13 @@ export const WORKSPACE_THEME_IDS = [
 ] as const;
 export type WorkspaceThemeId = (typeof WORKSPACE_THEME_IDS)[number];
 
-/** Every zone id declared by a registered layout manifest (decisions 5 and 6). */
-export const WORKSPACE_ZONE_IDS = ['main', 'receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global', 'portrait-deck', 'control-column', 'tx-aux', 'meters', 'scope-display', 'filter', 'rf-front-end', 'band', 'antenna', 'rit-xit-scan', 'rx-audio', 'dsp', 'cw-keyer', 'scope-controls', 'peer-columns'] as const;
+/** Every zone id declared by a registered layout manifest (decisions 5 and 6).
+ *  Derived by hand, and checked against the live union by
+ *  `__tests__/contract.test.ts`'s "zone ids are exactly the zones every
+ *  registered layout manifest declares". `main` left with MOR-2231, which
+ *  split sdr-test's only zone into `receiver-deck` + `rx-tx`; no other
+ *  manifest declared it. */
+export const WORKSPACE_ZONE_IDS = ['receiver-deck', 'rx-tx', 'primary-vfo', 'secondary-vfo', 'global', 'portrait-deck', 'control-column', 'tx-aux', 'meters', 'scope-display', 'filter', 'rf-front-end', 'band', 'antenna', 'rit-xit-scan', 'rx-audio', 'dsp', 'cw-keyer', 'scope-controls', 'peer-columns'] as const;
 export type WorkspaceZoneId = (typeof WORKSPACE_ZONE_IDS)[number];
 
 /** Decision 7: command-bus intent names (`set_compressor`), never module paths. */

@@ -69,10 +69,10 @@
   // its legacy twin does NOT also render; a surface no zone declares keeps its
   // legacy presentation untouched.
   //
-  // Both resolving families declare the full pair, so both are fully semantic:
-  // `sdr-test` through one zone (`main: [vfo, rxTx]`) and `desktop-v2` through
-  // two (`receiver-deck: [vfo]` + `rx-tx: [rxTx]`, MOR-1266), which is what
-  // puts desktop-v2 on the v3 path.
+  // Both resolving families declare the full pair, so both are fully semantic.
+  // Since MOR-2231 both also split it across the same two zone ids
+  // (`receiver-deck: [vfo]` + `rx-tx: [rxTx]`, MOR-1266 on desktop-v2), which
+  // is why the `regions` prop below cannot be derived from the manifest.
   //
   // The MANIFEST is the authority, deliberately NOT the resolved surface plan
   // (`useSurfacePlan`, MOR-1082): the workspace may subtract a surface from a
@@ -290,8 +290,19 @@
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
+    <!--
+      MOR-2231 — `regions` below asks the semantic vertical for a zone ELEMENT
+      around `vfo` and `rxTx`. The predicate is SKIN IDENTITY, not a manifest
+      reading: both resolving families now declare `receiver-deck` and
+      `rx-tx`, so nothing in the manifest tells the face that wants the hosts
+      from the one that does not. A later batch replaces it.
+
+      Outside the `{#if}` because the guard in
+      `presentation/layouts/__tests__/forward-declaration-inventory.test.ts`
+      separates `{#if semanticDeck}` from the mount by `\s*` only.
+    -->
     {#if semanticDeck}
-      <SemanticRadioSurfaces />
+      <SemanticRadioSurfaces regions={skinId === 'sdr-test'} />
     {:else}
       <VfoHeader
         {mainVfo}

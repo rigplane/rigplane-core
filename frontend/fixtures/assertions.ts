@@ -686,8 +686,18 @@ export function runAssertions(
  * Resolved paint of the controls that carry the most safety weight, recorded
  * per capture so a `prefers-contrast` / `forced-colors` variant is provable in
  * TEXT and not only in pixels.
+ *
+ * MOR-2243 — `rootTestId` is explicit because `currentRootTestId` is only ever
+ * assigned by `runAssertions`, which a fixture without an `expect` never calls
+ * (`fixtures/main.ts`). This probe then read the stale default against a page
+ * that has no such element, and `root()`'s non-null assertion turned that
+ * missing element into a TypeError that killed the whole capture run rather
+ * than a value this loop could skip. Passing the id in makes the probe
+ * independent of whether the optional assertion step ran first. A missing
+ * root is reported as `__rootMissing` rather than as an empty probe, so it
+ * stays distinguishable from a root that simply carries none of the targets.
  */
-export function styleProbe(): Record<string, Record<string, string>> {
+export function styleProbe(rootTestId: string): Record<string, Record<string, string>> {
   const targets: Record<string, string> = {
     key: '[data-testid="rx-tx-key"]',
     unkey: '[data-testid="rx-tx-unkey"]',
@@ -700,9 +710,15 @@ export function styleProbe(): Record<string, Record<string, string>> {
     inactiveStrip: '[data-testid^="channel-strip-"][data-strip-active="false"]',
     txBadge: '[data-vfo-tx-badge]',
   };
+  const scope = document.querySelector<HTMLElement>(`[data-testid="${rootTestId}"]`);
+  // An empty probe otherwise has two causes the manifest cannot tell apart:
+  // this root is absent, so nothing was searched at all, or it is present and
+  // carries none of the targets, which is a legitimate reading. Returning a
+  // named entry for the first keeps `{}` meaning only the second.
+  if (!scope) return { __rootMissing: { rootTestId } };
   const out: Record<string, Record<string, string>> = {};
   for (const [name, sel] of Object.entries(targets)) {
-    const el = q<HTMLElement>(sel);
+    const el = scope.querySelector<HTMLElement>(sel);
     if (!el) continue;
     const cs = getComputedStyle(el);
     out[name] = {

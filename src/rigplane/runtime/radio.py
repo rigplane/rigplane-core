@@ -346,15 +346,37 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return supported
         if (
             not supported
-            or command not in {"set_af_level", "set_rf_gain", "set_squelch"}
+            or command
+            not in {
+                "set_af_level",
+                "set_rf_gain",
+                "set_squelch",
+                "set_attenuator_level",
+            }
             or isinstance(receiver, bool)
             or not isinstance(receiver, int)
             or not self._profile.supports_receiver(receiver)
             or not callable(getattr(self, command, None))
-            or not self._profile.supports_capability(command.removeprefix("set_"))
+            or not self._profile.supports_capability(
+                "attenuator"
+                if command == "set_attenuator_level"
+                else command.removeprefix("set_")
+            )
         ):
             return False
         try:
+            if command == "set_attenuator_level":
+                command_map = self._profile.command_map
+                if (
+                    not self._profile.att_values
+                    or command_map is None
+                    or not command_map.has("set_attenuator")
+                ):
+                    return False
+                self._require_cmd29_route(
+                    0x11, None, receiver=receiver, operation=command
+                )
+                return True
             return self._level_command29(command, receiver=receiver) is not None
         except CommandError:
             return False
@@ -3968,6 +3990,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_attenuator(self, receiver: int = 0) -> bool:
         """Read attenuator state (compat wrapper)."""
         return (await self.get_attenuator_level(receiver)) > 0
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return db
 
     async def set_attenuator_level(
         self, db: int, receiver: int = RECEIVER_MAIN

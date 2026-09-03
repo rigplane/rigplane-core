@@ -18,18 +18,24 @@ export const sdrTestLayout: LayoutManifest = {
   id: 'sdr-test',
   displayName: 'SDR Test',
   loader: () => import('../../skins/sdr-test/SdrTestSkin.svelte'),
-  // MOR-1346: `meters` joins as its own zone, the same shape every optional
-  // surface graduates through on `desktop-v2` (`desktop-declarations.ts`'s
-  // one-zone-per-surface pattern) — never merged into `main`, so a persisted
-  // `visibleSurfaces.main` preference recorded before this zone existed
-  // cannot silently hide it (`resolveZone`'s allow-list intersection would
-  // otherwise treat an unlisted new member as hidden). Declaring it is what
-  // lets RadioLayout.svelte's existing `semanticMeters` gate
-  // (`declared.has('meters')`) retire `<MetersDockPanel>` here too — the
+  // MOR-1346: `meters` is its own zone, never merged into another one, so a
+  // persisted `visibleSurfaces` entry recorded for a zone before `meters`
+  // joined it cannot silently hide it (`resolveZone`'s allow-list
+  // intersection would otherwise treat an unlisted new member as hidden).
+  // Declaring it is what lets RadioLayout.svelte's existing `semanticMeters`
+  // gate (`declared.has('meters')`) retire `<MetersDockPanel>` here too — the
   // same S5/MOR-1341 mechanism `desktop-v2` already uses, not a second one.
   // Not `required`: the semantic surface self-gates on `view.meters`.
+  //
+  // MOR-2231 (step 1, batch 1): `vfo` and `rxTx` split out of the former
+  // single `main` zone into `receiver-deck` and `rx-tx` — the ids
+  // `desktop-declarations.ts` already uses — so this face names one host per
+  // surface and `SemanticRadioSurfaces` can build a real element for each
+  // (its `regions` prop, passed from `RadioLayout.svelte`). Every zone here is
+  // now one-surface, the shape `desktop-v2` has used since MOR-1266.
   zones: [
-    { id: 'main', surfaces: ['vfo', 'rxTx'] },
+    { id: 'receiver-deck', surfaces: ['vfo'] },
+    { id: 'rx-tx', surfaces: ['rxTx'] },
     { id: 'meters', surfaces: ['meters'] },
   ],
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],

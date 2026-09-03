@@ -661,7 +661,13 @@ class RigctldClientRadio:
 
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         if receiver is not None and (
-            command not in {"set_af_level", "set_rf_gain", "set_squelch"}
+            command
+            not in {
+                "set_af_level",
+                "set_rf_gain",
+                "set_squelch",
+                "set_attenuator_level",
+            }
             or isinstance(receiver, bool)
             or not isinstance(receiver, int)
             or receiver != 0
@@ -888,6 +894,9 @@ class RigctldClientRadio:
         self._require_main_receiver(receiver, "get_attenuator_level")
         line = (await self._transport.query("l ATT", response_lines=1))[0]
         return _parse_int_level(line, "attenuator")
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return db
 
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_attenuator_level")
