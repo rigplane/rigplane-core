@@ -2119,6 +2119,8 @@ def _expected_value_control_max_age(store_path: str) -> float | None:
         return 10.0
     if store_path == "global.operator_controls.power_level":
         return 30.0
+    if store_path.endswith(".tone_freq") or store_path.endswith(".tsql_freq"):
+        return 25.0
     return None
 
 
@@ -2687,6 +2689,64 @@ def test_meter_value_survives_freshness_window_between_live_arrivals(
     )
     assert payload["main"]["sMeter"] == -4
     assert payload["main"]["sMeter"] != -54  # the calibrated S0 floor
+
+
+@pytest.mark.parametrize(
+    ("sub", "name"),
+    [
+        (0x00, "tone_freq"),
+        (0x01, "tsql_freq"),
+    ],
+)
+def test_tone_and_tsql_freq_observations_can_go_stale(
+    radio: IcomRadio, sub: int, name: str
+) -> None:
+    """MOR-2234 follow-up: a declared-observable path still needs a TTL here.
+
+    ``_observation`` reads ``max_age`` from ``_OBSERVATION_MAX_AGE_SECONDS``
+    with no default, and ``state_store.py: StateStore.mark_stale_due`` skips
+    any entry whose ``max_age`` is ``None``. With no table entry this path
+    was observed once and then reported ``FRESH`` for the lifetime of the
+    process, whatever the front panel did afterwards.
+
+    Fail-without: the observation carries ``max_age=None`` and the field is
+    still ``FRESH`` past the TTL ``rigs/ic7300.toml`` declares for it.
+    """
+
+    stored = FieldPath.receiver("0", "operator_controls", name)
+    # The TTL is not a literal here: it is read from the IC-7300 profile,
+    # which is what declared this path observable (e0558fea).
+    declared_ttl = (
+        resolve_radio_profile(model="IC-7300")
+        .state_acquisition.field_policies[
+            FieldPath.receiver("main", "operator_controls", name)
+        ]
+        .freshness_ttl_seconds
+    )
+
+    observed_at = 500.0
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=observed_at):
+        radio._civ_runtime._apply_state_store_observations(
+            _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(88.5), receiver=0x00)
+        )
+    assert radio._state_store.snapshot().field(str(stored)).value == 8850
+
+    # Inside the declared TTL the value is still the radio's truth.
+    radio._state_store.mark_stale_due(now=observed_at + declared_ttl - 0.1)
+    assert radio._state_store.snapshot().field(str(stored)).freshness is (
+        FreshnessState.FRESH
+    )
+
+    # Past it, the freshness driver must be able to retire the value and ask
+    # for it again.
+    delta = radio._state_store.mark_stale_due(now=observed_at + declared_ttl + 0.1)
+    assert radio._state_store.snapshot().field(str(stored)).freshness is (
+        FreshnessState.STALE
+    )
+    assert [t.path for t in delta.freshness] == [stored]
+    assert [(r.path, r.max_age) for r in delta.reconciliation_requests] == [
+        (stored, declared_ttl)
+    ]
 
 
 def test_same_value_coalesced_meter_flush_completes_scheduler_request(

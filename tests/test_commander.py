@@ -40,14 +40,17 @@ async def _cleanup_held_commander(
     tasks: list[asyncio.Task],
 ) -> None:
     execute.release.set()
+    captured = [*tasks, worker]
+    if execute.task is not None:
+        captured.append(execute.task)
     # Cleanup may issue another cancellation; no verdict observes this phase.
     for _ in range(2):
-        for task in [*tasks, worker]:
+        for task in captured:
             if not task.done():
                 task.cancel()
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-    await asyncio.gather(*tasks, worker, return_exceptions=True)
+    await asyncio.gather(*captured, return_exceptions=True)
     await commander.stop()
 
 
@@ -78,6 +81,7 @@ async def test_stop_joins_cancel_resistant_execute_before_worker_exit(
         assert not pending, "cancel-resistant execute left stopping worker parked"
         assert execute.task is not None and execute.task.done()
         assert execute.seen == [b"held"], "stopped queue dispatched a later command"
+        assert send.exception() is not None, "stopped in-flight send reported success"
         assert isinstance(queued.exception(), ConnectionError)
         assert c._worker is None
         assert c._queue is None
@@ -107,6 +111,10 @@ async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
         if cancel_first:
             first.cancel()
             await asyncio.wait({first}, timeout=0.05)
+            if first.done() and not first.cancelled():
+                assert first.exception() is not None, (
+                    "cancelled stop waiter reported success before execute release"
+                )
             assert not worker.done(), "cancelled stop waiter terminated actual worker"
             assert c._worker is worker, "cancelled stop waiter lost worker handle"
         second = asyncio.create_task(c.stop())
@@ -123,6 +131,56 @@ async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
         await c.stop()
     finally:
         await _cleanup_held_commander(c, execute, worker, tasks)
+
+
+@pytest.mark.asyncio
+async def test_old_stop_preserves_restart_from_worker_done_callback() -> None:
+    seen = []
+
+    async def execute(payload: bytes, wait_response: bool) -> None:
+        seen.append(payload)
+
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    worker, queue = c._worker, c._queue
+    assert worker is not None
+    replacements = []
+    tasks = []
+
+    def restart(_worker: asyncio.Task[None]) -> None:
+        c.start()
+        replacements.append((c._worker, c._queue))
+
+    # Registered before stop awaits the worker, so restart precedes stop's resume.
+    worker.add_done_callback(restart)
+    try:
+        await asyncio.sleep(0)
+        stop = asyncio.create_task(c.stop())
+        tasks.append(stop)
+        _, pending = await asyncio.wait({stop, worker}, timeout=1)
+        assert not pending, "old stop did not finish"
+        stop.result()
+        replacement, replacement_queue = replacements[0]
+        assert replacement is not None and replacement is not worker
+        assert replacement_queue is not queue
+        assert c._worker is replacement, "old stop erased restarted worker"
+        assert c._queue is replacement_queue, "old stop erased restarted queue"
+        assert not replacement.done()
+        send = asyncio.create_task(c.send(b"current"))
+        tasks.append(send)
+        _, pending = await asyncio.wait({send}, timeout=1)
+        assert not pending, "restarted commander did not execute"
+        assert send.result() is None
+        assert seen == [b"current"]
+    finally:
+        captured = [*tasks, worker, *(item[0] for item in replacements)]
+        for task in captured:
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in captured if task is not None), return_exceptions=True
+        )
+        await c.stop()
 
 
 @pytest.mark.asyncio
