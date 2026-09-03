@@ -537,7 +537,7 @@ async function assertProductionLanguageCss(page: Page, item: ProductionLanguageC
       fieldline: rules.some((rule) => rule.includes('--dl-fieldline-surface')),
       productionCss: [...document.styleSheets]
         .map((sheet) => sheet.href)
-        .some((href) => /\/assets\/[^/]+-[\w-]+\.css$/.test(href)),
+        .some((href) => href !== null && /\/assets\/[^/]+-[\w-]+\.css$/.test(href)),
     };
   })).toEqual({ studioline: true, fieldline: true, productionCss: true });
 }

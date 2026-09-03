@@ -13,6 +13,18 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-03 — Icom lower-executor lifetime (draft, source `4e4c1782`)
+
+- [2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md](2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md)
+  — bounded commander/captured-executor ownership and frozen-matrix evidence;
+  pending independent adjudication, without whole-app or RF claims.
+
+## 2026-09-03 — managed command queue (tree `3c997a9d`)
+
+- [2026-09-03-mechanism-audit-managed-command-queue.md](2026-09-03-mechanism-audit-managed-command-queue.md)
+  — shared definitions, missing whole-operation claim/lifetime surfaces, and
+  incomplete managed ingress migration; no implementation or runtime proof.
+
 ## 2026-09-03 — command queue and Web execution (tree `fdbd7403`)
 
 - [2026-09-03-mechanism-audit-command-queue-web.md](2026-09-03-mechanism-audit-command-queue-web.md)

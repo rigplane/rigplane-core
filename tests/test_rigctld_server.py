@@ -538,6 +538,9 @@ class TestLifecycle:
             cfg,
             state_store=store,
             state_model_service=model_service,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
         )
 
     async def test_start_bootstraps_profiled_standalone_state_acquisition(
@@ -577,6 +580,9 @@ class TestLifecycle:
             cfg,
             state_store=srv._state_store,
             state_model_service=srv._state_model_service,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
         )
         assert srv._state_store_freshness_task is None
 
@@ -620,6 +626,9 @@ class TestLifecycle:
             cfg,
             state_store=store,
             state_model_service=model_service,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
         )
 
     async def test_combined_seats_drive_the_shared_service_once(
@@ -738,7 +747,14 @@ class TestLifecycle:
         tick_interval = 0.05
         window = 1.2
         steps = round(window / tick_interval)
-        for _ in range(steps):
+        ticks_per_cadence = round(declared_cadence / tick_interval)
+        cycle_start = clock.now()
+        for step in range(steps):
+            tick_in_cycle = step % ticks_per_cadence
+            if step and tick_in_cycle == 0:
+                cycle_start += declared_cadence
+            target = cycle_start + tick_in_cycle * tick_interval
+            clock.advance(target - clock.now())
             service.tick(now=clock.now())
             await srv._drain_state_acquisition_once()
             # Stand in for the CI-V ingress that credits an answered read;
@@ -762,7 +778,6 @@ class TestLifecycle:
                     )
                 )
                 scheduler.record_acquisition_result(request, change_set)
-            clock.advance(tick_interval)
 
         ptt_sends = [
             at for at, command, sub in radio.civ_sends if (command, sub) == (0x1C, 0x00)
@@ -890,6 +905,9 @@ class TestLifecycle:
             cfg,
             state_store=srv._state_store,
             state_model_service=None,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
         )
 
     async def test_standalone_shared_store_is_never_advanced_by_server(

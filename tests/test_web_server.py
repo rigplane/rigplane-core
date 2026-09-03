@@ -3840,9 +3840,12 @@ class TestSwitchScopeReceiver:
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
         poller.start()
-        queue.put(SetCwPitch(600))
-        await asyncio.sleep(0.03)
-        poller.stop()
+        reply = asyncio.get_running_loop().create_future()
+        queue.put_ordered(SetCwPitch(600), future=reply)
+        try:
+            await asyncio.wait_for(reply, timeout=2.0)
+        finally:
+            poller.stop()
 
         radio.set_cw_pitch.assert_awaited_once_with(600)
         assert poller._radio_state is not None
