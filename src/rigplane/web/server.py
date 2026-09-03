@@ -3038,6 +3038,7 @@ class WebServer:
                     "agcLabels": profile.agc_labels,
                     "rfSqlControlModel": profile.rf_sql_control_model,
                     "antennas": profile.antenna_tx_count,
+                    "hasRxAntenna": profile.antenna_has_rx_ant,
                     "dataModeCount": profile.data_mode_count,
                     "dataModeLabels": profile.data_mode_labels,
                     "keyboard": _serialize_keyboard_config(profile),
@@ -3533,6 +3534,7 @@ class WebServer:
                 "jitterCeilingMs": get_audio_rx_jitter_ceiling_ms(),
             },
             "antennas": profile.antenna_tx_count,
+            "hasRxAntenna": profile.antenna_has_rx_ant,
             "webrtc": {
                 "available": webrtc_available(),
                 "enabled": self._config.webrtc_enabled,

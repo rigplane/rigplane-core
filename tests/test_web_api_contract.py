@@ -69,6 +69,10 @@ scheme = "ab"
 
 [commands.overrides]
 
+[antenna]
+tx_count = 2
+has_rx_ant = true
+
 [controls.identity]
 mapping = "identity"
 raw_min = -2
@@ -141,6 +145,8 @@ async def test_control_domains_round_trip_through_both_capability_endpoints(
     """The shared JSON is derived only by loading TOML into a RadioProfile."""
     profile = _golden_profile(tmp_path)
     assert profile.controls == _golden_controls()
+    assert profile.antenna_tx_count == 2
+    assert profile.antenna_has_rx_ant is True
     radio = SimpleNamespace(
         model=profile.model,
         profile=profile,
@@ -161,7 +167,12 @@ async def test_control_domains_round_trip_through_both_capability_endpoints(
             if path == "/api/v1/info"
             else payload["controls"]
         )
+        capability_payload = (
+            payload["capabilities"] if path == "/api/v1/info" else payload
+        )
         assert controls == _golden_controls()
+        assert capability_payload["antennas"] == 2
+        assert capability_payload["hasRxAntenna"] is True
 
 
 @pytest.mark.asyncio
