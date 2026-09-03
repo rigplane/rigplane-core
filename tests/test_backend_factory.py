@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
@@ -22,6 +23,7 @@ from rigplane.backends.icom7610.drivers.contracts import (
     CivLink,
     SessionDriver,
 )
+from rigplane.exceptions import CommandError
 
 
 class TestBackendConfigValidation:
@@ -194,6 +196,13 @@ class TestContracts:
         class _Civ:
             async def send(self, frame: bytes) -> None:
                 return None
+
+            async def send_written(
+                self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+            ) -> None:
+                if is_current is not None and not is_current():
+                    raise CommandError("Serial CI-V write is no longer current.")
+                await self.send(frame)
 
             async def receive(self, timeout: float | None = None) -> bytes | None:
                 return frame if (frame := b"x") else None
