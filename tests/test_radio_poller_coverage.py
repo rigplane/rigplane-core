@@ -1849,6 +1849,100 @@ async def test_scheduler_polling_does_not_starve_user_command_queue() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finite_command_turn_composes_with_acquisition_error_backoff(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    queue, radio = CommandQueue(), _make_radio(active="MAIN")
+    loop = asyncio.get_running_loop()
+    first, second = loop.create_future(), loop.create_future()
+    later, leaves, boundary = [], [], {}
+
+    async def set_freq(freq: int) -> None:
+        leaves.append(freq)
+        if freq == 14_074_000:
+            later.append(queue.put_ordered(SetFreq(14_250_000), future=second))
+
+    async def send(
+        request: object,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> None:
+        if executor.execute.await_count == 1:
+            boundary.update(
+                first_complete=first.done() and first.result() is None,
+                pending=tuple(
+                    entry
+                    for segment in queue._segments  # noqa: SLF001
+                    for entry in segment.entries()
+                ),
+                second_pending=not second.done(),
+                leaves=tuple(leaves),
+            )
+            # Quota protects this pass only; remove the fixture's later work
+            # before observing the next pass's real acquisition backoff.
+            boundary["removed"] = queue.remove_pending(later[0])
+            raise ConnectionError("acquisition link down")
+        raise asyncio.CancelledError
+
+    radio.set_freq = AsyncMock(side_effect=set_freq)
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(
+            FieldPath.receiver("main", "meters", "s_meter"),
+            FieldPath.receiver("sub", "meters", "s_meter"),
+        )
+    )
+    radio._acquisition_scheduler = scheduler
+    executor = SimpleNamespace(execute=AsyncMock(side_effect=send))
+    recorder = StateDiagnosticsRecorder(enabled=True)
+    poller = RadioPoller(
+        radio,
+        queue,
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+        diagnostics=recorder,
+    )
+    _seed_fresh_rx(poller)
+    _tick_cadence(poller)
+    assert len(scheduler.pending_requests()) == 2
+    queue.put_ordered(SetFreq(14_074_000), future=first)
+    queue.wait = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
+    with (
+        patch("rigplane.web.radio_poller.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"),
+    ):
+        task = asyncio.create_task(poller._run())  # noqa: SLF001
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        finally:
+            task.cancel()
+            first.cancel()
+            second.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert boundary["first_complete"]
+    assert boundary["leaves"] == (14_074_000,), "arrival must not refill initial quota"
+    assert len(boundary["pending"]) == 1 and boundary["pending"][0] is later[0]
+    assert later[0].future is second and boundary["second_pending"]
+    assert boundary["removed"]
+    radio.set_freq.assert_awaited_once_with(14_074_000)
+    assert first.result() is None
+    assert executor.execute.await_count == 2
+    assert sleep.await_args_list.count(call(0.5)) == 1
+    assert "radio disconnected, backing off 0.5s" in caplog.text
+    reported = [
+        event.details
+        for event in recorder.events()
+        if event.details.get("reason") == "acquisition_executor_error"
+    ]
+    assert [(event["error_type"], event["error"]) for event in reported] == [
+        ("ConnectionError", "acquisition link down")
+    ]
+    assert scheduler.diagnostics()["failureCountByReason"] == {
+        "acquisition_executor_error": 1
+    }
+
+
+@pytest.mark.asyncio
 async def test_command_queue_wait_and_drain_behavior() -> None:
     q = CommandQueue()
     await q.wait(timeout=0.001)
