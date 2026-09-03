@@ -11,13 +11,7 @@
  *
  * DEGRADE belongs to the shell, not the declaration: a
  * declared-compatible topology whose second receiver was never observed
- * renders ONE strip and no `secondary-vfo` zone. Nothing fabricates a SUB
- * (`receiversOf` reads `view.vfos`), the radio-wide row still renders exactly
- * once, and the single TX authority is untouched in every arm.
- *
- * `stageSizing: fluid` encodes the MOR-1160 chrome-fluid half of the sizing
- * axis: this shell composes only VFO/RX-TX status text today (no fixed-native
- * instrument glass yet), so it always fits, at any viewport.
+ * renders ONE strip and no `secondary-vfo` zone.
  */
 import { registerLayout, type LayoutManifest } from './contract';
 
