@@ -2169,11 +2169,11 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
 ):
     """MOR-1501 acceptance criterion.
 
-    Simulates the real IC-7300 acquisition profile's 22 non-polling
+    Simulates the real IC-7300 acquisition profile's 24 non-polling
     ``field_policies`` fields populating from a cold connect (empty store).
     Before adaptive pacing, the flat 30s re-derivation interval combined
     with the unchanged 5-field burst cap gave this profile a ~120s tail
-    (``ceil(22 / 5) == 5`` waves, 30s apart), even though each field's true
+    (five 5-field-capped waves, 30s apart), even though each field's true
     CI-V round-trip cost is ~1.1s — the interval, not the serial link, was
     the bottleneck. With the 5s adaptive interval the same 5 waves complete
     in ~20-25s. This drives the scheduler/service pair directly (no real
@@ -2198,9 +2198,10 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
     # (MOR-1501) — guards against silent membership drift changing the
     # shape of this regression test without anyone noticing. MOR-2144 removes
     # only the unsupported APF path; the supported NB level stays scheduled.
+    # MOR-2234 adds tone_freq/tsql_freq, taking the count from 22 to 24.
     assert apf_path not in acquisition.field_policies
     assert nb_level_path in acquisition.field_policies
-    assert len(non_polling_paths) == 22
+    assert len(non_polling_paths) == 24
 
     clock = FreshnessClock(start=2000.0)
     store = StateStore(freshness_clock=clock)
@@ -3132,6 +3133,55 @@ def test_ic7300_real_profile_vox_delay_is_primed_and_executor_builds_multibyte_f
     execution = asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
     assert execution.failed_paths == ()
     assert acquisition_query(0x1A, sub=0x05, data=b"\x01\x91") in sent
+
+
+def test_ic7300_real_profile_primes_tone_and_tsql_freq_and_sends_1b_reads() -> None:
+    """MOR-2234 group B: the scheduler must actually ask for tone/TSQL freq.
+
+    ``rigs/ic7300.toml`` declares ``get_tone_freq``/``get_tsql_freq`` and
+    ``runtime/_civ_rx.py`` decodes the ``0x1B`` replies, but neither path
+    appeared in any ``[state_acquisition.capabilities]`` list, so
+    ``capability_for`` returned the default UNKNOWN and no acquisition
+    mechanism ever reached them. Driving the real scheduler over a full
+    round-robin sweep of ``field_policies`` must queue both paths and the
+    CI-V executor must emit their declared ``1B 00`` / ``1B 01`` reads.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic7300.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    tone_freq = FieldPath.receiver("main", "operator_controls", "tone_freq")
+    tsql_freq = FieldPath.receiver("main", "operator_controls", "tsql_freq")
+    for path in (tone_freq, tsql_freq):
+        capability = acquisition.capability_for(path)
+        assert capability.is_unavailable is False
+        assert capability.can_poll is False
+        assert capability.command_response_observable is True
+
+    clock = FreshnessClock(start=400.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+
+    # prime_unobserved caps each call at a burst limit and advances a
+    # round-robin cursor, so one call need not reach every policy field.
+    # len(field_policies) calls bound a full sweep from any start offset.
+    request_by_path: dict[FieldPath, Any] = {}
+    for _ in range(len(acquisition.field_policies)):
+        for request in scheduler.prime_unobserved(observed_paths=()):
+            for path in request.paths:
+                request_by_path.setdefault(path, request)
+    assert {tone_freq, tsql_freq} <= set(request_by_path)
+
+    # Both paths coalesce into one request (same scope/family/receiver/
+    # method/policy key), so one execution covers them.
+    request = request_by_path[tone_freq]
+    assert request_by_path[tsql_freq] is request
+    assert request.acquisition_method == "command_response"
+
+    executor, sent = recording_executor(get_radio_profile("IC-7300"))
+    execution = asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
+    assert execution.failed_paths == ()
+    assert acquisition_query(0x1B, sub=0x00, receiver=0) in sent
+    assert acquisition_query(0x1B, sub=0x01, receiver=0) in sent
 
 
 def test_ic7610_real_profile_vfo_global_query_for_path() -> None:
