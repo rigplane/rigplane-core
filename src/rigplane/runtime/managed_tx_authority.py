@@ -185,6 +185,8 @@ class ManagedTxAuthority:
             if _registered.done():
                 raise ValueError("PTT registration acknowledgement must be pending")
         try:
+            if _registered is not None:
+                _registered.set_result(None)
             worker, admitted = self._begin_ptt_operation(on, owner, ready=ready)
         except asyncio.CancelledError:
             if _registered is not None:
@@ -194,8 +196,6 @@ class ManagedTxAuthority:
             if _registered is not None:
                 _registered.set_exception(error)
             raise
-        if _registered is not None:
-            _registered.set_result(None)
         try:
             transition = await asyncio.shield(admitted)
         except asyncio.CancelledError:
