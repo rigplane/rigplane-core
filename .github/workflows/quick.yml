@@ -133,6 +133,7 @@ jobs:
         run: |
           cd frontend
           npm ci
+          npm run lint
           npm run i18n:check
           npm run check
           npx vitest run
