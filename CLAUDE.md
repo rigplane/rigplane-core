@@ -213,7 +213,7 @@ a coordinator: it plans and dispatches, and does not implement. The
 implementation agent never reviews its own work (Language & Git above).
 
 Subagent roles with pinned models live in `.claude/agents/`: `scout` (haiku,
-read-only status/fact collection), `builder` (sonnet, implementation from a
+read-only status/fact collection), `builder` (opus, implementation from a
 spec), `verifier` (opus, independent review and gate verdicts), `researcher`
 (sonnet, read-only exploration with synthesis), `auditor` (opus, read-only
 adjudication of audits — mechanism duplication, displacement across layer
