@@ -2178,53 +2178,33 @@ async def test_execute_event_emitting_commands_and_vfo_paths() -> None:
         await poller._execute(SwitchScopeReceiver(2))  # noqa: SLF001
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("command", [VfoSwap, VfoEqualize])
-@pytest.mark.parametrize("queued", [False, True], ids=("direct", "queued"))
-async def test_unknown_profileless_vfo_commands_fail_before_mutation(
-    command: type[VfoSwap] | type[VfoEqualize], queued: bool
+@pytest.mark.parametrize("capabilities", [set(), {"dual_rx"}], ids=("empty", "dual_rx"))
+def test_unknown_profileless_radio_refuses_construction_before_any_wire_or_mutation(
+    capabilities: set[str],
 ) -> None:
-    """Unknown profile-less VFO commands must never inherit a foreign primitive."""
+    """An unknown radio cannot inherit either Icom profile during setup."""
     radio = _make_radio()
     radio.profile = None
     radio.model = "Unknown Rig"
-    radio.capabilities = {"dual_rx"}
+    radio.capabilities = capabilities
+    radio.set_vfo = AsyncMock()
+    radio.select_receiver = AsyncMock()
     radio.swap_vfo_ab = AsyncMock()
     radio.equalize_vfo_ab = AsyncMock()
-    poller = RadioPoller(radio, CommandQueue())
+    radio.swap_main_sub = AsyncMock()
+    radio.equalize_main_sub = AsyncMock()
 
-    if queued:
-        _seed_fresh_rx(poller)
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        poller._queue.put_ordered(command(), future=future)  # noqa: SLF001
-        poller.start()
-        with pytest.raises(NotImplementedError, match="unknown.*profile"):
-            await asyncio.wait_for(future, timeout=1)
-        poller.stop()
-    else:
-        with pytest.raises(NotImplementedError, match="unknown.*profile"):
-            await poller._execute(command())  # noqa: SLF001
+    with pytest.raises(NotImplementedError, match="unknown.*profile"):
+        RadioPoller(radio, CommandQueue())
 
+    radio.set_freq.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
+    radio.set_vfo.assert_not_awaited()
+    radio.select_receiver.assert_not_awaited()
     radio.swap_vfo_ab.assert_not_awaited()
     radio.equalize_vfo_ab.assert_not_awaited()
     radio.swap_main_sub.assert_not_awaited()
     radio.equalize_main_sub.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_unknown_profileless_set_freq_keeps_base_receiver_guard() -> None:
-    """Unknown profile-less non-VFO commands retain the base fallback behavior."""
-    radio = _make_radio()
-    radio.profile = None
-    radio.model = "Unknown Rig"
-    radio.capabilities = set()
-    poller = RadioPoller(radio, CommandQueue())
-
-    with pytest.raises(CommandError, match="receiver=1"):
-        await poller._execute(SetFreq(14_074_000, receiver=1))  # noqa: SLF001
-
-    radio.set_freq.assert_not_awaited()
-    radio.send_civ.assert_not_awaited()
 
 
 @pytest.mark.asyncio
