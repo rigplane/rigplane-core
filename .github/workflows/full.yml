@@ -5,6 +5,12 @@ on:
     # Mon/Wed/Fri 03:00 UTC (06:00 MSK)
     - cron: "0 3 * * 1,3,5"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Normal matrix or isolated serial close RED
+        type: choice
+        default: normal
+        options: [normal, serial-close-red]
   push:
     branches: [main]
 
@@ -15,9 +21,10 @@ concurrency:
 jobs:
   test:
     # On push: only when commit message contains [full-ci].
-    # On schedule / manual dispatch: run except on the formatter preflight ref.
+    # Keep normal runs; only the exact manual RED mode/ref uses its own job.
     if: >-
-      github.ref != 'refs/heads/codex/serial-completion-preflight' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-close-red' &&
+      github.ref == 'refs/heads/codex/serial-completion-preflight') &&
       (github.event_name != 'push' ||
       contains(github.event.head_commit.message, '[full-ci]'))
     # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
@@ -185,10 +192,11 @@ jobs:
     #
     # Same push guard as the `test` job above: on `push`, only runs when
     # the commit message contains `[full-ci]`; on `schedule`/
-    # `workflow_dispatch`, runs except on the formatter preflight ref. Keeps it off
+    # `workflow_dispatch`, runs except for the exact manual RED mode/ref. Keeps it off
     # ordinary push to `main`.
     if: >-
-      github.ref != 'refs/heads/codex/serial-completion-preflight' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-close-red' &&
+      github.ref == 'refs/heads/codex/serial-completion-preflight') &&
       (github.event_name != 'push' ||
       contains(github.event.head_commit.message, '[full-ci]'))
     runs-on: [self-hosted, linux, build]
@@ -267,123 +275,433 @@ jobs:
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
 
-  serial-formatter-preflight:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/serial-completion-preflight'
+  serial-close-red:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-close-red' && github.ref == 'refs/heads/codex/serial-completion-preflight'
     runs-on: [self-hosted, linux, build]
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
     env:
-      SOURCE_PIN: 82585fb4b7957096d9644db5d8b95c3ca1c79077
-      UV_PYTHON: '3.11'
+      UV_PYTHON: '3.11.16'
       PYTHONDONTWRITEBYTECODE: '1'
     defaults:
       run:
         shell: bash
         working-directory: source
     steps:
+      - name: Establish isolated evidence paths
+        working-directory: ${{ github.workspace }}
+        run: |
+          proof_root=$(mktemp -d "$RUNNER_TEMP/serial-close-red.XXXXXX")
+          mkdir "$proof_root/evidence"
+          echo "PROOF_ROOT=$proof_root" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$proof_root/uv-cache" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$proof_root/venv" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$proof_root/python" >> "$GITHUB_ENV"
+          printf '%s\n' '{"status":"INVALID","reason":"execution has not completed"}' > "$proof_root/evidence/verdict.json"
       - uses: actions/checkout@v6
         with:
-          ref: 82585fb4b7957096d9644db5d8b95c3ca1c79077
+          path: diagnostic
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: 798e4db44dba831a38897606f13e75061a48837e
           fetch-depth: 0
           persist-credentials: false
           path: source
 
-      - name: Prepare isolated formatter evidence
-        id: prepare
-        run: |
-          artifact_dir=$(mktemp -d "$RUNNER_TEMP/serial-preflight-evidence.XXXXXX")
-          uv_cache_dir=$(mktemp -d "$RUNNER_TEMP/serial-preflight-cache.XXXXXX")
-          venv_dir=$(mktemp -d "$RUNNER_TEMP/serial-preflight-venv.XXXXXX")
-          echo "ARTIFACT_DIR=$artifact_dir" >> "$GITHUB_ENV"
-          echo "UV_CACHE_DIR=$uv_cache_dir" >> "$GITHUB_ENV"
-          echo "UV_PROJECT_ENVIRONMENT=$venv_dir" >> "$GITHUB_ENV"
-          echo "artifact_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "source=$SOURCE_PIN" "workflow=$GITHUB_SHA" "ref=$GITHUB_REF" \
-            "run=$GITHUB_RUN_ID" "attempt=$GITHUB_RUN_ATTEMPT" "runner=$RUNNER_NAME" \
-            > "$artifact_dir/metadata.txt"
-          printf '%s\n' \
-            src/rigplane/backends/icom7610/drivers/serial_civ_link.py \
-            src/rigplane/backends/icom7610/drivers/serial_session.py \
-            tests/test_serial_civ_link.py tests/test_serial_session.py \
-            > "$artifact_dir/allowed-files.txt"
-          git rev-parse HEAD > "$artifact_dir/source-head.txt"
-          git rev-parse 'HEAD^{tree}' > "$artifact_dir/source-tree.txt"
-          git status --porcelain=v1 --untracked-files=all > "$artifact_dir/status-before.txt"
-          git diff HEAD > "$artifact_dir/source-before.diff"
-          sha256sum \
-            src/rigplane/backends/icom7610/drivers/serial_civ_link.py \
-            src/rigplane/backends/icom7610/drivers/serial_session.py \
-            tests/test_serial_civ_link.py tests/test_serial_session.py \
-            > "$artifact_dir/source-sha256-before.txt"
-          test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
-          test ! -s "$artifact_dir/status-before.txt"
-          git diff --exit-code HEAD
-
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: false
+          version: '0.12.9'
 
-      - name: Install locked formatter dependencies
+      - name: Freeze RED instrument and manifest
         run: |
-          uv --version | tee "$ARTIFACT_DIR/uv-version.txt"
-          uv python install 3.11
-          uv sync --locked --all-extras --no-install-project \
-            > "$ARTIFACT_DIR/install.stdout.log" 2> "$ARTIFACT_DIR/install.stderr.log"
-          uv run --no-sync ruff --version | tee "$ARTIFACT_DIR/ruff-version.txt"
-          test "$(cat "$ARTIFACT_DIR/ruff-version.txt")" = 'ruff 0.15.2'
+          cat > "$PROOF_ROOT/evidence/serial_red.py" <<'PY'
+          import asyncio
+          import ctypes
+          import hashlib
+          import importlib.metadata
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import signal
+          import subprocess
+          import sys
+          import time
+          import xml.etree.ElementTree as ET
+          from collections import Counter
 
-      - name: Capture formatter diff without modifying source
+          SOURCE = '798e4db44dba831a38897606f13e75061a48837e'
+          TREE = '512b50358afdd7f3d5a21fd80b08c2e27c5d9cb9'
+          PARENT = '82585fb4b7957096d9644db5d8b95c3ca1c79077'
+          CARRIER_PARENT = '83add13d86ac20847ae9ae709b6fb3e4bdd9addb'
+          ROOT = Path.cwd().resolve()
+          DIAG = ROOT.parent / 'diagnostic'
+          EVIDENCE = Path(os.environ['PROOF_ROOT']) / 'evidence'
+          LINK = 'tests/test_serial_civ_link.py'
+          SESSION = 'tests/test_serial_session.py'
+          DRIVER = 'src/rigplane/backends/icom7610/drivers/'
+          REQUIRED_IMPORTS = ('rigplane.backends.icom7610.drivers.serial_civ_link',
+                              'rigplane.backends.icom7610.drivers.serial_session',
+                              'test_serial_civ_link', 'test_serial_session')
+          CONTROLS = [
+              LINK + '::test_send_written_waits_for_drain_and_preserves_raw_enqueue',
+              LINK + '::test_send_written_rechecks_guard_at_writer[false]',
+              LINK + '::test_send_written_rechecks_guard_at_writer[raises]',
+              LINK + '::test_send_written_captures_session_before_backpressure[queue]',
+              LINK + '::test_send_written_captures_session_before_backpressure[writer]',
+              LINK + '::test_send_written_captures_session_before_backpressure[both]',
+              LINK + '::test_admitted_write_rechecks_writer_identity_before_write',
+              LINK + '::test_cancelled_queued_write_keeps_active_neighbor_and_successor[False]',
+              LINK + '::test_cancelled_queued_write_keeps_active_neighbor_and_successor[True]',
+              LINK + '::test_active_write_cancellation_closes_captured_not_replacement',
+              LINK + '::test_replacement_off_follows_last_possible_old_session_on',
+              LINK + '::test_retired_worker_exits_after_cancel_resistant_drain_error[OSError]',
+              LINK + '::test_retired_worker_exits_after_cancel_resistant_drain_error[RuntimeError]',
+              LINK + '::test_overlapping_disconnect_joins_drain_and_wait_closed[False-disconnect]',
+              LINK + '::test_overlapping_disconnect_joins_drain_and_wait_closed[False-active-cancel]',
+              SESSION + '::test_send_tracked_waits_for_actual_serial_drain',
+              SESSION + '::test_send_tracked_propagates_actual_serial_io_failure[write]',
+              SESSION + '::test_send_tracked_propagates_actual_serial_io_failure[drain]',
+              SESSION + '::test_send_tracked_forwards_currency_to_serial_writer',
+          ]
+
+          def failure(file, name, line, message, tasks, close_caller):
+              return file + '::' + name, dict(file=file, line=line,
+                  exception='builtins.AssertionError', message_first_line=message,
+                  statement='assert not done, ' + json.dumps(message),
+                  tasks_done=tasks, close_caller=close_caller)
+
+          FAILURES = dict([
+              failure(LINK, 'test_idle_disconnect_joins_worker_before_raising_close_error',
+                      428, 'close error escaped before idle writer retirement',
+                      {'stopping': True, 'old_worker': False}, 'stopping'),
+              failure(LINK, 'test_overlapping_disconnect_joins_drain_and_wait_closed[True-disconnect]',
+                      474, 'overlapping disconnect skipped active drain retirement',
+                      {'first': True, 'second': True, 'pending': False, 'old_worker': False}, 'first'),
+              failure(LINK, 'test_overlapping_disconnect_joins_drain_and_wait_closed[True-active-cancel]',
+                      474, 'overlapping disconnect skipped active drain retirement',
+                      {'first': True, 'second': True, 'pending': True, 'old_worker': False}, 'first'),
+              failure(SESSION, 'test_cancelled_disconnect_retains_close_error_and_writer_lifetime',
+                      116, 'close error ended teardown before the active writer',
+                      {'caller': True, 'operation': False, 'worker': False}, 'caller'),
+          ])
+          EXPECTED = {**dict.fromkeys(CONTROLS), **FAILURES}
+
+          def save(name, data):
+              (EVIDENCE / name).write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+
+          def append(name, data):
+              with (EVIDENCE / name).open('a') as stream:
+                  stream.write(json.dumps(data, sort_keys=True) + '\n')
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def git(root, *args):
+              return subprocess.check_output(['git', *args], cwd=root, timeout=30)
+
+          def snapshot(root):
+              names = git(root, 'ls-files', '-z').decode().split('\0')[:-1]
+              hashes = {}
+              for name in names:
+                  path = root / name
+                  content = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+                  hashes[name] = sha(content)
+              return dict(head=git(root, 'rev-parse', 'HEAD').decode().strip(),
+                          tree=git(root, 'rev-parse', 'HEAD^{tree}').decode().strip(),
+                          status=git(root, 'status', '--porcelain=v1', '--untracked-files=all', '--ignored').decode(),
+                          hashes=hashes)
+
+          def inventories(label):
+              result = {'source': snapshot(ROOT), 'diagnostic': snapshot(DIAG)}
+              save(label + '.json', result)
+              assert result['source']['head'] == SOURCE and result['source']['tree'] == TREE
+              assert result['diagnostic']['head'] == os.environ['GITHUB_SHA']
+              assert all(not value['status'] for value in result.values()), result
+              return result
+
+          def imports(hashes):
+              records = {}
+              for name, module in sorted(sys.modules.items()):
+                  filename = getattr(module, '__file__', None)
+                  if not filename:
+                      continue
+                  path = Path(filename).resolve()
+                  if not (name == 'rigplane' or name.startswith('rigplane.') or
+                          name.startswith('test_') or name == 'conftest' or path.is_relative_to(ROOT)):
+                      continue
+                  assert path.is_relative_to(ROOT), ('foreign import', name, str(path))
+                  relative = str(path.relative_to(ROOT))
+                  assert relative in hashes and sha(path.read_bytes()) == hashes[relative], (name, relative)
+                  records[name] = {'path': str(path), 'sha256': hashes[relative]}
+              assert all(name in records for name in REQUIRED_IMPORTS), records.keys()
+              return records
+
+          def child():
+              import pytest
+              before = json.loads((EVIDENCE / 'before.json').read_text())
+              hashes = before['source']['hashes']
+              (EVIDENCE / 'warnings.jsonl').write_text('')
+              class Oracle:
+                  def pytest_warning_recorded(self, warning_message, when, nodeid, location):
+                      append('warnings.jsonl', {'node': nodeid, 'when': when,
+                          'category': warning_message.category.__name__, 'message': str(warning_message.message)})
+
+                  def pytest_collectreport(self, report):
+                      append('collection.jsonl', {'node': report.nodeid, 'outcome': report.outcome,
+                                                 'detail': str(report.longrepr) if report.failed else None})
+
+                  def pytest_collection_finish(self, session):
+                      actual = [item.nodeid for item in session.items]
+                      save('collected.json', actual)
+                      assert len(actual) == len(set(actual)) == len(EXPECTED) and set(actual) == set(EXPECTED)
+                      for item in session.items:
+                          path = ROOT / item.nodeid.split('::')[0]
+                          assert Path(item.path).resolve() == path == Path(item.module.__file__).resolve()
+                      save('imports-before.json', imports(hashes))
+
+                  @pytest.hookimpl(hookwrapper=True)
+                  def pytest_runtest_call(self, item):
+                      site = FAILURES.get(item.nodeid)
+                      previous = sys.gettrace()
+                      assert previous is None, 'unexpected pre-existing tracer'
+                      def trace(frame, event, _arg):
+                          if (site is not None and event == 'line' and frame.f_lineno == site['line']
+                                  and Path(frame.f_code.co_filename).resolve() == ROOT / site['file']):
+                              values = frame.f_locals
+                              states = {}
+                              for name in site['tasks_done']:
+                                  task = values[name]
+                                  assert isinstance(task, asyncio.Task), name
+                                  states[name] = {'done': task.done(), 'cancelled': task.cancelled(),
+                                                  'cancelling': task.cancelling()}
+                              caller = values[site['close_caller']]
+                              retained = values['link']._retirement
+                              append('liveness.jsonl', dict(node=item.nodeid, line=frame.f_lineno,
+                                  tasks=states, retirement_retained=retained is not None,
+                                  close_exception_is_original=(caller.done() and not caller.cancelled()
+                                      and caller.exception() is values['failure'])))
+                          return trace
+                      if site is not None:
+                          sys.settrace(trace)
+                      try:
+                          yield
+                      finally:
+                          sys.settrace(previous)
+
+                  @pytest.hookimpl(hookwrapper=True)
+                  def pytest_runtest_makereport(self, item, call):
+                      report = (yield).get_result()
+                      row = {'node': item.nodeid, 'phase': report.when, 'outcome': report.outcome,
+                             'xfail': getattr(report, 'wasxfail', None)}
+                      if call.excinfo is not None:
+                          last = call.excinfo.traceback[-1]
+                          row.update(exception=f'{call.excinfo.type.__module__}.{call.excinfo.type.__name__}',
+                                     message=str(call.excinfo.value), path=str(Path(last.path).resolve()),
+                                     line=last.lineno + 1)
+                      append('phases.jsonl', row)
+
+              args = ['-q', '-o', 'addopts=', '-o', f'cache_dir={EVIDENCE / "pytest-cache"}',
+                      '--tb=long', '--color=no', '--timeout=15', '--timeout-method=thread',
+                      f'--junitxml={EVIDENCE / "junit.xml"}', *EXPECTED]
+              save('pytest-command.json', args)
+              rc = pytest.main(args, plugins=[Oracle()])
+              save('imports-after.json', imports(hashes))
+              save('child-complete.json', {'pytest_exit': int(rc)})
+              return int(rc)
+
+          def supervised():
+              assert sys.platform == 'linux' and ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0
+              record = {'signals': [], 'timed_out': False, 'group_absent': False}
+              process = None
+              def interrupted(signum, _frame):
+                  raise KeyboardInterrupt(f'INVALID: interrupted by signal {signum}')
+              for signum in (signal.SIGTERM, signal.SIGINT):
+                  signal.signal(signum, interrupted)
+              def gone():
+                  if process.poll() is not None:
+                      while True:
+                          try:
+                              pid, _ = os.waitpid(-process.pid, os.WNOHANG)
+                          except ChildProcessError:
+                              break
+                          if pid == 0:
+                              break
+                  try:
+                      os.killpg(process.pid, 0)
+                  except ProcessLookupError:
+                      return process.poll() is not None
+                  return False
+              try:
+                  with (EVIDENCE / 'stdout.log').open('w') as out, (EVIDENCE / 'stderr.log').open('w') as err:
+                      args = [sys.executable, str(Path(__file__).resolve()), 'child']
+                      record['args'] = args
+                      process = subprocess.Popen(args, cwd=ROOT, stdout=out, stderr=err, start_new_session=True)
+                      record.update(pid=process.pid, pgid=process.pid)
+                      save('supervision.json', record)
+                      try:
+                          rc = process.wait(timeout=120)
+                      except subprocess.TimeoutExpired:
+                          record['timed_out'] = True
+                          raise
+                      assert gone(), 'INVALID: descendant outlived pytest'
+                      return rc
+              finally:
+                  if process is not None:
+                      for action in (signal.SIGTERM, signal.SIGKILL):
+                          if gone():
+                              break
+                          record['signals'].append(action.name)
+                          try:
+                              os.killpg(process.pid, action)
+                          except ProcessLookupError:
+                              pass
+                          deadline = time.monotonic() + 3
+                          while not gone() and time.monotonic() < deadline:
+                              time.sleep(0.02)
+                      record.update(group_absent=gone(), returncode=process.poll())
+                  save('supervision.json', record)
+                  assert record['group_absent'], 'INVALID: process group cleanup unconfirmed'
+
+          def validate(rc):
+              assert rc == 1 and json.loads((EVIDENCE / 'child-complete.json').read_text()) == {'pytest_exit': 1}
+              collected = json.loads((EVIDENCE / 'collected.json').read_text())
+              assert Counter(collected) == Counter(EXPECTED.keys())
+              assert (EVIDENCE / 'warnings.jsonl').read_text() == '', 'INVALID: unexpected warning'
+              collection = [json.loads(line) for line in (EVIDENCE / 'collection.jsonl').read_text().splitlines()]
+              assert collection and all(row['outcome'] == 'passed' for row in collection)
+              phases = [json.loads(line) for line in (EVIDENCE / 'phases.jsonl').read_text().splitlines()]
+              assert Counter((row['node'], row['phase']) for row in phases) == Counter(
+                  (node, phase) for node in EXPECTED for phase in ('setup', 'call', 'teardown'))
+              for row in phases:
+                  site = EXPECTED[row['node']] if row['phase'] == 'call' else None
+                  assert row['xfail'] is None, row
+                  if site is None:
+                      assert row['outcome'] == 'passed' and 'exception' not in row, row
+                  else:
+                      assert row['outcome'] == 'failed' and row['exception'] == site['exception'], row
+                      assert row['path'] == str(ROOT / site['file']) and row['line'] == site['line'], row
+                      assert row['message'].splitlines()[0] == site['message_first_line'], row
+              xml = ET.parse(EVIDENCE / 'junit.xml').getroot()
+              assert not xml.findall('.//error') and not xml.findall('.//skipped')
+              wanted = {(node.split('::')[0][:-3].replace('/', '.'), node.split('::')[1]): site
+                        for node, site in EXPECTED.items()}
+              cases = xml.findall('.//testcase')
+              assert Counter((case.get('classname'), case.get('name')) for case in cases) == Counter(wanted.keys())
+              for case in cases:
+                  assert len(case.findall('failure')) == int(wanted[(case.get('classname'), case.get('name'))] is not None)
+              witnesses = [json.loads(line) for line in (EVIDENCE / 'liveness.jsonl').read_text().splitlines()]
+              assert Counter(row['node'] for row in witnesses) == Counter(FAILURES.keys())
+              for row in witnesses:
+                  site = FAILURES[row['node']]
+                  assert row['line'] == site['line'] and row['close_exception_is_original'], row
+                  assert not row['retirement_retained'], row
+                  assert {key: value['done'] for key, value in row['tasks'].items()} == site['tasks_done'], row
+                  assert all(not value['cancelled'] for value in row['tasks'].values()), row
+              assert (EVIDENCE / 'imports-before.json').is_file() and (EVIDENCE / 'imports-after.json').is_file()
+              supervision = json.loads((EVIDENCE / 'supervision.json').read_text())
+              assert supervision['group_absent'] and not supervision['timed_out'] and not supervision['signals']
+
+          def main():
+              assert sys.version_info[:3] == (3, 11, 16) and sys.dont_write_bytecode
+              mode = sys.argv[1]
+              if mode == 'snapshot':
+                  inventories('before')
+                  assert git(ROOT, 'rev-parse', 'HEAD^').decode().strip() == PARENT
+                  git(DIAG, 'merge-base', '--is-ancestor', CARRIER_PARENT, 'HEAD')
+                  assert git(DIAG, 'diff', '--name-only', PARENT, 'HEAD').decode().splitlines() == ['.github/workflows/full.yml']
+                  for name in (DRIVER + 'serial_civ_link.py', DRIVER + 'serial_session.py', LINK, SESSION, 'pyproject.toml', 'uv.lock'):
+                      assert git(ROOT, 'show', f'{SOURCE}:{name}') == (ROOT / name).read_bytes(), name
+                  assert len(CONTROLS) == 19 and len(FAILURES) == 4 and len(EXPECTED) == 23
+                  for site in FAILURES.values():
+                      assert (ROOT / site['file']).read_text().splitlines()[site['line'] - 1].strip() == site['statement']
+                  save('manifest.json', {'source': SOURCE, 'tree': TREE, 'expected': EXPECTED,
+                       'expected_exit': 1, 'pass_count': 19, 'call_failure_count': 4,
+                       'limits': {'pytest_seconds': 15, 'process_seconds': 120},
+                       'scope': 'initial RED only; cancellation-message preservation is not asserted'})
+                  return 0
+              if mode == 'child':
+                  return child()
+              if mode == 'seal':
+                  if (EVIDENCE / 'before.json').exists():
+                      assert inventories('final') == json.loads((EVIDENCE / 'before.json').read_text())
+                  save('artifact-sha256.json', {str(path.relative_to(EVIDENCE)): sha(path.read_bytes())
+                      for path in sorted(EVIDENCE.rglob('*')) if path.is_file() and path.name != 'artifact-sha256.json'})
+                  return 0
+              assert mode == 'run'
+              before = json.loads((EVIDENCE / 'before.json').read_text())
+              assert inventories('after-dependencies') == before
+              uv = subprocess.check_output(['uv', '--version'], text=True, timeout=15).strip()
+              assert uv.split()[1] == '0.12.9'
+              dependencies = sorted((d.metadata['Name'], d.version) for d in importlib.metadata.distributions())
+              save('provenance.json', {'source': SOURCE, 'tree': TREE, 'parent': PARENT,
+                  'diagnostic': before['diagnostic']['head'], 'diagnostic_tree': before['diagnostic']['tree'],
+                  'carrier_parent': CARRIER_PARENT, 'python': sys.version, 'uv': uv,
+                  'python_executable': str(Path(sys.executable).resolve()),
+                  'python_sha256': sha(Path(sys.executable).read_bytes()),
+                  'uv_sha256': sha(Path(shutil.which('uv')).read_bytes()),
+                  'instrument_sha256': sha(Path(__file__).read_bytes()),
+                  'manifest_sha256': sha((EVIDENCE / 'manifest.json').read_bytes()),
+                  'workflow_sha256': sha((DIAG / '.github/workflows/full.yml').read_bytes()),
+                  'dependencies': dependencies, 'dependencies_sha256': sha(json.dumps(dependencies).encode()),
+                  'lock_sha256': before['source']['hashes']['uv.lock'],
+                  **{key: os.environ.get(key) for key in ('GITHUB_SHA', 'GITHUB_REF', 'GITHUB_RUN_ID',
+                     'GITHUB_RUN_ATTEMPT', 'RUNNER_NAME', 'UV_PROJECT_ENVIRONMENT', 'UV_CACHE_DIR')}})
+              try:
+                  rc = supervised()
+                  validate(rc)
+              finally:
+                  assert inventories('after') == before, 'INVALID: source or carrier changed'
+              save('verdict.json', {'status': 'EXPECTED_RED', 'passed': 19, 'call_assertion_failures': 4,
+                                    'source': SOURCE, 'tree': TREE})
+              return 0
+
+          if __name__ == '__main__':
+              try:
+                  sys.exit(main())
+              except (Exception, KeyboardInterrupt) as error:
+                  save('verdict.json', {'status': 'INVALID', 'reason': repr(error)})
+                  raise
+          PY
+
+      - name: Pin Python and install frozen dependencies without hooks
         run: |
-          formatter_files=(
-            src/rigplane/backends/icom7610/drivers/serial_civ_link.py
-            src/rigplane/backends/icom7610/drivers/serial_session.py
-            tests/test_serial_civ_link.py tests/test_serial_session.py
-          )
-          printf 'uv run --no-sync ruff format --diff %s\n' "${formatter_files[*]}" \
-            > "$ARTIFACT_DIR/command.txt"
-          set +e
-          uv run --no-sync ruff format --diff "${formatter_files[@]}" \
-            > "$ARTIFACT_DIR/format.patch" 2> "$ARTIFACT_DIR/formatter.stderr.log"
-          formatter_rc=$?
-          set -e
-          printf '%s\n' "$formatter_rc" > "$ARTIFACT_DIR/formatter-exit.txt"
-          cat "$ARTIFACT_DIR/format.patch" "$ARTIFACT_DIR/formatter.stderr.log"
-          case "$formatter_rc" in
-            0) test ! -s "$ARTIFACT_DIR/format.patch" ;;
-            1)
-              test -s "$ARTIFACT_DIR/format.patch"
-              sed -n 's/^--- //p' "$ARTIFACT_DIR/format.patch" > "$ARTIFACT_DIR/old-files.txt"
-              sed -n 's/^+++ //p' "$ARTIFACT_DIR/format.patch" > "$ARTIFACT_DIR/new-files.txt"
-              test -s "$ARTIFACT_DIR/old-files.txt"
-              diff -u "$ARTIFACT_DIR/old-files.txt" "$ARTIFACT_DIR/new-files.txt"
-              while IFS= read -r formatted_file; do
-                grep -Fx -- "$formatted_file" "$ARTIFACT_DIR/allowed-files.txt"
-              done < "$ARTIFACT_DIR/old-files.txt"
-              ;;
-            *) exit "$formatter_rc" ;;
-          esac
-          printf 'PASS: formatter exit %s; patch contract accepted\n' "$formatter_rc" \
-            > "$ARTIFACT_DIR/verdict.txt"
+          record() {
+            label=$1; shift
+            printf '%q ' "$@" > "$PROOF_ROOT/evidence/$label.command.txt"
+            set +e
+            "$@" > "$PROOF_ROOT/evidence/$label.stdout.log" 2> "$PROOF_ROOT/evidence/$label.stderr.log"
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" > "$PROOF_ROOT/evidence/$label.exit.txt"
+            return "$rc"
+          }
+          record uv-version uv --version
+          record python-install uv python install 3.11.16
+          record python-find uv python find 3.11.16
+          bootstrap_python=$(cat "$PROOF_ROOT/evidence/python-find.stdout.log")
+          echo "BOOTSTRAP_PYTHON=$bootstrap_python" >> "$GITHUB_ENV"
+          record snapshot "$bootstrap_python" "$PROOF_ROOT/evidence/serial_red.py" snapshot
+          record dependencies env HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras
 
-      - name: Require unchanged source
-        if: always() && steps.prepare.outcome == 'success'
+      - name: Observe and classify the frozen initial RED
         run: |
-          git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/status-after.txt"
-          git diff HEAD > "$ARTIFACT_DIR/source-after.diff"
-          git rev-parse HEAD > "$ARTIFACT_DIR/source-head-after.txt"
-          git rev-parse 'HEAD^{tree}' > "$ARTIFACT_DIR/source-tree-after.txt"
-          test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
-          git diff --exit-code HEAD
-          sha256sum -c "$ARTIFACT_DIR/source-sha256-before.txt" \
-            > "$ARTIFACT_DIR/source-sha256-check.txt"
-          test ! -s "$ARTIFACT_DIR/status-after.txt"
+          "$UV_PROJECT_ENVIRONMENT/bin/python" "$PROOF_ROOT/evidence/serial_red.py" run \
+            > "$PROOF_ROOT/evidence/driver.stdout.log" 2> "$PROOF_ROOT/evidence/driver.stderr.log"
 
-      - name: Upload formatter evidence
-        if: always() && steps.prepare.outputs.artifact_dir != ''
+      - name: Seal available evidence
+        if: always() && env.BOOTSTRAP_PYTHON != ''
+        run: '"$BOOTSTRAP_PYTHON" "$PROOF_ROOT/evidence/serial_red.py" seal'
+
+      - name: Upload RED evidence
+        if: always() && env.PROOF_ROOT != ''
         uses: actions/upload-artifact@v4
         with:
-          name: serial-completion-preflight-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.prepare.outputs.artifact_dir }}
+          name: serial-close-red-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROOF_ROOT }}/evidence
           if-no-files-found: error
           retention-days: 14
