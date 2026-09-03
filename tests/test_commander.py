@@ -33,6 +33,17 @@ class _HeldExecute:
         return None
 
 
+async def _stop_and_check_actual_join(
+    commander: IcomCommander,
+    worker: asyncio.Task[None],
+    execute_task: asyncio.Task[CivFrame | None],
+) -> None:
+    await commander.stop()
+    assert worker.done() and execute_task.done(), (
+        "successful stop did not join captured worker and execute"
+    )
+
+
 async def _cleanup_held_commander(
     commander: IcomCommander,
     execute: _HeldExecute,
@@ -68,18 +79,24 @@ async def test_stop_joins_cancel_resistant_execute_before_worker_exit(
     tasks = [send]
     try:
         await execute.started.wait()
+        execute_task = execute.task
+        assert execute_task is not None
         queued = asyncio.create_task(c.send(b"queued"))
         tasks.append(queued)
         await asyncio.sleep(0)
-        stop = asyncio.create_task(c.stop())
+        stop = asyncio.create_task(_stop_and_check_actual_join(c, worker, execute_task))
         tasks.append(stop)
         await execute.cancelled.wait()
         done, _ = await asyncio.wait({stop, worker}, timeout=0.05)
+        if stop.done() and not stop.cancelled():
+            stop.result()
+        assert not execute_task.done(), "held execute became terminal before release"
         assert not done, "stop returned before actual execute completed"
         execute.release.set()
         _, pending = await asyncio.wait({stop, worker, send, queued}, timeout=1)
         assert not pending, "cancel-resistant execute left stopping worker parked"
-        assert execute.task is not None and execute.task.done()
+        stop.result()
+        assert worker.done() and execute_task.done()
         assert execute.seen == [b"held"], "stopped queue dispatched a later command"
         assert send.exception() is not None, "stopped in-flight send reported success"
         assert isinstance(queued.exception(), ConnectionError)
@@ -105,30 +122,78 @@ async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
     tasks = [send]
     try:
         await execute.started.wait()
-        first = asyncio.create_task(c.stop())
+        execute_task = execute.task
+        assert execute_task is not None
+        first = asyncio.create_task(
+            _stop_and_check_actual_join(c, worker, execute_task)
+        )
         tasks.append(first)
         await execute.cancelled.wait()
         if cancel_first:
+            worker_cancels = worker.cancelling()
+            execute_cancels = execute_task.cancelling()
             first.cancel()
             await asyncio.wait({first}, timeout=0.05)
             if first.done() and not first.cancelled():
-                assert first.exception() is not None, (
-                    "cancelled stop waiter reported success before execute release"
-                )
+                first.result()
+            assert worker.cancelling() == worker_cancels, (
+                "cancelled stop waiter added a worker cancellation request"
+            )
+            assert execute_task.cancelling() == execute_cancels, (
+                "cancelled stop waiter added an execute cancellation request"
+            )
             assert not worker.done(), "cancelled stop waiter terminated actual worker"
+            assert not execute_task.done(), "cancelled stop waiter terminated execute"
             assert c._worker is worker, "cancelled stop waiter lost worker handle"
-        second = asyncio.create_task(c.stop())
+        second = asyncio.create_task(
+            _stop_and_check_actual_join(c, worker, execute_task)
+        )
         tasks.append(second)
         done, _ = await asyncio.wait({second, worker}, timeout=0.05)
+        if second.done() and not second.cancelled():
+            second.result()
+        assert not execute_task.done(), "held execute became terminal before release"
         assert not done, "overlapping stop did not join the held execute"
         execute.release.set()
         _, pending = await asyncio.wait(set(tasks) | {worker}, timeout=1)
         assert not pending, "overlapping stops did not settle after execute"
-        assert execute.task is not None and execute.task.done()
+        if not first.cancelled():
+            first.result()
+        second.result()
+        assert worker.done() and execute_task.done()
         assert execute.seen == [b"held"]
         assert c._worker is None
         assert c._queue is None
         await c.stop()
+    finally:
+        await _cleanup_held_commander(c, execute, worker, tasks)
+
+
+@pytest.mark.asyncio
+async def test_stop_accepts_terminal_execute_without_release() -> None:
+    execute = _HeldExecute()
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    worker = c._worker
+    assert worker is not None
+    send = asyncio.create_task(c.send(b"held"))
+    tasks = [send]
+    try:
+        await execute.started.wait()
+        execute_task = execute.task
+        assert execute_task is not None
+        worker.cancel()
+        await execute.cancelled.wait()
+        worker.cancel()
+        _, pending = await asyncio.wait({worker, execute_task, send}, timeout=1)
+        assert not pending, "explicit second cancellation did not finish captured tasks"
+        assert worker.result() is None
+        assert execute_task.cancelled()
+        assert isinstance(send.exception(), ConnectionError)
+        assert not execute.release.is_set()
+        await _stop_and_check_actual_join(c, worker, execute_task)
+        assert c._worker is None
+        assert c._queue is None
     finally:
         await _cleanup_held_commander(c, execute, worker, tasks)
 
