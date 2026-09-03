@@ -37,6 +37,8 @@ leave to the coordinator.
   rules already block on defects *inside* the diff and return PASS with a
   named correction for a false claim in a PR body, comment or commit message.
 - **`scout`, `researcher`, `auditor`** — read-only, per `.claude/agents/`.
+- **Non-code finder/coordinator** — consolidates PR-body, evidence, and prose
+  findings separately from the code-only verifier.
 - The author never reviews, and **you are an author too**: the dispatch brief
   is your claim about the code, not the code. Brief the verifier against the
   brief as well as the diff. Never review the output of your own dispatch
@@ -146,9 +148,12 @@ starting or shepherding each review. The coordinator receives only the
 immutable result packet: PR, exact SHA, verdict URL, checks found, merge
 readiness/status, and any blocker requiring an ownership or scope decision.
 
-The reviewer consolidates all parallel code, contract, body, and evidence
-findings into one verdict instead of dripping findings across cycles. Apply one
-batched correction, then run one fresh final exact-head review. After two
+The verifier consolidates all parallel code and contract findings into one
+verdict instead of dripping findings across cycles; the non-code finder/
+coordinator does the same for body, evidence, and prose findings. Apply one
+batched correction, then run one fresh final exact-head review. If the session
+lacks dispatch capability, it sends one immutable candidate packet and the
+coordinator may make exactly one fallback verifier dispatch. After two
 correction-to-review cycles, stop; a third requires an explicit owner
 decision/override. Complete test-only or proof corrections before final review
 where possible, and do not rerun a suite solely for review or metrics. An
