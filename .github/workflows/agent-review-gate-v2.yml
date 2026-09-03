@@ -1,0 +1,118 @@
+name: Agent Review Gate v2 observation
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
+  issue_comment:
+    types: [created, edited, deleted]
+
+concurrency:
+  group: agent-review-gate-v2-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Trusted review observation publisher
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Evaluate comments with the exact trusted base parser
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const pullNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            let headSha = context.payload.pull_request?.head?.sha ?? '';
+            const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const publishFailure = async (description) => {
+              if (/^[0-9a-f]{40}$/u.test(headSha)) {
+                await github.rest.repos.createCommitStatus({
+                  owner, repo, sha: headSha, state: 'failure',
+                  context: 'Agent Review Gate v2 observe', description,
+                  target_url: targetUrl,
+                });
+              }
+            };
+            try {
+              const {data: initialPull} = await github.rest.pulls.get({
+                owner, repo, pull_number: pullNumber,
+              });
+              headSha = initialPull.head.sha;
+              const baseSha = initialPull.base.sha;
+              if (!/^[0-9a-f]{40}$/u.test(headSha) || !/^[0-9a-f]{40}$/u.test(baseSha)) {
+                throw new Error('pull request head or base is not an exact SHA');
+              }
+              if (initialPull.base.ref !== 'main') {
+                throw new Error('observation controller only accepts the main base branch');
+              }
+              const {data: baseBranch} = await github.rest.repos.getBranch({
+                owner, repo, branch: initialPull.base.ref,
+              });
+              if (baseBranch.commit.sha !== baseSha) {
+                throw new Error('pull request base is not the current main head');
+              }
+              const [{data: commit}, comments, {data: parserFile}] = await Promise.all([
+                github.rest.repos.getCommit({owner, repo, ref: headSha}),
+                github.paginate(github.rest.issues.listComments, {
+                  owner, repo, issue_number: pullNumber, per_page: 100,
+                }),
+                github.rest.repos.getContent({
+                  owner, repo, path: '.github/scripts/agent-review-gate.js', ref: baseSha,
+                }),
+              ]);
+              if (
+                Array.isArray(parserFile) ||
+                parserFile.type !== 'file' ||
+                parserFile.encoding !== 'base64' ||
+                typeof parserFile.content !== 'string'
+              ) {
+                throw new Error('trusted base review parser content is invalid');
+              }
+              const parserModule = {exports: {}};
+              new Function(
+                'module', 'exports',
+                Buffer.from(parserFile.content, 'base64').toString('utf8'),
+              )(parserModule, parserModule.exports);
+              const {evaluateReviewGate, buildCommitStatus} = parserModule.exports;
+              if (typeof evaluateReviewGate !== 'function' || typeof buildCommitStatus !== 'function') {
+                throw new Error('trusted base review parser exports are invalid');
+              }
+              const committedAt = new Date(
+                commit.commit.committer?.date ??
+                commit.commit.author?.date ??
+                initialPull.updated_at,
+              );
+              const result = evaluateReviewGate({comments, headSha, committedAt});
+              const status = buildCommitStatus({
+                owner, repo, headSha, targetUrl, result,
+              });
+              status.context = 'Agent Review Gate v2 observe';
+
+              const [{data: currentPull}, {data: currentBase}] = await Promise.all([
+                github.rest.pulls.get({owner, repo, pull_number: pullNumber}),
+                github.rest.repos.getBranch({owner, repo, branch: 'main'}),
+              ]);
+              if (
+                currentPull.head.sha !== headSha ||
+                currentPull.base.sha !== baseSha ||
+                currentBase.commit.sha !== baseSha
+              ) {
+                status.state = 'failure';
+                status.description = 'PR head or current main changed during review observation.';
+              }
+              await github.rest.repos.createCommitStatus(status);
+              if (status.state !== 'success') {
+                core.notice(`Agent Review Gate v2 observation denied: ${result.passCount} PASS, ${result.blockedCount} BLOCKED, ${result.malformedBlockedCount} malformed BLOCKED.`);
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              await publishFailure('Agent Review Gate v2 observation evaluation failed closed.');
+              core.setFailed(`Agent Review Gate v2 observation evaluation failed closed: ${message}`);
+            }
