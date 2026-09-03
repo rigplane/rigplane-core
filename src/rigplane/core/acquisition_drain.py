@@ -157,13 +157,48 @@ class AcquisitionDrain:
         self._on_forget = on_forget
         self._claimant = self if claimant is None else claimant
 
-    def _forget(self, scheduler: AcquisitionScheduler, request_id: str) -> None:
+    def _forget_ledger(self, request_id: str) -> None:
         """Drop one ledger entry and tell the seat it is gone."""
 
-        scheduler.release_claim(request_id, claimant=self._claimant)
         self._in_flight.pop(request_id, None)
         if self._on_forget is not None:
             self._on_forget(request_id)
+
+    def _forget(
+        self,
+        scheduler: AcquisitionScheduler,
+        request_id: str,
+        *,
+        provider_generation: int,
+    ) -> None:
+        scheduler.release_claim(
+            request_id,
+            claimant=self._claimant,
+            provider_generation=provider_generation,
+        )
+        self._forget_ledger(request_id)
+
+    def _claim_is_current(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        store: StateStore | None,
+        provider_generation: int,
+    ) -> bool:
+        current_store = self._store()
+        return (
+            current_store is store
+            and (
+                current_store is None
+                or current_store.provider_generation == provider_generation
+            )
+            and scheduler.claim_is_current(
+                request,
+                claimant=self._claimant,
+                provider_generation=provider_generation,
+            )
+        )
 
     def _expiry_is_terminal(
         self,
@@ -205,7 +240,7 @@ class AcquisitionDrain:
         pending_ids = {request.id for request in pending}
         for request_id in tuple(self._in_flight):
             if request_id not in pending_ids:
-                self._forget(scheduler, request_id)
+                self._forget_ledger(request_id)
 
         # Eligibility is asked once per pass, over the unfiltered pending view
         # above: a request the seat declines to send is still pending, and its
@@ -215,6 +250,13 @@ class AcquisitionDrain:
             if not scheduler.try_claim(
                 request,
                 claimant=self._claimant,
+                provider_generation=provider_generation,
+            ):
+                continue
+            if not self._claim_is_current(
+                scheduler,
+                request,
+                store=store,
                 provider_generation=provider_generation,
             ):
                 continue
@@ -230,7 +272,11 @@ class AcquisitionDrain:
                     if self._expiry_is_terminal(
                         scheduler, request, sent_paths=sent_paths, now=now
                     ):
-                        self._forget(scheduler, request.id)
+                        self._forget(
+                            scheduler,
+                            request.id,
+                            provider_generation=provider_generation,
+                        )
                         continue
                 sent_paths = sent_paths.intersection(request.paths)
 
@@ -242,7 +288,11 @@ class AcquisitionDrain:
                 try:
                     self._report_executor_missing(scheduler, request, now=now)
                 finally:
-                    self._forget(scheduler, request.id)
+                    self._forget(
+                        scheduler,
+                        request.id,
+                        provider_generation=provider_generation,
+                    )
                 continue
 
             try:
@@ -251,9 +301,26 @@ class AcquisitionDrain:
                     already_sent_paths=sent_paths,
                 )
             except asyncio.CancelledError:
-                self._forget(scheduler, request.id)
+                if self._claim_is_current(
+                    scheduler,
+                    request,
+                    store=store,
+                    provider_generation=provider_generation,
+                ):
+                    self._forget(
+                        scheduler,
+                        request.id,
+                        provider_generation=provider_generation,
+                    )
                 raise
             except Exception as exc:
+                if not self._claim_is_current(
+                    scheduler,
+                    request,
+                    store=store,
+                    provider_generation=provider_generation,
+                ):
+                    raise
                 # The Web reporter completes the scheduler request before it
                 # re-raises, retaining that seat's in-flight expiry record.
                 self._report_executor_error(
@@ -263,20 +330,19 @@ class AcquisitionDrain:
                     sent_paths=sent_paths,
                     now=now,
                 )
-                self._forget(scheduler, request.id)
+                self._forget(
+                    scheduler,
+                    request.id,
+                    provider_generation=provider_generation,
+                )
                 continue
 
-            current_store = self._store()
-            generation_is_current = current_store is store and (
-                current_store is None
-                or current_store.provider_generation == provider_generation
-            )
-            if not generation_is_current or not scheduler.claim_is_current(
+            if not self._claim_is_current(
+                scheduler,
                 request,
-                claimant=self._claimant,
+                store=store,
                 provider_generation=provider_generation,
             ):
-                self._forget(scheduler, request.id)
                 continue
 
             failed_paths = tuple(result.failed_paths)

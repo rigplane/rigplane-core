@@ -103,8 +103,17 @@ class _StubScheduler:
             and self.claim_generation_by_request.get(request.id) == provider_generation
         )
 
-    def release_claim(self, request_id: str, *, claimant: object) -> None:
-        if self.claimant_by_request.get(request_id) is not claimant:
+    def release_claim(
+        self,
+        request_id: str,
+        *,
+        claimant: object,
+        provider_generation: int,
+    ) -> None:
+        if (
+            self.claimant_by_request.get(request_id) is not claimant
+            or self.claim_generation_by_request.get(request_id) != provider_generation
+        ):
             return
         self.claimant_by_request.pop(request_id, None)
         self.claim_generation_by_request.pop(request_id, None)

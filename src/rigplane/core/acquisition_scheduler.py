@@ -444,11 +444,21 @@ class AcquisitionScheduler:
             and existing.provider_generation == provider_generation
         )
 
-    def release_claim(self, request_id: str, *, claimant: object) -> None:
+    def release_claim(
+        self,
+        request_id: str,
+        *,
+        claimant: object,
+        provider_generation: int,
+    ) -> None:
         """Release a request flight only when ``claimant`` still owns it."""
 
         existing = self._claims_by_request_id.get(request_id)
-        if existing is not None and existing.claimant is claimant:
+        if (
+            existing is not None
+            and existing.claimant is claimant
+            and existing.provider_generation == provider_generation
+        ):
             del self._claims_by_request_id[request_id]
 
     def ensure_fresh(
