@@ -1,4 +1,4 @@
-name: Canonical level normalizers formatter diagnostic
+name: Canonical levels formatter diagnostic
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: fe026ad3fe52217f17d6a8cf94094a5eef7a5ad7
+          ref: eb2890bba30354d4c86861c317f9f6de3dca5bcc
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -35,7 +35,7 @@ jobs:
         run: |
           checked_head=$(git rev-parse HEAD)
           echo "checked_head=$checked_head"
-          if [ "$checked_head" != "fe026ad3fe52217f17d6a8cf94094a5eef7a5ad7" ]; then
+          if [ "$checked_head" != "eb2890bba30354d4c86861c317f9f6de3dca5bcc" ]; then
             echo "unexpected checkout: $checked_head" >&2
             exit 1
           fi
@@ -43,7 +43,12 @@ jobs:
           set +e
           uv run ruff format --diff \
             src/rigplane/core/command_dispatch.py \
-            src/rigplane/core/command_service.py > formatter.patch
+            src/rigplane/core/command_service.py \
+            src/rigplane/runtime/_poller_types.py \
+            src/rigplane/web/handlers/control.py \
+            src/rigplane/web/radio_poller.py \
+            src/rigplane/backends/yaesu_cat/poller.py \
+            src/rigplane/backends/rigctld_client/radio.py > formatter.patch
           rc=$?
           set -e
           echo "ruff_exit=$rc"
@@ -69,5 +74,5 @@ jobs:
       - name: Upload formatter patch
         uses: actions/upload-artifact@v7
         with:
-          name: canonical-level-normalizers-format-fe026ad3
+          name: canonical-levels-format-eb2890bb
           path: formatter.patch
