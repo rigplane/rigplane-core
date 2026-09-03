@@ -30,6 +30,9 @@ tx_codec = "PCM_1CH_16BIT"
 browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 
+[scope]
+span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+
 # ── Capabilities ─────────────────────────────────────────────────
 # Feature tags determine which UI panels and controls are rendered.
 # Grouped by functional area.

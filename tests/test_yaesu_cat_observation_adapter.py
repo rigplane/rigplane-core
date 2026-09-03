@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
@@ -10,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt, TxStateReading
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile
@@ -18,7 +20,7 @@ from rigplane.radio_state import RadioState
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.radio import RadioConnectionError, YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import CatCommandRejected
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTransportError
 
 
 def _clock() -> float:
@@ -73,6 +75,9 @@ def _make_radio() -> MagicMock:
     )
     radio.get_ptt = AsyncMock(return_value=False)
     radio.read_ptt = AsyncMock(return_value=False)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
+    )
     radio.get_af_level = AsyncMock(
         side_effect=lambda receiver=0: 128 if receiver == 0 else 64
     )
@@ -285,6 +290,11 @@ class _SideEffectingYaesuRadio:
 
     async def read_ptt(self) -> bool:
         return True
+
+    async def read_transmit_state(self) -> TxStateReading:
+        return TxStateReading(
+            await self.read_ptt(), "tx_cat", "yaesu_poll_response", True
+        )
 
     async def get_ptt(self) -> bool:
         value = await self.read_ptt()
@@ -587,6 +597,7 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
             KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000),
         ),
         ("global.tx_state.ptt", False),
+        ("global.tx_state.observed_ptt", ObservedPtt.OFF),
         ("receiver.main.active.freq_mode.filter_width", 500),
     ]
     radio.read_filter_width.assert_awaited_once()
@@ -604,6 +615,53 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
     assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 8.0
     assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 120.0
     assert all(item.source.capability_id == str(item.path) for item in observations)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_callback", [False, True])
+async def test_medium_canonical_ptt_has_exactly_one_publication(
+    with_callback: bool,
+) -> None:
+    radio = _make_radio()
+    adapter = YaesuObservationAdapter.from_radio(radio, clock=_clock)
+    emitted = []
+    observations = await adapter.poll_medium(
+        ptt_callback=emitted.append if with_callback else None
+    )
+    canonical = [item for item in observations if item.path == OBSERVED_PTT_PATH]
+    assert len(emitted) == int(with_callback)
+    assert len(canonical) == int(not with_callback)
+    assert (emitted + canonical)[0].value is ObservedPtt.OFF
+    legacy = [item for item in observations if str(item.path) == "global.tx_state.ptt"]
+    assert len(legacy) == 1
+    radio.read_transmit_state.assert_awaited_once_with()
+    radio.read_ptt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage", ["frequency", "ptt", "ptt-sink-error", "ptt-sink-cancel"]
+)
+async def test_medium_ptt_error_publication_is_local_and_preserves_exception(
+    stage: str,
+) -> None:
+    radio = _make_radio()
+    error = CatTransportError("original")
+    reader = "read_freq" if stage == "frequency" else "read_transmit_state"
+    setattr(radio, reader, AsyncMock(side_effect=error))
+    sink = MagicMock(
+        side_effect={
+            "ptt-sink-error": RuntimeError("sink"),
+            "ptt-sink-cancel": asyncio.CancelledError(),
+        }.get(stage)
+    )
+    with pytest.raises(CatTransportError) as caught:
+        await YaesuObservationAdapter.from_radio(radio).poll_medium(ptt_callback=sink)
+    assert caught.value is error
+    assert sink.call_count == int(stage != "frequency")
+    if stage != "frequency":
+        assert sink.call_args.args[0].value is ObservedPtt.UNKNOWN
+    radio.read_filter_width.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1208,6 +1266,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
             KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000),
         ),
         ("global.tx_state.ptt", True),
+        ("global.tx_state.observed_ptt", ObservedPtt.ON),
         ("receiver.main.meters.s_meter", 150),
         ("receiver.sub.meters.s_meter", 75),
         ("global.meters.alc", 200),

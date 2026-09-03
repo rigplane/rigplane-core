@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -11,12 +12,17 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    TxStateReading,
+    normalize_observed_ptt,
+)
 from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
 from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
 from .radio import _ctcss_index_to_centihz
-from .transport import CatCommandRejected
+from .transport import CatCommandRejected, CatTimeoutError, CatTransportError
 
 if TYPE_CHECKING:
     from rigplane.core.types import BreakInMode
@@ -202,7 +208,7 @@ class YaesuObservationRadio(Protocol):
 
     async def read_mode(self, receiver: int = 0) -> tuple[str, int | None]: ...
 
-    async def read_ptt(self) -> bool: ...
+    async def read_transmit_state(self) -> TxStateReading: ...
 
     async def get_tx_func(self) -> int: ...
 
@@ -307,7 +313,9 @@ class YaesuObservationAdapter:
             )
         return cls(radio, profile=profile, clock=clock)
 
-    async def poll_medium(self) -> tuple[Observation, ...]:
+    async def poll_medium(
+        self, *, ptt_callback: Callable[[Observation], None] | None = None
+    ) -> tuple[Observation, ...]:
         adapter = self._adapter()
         observations: list[Observation] = []
         if self._can_poll(_MAIN_FREQ):
@@ -348,11 +356,65 @@ class YaesuObservationAdapter:
                 )
             )
         if self._can_poll(_PTT):
-            ok, value = await self._safe_read("ptt", self.radio.read_ptt())
-            if ok:
-                observations.append(
-                    adapter.observation(_PTT, value, native_id="read_ptt")
+
+            def publish_ptt_error() -> None:
+                observation = self.observed_ptt_observation(None)
+                if ptt_callback is None:
+                    observations.append(observation)
+                else:
+                    try:
+                        ptt_callback(observation)
+                    except (Exception, asyncio.CancelledError):
+                        logger.warning("Yaesu PTT error callback failed", exc_info=True)
+
+            try:
+                reading = await self.radio.read_transmit_state()
+            except asyncio.CancelledError:
+                raise
+            except (
+                CatParseError,
+                CatFormatError,
+                ValueError,
+                KeyError,
+                CatCommandRejected,
+            ) as exc:
+                self._log_field_skip(
+                    "ptt", "Skipping field %s — PTT read failed: %s", exc
                 )
+                reading = TxStateReading(None, failure="read-error")
+            except Exception:
+                publish_ptt_error()
+                raise
+            if reading.failure is not None:
+                publish_ptt_error()
+                if reading.failure == "timeout":
+                    raise CatTimeoutError("PTT read failed: timeout")
+                if reading.failure == "transport":
+                    raise CatTransportError("PTT read failed: transport")
+            else:
+                timestamp = self.clock()
+                if type(reading.value) is bool:
+                    observations.append(
+                        adapter.observation(
+                            _PTT,
+                            reading.value,
+                            native_id="read_ptt",
+                            timestamp_monotonic=timestamp,
+                        )
+                    )
+                qualified = (
+                    reading.verified_readback is True
+                    and reading.source == "yaesu_poll_response"
+                    and reading.attributed in ("rx", "tx_cat", "tx_other")
+                )
+                observation = self.observed_ptt_observation(
+                    reading.value if qualified else None,
+                    timestamp_monotonic=timestamp,
+                )
+                if ptt_callback is None:
+                    observations.append(observation)
+                else:
+                    ptt_callback(observation)
         # filter_width (MOR-445) is a ``freq_mode`` ACTIVE-slot field, so it
         # belongs in the freq/mode lane — mirroring the legacy poller, which
         # reads it in ``_poll_medium`` for responsive knob tracking. MAIN-only
@@ -370,6 +432,17 @@ class YaesuObservationAdapter:
                     )
                 )
         return tuple(observations)
+
+    def observed_ptt_observation(
+        self, value: object, *, timestamp_monotonic: float | None = None
+    ) -> Observation:
+        return self._adapter().observation(
+            OBSERVED_PTT_PATH,
+            normalize_observed_ptt(value),
+            native_id="read_transmit_state",
+            timestamp_monotonic=timestamp_monotonic,
+            max_age=self.profile.policy_for(_PTT).freshness_ttl_seconds,
+        )
 
     async def _read_tx_func(self) -> int | UnknownTxTarget:
         method = getattr(self.radio, "get_tx_func", None)

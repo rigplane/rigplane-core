@@ -97,34 +97,41 @@ class IcomCommander:
             self._worker = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        if self._queue is not None:
+        worker, queue = self._worker, self._queue
+        # Close admission before yielding; overlapping stops cancel only once.
+        if worker is not None and not worker.done() and not worker.cancelling():
+            worker.cancel()
+        if queue is not None:
             while True:
                 try:
-                    _, _, item = self._queue.get_nowait()
+                    _, _, item = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                if item.key is not None:
+                if (
+                    item.key is not None
+                    and self._pending_by_key.get(item.key) is item.future
+                ):
                     self._pending_by_key.pop(item.key, None)
+                if item.counts_bg_inflight and self._bg_inflight > 0:
+                    self._bg_inflight -= 1
                 _fail_item(item, ConnectionError("Commander stopped"))
-                self._queue.task_done()
+                queue.task_done()
 
-        if self._worker is not None and not self._worker.done():
-            self._worker.cancel()
-            try:
-                await self._worker
-            except asyncio.CancelledError:
-                # See MOR-2081: same discriminator as _loop's own teardown
-                # cancel below (#2145) -- distinguishes "the worker I just
-                # cancelled finished" from "this task itself was cancelled
-                # from outside" via this task's own pending cancel request.
-                me = asyncio.current_task()
-                if me is not None and me.cancelling():
-                    raise
-
-        self._worker = None
-        self._queue = None
-        self._pending_by_key.clear()
-        self._bg_inflight = 0
+        try:
+            if worker is not None:
+                await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            me = asyncio.current_task()
+            if me is not None and me.cancelling():
+                raise
+        finally:
+            # A cancelled waiter retains the live join handle. A completed old
+            # worker may already have restarted through a done callback.
+            if self._worker is worker and (worker is None or worker.done()):
+                self._worker = None
+                self._queue = None
+                self._pending_by_key.clear()
+                self._bg_inflight = 0
 
     async def send(
         self,
@@ -151,7 +158,12 @@ class IcomCommander:
                 ``Priority.BACKGROUND`` fire-and-forget sends a defensive
                 ``_MAX_BG_INFLIGHT`` cap bounds outstanding work (drop-newest).
         """
-        if self._queue is None or self._worker is None:
+        if (
+            self._queue is None
+            or self._worker is None
+            or self._worker.done()
+            or self._worker.cancelling()
+        ):
             raise ConnectionError("Commander is not started")
 
         if dedupe and key is not None:
@@ -225,10 +237,11 @@ class IcomCommander:
             await restore(state)
 
     async def _loop(self) -> None:
-        assert self._queue is not None
+        queue, worker = self._queue, asyncio.current_task()
+        assert queue is not None and worker is not None
         try:
             while True:
-                _, _, item = await self._queue.get()
+                _, _, item = await queue.get()
                 execute_task: asyncio.Future[CivFrame | None] | None = None
                 try:
                     # Skip abandoned requests (caller cancelled/timed out
@@ -279,16 +292,15 @@ class IcomCommander:
                         # would park _loop on queue.get() forever and hang
                         # stop().  Task.cancelling() (3.11+) exposes the
                         # worker's own pending cancel request.
-                        worker = asyncio.current_task()
-                        if item.future.cancelled() and not (
-                            worker is not None and worker.cancelling()
-                        ):
+                        if item.future.cancelled() and not worker.cancelling():
                             # Packet was sent on the wire — honor pacing
                             # for the next item.
                             self._last_send = asyncio.get_running_loop().time()
                             continue
                         raise
 
+                    if worker.cancelling():
+                        raise asyncio.CancelledError
                     self._last_send = asyncio.get_running_loop().time()
                     if not item.future.done():
                         item.future.set_result(resp)
@@ -299,6 +311,8 @@ class IcomCommander:
                     raise
                 except Exception as exc:
                     _fail_item(item, exc)
+                    if worker.cancelling():
+                        raise asyncio.CancelledError
                 finally:
                     if item.counts_bg_inflight and self._bg_inflight > 0:
                         self._bg_inflight -= 1
@@ -307,6 +321,6 @@ class IcomCommander:
                         and self._pending_by_key.get(item.key) is item.future
                     ):
                         self._pending_by_key.pop(item.key, None)
-                    self._queue.task_done()
+                    queue.task_done()
         except asyncio.CancelledError:
             pass

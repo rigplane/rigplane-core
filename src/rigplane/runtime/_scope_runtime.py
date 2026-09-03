@@ -295,7 +295,12 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             label="get_scope_span",
         )
         command, sub, _ = self._expect_shape(get_scope_span)
-        rx_hint, span = parse_scope_span_response(resp, command=command, sub=sub)
+        rx_hint, span = parse_scope_span_response(
+            resp,
+            self._profile.scope_span_presets_hz,
+            command=command,
+            sub=sub,
+        )
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().span = span
         return span
@@ -306,7 +311,10 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         receiver = self._scope_controls().receiver
         await self._send_civ_raw(
             self._commands.scope_set_span(
-                span, to_addr=self._radio_addr, receiver=receiver
+                span,
+                to_addr=self._radio_addr,
+                presets=self._profile.scope_span_presets_hz,
+                receiver=receiver,
             ),
             wait_response=False,
         )

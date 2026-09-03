@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import pathlib
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -195,30 +196,12 @@ class TestCoreRadioWiring:
 
     @pytest.mark.asyncio
     async def test_migrated_getter_refuses_through_expect_shape(self) -> None:
-        """MOR-2006: a config.py getter's reply-shape lookup refuses too.
-
-        ``runtime/radio.py: CoreRadio.get_lan_mod_level`` calls
-        ``self._expect_shape(get_lan_mod_level)`` (-> ``self._commands.
-        expect``) before it ever builds or sends a frame. When this test
-        was first written, IC-7300 declared no ``get_lan_mod_level`` entry
-        and did not record it absent either -- state 3. MOR-2014 (D2) has
-        since declared it absent (no LAN hardware on this radio; no LAN
-        row anywhere in the Advanced Manual's command table) -- state 2
-        now, same refusal shape, still previously unpinned at the public
-        async-method level (every other case in this file calls
-        ``radio._commands.<builder>`` directly). This one calls the public
-        method itself, which ``tests/test_response_shape_from_profile.py``
-        (the keystone) deliberately never does -- it skips a profile/getter
-        pair the map omits rather than asserting a refusal.
-        """
+        """A missing IC-7300 LAN command refuses before transport dispatch."""
         profile = self._ic7300_profile()
         assert "get_lan_mod_level" not in profile.command_names
-        assert "get_lan_mod_level" in profile.absent_command_names, (
-            "fixture assumption: MOR-2014 (D2) declared IC-7300's "
-            "get_lan_mod_level absent -- if a later D2 pass instead fills "
-            "it with real bytes, this test needs a different undeclared "
-            "config.py getter/profile pair"
-        )
+        assert "get_lan_mod_level" not in profile.absent_command_names
         radio = CoreRadio("127.0.0.1", profile=profile)
+        radio._send_civ_expect = AsyncMock()  # noqa: SLF001
         with pytest.raises(CommandError, match="not supported by this radio"):
             await radio.get_lan_mod_level()
+        radio._send_civ_expect.assert_not_awaited()  # noqa: SLF001

@@ -947,7 +947,7 @@ question qualitatively.
 
 **The connect-time bootstrap exemption is retained — and it does not reach the
 seat this design creates. OPEN (Q15, raised 2026-08-21, not decided.)** The one
-`connection_epoch_bootstrap` exemption (`radio_poller.py:4024`) exists
+`connection_epoch_bootstrap` exemption exists
 because RF/VFO truth is structurally unobservable until that first
 `SelectVfo` lands. A previous draft claimed the solicited read dissolves it;
 it does not — vfo-select is HAZARD, whose read-failure direction is

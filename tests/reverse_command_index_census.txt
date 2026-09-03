@@ -16,7 +16,7 @@
 # Regenerate the same way after an intentional profile/command change --
 # do not hand-edit.
 IC-705	242	126	227
-IC-7300	323	182	279
+IC-7300	320	181	275
 IC-7610	216	129	169
 IC-9700	228	136	181
 X6100	67	42	50

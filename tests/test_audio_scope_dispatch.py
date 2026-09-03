@@ -22,6 +22,7 @@ PCM tap exactly as the live audio pipeline does.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -35,6 +36,7 @@ from rigplane.audio.backend import (
 from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.ic705.serial import Ic705SerialRadio
 from rigplane.capabilities import CAP_AUDIO, CAP_SCOPE
+from rigplane.exceptions import CommandError
 from rigplane.radio import IcomRadio
 from rigplane.scope import ScopeFrame
 from rigplane.types import AudioCodec
@@ -115,6 +117,13 @@ class _FakeSerialCivLink:
 
     async def send(self, frame: bytes) -> None:
         _ = frame
+
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("Serial CI-V write is no longer current.")
+        await self.send(frame)
 
     async def receive(self, timeout: float | None = None) -> bytes | None:
         await asyncio.sleep(0.0 if timeout is None else min(timeout, 0.0))

@@ -94,6 +94,7 @@ __all__ = [
     "AdvancedControlCapable",
     "DspControlCapable",
     "AntennaControlCapable",
+    "AttenuatorObservationProjectable",
     "CwControlCapable",
     "VoiceControlCapable",
     "SystemControlCapable",
@@ -265,12 +266,20 @@ class Radio(Protocol):
         """
         ...
 
-    def supports_command(self, command: str) -> bool:
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Check if this radio supports a specific command.
 
         Profile-driven backends derive this from direct profile declarations
         and explicit runtime relations. Other providers may resolve support
         through their own backend command inventory.
+
+        ``receiver=None`` retains name-only support. An explicit receiver
+        opts into target admission for ``set_af_level``, ``set_rf_gain``,
+        ``set_squelch`` and ``set_attenuator_level``: it must be an integer
+        (not bool) in the provider's topology with an executable write route.
+        This is structural eligibility, not current-frequency applicability.
+        Other commands return False for this opt-in query; their name-only
+        support is unchanged.
         """
         ...
 
@@ -1674,6 +1683,15 @@ class DspControlCapable(Protocol):
 
     async def get_nb_width(self, receiver: int = 0) -> int:
         """Get NB width (0-255)."""
+        ...
+
+
+@runtime_checkable
+class AttenuatorObservationProjectable(Protocol):
+    """Optional projection from a bound ATT input to its observation value."""
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        """Project an already-bound integer without validation or I/O."""
         ...
 
 

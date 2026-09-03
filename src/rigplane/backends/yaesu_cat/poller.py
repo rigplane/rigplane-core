@@ -33,7 +33,9 @@ from rigplane.core.command_dispatch import execute_command_intent
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.runtime._poller_types import canonicalize_level_command
 from rigplane.runtime.tx_interlock import (
     DeferredTxCommandLane,
     RfState,
@@ -330,19 +332,57 @@ class YaesuCatPoller:
             self._cancel_deferred_entry("connection generation changed")
             self._invalidate_ptt_observation()
             self._invalidate_tx_target()
+            self._publish_unknown_ptt(self._captured_provider_generation())
         return generation
 
+    def _publish_unknown_ptt(self, provider_generation: int | None) -> None:
+        callback = self._observation_callback
+        profile = getattr(
+            getattr(self._radio, "profile", None), "state_acquisition", None
+        )
+        if (
+            callback is None
+            or not isinstance(profile, RadioAcquisitionProfile)
+            or not profile.capability_for(FieldPath.global_("tx_state", "ptt")).can_poll
+        ):
+            return
+        from .observations import YaesuObservationAdapter
+
+        observation = YaesuObservationAdapter.from_radio(
+            self._radio
+        ).observed_ptt_observation(None)
+        if provider_generation is None:
+            provider_generation = self._captured_provider_generation()
+        observations = self._stamp_provider_generation(
+            (observation,), provider_generation
+        )
+        try:
+            callback(observations)
+        except (Exception, asyncio.CancelledError):
+            logger.warning("Yaesu PTT boundary callback failed", exc_info=True)
+
     async def _emit_medium_observations(self) -> bool:
-        if self._observation_callback is None:
+        callback = self._observation_callback
+        if callback is None:
             return False
         from .observations import YAESU_PTT_PATH, YaesuObservationAdapter
 
         provider_generation = self._captured_provider_generation()
         generation = self._sync_tx_target_generation()
+
+        def publish_ptt(observation: Observation) -> None:
+            if (
+                self._provider_generation_is_current(provider_generation)
+                and self._current_tx_target_generation() == generation
+            ):
+                callback(
+                    self._stamp_provider_generation((observation,), provider_generation)
+                )
+
         try:
             observations = await YaesuObservationAdapter.from_radio(
                 self._radio
-            ).poll_medium()
+            ).poll_medium(ptt_callback=publish_ptt)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -358,7 +398,7 @@ class YaesuCatPoller:
             observations = tuple(
                 item
                 for item in observations
-                if item.path not in (_TX_TARGET_PATH, YAESU_PTT_PATH)
+                if item.path not in (_TX_TARGET_PATH, YAESU_PTT_PATH, OBSERVED_PTT_PATH)
             )
             self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
@@ -564,6 +604,7 @@ class YaesuCatPoller:
             logger.warning("YaesuCatPoller: triggering auto-reconnect")
             self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
+            self._publish_unknown_ptt(provider_generation)
             await transport.reconnect()
             logger.info("YaesuCatPoller: reconnected successfully")
         except Exception:
@@ -896,6 +937,7 @@ class YaesuCatPoller:
         Commands come from the web UI CommandQueue.  The dispatcher handles
         all command types; unsupported commands fail truthfully.
         """
+        cmd = canonicalize_level_command(cmd, self._radio)
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
             return
@@ -914,7 +956,6 @@ class YaesuCatPoller:
             PttOff,
             PttOn,
             SelectVfo,
-            SetAfLevel,
             SetAgc,
             SetApf,
             SetAttenuator,
@@ -951,12 +992,10 @@ class YaesuCatPoller:
             SetPower,
             SetPowerstat,
             SetPreamp,
-            SetRfGain,
             SetRitFrequency,
             SetRitStatus,
             SetRitTxStatus,
             SetSplit,
-            SetSquelch,
             SetTwinPeak,
             SetVox,
             SetTunerStatus,
@@ -1025,12 +1064,6 @@ class YaesuCatPoller:
                 await radio.set_powerstat(on)
 
             # ── Audio / RF Levels ──
-            case SetAfLevel(level=level):
-                await radio.set_af_level(level)
-            case SetRfGain(level=level):
-                await radio.set_rf_gain(level)
-            case SetSquelch(level=level):
-                await radio.set_squelch(level)
             case SetMicGain(level=level):
                 await radio.set_mic_gain(level)
             case SetPower(level=level, unit=unit):

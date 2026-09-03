@@ -19,16 +19,16 @@ import datetime
 import inspect
 import logging
 import time
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
-from ..commands.commander import Priority
+from ..core.acquisition_drain import AcquisitionDrain
 from ..core.acquisition_scheduler import (
-    AcquisitionExecutionResult,
     AcquisitionExecutor,
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionQuery,
+    MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
     civ_acquisition_executor_for_provider,
@@ -38,14 +38,13 @@ from ..profiles import RadioProfile
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import FieldPath
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
-from ..core.state_store import FreshnessState, StateStore
+from ..core.state_store import StateStore
 from ..radio_protocol import (
     CivCommandCapable,
     StateModelCapable,
     StateModelService,
     StateStoreCapable,
 )
-from ..runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
 from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
     wire_parts_for_query,
@@ -57,31 +56,22 @@ from .contract import ClientSession, HamlibError, RigctldConfig  # noqa: TID251
 from .utils import get_mode_reader  # noqa: TID251
 
 if TYPE_CHECKING:
+    from ..core.command_service import CommandService
     from ..radio_protocol import Radio
+    from ..runtime._poller_types import CommandQueue
+    from ..runtime.managed_tx_authority import ManagedTxAuthority
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PTT_REREAD_INTERVAL_SECONDS", "RigctldServer", "run_rigctld_server"]
+__all__ = ["RigctldServer", "run_rigctld_server"]
 
-# MOR-1903: standalone rigctld had no cadence poller of any kind —
-# ``due_requests()`` is called only by the web radio poller, so nothing ever
-# sent a ``0x1C/0x00`` read after connect, the strict resolver behind the
-# MOR-1881 DEFER gate (and the BLOCK pre-gate guarding key-down) stayed UNKNOWN
-# forever, and every frequency / mode / VFO / split / RIT write and every
-# ``T 1`` was refused with ``RPRT -9``.
-#
-# The TTL is read from ``_civ_rx``'s own table, never copied; a quarter of it
-# puts two reads in every freshness window, so one lost reply cannot open a gap
-# (a cadence at or above the TTL would reproduce the web deployment's
-# known-then-unknown sawtooth, which refuses most writes). It is a background
-# poller and is sent as one: ``Priority.BACKGROUND`` to yield the shared CI-V
-# lane to user commands, an unkey above all (MOR-497i), and
-# ``wait_dispatch=False`` so parking on the Commander future cannot push the
-# send past the very TTL this cadence exists to stay inside (MOR-497ii).
-PTT_OBSERVATION_TTL_SECONDS: float = _OBSERVATION_MAX_AGE_SECONDS[
-    ("global", "tx_state", "ptt")
-]
-PTT_REREAD_INTERVAL_SECONDS: float = PTT_OBSERVATION_TTL_SECONDS / 4.0
+# ``AcquisitionScheduler.due_requests`` stamps every profile-cadence request
+# with this reason. ``AcquisitionScheduler._coalesce`` appends to ``reasons``
+# and leaves the scalar ``reason`` at the first writer's value, so the scalar
+# cannot tell a merged request from an unmerged one; a ``reasons`` tuple equal
+# to this one alone can. Pinned by
+# ``test_external_cat_session_stands_the_cadence_down_but_not_a_user_read``.
+_POLICY_CADENCE_REASON = "policy-cadence"
 
 
 class _AcquisitionExecutorUnavailable(RuntimeError):
@@ -132,22 +122,6 @@ def _mode_to_name(mode: object) -> str:
     return str(mode).upper()
 
 
-def _is_packet_mode_set(cmd: Any) -> bool:
-    """Return True for set_mode PKT* commands.
-
-    Used to hold poller writes a bit longer while radio applies DATA-mode
-    transitions (USB/LSB/RTTY -> PKT*).
-    """
-    try:
-        return (
-            getattr(cmd, "long_cmd", "") == "set_mode"
-            and bool(getattr(cmd, "args", ()))
-            and str(cmd.args[0]).upper().startswith("PKT")
-        )
-    except Exception:
-        return False
-
-
 class RigctldServer:
     """Asyncio TCP server implementing the hamlib NET rigctld protocol.
 
@@ -156,7 +130,6 @@ class RigctldServer:
         config: Server configuration; defaults to RigctldConfig().
         _protocol: Override the protocol module (for testing).
         _handler: Override the handler instance (for testing).
-        _poller: Override the poller instance (for testing).
         _circuit_breaker: Override the circuit breaker (for testing).
     """
 
@@ -165,11 +138,27 @@ class RigctldServer:
         radio: "Radio",
         config: RigctldConfig | None = None,
         *,
+        managed_tx_authority: ManagedTxAuthority | None = None,
+        command_queue: CommandQueue | None = None,
+        command_service: CommandService | None = None,
         _protocol: Any = None,
         _handler: Any = None,
-        _poller: Any = None,
         _circuit_breaker: Any = None,
     ) -> None:
+        supplied = (
+            managed_tx_authority is not None,
+            command_queue is not None,
+            command_service is not None,
+        )
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "managed authority, queue and service must be supplied together"
+            )
+        if all(supplied) and _handler is not None:
+            raise ValueError("managed references cannot be combined with _handler")
+        self._managed_tx_authority = managed_tx_authority
+        self._command_queue = command_queue
+        self._command_service = command_service
         self._radio = radio
         self._config = config or RigctldConfig()
         self._server: asyncio.Server | None = None
@@ -179,7 +168,6 @@ class RigctldServer:
         # Injected for testing; populated lazily in start() if None.
         self._protocol: Any = _protocol
         self._rig_handler: Any = _handler
-        self._poller: Any = _poller
         self._circuit_breaker: CircuitBreaker | None = _circuit_breaker
         self._server_was_running: bool = False
         self._state_store: StateStore | None = None
@@ -191,8 +179,8 @@ class RigctldServer:
         self._state_store_freshness_task: asyncio.Task[None] | None = None
         self._acquisition_executor: AcquisitionExecutor | None = None
         self._state_acquisition_drain_task: asyncio.Task[None] | None = None
-        self._ptt_reread_task: asyncio.Task[None] | None = None
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
+        self._acquisition_drain: AcquisitionDrain | None = None
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
         self._rate_windows: dict[int, list[float]] = {}
@@ -395,6 +383,12 @@ class RigctldServer:
             ("_acquisition_scheduler", scheduler),
             ("state_model_service", model_service),
             ("_state_freshness_service", freshness_service),
+            # MOR-2280 F14: standalone rigctld coalesces meter bursts as the
+            # web seat does. ``_bootstrap_state_acquisition`` returns before
+            # calling this when the radio already carries a
+            # ``state_model_service``, so a coalescer another seat attached
+            # over the same radio is never replaced here.
+            ("_meter_observation_coalescer", MeterObservationCoalescer()),
         ):
             try:
                 setattr(self._radio, name, value)
@@ -438,6 +432,7 @@ class RigctldServer:
         freshness_service = StateFreshnessService(
             store=self._state_store,
             scheduler=scheduler,
+            radio=self._radio,
         )
         self._acquisition_scheduler = scheduler
         self._state_model_service = model_service
@@ -464,94 +459,6 @@ class RigctldServer:
             self._state_freshness_service.run(),
             name="rigctld-state-freshness",
         )
-
-    def _start_ptt_reread_task(self) -> None:
-        """Start the client-gated CI-V PTT re-read, if this radio supports it.
-
-        CI-V only; the Yaesu leg is MOR-1903-B.
-        """
-        if self._ptt_reread_task is not None:
-            return
-        if not isinstance(self._radio, CivCommandCapable):
-            return
-        self._ptt_reread_task = asyncio.get_running_loop().create_task(
-            self._run_ptt_reread(),
-            name="rigctld-ptt-reread",
-        )
-
-    async def _stop_ptt_reread_task(self) -> None:
-        task, self._ptt_reread_task = self._ptt_reread_task, None
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.debug("rigctld PTT re-read task failed before stop", exc_info=True)
-
-    async def _run_ptt_reread(self) -> None:
-        """Drive the *request* only; nothing here writes to the StateStore.
-
-        If the radio never answers, RF truth stays UNKNOWN and the gate keeps
-        refusing — absence is never filled in (MOR-1900).
-        """
-        while True:
-            try:
-                await asyncio.sleep(PTT_REREAD_INTERVAL_SECONDS)
-                await self._send_ptt_reread_once()
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                # A dead link or mid-teardown transport must not kill the
-                # driver; the next tick retries, honestly UNKNOWN meanwhile.
-                logger.debug("rigctld PTT re-read failed: %s", exc, exc_info=True)
-
-    async def _send_ptt_reread_once(self) -> None:
-        """Emit one ``0x1C/0x00`` read on the poller lane, if we may.
-
-        Not via ``_send_one_state_query``: that carries bounded on-demand
-        requests on the user-command lane, the wrong lane for a cadence.
-
-        Two independent triggers can reach this method: the scheduled tick
-        in ``_run_ptt_reread`` and the connect-triggered immediate re-read in
-        ``_accept_client``. They are not serialized against each other, so
-        both can put a ``0x1C/0x00`` request on the wire close together.
-        That is harmless: the read carries no side effect and the reply is
-        idempotent, so a duplicate in-flight request changes nothing the
-        gate or the StateStore observes.
-        """
-        radio = self._radio
-        # Parity with the lazy poller start: an idle server stays off the wire.
-        if self._client_count <= 0 or not isinstance(radio, CivCommandCapable):
-            return
-        # A Hamlib bridge owns the byte stream; our reads must not pollute it
-        # (MOR-166 slice 2). ``is True``, matching every sibling poller, so a
-        # duck-typed radio never quiesces by accident.
-        if getattr(radio, "external_cat_session_active", False) is True:
-            return
-        await radio.send_civ(
-            0x1C,
-            sub=0x00,
-            wait_response=False,
-            priority=Priority.BACKGROUND,
-            wait_dispatch=False,
-        )
-
-    async def _send_ptt_reread_once_on_connect(self) -> None:
-        """Spawn target for the connect-triggered re-read in ``_accept_client``.
-
-        Same exception discipline as the scheduled-tick caller,
-        ``_run_ptt_reread``: a dead or mid-teardown transport must not
-        surface as an unretrieved task exception on
-        ``RigctldServer._spawn``'s done-callback, which only discards the
-        task and never retrieves its result.
-        """
-        try:
-            await self._send_ptt_reread_once()
-        except Exception as exc:
-            logger.debug("rigctld PTT re-read failed: %s", exc, exc_info=True)
 
     def _start_state_acquisition_drain_task(self) -> None:
         if (
@@ -670,161 +577,123 @@ class RigctldServer:
             link_healthy=False,
         )
 
-    def _derive_tx_active(self) -> bool:
-        """Derive the canonical tx_active fact for the scheduler's dispatch gate.
+    def _dispatchable_this_pass(
+        self,
+        pending: Sequence[AcquisitionRequest],
+    ) -> Sequence[AcquisitionRequest]:
+        """Return the requests this seat may put on the wire this pass.
 
-        MOR-1532: standalone rigctld never calls
-        ``AcquisitionScheduler.due_requests()`` (MOR-1903 gave this seat one
-        cadence of its own -- the PTT re-read -- but it bypasses the scheduler
-        entirely), so its scheduler's cached ``_tx_active`` never
-        left the ``__init__`` default of ``True`` -- the MOR-1531
-        ``tx_only`` reconciliation gate stayed permanently open in that
-        mode. Derived identically to the web poller (MOR-1525 / PR #2438):
-        the canonical ``global.tx_state.ptt`` observation, FRESH-gated. Fail
-        closed: unobserved/stale/unknown ptt -> tx_active False, the honest
-        direction when the fact isn't known.
+        A Hamlib bridge owns the byte stream; the cadence reads this seat
+        gained must not pollute it (MOR-166 slice 2). The deleted PTT
+        re-read stood down on this exact flag. ``is True``, matching every
+        sibling poller, so a duck-typed radio never quiesces by accident.
+
+        Only a request whose ``reasons`` is exactly the profile cadence
+        stands down; a client read that coalesced into it carries a second
+        reason and still reaches the wire.
         """
 
-        store = self._state_store
-        if store is None:
-            return False
-        try:
-            ptt_field = store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
-        except KeyError:
-            return False
-        return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
+        external_cat_owns_wire = (
+            getattr(self._radio, "external_cat_session_active", False) is True
+        )
+        if not external_cat_owns_wire:
+            return pending
+        return tuple(
+            request
+            for request in pending
+            if request.reasons != (_POLICY_CADENCE_REASON,)
+        )
+
+    def _report_acquisition_executor_missing(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        now: float,
+    ) -> None:
+        if self._provider_uses_civ_executor(request.provider) and not isinstance(
+            self._radio, CivCommandCapable
+        ):
+            reason = "acquisition_executor_unavailable"
+        else:
+            reason = "acquisition_executor_missing"
+        self._record_acquisition_failure(
+            scheduler,
+            request,
+            reason=reason,
+            failed_paths=request.paths,
+            now=now,
+            kind=reason,
+        )
+
+    def _report_acquisition_executor_error(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        error: BaseException,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        failed_paths = tuple(path for path in request.paths if path not in sent_paths)
+        unavailable = isinstance(error, _AcquisitionExecutorUnavailable)
+        reason = (
+            "acquisition_executor_unavailable"
+            if unavailable
+            else "acquisition_executor_error"
+        )
+        self._record_acquisition_failure(
+            scheduler,
+            request,
+            reason=reason,
+            failed_paths=failed_paths or request.paths,
+            now=now,
+            kind=reason if unavailable else "acquisition_request_failed",
+            error=str(error),
+            error_type=type(error).__name__,
+        )
+
+    def _report_acquisition_sent(
+        self,
+        request: AcquisitionRequest,
+        *,
+        paths: tuple[FieldPath, ...],
+        pending_request_count: int,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_request_sent",
+            "rigctld.server",
+            request_id=request.id,
+            paths=[str(path) for path in paths],
+            pending_request_count=pending_request_count,
+        )
+
+    def _state_acquisition_drain(self) -> AcquisitionDrain:
+        """Return this seat's drain, built on first use.
+
+        Scheduler, executor and store are read through callables:
+        ``_bootstrap_state_acquisition`` attaches them after construction.
+        """
+
+        drain = self._acquisition_drain
+        if drain is None:
+            drain = AcquisitionDrain(
+                scheduler=lambda: self._acquisition_scheduler,
+                executor=lambda: self._acquisition_executor,
+                store=lambda: self._state_store,
+                in_flight=self._acquisition_in_flight,
+                expired=self._acquisition_request_expired,
+                dispatchable=self._dispatchable_this_pass,
+                report_failure=self._record_acquisition_failure,
+                report_executor_missing=self._report_acquisition_executor_missing,
+                report_executor_error=self._report_acquisition_executor_error,
+                report_sent=self._report_acquisition_sent,
+            )
+            self._acquisition_drain = drain
+        return drain
 
     async def _drain_state_acquisition_once(self) -> None:
-        scheduler = self._acquisition_scheduler
-        if scheduler is None:
-            return
-        now = time.monotonic()
-        # MOR-1532: keep the scheduler's tx_active cache current on this
-        # drain path too -- see note_tx_active()'s docstring for why calling
-        # it here can never disagree with the web poller's due_requests()
-        # call in combined (shared-scheduler) mode.
-        scheduler.note_tx_active(self._derive_tx_active())
-        # MOR-1533: dispatch must use the tx_active-gated view; crediting an
-        # already-sent answer (runtime._civ_rx, driven by this radio's own
-        # CI-V pump) uses the unfiltered pending_requests() instead, so an
-        # answer landing after de-key is never blinded by this gate.
-        pending = scheduler.dispatchable_requests()
-        pending_ids = {request.id for request in pending}
-        for request_id in tuple(self._acquisition_in_flight):
-            if request_id not in pending_ids:
-                del self._acquisition_in_flight[request_id]
-
-        for request in pending:
-            sent_paths: frozenset[FieldPath] = frozenset()
-            sent_at = 0.0
-            existing = self._acquisition_in_flight.get(request.id)
-            if existing is not None:
-                sent_paths, sent_at = existing
-                if self._acquisition_request_expired(
-                    request,
-                    sent_at=sent_at,
-                    now=now,
-                ):
-                    self._record_acquisition_failure(
-                        scheduler,
-                        request,
-                        reason="acquisition_request_timeout",
-                        failed_paths=sent_paths or frozenset(request.paths),
-                        now=now,
-                    )
-                    self._acquisition_in_flight.pop(request.id, None)
-                    continue
-                sent_paths = sent_paths.intersection(request.paths)
-
-            if all(path in sent_paths for path in request.paths):
-                continue
-
-            executor = self._acquisition_executor
-            if executor is None:
-                if self._provider_uses_civ_executor(
-                    request.provider
-                ) and not isinstance(self._radio, CivCommandCapable):
-                    reason = "acquisition_executor_unavailable"
-                    kind = reason
-                else:
-                    reason = "acquisition_executor_missing"
-                    kind = reason
-                self._record_acquisition_failure(
-                    scheduler,
-                    request,
-                    reason=reason,
-                    failed_paths=request.paths,
-                    now=now,
-                    kind=kind,
-                )
-                continue
-
-            try:
-                result: AcquisitionExecutionResult = await executor.execute(
-                    request,
-                    already_sent_paths=sent_paths,
-                )
-            except asyncio.CancelledError:
-                raise
-            except _AcquisitionExecutorUnavailable as exc:
-                failed_paths = tuple(
-                    path for path in request.paths if path not in sent_paths
-                )
-                self._record_acquisition_failure(
-                    scheduler,
-                    request,
-                    reason="acquisition_executor_unavailable",
-                    failed_paths=failed_paths or request.paths,
-                    now=now,
-                    kind="acquisition_executor_unavailable",
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                )
-                self._acquisition_in_flight.pop(request.id, None)
-                continue
-            except Exception as exc:
-                failed_paths = tuple(
-                    path for path in request.paths if path not in sent_paths
-                )
-                self._record_acquisition_failure(
-                    scheduler,
-                    request,
-                    reason="acquisition_executor_error",
-                    failed_paths=failed_paths or request.paths,
-                    now=now,
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                )
-                self._acquisition_in_flight.pop(request.id, None)
-                continue
-            failed_paths = tuple(result.failed_paths)
-            if failed_paths:
-                reason = result.failure_reason or "acquisition_request_failed"
-                self._record_acquisition_failure(
-                    scheduler,
-                    request,
-                    reason=reason,
-                    failed_paths=failed_paths,
-                    now=now,
-                )
-
-            newly_sent = tuple(result.sent_paths)
-            if newly_sent:
-                self._acquisition_in_flight[request.id] = (
-                    sent_paths.union(newly_sent),
-                    now,
-                )
-                self._record_state_diagnostic(
-                    "acquisition_request_sent",
-                    "rigctld.server",
-                    request_id=request.id,
-                    paths=[str(path) for path in newly_sent],
-                    # MOR-1533: dispatchable_requests(), matching this
-                    # drain's own dispatch view -- not the unfiltered
-                    # pending_requests(), which would also count entries
-                    # this drain will never send (withheld tx_only hints).
-                    pending_request_count=len(scheduler.dispatchable_requests()),
-                )
+        await self._state_acquisition_drain().run_once()
 
     async def start(self) -> None:
         """Start the TCP listener and initialise the command handler."""
@@ -846,6 +715,9 @@ class RigctldServer:
                 self._config,
                 state_store=self._state_store,
                 state_model_service=self._state_model_service,
+                managed_tx_authority=self._managed_tx_authority,
+                command_queue=self._command_queue,
+                command_service=self._command_service,
             )
 
         store = self._state_store
@@ -872,7 +744,6 @@ class RigctldServer:
         logger.info("rigctld listening on %s:%d", addr[0], addr[1])
         self._start_state_freshness_task()
         self._start_state_acquisition_drain_task()
-        self._start_ptt_reread_task()
 
         # Poller starts lazily on first client connection to avoid idle
         # CI-V traffic/noise when no CAT clients are connected.
@@ -895,8 +766,6 @@ class RigctldServer:
             self._state_store.begin_provider_generation()
             self._fallback_state_store_attached = False
 
-        await self._stop_ptt_reread_task()
-
         if self._state_acquisition_drain_task is not None:
             self._state_acquisition_drain_task.cancel()
             try:
@@ -917,10 +786,6 @@ class RigctldServer:
             except asyncio.CancelledError:
                 pass
             self._state_store_freshness_task = None
-
-        if self._poller is not None:
-            await self._poller.stop()
-            self._poller = None
 
         # Listener down, then the live sessions, then the wait. The order is
         # the release guarantee, not tidiness (MOR-1014): since 3.12
@@ -1016,22 +881,6 @@ class RigctldServer:
         self._client_tasks.add(task)
         self._client_count += 1
 
-        # Start poller when the first client connects.
-        if self._poller is not None and self._client_count == 1:
-            self._spawn(self._poller.start())
-
-        # The re-read cadence otherwise ticks on its own clock from server
-        # start: a client connecting just before the next scheduled tick
-        # could find RF truth UNKNOWN and have its first DEFER-family write
-        # refused (RPRT -9). Firing one read on the zero-to-one transition
-        # closes that window instead of waiting out up to a full
-        # PTT_REREAD_INTERVAL_SECONDS; the scheduled cadence continues
-        # unchanged afterward. This can race a tick already in flight and
-        # put two 0x1C/0x00 requests on the wire close together -- harmless,
-        # since the read is idempotent and carries no side effect.
-        if self._client_count == 1 and self._ptt_reread_task is not None:
-            self._spawn(self._send_ptt_reread_once_on_connect())
-
         # Optional WSJT-X compatibility pre-warm for first client:
         # if radio is in USB/LSB/RTTY with DATA off, enable DATA mode upfront
         # to avoid long CAT/PTT latency on first TX sequence.
@@ -1044,23 +893,11 @@ class RigctldServer:
         self._client_tasks.discard(task)
         self._client_count -= 1
 
-        # Stop poller when no clients remain.
-        if self._poller is not None and self._client_count <= 0:
-            self._client_count = 0
-            try:
-                self._spawn(self._poller.stop())
-            except RuntimeError:
-                # Loop already closed during shutdown.
-                pass
-
     async def _wsjtx_compat_prewarm(self) -> None:
         """Best-effort DATA-mode prewarm for WSJT-X compatibility mode."""
         get_mode = get_mode_reader(self._radio, _mode_to_name)
         if get_mode is None:
             return
-        poller = self._poller
-        if poller is not None:
-            poller.write_busy = True
         try:
             mode_name, _ = await get_mode()
             data_on = await self._radio.get_data_mode()
@@ -1084,8 +921,6 @@ class RigctldServer:
                     source=self._config.wsjtx_data_mod_input,
                 )
                 await self._radio.set_data_mode(data_mode)
-                if poller is not None:
-                    poller.hold_for(1.5)
                 logger.info(
                     "WSJT-X compat prewarm: DATA%s enabled (base mode=%s)",
                     data_mode,
@@ -1093,9 +928,6 @@ class RigctldServer:
                 )
         except Exception as exc:
             logger.debug("WSJT-X compat prewarm skipped/failed: %s", exc)
-        finally:
-            if poller is not None:
-                poller.write_busy = False
 
     # ------------------------------------------------------------------
     # Per-client coroutine
@@ -1184,9 +1016,6 @@ class RigctldServer:
                     continue
 
                 # ── execute with command timeout ─────────────────────
-                poller_hold = bool(cmd.is_set and self._poller is not None)
-                if poller_hold:
-                    self._poller.write_busy = True
                 t_start = time.monotonic()
                 try:
                     resp = await asyncio.wait_for(
@@ -1207,17 +1036,6 @@ class RigctldServer:
                     writer.write(proto.format_error(HamlibError.EIO))
                     await writer.drain()
                     continue
-                finally:
-                    if poller_hold:
-                        # Packet mode transitions can make CI-V briefly unresponsive.
-                        # Keep poller paused for a settle window to avoid
-                        # immediate get_frequency storms.
-                        if _is_packet_mode_set(cmd):
-                            try:
-                                self._poller.hold_for(3.0)
-                            except Exception:
-                                logger.debug("hold_for failed", exc_info=True)
-                        self._poller.write_busy = False
 
                 # ── session-state wiring (vfo_opt handshake) ─────────
                 # When the handler advertised vfo_opt via ``\chk_vfo`` →

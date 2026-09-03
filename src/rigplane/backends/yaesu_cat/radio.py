@@ -727,11 +727,41 @@ class YaesuCatRadio:
             and spec.write is not None
         )
 
-    def supports_command(self, command: str) -> bool:
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Return profile-derived support only for an executable operation."""
-        return supports_callable(self.profile, command) and callable(
+        supported = supports_callable(self.profile, command) and callable(
             getattr(self, command, None)
         )
+        if receiver is None:
+            return supported
+        if not supported or command not in {
+            "set_af_level",
+            "set_rf_gain",
+            "set_squelch",
+            "set_attenuator_level",
+        }:
+            return False
+        try:
+            key = self._receiver_level_write_key(command, receiver)
+        except (TypeError, ValueError):
+            return False
+        if command == "set_attenuator_level":
+            if (
+                receiver != 0
+                or not self.profile.supports_capability("attenuator")
+                or not callable(getattr(self, "set_attenuator", None))
+            ):
+                return False
+            key = "set_attenuator"
+        return self._has_write_command(key)
+
+    def _receiver_level_write_key(self, command: str, receiver: int) -> str:
+        """Select a MAIN/SUB level key after validating the target receiver."""
+        if isinstance(receiver, bool) or not isinstance(receiver, int):
+            raise TypeError("level receiver must be an integer")
+        if receiver not in (0, 1) or not self.profile.supports_receiver(receiver):
+            raise ValueError(f"level receiver is not supported: {receiver}")
+        return command if receiver == 0 else f"{command}_sub"
 
     def _default_nb_level(self) -> int:
         """Default NB level for turning on when current level is 0."""
@@ -1310,7 +1340,7 @@ class YaesuCatRadio:
 
     async def set_af_level(self, level: int, receiver: int = 0) -> None:
         """Set the AF (audio) level (0–255)."""
-        cmd = "set_af_level" if receiver == 0 else "set_af_level_sub"
+        cmd = self._receiver_level_write_key("set_af_level", receiver)
         await self._write(cmd, level=level)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.af_level = level
@@ -1330,7 +1360,7 @@ class YaesuCatRadio:
 
     async def set_rf_gain(self, level: int, receiver: int = 0) -> None:
         """Set the RF gain (0–255)."""
-        cmd = "set_rf_gain" if receiver == 0 else "set_rf_gain_sub"
+        cmd = self._receiver_level_write_key("set_rf_gain", receiver)
         await self._write(cmd, level=level)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.rf_gain = level
@@ -1350,7 +1380,7 @@ class YaesuCatRadio:
 
     async def set_squelch(self, level: int, receiver: int = 0) -> None:
         """Set the squelch level (0–255)."""
-        cmd = "set_squelch" if receiver == 0 else "set_squelch_sub"
+        cmd = self._receiver_level_write_key("set_squelch", receiver)
         await self._write(cmd, level=level)
         rx = self._state.main if receiver == 0 else self._state.sub
         rx.squelch = level
@@ -1380,6 +1410,9 @@ class YaesuCatRadio:
         silently ignores it. Coerce to ``int`` first so ``RA0{0,1};`` is sent.
         """
         await self._write("set_attenuator", state=str(int(state)))
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return int(db > 0)
 
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         """Set attenuator by dB level.

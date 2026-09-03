@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,6 +28,7 @@ from rigplane.backends.rigctld_client.radio import RigctldClientObservationPolle
 from rigplane.backends.rigctld_client.observations import (
     RigctldClientObservationAdapter,
     build_external_rigctld_acquisition_profile,
+    resolve_external_rigctld_poll_intervals,
 )
 from rigplane.core.acquisition_scheduler import AcquisitionScheduler, AcquisitionStatus
 from rigplane.core.capabilities import CAP_POWER_CONTROL, CAP_TX
@@ -46,7 +48,17 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    project_observed_ptt,
+)
 from rigplane.exceptions import CommandError
+
+
+_MEDIUM_INTERVAL, _SLOW_INTERVAL = resolve_external_rigctld_poll_intervals(
+    build_external_rigctld_acquisition_profile(vfo_supported=True)
+)
 
 
 def _clock() -> float:
@@ -131,6 +143,7 @@ async def test_observation_poller_drains_web_commands_before_readback() -> None:
             assert all(future.done() and not future.cancelled() for future in futures)
             assert all(future.result() is None for future in futures)
             assert [str(item.path) for item in observations] == [
+                "global.tx_state.observed_ptt",
                 "receiver.main.active.freq_mode.freq_hz",
                 "receiver.main.active.freq_mode.mode",
                 "receiver.main.active.freq_mode.filter_width",
@@ -150,6 +163,7 @@ async def test_observation_poller_drains_web_commands_before_readback() -> None:
                 "receiver.main.operator_toggles.nr",
             ]
             assert [item.value for item in observations] == [
+                ObservedPtt.ON,
                 7_050_000,
                 "LSB",
                 1800,
@@ -450,6 +464,8 @@ async def test_observation_poller_discards_expectation_when_readback_unavailable
                 callback=lambda _observations: None,
                 command_queue=queue,
                 clock=clock.now,
+                medium_interval=_MEDIUM_INTERVAL,
+                slow_interval=_SLOW_INTERVAL,
             )
 
             await poller._drain_commands()  # noqa: SLF001
@@ -655,6 +671,8 @@ async def test_observation_poller_correlates_slow_control_after_overlay_ttl_edge
                 callback=observations.extend,
                 command_queue=queue,
                 clock=lambda: clock.advance(0.01),
+                medium_interval=_MEDIUM_INTERVAL,
+                slow_interval=_SLOW_INTERVAL,
             )
 
             await poller._poll_medium()  # noqa: SLF001
@@ -795,6 +813,7 @@ async def test_radio_observation_poller_emits_adapter_covered_reads() -> None:
             await poller._poll_medium()  # noqa: SLF001
 
             assert [str(item.path) for item in observations] == [
+                "global.tx_state.observed_ptt",
                 "receiver.main.active.freq_mode.freq_hz",
                 "receiver.main.active.freq_mode.mode",
                 "receiver.main.active.freq_mode.filter_width",
@@ -804,6 +823,7 @@ async def test_radio_observation_poller_emits_adapter_covered_reads() -> None:
                 "receiver.main.vfo.active_slot",
             ]
             assert [item.value for item in observations] == [
+                ObservedPtt.OFF,
                 14_074_000,
                 "USB",
                 2400,
@@ -1068,3 +1088,305 @@ async def test_ptt_and_slow_control_reads_cover_declared_rigctld_capabilities() 
             assert all(item.max_age == 120.0 for item in observations[1:])
         finally:
             await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_rigctld_client_observation_poller_intervals_come_from_the_acquisition_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            declared = build_external_rigctld_acquisition_profile(vfo_supported=True)
+            preamp = FieldPath.receiver("main", "operator_controls", "preamp")
+            # 3.5 and 41.0 replace the 2.0 and 30.0 this profile declares, so
+            # the assertion below fails if either loop period comes from
+            # anywhere but the profile.
+            retuned = replace(
+                declared,
+                default_policy=replace(declared.default_policy, cadence_seconds=3.5),
+                field_policies={
+                    path: (
+                        replace(policy, cadence_seconds=41.0)
+                        if path == preamp
+                        else policy
+                    )
+                    for path, policy in declared.field_policies.items()
+                },
+            )
+            monkeypatch.setattr(
+                "rigplane.backends.rigctld_client.observations"
+                ".build_external_rigctld_acquisition_profile",
+                lambda **_kwargs: retuned,
+            )
+            poller = radio.create_observation_poller(
+                callback=lambda _observations: None
+            )
+            started: list[tuple[str, float]] = []
+
+            def _record_loop(poll: object, interval: float) -> object:
+                started.append((getattr(poll, "__name__", repr(poll)), interval))
+                return asyncio.sleep(0)
+
+            monkeypatch.setattr(poller, "_run_loop", _record_loop)
+
+            await poller.start()
+            await poller.stop()
+
+            assert started == [
+                ("_poll_medium", retuned.default_policy.cadence_seconds),
+                ("_poll_slow", retuned.policy_for(preamp).cadence_seconds),
+            ]
+        finally:
+            await radio.disconnect()
+
+
+def test_external_rigctld_poll_intervals_reject_a_cadence_free_policy() -> None:
+    declared = build_external_rigctld_acquisition_profile(vfo_supported=True)
+    cadence_free = replace(
+        declared,
+        default_policy=replace(declared.default_policy, cadence_seconds=None),
+    )
+
+    with pytest.raises(ValueError, match="cadence_seconds is required"):
+        resolve_external_rigctld_poll_intervals(cadence_free)
+
+
+def _observed_ptt_poller(
+    radio: RigctldClientRadio, clock: FreshnessClock
+) -> tuple[StateStore, RigctldClientObservationPoller]:
+    store = StateStore(freshness_clock=clock)
+    poller = RigctldClientObservationPoller(
+        radio,
+        callback=lambda batch: [store.apply(item) for item in batch],
+        clock=clock.now,
+        medium_interval=_MEDIUM_INTERVAL,
+        slow_interval=_SLOW_INTERVAL,
+    )
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    return store, poller
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ptt", (0, 1), ids=("off", "on"))
+@pytest.mark.parametrize("vfo_error", (False, True), ids=("vfo-ok", "vfo-error"))
+async def test_observed_ptt_arrives_before_later_vfo_read(
+    ptt: int, vfo_error: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with FakeRigctldServer() as server:
+        server.state.ptt = ptt
+        async with RigctldClientRadio(host=server.host, port=server.port) as radio:
+            clock = FreshnessClock(start=50.0)
+            store, poller = _observed_ptt_poller(radio, clock)
+            expected = ObservedPtt.ON if ptt else ObservedPtt.OFF
+            original = RigctldClientObservationAdapter.read_active_vfo
+
+            async def later_read(
+                adapter: RigctldClientObservationAdapter,
+            ) -> Observation | None:
+                assert project_observed_ptt(store.snapshot()) is expected, (
+                    "PTT reply was not published before the next read"
+                )
+                clock.advance(3.0)
+                return await original(adapter)
+
+            monkeypatch.setattr(
+                RigctldClientObservationAdapter, "read_active_vfo", later_read
+            )
+            if vfo_error:
+                server.behavior.malformed_responses["v"] = b"invalid-vfo\n"
+                with pytest.raises(CommandError):
+                    await poller._poll_medium()  # noqa: SLF001
+            else:
+                await poller._poll_medium()  # noqa: SLF001
+            field = store.snapshot().field(OBSERVED_PTT_PATH)
+            assert field.value is expected
+            assert field.provider_generation == store.provider_generation == 0
+            assert field.last_observed_monotonic == 50.0
+            profile = build_external_rigctld_acquisition_profile(vfo_supported=True)
+            assert (
+                field.max_age
+                == profile.policy_for(OBSERVED_PTT_PATH).freshness_ttl_seconds
+            )
+            assert field.source.source == "hamlib_response"
+            assert field.source.provider == "external_rigctld"
+            assert field.source.transport == "rigctld"
+            assert field.source.native_id == "t"
+            assert server.commands_seen.count("t") == 1
+            reading = await radio.read_transmit_state()
+            assert reading.value is bool(ptt)
+            assert reading.source == "hamlib_response"
+            assert reading.verified_readback is False
+            assert field.max_age is not None
+            clock.advance(field.max_age)
+            store.mark_stale_due()
+            assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    (b"9\n", b"RPRT -4\n", b"RPRT -8\n"),
+    ids=("malformed", "unsupported", "read-error"),
+)
+async def test_observed_ptt_read_error_replaces_seeded_on_with_unknown(
+    reply: bytes,
+) -> None:
+    async with FakeRigctldServer() as server:
+        server.state.ptt = 1
+        async with RigctldClientRadio(host=server.host, port=server.port) as radio:
+            clock = FreshnessClock(start=50.0)
+            store, poller = _observed_ptt_poller(radio, clock)
+            adapter = RigctldClientObservationAdapter(radio, clock=clock.now)
+            seed = await adapter.read_ptt()
+            assert seed.value is True and str(seed.path) == "global.tx_state.ptt"
+            store.apply(replace(seed, path=OBSERVED_PTT_PATH, value=ObservedPtt.ON))
+            server.behavior.malformed_responses["t"] = reply
+            with pytest.raises(CommandError) as legacy_error:
+                await adapter.read_ptt()
+            with pytest.raises(type(legacy_error.value)) as poll_error:
+                await poller._poll_medium()  # noqa: SLF001
+            assert str(poll_error.value) == str(legacy_error.value)
+            assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN, (
+                "failed current PTT read retained ON evidence"
+            )
+            field = store.snapshot().field(OBSERVED_PTT_PATH)
+            assert field.value is ObservedPtt.UNKNOWN
+            assert field.provider_generation == store.provider_generation == 0
+            assert radio.radio_state.ptt is True
+
+
+@pytest.mark.asyncio
+async def test_disconnect_invalidates_observed_ptt_without_another_poll() -> None:
+    async with FakeRigctldServer() as server:
+        server.state.ptt = 1
+        async with RigctldClientRadio(host=server.host, port=server.port) as radio:
+            clock = FreshnessClock(start=50.0)
+            store, _poller = _observed_ptt_poller(radio, clock)
+            adapter = RigctldClientObservationAdapter(radio, clock=clock.now)
+            seed = await adapter.read_ptt()
+            store.apply(replace(seed, path=OBSERVED_PTT_PATH, value=ObservedPtt.ON))
+            assert project_observed_ptt(store.snapshot()) is ObservedPtt.ON
+            count = server.commands_seen.count("t")
+            await radio.disconnect()
+            assert store.provider_generation == 1
+            assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+            assert server.commands_seen.count("t") == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", (False, True), ids=("success", "error"))
+async def test_retired_ptt_completion_cannot_replace_current_observation(
+    read_error: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with FakeRigctldServer() as server:
+        server.state.ptt = 1
+        async with RigctldClientRadio(host=server.host, port=server.port) as radio:
+            clock = FreshnessClock(start=50.0)
+            store, poller = _observed_ptt_poller(radio, clock)
+            original = RigctldClientObservationAdapter.read_ptt
+            entered, release = asyncio.Event(), asyncio.Event()
+            held = False
+
+            async def delayed(adapter: RigctldClientObservationAdapter) -> Observation:
+                nonlocal held
+                if held:
+                    return await original(adapter)
+                held = True
+                try:
+                    outcome: Observation | CommandError = await original(adapter)
+                except CommandError as exc:
+                    outcome = exc
+                entered.set()
+                await release.wait()
+                if isinstance(outcome, CommandError):
+                    raise outcome
+                return outcome
+
+            monkeypatch.setattr(RigctldClientObservationAdapter, "read_ptt", delayed)
+            if read_error:
+                server.behavior.unsupported_commands.add("t")
+            task = asyncio.create_task(poller._poll_medium())  # noqa: SLF001
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=2.0)
+                await radio.disconnect()
+                assert store.provider_generation == 1
+                server.behavior.unsupported_commands.clear()
+                server.state.ptt = 0
+                await radio.connect()
+                await poller._poll_medium()  # noqa: SLF001
+                assert project_observed_ptt(store.snapshot()) is ObservedPtt.OFF
+                current = store.snapshot().field(OBSERVED_PTT_PATH)
+                assert current.provider_generation == 1
+                release.set()
+                if read_error:
+                    with pytest.raises(CommandError):
+                        await task
+                else:
+                    await task
+                assert store.snapshot().field(OBSERVED_PTT_PATH) == current, (
+                    "retired PTT completion replaced current evidence"
+                )
+                server.state.ptt = 1
+                await poller._poll_medium()  # noqa: SLF001
+                assert project_observed_ptt(store.snapshot()) is ObservedPtt.ON
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_ptt_read_does_not_publish_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with FakeRigctldServer() as server:
+        server.state.ptt = 1
+        async with RigctldClientRadio(host=server.host, port=server.port) as radio:
+            clock = FreshnessClock(start=50.0)
+            store, poller = _observed_ptt_poller(radio, clock)
+            original = RigctldClientObservationAdapter.read_ptt
+            adapter = RigctldClientObservationAdapter(radio, clock=clock.now)
+            seed = await original(adapter)
+            store.apply(replace(seed, path=OBSERVED_PTT_PATH, value=ObservedPtt.ON))
+            current = store.snapshot().field(OBSERVED_PTT_PATH)
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            async def delayed(adapter: RigctldClientObservationAdapter) -> Observation:
+                result = await original(adapter)
+                entered.set()
+                await release.wait()
+                return result
+
+            monkeypatch.setattr(RigctldClientObservationAdapter, "read_ptt", delayed)
+            task = asyncio.create_task(poller._poll_medium())  # noqa: SLF001
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=2.0)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert task.cancelled()
+                assert store.snapshot().field(OBSERVED_PTT_PATH) == current
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+def test_observed_ptt_profile_declares_polling_without_write_controls() -> None:
+    profile = build_external_rigctld_acquisition_profile(vfo_supported=True)
+    capability = profile.capability_for(OBSERVED_PTT_PATH)
+
+    assert capability.path == OBSERVED_PTT_PATH
+    assert capability.availability is FieldAvailability.SUPPORTED, (
+        "canonical observed PTT is missing supported capability metadata"
+    )
+    assert capability.polling is True
+    assert capability.can_poll is True
+    assert OBSERVED_PTT_PATH in profile.pollable_paths()
+    assert capability.supported_controls == ()
+    assert capability.command_response_observable is False

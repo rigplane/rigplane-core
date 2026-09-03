@@ -1185,12 +1185,10 @@
       "runtime_symbols": [
         "rigplane.commands:get_power_meter",
         "rigplane.radio:IcomRadio.get_power_meter",
-        "rigplane.web.radio_poller:RadioPoller._FAST_CMDS",
         "rigplane.web.server:WebServer._on_radio_state_change"
       ],
       "test_patterns": [
-        "tests/test_commands.py::test_get_power_meter",
-        "tests/test_web_server.py::test_poller_broadcasts_meter_readings"
+        "tests/test_commands.py::test_get_power_meter"
       ],
       "notes": ""
     },
@@ -1243,13 +1241,11 @@
       "runtime_symbols": [
         "rigplane.commands:get_comp_meter",
         "rigplane.radio:IcomRadio.get_comp_meter",
-        "rigplane._civ_rx:_CivRxMixin._update_radio_state_from_frame",
-        "rigplane.web.radio_poller:RadioPoller._FAST_CMDS"
+        "rigplane._civ_rx:_CivRxMixin._update_radio_state_from_frame"
       ],
       "test_patterns": [
         "tests/test_commands.py::test_get_comp_meter",
-        "tests/test_civ_rx_coverage.py::test_update_radio_state_comp_meter",
-        "tests/test_radio_poller_coverage.py::test_fast_cmds_include_comp_meter_for_ic7610"
+        "tests/test_civ_rx_coverage.py::test_update_radio_state_comp_meter"
       ],
       "notes": ""
     },
@@ -1267,13 +1263,11 @@
         "rigplane.commands:get_vd_meter",
         "rigplane.radio:IcomRadio.get_vd_meter",
         "rigplane._civ_rx:_CivRxMixin._update_radio_state_from_frame",
-        "rigplane.web.radio_poller:RadioPoller._FAST_CMDS",
         "rigplane.web.server:WebServer._on_radio_state_change"
       ],
       "test_patterns": [
         "tests/test_commands.py::test_get_vd_meter",
-        "tests/test_civ_rx_coverage.py::test_update_radio_state_vd_meter",
-        "tests/test_web_server.py::test_poller_broadcasts_meter_readings"
+        "tests/test_civ_rx_coverage.py::test_update_radio_state_vd_meter"
       ],
       "notes": ""
     },

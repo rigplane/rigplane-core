@@ -8,15 +8,23 @@ a neutral module avoids backend → web import cycles.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
-from rigplane.core.state_pipeline_contracts import CommandIntent, CommandSource
+from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    CommandSource,
+    FieldPath,
+)
 
 __all__ = [
     "Command",
     "CommandQueue",
     "CommandQueueEntry",
+    "canonicalize_level_command",
+    "execute_command_queue_entry",
     # -- command dataclasses (alphabetical) --
     "DisableScope",
     "EnableScope",
@@ -964,6 +972,33 @@ Command: TypeAlias = (
 )
 
 
+def canonicalize_level_command(
+    command: Command,
+    radio: DispatchRadio,
+    *,
+    command_id: str | None = None,
+    source: CommandSource = "websocket",
+    session_id: str | None = None,
+) -> Command:
+    match command:
+        case SetAfLevel(level=level, receiver=receiver):
+            name = "set_af_level"
+        case SetRfGain(level=level, receiver=receiver):
+            name = "set_rf_gain"
+        case SetSquelch(level=level, receiver=receiver):
+            name = "set_squelch"
+        case _:
+            return command
+    return prepare_command_intent(
+        radio,
+        name,
+        {"level": level, "receiver": receiver},
+        source=source,
+        command_id=command_id,
+        session_id=session_id,
+    )
+
+
 # ------------------------------------------------------------------
 # CommandQueue
 # ------------------------------------------------------------------
@@ -979,11 +1014,56 @@ class CommandQueueEntry:
     command_service: Any | None = None
 
 
+async def execute_command_queue_entry(
+    entry: CommandQueueEntry,
+    execute: Callable[[CommandQueueEntry], Awaitable[Any]],
+) -> None:
+    """Keep the operation owned until its leaf and cancellation cleanup finish."""
+    reply = entry.future
+    if reply is not None and reply.cancelled():
+        return
+
+    async def invoke() -> Any:
+        if reply is not None and reply.cancelled():
+            return None
+        return await execute(entry)
+
+    owner = asyncio.current_task()
+    cancelling = owner.cancelling() if owner is not None else 0
+    child = asyncio.create_task(invoke())
+    try:
+        result = await asyncio.shield(child)
+    except asyncio.CancelledError:
+        if owner is not None and owner.cancelling() > cancelling:
+            child.cancel()
+            while not child.done():
+                try:
+                    await asyncio.shield(child)
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if not child.cancelled():
+                child.exception()
+            if reply is not None and not reply.done():
+                reply.cancel()
+            raise
+        if reply is not None and not reply.done():
+            reply.cancel()
+    except Exception as exc:
+        if reply is not None and not reply.done():
+            reply.set_exception(exc)
+        raise
+    else:
+        if reply is not None and not reply.done():
+            reply.set_result(result)
+
+
 @dataclass(slots=True)
 class _CommandQueueSegment:
     kind: Literal["coalesced", "ordered"]
     ptt: list[CommandQueueEntry] = field(default_factory=list)
-    dedup: dict[type, CommandQueueEntry] = field(default_factory=dict)
+    dedup: dict[type | tuple[str, FieldPath | None], CommandQueueEntry] = field(
+        default_factory=dict,
+    )
     ordered: list[CommandQueueEntry] = field(default_factory=list)
 
     @classmethod
@@ -1072,7 +1152,10 @@ class CommandQueue:
         if isinstance(cmd, (PttOn, PttOff)):
             segment.ptt.append(entry)
         else:
-            segment.dedup[type(cmd)] = entry
+            key = (
+                (cmd.name, cmd.target) if isinstance(cmd, CommandIntent) else type(cmd)
+            )
+            segment.dedup[key] = entry
         self._notify.set()
 
     def put_ordered(
@@ -1084,21 +1167,77 @@ class CommandQueue:
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
-    ) -> None:
+    ) -> CommandQueueEntry:
         self._record_scope_demand(cmd)
-        self._segments.append(
-            _CommandQueueSegment.ordered_entry(
-                CommandQueueEntry(
-                    cmd,
-                    future=future,
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
-                )
-            )
+        entry = CommandQueueEntry(
+            cmd,
+            future=future,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+            command_service=command_service,
         )
+        self._segments.append(_CommandQueueSegment.ordered_entry(entry))
         self._notify.set()
+        if future is not None:
+
+            def remove_cancelled(reply: asyncio.Future[None]) -> None:
+                # Preserve the legacy final drain's pending-unkey eligibility.
+                if reply.cancelled() and not isinstance(entry.command, PttOff):
+                    self.remove_pending(entry)
+
+            future.add_done_callback(remove_cancelled)
+        return entry
+
+    @property
+    def pending_count(self) -> int:
+        return sum(
+            len(segment.ptt) + len(segment.dedup) + len(segment.ordered)
+            for segment in self._segments
+        )
+
+    def take_entry(self) -> CommandQueueEntry | None:
+        """Claim one pending entry in the existing segment and PTT order."""
+        while self._segments:
+            segment = self._segments[0]
+            if segment.ordered:
+                entry = segment.ordered.pop(0)
+            elif segment.ptt:
+                entry = segment.ptt.pop(0)
+            elif segment.dedup:
+                entry = segment.dedup.pop(next(iter(segment.dedup)))
+            else:
+                self._segments.pop(0)
+                continue
+            if not segment.has_commands:
+                self._segments.pop(0)
+            if not self.has_commands:
+                self._notify.clear()
+            return entry
+        self._notify.clear()
+        return None
+
+    def remove_pending(self, entry: CommandQueueEntry) -> bool:
+        """Remove only this still-pending identity, without completing its reply."""
+        for segment_index, segment in enumerate(self._segments):
+            for entries in (segment.ordered, segment.ptt):
+                for index, pending in enumerate(entries):
+                    if pending is entry:
+                        del entries[index]
+                        if not segment.has_commands:
+                            del self._segments[segment_index]
+                        if not self.has_commands:
+                            self._notify.clear()
+                        return True
+            for key, pending in segment.dedup.items():
+                if pending is entry:
+                    del segment.dedup[key]
+                    if not segment.has_commands:
+                        del self._segments[segment_index]
+                    if not self.has_commands:
+                        self._notify.clear()
+                    return True
+        return False
 
     def drain(self) -> list[Command]:
         return [entry.command for entry in self.drain_entries()]

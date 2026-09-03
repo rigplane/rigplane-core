@@ -222,6 +222,10 @@ const MATRIX = [
     .map((id) => ({
       name: `${id}--reference--desktop`, fixture: `${id}--reference`, viewport: 'desktop',
     })),
+  // T. MOR-2243 — the segmentline peer-split glass chassis. This fixture
+  // declares no `expect`; what its assertion cell does and does not cover is
+  // spelled out in `intentionalDifferences` below.
+  { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis', viewport: 'desktop' },
 ];
 
 /* ── build identity ────────────────────────────────────────────────────── */
@@ -522,14 +526,12 @@ try {
       tokens,
       paint,
     });
-    // eslint-disable-next-line no-console
     console.log(
       `${passed ? 'PASS' : 'FAIL'}  ${spec.name}`
       + `  (${assertions.filter((a) => a.ok).length}/${assertions.length} assertions)`,
     );
     if (!passed) {
       for (const a of assertions.filter((x) => !x.ok)) {
-        // eslint-disable-next-line no-console
         console.log(`        ✗ ${a.name}: ${a.detail}`);
       }
       for (const e of consoleErrors) console.log(`        ✗ console: ${e}`);
@@ -596,6 +598,17 @@ const manifest = {
     + '`dualReceiverCockpitLayout` is ever resolved here; the `--reference` family (desktop-v2/sdr-test '
     + 'wiring) has no plan-ful twin in this slice — its manifest declares a different zone set and is '
     + 'separately scoped follow-up work.',
+    'MOR-2243: `peer-split-chassis--desktop` carries no fixture-declared behaviour assertions — '
+    + '`fixtures/main.ts` answers `peer-split-chassis`\'s absent `expect` with one hardcoded '
+    + 'passing entry (`peer-split-no-assertion-pipeline`) that cannot go red on a composition '
+    + 'defect. Its recorded assertion list holds exactly two entries: that stub, and the '
+    + 'harness-appended `meter-ballistics-honor-reduced-motion`, which does discriminate but '
+    + 'reports on the rAF ballistics loop, not on the composition. The composition itself is '
+    + 'pinned only by the pixel baselines of the same names in '
+    + '`tests/e2e/visual/visual-baselines.spec.ts`, which per `fixtures/approved-baselines/'
+    + 'README.md` catch only changes above `maxDiffPixelRatio` of the frame — ~1024 differing '
+    + 'pixels (~32x32 px) at 1280x800, ~880 (~29x29) at 1100x800 — and cannot see whole-frame '
+    + 'brightness/contrast drift at all.',
   ],
   viewports: VIEWPORTS,
   summary: {
@@ -608,6 +621,5 @@ const manifest = {
   captures,
 };
 writeFileSync(path.join(OUT, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-// eslint-disable-next-line no-console
 console.log(`\n${captures.length} captures → ${OUT}  (${failures} invalid)`);
 process.exit(failures === 0 ? 0 : 1);

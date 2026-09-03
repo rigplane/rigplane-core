@@ -27,8 +27,8 @@ sub-modules directly:
   building blocks; 43 test files reach in via private paths and depend
   on the migration shims.
 - `runtime._audio_runtime_mixin`, `runtime._scope_runtime`,
-  `runtime._dual_rx_runtime`, `runtime._shared_state_runtime`,
-  `runtime._runtime_protocols` — mixins composed onto `IcomRadio`.
+  `runtime._dual_rx_runtime`, `runtime._runtime_protocols` — mixins
+  composed onto `IcomRadio`.
 - `runtime.profiles_runtime`, `runtime.meter_cal`,
   `runtime.cw_auto_tuner`, `runtime.startup_checks`, `runtime.proxy`,
   `runtime.ic705`, `runtime.radios` — per-rig and helper utilities.
