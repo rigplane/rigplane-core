@@ -7,16 +7,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: managed-rigctld-ingress-red-${{ github.ref }}
+  group: managed-rigctld-ingress-red-proof-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  managed-ingress-red:
+  managed-ingress-red-proof:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/ptt-managed-ingress-red-proof'
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
     env:
-      SOURCE_PIN: 97e81fe4cc096e0e7057a1636955d85033570f14
+      SOURCE_REF: codex/ptt-managed-ingress-proof-source
+      SOURCE_PIN: 64f15eabcead5e5fcc45e6db22c28be4c0f2abed
+      SOURCE_TREE_PIN: 3a0cf5c0d411959739146758fe1d1ec37571b51a
+      SOURCE_PARENT_PIN: 31db5f682f31791f69f7ac1e600166f0d06520e3
+      REVIEW_BASE_PIN: 2e826e5a5041a4a19b623b359feee73e71dbb821
       UV_PYTHON: '3.11'
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONPATH: ${{ github.workspace }}/source/src:${{ github.workspace }}/source/tests
@@ -25,9 +29,18 @@ jobs:
         shell: bash
         working-directory: source
     steps:
-      - uses: actions/checkout@v6
+      - name: Check out diagnostic carrier
+        uses: actions/checkout@v6
         with:
-          ref: 97e81fe4cc096e0e7057a1636955d85033570f14
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: carrier
+
+      - name: Check out immutable fixture source ref
+        uses: actions/checkout@v6
+        with:
+          ref: codex/ptt-managed-ingress-proof-source
           fetch-depth: 0
           persist-credentials: false
           path: source
@@ -35,182 +48,497 @@ jobs:
       - name: Prepare isolated evidence and caches
         id: prepare
         run: |
-          artifact_dir=$(mktemp -d "$RUNNER_TEMP/managed-rigctld-ingress-red.XXXXXX")
-          pycache_dir=$(mktemp -d "$RUNNER_TEMP/managed-rigctld-pycache.XXXXXX")
-          uv_cache_dir=$(mktemp -d "$RUNNER_TEMP/managed-rigctld-uvcache.XXXXXX")
-          venv_dir=$(mktemp -d "$RUNNER_TEMP/managed-rigctld-venv.XXXXXX")
+          artifact_dir=$(mktemp -d "$RUNNER_TEMP/managed-ingress-red-proof.XXXXXX")
+          pycache_dir=$(mktemp -d "$RUNNER_TEMP/managed-ingress-pycache.XXXXXX")
+          uv_cache_dir=$(mktemp -d "$RUNNER_TEMP/managed-ingress-uvcache.XXXXXX")
+          venv_dir=$(mktemp -d "$RUNNER_TEMP/managed-ingress-venv.XXXXXX")
           echo "ARTIFACT_DIR=$artifact_dir" >> "$GITHUB_ENV"
+          echo "PHASE_REPORT=$artifact_dir/phase-report.json" >> "$GITHUB_ENV"
           echo "PYTHONPYCACHEPREFIX=$pycache_dir" >> "$GITHUB_ENV"
           echo "UV_CACHE_DIR=$uv_cache_dir" >> "$GITHUB_ENV"
           echo "UV_PROJECT_ENVIRONMENT=$venv_dir" >> "$GITHUB_ENV"
-          echo "RUFF_CACHE_DIR=$artifact_dir/ruff-cache" >> "$GITHUB_ENV"
           echo "artifacts_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "SOURCE_PIN=$SOURCE_PIN" "DIAG_SHA=$GITHUB_SHA" "REF=$GITHUB_REF" "RUN_ID=$GITHUB_RUN_ID" "RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" > "$artifact_dir/run-metadata.txt"
-          git status --porcelain=v1 --untracked-files=all > "$artifact_dir/status-before.txt"
+          printf '%s\n' \
+            "SOURCE_REF=$SOURCE_REF" \
+            "SOURCE_PIN=$SOURCE_PIN" \
+            "SOURCE_TREE_PIN=$SOURCE_TREE_PIN" \
+            "SOURCE_PARENT_PIN=$SOURCE_PARENT_PIN" \
+            "REVIEW_BASE_PIN=$REVIEW_BASE_PIN" \
+            "CARRIER_SHA=$GITHUB_SHA" \
+            "CARRIER_REF=$GITHUB_REF" \
+            "RUN_ID=$GITHUB_RUN_ID" \
+            "RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" \
+            > "$artifact_dir/run-metadata.txt"
+          git status --porcelain=v1 --untracked-files=all > "$artifact_dir/source-status-before.txt"
+          git -C ../carrier status --porcelain=v1 --untracked-files=all > "$artifact_dir/carrier-status-before.txt"
           git rev-parse HEAD > "$artifact_dir/source-head-before.txt"
+          git rev-parse 'HEAD^{tree}' > "$artifact_dir/source-tree-before.txt"
+          git -C ../carrier rev-parse HEAD > "$artifact_dir/carrier-head.txt"
           test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
-          test ! -s "$artifact_dir/status-before.txt"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE_PIN"
+          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT_PIN"
+          test "$(git rev-parse "$SOURCE_REF")" = "$SOURCE_PIN"
+          test "$(git -C ../carrier rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -s "$artifact_dir/source-status-before.txt"
+          test ! -s "$artifact_dir/carrier-status-before.txt"
+          files=(
+            src/rigplane/rigctld/server.py
+            src/rigplane/rigctld/handler.py
+            tests/test_rigctld_ingress_scheduling.py
+            tests/test_rigctld_managed_ingress_scheduling.py
+            pyproject.toml
+            uv.lock
+          )
+          printf '%s\n' "${files[@]}" > "$artifact_dir/immutable-paths.txt"
+          sha256sum "${files[@]}" > "$artifact_dir/source-sha256-before.txt"
+          git archive --format=tar "$SOURCE_PIN" -- "${files[@]}" > "$artifact_dir/source-files.tar"
+          cp ../carrier/.github/workflows/full.yml "$artifact_dir/carrier-full.yml"
 
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: false
 
-      - name: Install focused test dependencies
+      - name: Install frozen focused-test dependencies
         id: install
         run: |
-          printf '%s\n' 'uv python install 3.11' 'uv sync --frozen --extra dev' > "$ARTIFACT_DIR/dependency-commands.txt"
+          printf '%s\n' \
+            'uv python install 3.11' \
+            'uv sync --frozen --extra dev' \
+            > "$ARTIFACT_DIR/dependency-commands.txt"
           uv python install 3.11
           uv sync --frozen --extra dev
+          uv pip freeze > "$ARTIFACT_DIR/frozen-environment.txt"
 
-      - name: Focused ingress pytest and exact CALL-failure oracle
+      - name: Write phase recorder outside source
+        id: recorder
+        run: |
+          cat > "$ARTIFACT_DIR/phase_plugin.py" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          collected = []
+          deselected = []
+          phases = []
+          warnings = []
+
+
+          def pytest_collection_finish(session):
+              collected.extend(item.nodeid for item in session.items)
+
+
+          def pytest_deselected(items):
+              deselected.extend(item.nodeid for item in items)
+
+
+          def pytest_runtest_logreport(report):
+              phases.append(
+                  {
+                      "nodeid": report.nodeid,
+                      "phase": report.when,
+                      "outcome": report.outcome,
+                      "wasxfail": getattr(report, "wasxfail", None),
+                  }
+              )
+
+
+          def pytest_warning_recorded(warning_message, when, nodeid, location):
+              warnings.append(
+                  {
+                      "category": warning_message.category.__qualname__,
+                      "message": str(warning_message.message),
+                      "when": when,
+                      "nodeid": nodeid,
+                      "location": location,
+                  }
+              )
+
+
+          def pytest_sessionfinish(session, exitstatus):
+              module_names = (
+                  "rigplane.rigctld.server",
+                  "rigplane.rigctld.handler",
+                  "test_rigctld_ingress_scheduling",
+                  "test_rigctld_managed_ingress_scheduling",
+              )
+              Path(os.environ["PHASE_REPORT"]).write_text(
+                  json.dumps(
+                      {
+                          "collected": collected,
+                          "deselected": deselected,
+                          "exitstatus": exitstatus,
+                          "phases": phases,
+                          "warnings": warnings,
+                          "loaded_modules": {
+                              name: str(Path(sys.modules[name].__file__).resolve())
+                              for name in module_names
+                          },
+                      },
+                      indent=2,
+                  )
+              )
+          PY
+
+      - name: One focused RED invocation and exact oracle
         id: oracle
         run: |
           set +e
           uv run --no-sync python - > "$ARTIFACT_DIR/oracle.log" 2>&1 <<'PY'
+          from collections import Counter
+          import importlib.util
           import json
           import os
           from pathlib import Path
           import re
+          import signal
           import subprocess
           import sys
+          import time
           import xml.etree.ElementTree as ET
 
           artifacts = Path(os.environ["ARTIFACT_DIR"])
-          (artifacts / "oracle.txt").write_text("NOT CONFIRMED: oracle has not completed.\n")
+          (artifacts / "oracle.txt").write_text(
+              "NOT CONFIRMED: corrected RED oracle has not completed.\n"
+          )
           assert sys.version_info[:2] == (3, 11), sys.version
-          assert subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == os.environ["SOURCE_PIN"]
-          metadata = {key: os.environ.get(key) for key in (
-              "SOURCE_PIN", "GITHUB_SHA", "GITHUB_REF", "GITHUB_RUN_ID",
-              "GITHUB_RUN_ATTEMPT", "PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE",
-              "UV_CACHE_DIR", "UV_PROJECT_ENVIRONMENT", "RUFF_CACHE_DIR",
-          )}
-          metadata["python"] = sys.version
-          metadata["scope"] = (
-              "Real socket/parser/handler/service ingress regression with unmanaged "
-              "and real external-provider managed fixtures. Constructor/reference "
-              "seam only; not completed managed ingress, queue-join, or RF proof."
-          )
-          (artifacts / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
-          raw = "test_rigctld_ingress_scheduling"
-          managed = "test_rigctld_managed_ingress_scheduling"
-          expected = {
-              (raw, "test_pipelined_off_reaches_provider_before_held_frequency_finishes[frequency-success]"): 113,
-              (raw, "test_pipelined_off_reaches_provider_before_held_frequency_finishes[frequency-provider-error]"): 113,
-              (raw, "test_frequency_provider_failure_is_not_an_enqueue_ack"): None,
-              (raw, "test_sequential_frequency_then_off_preserves_call_and_reply_order"): None,
-              (raw, "test_pipelined_on_does_not_overtake_held_frequency"): None,
-              (managed, "test_partial_managed_configuration_is_rejected_before_bootstrap[present0]"): None,
-              (managed, "test_partial_managed_configuration_is_rejected_before_bootstrap[present1]"): None,
-              (managed, "test_partial_managed_configuration_is_rejected_before_bootstrap[present2]"): None,
-              (managed, "test_partial_managed_configuration_is_rejected_before_bootstrap[present3]"): None,
-              (managed, "test_partial_managed_configuration_is_rejected_before_bootstrap[present4]"): None,
-              (managed, "test_partial_managed_configuration_is_rejected_before_bootstrap[present5]"): None,
-              (managed, "test_managed_configuration_rejects_custom_handler"): None,
-              (managed, "test_injected_references_and_per_call_leaf_preserve_shared_default"): None,
-              (managed, "test_real_authority_fixture_uses_provider_ptt"): None,
-              (managed, "test_real_provider_poller_drains_injected_queue"): None,
-              (managed, "test_frequency_provider_rejection_preserves_terminal_error"): None,
-              (managed, "test_pending_on_is_revoked_by_pipelined_off[frequency-success]"): 282,
-              (managed, "test_pending_on_is_revoked_by_pipelined_off[frequency-provider-error]"): 282,
-              (managed, "test_disconnect_revokes_pending_on[eof]"): 305,
-              (managed, "test_disconnect_revokes_pending_on[server-stop]"): 305,
-              (managed, "test_sequential_frequency_then_ptt_preserves_wire_order"): None,
+          raw_path = "tests/test_rigctld_ingress_scheduling.py"
+          managed_path = "tests/test_rigctld_managed_ingress_scheduling.py"
+          red = {
+              f"{raw_path}::test_pipelined_unmanaged_off_is_read_without_overtaking_frequency": {
+                  "outer": (raw_path, 194),
+                  "actual": "[b'F 14074000']",
+                  "expected": "[b'F 14074000', b'T 0']",
+              },
+              f"{managed_path}::test_active_owner_off_settles_while_frequency_is_pending[accepted]": {
+                  "outer": (managed_path, 425),
+                  "review_precondition": (managed_path, 424),
+                  "actual": "[b'F 14074000']",
+                  "expected": "[b'F 14074000', b'T 0']",
+              },
+              f"{managed_path}::test_pending_on_is_revoked_by_pipelined_off[frequency-success]": {
+                  "outer": (managed_path, 514),
+                  "actual": "[b'F 14074000']",
+                  "expected": "[b'F 14074000', b'T 1', b'T 0']",
+              },
+              f"{managed_path}::test_disconnect_revokes_pending_on[eof]": {
+                  "outer": (managed_path, 548),
+                  "actual": "[b'F 14074000']",
+                  "expected": "[b'F 14074000', b'T 1']",
+              },
           }
-          assert len(expected) == 21
-          assert sum(line is not None for line in expected.values()) == 6
-          checkpoints = {
-              (raw, 113): (
-                  "await asyncio.wait_for(",
-                  "radio.ptt_off_written.wait(), timeout=_WAIT_TIMEOUT",
-                  ")",
-              ),
-              (managed, 282): ("await asyncio.wait_for(rig.fence.registered.wait(), 2)",),
-              (managed, 305): ("await asyncio.wait_for(rig.fence.registered.wait(), 2)",),
-          }
-          for (module, line), statements in checkpoints.items():
-              source_lines = Path(f"tests/{module}.py").read_text().splitlines()
-              assert tuple(value.strip() for value in source_lines[line - 1:line - 1 + len(statements)]) == statements
-          manifest = [
-              {
-                  "nodeid": f"tests/{module}.py::{name}",
-                  "classname": f"tests.{module}",
-                  "name": name,
-                  "expected": "CALL TimeoutError" if line is not None else "PASS",
-                  "file": f"tests/{module}.py" if line is not None else None,
-                  "line": line,
-                  "statements": checkpoints.get((module, line)),
-              }
-              for (module, name), line in expected.items()
+          controls = [
+              f"{raw_path}::test_frequency_provider_failure_is_not_an_enqueue_ack",
+              f"{raw_path}::test_sequential_frequency_then_off_preserves_call_and_reply_order",
+              f"{raw_path}::test_pipelined_on_does_not_overtake_held_frequency",
+              f"{managed_path}::test_injected_references_and_per_call_leaf_preserve_shared_default",
+              f"{managed_path}::test_real_provider_poller_drains_injected_queue",
+              f"{managed_path}::test_active_owner_off_provider_error_retains_release_debt",
           ]
-          (artifacts / "expected-cases.json").write_text(json.dumps(manifest, indent=2))
-          (artifacts / "expected-nodeids.txt").write_text(
-              "\n".join(case["nodeid"] for case in manifest) + "\n"
+          selection = list(red) + controls
+          assert len(selection) == len(set(selection)) == 10
+          assert len(red) == 4 and len(controls) == 6
+          (artifacts / "expected-nodeids.txt").write_text("\n".join(selection) + "\n")
+          (artifacts / "expected-results.json").write_text(
+              json.dumps(
+                  {
+                      "red": red,
+                      "controls": {nodeid: "CALL PASS" for nodeid in controls},
+                      "phase_census": {
+                          "setup": {"passed": 10},
+                          "call": {"passed": 6, "failed": 4},
+                          "teardown": {"passed": 10},
+                      },
+                  },
+                  indent=2,
+              )
           )
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          assert git("rev-parse", "HEAD") == os.environ["SOURCE_PIN"]
+          assert git("rev-parse", "HEAD^{tree}") == os.environ["SOURCE_TREE_PIN"]
+          assert git("rev-parse", "HEAD^") == os.environ["SOURCE_PARENT_PIN"]
+          assert git("rev-parse", os.environ["SOURCE_REF"]) == os.environ["SOURCE_PIN"]
+
+          diff_paths = [raw_path, managed_path]
+          numstat = git(
+              "diff",
+              "--numstat",
+              f"{os.environ['REVIEW_BASE_PIN']}..{os.environ['SOURCE_PIN']}",
+              "--",
+              *diff_paths,
+          )
+          rows = [line.split("\t") for line in numstat.splitlines()]
+          assert rows == [
+              ["103", "22", raw_path],
+              ["274", "26", managed_path],
+          ], rows
+          assert sum(int(added) + int(deleted) for added, deleted, _ in rows) == 425
+          (artifacts / "fixture-source-budget.json").write_text(
+              json.dumps({"files": 2, "changed_lines": 425, "numstat": rows}, indent=2)
+          )
+
+          source_lines = {
+              path: Path(path).read_text().splitlines() for path in diff_paths
+          }
+
+          def at(path, line):
+              return source_lines[path][line - 1].strip()
+
+          assert at(raw_path, 74) == "assert trace.lines_received == expected_lines"
+          assert at(raw_path, 194) == "await _ingress_checkpoint(trace, commands)"
+          assert at(managed_path, 424) == (
+              "await asyncio.wait_for(rig.radio.frequency_entered.wait(), 2)"
+          )
+          assert at(managed_path, 425) == "await _assert_ingress_accepted(rig, commands)"
+          assert at(managed_path, 513) == (
+              "await asyncio.wait_for(rig.radio.frequency_entered.wait(), 2)"
+          )
+          assert at(managed_path, 514) == "await _assert_ingress_accepted(rig, commands)"
+          assert at(managed_path, 547) == (
+              "await asyncio.wait_for(rig.radio.frequency_entered.wait(), 2)"
+          )
+          assert at(managed_path, 548) == "await _assert_ingress_accepted(rig, commands)"
+
+          expected_modules = {
+              "rigplane.rigctld.server": "src/rigplane/rigctld/server.py",
+              "rigplane.rigctld.handler": "src/rigplane/rigctld/handler.py",
+              "test_rigctld_ingress_scheduling": raw_path,
+              "test_rigctld_managed_ingress_scheduling": managed_path,
+          }
+          module_paths = {}
+          for qualified_name, relative_path in expected_modules.items():
+              spec = importlib.util.find_spec(qualified_name)
+              assert spec is not None and spec.origin is not None, qualified_name
+              origin = Path(spec.origin).resolve()
+              expected_origin = Path(relative_path).resolve()
+              assert origin == expected_origin, (qualified_name, origin, expected_origin)
+              module_paths[qualified_name] = str(origin)
+          (artifacts / "qualified-import-paths.json").write_text(
+              json.dumps(module_paths, indent=2)
+          )
+
           command = [
-              sys.executable, "-m", "pytest", "-q", "-o", "addopts=",
-              "-o", f"cache_dir={artifacts / 'pytest-cache'}",
-              "--tb=long", "--color=no", "--timeout=30", "--timeout-method=thread",
+              sys.executable,
+              "-m",
+              "pytest",
+              "-q",
+              "-o",
+              "addopts=",
+              "-o",
+              f"cache_dir={artifacts / 'pytest-cache'}",
+              "-W",
+              "error",
+              "--tb=long",
+              "--color=no",
+              "--timeout=30",
+              "--timeout-method=thread",
               f"--junitxml={artifacts / 'junit.xml'}",
-              f"tests/{raw}.py", f"tests/{managed}.py",
+              "-p",
+              "phase_plugin",
+              *selection,
           ]
           (artifacts / "command.json").write_text(json.dumps(command, indent=2))
+
+          def group_exists(pgid):
+              try:
+                  os.killpg(pgid, 0)
+              except ProcessLookupError:
+                  return False
+              except PermissionError:
+                  return True
+              return True
+
+          def signal_group(pgid, sig):
+              try:
+                  os.killpg(pgid, sig)
+                  return True
+              except ProcessLookupError:
+                  return False
+
+          env = os.environ.copy()
+          env["PYTHONPATH"] = os.pathsep.join(
+              [
+                  str(artifacts),
+                  str(Path("src").resolve()),
+                  str(Path("tests").resolve()),
+              ]
+          )
+          process = None
+          pgid = None
+          timed_out = False
+          term_sent = False
+          kill_sent = False
+          group_live_after_reap = False
+          log = (artifacts / "pytest.log").open("w")
           try:
-              with (artifacts / "pytest.log").open("w") as log:
-                  result = subprocess.run(
-                      command, stdout=log, stderr=subprocess.STDOUT, timeout=180
-                  )
-          except subprocess.TimeoutExpired:
-              (artifacts / "pytest-exit.txt").write_text("subprocess timeout\n")
-              raise
+              process = subprocess.Popen(
+                  command,
+                  stdout=log,
+                  stderr=subprocess.STDOUT,
+                  env=env,
+                  start_new_session=True,
+              )
+              pgid = process.pid
+              try:
+                  returncode = process.wait(timeout=180)
+              except subprocess.TimeoutExpired:
+                  timed_out = True
+                  term_sent = signal_group(pgid, signal.SIGTERM)
+                  try:
+                      returncode = process.wait(timeout=10)
+                  except subprocess.TimeoutExpired:
+                      kill_sent = signal_group(pgid, signal.SIGKILL)
+                      returncode = process.wait(timeout=10)
+              process.wait()
+              group_live_after_reap = group_exists(pgid)
           finally:
-              print((artifacts / "pytest.log").read_text(), end="")
-          (artifacts / "pytest-exit.txt").write_text(str(result.returncode) + "\n")
-          assert result.returncode == 1, f"Expected CALL failures, got pytest exit {result.returncode}"
+              if process is not None and process.poll() is None:
+                  term_sent = signal_group(process.pid, signal.SIGTERM) or term_sent
+                  try:
+                      process.wait(timeout=10)
+                  except subprocess.TimeoutExpired:
+                      kill_sent = signal_group(process.pid, signal.SIGKILL) or kill_sent
+                      process.wait(timeout=10)
+              if pgid is not None and group_exists(pgid):
+                  term_sent = signal_group(pgid, signal.SIGTERM) or term_sent
+                  deadline = time.monotonic() + 5
+                  while group_exists(pgid) and time.monotonic() < deadline:
+                      time.sleep(0.05)
+                  if group_exists(pgid):
+                      kill_sent = signal_group(pgid, signal.SIGKILL) or kill_sent
+                      deadline = time.monotonic() + 5
+                      while group_exists(pgid) and time.monotonic() < deadline:
+                          time.sleep(0.05)
+              log.close()
+
+          final_group_exists = pgid is not None and group_exists(pgid)
+          supervision = {
+              "deadline_seconds": 180,
+              "returncode": returncode,
+              "timed_out": timed_out,
+              "term_sent": term_sent,
+              "kill_sent": kill_sent,
+              "group_live_after_reap": group_live_after_reap,
+              "final_group_exists": final_group_exists,
+          }
+          (artifacts / "supervision.json").write_text(
+              json.dumps(supervision, indent=2)
+          )
+          print((artifacts / "pytest.log").read_text(), end="")
+          assert not timed_out, supervision
+          assert not term_sent and not kill_sent, supervision
+          assert not group_live_after_reap and not final_group_exists, supervision
+          assert returncode == 1, supervision
+
+          phase_data = json.loads((artifacts / "phase-report.json").read_text())
+          assert phase_data["exitstatus"] == 1
+          assert phase_data["loaded_modules"] == module_paths
+          assert phase_data["collected"] == selection, phase_data["collected"]
+          assert not phase_data["deselected"]
+          assert not phase_data["warnings"]
+          assert len(phase_data["phases"]) == 30
+          assert not any(item["wasxfail"] for item in phase_data["phases"])
+          census = Counter(
+              (item["phase"], item["outcome"]) for item in phase_data["phases"]
+          )
+          assert census == Counter(
+              {
+                  ("setup", "passed"): 10,
+                  ("call", "passed"): 6,
+                  ("call", "failed"): 4,
+                  ("teardown", "passed"): 10,
+              }
+          ), census
+          failed_call_multiset = Counter(
+              item["nodeid"]
+              for item in phase_data["phases"]
+              if item["phase"] == "call" and item["outcome"] == "failed"
+          )
+          passed_call_multiset = Counter(
+              item["nodeid"]
+              for item in phase_data["phases"]
+              if item["phase"] == "call" and item["outcome"] == "passed"
+          )
+          assert failed_call_multiset == Counter(red), failed_call_multiset
+          assert passed_call_multiset == Counter(controls), passed_call_multiset
 
           report = ET.parse(artifacts / "junit.xml").getroot()
           cases = report.findall(".//testcase")
-          actual = [(case.get("classname"), case.get("name")) for case in cases]
-          identities = {(f"tests.{module}", name) for module, name in expected}
-          assert len(actual) == len(set(actual)) == 21, actual
-          assert set(actual) == identities, {
-              "missing": sorted(identities - set(actual)),
-              "unexpected": sorted(set(actual) - identities),
+          assert len(cases) == 10
+          assert not report.findall(".//error")
+          assert not report.findall(".//skipped")
+          actual_identities = {
+              (case.get("classname"), case.get("name")) for case in cases
           }
-          assert not report.findall(".//error"), "Setup/teardown/collection errors are not intended RED"
-          assert not report.findall(".//skipped"), "Skipped or xfailed cases are not evidence"
-          assert len(report.findall(".//failure")) == 6
-          failures = 0
+          expected_identities = {
+              (
+                  "tests." + nodeid.split("::", 1)[0][6:-3].replace("/", "."),
+                  nodeid.split("::", 1)[1],
+              )
+              for nodeid in selection
+          }
+          assert len(actual_identities) == 10
+          assert actual_identities == expected_identities, {
+              "missing": sorted(expected_identities - actual_identities),
+              "unexpected": sorted(actual_identities - expected_identities),
+          }
+
+          selected_failures = []
+          helper_frame = (raw_path, 74)
+          frame_pattern = re.compile(
+              r"(?m)^(?:.*?/)?(tests/test_rigctld_(?:managed_)?ingress_scheduling\.py):(\d+):"
+          )
           for case in cases:
-              classname, name = case.get("classname"), case.get("name")
-              module = classname.removeprefix("tests.")
-              line = expected[(module, name)]
-              entries = case.findall("failure")
-              if line is None:
-                  assert not entries, (classname, name, "passing control failed")
+              nodeid = (
+                  "tests/"
+                  + case.get("classname").removeprefix("tests.").replace(".", "/")
+                  + ".py::"
+                  + case.get("name")
+              )
+              failures = case.findall("failure")
+              if nodeid in controls:
+                  assert not failures, (nodeid, "control failed")
                   continue
-              assert len(entries) == 1, (classname, name, "expected one CALL failure")
-              failure = entries[0]
-              assert failure.get("message", "").strip() in {"TimeoutError", "TimeoutError:"}, (
-                  classname, name, failure.attrib
+              assert nodeid in red and len(failures) == 1, (nodeid, failures)
+              failure = failures[0]
+              assert failure.get("type") == "builtins.AssertionError", failure.attrib
+              traceback = failure.text or ""
+              assert "TimeoutError" not in traceback
+              assert "Failed: Timeout" not in traceback
+              frames = [(path, int(line)) for path, line in frame_pattern.findall(traceback)]
+              assert helper_frame in frames, (nodeid, frames)
+              assert tuple(red[nodeid]["outer"]) in frames, (nodeid, frames)
+              equality = f"assert {red[nodeid]['actual']} == {red[nodeid]['expected']}"
+              assert equality in traceback, (nodeid, equality, traceback)
+              selected_failures.append(
+                  {
+                      "nodeid": nodeid,
+                      "exception": "builtins.AssertionError",
+                      "selected_project_frame": {
+                          "path": helper_frame[0],
+                          "line": helper_frame[1],
+                      },
+                      "outer_call_frame": {
+                          "path": red[nodeid]["outer"][0],
+                          "line": red[nodeid]["outer"][1],
+                      },
+                      "actual": red[nodeid]["actual"],
+                      "expected": red[nodeid]["expected"],
+                  }
               )
-              trace = failure.text or ""
-              statements = checkpoints[(module, line)]
-              statement_pattern = r"(?m)^>[ \t]+" + re.escape(statements[0]) + r"[ \t]*$"
-              for statement in statements[1:]:
-                  statement_pattern += r"\n[ \t]+" + re.escape(statement) + r"[ \t]*$"
-              assert re.search(statement_pattern, trace), (classname, name, "wrong failing await", trace)
-              frame_pattern = r"(?m)^" + re.escape(f"tests/{module}.py:{line}:")
-              assert re.search(frame_pattern, trace), (classname, name, "wrong source frame", trace)
-              terminal_errors = re.findall(r"(?m)^E[ \t]+(\S[^\n]*)$", trace)
-              assert terminal_errors and terminal_errors[-1].strip() in {"TimeoutError", "TimeoutError:"}, (
-                  classname, name, "wrong terminal exception", trace
-              )
-              failures += 1
-          assert failures == 6 and len(cases) - failures == 15
+          assert {item["nodeid"] for item in selected_failures} == set(red)
+          (artifacts / "classified-failures.json").write_text(
+              json.dumps(selected_failures, indent=2)
+          )
           (artifacts / "oracle.txt").write_text(
-              "ORACLE PASS: exact 6 intended CALL TimeoutErrors and 15 passing controls; zero errors/skips/duplicates.\n"
-              "This is regression evidence, not completed ingress or RF proof. Overall harness also requires Ruff and unchanged source.\n"
+              "ORACLE PASS: exact 4 intended CALL builtins.AssertionError results "
+              "at helper line 74, 6 CALL PASS controls, 10 setup PASS, and 10 "
+              "teardown PASS; zero timeout semantics, warnings, skips, xfails, "
+              "deselections, duplicate identities, unexpected failures, or errors.\n"
           )
           print((artifacts / "oracle.txt").read_text(), end="")
           PY
@@ -219,42 +547,39 @@ jobs:
           cat "$ARTIFACT_DIR/oracle.log"
           exit "$oracle_rc"
 
-      - name: Ruff changed consumer files without mutation
-        if: always() && steps.install.outcome == 'success'
-        run: |
-          files=(src/rigplane/rigctld/server.py src/rigplane/rigctld/handler.py tests/test_rigctld_ingress_scheduling.py tests/test_rigctld_managed_ingress_scheduling.py)
-          printf '%s\n' "uv run --no-sync ruff check ${files[*]}" > "$ARTIFACT_DIR/ruff-check-command.txt"
-          printf '%s\n' "uv run --no-sync ruff format --check ${files[*]}" > "$ARTIFACT_DIR/ruff-format-command.txt"
-          printf '%s\n' "uv run --no-sync ruff format --diff ${files[*]}" > "$ARTIFACT_DIR/ruff-format-diff-command.txt"
-          set +e
-          uv run --no-sync ruff check "${files[@]}" > "$ARTIFACT_DIR/ruff-check.log" 2>&1
-          check_rc=$?
-          uv run --no-sync ruff format --check "${files[@]}" > "$ARTIFACT_DIR/ruff-format.log" 2>&1
-          format_rc=$?
-          uv run --no-sync ruff format --diff "${files[@]}" > "$ARTIFACT_DIR/ruff-format-diff.log" 2>&1
-          diff_rc=$?
-          printf '%s\n' "$check_rc" > "$ARTIFACT_DIR/ruff-check-exit.txt"
-          printf '%s\n' "$format_rc" > "$ARTIFACT_DIR/ruff-format-exit.txt"
-          printf '%s\n' "$diff_rc" > "$ARTIFACT_DIR/ruff-format-diff-exit.txt"
-          cat "$ARTIFACT_DIR/ruff-check.log" "$ARTIFACT_DIR/ruff-format.log" "$ARTIFACT_DIR/ruff-format-diff.log"
-          set -e
-          test "$check_rc" -eq 0
-          test "$format_rc" -eq 0
-          test "$diff_rc" -eq 0
-
-      - name: Record and require unchanged source
+      - name: Require immutable carrier and source
         if: always() && steps.prepare.outputs.artifacts_dir != ''
         run: |
-          git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/status-after.txt"
+          git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/source-status-after.txt"
+          git -C ../carrier status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/carrier-status-after.txt"
           git rev-parse HEAD > "$ARTIFACT_DIR/source-head-after.txt"
-          git diff --stat > "$ARTIFACT_DIR/source-diff-stat.txt"
+          git rev-parse 'HEAD^{tree}' > "$ARTIFACT_DIR/source-tree-after.txt"
+          files=(
+            src/rigplane/rigctld/server.py
+            src/rigplane/rigctld/handler.py
+            tests/test_rigctld_ingress_scheduling.py
+            tests/test_rigctld_managed_ingress_scheduling.py
+            pyproject.toml
+            uv.lock
+          )
+          sha256sum "${files[@]}" > "$ARTIFACT_DIR/source-sha256-after.txt"
           test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
-          test ! -s "$ARTIFACT_DIR/status-after.txt"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE_PIN"
+          test "$(git -C ../carrier rev-parse HEAD)" = "$GITHUB_SHA"
+          test ! -s "$ARTIFACT_DIR/source-status-after.txt"
+          test ! -s "$ARTIFACT_DIR/carrier-status-after.txt"
+          diff -u "$ARTIFACT_DIR/source-sha256-before.txt" "$ARTIFACT_DIR/source-sha256-after.txt"
+
+      - name: Record final artifact inventory
+        if: always() && steps.prepare.outputs.artifacts_dir != ''
+        run: |
+          find "$ARTIFACT_DIR" -type f ! -name final-inventory.tsv -printf '%P\t%s\n' \
+            | LC_ALL=C sort > "$ARTIFACT_DIR/final-inventory.tsv"
 
       - name: Upload diagnostic evidence
         if: always() && steps.prepare.outputs.artifacts_dir != ''
         uses: actions/upload-artifact@v4
         with:
-          name: managed-rigctld-ingress-red-97e81fe4-${{ github.run_id }}-${{ github.run_attempt }}
+          name: managed-ingress-red-proof-64f15eab-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.prepare.outputs.artifacts_dir }}
           if-no-files-found: error
