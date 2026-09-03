@@ -122,8 +122,12 @@ def _make_scope_waveform_frame(
     """Build a single-packet (LAN-style, seq=seqMax=1) ``0x27``/``0x00``
     waveform frame, per ``rigplane.scope._ReceiverState.feed``'s sequence-1
     layout: ``[receiver, seq_bcd, seqMax_bcd, mode, start(5), end(5), oor,
-    pixels...]``. ``mode`` != 0 so the assembler does not remap start/end
-    into center +/- bandwidth (only mode 0 does that).
+    pixels...]``. For ``mode == 0`` (center) the assembler remaps
+    ``start_hz``/``end_hz`` as ``[center_freq, half_span]`` into real edges
+    (``center - half_span``, ``center + half_span``) -- pass ``start_hz``
+    as the center frequency and ``end_hz`` as the half-span in that case.
+    For any other mode both are used as literal edge frequencies,
+    unremapped.
     """
     raw_payload = (
         bytes([0x01, 0x01, mode])
@@ -3973,13 +3977,19 @@ async def test_scope_waveform_mode_unchanged_emits_no_observation(
     assert apply_spy.call_count == 0
 
 
-async def test_scope_waveform_frame_never_emits_edge_or_span_observation(
+async def test_scope_waveform_fixed_mode_emits_no_span_edge_or_fixed_edge(
     radio: IcomRadio,
 ) -> None:
-    """MOR-2222: the waveform stream republishes ``mode`` only — edge/span
-    frequencies have no existing scope-control field to land in (``edge``
-    is a preset index, ``fixed_edge`` a preset-table record) and this slice
-    deliberately does not invent one. Guards the "do not invent" rule."""
+    """MOR-2222/MOR-2256: a fixed-mode (``mode != 0``) waveform frame
+    republishes nothing beyond ``mode`` itself. ``edge`` has no
+    frame-carried source at all. ``fixed_edge`` has no declared table of
+    legal (start_hz, end_hz) pairs to match a frame's edges against
+    (``_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ`` maps a start_hz to a band, not
+    to a specific stored preset) — MOR-2256 rules out guessing which
+    preset is active. ``span`` is center-mode-only by construction
+    (``_publish_scope_span_observation`` returns immediately when
+    ``scope_frame.mode != 0``), so a fixed-mode frame never reaches its
+    exact-match lookup regardless of width."""
     with _spy_state_store_apply(radio) as apply_spy:
         frame = _make_scope_waveform_frame(
             mode=1, start_hz=14_000_000, end_hz=14_350_000
@@ -3990,6 +4000,70 @@ async def test_scope_waveform_frame_never_emits_edge_or_span_observation(
     assert "scope_controls.global.display.edge" not in applied_paths
     assert "scope_controls.global.display.span" not in applied_paths
     assert "scope_controls.global.display.fixed_edge" not in applied_paths
+
+
+async def test_scope_waveform_center_mode_span_match_emits_one_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2256: a center-mode frame whose displayed width
+    (``end_freq_hz - start_freq_hz``) exactly equals a declared span
+    preset publishes exactly one ``span`` observation carrying that
+    preset's index (the same representation ``parse_scope_span_response``
+    stores for the 0x15 reply path). Width = 2 * half_span (the raw
+    payload's "end" field, per ``rigplane.scope._ReceiverState.feed``'s
+    center-mode adjustment) = 2 * 1250 = 2500 Hz, matching
+    ``_SCOPE_SPAN_PRESETS_HZ[0]``."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=1_250)
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    span_calls = [
+        call
+        for call in apply_spy.call_args_list
+        if str(call.args[0].path) == "scope_controls.global.display.span"
+    ]
+    assert len(span_calls) == 1
+    assert span_calls[0].args[0].value == 0
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.span")
+    assert field.value == 0
+    assert field.freshness is FreshnessState.FRESH
+
+
+async def test_scope_waveform_center_mode_unknown_width_emits_no_span(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2256: a center-mode frame whose width has no exact match in
+    ``_SCOPE_SPAN_PRESETS_HZ`` publishes nothing — not a nearest-value
+    guess. Width = 2 * 999 = 1998 Hz, which is not one of the eight
+    declared presets (2500/5000/10000/25000/50000/100000/250000/500000)."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=999)
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    applied_paths = {str(call.args[0].path) for call in apply_spy.call_args_list}
+    assert "scope_controls.global.display.span" not in applied_paths
+
+
+async def test_scope_waveform_center_mode_span_unchanged_emits_no_second_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2256: two consecutive center-mode frames with the same matching
+    width publish exactly one ``span`` observation total, not one per
+    frame — mirrors ``test_scope_waveform_mode_unchanged_emits_no_observation``."""
+    first = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=1_250)
+    await radio._civ_runtime._route_civ_frame(first, generation=radio._civ_epoch)
+
+    with _spy_state_store_apply(radio) as apply_spy:
+        second = _make_scope_waveform_frame(mode=0, start_hz=14_100_000, end_hz=1_250)
+        await radio._civ_runtime._route_civ_frame(second, generation=radio._civ_epoch)
+
+    span_calls = [
+        call
+        for call in apply_spy.call_args_list
+        if str(call.args[0].path) == "scope_controls.global.display.span"
+    ]
+    assert span_calls == []
 
 
 def test_scope_control_observations_project_public(radio: IcomRadio) -> None:

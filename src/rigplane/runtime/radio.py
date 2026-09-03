@@ -454,6 +454,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # stream, per receiver (0=MAIN, 1=SUB) — lets the stream
         # change-detect before writing to the StateStore.
         self._scope_stream_last_mode: dict[int, int] = {}
+        # MOR-2256: last scope-display span index published from the
+        # waveform stream (center mode only), per receiver -- same
+        # change-detect purpose as _scope_stream_last_mode above.
+        self._scope_stream_last_span: dict[int, int] = {}
         # Raw CI-V pipe listeners (MOR-164): receive inbound on-wire frame bytes.
         self._raw_civ_listeners: list[Callable[[bytes], Any]] = []
         # External CAT-session ownership (MOR-166 slice 2): when True, cooperating

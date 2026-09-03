@@ -45,6 +45,7 @@ from rigplane.commands import (
     parse_scope_span_response,
     parse_scope_speed_response,
     parse_scope_vbw_response,
+    span_index_for_hz,
 )
 from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
 from rigplane.core.exceptions import ConnectionError, TimeoutError
@@ -1600,6 +1601,9 @@ class CivRuntime:
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
                 self._publish_scope_mode_observation(
+                    scope_frame, receiver=receiver, frame=frame
+                )
+                self._publish_scope_span_observation(
                     scope_frame, receiver=receiver, frame=frame
                 )
                 self._publish_scope_frame(scope_frame)
@@ -3272,13 +3276,15 @@ class CivRuntime:
         scope's own reads own them now. The waveform stream (``0x27``/
         ``0x00``) is the one unsolicited source that keeps ``mode`` current
         while it runs, so this republishes it — once per change, not once
-        per frame, since the stream runs at up to ~15 fps. Only ``mode`` is
-        republished: edge/span frequencies have no existing scope-control
-        field to land in (``edge`` is a preset index 1-4, ``fixed_edge`` a
-        preset-table record with its own range_index/edge/start/end shape)
-        and MOR-2222 deliberately does not invent one — those stay
-        display-only, carried to the web through the spectrum stream itself
-        (``ScopeFrame``), not the StateStore.
+        per frame, since the stream runs at up to ~15 fps. ``span`` is
+        republished the same way by ``_publish_scope_span_observation``
+        below (MOR-2256, derived through the profile's span-preset table,
+        not a raw frequency). ``edge``/``fixed_edge`` are NOT republished:
+        ``edge`` is a preset index 1-4 with no frame-carried source, and
+        ``fixed_edge`` a preset-table record (range_index/edge/start/end)
+        with no declared table of legal values to derive it from — those
+        stay display-only, carried to the web through the spectrum stream
+        itself (``ScopeFrame``), not the StateStore.
         """
         last_modes = self._host._scope_stream_last_mode
         if last_modes.get(receiver) == scope_frame.mode:
@@ -3287,6 +3293,54 @@ class CivRuntime:
         observation = self._observation(
             FieldPath.scope_control("display", "mode"),
             scope_frame.mode,
+            frame=frame,
+        )
+        changeset = self._host._state_store.apply(observation)
+        self._record_scheduler_result_for_observation(observation, changeset)
+        self._notify_state_store_changed(changeset)
+
+    def _publish_scope_span_observation(
+        self, scope_frame: ScopeFrame, *, receiver: int, frame: CivFrame
+    ) -> None:
+        """Emit a change-detected ``scope_controls.global.display.span`` write.
+
+        Center mode only (``scope_frame.mode == 0``): the frame's displayed
+        width (``end_freq_hz - start_freq_hz``) is matched EXACTLY against
+        ``commands/scope.py: _SCOPE_SPAN_PRESETS_HZ`` via the shared
+        ``span_index_for_hz`` helper — the same lookup
+        ``parse_scope_span_response`` (the 0x15 reply path) uses, so the
+        stream and a typed-getter reply always agree on what index a given
+        Hz value maps to (MOR-2256). No match -> publish nothing, and do
+        not clear whatever the field last held: ``hz`` here is exact
+        (``bcd_decode`` round-trips losslessly to an integer, so no
+        tolerance is needed or wanted), so a non-matching width is either
+        drift outside the eight documented presets or an unexpected
+        source, not something to overwrite a confirmed value with a guess.
+
+        Fixed mode (``scope_frame.mode != 0``) publishes nothing: unlike
+        span, there is no declared table of legal (start_hz, end_hz) pairs
+        to match a fixed-mode frame's edges against —
+        ``_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ`` only maps a start_hz to a
+        *band*, not to a specific stored (range, edge) preset, and a
+        preset's actual edges are radio-side user-configured memory, not
+        enumerable data. Publishing here would mean guessing which preset
+        is active, which MOR-2256 rules out. Moving the span table into
+        per-profile data (rather than reusing the existing hardcoded
+        ``commands/scope.py`` constant) is tracked separately as MOR-2257.
+        """
+        if scope_frame.mode != 0:
+            return
+        width_hz = scope_frame.end_freq_hz - scope_frame.start_freq_hz
+        span = span_index_for_hz(width_hz)
+        if span is None:
+            return
+        last_spans = self._host._scope_stream_last_span
+        if last_spans.get(receiver) == span:
+            return
+        last_spans[receiver] = span
+        observation = self._observation(
+            FieldPath.scope_control("display", "span"),
+            span,
             frame=frame,
         )
         changeset = self._host._state_store.apply(observation)

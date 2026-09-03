@@ -292,6 +292,7 @@ from .scope import (
     scope_set_speed,
     scope_set_vbw,
     scope_single_dual,
+    span_index_for_hz,
 )
 
 # --- cw.py ---
@@ -595,6 +596,7 @@ __all__ = [
     "scope_set_mode",
     "get_scope_span",
     "scope_set_span",
+    "span_index_for_hz",
     "get_scope_ref",
     "scope_set_ref",
     "get_scope_speed",
