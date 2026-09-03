@@ -171,10 +171,31 @@ class ManagedTxAuthority:
         return submission.outcome
 
     async def submit_ptt(
-        self, on: bool, owner: str, *, ready: asyncio.Future[Any] | None = None
+        self,
+        on: bool,
+        owner: str,
+        *,
+        ready: asyncio.Future[Any] | None = None,
+        _registered: asyncio.Future[None] | None = None,
     ) -> ManagedTxSubmission:
-        """Return after owner-scoped admission, before provider settlement."""
-        worker, admitted = self._begin_ptt_operation(on, owner, ready=ready)
+        """Acknowledge pending membership, then return after admission."""
+        if _registered is not None:
+            if not isinstance(_registered, asyncio.Future):
+                raise TypeError("PTT registration acknowledgement must be a Future")
+            if _registered.done():
+                raise ValueError("PTT registration acknowledgement must be pending")
+        try:
+            worker, admitted = self._begin_ptt_operation(on, owner, ready=ready)
+        except asyncio.CancelledError:
+            if _registered is not None:
+                _registered.cancel()
+            raise
+        except BaseException as error:
+            if _registered is not None:
+                _registered.set_exception(error)
+            raise
+        if _registered is not None:
+            _registered.set_result(None)
         try:
             transition = await asyncio.shield(admitted)
         except asyncio.CancelledError:
