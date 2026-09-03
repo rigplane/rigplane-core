@@ -1552,6 +1552,94 @@ class TestCapturedExecuteLifetime:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pause", ["pacing", "send"])
+    async def test_generation_retirement_retrieves_detached_blocking_exception(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        pause: str,
+    ) -> None:
+        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
+        replacement = MockTransport()
+        entered, release = asyncio.Event(), asyncio.Event()
+        radio._last_civ_send_monotonic = time.monotonic()
+        radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        original_send = mock_transport.send_tracked
+        tasks = []
+        pending_response = None
+
+        async def hold(value: float | bytes) -> None:
+            if pause == "send":
+                assert isinstance(value, bytes)
+                await original_send(value)
+            entered.set()
+            await release.wait()
+
+        target = asyncio if pause == "pacing" else mock_transport
+        method = "sleep" if pause == "pacing" else "send_tracked"
+        try:
+            with patch.object(runtime, "start_pump"):
+                with patch.object(target, method, hold):
+                    stale = asyncio.create_task(runtime._execute_civ_raw(frame))
+                    tasks.append(stale)
+                    await entered.wait()
+                    pending_response = tracker._ack_waiters[0].future
+                    assert pending_response is not None
+                    assert not pending_response.done()
+                    runtime.advance_generation("test provider retirement")
+                    assert pending_response.done() and not pending_response.cancelled()
+                    # CPython's pending-exception diagnostic flag is non-consuming.
+                    assert pending_response._log_traceback
+                    assert tracker.pending_count == 0
+                    radio._civ_transport = replacement
+                    tracker.register_ack(wait=False)
+                    last_send = time.monotonic() + 100.0
+                    radio._last_civ_send_monotonic = last_send
+                    release.set()
+                    _, waiting = await asyncio.wait({stale}, timeout=1)
+                    assert len(mock_transport.sent_packets) == (pause == "send")
+                    assert replacement.sent_packets == []
+                    assert not waiting, "retired blocking executor did not settle"
+                    result = await asyncio.gather(stale, return_exceptions=True)
+                    assert isinstance(result[0], ConnectionError)
+                    assert radio._last_civ_send_monotonic == last_send
+                    assert tracker.timeout_count == 0
+                    assert tracker.pending_count == tracker.ack_sink_count == 1
+                    assert pending_response.done()
+                    assert not pending_response._log_traceback, (
+                        "retired blocking waiter exception was not retrieved"
+                    )
+                tracker.drop_ack_sinks()
+                radio._last_civ_send_monotonic = 0.0
+                radio._civ_min_interval = 0.0
+                current = asyncio.create_task(runtime._execute_civ_raw(frame))
+                tasks.append(current)
+                await asyncio.sleep(0)
+                assert len(replacement.sent_packets) == 1
+                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
+                assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=ack))
+                _, waiting = await asyncio.wait({current}, timeout=1)
+                assert not waiting, "current command failed after real retirement"
+                assert current.result() is ack
+                assert tracker.pending_count == 0
+                assert not replacement.disconnected
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            tracker.fail_all(ConnectionError("test cleanup"))
+            if pending_response is not None:
+                if not pending_response.done():
+                    pending_response.cancel()
+                elif not pending_response.cancelled():
+                    pending_response.exception()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pause", ["pacing", "send"])
     async def test_cancelled_fire_and_forget_cleans_captured_ack_sink(
         self,
         radio: IcomRadio,
