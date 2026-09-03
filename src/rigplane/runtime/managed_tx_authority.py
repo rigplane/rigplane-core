@@ -333,7 +333,10 @@ class ManagedTxAuthority:
         if not isinstance(intent, CommandIntent):
             raise TypeError("managed write admission requires a CommandIntent")
         async with self._lock:
-            managed_tx = self._state.intent.kind is not ManagedTxIntentKind.RX
+            managed_tx = (
+                self._state.intent.kind is not ManagedTxIntentKind.RX
+                or intent.params.get("observed_ptt") == "on"
+            )
             if not managed_tx:
                 return True
             if intent.name in _ANTENNA_WRITE_NAMES:
