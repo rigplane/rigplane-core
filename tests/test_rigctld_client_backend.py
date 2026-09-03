@@ -303,12 +303,15 @@ async def test_urgent_exchange_preserves_active_frame_and_each_fifo(
         )
         await asyncio.wait_for(tasks[0], 1)
         tasks.append(asyncio.create_task(transport.command("F 4")))
-        for expected in (b"T 0\n", b"F 9\n", b"F 2\n", b"F 3\n", b"F 4\n"):
-            assert await asyncio.wait_for(stream.written.get(), 1) == expected, (
-                "urgent release lost the next exchange boundary"
-            )
+        expected_order = [b"T 0\n", b"F 9\n", b"F 2\n", b"F 3\n", b"F 4\n"]
+        actual_order = []
+        for _ in expected_order:
+            actual_order.append(await asyncio.wait_for(stream.written.get(), 1))
             stream.responses.put_nowait(b"RPRT 0\n")
         await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        assert actual_order == expected_order, (
+            "urgent release lost the next exchange boundary"
+        )
     finally:
         await _finish_exchanges(transport, (stream,), tasks)
 
