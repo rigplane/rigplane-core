@@ -11,7 +11,11 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
-from rigplane.core.state_pipeline_contracts import CommandIntent, CommandSource
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    CommandSource,
+    FieldPath,
+)
 
 __all__ = [
     "Command",
@@ -983,7 +987,9 @@ class CommandQueueEntry:
 class _CommandQueueSegment:
     kind: Literal["coalesced", "ordered"]
     ptt: list[CommandQueueEntry] = field(default_factory=list)
-    dedup: dict[type, CommandQueueEntry] = field(default_factory=dict)
+    dedup: dict[type | tuple[str, FieldPath | None], CommandQueueEntry] = field(
+        default_factory=dict
+    )
     ordered: list[CommandQueueEntry] = field(default_factory=list)
 
     @classmethod
@@ -1072,7 +1078,8 @@ class CommandQueue:
         if isinstance(cmd, (PttOn, PttOff)):
             segment.ptt.append(entry)
         else:
-            segment.dedup[type(cmd)] = entry
+            key = (cmd.name, cmd.target) if isinstance(cmd, CommandIntent) else type(cmd)
+            segment.dedup[key] = entry
         self._notify.set()
 
     def put_ordered(
