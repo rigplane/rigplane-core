@@ -222,6 +222,10 @@ const MATRIX = [
     .map((id) => ({
       name: `${id}--reference--desktop`, fixture: `${id}--reference`, viewport: 'desktop',
     })),
+  // T. MOR-2243 — the segmentline peer-split glass chassis. Behavior
+  // assertions do not apply here (see `intentionalDifferences`); the
+  // discriminating check is the pixel baseline of the same name.
+  { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis', viewport: 'desktop' },
 ];
 
 /* ── build identity ────────────────────────────────────────────────────── */
@@ -596,6 +600,14 @@ const manifest = {
     + '`dualReceiverCockpitLayout` is ever resolved here; the `--reference` family (desktop-v2/sdr-test '
     + 'wiring) has no plan-ful twin in this slice — its manifest declares a different zone set and is '
     + 'separately scoped follow-up work.',
+    'MOR-2243: `peer-split-chassis--desktop` runs no real behavior assertions — `fixtures/main.ts` '
+    + 'returns one hardcoded passing entry (`peer-split-no-assertion-pipeline`) for every '
+    + '`peer-split` fixture because `fixture.expect` is absent, so this capture\'s assertion cell '
+    + 'confirms only that the harness mounted and cannot go red on a composition defect; the '
+    + 'discriminating check for this fixture is the pixel baseline of the same name in '
+    + '`tests/e2e/visual/visual-baselines.spec.ts`, which per `fixtures/approved-baselines/'
+    + 'README.md` catches only changes above ~1024 differing pixels (~32x32 px at 1280x800) and '
+    + 'cannot see whole-frame brightness/contrast drift at all.',
   ],
   viewports: VIEWPORTS,
   summary: {

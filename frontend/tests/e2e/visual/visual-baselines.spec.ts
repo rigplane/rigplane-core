@@ -50,6 +50,7 @@ const COCKPIT: Spec[] = [
     mode: 'light',
   },
   { name: 'tx-phase-fault--desktop--fieldline', fixture: 'tx-phase-fault', language: 'fieldline' },
+  { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis' },
 ];
 
 for (const spec of COCKPIT) {
