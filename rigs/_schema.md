@@ -233,14 +233,14 @@ scope, where the radio supports one.
 | `ref_step_db`     | float   | no       | Scope reference level step size, dB.                       |
 | `span_presets_hz` | int[]   | no       | Scope span presets in Hz, index-ordered (index 0-7 matches the CI-V `0x27 0x15` span code the radio itself uses). Must be non-empty and strictly ascending. |
 
-`span_presets_hz` is what the waveform-stream span derivation
-(`runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation`,
-MOR-2256) resolves a frame's displayed width to a span index against. The
-0x15 reply-path decoder/encoder (`commands/scope.py:
-parse_scope_span_response`/`scope_set_span`) still use the hardcoded
-`_SCOPE_SPAN_PRESETS_HZ` constant as of this field's introduction — a
-follow-up threads them onto this same declared list and removes the
-constant, so there is exactly one source instead of two.
+`span_presets_hz` is the only place these values live. The
+waveform-stream span derivation (`runtime/_civ_rx.py:
+CivRuntime._publish_scope_span_observation`) resolves a frame's displayed
+width to a span index against it, and the 0x15 reply-path decoder/encoder
+(`commands/scope.py: parse_scope_span_response`/`scope_set_span`) take it
+as an argument — `commands/` may not import `profiles/`, so the runtime
+reads the resolved profile and passes the list in. A profile that omits
+this key therefore decodes and encodes no span at all.
 
 ## `[attenuator]` — Attenuator Steps
 

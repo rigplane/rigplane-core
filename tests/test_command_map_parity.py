@@ -278,14 +278,13 @@ def _hardcode_only_builders() -> frozenset[Key]:
     return frozenset(found)
 
 
-def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, ...]:
-    """Probe values for *param*, derived from its annotation alone."""
-    try:
-        annotation = eval(param.annotation, fn.__globals__)  # noqa: S307
-    except Exception:
-        return ()
-    args = typing.get_args(annotation)
-    types = list(args) if args else [annotation]
+def _scalar_values_for(types: list[typing.Any]) -> tuple[typing.Any, ...]:
+    """Probe values for a parameter whose annotation resolved to *types*.
+
+    Split out of :func:`_values_for` so the tuple branch there can reuse
+    the same ladders for a tuple's ELEMENT type instead of a second,
+    independent copy that could disagree with this one.
+    """
     members = [
         member
         for candidate in types
@@ -303,6 +302,33 @@ def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, .
     if int in types:
         return _INTS + _FREQS
     return ()
+
+
+def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, ...]:
+    """Probe values for *param*, derived from its annotation alone."""
+    try:
+        annotation = eval(param.annotation, fn.__globals__)  # noqa: S307
+    except Exception:
+        return ()
+    if typing.get_origin(annotation) is tuple:
+        # A tuple parameter wants a SEQUENCE of its element type, not one
+        # element. Without this branch ``get_args`` flattens
+        # ``tuple[int, ...]`` into ``[int, Ellipsis]`` and the scalar
+        # ladder below hands the builder a bare ``0``, which every use of
+        # the parameter as a sequence rejects -- the builder then reports
+        # as unsynthesisable for a reason that is about this file, not
+        # about the builder. Longest candidate first, so a builder that
+        # indexes into the sequence with one of its OTHER synthesised
+        # arguments has room for the index values in ``_INTS``.
+        elements = _scalar_values_for(
+            [arg for arg in typing.get_args(annotation) if arg is not Ellipsis]
+        )
+        if not elements:
+            return ()
+        return (elements, elements[:2], elements[:1])
+    args = typing.get_args(annotation)
+    types = list(args) if args else [annotation]
+    return _scalar_values_for(types)
 
 
 def _requires_cmd_map(fn: typing.Any) -> bool:

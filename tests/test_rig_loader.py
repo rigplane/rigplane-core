@@ -1921,14 +1921,13 @@ _EXPECTED_SPAN_PRESETS_HZ = (
 class TestScopeSpanPresets:
     """[scope].span_presets_hz parsing, validation, and shipped-profile parity.
 
-    MOR-2258: the waveform-stream span derivation
-    (``runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation``)
-    reads ``RadioProfile.scope_span_presets_hz`` -- this is the field's
-    only production reader in this change; the 0x15 reply-path decoder/
-    encoder (``commands/scope.py: parse_scope_span_response``/
-    ``scope_set_span``) still use the hardcoded ``_SCOPE_SPAN_PRESETS_HZ``
-    module constant, unchanged (a follow-up threads them onto this field
-    too and removes the constant).
+    MOR-2258: ``RadioProfile.scope_span_presets_hz`` is the sole source of
+    the Hz<->span-index mapping. It is read by the waveform-stream span
+    derivation (``runtime/_civ_rx.py:
+    CivRuntime._publish_scope_span_observation``) and passed into the 0x15
+    reply-path decoder/encoder (``commands/scope.py:
+    parse_scope_span_response``/``scope_set_span``), which take it as a
+    parameter because ``commands/`` may not import ``profiles/``.
     """
 
     def test_defaults_to_empty_tuple_when_undeclared(self, tmp_path):
@@ -1970,10 +1969,7 @@ class TestScopeSpanPresets:
     @pytest.mark.parametrize("name", _SHIPPED_SCOPE_RIGS)
     def test_shipped_scope_rig_declares_the_eight_icom_presets(self, name):
         """Every shipped scope-capable profile declares the same eight
-        Icom CI-V span presets (span code 0-7 -> Hz) that
-        ``commands/scope.py: _SCOPE_SPAN_PRESETS_HZ`` hardcodes -- this is
-        the parity a follow-up PR relies on when it removes that constant
-        in favor of this field."""
+        Icom CI-V span presets (span code 0-7 -> Hz)."""
         rig = load_rig(RIGS_DIR / name)
         assert rig.scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
         assert rig.to_profile().scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
