@@ -1,266 +1,330 @@
 name: Tests (full matrix)
 
 on:
-  schedule:
-    # Mon/Wed/Fri 03:00 UTC (06:00 MSK)
-    - cron: "0 3 * * 1,3,5"
   workflow_dispatch:
-  push:
-    branches: [main]
+
+permissions:
+  contents: read
 
 concurrency:
-  group: tests-full-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: rigctld-actuator-mutations-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  test:
-    # On push: only when commit message contains [full-ci].
-    # On schedule / manual dispatch: always run.
-    if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
-    # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
-    # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
-    # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
-    # Operator doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
+  mutation-proof:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/rigctld-actuator-mutation-proof'
     runs-on: [self-hosted, linux, build]
-    timeout-minutes: 25
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+    timeout-minutes: 20
     env:
-      # Pin uv to the matrix interpreter. Without this, `uv run` satisfies
-      # requires-python=">=3.11" with the newest interpreter on the runner
-      # (3.13), so every matrix job silently tested 3.13 (MOR-590).
-      UV_PYTHON: ${{ matrix.python-version }}
-
+      SOURCE_PIN: 5c96eba7e410c72bf00388629ca3cd1f40638663
+      UV_PYTHON: '3.11'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: ${{ github.workspace }}/source/src:${{ github.workspace }}/source/tests
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
     steps:
       - uses: actions/checkout@v6
         with:
-          # Architecture debt guards compare HEAD with the reachable PR base.
-          fetch-depth: 2
+          ref: 5c96eba7e410c72bf00388629ca3cd1f40638663
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+      - name: Prepare isolated evidence and caches
+        id: prepare
+        run: |
+          artifact_dir=$(mktemp -d "${RUNNER_TEMP}/rigctld-actuator-mutations.XXXXXX")
+          pycache_dir=$(mktemp -d "${RUNNER_TEMP}/rigctld-actuator-pycache.XXXXXX")
+          uv_cache_dir=$(mktemp -d "${RUNNER_TEMP}/rigctld-actuator-uvcache.XXXXXX")
+          venv_dir=$(mktemp -d "${RUNNER_TEMP}/rigctld-actuator-venv.XXXXXX")
+          echo "ARTIFACT_DIR=$artifact_dir" >> "$GITHUB_ENV"
+          echo "PYTHONPYCACHEPREFIX=$pycache_dir" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$uv_cache_dir" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$venv_dir" >> "$GITHUB_ENV"
+          echo "artifacts_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
+          git status --porcelain=v1 --untracked-files=all > "$artifact_dir/status-before.txt"
+          git rev-parse HEAD > "$artifact_dir/source-head.txt"
+          test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
+          test ! -s "$artifact_dir/status-before.txt"
+
+      - uses: astral-sh/setup-uv@v8.1.0
         with:
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
+          enable-cache: false
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
-        # already installed its packages (pytest, ruff, mypy, pydantic,
-        # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
-        # alias) — but neither flag named `scope` (Pillow), `dsp` (scipy), or
-        # `webrtc` (aiortc), the extras that gate 62 tests in tests/. Those
-        # tests ran skipped in CI while still showing green. `uv sync
-        # --all-extras` installs every extra declared in pyproject.toml's
-        # [project.optional-dependencies], so those tests run instead of
-        # skipping.
-        run: uv sync --all-extras
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
+      - name: Install mock-test dependencies and package metadata
         run: |
-          cd frontend
-          npm ci
+          uv python install 3.11
+          uv sync --frozen --extra dev
 
-      - name: i18n catalog lint
+      - name: Preflight, isolated mutations, equivalent control, and restoration
         run: |
-          cd frontend
-          npm run i18n:check
+          uv run --no-sync python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+          import xml.etree.ElementTree as ET
 
-      - name: Frontend type-check
+          artifacts = Path(os.environ["ARTIFACT_DIR"])
+          pin = os.environ["SOURCE_PIN"]
+          assert sys.version_info[:2] == (3, 11), sys.version
+          assert subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == pin
+          metadata = {key: os.environ.get(key) for key in (
+              "SOURCE_PIN", "GITHUB_SHA", "GITHUB_REF", "GITHUB_RUN_ID",
+              "GITHUB_RUN_ATTEMPT", "PYTHONDONTWRITEBYTECODE",
+          )}
+          metadata["python"] = sys.version
+          metadata["claim"] = "Selected mock mutation proof; not production cutover or physical-radio proof"
+          (artifacts / "metadata.json").write_text(json.dumps(metadata, indent=2))
+
+          authority = "tests/test_managed_tx_authority.py"
+          lane = "tests/test_managed_tx_effect_lane.py"
+          backend = "tests/test_rigctld_client_backend.py"
+          rows = [
+              (authority, "test_effect_currency_tracks_pending_owner_release",
+               ["ptt_up", "offline_ptt_up", "force_off", "replace"]),
+              (authority, "test_abort_currency_ends_when_current_force_receive_settles", [None]),
+              (authority, "test_shutdown_currency_observes_termination_synchronously", [None]),
+              (lane, "test_live_claim_currency_blocks_resistant_write", ["caller", "cancel", "deadline"]),
+              (lane, "test_removed_claim_has_no_currency_during_isolation", [None]),
+              (backend, "test_urgent_exchange_preserves_active_frame_and_each_fifo", ["query", "command"]),
+              (backend, "test_cancelled_admission_releases_only_its_reservation",
+               ["normal-queued", "normal-granted", "urgent-queued", "urgent-granted"]),
+              (backend, "test_write_currency_is_checked_after_stale_drain", ["false", "raises"]),
+              (backend, "test_managed_actuator_forwards_live_currency_to_final_write", [None]),
+              (backend, "test_tokened_queue_cannot_retarget_or_drain_replacement", [None]),
+              (backend, "test_tokened_write_cannot_cross_replacement_during_drain", [None]),
+              (backend, "test_managed_actuator_uses_canonical_rigctld_outcomes",
+               ["accepted-ptt_on", "accepted-transmit_on", "accepted-force_receive",
+                "rprt_error-ptt_on", "rprt_error-transmit_on", "rprt_error-force_receive",
+                "malformed-ptt_on", "malformed-transmit_on", "malformed-force_receive"]),
+              (backend, "test_controlled_authority_replacement_keeps_debt_after_late_on_rprt", [None]),
+              (backend, "test_rigctld_unsupported_abort_does_not_emit_a_command", ["stop_cw", "stop_tune"]),
+              (backend, "test_authority_canonical_rigctld_release_precedes_unrelated_cleanup", [None]),
+              (backend, "test_transport_connect_query_and_close", [None]),
+              (backend, "test_transport_serializes_requests", [None]),
+              (backend, "test_cancelled_lock_waiter_keeps_active_exchange", [None]),
+              (backend, "test_old_exchange_interruption_does_not_retire_replacement",
+               ["cancel", "eof", "oserror", "timeout"]),
+              (backend, "test_cancelled_lifecycle_preserves_real_stream_close_future", ["close", "connect"]),
+              (backend, "test_delayed_cancelled_rprt_cannot_complete_next_command", [None]),
+              (lane, "test_preserves_explicit_normalized_result", ["accepted", "rejected", "uncertain"]),
+              (authority, "test_late_physical_on_retains_debt_until_a_fresh_off", ["False", "True"]),
+              (authority, "test_real_fence_releases_before_cleanup_and_shutdown_waits_for_cleanup",
+               ["force_off", "shutdown", "offline_shutdown"]),
+          ]
+          all_cases, selected = {}, []
+          for file, function, suffixes in rows:
+              node = f"{file}::{function}"
+              assert node not in selected, node
+              selected.append(node)
+              for suffix in suffixes:
+                  case = node if suffix is None else f"{node}[{suffix}]"
+                  assert case not in all_cases, case
+                  all_cases[case] = None
+          assert len(selected) == 24 and len(all_cases) == 52
+          controls = [
+              f"{backend}::test_managed_actuator_uses_canonical_rigctld_outcomes[accepted-ptt_on]",
+              f"{backend}::test_managed_actuator_uses_canonical_rigctld_outcomes[accepted-force_receive]",
+              f"{backend}::test_old_exchange_interruption_does_not_retire_replacement[cancel]",
+              f"{backend}::test_cancelled_lock_waiter_keeps_active_exchange",
+          ]
+          assert len(set(controls)) == 4 and set(controls) <= set(all_cases)
+          authority_source = "src/rigplane/runtime/managed_tx_authority.py"
+          lane_source = "src/rigplane/runtime/managed_tx_effect_lane.py"
+          radio_source = "src/rigplane/backends/rigctld_client/radio.py"
+          transport_source = "src/rigplane/backends/rigctld_client/transport.py"
+          # Escaped line anchors: no indentation-sensitive multiline templates.
+          currency_context = (
+              "    def is_effect_current(\n"
+              "        self, token: EffectToken, operation: ActuationOperation | AbortOperation\n"
+              "    ) -> bool:\n"
+              '        """Check write currency synchronously against the live pending attempt."""\n'
+              "        pending = self._state.pending_effect\n"
+              "        if isinstance(operation, AbortOperation):\n"
+              "            operation = ActuationOperation.FORCE_RECEIVE\n"
+              "        return bool(\n"
+              "            not (self._closing or self._closed or self._terminated)\n"
+              "            and not (\n"
+              "                self._shutdown_termination is not None\n"
+          )
+          mutants = [
+              ("M1-pending", authority_source,
+               "            and pending.token == token\n            and pending.operation is operation\n",
+               "            and pending.token.effect_epoch == token.effect_epoch\n",
+               f"{authority}::test_effect_currency_tracks_pending_owner_release[ptt_up]",
+               "old ON stayed writable after its pending effect changed"),
+              ("M2-termination", authority_source,
+               currency_context + "                and self._shutdown_termination.is_set()\n",
+               currency_context + "                and False\n",
+               f"{authority}::test_shutdown_currency_observes_termination_synchronously",
+               "termination must fence writes without another loop turn"),
+              ("M3-membership", lane_source,
+               "            self._claims.get((claim.token, claim.operation)) is claim\n",
+               "            True\n",
+               f"{lane}::test_removed_claim_has_no_currency_during_isolation",
+               "unfinished result does not prove claim ownership"),
+              ("M4-forwarding", radio_source,
+               "        await self._set_ptt(on, is_current=is_current, urgent=not on)\n",
+               "        await self._set_ptt(on, urgent=not on)\n",
+               f"{backend}::test_managed_actuator_forwards_live_currency_to_final_write",
+               "managed actuator wrote after currency invalidation"),
+              ("M5-final-identity", transport_source,
+               "            await self._write_line(command, reader, writer, is_current=guard)\n",
+               "            await self._write_line(command, reader, writer, is_current=is_current)\n",
+               f"{backend}::test_tokened_write_cannot_cross_replacement_during_drain",
+               "managed write escaped the replaced connection boundary"),
+              ("M6-urgent-order", transport_source,
+               "        for queue in (self._urgent_waiters, self._ordinary_waiters):\n",
+               "        for queue in (self._ordinary_waiters, self._urgent_waiters):\n",
+               f"{backend}::test_urgent_exchange_preserves_active_frame_and_each_fifo[query]",
+               "urgent release lost the next exchange boundary"),
+              ("M7-granted-cancel", transport_source,
+               "                # Already granted, but no connection has been captured yet.\n                self._release_exchange()\n",
+               "                # Already granted, but no connection has been captured yet.\n                self._retire_connection(self._reader, self._writer)\n                self._release_exchange()\n",
+               f"{backend}::test_cancelled_admission_releases_only_its_reservation[normal-granted]",
+               "admission cancellation retired a healthy connection"),
+          ]
+          equivalent = (
+              radio_source,
+              '            f"T {1 if on else 0}", is_current=is_current, urgent=urgent\n',
+              '            ("T 1" if on else "T 0"), is_current=is_current, urgent=urgent\n',
+          )
+          originals = {
+              file: subprocess.check_output(["git", "show", f"{pin}:{file}"])
+              for file in (authority_source, lane_source, radio_source, transport_source)
+          }
+          for file, data in originals.items():
+              assert Path(file).read_bytes() == data, (file, "not exact pinned source")
+          patches = [(name, file, old, new) for name, file, old, new, _, _ in mutants]
+          patches.append(("equivalent", *equivalent))
+          for name, file, old, new in patches:
+              assert old != new and originals[file].decode().count(old) == 1, name
+          for name, _, _, _, target, message in mutants:
+              assert target in all_cases and target not in controls, name
+              assert message, name
+          (artifacts / "preflight.json").write_text(json.dumps({
+              "patches": patches,
+              "source_sha256": {file: hashlib.sha256(data).hexdigest() for file, data in originals.items()},
+              "planned_invocations": 10,
+              "planned_case_executions": 191,
+          }, indent=2))
+
+          def status():
+              return subprocess.check_output(["git", "status", "--porcelain=v1", "--untracked-files=all"], text=True)
+
+          def restore():
+              for file, data in originals.items():
+                  Path(file).write_bytes(data)
+              assert not status(), "source restoration left a dirty checkout"
+
+          def junit_key(node):
+              file, name = node.split("::", 1)
+              return (file.removesuffix(".py").replace("/", "."), name)
+
+          records = []
+
+          def run_cases(label, patch, nodes, expectations):
+              restore()
+              evidence = artifacts / label
+              evidence.mkdir()
+              env = os.environ.copy()
+              env["PYTHONPYCACHEPREFIX"] = tempfile.mkdtemp(
+                  prefix=f"rigctld-{label}-pycache-", dir=env["RUNNER_TEMP"]
+              )
+              env["PYTHONDONTWRITEBYTECODE"] = "1"
+              expected = {junit_key(node): message for node, message in expectations.items()}
+              assert len(expected) == len(expectations)
+              failures_expected = sum(message is not None for message in expected.values())
+              assert (len(expected), failures_expected) in {(52, 0), (5, 1)}
+              (evidence / "expected-cases.json").write_text(json.dumps([
+                  {"classname": key[0], "name": key[1], "failure_message_prefix": message}
+                  for key, message in sorted(expected.items())
+              ], indent=2))
+              (evidence / "pycache.txt").write_text(env["PYTHONPYCACHEPREFIX"] + "\n")
+              try:
+                  if patch is not None:
+                      file, old, new = patch
+                      Path(file).write_text(originals[file].decode().replace(old, new, 1))
+                  changed = subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+                  assert changed == ([] if patch is None else [patch[0]]), changed
+                  (evidence / "source.diff").write_bytes(subprocess.check_output(["git", "diff"]))
+                  command = [sys.executable, "-m", "pytest", "-q", "-o", "addopts=",
+                             "--tb=long", "--timeout=20", "--timeout-method=thread",
+                             f"--junitxml={evidence / 'junit.xml'}", *nodes]
+                  (evidence / "command.json").write_text(json.dumps(command, indent=2))
+                  with (evidence / "pytest.log").open("w") as log:
+                      result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=180)
+                  print((evidence / "pytest.log").read_text(), end="")
+                  (evidence / "pytest-exit.txt").write_text(str(result.returncode) + "\n")
+                  assert result.returncode == (1 if failures_expected else 0), (label, result.returncode)
+                  report = ET.parse(evidence / "junit.xml").getroot()
+                  cases = report.findall(".//testcase")
+                  actual = [(case.get("classname"), case.get("name")) for case in cases]
+                  assert len(actual) == len(set(actual)) == len(expected), (label, actual)
+                  assert set(actual) == set(expected), {
+                      "missing": sorted(set(expected) - set(actual)),
+                      "unexpected": sorted(set(actual) - set(expected)),
+                  }
+                  assert not report.findall(".//error"), (label, "setup/teardown error")
+                  assert not report.findall(".//skipped"), (label, "skipped case")
+                  for case in cases:
+                      key = (case.get("classname"), case.get("name"))
+                      message = expected[key]
+                      failures = case.findall("failure")
+                      if message is None:
+                          assert not failures, (label, key, "control/positive failed")
+                      else:
+                          assert len(failures) == 1, (label, key, "expected one CALL failure")
+                          actual_message = failures[0].get("message", "")
+                          assert actual_message.startswith("AssertionError: " + message), (label, key, actual_message)
+                  record = {"invocation": label, "cases": len(cases), "expected_failures": failures_expected}
+                  records.append(record)
+                  (evidence / "verdict.json").write_text(json.dumps({"status": "PASS", **record}, indent=2))
+              except BaseException as error:
+                  (evidence / "verdict.json").write_text(json.dumps({
+                      "status": "FAIL", "error": type(error).__name__, "detail": str(error)
+                  }, indent=2))
+                  raise
+              finally:
+                  restore()
+                  (evidence / "status-restored.txt").write_text(status())
+
+          try:
+              run_cases("baseline", None, selected, all_cases)
+              for name, file, old, new, target, message in mutants:
+                  expectations = {node: None for node in controls}
+                  expectations[target] = message
+                  run_cases(name, (file, old, new), [target, *controls], expectations)
+              run_cases("equivalent", equivalent, selected, all_cases)
+              run_cases("restored", None, selected, all_cases)
+              assert len(records) == 10 and sum(item["cases"] for item in records) == 191
+              (artifacts / "oracle.txt").write_text(
+                  "PASS: baseline52, seven isolated1FAIL+4PASS, equivalent52, restored52; zero errors/skips.\n"
+                  "Seven expected CALL assertions are mutation evidence, not product test failures.\n"
+              )
+          finally:
+              restore()
+              (artifacts / "completed-invocations.json").write_text(json.dumps(records, indent=2))
+          PY
+
+      - name: Record and require unchanged source
+        if: always() && steps.prepare.outcome == 'success'
         run: |
-          cd frontend
-          npm run check
+          git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/status-after.txt"
+          git diff --stat > "$ARTIFACT_DIR/source-diff-stat.txt"
+          test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
+          test ! -s "$ARTIFACT_DIR/status-after.txt"
 
-      - name: Frontend tests
-        run: |
-          cd frontend
-          npx vitest run
-
-      - name: Build frontend
-        run: |
-          cd frontend
-          npm run build
-          rm -f ../src/rigplane/web/static
-          mkdir -p ../src/rigplane/web/static
-          cp -r dist/* ../src/rigplane/web/static/
-
-      - name: Lint web boundary
-        run: uv run ruff check src/rigplane/web
-
-      - name: Type-check web boundary
-        run: uv run mypy --strict src/rigplane/web
-
-      - name: Lint architecture (import-linter)
-        run: uv run lint-imports
-
-      - name: Run tests
-        id: tests
-        run: |
-          # Without pipefail the pipe's exit status is tee's (always 0), so
-          # pytest failures were swallowed and the step reported success.
-          # Capture pytest's exit code via PIPESTATUS, extract the summary
-          # (still needed for the badge, including on failure), then exit
-          # with pytest's code so failing tests fail the step.
-          uv run pytest tests/ -n auto --tb=short --timeout=300 --timeout-method=thread \
-            | tee pytest-output.txt
-          rc=${PIPESTATUS[0]}
-          SUMMARY=$(tail -1 pytest-output.txt)
-          PASSED=$(echo "$SUMMARY" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          exit "$rc"
-
-      - name: Extract version
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main'
-        id: version
-        run: |
-          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('rigplane'))")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Update tests badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-tests.json
-          label: tests
-          message: "${{ steps.tests.outputs.passed }} passed"
-          color: ${{ steps.tests.outcome == 'success' && 'brightgreen' || 'red' }}
-
-      - name: Update version badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-version.json
-          label: version
-          message: "v${{ steps.version.outputs.version }}"
-          color: blue
-
-      - name: Update mypy badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-mypy.json
-          label: mypy
-          message: "0 errors"
-          color: blue
-
-  capture-harness:
-    # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
-    # capture (`frontend/fixtures/capture.mjs`) into CI. It ran in NO
-    # workflow before this. Deliberately a single dedicated job, NOT a
-    # matrix leg — the capture matrix is Python-version-independent (it
-    # only exercises the built frontend in a real browser), so multiplying
-    # it by matrix.python-version (3.11/3.12/3.13) would triple runner
-    # minutes for zero additional coverage.
-    #
-    # BLOCKING since MOR-1386 (v3 gate promotion, session-9): this job used
-    # to run `continue-on-error: true` for one cycle (MOR-1382); that cycle
-    # is closed — quick-leg green on PR #2286 run 31127603844, full-leg
-    # green on dispatched run 31137987620 (capture-harness green alongside
-    # the 3.11/3.12/3.13 matrix) — so the owner flipped it to blocking here.
-    # The browser/deps install step below fails loud on its own (no
-    # `|| true` masking) so a chromium provisioning failure reads as
-    # "Install deps + Playwright chromium" red, never as a fixtures
-    # regression in the `Run fixture-harness capture` step.
-    #
-    # Same push guard as the `test` job above: on `push`, only runs when
-    # the commit message contains `[full-ci]`; on `schedule`/
-    # `workflow_dispatch`, always runs. This keeps the job off every
-    # ordinary push to `main`.
-    if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
-    runs-on: [self-hosted, linux, build]
-    # Budget: ~45s once the Playwright browser cache is warm (npm ci +
-    # cached chromium + the capture matrix itself). 10 minutes is a
-    # generous ceiling for a cold cache / first run on a new runner image,
-    # not the expected steady-state duration.
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      # Read the LOCKFILE-RESOLVED exact version, not package.json's range.
-      # `devDependencies['@playwright/test']` is the string "^1.55.0", which
-      # resolves to 1.58.2 today: keying the cache on the range would let a
-      # lockfile-only Playwright bump hit the SAME key, restore the old
-      # browser, re-download the new one, and then skip the save (an exact
-      # key hit never re-saves) — permanently poisoning the cache it exists
-      # to populate.
-      - name: Resolve Playwright version
-        id: pw
-        run: |
-          cd frontend
-          echo "version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
-
-      # Playwright's own browser cache, keyed on the lockfile-resolved
-      # @playwright/test version (frontend/package-lock.json) — this is what
-      # "playwright install dominates" is about: a cache hit skips the
-      # ~100-200MB chromium download entirely and turns this job's dominant
-      # cost into the capture matrix run itself.
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        id: pw-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
-
-      # Fails loud on its own: no `|| true` masking. A chromium download or
-      # `npm ci` failure red-flags THIS step — reads as provisioning — and
-      # never reaches the capture step below.
-      - name: Install deps + Playwright chromium
-        run: |
-          cd frontend
-          npm ci
-          npx playwright install chromium
-
-      - name: Install Playwright Chromium system dependencies
-        working-directory: frontend
-        run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
-
-      # Blocking since MOR-1386 gate promotion — see the job header comment.
-      # The browser and system-dependency steps above fail loud on their own,
-      # so a red here means a fixture regression only.
-      - name: Run fixture-harness capture
-        id: capture
-        run: node frontend/fixtures/capture.mjs
-
-      # Always uploaded (not just on failure) — this is the MOR-1091
-      # "links to CI artifacts" deliverable: the manifest + PNGs need to be
-      # linkable from a passing run too, not only a failing one.
-      - name: Upload capture output
-        if: always()
+      - name: Upload diagnostic evidence
+        if: always() && steps.prepare.outputs.artifacts_dir != ''
         uses: actions/upload-artifact@v4
         with:
-          name: fixture-harness-capture
-          path: frontend/fixtures-baselines/
-          retention-days: 14
-
-      - name: Annotate result
-        if: always()
-        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
+          name: rigctld-actuator-mutations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.prepare.outputs.artifacts_dir }}
+          if-no-files-found: error
