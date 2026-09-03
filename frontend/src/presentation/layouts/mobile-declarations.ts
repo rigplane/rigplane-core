@@ -53,8 +53,6 @@ export const mobileLayout: LayoutManifest = {
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
   stageSizing: MOBILE_FLUID_SIZING,
-  // Terminal by construction: a fluid layout never fails a viewport, so a hop
-  // off mobile would be unreachable and would only mask a real failure.
   fallbackLayoutId: null,
 };
 

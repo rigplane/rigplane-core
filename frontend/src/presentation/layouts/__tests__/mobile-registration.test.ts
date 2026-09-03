@@ -62,15 +62,12 @@ describe('declared semantic zone (what the migrated mobile shell mounts)', () =>
 });
 
 describe('MOR-1160 sizing axis — mobile is the fluid side', () => {
-  // Kills: declaring mobile `fixed-native`. Mobile chrome reflows; it is not
-  // an instrument stage scaled as one letterboxed block, and a native stage
-  // here would make the phone shell fail its own minScale gate.
+  // Kills: declaring mobile `fixed-native`.
   it('declares fluid sizing with the one breakpoint the layout implements', () => {
     expect(mobileLayout.stageSizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [500] });
   });
 
-  // Kills: giving mobile a fallback it does not need. Mobile declares fluid
-  // sizing, so it has no viewport gate to fail.
+  // Kills: giving mobile a fallback it does not need.
   it('declares no fallback', () => {
     expect(mobileLayout.fallbackLayoutId).toBeNull();
   });
