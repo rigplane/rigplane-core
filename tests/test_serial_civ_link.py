@@ -857,3 +857,74 @@ async def test_set_device_rejects_while_connected(
             link.set_device("/dev/cu.usbserial-9931")
     finally:
         await link.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_stacked_retirement_joins_prior_before_current_close_error() -> None:
+    close_a, drain_b, close_b = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    error_a, error_b = OSError("close A failed"), OSError("close B failed")
+    writer_a = _FakeWriter(close_gate=close_a, close_error=error_a)
+    writer_b = _FakeWriter(
+        drain_gate=drain_b, resist_cancel=True, close_gate=close_b, close_error=error_b
+    )
+    newer = _FakeWriter()
+    link, _, _ = await _make_link(writer=writer_a)
+    worker_a = link._writer_task
+    assert worker_a is not None
+    first = asyncio.create_task(link.disconnect())
+    tasks = [first, worker_a]
+    try:
+        await asyncio.wait_for(writer_a.wait_closed_started.wait(), timeout=1)
+        assert worker_a.done()
+        assert link._retirement is not None
+        cleanup_a = link._retirement[1]
+        _install_replacement(link, writer_b)
+        worker_b = link._writer_task
+        assert worker_b is not None
+        tasks.append(worker_b)
+        await link.send(_ON)
+        await asyncio.wait_for(writer_b.drain_started.wait(), timeout=1)
+        second = asyncio.create_task(link.disconnect())
+        tasks.append(second)
+        await asyncio.wait_for(writer_b.close_called.wait(), timeout=1)
+        assert link._retirement is not None
+        cleanup_b = link._retirement[1]
+        assert cleanup_b is not cleanup_a
+        assert not worker_b.done()
+        assert not cleanup_b.done()
+        joiner = asyncio.create_task(link.disconnect())
+        tasks.append(joiner)
+        drain_b.set()
+        await asyncio.wait_for(writer_b.wait_closed_started.wait(), timeout=1)
+        assert worker_b.done()
+        close_b.set()
+        await asyncio.sleep(0)
+        assert not cleanup_a.done()
+        assert not cleanup_b.done(), "current retirement skipped its predecessor"
+        assert not first.done()
+        assert not second.done()
+        assert not joiner.done()
+        _install_replacement(link, newer)
+        new_worker, new_queue = link._writer_task, link._write_queue
+        close_a.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(first, second, joiner, return_exceptions=True), timeout=1
+        )
+        assert results[0] is error_a
+        assert results[1] is error_b, "prior close error replaced current close error"
+        assert results[2] is error_b
+        assert cleanup_a.done()
+        assert cleanup_b.done()
+        assert link._writer is newer
+        assert link._writer_task is new_worker
+        assert link._write_queue is new_queue
+        assert not newer.closed
+        assert link.ready
+        await asyncio.wait_for(link.send_written(_OFF), timeout=1)
+        assert writer_a.writes == []
+        assert writer_b.writes == [_wire(_ON)]
+        assert newer.writes == [_wire(_OFF)]
+    finally:
+        await asyncio.wait_for(
+            _cleanup_writes(link, tasks, writer_a, writer_b, newer), timeout=1
+        )
