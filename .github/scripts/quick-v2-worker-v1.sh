@@ -23,17 +23,8 @@ if [[ "$core" != true && "$frontend" != true && "$ci" != true ]]; then
   exit 2
 fi
 
-critical_controls=(
-  .github/scripts/agent-review-gate.js
-  .github/scripts/base-controlled-gates-v1.test.js
-  .github/scripts/base-gate-policy-v1.js
-  .github/scripts/quick-v2-worker-v1.sh
-  .github/workflows/agent-review-gate-v2.yml
-  .github/workflows/quick-v2.yml
-)
-for path in "${critical_controls[@]}"; do
-  cmp -- "$control_root/$path" "$target_root/$path"
-done
+"$control_root/.github/scripts/verify-immutable-controls-v1.sh" \
+  "$control_root" "$target_root"
 
 if [[ "$ci" == true ]]; then
   node --test "$control_root/.github/scripts/agent-review-gate.test.js"

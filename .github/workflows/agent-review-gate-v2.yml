@@ -1,4 +1,4 @@
-name: Agent Review Gate v2 base-controlled
+name: Agent Review Gate v2 observation
 
 on:
   pull_request_target:
@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   publish:
-    name: Trusted review result publisher
+    name: Trusted review observation publisher
     if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -35,7 +35,7 @@ jobs:
               if (/^[0-9a-f]{40}$/u.test(headSha)) {
                 await github.rest.repos.createCommitStatus({
                   owner, repo, sha: headSha, state: 'failure',
-                  context: 'Agent Review Gate v2', description,
+                  context: 'Agent Review Gate v2 observe', description,
                   target_url: targetUrl,
                 });
               }
@@ -48,6 +48,15 @@ jobs:
               const baseSha = initialPull.base.sha;
               if (!/^[0-9a-f]{40}$/u.test(headSha) || !/^[0-9a-f]{40}$/u.test(baseSha)) {
                 throw new Error('pull request head or base is not an exact SHA');
+              }
+              if (initialPull.base.ref !== 'main') {
+                throw new Error('observation controller only accepts the main base branch');
+              }
+              const {data: baseBranch} = await github.rest.repos.getBranch({
+                owner, repo, branch: initialPull.base.ref,
+              });
+              if (baseBranch.commit.sha !== baseSha) {
+                throw new Error('pull request base is not the current main head');
               }
               const [{data: commit}, comments, {data: parserFile}] = await Promise.all([
                 github.rest.repos.getCommit({owner, repo, ref: headSha}),
@@ -84,21 +93,26 @@ jobs:
               const status = buildCommitStatus({
                 owner, repo, headSha, targetUrl, result,
               });
-              status.context = 'Agent Review Gate v2';
+              status.context = 'Agent Review Gate v2 observe';
 
-              const {data: currentPull} = await github.rest.pulls.get({
-                owner, repo, pull_number: pullNumber,
-              });
-              if (currentPull.head.sha !== headSha || currentPull.base.sha !== baseSha) {
+              const [{data: currentPull}, {data: currentBase}] = await Promise.all([
+                github.rest.pulls.get({owner, repo, pull_number: pullNumber}),
+                github.rest.repos.getBranch({owner, repo, branch: 'main'}),
+              ]);
+              if (
+                currentPull.head.sha !== headSha ||
+                currentPull.base.sha !== baseSha ||
+                currentBase.commit.sha !== baseSha
+              ) {
                 status.state = 'failure';
-                status.description = 'PR head or base changed during review evaluation.';
+                status.description = 'PR head or current main changed during review observation.';
               }
               await github.rest.repos.createCommitStatus(status);
               if (status.state !== 'success') {
-                core.notice(`Agent Review Gate v2 denied: ${result.passCount} PASS, ${result.blockedCount} BLOCKED, ${result.malformedBlockedCount} malformed BLOCKED.`);
+                core.notice(`Agent Review Gate v2 observation denied: ${result.passCount} PASS, ${result.blockedCount} BLOCKED, ${result.malformedBlockedCount} malformed BLOCKED.`);
               }
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
-              await publishFailure('Agent Review Gate v2 evaluation failed closed.');
-              core.setFailed(`Agent Review Gate v2 evaluation failed closed: ${message}`);
+              await publishFailure('Agent Review Gate v2 observation evaluation failed closed.');
+              core.setFailed(`Agent Review Gate v2 observation evaluation failed closed: ${message}`);
             }

@@ -1,7 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -15,7 +17,7 @@ function readTarget(relative) {
   return fs.readFileSync(path.join(TARGET_ROOT, relative), 'utf8');
 }
 
-function topologyErrors({quick, review, worker}) {
+function topologyErrors({quick, review, worker, migration}) {
   const errors = [];
   if (!quick.includes('\n  pull_request_target:\n') || quick.includes('\n  pull_request:\n')) {
     errors.push('quick controller must use only pull_request_target');
@@ -37,11 +39,11 @@ function topologyErrors({quick, review, worker}) {
   if (!review.includes("path: '.github/scripts/agent-review-gate.js', ref: baseSha")) {
     errors.push('review controller must fetch parser at exact base SHA');
   }
-  if (!quick.includes("context: 'quick-v2'")) {
-    errors.push('quick controller must publish only the v2 context');
+  if (!quick.includes("context: 'quick-v2-observe'")) {
+    errors.push('quick controller must publish only the observation context');
   }
-  if (!review.includes("context: 'Agent Review Gate v2'")) {
-    errors.push('review controller must publish only the v2 context');
+  if (!review.includes("context: 'Agent Review Gate v2 observe'")) {
+    errors.push('review controller must publish only the observation context');
   }
   if (!quick.includes('name: Read-only quick v2 worker')) {
     errors.push('quick controller must retain the isolated worker');
@@ -69,16 +71,27 @@ function topologyErrors({quick, review, worker}) {
   if (!workerJob.includes('rev-list --parents -n 1 HEAD')) {
     errors.push('worker must bind the merge commit to exact parents');
   }
-  for (const critical of [
-    '.github/scripts/agent-review-gate.js',
-    '.github/scripts/base-controlled-gates-v1.test.js',
-    '.github/scripts/base-gate-policy-v1.js',
-    '.github/scripts/quick-v2-worker-v1.sh',
-    '.github/workflows/agent-review-gate-v2.yml',
-    '.github/workflows/quick-v2.yml',
+  if (
+    !quick.includes("initialPull.head.repo?.full_name === `${owner}/${repo}`") ||
+    !workerJob.includes("needs.admit.outputs.same_repo == 'true'") ||
+    (quick.match(/currentBase\.commit\.sha !== baseSha/gu) ?? []).length !== 2
+  ) {
+    errors.push('quick observation must withhold forks and reject stale main');
+  }
+  if (!review.includes('currentBase.commit.sha !== baseSha')) {
+    errors.push('review observation must reject stale main');
+  }
+  if (!worker.includes('.github/scripts/verify-immutable-controls-v1.sh')) {
+    errors.push('worker must invoke the Git-object immutable-control verifier');
+  }
+  for (const requiredText of [
+    'must never be configured as required checks',
+    'distinct from GitHub Actions app ID `15368`',
+    '"strict": true',
+    'switch protection back to the still-running legacy contexts **before**',
   ]) {
-    if (!worker.includes(critical)) {
-      errors.push(`immutable worker manifest is missing ${critical}`);
+    if (!migration.includes(requiredText)) {
+      errors.push(`migration contract is missing: ${requiredText}`);
     }
   }
   return errors;
@@ -132,6 +145,7 @@ test('candidate v2 topology retains base control and isolated permissions', () =
     quick: readTarget('.github/workflows/quick-v2.yml'),
     review: readTarget('.github/workflows/agent-review-gate-v2.yml'),
     worker: readTarget('.github/scripts/quick-v2-worker-v1.sh'),
+    migration: readTarget('docs/internals/base-controlled-required-gates.md'),
   };
   assert.deepEqual(topologyErrors(sources), []);
 });
@@ -141,6 +155,7 @@ test('topology contract catches self-green workflow and helper mutations', () =>
     quick: readTarget('.github/workflows/quick-v2.yml'),
     review: readTarget('.github/workflows/agent-review-gate-v2.yml'),
     worker: readTarget('.github/scripts/quick-v2-worker-v1.sh'),
+    migration: readTarget('docs/internals/base-controlled-required-gates.md'),
   };
   const workerStart = sources.quick.indexOf('  worker:\n');
   const writeEnabledWorker =
@@ -155,9 +170,63 @@ test('topology contract catches self-green workflow and helper mutations', () =>
     {...sources, quick: sources.quick.replace('persist-credentials: false', 'persist-credentials: true')},
     {...sources, quick: writeEnabledWorker},
     {...sources, review: sources.review.replace('ref: baseSha', 'ref: github.workflow_sha')},
-    {...sources, worker: sources.worker.replace('.github/workflows/quick-v2.yml', '.github/workflows/quick.yml')},
+    {...sources, worker: sources.worker.replace('verify-immutable-controls-v1.sh', 'true')},
+    {...sources, quick: sources.quick.replace("needs.admit.outputs.same_repo == 'true'", 'true')},
+    {...sources, quick: sources.quick.replace('currentBase.commit.sha !== baseSha', 'false')},
+    {...sources, migration: sources.migration.replace('"strict": true', '"strict": false')},
   ];
   for (const mutant of mutants) {
     assert.notDeepEqual(topologyErrors(mutant), []);
+  }
+});
+
+test('immutable-control verifier rejects chmod and symlink mutations', () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'rigplane-gate-mode-'));
+  const trusted = path.join(sandbox, 'trusted');
+  const target = path.join(sandbox, 'target');
+  const critical = [
+    '.github/scripts/agent-review-gate.js',
+    '.github/scripts/base-controlled-gates-v1.test.js',
+    '.github/scripts/base-gate-policy-v1.js',
+    '.github/scripts/quick-v2-worker-v1.sh',
+    '.github/scripts/verify-immutable-controls-v1.sh',
+    '.github/workflows/agent-review-gate-v2.yml',
+    '.github/workflows/quick-v2.yml',
+  ];
+  const git = (repo, ...args) => childProcess.execFileSync(
+    'git', ['-C', repo, ...args], {stdio: 'ignore'},
+  );
+  const commit = (repo, message) => {
+    git(repo, 'add', '-A');
+    git(repo, '-c', 'user.name=Gate Contract', '-c', 'user.email=gate@example.invalid', 'commit', '-m', message);
+  };
+  try {
+    for (const repo of [trusted, target]) {
+      fs.mkdirSync(repo, {recursive: true});
+      git(repo, 'init');
+      for (const relative of critical) {
+        const destination = path.join(repo, relative);
+        fs.mkdirSync(path.dirname(destination), {recursive: true});
+        fs.copyFileSync(path.join(CONTROL_ROOT, relative), destination);
+        fs.chmodSync(destination, relative.endsWith('.sh') ? 0o755 : 0o644);
+      }
+      commit(repo, 'trusted controls');
+    }
+    const verifier = path.join(CONTROL_ROOT, '.github/scripts/verify-immutable-controls-v1.sh');
+    childProcess.execFileSync(verifier, [trusted, target], {stdio: 'ignore'});
+
+    const parser = path.join(target, '.github/scripts/agent-review-gate.js');
+    fs.chmodSync(parser, 0o755);
+    commit(target, 'chmod mutation');
+    assert.throws(() => childProcess.execFileSync(verifier, [trusted, target], {stdio: 'ignore'}));
+
+    git(target, 'checkout', 'HEAD^', '--', '.');
+    commit(target, 'restore controls');
+    fs.unlinkSync(parser);
+    fs.symlinkSync('base-gate-policy-v1.js', parser);
+    commit(target, 'symlink mutation');
+    assert.throws(() => childProcess.execFileSync(verifier, [trusted, target], {stdio: 'ignore'}));
+  } finally {
+    fs.rmSync(sandbox, {recursive: true, force: true});
   }
 });

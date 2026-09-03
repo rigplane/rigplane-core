@@ -1,4 +1,4 @@
-name: Tests (quick v2 base-controlled)
+name: Tests (quick v2 observation)
 
 on:
   pull_request_target:
@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   admit:
-    name: Trusted quick admission
+    name: Trusted quick observation admission
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
@@ -27,6 +27,7 @@ jobs:
       ci: ${{ steps.admit.outputs.ci }}
       docs: ${{ steps.admit.outputs.docs }}
       ready: ${{ steps.admit.outputs.ready }}
+      same_repo: ${{ steps.admit.outputs.same_repo }}
     steps:
       - name: Capture exact PR state with trusted base policy
         id: admit
@@ -40,7 +41,7 @@ jobs:
             const publish = async (state, description) => {
               if (/^[0-9a-f]{40}$/u.test(headSha)) {
                 await github.rest.repos.createCommitStatus({
-                  owner, repo, sha: headSha, state, context: 'quick-v2',
+                  owner, repo, sha: headSha, state, context: 'quick-v2-observe',
                   description, target_url: targetUrl,
                 });
               }
@@ -51,9 +52,21 @@ jobs:
               });
               headSha = initialPull.head.sha;
               const baseSha = initialPull.base.sha;
+              if (initialPull.base.ref !== 'main') {
+                throw new Error('observation controller only accepts the main base branch');
+              }
+              const {data: baseBranch} = await github.rest.repos.getBranch({
+                owner, repo, branch: initialPull.base.ref,
+              });
+              if (baseBranch.commit.sha !== baseSha) {
+                throw new Error('pull request base is not the current main head');
+              }
+              const sameRepo = initialPull.head.repo?.full_name === `${owner}/${repo}`;
               await publish('pending', initialPull.draft
                 ? 'Waiting for the pull request to become ready.'
-                : 'Trusted base controller admitted this exact PR state.');
+                : sameRepo
+                  ? 'Trusted base observation admitted this exact PR state.'
+                  : 'Fork observation is metadata-only; worker execution is withheld.');
 
               const files = await github.paginate(github.rest.pulls.listFiles, {
                 owner, repo, pull_number: pullNumber, per_page: 100,
@@ -84,10 +97,15 @@ jobs:
               assertSha(baseSha, 'base');
               const routes = classifyPullFiles(files, initialPull.changed_files);
 
-              const {data: currentPull} = await github.rest.pulls.get({
-                owner, repo, pull_number: pullNumber,
-              });
-              if (currentPull.head.sha !== headSha || currentPull.base.sha !== baseSha) {
+              const [{data: currentPull}, {data: currentBase}] = await Promise.all([
+                github.rest.pulls.get({owner, repo, pull_number: pullNumber}),
+                github.rest.repos.getBranch({owner, repo, branch: 'main'}),
+              ]);
+              if (
+                currentPull.head.sha !== headSha ||
+                currentPull.base.sha !== baseSha ||
+                currentBase.commit.sha !== baseSha
+              ) {
                 throw new Error('pull request head or base changed during admission');
               }
               const outputs = {
@@ -99,6 +117,7 @@ jobs:
                 ci: String(routes.ci),
                 docs: String(routes.docs),
                 ready: String(!initialPull.draft),
+                same_repo: String(sameRepo),
               };
               for (const [name, value] of Object.entries(outputs)) {
                 core.setOutput(name, value);
@@ -115,7 +134,8 @@ jobs:
     if: >-
       needs.admit.result == 'success' &&
       needs.admit.outputs.ready == 'true' &&
-      needs.admit.outputs.docs != 'true'
+      needs.admit.outputs.docs != 'true' &&
+      needs.admit.outputs.same_repo == 'true'
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
     permissions:
@@ -160,7 +180,7 @@ jobs:
         if: always() && needs.admit.outputs.frontend == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: quick-v2-frontend-${{ needs.admit.outputs.head_sha }}
+          name: quick-v2-observe-frontend-${{ needs.admit.outputs.head_sha }}
           path: |
             target/frontend/tests/e2e/i18n/.output/
             target/frontend/playwright-report/
@@ -169,16 +189,17 @@ jobs:
           retention-days: 14
 
   publish:
-    name: Trusted quick result publisher
+    name: Trusted quick observation publisher
     needs: [admit, worker]
     if: always() && needs.admit.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
+      contents: read
       pull-requests: read
       statuses: write
     steps:
-      - name: Publish exact-head quick-v2 status
+      - name: Publish exact-head quick-v2-observe status
         uses: actions/github-script@v7
         env:
           PULL_NUMBER: ${{ needs.admit.outputs.pull_number }}
@@ -186,6 +207,7 @@ jobs:
           ADMITTED_BASE: ${{ needs.admit.outputs.base_sha }}
           READY: ${{ needs.admit.outputs.ready }}
           DOCS: ${{ needs.admit.outputs.docs }}
+          SAME_REPO: ${{ needs.admit.outputs.same_repo }}
           WORKER_RESULT: ${{ needs.worker.result }}
         with:
           script: |
@@ -194,16 +216,23 @@ jobs:
             const headSha = process.env.ADMITTED_HEAD;
             const baseSha = process.env.ADMITTED_BASE;
             const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const {data: currentPull} = await github.rest.pulls.get({
-              owner, repo, pull_number: pullNumber,
-            });
+            const [{data: currentPull}, {data: currentBase}] = await Promise.all([
+              github.rest.pulls.get({owner, repo, pull_number: pullNumber}),
+              github.rest.repos.getBranch({owner, repo, branch: 'main'}),
+            ]);
             let state = 'failure';
-            let description = 'Quick v2 failed closed.';
-            if (currentPull.head.sha !== headSha || currentPull.base.sha !== baseSha) {
-              description = 'PR head or base changed after quick-v2 admission.';
+            let description = 'Quick v2 observation failed closed.';
+            if (
+              currentPull.head.sha !== headSha ||
+              currentPull.base.sha !== baseSha ||
+              currentBase.commit.sha !== baseSha
+            ) {
+              description = 'PR head or current main changed after quick-v2 observation admission.';
             } else if (process.env.READY !== 'true') {
               state = 'pending';
               description = 'Waiting for the pull request to become ready.';
+            } else if (process.env.SAME_REPO !== 'true') {
+              description = 'Fork code was not executed on the shared self-hosted worker.';
             } else if (process.env.DOCS === 'true') {
               state = 'success';
               description = 'Trusted base policy selected documentation-only review.';
@@ -214,7 +243,7 @@ jobs:
               description = `Base-controlled quick carrier ended ${process.env.WORKER_RESULT}.`;
             }
             await github.rest.repos.createCommitStatus({
-              owner, repo, sha: headSha, state, context: 'quick-v2',
+              owner, repo, sha: headSha, state, context: 'quick-v2-observe',
               description, target_url: targetUrl,
             });
             if (state === 'failure') {
