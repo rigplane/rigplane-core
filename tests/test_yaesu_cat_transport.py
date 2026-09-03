@@ -243,9 +243,7 @@ class TestYaesuCatTransport:
         )
         transport = YaesuCatTransport(device="/dev/test")
         await transport.connect()
-        monkeypatch.setattr(
-            transport, "_drain_responses", AsyncMock(return_value=0)
-        )
+        monkeypatch.setattr(transport, "_drain_responses", AsyncMock(return_value=0))
         monkeypatch.setattr(transport, "readline", AsyncMock(return_value="MD02"))
 
         active = asyncio.create_task(transport.write("FA000000001;"))
@@ -286,9 +284,7 @@ class TestYaesuCatTransport:
         )
         transport = YaesuCatTransport(device="/dev/test")
         await transport.connect()
-        monkeypatch.setattr(
-            transport, "_drain_responses", AsyncMock(return_value=0)
-        )
+        monkeypatch.setattr(transport, "_drain_responses", AsyncMock(return_value=0))
 
         active = asyncio.create_task(transport.write("FA000000001;"))
         await asyncio.wait_for(writer.first_drain_entered.wait(), 1)

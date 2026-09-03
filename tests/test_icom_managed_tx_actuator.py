@@ -64,8 +64,9 @@ def test_icom_radio_satisfies_managed_tx_actuator_protocol() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
-) -> None:
+async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane() -> (
+    None
+):
     radio = _profile_bound_radio()
     radio._send_civ_raw = AsyncMock(return_value=None)
 
@@ -158,6 +159,7 @@ async def test_commander_propagates_currency_to_final_executor() -> None:
 
     def current() -> bool:
         return True
+
     commander.start()
     try:
         await commander.send(b"managed", is_current=current)

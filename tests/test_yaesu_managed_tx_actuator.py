@@ -75,8 +75,9 @@ async def test_managed_on_uses_profile_ptt_and_propagates_currency(
 
 
 @pytest.mark.asyncio
-async def test_force_receive_uses_urgent_profile_ptt_without_claiming_observation(
-) -> None:
+async def test_force_receive_uses_urgent_profile_ptt_without_claiming_observation() -> (
+    None
+):
     radio = _profile_radio()
     radio.radio_state.ptt = True
 
