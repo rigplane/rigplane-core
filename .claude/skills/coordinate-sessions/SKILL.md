@@ -21,7 +21,8 @@ leave to the coordinator.
 
 ## Roles
 
-- **Coordinator (you).** Plan, dispatch, relay verdicts, merge. Do not
+- **Coordinator (you).** Plan, dispatch implementation, receive immutable
+  review packets, merge. Do not
   implement: EXECUTE is dispatched to `builder`, never self-served, because
   writing the code makes you author and first reviewer at once (CLAUDE.md
   §Agent working rules — The pipeline). The owner has carved out three things
@@ -35,7 +36,6 @@ leave to the coordinator.
   to grade documentation, comments, changelog rows or PR-body prose. Its own
   rules already block on defects *inside* the diff and return PASS with a
   named correction for a false claim in a PR body, comment or commit message.
-  It never posts: it stages the verdict as text and you relay it.
 - **`scout`, `researcher`, `auditor`** — read-only, per `.claude/agents/`.
 - The author never reviews, and **you are an author too**: the dispatch brief
   is your claim about the code, not the code. Brief the verifier against the
@@ -95,8 +95,9 @@ whose commit changed the tree being compared, valid only while `git diff
 §Agent working rules). One tree state, one instrument.
 
 Then: push → `gh pr create --draft` → `quick` runs on the PR → `gh pr ready` →
-dispatch `verifier` → relay its verdict → confirm required checks green at the
-exact head → merge → remove the worktree.
+the implementation or integration owner directly dispatches a fresh independent
+review on the final candidate → receive its immutable packet → confirm required
+checks green at the exact head → merge → remove the worktree.
 
 - There is no window before the PR: `quick.yml` triggers only on push/PR to
   `main`, so a pushed branch has no run of its own until a PR exists.
@@ -136,6 +137,23 @@ means FAILED with a classification (CLAUDE.md §Failure handling). A third
 round is the owner's call, not yours and not the peer's. Ask before the round
 starts, not after the BLOCKED has been handed back, and scope the request to
 the delta the round would cover rather than to a re-review of the whole PR.
+
+## Direct review dispatch
+
+The implementation or integration owner directly dispatches a fresh independent
+review subagent on the final candidate. The coordinator is not a relay for
+starting or shepherding each review. The coordinator receives only the
+immutable result packet: PR, exact SHA, verdict URL, checks found, merge
+readiness/status, and any blocker requiring an ownership or scope decision.
+
+The reviewer consolidates all parallel code, contract, body, and evidence
+findings into one verdict instead of dripping findings across cycles. Apply one
+batched correction, then run one fresh final exact-head review. After two
+correction-to-review cycles, stop; a third requires an explicit owner
+decision/override. Complete test-only or proof corrections before final review
+where possible, and do not rerun a suite solely for review or metrics. An
+exact-head PASS remains required, and the reviewer must be independent of the
+author.
 
 ## Guardrail exceptions
 
