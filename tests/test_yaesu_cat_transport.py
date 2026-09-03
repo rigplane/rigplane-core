@@ -177,6 +177,44 @@ class TestYaesuCatTransport:
 
         assert writer.written == [b"CT002;"]
 
+    @pytest.mark.parametrize("failure_stage", ["writer-drain", "response-drain"])
+    async def test_write_propagates_io_failure_without_resetting_error_count(
+        self,
+        mock_serial_connection: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        failure_stage: str,
+    ) -> None:
+        reader = FakeStreamReader([])
+        writer = FakeStreamWriter()
+        io_error = OSError("serial I/O failed")
+        failed_io = AsyncMock(side_effect=io_error)
+        if failure_stage == "writer-drain":
+            monkeypatch.setattr(writer, "drain", failed_io)
+            error_prefix = "Write"
+        else:
+            monkeypatch.setattr(reader, "readuntil", failed_io)
+            error_prefix = "Read"
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+
+        with pytest.raises(
+            CatTransportError, match=f"{error_prefix} failed: serial I/O failed"
+        ) as caught:
+            await transport.write("TX0;")
+
+        assert type(caught.value) is CatTransportError
+        assert caught.value.__cause__ is io_error
+        assert writer.written == [b"TX0;"]
+        failed_io.assert_awaited_once()
+        assert transport.stats.errors == 1
+        assert transport.stats.consecutive_errors == 1
+        assert transport.stats.timeouts == 0
+        assert transport.stats.writes == (0 if failure_stage == "writer-drain" else 1)
+
     async def test_readline_returns_response_without_terminator(
         self, mock_serial_connection: Any
     ) -> None:
