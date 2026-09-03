@@ -249,3 +249,49 @@ describe('the native canvas is declared exactly once in production source (ADR �
     expect(readFileSync(file, 'utf8')).not.toMatch(NATIVE_CANVAS_LITERAL);
   });
 });
+
+// MOR-2253 slice 1 F1 (verifier BLOCKED, fixed in b994382e): `fixtures/
+// main.ts` mounts `PeerSplitLayout` directly, the harness's own registration
+// path outside every inventory test and outside both tsconfigs — it has no
+// automated guard at all, and its correctness rested on two manual browser
+// measurements. This pin closes that: a textual check that the mount
+// sources canvasW/canvasH from `peerSplitGlassGroup`, never from a literal,
+// since a literal here is exactly what would be invisible to the "declared
+// once" contour scan above (`fixtures/` sits outside `src/`, where that scan
+// roots).
+describe('the fixture harness sources the peer-split canvas from the group (ADR §4 / F1)', () => {
+  // Comments stripped first — same idiom as `presentation/workspace/
+  // __tests__/purity.isolated.test.ts: code()` and `skins/segmentline/
+  // __tests__/PeerSplitLayout.component.test.ts`'s CSS stripper: a naive
+  // text search would match a comment DESCRIBING the sourcing rule instead
+  // of code that actually obeys it — the exact class of mistake that pulled
+  // `LcdLayout.svelte` into this file's own derived contour two cycles ago.
+  const fixtureSource = readFileSync('fixtures/main.ts', 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  // Narrowed to the `mount(PeerSplitLayout, ...)` call itself, not the whole
+  // file: a `1280`/`540` written for an unrelated reason elsewhere in this
+  // file (there is none today, but nothing stops one) must not mask what
+  // this call site actually passes.
+  const mountCall = fixtureSource.match(/mount\(PeerSplitLayout[\s\S]*?\}\);/)?.[0];
+
+  it('sources canvasW/canvasH from peerSplitGlassGroup.canvas, never a literal', () => {
+    // Kills: the `mount(PeerSplitLayout, ...)` call site disappearing or
+    // being renamed past what this pin's own regex recognizes — silent
+    // green from a pin that stopped finding anything would be worse than a
+    // loud failure.
+    expect(mountCall, 'no mount(PeerSplitLayout, ...) call found in fixtures/main.ts').toBeDefined();
+    // Kills: MUTATION 1 (verifier-specified) — dropping `props` from that
+    // mount call entirely, reproducing the exact defect a verifier caught
+    // live (canvasW/canvasH undefined, ScaledStage's guard cannot catch NaN).
+    expect(mountCall).toMatch(/canvasW:\s*peerSplitGlassGroup\.canvas\.w\b/);
+    expect(mountCall).toMatch(/canvasH:\s*peerSplitGlassGroup\.canvas\.h\b/);
+    // Kills: MUTATION 2 (verifier-specified, "the one that matters") —
+    // reverting the sourced values to literals (`canvasW: 1280, canvasH:
+    // 540`). Already implied by the two matches above failing to match a
+    // literal, but checked directly here too, as its own named condition
+    // with its own failure mode: a literal at this call site is precisely
+    // what the "declared once" guard above cannot see.
+    expect(mountCall).not.toMatch(/\b1280\b|\b540\b/);
+  });
+});
