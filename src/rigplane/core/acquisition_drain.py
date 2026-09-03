@@ -16,6 +16,13 @@ Injected, because the seats differ deliberately:
 
 The reporting hooks are injected for the same reason: the seats record
 different diagnostic sources and different executor-failure reasons.
+
+Two hooks are optional, and rigctld injects neither. ``report_expiry`` lets
+a seat report a fired deadline itself and answer whether the request is
+finished with: MOR-874's healthy-link grace holds a web request in flight so
+a late answer can still credit it, where rigctld's every timeout is
+terminal. ``on_forget`` names the request ids the drain drops from the
+ledger, which is what keeps the web seat's grace clock from outliving them.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ from .state_store import StateStore
 __all__ = [
     "AcquisitionDrain",
     "AcquisitionExpiryPolicy",
+    "AcquisitionExpiryReport",
     "InFlightLedger",
 ]
 
@@ -90,6 +98,19 @@ class AcquisitionExecutorErrorReport(Protocol):
     ) -> None: ...
 
 
+class AcquisitionExpiryReport(Protocol):
+    """Report one fired deadline; return whether it ends the request."""
+
+    def __call__(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> bool: ...
+
+
 class AcquisitionSentReport(Protocol):
     def __call__(
         self,
@@ -118,6 +139,8 @@ class AcquisitionDrain:
         report_executor_missing: AcquisitionExecutorMissingReport,
         report_executor_error: AcquisitionExecutorErrorReport,
         report_sent: AcquisitionSentReport,
+        report_expiry: AcquisitionExpiryReport | None = None,
+        on_forget: Callable[[str], None] | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._executor = executor
@@ -129,6 +152,36 @@ class AcquisitionDrain:
         self._report_executor_missing = report_executor_missing
         self._report_executor_error = report_executor_error
         self._report_sent = report_sent
+        self._report_expiry = report_expiry
+        self._on_forget = on_forget
+
+    def _forget(self, request_id: str) -> None:
+        """Drop one ledger entry and tell the seat it is gone."""
+
+        self._in_flight.pop(request_id, None)
+        if self._on_forget is not None:
+            self._on_forget(request_id)
+
+    def _expiry_is_terminal(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> bool:
+        if self._report_expiry is not None:
+            return self._report_expiry(
+                scheduler, request, sent_paths=sent_paths, now=now
+            )
+        self._report_failure(
+            scheduler,
+            request,
+            reason="acquisition_request_timeout",
+            failed_paths=sent_paths or frozenset(request.paths),
+            now=now,
+        )
+        return True
 
     async def run_once(self) -> None:
         scheduler = self._scheduler()
@@ -149,7 +202,7 @@ class AcquisitionDrain:
         pending_ids = {request.id for request in pending}
         for request_id in tuple(self._in_flight):
             if request_id not in pending_ids:
-                del self._in_flight[request_id]
+                self._forget(request_id)
 
         # Eligibility is asked once per pass, over the unfiltered pending view
         # above: a request the seat declines to send is still pending, and its
@@ -160,15 +213,14 @@ class AcquisitionDrain:
             if existing is not None:
                 sent_paths, sent_at = existing
                 if self._expired(request, sent_at=sent_at, now=now):
-                    self._report_failure(
-                        scheduler,
-                        request,
-                        reason="acquisition_request_timeout",
-                        failed_paths=sent_paths or frozenset(request.paths),
-                        now=now,
-                    )
-                    self._in_flight.pop(request.id, None)
-                    continue
+                    # A seat may hold the request in flight instead (MOR-874).
+                    # Falling through then re-sends only what never went out,
+                    # which is what the intersection below leaves.
+                    if self._expiry_is_terminal(
+                        scheduler, request, sent_paths=sent_paths, now=now
+                    ):
+                        self._forget(request.id)
+                        continue
                 sent_paths = sent_paths.intersection(request.paths)
 
             if all(path in sent_paths for path in request.paths):
@@ -194,7 +246,7 @@ class AcquisitionDrain:
                     sent_paths=sent_paths,
                     now=now,
                 )
-                self._in_flight.pop(request.id, None)
+                self._forget(request.id)
                 continue
 
             failed_paths = tuple(result.failed_paths)

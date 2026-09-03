@@ -102,11 +102,28 @@ class _StubExecutor:
 class _Reports:
     """Collects everything the drain hands back to its seat."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, expiry_is_terminal: bool = True) -> None:
         self.failures: list[tuple[str, str, frozenset[FieldPath]]] = []
         self.executor_missing: list[str] = []
         self.executor_errors: list[tuple[str, str]] = []
         self.sent: list[tuple[str, tuple[FieldPath, ...], int]] = []
+        self.expiries: list[tuple[str, frozenset[FieldPath]]] = []
+        self.forgotten: list[str] = []
+        self._expiry_is_terminal = expiry_is_terminal
+
+    def expiry(
+        self,
+        scheduler: Any,
+        request: AcquisitionRequest,
+        *,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> bool:
+        self.expiries.append((request.id, sent_paths))
+        return self._expiry_is_terminal
+
+    def forget(self, request_id: str) -> None:
+        self.forgotten.append(request_id)
 
     def failure(
         self,
@@ -153,6 +170,7 @@ def _drain(
     in_flight: dict[str, tuple[frozenset[FieldPath], float]] | None = None,
     executor: _StubExecutor | None = None,
     dispatchable: Any = None,
+    seat_expiry: bool = False,
 ) -> AcquisitionDrain:
     return AcquisitionDrain(
         scheduler=lambda: cast(Any, scheduler),
@@ -165,6 +183,8 @@ def _drain(
         report_executor_missing=reports.missing,
         report_executor_error=reports.error,
         report_sent=reports.sent_report,
+        report_expiry=reports.expiry if seat_expiry else None,
+        on_forget=reports.forget,
     )
 
 
@@ -359,3 +379,172 @@ class TestAcquisitionDrainLedger:
         await drain.run_once()
 
         assert scheduler.tx_active_calls == [False]
+
+
+class TestAcquisitionDrainSeatOwnedExpiry:
+    """The non-terminal expiry seam, whose caller is MOR-874's grace (3b).
+
+    A seat may report a fired deadline itself and say the request is not
+    finished with: the web poller holds a healthy-link expiry in flight so a
+    late answer can still credit it. A seat that injects no ``report_expiry``
+    keeps the terminal rule pinned in ``TestAcquisitionDrainExpiry``.
+    """
+
+    async def test_a_non_terminal_expiry_keeps_the_ledger_entry(self) -> None:
+        request = _request()
+        scheduler = _StubScheduler((request,))
+        reports = _Reports(expiry_is_terminal=False)
+        in_flight = {request.id: (frozenset({_FREQ}), 10.0)}
+        executor = _StubExecutor()
+        drain = _drain(
+            scheduler=scheduler,
+            reports=reports,
+            expired=_always_expired,
+            in_flight=in_flight,
+            executor=executor,
+            seat_expiry=True,
+        )
+
+        await drain.run_once()
+
+        assert reports.expiries == [(request.id, frozenset({_FREQ}))]
+        assert in_flight == {request.id: (frozenset({_FREQ}), 10.0)}
+        assert reports.forgotten == []
+        assert executor.calls == [], "every path was already sent; nothing to re-send"
+        assert reports.failures == [], (
+            "the seat reported this expiry itself; the drain must not also "
+            "report it through the ordinary failure hook"
+        )
+
+    async def test_a_non_terminal_expiry_still_sends_the_paths_never_dispatched(
+        self,
+    ) -> None:
+        """Holding a request in flight is not the same as skipping the pass.
+
+        Only the paths already on the wire are withheld. This is the branch
+        the terminal rule cannot reach, because it ``continue``s first.
+        """
+
+        request = _request(paths=(_FREQ, _MODE))
+        scheduler = _StubScheduler((request,))
+        reports = _Reports(expiry_is_terminal=False)
+        in_flight = {request.id: (frozenset({_FREQ}), 10.0)}
+        executor = _StubExecutor(result=AcquisitionExecutionResult(sent_paths=(_MODE,)))
+        drain = _drain(
+            scheduler=scheduler,
+            reports=reports,
+            expired=_always_expired,
+            in_flight=in_flight,
+            executor=executor,
+            seat_expiry=True,
+        )
+
+        await drain.run_once()
+
+        assert [call[1] for call in executor.calls] == [frozenset({_FREQ})]
+        assert in_flight[request.id][0] == frozenset({_FREQ, _MODE})
+
+    async def test_a_terminal_seat_expiry_drops_the_entry_without_a_second_report(
+        self,
+    ) -> None:
+        request = _request()
+        scheduler = _StubScheduler((request,))
+        reports = _Reports(expiry_is_terminal=True)
+        in_flight = {request.id: (frozenset({_FREQ}), 10.0)}
+        executor = _StubExecutor()
+        drain = _drain(
+            scheduler=scheduler,
+            reports=reports,
+            expired=_always_expired,
+            in_flight=in_flight,
+            executor=executor,
+            seat_expiry=True,
+        )
+
+        await drain.run_once()
+
+        assert in_flight == {}
+        assert reports.forgotten == [request.id]
+        assert reports.failures == []
+        assert executor.calls == [], "a timed-out request must not be re-sent"
+
+
+class TestAcquisitionDrainForgetHook:
+    """``on_forget`` fires wherever the drain drops a ledger entry.
+
+    The web seat keeps a second per-request map (the MOR-874 grace clock)
+    alongside the ledger; an entry the drain drops for any reason must not
+    leave a stale clock behind. Each drop site is exercised separately
+    because they are three different statements in ``run_once``.
+    """
+
+    async def test_a_pruned_request_is_forgotten(self) -> None:
+        scheduler = _StubScheduler(())
+        reports = _Reports()
+        in_flight = {"acq-gone": (frozenset({_FREQ}), 10.0)}
+        drain = _drain(scheduler=scheduler, reports=reports, in_flight=in_flight)
+
+        await drain.run_once()
+
+        assert reports.forgotten == ["acq-gone"]
+
+    async def test_a_timed_out_request_is_forgotten(self) -> None:
+        request = _request()
+        scheduler = _StubScheduler((request,))
+        reports = _Reports()
+        in_flight = {request.id: (frozenset({_FREQ}), 10.0)}
+        drain = _drain(
+            scheduler=scheduler,
+            reports=reports,
+            expired=_always_expired,
+            in_flight=in_flight,
+            executor=_StubExecutor(),
+        )
+
+        await drain.run_once()
+
+        assert reports.forgotten == [request.id]
+
+    async def test_a_request_whose_executor_raised_is_forgotten(self) -> None:
+        request = _request()
+        scheduler = _StubScheduler((request,))
+        reports = _Reports()
+        in_flight = {request.id: (frozenset(), 10.0)}
+        drain = _drain(
+            scheduler=scheduler,
+            reports=reports,
+            in_flight=in_flight,
+            executor=_StubExecutor(error=RuntimeError("port closed")),
+        )
+
+        await drain.run_once()
+
+        assert reports.forgotten == [request.id]
+
+    async def test_a_seat_that_injects_no_forget_hook_still_drains(self) -> None:
+        """rigctld injects neither new hook; the default must be inert."""
+
+        request = _request()
+        scheduler = _StubScheduler((request,))
+        reports = _Reports()
+        in_flight = {request.id: (frozenset({_FREQ}), 10.0)}
+        drain = AcquisitionDrain(
+            scheduler=lambda: cast(Any, scheduler),
+            executor=lambda: cast(Any, _StubExecutor()),
+            store=lambda: None,
+            in_flight=in_flight,
+            expired=_always_expired,
+            dispatchable=lambda pending: pending,
+            report_failure=reports.failure,
+            report_executor_missing=reports.missing,
+            report_executor_error=reports.error,
+            report_sent=reports.sent_report,
+        )
+
+        await drain.run_once()
+
+        assert in_flight == {}
+        assert reports.failures == [
+            (request.id, "acquisition_request_timeout", frozenset({_FREQ}))
+        ]
+        assert reports.forgotten == []
