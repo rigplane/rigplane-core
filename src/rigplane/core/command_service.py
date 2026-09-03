@@ -1179,15 +1179,6 @@ def command_intent_from_request(
         normalized["ptt"] = True
     elif command_name == "ptt_off":
         normalized["ptt"] = False
-    elif command_name in ("set_att", "set_attenuator", "set_attenuator_level"):
-        raw_value = (
-            normalized["db"]
-            if "db" in normalized
-            else normalized["level"]
-            if "level" in normalized
-            else normalized["value"]
-        )
-        normalized["att"] = int(raw_value)
     elif command_name == "set_preamp":
         raw_value = (
             normalized["level"] if "level" in normalized else normalized["value"]
