@@ -147,6 +147,24 @@ def set_data_mode(
     mode_value = int(on) if isinstance(on, bool) else int(on)
     if not 0 <= mode_value <= 3:
         raise ValueError(f"DATA mode must be 0-3, got {mode_value}")
+
+    variant_keys = {
+        0: "set_data_mode_off",
+        1: "set_data_mode_data1",
+    }
+    if any(cmd_map.has(key) for key in variant_keys.values()):
+        variant_key = variant_keys.get(mode_value)
+        if variant_key is None or not cmd_map.has(variant_key):
+            raise ValueError(f"DATA mode {mode_value} is not declared by this profile")
+        return _build_from_map(
+            cmd_map,
+            variant_key,
+            to_addr=to_addr,
+            from_addr=from_addr,
+            receiver=receiver,
+            command29=(receiver != RECEIVER_MAIN),
+        )
+
     return _build_from_map(
         cmd_map,
         "set_data_mode",
