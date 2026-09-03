@@ -1,25 +1,21 @@
 name: Icom observed PTT RED proof
 
 on:
-  workflow_dispatch:
-    inputs:
-      source_sha:
-        description: Tests-first commit to prove RED
-        required: true
-        type: string
+  push:
+    branches: [codex/icom-observed-ptt-red-proof]
 
 jobs:
   red-proof:
     runs-on: [self-hosted, linux, build]
+    env:
+      SOURCE_SHA: a0c37b6ef4956f90d3ee08715a756c2d77421a21
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ env.SOURCE_SHA }}
           fetch-depth: 0
 
       - name: Verify pinned source
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
         run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
       - name: Prove expected RED structurally
