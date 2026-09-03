@@ -61,7 +61,11 @@ run_guard_suite() {
   cache_dir="$(mktemp -d)"
   PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$cache_dir" \
     uv run pytest "$guard_suite" -q --tb=short --color=no \
+    --junitxml="$artifact_dir/$label.xml" \
     | tee "$artifact_dir/$label.log"
+  test "$(grep -o '<testcase ' "$artifact_dir/$label.xml" | wc -l | tr -d ' ')" \
+    -eq 11
+  ! grep -q -E '<failure|<error|<skipped' "$artifact_dir/$label.xml"
 }
 
 run_guard_suite control-before
@@ -71,23 +75,35 @@ run_mutant() {
   local node=$2
   local failures=$3
   local expected=$4
+  local failure_marker=$5
   local cache_dir
   mutation_name=$name
   mutant_applied=1
   git diff -- src/rigplane/core/transport.py | tee "$artifact_dir/$name.diff"
+  git status --short --untracked-files=no > "$artifact_dir/$name-mutated-status.txt"
   set +e
   cache_dir="$(mktemp -d)"
   PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$cache_dir" \
-    uv run pytest "$node" -q --tb=short --color=no > "$artifact_dir/$name.log" 2>&1
+    uv run pytest "$node" -q --tb=short --color=no \
+    --junitxml="$artifact_dir/$name.xml" > "$artifact_dir/$name.log" 2>&1
   result=$?
   set -e
   restore_mutant
   git diff --exit-code "$source_sha" -- "${source_files[@]}" \
     | tee "$artifact_dir/$name-restored.diff"
+  git status --short --untracked-files=no > "$artifact_dir/$name-restored-status.txt"
+  run_guard_suite "$name-restored-control"
   cat "$artifact_dir/$name.log"
   test "$result" -eq 1
-  test "$(grep -c '^FAILED ' "$artifact_dir/$name.log")" -eq "$failures"
-  grep -F "$expected" "$artifact_dir/$name.log"
+  test "$(grep -o '<testcase ' "$artifact_dir/$name.xml" | wc -l | tr -d ' ')" \
+    -eq "$failures"
+  test "$(grep -o '<failure' "$artifact_dir/$name.xml" | wc -l | tr -d ' ')" \
+    -eq "$failures"
+  ! grep -q -E '<error|<skipped' "$artifact_dir/$name.xml"
+  test "$(grep -o "name=\"$expected" "$artifact_dir/$name.xml" | wc -l | tr -d ' ')" \
+    -eq "$failures"
+  test "$(grep -o "$failure_marker" "$artifact_dir/$name.xml" | wc -l | tr -d ' ')" \
+    -eq "$failures"
 }
 
 git apply <<'PATCH'
@@ -104,7 +120,7 @@ diff --git a/src/rigplane/core/transport.py b/src/rigplane/core/transport.py
 PATCH
 run_mutant initial \
   tests/test_transport.py::TestTrackedWriteGuard::test_initial_suppression_has_no_send_side_effects \
-  2 test_initial_suppression_has_no_send_side_effects
+  2 test_initial_suppression_has_no_send_side_effects 'DID NOT RAISE'
 
 git apply <<'PATCH'
 diff --git a/src/rigplane/core/transport.py b/src/rigplane/core/transport.py
@@ -121,7 +137,7 @@ diff --git a/src/rigplane/core/transport.py b/src/rigplane/core/transport.py
 PATCH
 run_mutant single \
   tests/test_transport.py::TestTrackedWriteGuard::test_stale_on_replay_after_current_off_is_suppressed[False] \
-  1 'test_stale_on_replay_after_current_off_is_suppressed[False]'
+  1 'test_stale_on_replay_after_current_off_is_suppressed[False]' 'type="AssertionError"'
 
 git apply <<'PATCH'
 diff --git a/src/rigplane/core/transport.py b/src/rigplane/core/transport.py
@@ -138,7 +154,7 @@ diff --git a/src/rigplane/core/transport.py b/src/rigplane/core/transport.py
 PATCH
 run_mutant multi \
   tests/test_transport.py::TestTrackedWriteGuard::test_stale_on_replay_after_current_off_is_suppressed[True] \
-  1 'test_stale_on_replay_after_current_off_is_suppressed[True]'
+  1 'test_stale_on_replay_after_current_off_is_suppressed[True]' 'type="AssertionError"'
 
 git apply <<'PATCH'
 diff --git a/src/rigplane/core/transport.py b/src/rigplane/core/transport.py
@@ -154,7 +170,33 @@ diff --git a/src/rigplane/core/transport.py b/src/rigplane/core/transport.py
 PATCH
 run_mutant eviction \
   tests/test_transport.py::TestTrackedWriteGuard::test_guard_metadata_follows_fifo_eviction \
-  1 test_guard_metadata_follows_fifo_eviction
+  1 test_guard_metadata_follows_fifo_eviction 'type="AssertionError"'
+
+git apply <<'PATCH'
+diff --git a/src/rigplane/core/transport.py b/src/rigplane/core/transport.py
+--- a/src/rigplane/core/transport.py
++++ b/src/rigplane/core/transport.py
+@@ -424,6 +424,6 @@ class IcomTransport:
+         This guards local submission only, not delivery or radio execution.
+         """
+-        if is_current is not None and not is_current():
++        if not (is_current is None or is_current()):
+             raise CommandError("Tracked write is no longer current")
+         seq = self._next_send_seq()
+PATCH
+mutation_name=positive-equivalent
+mutant_applied=1
+git diff -- src/rigplane/core/transport.py \
+  | tee "$artifact_dir/positive-equivalent.diff"
+git status --short --untracked-files=no \
+  > "$artifact_dir/positive-equivalent-mutated-status.txt"
+run_guard_suite positive-equivalent-control
+restore_mutant
+git diff --exit-code "$source_sha" -- "${source_files[@]}" \
+  | tee "$artifact_dir/positive-equivalent-restored.diff"
+git status --short --untracked-files=no \
+  > "$artifact_dir/positive-equivalent-restored-status.txt"
+run_guard_suite positive-equivalent-restored-control
 
 git diff --exit-code "$source_sha" -- "${source_files[@]}" \
   | tee "$artifact_dir/source-diff-final.txt"
