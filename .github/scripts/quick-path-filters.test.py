@@ -25,6 +25,31 @@ REBRAND_YML = ROOT / ".github" / "workflows" / "rebrand-gate.yml"
 
 
 class QuickPathFilterContractTest(unittest.TestCase):
+    def quick_ignore_blocks(self) -> list[list[str]]:
+        blocks: list[list[str]] = []
+        lines = QUICK_YML.read_text(encoding="utf-8").splitlines()
+        for index, line in enumerate(lines):
+            if line != "    paths-ignore:":
+                continue
+            block: list[str] = []
+            for candidate in lines[index + 1 :]:
+                if not candidate.startswith('      - "'):
+                    break
+                block.append(candidate.removeprefix('      - "').removesuffix('"'))
+            blocks.append(block)
+        return blocks
+
+    @staticmethod
+    def ignored_by_block(path: str, patterns: list[str]) -> bool:
+        for pattern in patterns:
+            if pattern.endswith("/**") and path.startswith(pattern[:-2]):
+                return True
+            if pattern.startswith("**/*.") and path.endswith(pattern[4:]):
+                return True
+            if path == pattern:
+                return True
+        return False
+
     def docs_quick_script(self) -> str:
         workflow = DOCS_QUICK_YML.read_text(encoding="utf-8")
         marker = "          script: |\n"
@@ -281,6 +306,21 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                     changed_files=overrides.get("changed_files"),
                 )
                 self.assertEqual(result["statuses"], [])
+
+    def test_rejected_publisher_paths_select_both_normal_quick_routes(self) -> None:
+        blocks = self.quick_ignore_blocks()
+        self.assertEqual(len(blocks), 2)
+        for path in (
+            "docs",
+            ".claude",
+            "frontend/README.rſt",
+            "frontend/README.md\n",
+            "frontend/README.rst\r\n",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(
+                    all(not self.ignored_by_block(path, block) for block in blocks)
+                )
 
     def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
         citation = DOC_CITATION_YML.read_text(encoding="utf-8")
