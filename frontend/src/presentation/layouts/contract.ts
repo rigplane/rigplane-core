@@ -50,12 +50,27 @@ export type TopologyClass = (typeof TOPOLOGY_CLASSES)[number];
 export interface LayoutZone {
   readonly id: string;
   readonly surfaces: readonly SemanticSurfaceName[];
+  /**
+   * MOR-2253 slice 1 — the id of the `InstrumentGroup` (`../groups/
+   * contract.ts`) mounted in this zone. A plain `string`, not an imported
+   * `GroupId` type alias: `presentation/workspace/__tests__/purity.isolated
+   * .test.ts` and its two siblings (MOR-1077/78/79) pin this file's own
+   * import closure by hand, and even a type-only import of `../groups/
+   * contract` would pull that module into it — a real edge this manifest
+   * contract does not need, since the id is only ever compared as a string
+   * (`getGroup` in `../groups/contract.ts` also takes a bare `string`).
+   * Optional: most zones mount bare semantic surfaces with no group.
+   * `validateZones` below checks only `id`/`surfaces` — this field is not
+   * exact-key-checked (no `hasExactPlainKeys` call touches a zone object),
+   * so adding it needed no validator change.
+   */
+  readonly group?: string;
 }
 
 /**
  * Sizing axis (MOR-1160, frozen 2026-07-29): `fluid` reflows on declared
  * breakpoints; `fixed-native` scales as one block by
- * `min(w/nativeW, h/nativeH)`, letterboxed, falling back below `minScale`.
+ * `min(w/nativeW, h/nativeH)`, letterboxed.
  * Structurally exclusive at the type level (`FixedNativeSizing` has no
  * `responsiveBreakpoints` slot); the runtime validator enforces the same
  * exclusion against untyped input. See `LayoutManifest.stageSizing` below for
@@ -77,7 +92,15 @@ export interface LayoutManifest {
   readonly schemaVersion: 1;
   readonly id: string;
   readonly displayName: string;
-  readonly loader: () => Promise<{ default: Component }>;
+  // `Component<any>`, not the bare `Component` (implicitly `Component<{}>`):
+  // MOR-2253 slice 1 gave `PeerSplitLayout.svelte` required `canvasW`/
+  // `canvasH` props (its former native-size constants, now the shell's
+  // job), and `Props` is checked contravariantly here — a loader whose
+  // component requires props is not assignable to one requiring none. The
+  // validator only ever checks `typeof manifest.loader === 'function'`
+  // (below), never the loaded component's prop shape, so this widens
+  // nothing this contract actually enforces.
+  readonly loader: () => Promise<{ default: Component<any> }>;
   readonly zones: readonly LayoutZone[];
   readonly compatibleTopologies: readonly TopologyClass[];
   readonly requiredSemanticSurfaces: readonly SemanticSurfaceName[];
@@ -255,27 +278,6 @@ export function listLayoutIds(): readonly string[] {
   return Array.from(registry.keys());
 }
 
-/** Resolves `manifest.fallbackLayoutId` and re-applies `criterion` to the
- *  fallback itself — a fallback that also fails the criterion (or points
- *  back at `manifest`) is not returned; the caller gets `undefined`, a typed
- *  "unresolvable" signal, not a layout that silently fails what it was
- *  fetched to satisfy (review cycle 1, F1: a self-referential or two-hop
- *  fallback, or a fixed-native fallback that itself fails minScale, used to
- *  come back unvalidated). v1 takes exactly one hop — it does not chase a
- *  chain — but that one hop must still pass. */
-function resolveFallback(
-  manifest: LayoutManifest,
-  criterion: (candidate: LayoutManifest) => boolean,
-): LayoutManifest | undefined {
-  if (!manifest.fallbackLayoutId || manifest.fallbackLayoutId === manifest.id) return undefined;
-  const fallback = getLayout(manifest.fallbackLayoutId);
-  return fallback && criterion(fallback) ? fallback : undefined;
-}
-
-export function supportsTopology(manifest: LayoutManifest, topology: TopologyClass): boolean {
-  return manifest.compatibleTopologies.includes(topology);
-}
-
 /**
  * MOR-1313 — every semantic surface `manifest`'s DECLARED ZONES mount, as one
  * flat set. The zone schema is untouched (risk R3): this derives entirely from
@@ -302,36 +304,4 @@ export function declaredSurfaces(
     for (const surface of zone.surfaces) declared.add(surface);
   }
   return declared;
-}
-
-/** Resolves `id` against `topology`, falling back to `fallbackLayoutId` only
- *  when the fallback itself also supports `topology`. */
-export function resolveLayoutForTopology(id: string, topology: TopologyClass): LayoutManifest | undefined {
-  const manifest = getLayout(id);
-  if (!manifest) return undefined;
-  if (supportsTopology(manifest, topology)) return manifest;
-  return resolveFallback(manifest, (candidate) => supportsTopology(candidate, topology));
-}
-
-export interface Viewport { readonly width: number; readonly height: number }
-
-/** `fluid` always fits — breakpoints are reflow hints, not a hard gate in
- *  v1. `fixed-native` compares the achievable uniform scale against
- *  `minScale` (MOR-1160) instead of matching a breakpoint: a portrait
- *  mobile viewport fails this arithmetically (small height vs. a wide
- *  native design), with no separate mobile-detection branch. */
-export function fitsViewport(manifest: LayoutManifest, viewport: Viewport): boolean {
-  if (manifest.stageSizing.mode === 'fluid') return true;
-  const { nativeW, nativeH, minScale } = manifest.stageSizing;
-  return Math.min(viewport.width / nativeW, viewport.height / nativeH) >= minScale;
-}
-
-/** Same fallback path as `resolveLayoutForTopology` — falling below
- *  `minScale` triggers the normal fallback resolution (re-checked against
- *  the same viewport), not a special case and not an unvalidated return. */
-export function resolveLayoutForViewport(id: string, viewport: Viewport): LayoutManifest | undefined {
-  const manifest = getLayout(id);
-  if (!manifest) return undefined;
-  if (fitsViewport(manifest, viewport)) return manifest;
-  return resolveFallback(manifest, (candidate) => fitsViewport(candidate, viewport));
 }

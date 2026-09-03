@@ -9,7 +9,6 @@ import pytest
 
 from rigplane.command_spec import AbsentCommandSpec, CatCommandSpec, CivCommandSpec
 from rigplane.rig_loader import RigLoadError, load_rig
-from test_rig_loader import TestFtx1DeclaresAbsentCommands as _Ftx1AbsentPin
 from test_rig_loader import TestIc7610DeclaresAbsentCommands as _Ic7610AbsentPin
 from test_rig_loader import TestTx500DeclaresAbsentCommands as _Tx500AbsentPin
 from test_rig_loader import TestX6100DeclaresAbsentCommands as _X6100AbsentPin
@@ -423,15 +422,14 @@ class TestBackwardCompatibility:
     def _assert_loads_except_declared_absent(
         self, toml_name: str, expected_absent: frozenset[str], live_spec_type: type
     ) -> None:
-        """Shared body for the four MOR-2008 batch 4 checks below: every
+        """Shared body for the four profile checks below: every
         command in ``rig.commands`` is *live_spec_type* except the pinned
         absent set, discriminating both directions the same way
         ``test_ic7610_loads_civ_except_the_declared_absent_tone_tsql_family``
         above does -- a row silently becoming absent, or an absent row
         silently reverting to live, fails regardless of which name moves.
-        Generalized to four callers (X6200/X6100: ``CivCommandSpec``;
-        FTX-1/TX-500: ``CatCommandSpec``) rather than duplicated a fourth
-        and fifth time, per the rule of three.
+        X6200/X6100 retain CI-V specs; FTX-1/TX-500 retain CAT specs.
+        FTX-1's manual-only policy requires an empty absent set.
         """
         rigs_dir = Path(__file__).resolve().parent.parent / "rigs"
         p = rigs_dir / toml_name
@@ -456,8 +454,7 @@ class TestBackwardCompatibility:
             if isinstance(spec, AbsentCommandSpec)
         }
         assert actually_absent == expected_absent, (
-            f"{toml_name}'s AbsentCommandSpec entries drifted from its own "
-            "TestXDeclaresAbsentCommands._EXPECTED_ABSENT pin"
+            f"{toml_name}'s AbsentCommandSpec entries drifted from its expected set"
         )
 
     def test_x6200_loads_civ_except_the_declared_absent_group_b_family(self) -> None:
@@ -476,17 +473,14 @@ class TestBackwardCompatibility:
             "x6100.toml", _X6100AbsentPin._EXPECTED_ABSENT, CivCommandSpec
         )
 
-    def test_ftx1_loads_cat_except_the_declared_absent_group_b_family(self) -> None:
-        """MOR-2008 batch 4: FTX-1 declares all 16 Group B canonical keys
-        absent (protocol mismatch -- [protocol] type = "yaesu_cat") --
-        everything else in its ``[commands]`` table is CatCommandSpec.
-        """
+    def test_ftx1_loads_only_cat_specs_without_absent_markers(self) -> None:
+        """MOR-2257: every retained FTX-1 declaration is a CAT spec."""
         self._assert_loads_except_declared_absent(
-            "ftx1.toml", _Ftx1AbsentPin._EXPECTED_ABSENT, CatCommandSpec
+            "ftx1.toml", frozenset(), CatCommandSpec
         )
 
     def test_tx500_loads_cat_except_the_declared_absent_group_b_family(self) -> None:
-        """Sibling of the FTX-1 check above ([protocol] type = "kenwood_cat")."""
+        """TX-500 retains its protocol-mismatch absent markers."""
         self._assert_loads_except_declared_absent(
             "tx500.toml", _Tx500AbsentPin._EXPECTED_ABSENT, CatCommandSpec
         )

@@ -4,6 +4,7 @@ import type { ComponentProps } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
+import { DEFAULT_ZONES } from '../bar-gauge-utils';
 
 // Minimal calibration table with an S9 knot — enough for `getS9Raw()` to
 // resolve to a real anchor (raw 130) and for `rawToSegments` to place it at
@@ -69,8 +70,11 @@ function segmentRects(target: HTMLElement): SVGRectElement[] {
 // "no language tone supplied" value `DEFAULT_METER_DISPLAY` uses — so
 // `activeColor`/`dimColor` still take the untouched gradient/hex path these
 // tests already pin.
+// MOR-2255 added the required `zones` field; `LinearSMeter` reads none of it,
+// so every literal below carries `DEFAULT_ZONES` — the same value
+// `DEFAULT_METER_DISPLAY` uses — purely to satisfy the type.
 const geometry = (segmentCount: number, segmentGapPx: number) => (
-  { segmentCount, segmentGapPx, toneBelowS9: '', toneAboveS9: '' }
+  { segmentCount, segmentGapPx, toneBelowS9: '', toneAboveS9: '', zones: DEFAULT_ZONES }
 );
 
 describe('LinearSMeter display prop', () => {
@@ -257,7 +261,7 @@ describe('LinearSMeter display prop', () => {
     function activeFillAt(toneBelowS9: string, toneAboveS9: string, index: number): string | null {
       const target = mountMeter({
         value: 60,
-        display: { segmentCount: 20, segmentGapPx: 1, toneBelowS9, toneAboveS9 },
+        display: { segmentCount: 20, segmentGapPx: 1, toneBelowS9, toneAboveS9, zones: DEFAULT_ZONES },
       });
       const dim = segmentRects(target)[index];
       const active = dim.nextElementSibling as SVGRectElement | null;
@@ -273,7 +277,7 @@ describe('LinearSMeter display prop', () => {
       function firstToneAboveIndex(toneBelowS9: string, toneAboveS9: string): number {
         const target = mountMeter({
           value: 60,
-          display: { segmentCount: 20, segmentGapPx: 1, toneBelowS9, toneAboveS9 },
+          display: { segmentCount: 20, segmentGapPx: 1, toneBelowS9, toneAboveS9, zones: DEFAULT_ZONES },
         });
         const rects = segmentRects(target);
         return rects.findIndex((dim) => (dim.nextElementSibling as SVGRectElement | null)?.getAttribute('fill') === toneAboveS9);

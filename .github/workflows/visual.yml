@@ -22,6 +22,12 @@ on:
     paths:
       - "frontend/**"
       - ".github/workflows/visual.yml"
+  workflow_dispatch:
+    inputs:
+      regenerate:
+        description: "Re-pin baselines on the Linux runner, upload as artifact"
+        type: boolean
+        default: false
 
 concurrency:
   group: visual-${{ github.workflow }}-${{ github.ref }}
@@ -59,6 +65,7 @@ jobs:
       # Linux baseline re-pin.
       - name: Pixel-diff vs approved baselines
         id: visual
+        if: github.event.inputs.regenerate != 'true'
         run: cd frontend && npm run test:e2e:visual
 
       # Keep failure diagnostics available even though the pixel step is
@@ -74,3 +81,35 @@ jobs:
       - name: Annotate failure
         if: always() && steps.visual.outcome == 'failure'
         run: echo "::error::Visual pixel-diff failed. See the visual-diff-report artifact."
+
+      # MOR-2296 — manual re-pin route. A visual change small enough to stay
+      # under the comparator floor (`COMPARATOR` in
+      # playwright.visual.config.ts) leaves the pixel-diff step green, so the
+      # `steps.visual.outcome == 'failure'` diff-report upload above never
+      # fires and there is no Linux-rendered PNG to pull. This runs INSTEAD
+      # of the pixel-diff step (their conditions are mutually exclusive),
+      # writing into frontend/fixtures/approved-baselines/ via that config's
+      # `snapshotPathTemplate`.
+      #
+      # `=all` is load-bearing: the bare `--update-snapshots` flag selects
+      # mode `changed`, which is comparator-gated and so writes nothing for
+      # exactly the sub-floor change this route exists to re-pin. Mode `all`
+      # skips the comparator and rewrites every baseline whose raw bytes
+      # differ from the freshly-rendered capture. That includes the
+      # same-tree antialiasing noise fixtures/approved-baselines/README.md
+      # records (3-123 differing pixels per capture), so the tradeoff is
+      # accepted deliberately: each dispatch re-pins every capture rather
+      # than only the ones that actually changed.
+      - name: Regenerate approved baselines
+        if: github.event.inputs.regenerate == 'true'
+        run: cd frontend && npm run test:e2e:visual -- --update-snapshots=all
+
+      # always(): upload whatever the step above wrote even if it exited
+      # non-zero, so a partial re-pin is still downloadable.
+      - name: Upload regenerated baselines
+        if: always() && github.event.inputs.regenerate == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: regenerated-baselines
+          path: frontend/fixtures/approved-baselines/
+          retention-days: 14

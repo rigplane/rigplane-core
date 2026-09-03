@@ -31,7 +31,9 @@ User-facing prompts in Russian. Commits / CHANGELOG / tags / release notes in En
 
 ## Step 2 — Pre-flight checks
 
-Match `publish.yml`'s `validate` job exactly so green pre-flight = green publish. Run sequentially. STOP on first failure.
+Pre-flight covers every gate in `publish.yml`'s `validate` job: frontend (2g),
+ruff (2d), mypy (2f), import-linter (2e), pytest (2h). Run sequentially. STOP on
+first failure.
 
 ```bash
 # 2a. Clean tree
@@ -46,8 +48,8 @@ git branch --show-current
 Not `main` → warn, ask confirmation.
 
 ```bash
-# 2c. Sync deps (all extras, MOR-1978: installs the same extras as
-# publish.yml's validate job, so 2h below is not narrower than release CI)
+# 2c. Sync deps (all extras, MOR-1978: the same set publish.yml's
+# validate job installs)
 uv sync --all-extras
 ```
 
@@ -77,9 +79,56 @@ npm run build
 cd ..
 ```
 
+### 2h. Python tests — read the record, do not run the suite
+
+The suite record for a head is that head's `quick.yml` run, and the full suite
+is not run on the laptop or the remote testbed for a head CI has run (CLAUDE.md
+§Testing, §Agent working rules). 2a requires a clean tree and 2b expects
+`main`, so the head under test here is `main`'s current HEAD, and its run is the
+one `quick.yml`'s `push: branches: [main]` trigger produced. A bump prepared on
+a branch reads that branch's PR run instead — `quick.yml` triggers on
+`pull_request: branches: [main]` too.
+
 ```bash
-# 2h. Python tests
-uv run pytest tests/ -n auto --tb=short --timeout=300 --timeout-method=thread
+gh run list --workflow "Tests (quick)" --branch main --limit 5 \
+  --json databaseId,headSha,conclusion,createdAt
+gh run view <id> --json jobs \
+  --jq '.jobs[].steps[] | select(.name=="Run tests") | .conclusion'
+```
+
+The second command must print `success`. `quick.yml` gates `Run tests` on
+`steps.filter.outputs.core`, so on a run whose `core` filter did not match it
+prints `skipped` while the run's own conclusion is still `success` — the run's
+conclusion is not the suite's. Then confirm that run's commit still covers HEAD
+— the `core` filter's own paths:
+
+```bash
+git diff --name-only <run-sha>..HEAD -- src tests frontend rigs contracts \
+  pyproject.toml uv.lock .importlinter .github/scripts .github/workflows
+```
+
+Non-empty output → that run is not the record for HEAD. Stop and get a run at
+HEAD.
+
+The check is against HEAD, not against the commit that gets tagged: Step 6
+commits the Step 5 edits on top of HEAD, so the released commit is HEAD plus a
+`pyproject.toml` version line and a `docs/CHANGELOG.md` entry. `pyproject.toml`
+is in the pathspec above, so that commit is a different head, with its own
+`quick` run when it lands.
+
+**Interpreter matrix before the tag.** `quick.yml` pins `UV_PYTHON: "3.11"`.
+`publish.yml`'s `validate` matrix is `["3.12", "3.13"]` — 3.11 is dropped there
+(see the comment on that matrix) — and it runs on `release: published`, so it
+first reports after the tag and the GitHub Release exist. Its failure does stop
+PyPI: `build` needs `validate` and `publish` needs `build`. What it cannot undo
+is the tag and the Release, which is the last block of Error recovery below. So
+dispatching `full.yml`'s 3.11/3.12/3.13 matrix before tagging is a safety net,
+not redundant coverage — it moves a 3.12/3.13 failure to before the tag exists:
+
+```bash
+gh workflow run "Tests (full matrix)" --ref main
+gh run list --workflow "Tests (full matrix)" --limit 3   # find the dispatched run
+gh run watch <id>
 ```
 
 ```bash
@@ -88,7 +137,9 @@ uv build && rm -rf dist/
 ```
 
 ```bash
-# 2j. Optional regression check (.claude/commands/regression-check.md)
+# 2j. Optional regression check (.claude/commands/regression-check.md).
+# Its step 1 reads "the run on its draft PR", which a release cut from
+# `main` does not have; 2h above is the record in that case.
 ```
 
 ```bash
@@ -252,5 +303,5 @@ git revert HEAD  # or git push --force-with-lease (dangerous; ask first)
 ## Notes for the operator
 
 - This skill replaces the old global `Release icom-lan` slash command (`.claude/commands/release.md`), which had stale references to `src/icom_lan/__init__.py` (a shim, never canonical), `RELEASE_NOTES.md` (no longer used), `CLAUDE.md` Version row (no longer exists), and root `CHANGELOG.md` (symlink — must edit `docs/CHANGELOG.md`).
-- Match `publish.yml`'s `validate` job exactly. If CI's validate gate changes, update Step 2.
+- If `publish.yml`'s `validate` gate changes, update Step 2.
 - For Pro releases (Tauri shell), use the `release` skill in `rigplane-pro` (different beast — single-tag-then-handoff to operator's Mac terminal, not single-shot publish).

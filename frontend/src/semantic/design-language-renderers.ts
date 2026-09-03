@@ -41,14 +41,15 @@
  *                   assistive-tech-neutral tests can observe them. Nested
  *                   objects and arrays are skipped rather than serialised —
  *                   a family's private geometry stays private.
- *   `display`     — MOR-2214/MOR-2250: the same structural check as
- *                   `text`/`attributes`, narrowed to the one shape a shipped
- *                   gauge component (`LinearSMeter`) already knows how to
- *                   consume: `segmentCount`/`segmentGapPx` (numeric) plus
- *                   `toneBelowS9`/`toneAboveS9` (string). A descriptor
- *                   missing any of the four, or typed wrong, yields `null`
- *                   — this is not a `meters`-slot special case, it is the
- *                   same "structural shape present or absent" test as the
+ *   `display`     — MOR-2214/MOR-2250/MOR-2255: the same structural check as
+ *                   `text`/`attributes`, narrowed to the one shape the shipped
+ *                   gauge components (`LinearSMeter`, `BarGauge`) already know
+ *                   how to consume: `segmentCount`/`segmentGapPx` (numeric),
+ *                   `toneBelowS9`/`toneAboveS9` (string) and `zones` (a
+ *                   non-empty array of `{end: number, color: string}`). A
+ *                   descriptor missing any of the five, or typed wrong, yields
+ *                   `null` — this is not a `meters`-slot special case, it is
+ *                   the same "structural shape present or absent" test as the
  *                   other two readings, applied to a different set of field
  *                   names.
  *
@@ -58,6 +59,7 @@
 import {
   getDesignLanguage, resolveRenderer,
   type DesignLanguageManifest, type MeterDisplay, type RendererSlotName, type RendererViewModel,
+  type Zone,
 } from '../presentation/languages/contract';
 // Side-effect import: the registry is populated by the declarations module,
 // which is otherwise imported only by its own tests. Importing the DECLARATIONS
@@ -87,9 +89,9 @@ export interface RendererDisplay {
   /** `data-dl-*` display annotations, ready to spread onto an element. */
   readonly attributes: Readonly<Record<string, string>>;
   /**
-   * MOR-2214/MOR-2250: the descriptor's `segmentCount`/`segmentGapPx`/
-   * `toneBelowS9`/`toneAboveS9` quartet, or `null` when any one is absent or
-   * mistyped. See the file doc comment above.
+   * MOR-2214/MOR-2250/MOR-2255: the descriptor's `segmentCount`/
+   * `segmentGapPx`/`toneBelowS9`/`toneAboveS9`/`zones` quintet, or `null`
+   * when any one is absent or mistyped. See the file doc comment above.
    */
   readonly display: MeterDisplay | null;
 }
@@ -115,6 +117,13 @@ function annotate(descriptor: Record<string, unknown>): Record<string, string> {
   return out;
 }
 
+/** MOR-2255: a non-empty array of well-typed `{end, color}` bands. */
+function isZoneArray(value: unknown): value is readonly Zone[] {
+  return Array.isArray(value) && value.length > 0 && value.every((zone) =>
+    typeof zone === 'object' && zone !== null
+    && typeof (zone as Zone).end === 'number' && typeof (zone as Zone).color === 'string');
+}
+
 /**
  * Renders `fields` through the active language's renderer for `slot`.
  *
@@ -136,9 +145,11 @@ export function renderSlot(slot: RendererSlotName, fields: RendererFields): Rend
     attributes: annotate(descriptor),
     display: typeof descriptor.segmentCount === 'number' && typeof descriptor.segmentGapPx === 'number'
       && typeof descriptor.toneBelowS9 === 'string' && typeof descriptor.toneAboveS9 === 'string'
+      && isZoneArray(descriptor.zones)
       ? {
         segmentCount: descriptor.segmentCount, segmentGapPx: descriptor.segmentGapPx,
         toneBelowS9: descriptor.toneBelowS9, toneAboveS9: descriptor.toneAboveS9,
+        zones: descriptor.zones,
       }
       : null,
   };

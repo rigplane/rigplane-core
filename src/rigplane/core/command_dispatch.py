@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
@@ -29,6 +30,7 @@ __all__ = [
     "CommandDescriptor",
     "CommandUnsupportedError",
     "DescriptorTxPolicy",
+    "bind_command_intent",
     "command_descriptor",
     "command_descriptors",
     "enqueue_command_intent",
@@ -42,10 +44,22 @@ class CommandUnsupportedError(CommandError):
 
 
 class DispatchRadio(Protocol):
-    def supports_command(self, command: str) -> bool: ...
+    def supports_command(
+        self, command: str, *, receiver: int | None = None
+    ) -> bool: ...
 
 
 class DispatchQueue(Protocol):
+    def put(
+        self,
+        command: Any,
+        *,
+        command_id: str | None = None,
+        source: CommandSource | None = None,
+        session_id: str | None = None,
+        command_service: Any | None = None,
+    ) -> None: ...
+
     def put_ordered(
         self,
         command: Any,
@@ -55,7 +69,7 @@ class DispatchQueue(Protocol):
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
-    ) -> None: ...
+    ) -> object: ...
 
 
 Binder = Callable[[Mapping[str, Any]], dict[str, Any]]
@@ -80,7 +94,8 @@ class CommandDescriptor:
     argument_names: tuple[str, ...]
     tx_policy: DescriptorTxPolicy
     timeout: float = 10.0
-    queue_policy: Literal["ordered"] = "ordered"
+    queue_policy: Literal["ordered", "coalesced"] = "ordered"
+    receiver_aware: bool = False
 
     def result(self, intent: CommandIntent) -> dict[str, Any]:
         return {name: intent.params[name] for name in self.argument_names}
@@ -110,6 +125,73 @@ def _repeater_shift_target(params: Mapping[str, Any]) -> FieldPath:
     )
 
 
+def _raw_int_level_from_param(value: Any) -> int:
+    """Coerce a raw-only level command param (MOR-1579).
+
+    ``set_rf_gain``/``set_sql``/``set_squelch``: both the web frontend
+    (``radio-intents.ts`` declares ``'integer'``) and the documented
+    HTTP/WS command catalog agree the wire value is always a raw 0-255
+    integer, never a normalized float. Dispatch on the JSON *type*, not
+    magnitude — a value in ``[0, 1]`` used to be silently reinterpreted as
+    normalized (MOR-1579's headline bug: raw level ``1`` became raw
+    ``255``). A non-int or an out-of-range int is a caller bug, not an
+    alternate encoding, so it raises instead of being coerced.
+
+    This value feeds both the StateStore readback expectation (via
+    :func:`_expected_value_for_path`) *and*, on the ``public_api`` sync
+    ingress (:mod:`rigplane.runtime.sync`), the actual value sent to the
+    radio (``_SyncCommandExecutor`` reads ``intent.params["squelch"]``
+    directly) — so this function is the actuation path there, not just
+    bookkeeping.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"level {value!r} must be a raw integer 0-255, not {type(value).__name__}"
+        )
+    if not (0 <= value <= 255):
+        raise ValueError(f"level {value!r} is out of the raw 0-255 domain")
+    return int(value)
+
+
+def _af_level_from_param(value: Any) -> int:
+    """Coerce ``set_af_level``'s type-dispatched level param (MOR-1579).
+
+    Two documented wire contracts coexist for this one intent: the
+    HTTP/WS command catalog (``docs/api/command-catalog.md``) declares
+    ``level: int`` on the raw 0-255 scale (see the live-hardware
+    validation recipe's ``level:35`` example, which expects raw BCD
+    ``0035``); the web frontend (``radio-intents.ts`` declares
+    ``'normalized'``) sends a JSON float in 0.0-1.0. Dispatch on JSON
+    type, never magnitude: an int is always raw, a float is always
+    normalized, matching MOR-334's original coercion for float input
+    while restoring int input to a true no-op. Out-of-domain values for
+    either type raise rather than being reinterpreted as the other.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"level {value!r} must be an int or a normalized float")
+    if isinstance(value, int):
+        if not (0 <= value <= 255):
+            raise ValueError(f"level {value!r} is out of the raw 0-255 domain")
+        return value
+    if isinstance(value, float):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
+        return max(0, min(255, round(value * 255)))
+    raise ValueError(f"level {value!r} must be an int or a normalized float")
+
+
+def _bind_level(field: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    normalize = (
+        _af_level_from_param if field == "af_level" else _raw_int_level_from_param
+    )
+    level = normalize(params["level"])
+    return {"level": level, field: level, "receiver": int(params.get("receiver", 0))}
+
+
+def _level_target(field: str, params: Mapping[str, Any]) -> FieldPath:
+    return FieldPath.receiver(str(params["receiver"]), "operator_controls", field)
+
+
 _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
     {
         "set_repeater_shift": CommandDescriptor(
@@ -119,7 +201,37 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             target=_repeater_shift_target,
             argument_names=("direction", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
-        )
+        ),
+        "set_af_level": CommandDescriptor(
+            name="set_af_level",
+            method_name="set_af_level",
+            bind=partial(_bind_level, "af_level"),
+            target=partial(_level_target, "af_level"),
+            argument_names=("level", "receiver"),
+            tx_policy=DescriptorTxPolicy.ALWAYS_PASS,
+            queue_policy="coalesced",
+            receiver_aware=True,
+        ),
+        "set_rf_gain": CommandDescriptor(
+            name="set_rf_gain",
+            method_name="set_rf_gain",
+            bind=partial(_bind_level, "rf_gain"),
+            target=partial(_level_target, "rf_gain"),
+            argument_names=("level", "receiver"),
+            tx_policy=DescriptorTxPolicy.ALWAYS_PASS,
+            queue_policy="coalesced",
+            receiver_aware=True,
+        ),
+        "set_squelch": CommandDescriptor(
+            name="set_squelch",
+            method_name="set_squelch",
+            bind=partial(_bind_level, "squelch"),
+            target=partial(_level_target, "squelch"),
+            argument_names=("level", "receiver"),
+            tx_policy=DescriptorTxPolicy.ALWAYS_PASS,
+            queue_policy="coalesced",
+            receiver_aware=True,
+        ),
     }
 )
 
@@ -149,14 +261,14 @@ def command_descriptors() -> Mapping[str, CommandDescriptor]:
 
 
 def command_descriptor(name: str) -> CommandDescriptor | None:
-    return _COMMAND_DESCRIPTORS.get(name)
+    return _COMMAND_DESCRIPTORS.get("set_squelch" if name == "set_sql" else name)
 
 
 def enqueue_command_intent(
     queue: DispatchQueue,
     intent: CommandIntent,
     *,
-    future: asyncio.Future[None],
+    future: asyncio.Future[None] | None,
     command_id: str,
     source: CommandSource,
     session_id: str | None,
@@ -180,7 +292,16 @@ def enqueue_command_intent(
         raise CommandError(f"queue metadata does not match intent {intent.id!r}")
     if command_service is None:
         raise CommandError(f"command service is required for intent {intent.id!r}")
-    if descriptor.queue_policy == "ordered":
+    if descriptor.queue_policy == "coalesced" and future is None:
+        queue.put(
+            intent,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+            command_service=command_service,
+        )
+        return
+    if descriptor.queue_policy in ("ordered", "coalesced"):
         queue.put_ordered(
             intent,
             future=future,
@@ -195,6 +316,38 @@ def enqueue_command_intent(
     )
 
 
+def bind_command_intent(
+    name: str,
+    params: Mapping[str, Any],
+    *,
+    source: CommandSource,
+    command_id: str | None = None,
+    session_id: str | None = None,
+    timeout: float | None = 10.0,
+) -> CommandIntent:
+    """Bind one descriptor operation without consulting a provider."""
+
+    descriptor = command_descriptor(name)
+    if descriptor is None:
+        raise KeyError(f"no command descriptor for {name!r}")
+    _require_descriptor_policy_seat(descriptor)
+    normalized = descriptor.bind(params)
+    if session_id is not None:
+        normalized["session_id"] = session_id
+    target = descriptor.target(normalized)
+    return CommandIntent(
+        id=command_id or f"{source}-{time.monotonic_ns()}",
+        name=descriptor.name,
+        params=normalized,
+        source=source,
+        target=target,
+        priority="user",
+        timeout=timeout,
+        pending_policy="scoped",
+        expected_observations=(target,),
+    )
+
+
 def prepare_command_intent(
     radio: DispatchRadio,
     name: str,
@@ -204,31 +357,27 @@ def prepare_command_intent(
     command_id: str | None = None,
     session_id: str | None = None,
 ) -> CommandIntent:
-    """Bind and admit one descriptor operation before CommandService state."""
-
     descriptor = command_descriptor(name)
     if descriptor is None:
         raise KeyError(f"no command descriptor for {name!r}")
-    _require_descriptor_policy_seat(descriptor)
-    normalized = descriptor.bind(params)
-    if session_id is not None:
-        normalized["session_id"] = session_id
-    if not radio.supports_command(descriptor.name):
+    intent = bind_command_intent(
+        name,
+        params,
+        source=source,
+        command_id=command_id,
+        session_id=session_id,
+        timeout=descriptor.timeout,
+    )
+    supported = (
+        radio.supports_command(descriptor.name, receiver=intent.params["receiver"])
+        if descriptor.receiver_aware
+        else radio.supports_command(descriptor.name)
+    )
+    if not supported:
         raise CommandUnsupportedError(
             f"command {descriptor.name!r} is not supported by active profile"
         )
-    target = descriptor.target(normalized)
-    return CommandIntent(
-        id=command_id or f"{source}-{time.monotonic_ns()}",
-        name=descriptor.name,
-        params=normalized,
-        source=source,
-        target=target,
-        priority="user",
-        timeout=descriptor.timeout,
-        pending_policy="scoped",
-        expected_observations=(target,),
-    )
+    return intent
 
 
 async def execute_command_intent(radio: Any, intent: CommandIntent) -> None:

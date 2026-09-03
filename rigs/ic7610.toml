@@ -40,6 +40,7 @@ data_len_max = 689
 ref_min_db = -30.0
 ref_max_db = 10.0
 ref_step_db = 0.5
+span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
 
 # ── Capabilities ─────────────────────────────────────────────────
 # Feature tags determine which UI panels and controls are rendered.

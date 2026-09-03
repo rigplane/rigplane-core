@@ -4,7 +4,6 @@ Covers:
 - commands.py: get_data_mode, set_data_mode, parse_data_mode_response
 - state_cache.py: data_mode field, update/invalidate, is_fresh, snapshot
 - handler.py: PKTUSB/PKTLSB/PKTRTTY set_mode, get_mode with DATA active
-- poller.py: data mode polled each cycle and stored in cache
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ from rigplane.commands import (
 from rigplane.rig_loader import load_rig
 from rigplane.rigctld.contract import RigctldCommand, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
-from rigplane.rigctld.poller import RadioPoller
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.types import CivFrame, Mode
 
@@ -378,81 +376,3 @@ class TestHandlerGetModeCacheDataMode:
         await handler.execute(set_cmd("set_mode", "PKTUSB"))
         assert handler._cache.data_mode is True
         assert handler._cache.data_mode_ts > 0.0
-
-
-# ---------------------------------------------------------------------------
-# poller.py — data mode polled each cycle
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def poll_config() -> RigctldConfig:
-    return RigctldConfig(poll_interval=0.01)
-
-
-@pytest.fixture
-def poll_cache() -> StateCache:
-    return StateCache()
-
-
-@pytest.fixture
-def poll_radio() -> AsyncMock:
-    radio = AsyncMock()
-    radio.get_freq.return_value = 14_074_000
-    radio.get_mode_info.return_value = (Mode.USB, 1)
-    radio.get_data_mode.return_value = True
-    return radio
-
-
-@pytest.fixture
-def poller(
-    poll_radio: AsyncMock, poll_cache: StateCache, poll_config: RigctldConfig
-) -> RadioPoller:
-    return RadioPoller(poll_radio, poll_cache, poll_config)
-
-
-@pytest.mark.asyncio
-async def test_poller_updates_data_mode_in_cache(
-    poller: RadioPoller,
-    poll_cache: StateCache,
-    poll_radio: AsyncMock,
-) -> None:
-    import asyncio
-
-    await poller.start()
-    await asyncio.sleep(0.05)
-    await poller.stop()
-    assert poll_cache.data_mode is True
-    assert poll_cache.is_fresh("data_mode", 1.0) is True
-
-
-@pytest.mark.asyncio
-async def test_poller_data_mode_false(
-    poller: RadioPoller,
-    poll_cache: StateCache,
-    poll_radio: AsyncMock,
-) -> None:
-    import asyncio
-
-    poll_radio.get_data_mode.return_value = False
-    await poller.start()
-    await asyncio.sleep(0.05)
-    await poller.stop()
-    assert poll_cache.data_mode is False
-
-
-@pytest.mark.asyncio
-async def test_poller_data_mode_error_does_not_crash(
-    poller: RadioPoller,
-    poll_radio: AsyncMock,
-) -> None:
-    import asyncio
-
-    from rigplane.exceptions import TimeoutError as IcomTimeoutError
-
-    poll_radio.get_data_mode.side_effect = IcomTimeoutError("timeout")
-    await poller.start()
-    await asyncio.sleep(0.05)
-    assert poller._task is not None
-    assert not poller._task.done()
-    await poller.stop()

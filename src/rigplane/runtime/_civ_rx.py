@@ -47,6 +47,7 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
+from rigplane.commands.scope import _span_index_for_hz
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import KnownTxTarget
@@ -99,6 +100,14 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("receiver", "operator_controls", "rf_gain"): 10.0,
     ("receiver", "operator_controls", "pbt_inner"): 10.0,
     ("receiver", "operator_controls", "pbt_outer"): 10.0,
+    # MOR-2234 follow-up: declaring these observable in ``rigs/ic7300.toml``
+    # left them with no entry here, so ``_observation`` gave them
+    # ``max_age=None`` and ``state_store.py: StateStore.mark_stale_due``
+    # never aged them. The TTL is that profile's declared
+    # ``freshness_ttl_seconds``, pinned by
+    # ``test_tone_and_tsql_freq_observations_can_go_stale``.
+    ("receiver", "operator_controls", "tone_freq"): 25.0,
+    ("receiver", "operator_controls", "tsql_freq"): 25.0,
     ("global", "slow_state", "active"): 5.0,
     ("global", "tx_state", "ptt"): 1.0,
     ("global", "tx_state", "rit_on"): 10.0,
@@ -1599,6 +1608,12 @@ class CivRuntime:
             )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
+                self._publish_scope_mode_observation(
+                    scope_frame, receiver=receiver, frame=frame
+                )
+                self._publish_scope_span_observation(
+                    scope_frame, receiver=receiver, frame=frame
+                )
                 self._publish_scope_frame(scope_frame)
             return
 
@@ -2575,7 +2590,9 @@ class CivRuntime:
             receiver, mode = parse_scope_mode_response(frame)
             pairs.append(("mode", mode))
         elif frame.sub == 0x15:
-            receiver, span = parse_scope_span_response(frame)
+            receiver, span = parse_scope_span_response(
+                frame, self._host._profile.scope_span_presets_hz
+            )
             pairs.append(("span", span))
         elif frame.sub == 0x16:
             receiver, edge = parse_scope_edge_response(frame)
@@ -3163,7 +3180,9 @@ class CivRuntime:
                 scope.receiver = receiver
             scope.mode = mode
         elif frame.sub == 0x15:
-            receiver, span = parse_scope_span_response(frame)
+            receiver, span = parse_scope_span_response(
+                frame, self._host._profile.scope_span_presets_hz
+            )
             if receiver is not None:
                 scope.receiver = receiver
             scope.span = span
@@ -3258,6 +3277,158 @@ class CivRuntime:
         recorder = getattr(self._host, "_state_diagnostics", None)
         if isinstance(recorder, StateDiagnosticsRecorder):
             recorder.record(kind, source, **details)
+
+    def _publish_scope_mode_observation(
+        self, scope_frame: ScopeFrame, *, receiver: int, frame: CivFrame
+    ) -> None:
+        """Emit a change-detected ``scope_controls.global.display.mode`` write.
+
+        MOR-2222 moved the ``scope_controls.global.display.*`` paths out of
+        the acquisition cadence (no more periodic ``0x27`` polls): the
+        scope's own reads own them now. The waveform stream (``0x27``/
+        ``0x00``) is the one unsolicited source that keeps ``mode`` current
+        while it runs, so this republishes it — once per change, not once
+        per frame, since the stream runs at up to ~15 fps. ``mode`` is
+        validated against its documented 0-3 range (``ScopeFrame.mode``'s
+        own docstring; the reply path can never produce anything else) —
+        an out-of-range value publishes nothing. ``span`` is republished
+        the same way by ``_publish_scope_span_observation`` below
+        (MOR-2256, derived through the span-preset table, not a raw
+        frequency). ``edge``/``fixed_edge`` are NOT republished: ``edge``
+        is a preset index 1-4 with no frame-carried source, and
+        ``fixed_edge`` a preset-table record (range_index/edge/start/end)
+        with no declared table of legal values to derive it from — those
+        stay display-only, carried to the web through the spectrum stream
+        itself (``ScopeFrame``), not the StateStore.
+
+        Unlike ``_publish_scope_span_observation`` below, this does NOT
+        need an ``out_of_range`` guard: ``mode`` (``ScopeFrame.mode``)
+        comes from ``raw_payload[2]``, decoded in
+        ``rigplane.scope._ReceiverState.feed`` before the OOR check, and
+        is unaffected by it -- only ``start_freq_hz``/``end_freq_hz``
+        (which this method never reads) are left as raw, unexpanded
+        values when ``out_of_range`` is set (#3063 review, second round;
+        checked, confirmed not applicable here).
+
+        The observation is bound to the store's CURRENT provider
+        generation before ``apply`` — mirroring
+        ``_apply_state_store_observations``'s own pattern below — because
+        ``Observation.provider_generation`` defaults to 0 and
+        ``StateStore.apply``/``_is_current_observation`` silently rejects
+        anything that does not match ``advance_generation``'s bump on
+        connect (#3063 review: a connected radio's stream observations
+        were dropped from the moment of connect onward). The
+        change-detect cache is updated only when ``apply`` reports the
+        observation ACCEPTED -- ``changeset.observed_paths`` non-empty,
+        the same signal ``StateStore._apply_one``/``_empty_changeset``
+        use to distinguish a written observation from a rejected one --
+        not merely after the call returns (#3063 review, second round):
+        caching on every call, accepted or not, would mean a rejected
+        value is never retried once the stream reports that same value
+        again.
+        """
+        if not 0 <= scope_frame.mode <= 3:
+            return
+        last_modes = self._host._scope_stream_last_mode
+        if last_modes.get(receiver) == scope_frame.mode:
+            return
+        store_provider_generation = self._host._state_store.provider_generation
+        observation = _replace_dataclass(
+            self._observation(
+                FieldPath.scope_control("display", "mode"),
+                scope_frame.mode,
+                frame=frame,
+            ),
+            provider_generation=store_provider_generation,
+        )
+        changeset = self._host._state_store.apply(observation)
+        if changeset.observed_paths:
+            last_modes[receiver] = scope_frame.mode
+        self._record_scheduler_result_for_observation(observation, changeset)
+        self._notify_state_store_changed(changeset)
+
+    def _publish_scope_span_observation(
+        self, scope_frame: ScopeFrame, *, receiver: int, frame: CivFrame
+    ) -> None:
+        """Emit a change-detected ``scope_controls.global.display.span`` write.
+
+        Center mode only (``scope_frame.mode == 0``) AND in-range
+        (``scope_frame.out_of_range`` is False): when a waveform frame's
+        OOR flag is set, ``rigplane.scope._ReceiverState.feed`` returns
+        BEFORE the center-mode edge expansion (``center - span``/
+        ``center + span``) — ``start_freq_hz``/``end_freq_hz`` are then
+        the raw, unexpanded [center, span] pair, not edges, so
+        ``end_freq_hz - start_freq_hz`` is ``span - center``, not
+        ``2 * span`` (#3063 review, second round: a center-450kHz/
+        span-500kHz OOR frame computed index 3 instead of 7 before this
+        guard). Publishing from an OOR frame at all would also be
+        publishing a span the operator cannot currently see confirmed on
+        screen, which the mode/span republish exists to avoid guessing.
+
+        Per the IC-7610 CI-V reference (p.14, "Scope waveform data") and
+        the IC-7300 manual, an in-range center-mode payload carries the
+        center frequency and the SPAN value itself — the same value the
+        ``0x27 0x15`` span table encodes — not half of it.
+        ``_ReceiverState.feed`` turns that pair into edges via
+        ``center - span``, ``center + span``, so ``end_freq_hz -
+        start_freq_hz == 2 * span``. The span to look up is therefore
+        ``(end_freq_hz - start_freq_hz) / 2``, computed with an
+        exact-division check (a remainder means this width did not come
+        from that doubling and is untrustworthy) — not the raw
+        difference, which is off by 2x (#3063 review, first round,
+        verified against both manuals). Matched EXACTLY against this
+        profile's declared ``scope_span_presets_hz`` (``rigs/*.toml``:
+        ``[scope].span_presets_hz``, MOR-2258) via the shared
+        ``_span_index_for_hz`` helper — the same lookup
+        ``parse_scope_span_response`` (the 0x15 reply path) uses against
+        the same profile-declared list, so the stream and a typed-getter
+        reply agree on what index a given Hz value maps to. No match ->
+        publish nothing, and do not clear whatever the field last held:
+        a non-matching span is either drift outside the declared presets
+        or an unexpected source, not something to overwrite a confirmed
+        value with a guess. A profile with no declared presets (empty
+        tuple) never matches, so this is a silent no-op for any rig that
+        hasn't declared ``[scope].span_presets_hz``.
+
+        Fixed mode (``scope_frame.mode != 0``) publishes nothing: unlike
+        span, there is no declared table of legal (start_hz, end_hz) pairs
+        to match a fixed-mode frame's edges against —
+        ``_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ`` only maps a start_hz to a
+        *band*, not to a specific stored (range, edge) preset, and a
+        preset's actual edges are radio-side user-configured memory, not
+        enumerable data. Publishing here would mean guessing which preset
+        is active, which MOR-2256 rules out.
+
+        Same generation-binding and cache-after-ACCEPTED-apply ordering
+        as ``_publish_scope_mode_observation`` above — see its docstring.
+        """
+        if scope_frame.mode != 0 or scope_frame.out_of_range:
+            return
+        width_hz = scope_frame.end_freq_hz - scope_frame.start_freq_hz
+        if width_hz % 2 != 0:
+            return
+        span_hz = width_hz // 2
+        presets = self._host._profile.scope_span_presets_hz
+        span = _span_index_for_hz(span_hz, presets)
+        if span is None:
+            return
+        last_spans = self._host._scope_stream_last_span
+        if last_spans.get(receiver) == span:
+            return
+        store_provider_generation = self._host._state_store.provider_generation
+        observation = _replace_dataclass(
+            self._observation(
+                FieldPath.scope_control("display", "span"),
+                span,
+                frame=frame,
+            ),
+            provider_generation=store_provider_generation,
+        )
+        changeset = self._host._state_store.apply(observation)
+        if changeset.observed_paths:
+            last_spans[receiver] = span
+        self._record_scheduler_result_for_observation(observation, changeset)
+        self._notify_state_store_changed(changeset)
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""
@@ -3446,19 +3617,21 @@ class CivRuntime:
             return len(frame.data) == 0
         return len(frame.data) == 0
 
-    async def _drain_ack_sinks_before_blocking(self) -> None:
+    async def _drain_ack_sinks_before_blocking(
+        self, *, check_current: Callable[[], None] | None = None
+    ) -> None:
         """Give fire-and-forget ACK sinks a short chance to drain."""
-        if self._host._civ_request_tracker.ack_sink_count == 0:
+        tracker = self._host._civ_request_tracker
+        if tracker.ack_sink_count == 0:
             return
 
         deadline = time.monotonic() + self._host._civ_ack_sink_grace
-        while (
-            self._host._civ_request_tracker.ack_sink_count > 0
-            and time.monotonic() < deadline
-        ):
+        while tracker.ack_sink_count > 0 and time.monotonic() < deadline:
             await asyncio.sleep(0.005)
+            if check_current is not None:
+                check_current()
 
-        dropped = self._host._civ_request_tracker.drop_ack_sinks()
+        dropped = tracker.drop_ack_sinks()
         if dropped:
             logger.debug(
                 "Dropped %d stale ACK sink waiter(s) before blocking command", dropped
@@ -3472,6 +3645,17 @@ class CivRuntime:
         """Execute one CI-V command via request tracker (serialized by worker)."""
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()
+        transport = self._host._civ_transport
+        tracker = self._host._civ_request_tracker
+        epoch = self._host._civ_epoch
+
+        def check_current() -> None:
+            if (
+                self._host._civ_transport is not transport
+                or self._host._civ_request_tracker is not tracker
+                or self._host._civ_epoch != epoch
+            ):
+                raise ConnectionError("CI-V execution belongs to a retired session")
 
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
@@ -3483,36 +3667,38 @@ class CivRuntime:
             ack_sink_token: "int | None" = None
 
             if not expects_response:
-                token_or_future = self._host._civ_request_tracker.register_ack(
-                    wait=False
-                )
+                token_or_future = tracker.register_ack(wait=False)
                 if isinstance(token_or_future, int):
                     ack_sink_token = token_or_future
 
-            self.start_pump()
-
-            now = time.monotonic()
-            delta = now - self._host._last_civ_send_monotonic
-            if delta < self._host._civ_min_interval:
-                await asyncio.sleep(self._host._civ_min_interval - delta)
-
-            pkt = self._wrap_civ(civ_frame)
             try:
-                await self._host._civ_transport.send_tracked(pkt)
-            except Exception:
+                self.start_pump()
+                now = time.monotonic()
+                delta = now - self._host._last_civ_send_monotonic
+                if delta < self._host._civ_min_interval:
+                    await asyncio.sleep(self._host._civ_min_interval - delta)
+
+                check_current()
+                pkt = self._wrap_civ(civ_frame)
+                await transport.send_tracked(pkt)
+                check_current()
+            except (Exception, asyncio.CancelledError) as exc:
                 if ack_sink_token is not None:
-                    self._host._civ_request_tracker.unregister_ack_sink(ack_sink_token)
+                    tracker.unregister_ack_sink(ack_sink_token)
+                if not isinstance(exc, asyncio.CancelledError):
+                    check_current()
                 raise
 
             self._host._last_civ_send_monotonic = time.monotonic()
             return None
 
-        await self._drain_ack_sinks_before_blocking()
+        await self._drain_ack_sinks_before_blocking(check_current=check_current)
+        check_current()
 
         pending: "asyncio.Future[CivFrame] | None" = None
         try:
             if expects_response:
-                pending = self._host._civ_request_tracker.register_response(request_key)
+                pending = tracker.register_response(request_key)
             else:
                 # ``consume_backlog=False``: this waiter is registered before
                 # the frame is sent, so anything already in the orphan ACK/NAK
@@ -3520,7 +3706,7 @@ class CivRuntime:
                 # the oldest entry whatever it is, so it charges a stranger's
                 # NAK to this command -- or, worse, settles it from a stranger's
                 # ACK, reporting success for a write the radio never answered.
-                pending_or_token = self._host._civ_request_tracker.register_ack(
+                pending_or_token = tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
                 )
@@ -3535,8 +3721,10 @@ class CivRuntime:
             if delta < self._host._civ_min_interval:
                 await asyncio.sleep(self._host._civ_min_interval - delta)
 
+            check_current()
             pkt = self._wrap_civ(civ_frame)
-            await self._host._civ_transport.send_tracked(pkt)
+            await transport.send_tracked(pkt)
+            check_current()
             self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
             # The answer window is spent from here, not from method entry:
@@ -3549,16 +3737,26 @@ class CivRuntime:
             # ``tests/test_radio.py:
             # TestResponseDeadlineOpensAtSend`` fails on that mis-charge.
             try:
-                return await asyncio.wait_for(
+                response = await asyncio.wait_for(
                     pending, timeout=self._host._civ_get_timeout
                 )
             except asyncio.TimeoutError:
-                self._host._civ_request_tracker.note_timeout()
+                check_current()
+                tracker.note_timeout()
                 logger.debug(
                     "CI-V command 0x%02X timed out",
                     request_key.command,
                 )
                 raise TimeoutError("CI-V response timed out")
+            check_current()
+            return response
+        except Exception:
+            check_current()
+            raise
         finally:
             if pending is not None:
-                self._host._civ_request_tracker.unregister(pending)
+                tracker.unregister(pending)
+                if not pending.done():
+                    pending.cancel()
+                elif not pending.cancelled():
+                    pending.exception()

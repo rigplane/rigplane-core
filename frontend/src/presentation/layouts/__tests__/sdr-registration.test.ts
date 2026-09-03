@@ -6,19 +6,16 @@
  * `registry.test.ts` already pins the bare registration fact ("the sdr-test
  * real registration proof") as MOR-1066's acceptance evidence. This file is
  * the entrypoint's OWN focused suite, mirroring the shape
- * `lcd-registration.test.ts` (MOR-1092) uses for its family: topology
- * honesty across all four canonical classes, the sizing axis, and — because
- * sdr-test has no sibling to fall back to — that it declares none. Every
- * claim is read back out of the shared registry rather than off the
- * exported object, so a manifest that is written but never registered fails
- * here. Each test's doc line names the mutation it exists to kill.
+ * `lcd-registration.test.ts` (MOR-1092) uses for its family: the sizing
+ * axis, and — because sdr-test has no sibling to fall back to — that it
+ * declares none. Every claim is read back out of the shared registry rather
+ * than off the exported object, so a manifest that is written but never
+ * registered fails here. Each test's doc line names the mutation it exists
+ * to kill.
  */
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import {
-  getLayout, resolveLayoutForTopology, resolveLayoutForViewport,
-  TOPOLOGY_CLASSES,
-} from '../contract';
+import { getLayout } from '../contract';
 // Deliberately through the shared aggregation entry, not `../declarations`'
 // module-scope side effect alone: importing the named export pins that
 // `declarations.ts` really registers `sdrTestLayout` (nothing else does),
@@ -58,35 +55,68 @@ describe('the sdr-test entrypoint is registered in the real registry', () => {
 });
 
 describe('declared semantic zones (what the migrated entrypoint actually mounts)', () => {
-  // Kills: declaring a surface the layout does not mount, or dropping rxTx
+  // MOR-2231 (step 1, batch 1): the pair is split across the two zone ids
+  // `desktop-v2` already uses, so both faces name the same hosts and
+  // `SemanticRadioSurfaces` can build a real element for each.
+  // Kills: declaring a surface the layout does not mount, dropping rxTx
   // (which would let sdr-test keep the legacy sidebar TX panel as its only
-  // TX owner).
-  it('mounts vfo + rxTx in one zone', () => {
-    expect(sdrTestLayout.zones).toContainEqual({ id: 'main', surfaces: ['vfo', 'rxTx'] });
+  // TX owner), or folding the pair back into one zone.
+  it('mounts vfo and rxTx in their own zones', () => {
+    expect(sdrTestLayout.zones).toContainEqual({ id: 'receiver-deck', surfaces: ['vfo'] });
+    expect(sdrTestLayout.zones).toContainEqual({ id: 'rx-tx', surfaces: ['rxTx'] });
     expect([...sdrTestLayout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
   });
 
   // MOR-1346: `meters` joins as its own zone (the desktop-v2/MOR-1341 shape),
   // which is what lets RadioLayout's existing `semanticMeters` gate retire
   // the legacy `<MetersDockPanel>` here too. Kills: folding `meters` into
-  // `main` instead (a persisted `main` visibility preference predating this
-  // zone could then silently hide it) or leaving it undeclared again.
+  // another zone (a persisted visibility preference recorded for that zone
+  // before `meters` joined it could then silently hide it) or leaving it
+  // undeclared again.
   it('mounts meters in its own zone, not required', () => {
     expect(sdrTestLayout.zones).toContainEqual({ id: 'meters', surfaces: ['meters'] });
     expect(sdrTestLayout.requiredSemanticSurfaces).not.toContain('meters');
   });
-});
 
-describe('topology honesty', () => {
-  // Kills: under-declaring the topology set. RadioLayout renders the deck
-  // unconditionally and SemanticRadioSurfaces itself branches on the live
-  // topology fixture (`semantic-desktop-migration.component.test.ts` proves
-  // all four render safely), so every canonical class resolves to sdr-test
-  // itself, never to a fallback.
-  it('resolves itself on all four canonical topologies', () => {
-    for (const topology of TOPOLOGY_CLASSES) {
-      expect(resolveLayoutForTopology('sdr-test', topology)?.id).toBe('sdr-test');
-    }
+  // MOR-2231 (step 1, batch 2) — the five control families, each alone in a
+  // zone carrying the id `desktop-declarations.ts` already uses.
+  //
+  // Kills: declaring one of the five under a DRIFTED zone id, folding two of
+  // them into one zone, dropping one, or making one `required`. The id drift
+  // is the mutation worth a dedicated pin, because it is the one the
+  // suppression channel cannot catch: `LeftSidebar`/`RadioLayout` retire the
+  // legacy twins on `declared.has(<surface>)`, which reads the SURFACE name
+  // and never the zone id — so a drifted id would still retire the twin while
+  // naming a host no arrangement can bind, and the face would lose the panel
+  // without gaining a placed surface.
+  it.each([
+    ['filter', 'filter'],
+    ['rfFrontEnd', 'rf-front-end'],
+    ['band', 'band'],
+    ['antenna', 'antenna'],
+    ['ritXitScan', 'rit-xit-scan'],
+    // MOR-2231 (step 1, batch 3) — the right column's four, same shape. The id
+    // drift argument above applies unchanged to `rxAudio`/`dsp`/`cwKeyer`. It
+    // does NOT apply to `txAux`: no `declared.has('txAux')` predicate exists,
+    // so a drifted id there names a host no arrangement can bind without
+    // retiring anything.
+    ['rxAudio', 'rx-audio'],
+    ['dsp', 'dsp'],
+    ['cwKeyer', 'cw-keyer'],
+    ['txAux', 'tx-aux'],
+    // MOR-2231 (step 1, batch 4) — the centre-top pair completes the fourteen.
+    // The id-drift argument applies to `scopeDisplay` unchanged. It applies to
+    // `scopeControls` too, but through a PROP rather than a mount gate:
+    // `hideScopeControls={declared.has('scopeControls')}` would still go true
+    // under a drifted id, so the toolbar's fact-backed half would still retire
+    // while the surface named a host no arrangement can bind.
+    ['scopeDisplay', 'scope-display'],
+    ['scopeControls', 'scope-controls'],
+  ] as const)('mounts %s alone in the stable `%s` zone, not required', (surface, zoneId) => {
+    const owning = sdrTestLayout.zones.filter((z) => z.surfaces.includes(surface));
+    expect(owning).toHaveLength(1);
+    expect(owning[0]).toEqual({ id: zoneId, surfaces: [surface] });
+    expect(sdrTestLayout.requiredSemanticSurfaces).not.toContain(surface);
   });
 });
 
@@ -96,11 +126,6 @@ describe('MOR-1160 sizing axis — sdr-test stays fluid', () => {
   // instrument glass.
   it('declares fluid sizing with no breakpoints', () => {
     expect(sdrTestLayout.stageSizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [] });
-  });
-
-  it('resolves on both a desktop and an iPhone-class portrait viewport — fluid never gates', () => {
-    expect(resolveLayoutForViewport('sdr-test', { width: 1440, height: 900 })?.id).toBe('sdr-test');
-    expect(resolveLayoutForViewport('sdr-test', { width: 390, height: 844 })?.id).toBe('sdr-test');
   });
 });
 

@@ -68,6 +68,7 @@ from .utils import get_mode_reader  # noqa: TID251
 
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
+    from ..runtime.managed_tx_authority import ManagedTxAuthority
 
 from ..capabilities import CAP_METERS, CAP_RIT
 from .routing import (  # noqa: TID251
@@ -672,7 +673,21 @@ class RigctldHandler:
         *,
         state_store: StateStore | None = None,
         state_model_service: StateModelService | None = None,
+        managed_tx_authority: ManagedTxAuthority | None = None,
+        command_queue: tx_commands.CommandQueue | None = None,
+        command_service: CommandService | None = None,
     ) -> None:
+        supplied = (
+            managed_tx_authority is not None,
+            command_queue is not None,
+            command_service is not None,
+        )
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "managed authority, queue and service must be supplied together"
+            )
+        self._managed_tx_authority = managed_tx_authority
+        self._command_queue = command_queue
         self._radio = radio
         self._config = config
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
@@ -717,15 +732,15 @@ class RigctldHandler:
             state_model_service = None
         self._state_model_service = state_model_service
         self._install_routing_state_observer()
-        self._command_service = CommandService(
-            executor=_RigctldCommandExecutor(self),
-            state_store=state_store,
-            # Every write this seat makes asks the radio to re-observe the
-            # field it wrote (MOR-1892). Without it, RF truth trails our own
-            # unkey by up to a poll cadence and the next write is dropped
-            # inside that window — see
-            # ``CommandService._request_write_confirmation``.
-            state_model_service=self._state_model_service,
+        self._command_executor = _RigctldCommandExecutor(self)
+        self._command_service = (
+            CommandService(
+                executor=self._command_executor,
+                state_store=state_store,
+                state_model_service=self._state_model_service,
+            )
+            if command_service is None
+            else command_service
         )
 
     def bind_provider_generation(self, capture: Callable[[], int]) -> None:
@@ -875,7 +890,9 @@ class RigctldHandler:
         the socket — post-beta work, tracked separately.
         """
         try:
-            result = await self._command_service.execute(intent)
+            result = await self._command_service.execute(
+                intent, executor=self._command_executor
+            )
         except CommandExecutionInvalidatedError as exc:
             logger.warning(
                 "rigctld: %s was invalidated in flight (%s) — reporting failure",

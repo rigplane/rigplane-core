@@ -583,7 +583,6 @@ docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:2246
 docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:255-263
 docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:2839
 docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:3702-3711
-docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:4024
 docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:718-722
 docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:723
 docs/plans/2026-08-20-transmit-authority.md	radio_poller.py:818
@@ -702,7 +701,6 @@ docs/plans/discovery-artifacts/external-usage.md	tests/test_radio_coverage.py:18
 docs/plans/discovery-artifacts/external-usage.md	tests/test_radio_coverage.py:204
 docs/plans/discovery-artifacts/external-usage.md	tests/test_reconnect.py:8
 docs/plans/discovery-artifacts/external-usage.md	tests/test_rig_ic7300.py:12
-docs/plans/discovery-artifacts/external-usage.md	tests/test_shared_state_runtime.py:7
 docs/plans/discovery-artifacts/external-usage.md	tests/test_state_queries.py:9
 docs/plans/discovery-artifacts/external-usage.md	tests/test_sync_coverage.py:9
 docs/plans/discovery-artifacts/external-usage.md	tests/test_tx_band_edge.py:16

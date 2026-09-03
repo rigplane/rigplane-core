@@ -30,10 +30,18 @@ _Operation = ActuationOperation | AbortOperation
 class FakeActuator:
     def __init__(self) -> None:
         self.calls: list[tuple[EffectToken, _Operation]] = []
+        self.guards: list[Callable[[], bool] | None] = []
         self.actions: dict[_Operation, ActuationResult | BaseException | _Action] = {}
 
-    async def actuate(self, token: EffectToken, op: _Operation) -> ActuationResult:
+    async def actuate(
+        self,
+        token: EffectToken,
+        op: _Operation,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> ActuationResult:
         self.calls.append((token, op))
+        self.guards.append(is_current)
         action = self.actions.get(op, ActuationResult.ACCEPTED)
         if isinstance(action, BaseException):
             raise action
@@ -433,3 +441,88 @@ async def test_retry_epoch_prevents_stale_release_clear(
         assert retry.outcome is ManagedTxOutcome.ACCEPTED
         assert stale.outcome is ManagedTxOutcome.STALE
         assert stale.state.release_required
+
+
+@pytest.mark.parametrize("edge", ["caller", "cancel", "deadline"])
+async def test_live_claim_currency_blocks_resistant_write(edge: str) -> None:
+    actuator = FakeActuator()
+    started, release, cancelled, finish_isolation = (asyncio.Event() for _ in range(4))
+    now, caller_current, writes = [100.0], [True], []
+
+    async def action() -> ActuationResult:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        guard = actuator.guards[-1]
+        assert callable(guard), "lane did not supply a live claim predicate"
+        if guard():
+            writes.append("ON")
+        return ActuationResult.REJECTED if not writes else ActuationResult.ACCEPTED
+
+    actuator.actions[ActuationOperation.PTT_ON] = action
+    lane = ManagedTxEffectLane(
+        actuator,
+        clock=lambda: now[0],
+        poison_generation=lambda _: finish_isolation.wait(),
+    )
+    kwargs = {"is_current": lambda: caller_current[0]} if edge == "caller" else {}
+    task = asyncio.create_task(lane.settle(effect(), deadline_monotonic=103, **kwargs))
+    task.add_done_callback(lambda _: started.set())
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        if not actuator.calls:
+            await task
+        guard = actuator.guards[0]
+        assert callable(guard), "lane did not supply a live claim predicate"
+        assert guard()
+        if edge == "caller":
+            caller_current[0] = False
+        elif edge == "deadline":
+            now[0] = 103
+        else:
+            task.cancel()
+            await asyncio.wait_for(cancelled.wait(), 1)
+        assert not guard(), f"{edge} left the old pre-write callback current"
+        release.set()
+        finish_isolation.set()
+        await asyncio.wait_for(task, 1)
+        assert writes == []
+    finally:
+        release.set()
+        finish_isolation.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        if lane._isolation is not None:
+            await asyncio.wait_for(lane._isolation[1], 1)
+
+
+async def test_removed_claim_has_no_currency_during_isolation() -> None:
+    actuator = FakeActuator()
+    isolating, release = asyncio.Event(), asyncio.Event()
+    claims = []
+
+    async def uncertain() -> ActuationResult:
+        claims.extend(lane._claims.values())
+        return ActuationResult.UNCERTAIN
+
+    async def isolate(_: int) -> None:
+        isolating.set()
+        await release.wait()
+
+    actuator.actions[ActuationOperation.PTT_ON] = uncertain
+    lane = ManagedTxEffectLane(actuator, poison_generation=isolate)
+    task = asyncio.create_task(settle(lane, effect(), 3))
+    try:
+        await asyncio.wait_for(isolating.wait(), 1)
+        assert len(claims) == 1 and not claims[0].result.done()
+        assert not lane._claims
+        guard = actuator.guards[0]
+        assert callable(guard), "lane did not supply a live claim predicate"
+        assert not guard(), "unfinished result does not prove claim ownership"
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 1)

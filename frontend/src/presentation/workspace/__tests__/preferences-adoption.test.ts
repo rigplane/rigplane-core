@@ -137,8 +137,18 @@ describe('MOR-1082 — the surface plan starts from what the manifest declares',
       // MOR-1336 (S4): the cockpit now declares a tx-aux zone too.
       ['tx-aux', ['txAux']],
     ]);
-    // MOR-1346: `meters` joined as sdr-test's own second zone.
-    expect([...plan(sdrTestLayout)]).toEqual([['main', ['vfo', 'rxTx']], ['meters', ['meters']]]);
+    // MOR-1346: `meters` joined as sdr-test's own zone. MOR-2231 batch 1: `vfo`
+    // and `rxTx` each hold one too, under the ids `desktop-v2` already uses;
+    // batch 2 adds the five control families, batch 3 the right column's four
+    // and batch 4 the centre-top pair, all the same one-surface-per-zone shape.
+    expect([...plan(sdrTestLayout)]).toEqual([
+      ['receiver-deck', ['vfo']], ['rx-tx', ['rxTx']], ['meters', ['meters']],
+      ['filter', ['filter']], ['rf-front-end', ['rfFrontEnd']], ['band', ['band']],
+      ['antenna', ['antenna']], ['rit-xit-scan', ['ritXitScan']],
+      ['rx-audio', ['rxAudio']], ['dsp', ['dsp']], ['cw-keyer', ['cwKeyer']],
+      ['tx-aux', ['txAux']], ['scope-display', ['scopeDisplay']],
+      ['scope-controls', ['scopeControls']],
+    ]);
   });
 
   it('applies ONE contract to every layout family — mobile does not fork', () => {
@@ -186,22 +196,25 @@ describe('MOR-1082 — the surface plan starts from what the manifest declares',
     // The contract already refuses a duplicate across zones on READ; the
     // adoption must not open a second door. `txAux` is a real surface id that
     // no shipped zone declares, so naming it is the purest cross-zone probe.
-    const moved = plan(sdrTestLayout, {
-      visibleSurfaces: { main: ['vfo', 'rxTx', 'txAux'] },
-      zoneOrder: { main: ['txAux', 'rxTx', 'vfo'] },
+    const moved = plan(mobileLayout, {
+      visibleSurfaces: { 'portrait-deck': ['vfo', 'rxTx', 'txAux'] },
+      zoneOrder: { 'portrait-deck': ['txAux', 'rxTx', 'vfo'] },
     });
-    expect(moved.get('main')).toEqual(['rxTx', 'vfo']);
-    expect(moved.get('main')).not.toContain('txAux');
+    expect(moved.get('portrait-deck')).toEqual(['rxTx', 'vfo']);
+    expect(moved.get('portrait-deck')).not.toContain('txAux');
   });
 
   it('reorders within a zone, and normalizes a partial or padded order', () => {
-    expect(plan(sdrTestLayout, { zoneOrder: { main: ['rxTx', 'vfo'] } }).get('main'))
+    // `mobile`'s `portrait-deck` since MOR-2231: reordering WITHIN a zone
+    // needs a zone that declares more than one surface, and sdr-test's pair
+    // now lives in two.
+    expect(plan(mobileLayout, { zoneOrder: { 'portrait-deck': ['rxTx', 'vfo'] } }).get('portrait-deck'))
       .toEqual(['rxTx', 'vfo']);
     // Partial: what the operator named leads, the rest follows in DECLARED order.
-    expect(plan(sdrTestLayout, { zoneOrder: { main: ['rxTx'] } }).get('main'))
+    expect(plan(mobileLayout, { zoneOrder: { 'portrait-deck': ['rxTx'] } }).get('portrait-deck'))
       .toEqual(['rxTx', 'vfo']);
     // An order naming nothing the zone declares is inert, never destructive.
-    expect(plan(sdrTestLayout, { zoneOrder: { main: ['meters'] } }).get('main'))
+    expect(plan(mobileLayout, { zoneOrder: { 'portrait-deck': ['meters'] } }).get('portrait-deck'))
       .toEqual(['vfo', 'rxTx']);
   });
 
@@ -266,8 +279,11 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
   });
 
   it('flattens the plan in zone-declaration order, deduped', () => {
-    // MOR-1346: sdr-test's own `meters` zone flattens in behind `main`.
-    expect(compositionSurfaces(plan(sdrTestLayout), FALLBACK)).toEqual(['vfo', 'rxTx', 'meters']);
+    // MOR-1346/2231: sdr-test's fourteen zones flatten in declaration order.
+    expect(compositionSurfaces(plan(sdrTestLayout), FALLBACK)).toEqual([
+      'vfo', 'rxTx', 'meters', 'filter', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan',
+      'rxAudio', 'dsp', 'cwKeyer', 'txAux', 'scopeDisplay', 'scopeControls',
+    ]);
     // desktop-v2 spreads the same two surfaces over two zones, plus its own
     // MOR-1336 (S4) tx-aux zone, MOR-1341 (S5) meters zone, MOR-1365 (S6a)
     // scope-display zone, the MOR-1366 (S7) filter/rf-front-end zones, the
@@ -283,8 +299,12 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
     // is the counterpart that would catch a double mount.
     expect(compositionSurfaces(plan(desktopV2Layout), FALLBACK))
       .toEqual(['vfo', 'rxTx', 'txAux', 'meters', 'scopeDisplay', 'filter', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan', 'rxAudio', 'dsp', 'cwKeyer', 'scopeControls']);
-    expect(compositionSurfaces(plan(sdrTestLayout, { zoneOrder: { main: ['rxTx', 'vfo'] } }), FALLBACK))
-      .toEqual(['rxTx', 'vfo', 'meters']);
+    // A within-zone reorder reaches the flattened composition — on `mobile`,
+    // which still declares both surfaces in one zone (MOR-2231 split
+    // sdr-test's).
+    expect(compositionSurfaces(
+      plan(mobileLayout, { zoneOrder: { 'portrait-deck': ['rxTx', 'vfo'] } }), FALLBACK,
+    )).toEqual(['rxTx', 'vfo']);
   });
 
   it('never composes to nothing — an empty plan yields the fallback', () => {

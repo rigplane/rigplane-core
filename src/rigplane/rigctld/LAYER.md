@@ -23,7 +23,6 @@ Internal layout:
 - `rigctld/protocol.py` — line-based protocol parser/formatter.
 - `rigctld/routing.py` — backend → rigctld feature mapping
   (`RigctldRoutable` integration; see #1322, #1324).
-- `rigctld/poller.py`, `rigctld/state_cache.py` — telemetry plumbing.
 - `rigctld/circuit_breaker.py`, `rigctld/contract.py`,
   `rigctld/audit.py`, `rigctld/utils.py` — operational helpers.
 

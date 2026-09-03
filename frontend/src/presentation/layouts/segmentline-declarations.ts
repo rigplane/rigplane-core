@@ -31,14 +31,24 @@
  *      collapsed to the one minimal zone below.
  */
 import { registerLayout, type LayoutManifest } from './contract';
+import { peerSplitGlassGroup } from '../groups/declarations';
 
 /**
- * The `segmentline` family's canonical glass, matching the LCD family's own
- * `LCD_NATIVE_STAGE` (`lcd-declarations.ts`) — same 1280x540 native size and
- * 0.5 `minScale`, per `docs/plans/2026-09-01-segmentline-peer-split.md` §9.
+ * The `segmentline` family's canonical glass. Its native size and minScale
+ * are the `peer-split-glass` instrument group's own declaration
+ * (`../groups/declarations.ts`, MOR-2253 slice 1), read by reference here —
+ * this used to duplicate `PeerSplitLayout.svelte`'s own `NATIVE_W`/
+ * `NATIVE_H` constants as a second, independent literal (instrument-group
+ * ADR §4, F2); both now point at the one group declaration instead.
+ * `LCD_NATIVE_STAGE` (`lcd-declarations.ts`) happens to agree with this
+ * group's numbers, but stays its own separate literal (ADR §4): `lcd-
+ * cockpit`/`lcd-scope` are not groups until a later migration slice.
  */
 const SEGMENTLINE_GLASS_STAGE = {
-  mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5,
+  mode: 'fixed-native',
+  nativeW: peerSplitGlassGroup.canvas.w,
+  nativeH: peerSplitGlassGroup.canvas.h,
+  minScale: peerSplitGlassGroup.scaling.minScale,
 } as const;
 
 export const peerSplitLayout: LayoutManifest = {
@@ -50,8 +60,11 @@ export const peerSplitLayout: LayoutManifest = {
   // `<SemanticRadioSurfaces strips="dual" />` (MOR-2155). The dual
   // composition hardcodes its own `primary-vfo`/`secondary-vfo`/`global`/
   // `rx-tx` DOM zone ids regardless of what a manifest declares here (spec
-  // §4) — this id is a manifest-level label, not a DOM binding.
-  zones: [{ id: 'peer-columns', surfaces: ['vfo', 'rxTx'] }],
+  // §4) — this id is a manifest-level label, not a DOM binding. `group`
+  // (MOR-2253 slice 1) is the reverse reference the instrument-group ADR §4
+  // adds: the shell resolves `peer-split-glass` through this zone instead of
+  // hardcoding the group id.
+  zones: [{ id: 'peer-columns', surfaces: ['vfo', 'rxTx'], group: peerSplitGlassGroup.id }],
   // FTX-1's `2/ab_shared` topology is one of these two; a single-receiver
   // radio has nothing to put in a second column (spec §2).
   compatibleTopologies: ['2/ab_shared', '2/main_sub'],
