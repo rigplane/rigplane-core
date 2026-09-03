@@ -68,6 +68,33 @@ export const sdrTestLayout: LayoutManifest = {
   // which follows the semantic DECK for R9) and batch 1's `vfo` zone already
   // suppressed it here.
   //
+  // MOR-2231 (step 1, batch 4): `scopeDisplay` and `scopeControls` join, under
+  // the ids `desktop-declarations.ts` already uses. That completes the
+  // fourteen — every name in `SEMANTIC_SURFACE_NAMES` (`contract.ts`) now has
+  // a zone here. Both already mounted BARE through the single composition's
+  // `zoned()` calls in `SemanticRadioSurfaces.svelte` (both take the default
+  // `allowBare` on that path), so declaring the zone gives each a
+  // `data-zone-id` host.
+  //
+  // The two differ in what else the declaration does, and NEITHER matches the
+  // batch-3 shape:
+  //
+  //   `scopeDisplay` retires ONE host, and it is the first on this face that
+  //   is neither a sidebar panel nor a settings-modal section: `StatusBar`'s
+  //   scope indicator, `{#if hasAnyScope() && !declared.has('scopeDisplay')}`.
+  //   The twin is capability-gated on `hasAnyScope()`, so a radio with neither
+  //   a hardware scope nor an audio-FFT source has no indicator to retire.
+  //
+  //   `scopeControls` retires NO host — the `band` shape rather than the
+  //   `txAux` one, since a predicate does exist. Its only consumer is a PROP:
+  //   `RadioLayout.svelte` forwards `hideScopeControls={declared.has(
+  //   'scopeControls')}` to `SpectrumPanel`, which keeps mounting and drops
+  //   the toolbar's twelve fact-backed `scopeControls.*` leaves (the eight
+  //   client-side view options are never gated on it, S10 category (b)). The
+  //   host is the CENTRE column's legacy spectrum panel, inside
+  //   `{#if hasSpectrum()}` — a different mechanism from the sidebars'
+  //   `drag.order.includes(...)` mount gates.
+  //
   // None is `required`, matching `desktop-v2`: each surface self-gates on its
   // own `view.*` group, so a radio whose evidence gate declined the group must
   // still resolve this layout.
@@ -84,6 +111,8 @@ export const sdrTestLayout: LayoutManifest = {
     { id: 'dsp', surfaces: ['dsp'] },
     { id: 'cw-keyer', surfaces: ['cwKeyer'] },
     { id: 'tx-aux', surfaces: ['txAux'] },
+    { id: 'scope-display', surfaces: ['scopeDisplay'] },
+    { id: 'scope-controls', surfaces: ['scopeControls'] },
   ],
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],

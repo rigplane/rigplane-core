@@ -104,6 +104,14 @@ describe('declared semantic zones (what the migrated entrypoint actually mounts)
     ['dsp', 'dsp'],
     ['cwKeyer', 'cw-keyer'],
     ['txAux', 'tx-aux'],
+    // MOR-2231 (step 1, batch 4) — the centre-top pair completes the fourteen.
+    // The id-drift argument applies to `scopeDisplay` unchanged. It applies to
+    // `scopeControls` too, but through a PROP rather than a mount gate:
+    // `hideScopeControls={declared.has('scopeControls')}` would still go true
+    // under a drifted id, so the toolbar's fact-backed half would still retire
+    // while the surface named a host no arrangement can bind.
+    ['scopeDisplay', 'scope-display'],
+    ['scopeControls', 'scope-controls'],
   ] as const)('mounts %s alone in the stable `%s` zone, not required', (surface, zoneId) => {
     const owning = sdrTestLayout.zones.filter((z) => z.surfaces.includes(surface));
     expect(owning).toHaveLength(1);

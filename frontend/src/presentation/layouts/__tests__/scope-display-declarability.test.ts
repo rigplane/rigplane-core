@@ -7,9 +7,10 @@
  * added no design-language renderer slot (that set was frozen by MOR-1072 —
  * adding one would be a language-contract change this slice must not make).
  *
- * MOR-1365 flips the second half, on `desktop-v2` ONLY: the cockpit manifest
- * is deliberately untouched (S5 precedent), so `scopeDisplay` keeps mounting
- * bare there. The inventory below is a LITERAL of who declares it, mirroring
+ * MOR-1365 flipped the second half on `desktop-v2`; MOR-2231 (step 1, batch 4)
+ * adds `sdr-test`. The cockpit manifest stays deliberately untouched (S5
+ * precedent), so `scopeDisplay` keeps mounting bare there. The inventory below
+ * is a LITERAL of who declares it, mirroring
  * `meters-declarability.test.ts`'s post-S5 shape.
  *
  * Same three pins as `tx-aux-declarability.test.ts` / `meters-declarability.test.ts`
@@ -55,7 +56,13 @@ describe('scopeDisplay is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare a scopeDisplay zone (MOR-1365)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_SCOPE_DISPLAY = ['desktop-v2'];
+  // MOR-2231 (step 1, batch 4) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force: the same declaration retires that
+  // face's status-bar scope indicator through the `declared.has(...)` channel
+  // (`StatusBar.svelte`'s `{#if hasAnyScope() && !declared.has('scopeDisplay')}`).
+  // That is the only host it retires, and it is the first twin on this face
+  // that is neither a sidebar panel nor a settings-modal section.
+  const DECLARES_SCOPE_DISPLAY = ['desktop-v2', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.
