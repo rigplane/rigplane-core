@@ -14,7 +14,22 @@
  * carries a fractional fill and a sub-pixel peak; a segment ladder quantises
  * both, so a reading is legible as a COUNT at arm's length with gloves on.
  */
-import type { DesignLanguageTokens, RendererViewModel } from '../contract';
+import type { DesignLanguageTokens, RendererViewModel, Zone } from '../contract';
+
+/**
+ * MOR-2255 (slice A): fieldline's bar-gauge zone palette. These three values
+ * are the ones `BarGauge` already draws — `DEFAULT_ZONES` in
+ * `components-v2/meters/bar-gauge-utils.ts` — so wiring the palette through
+ * this seam changes no pixel. Giving each language its own palette is a
+ * separate ticket. The literal is repeated in `studioline` and `segmentline`
+ * rather than shared through a constant (coordinator ruling, MOR-2255): a
+ * language declares its own data.
+ */
+export const FIELDLINE_METER_ZONES: readonly Zone[] = [
+  { end: 0.6, color: '#14A665' },
+  { end: 0.8, color: '#F2CF4A' },
+  { end: 1.0, color: '#F14C42' },
+];
 
 /** Few enough to count at a glance, coarse enough to read in sunlight. */
 export const FIELDLINE_SEGMENT_COUNT = 12;
@@ -58,6 +73,9 @@ export interface FieldlineMeter {
    */
   readonly toneBelowS9: string;
   readonly toneAboveS9: string;
+  /** MOR-2255: `FIELDLINE_METER_ZONES`, the `MeterDisplay` field `BarGauge`
+   *  colors its segments from. */
+  readonly zones: readonly Zone[];
   readonly scaleTicks: readonly number[];
   readonly unknown: boolean;
 }
@@ -108,6 +126,7 @@ export function renderMeter(
     litCount,
     toneBelowS9: tokens.rx.active,
     toneAboveS9: tokens.tx.tuning,
+    zones: FIELDLINE_METER_ZONES,
     scaleTicks: FIELDLINE_SCALE_TICKS,
     unknown: value === null,
   };

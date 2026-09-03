@@ -13,12 +13,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **The shared state-cache poll helpers are deleted.** Removed:
+  `rigplane.runtime._shared_state_runtime` (the whole module — its
+  `DEFAULT_STATE_CACHE_TTL`, `is_cache_fresh`, `poll_frequency`,
+  `poll_mode` and `poll_standard_fields`) and the legacy alias shim
+  `rigplane._shared_state_runtime`. Importing either module path now
+  raises `ModuleNotFoundError`. `rigctld` keeps its own TTL in
+  `RigctldConfig.cache_ttl`.
+- **The `rigctld` server's `_poller` constructor hook is deleted.** Removed
+  from `rigplane.rigctld.server`: the `_poller` keyword argument of
+  `RigctldServer.__init__`, the `self._poller` attribute, and the poller
+  start/stop and `write_busy`/`hold_for` pacing sites that read it in
+  `RigctldServer.stop`, `RigctldServer._on_client_done`,
+  `RigctldServer._wsjtx_compat_prewarm` and `RigctldServer._handle_client`,
+  together with the module-level `_is_packet_mode_set` helper that gated the
+  packet-mode hold. Passing `_poller=` to `RigctldServer` now raises
+  `TypeError`.
+- **`rigplane.commands.parse_scope_span_response` and
+  `rigplane.commands.scope_set_span` require the span-preset table as an
+  argument (MOR-2258).** The module constant that held the eight Icom
+  CI-V span values (span code 0-7 -> Hz) inside
+  `src/rigplane/commands/scope.py` is deleted; the table now lives only in
+  `rigs/*.toml` (`[scope].span_presets_hz`) and reaches these two
+  functions as `RadioProfile.scope_span_presets_hz`, passed in by the
+  caller because `commands/` may not import `profiles/`
+  (`.importlinter`). `parse_scope_span_response` takes it as a second
+  positional parameter, `scope_set_span` as a required keyword-only
+  `presets=`; both raise `TypeError` if it is omitted. The legal span
+  index range is now `0..len(presets) - 1` rather than a fixed `0..7`.
+  Every caller in this repository (`runtime/_civ_rx.py: CivRuntime`,
+  `runtime/_scope_runtime.py: ScopeRuntimeMixin`) reads the resolved
+  profile and passes it; an external caller must do the same. At this
+  commit every shipped profile that declares `get_scope_span`
+  (`ic7300`, `ic705`, `ic7610`, `ic9700`) also declares
+  `[scope].span_presets_hz` with the same eight values, so no shipped
+  radio changes behaviour.
 - **The `rigctld` `RadioPoller` is deleted.** Removed: `rigplane.rigctld.poller`
   (the module, its `RadioPoller` class, `_mode_to_hamlib_str`,
   `_get_mode_reader`, and `_STATS_LOG_INTERVAL`) and its `## RadioPoller`
-  section in `docs/api/rigctld.md`. At the parent commit nothing under
-  `src/` constructs the class; `RigctldServer`'s `_poller` constructor hook
-  stays and is removed in the follow-up.
+  section in `docs/api/rigctld.md`. At that entry's parent commit nothing
+  under `src/` constructed the class.
 - **The misnamed `tx_freq_monitor` field and commands are deleted; XFC is
   the real transmit-frequency monitor (MOR-2246).** Removed: the
   `TransceiverStatusCapable` protocol (and its `rigplane.TransceiverStatusCapable`

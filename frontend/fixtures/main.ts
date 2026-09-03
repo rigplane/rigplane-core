@@ -194,7 +194,13 @@ const target = document.getElementById('app')!;
 // call shared with two components that take none.
 if (fixture.layout === 'peer-split') {
   mount(PeerSplitLayout, {
-    target, context, props: { canvasW: peerSplitGlassGroup.canvas.w, canvasH: peerSplitGlassGroup.canvas.h },
+    target,
+    context,
+    props: {
+      canvasW: peerSplitGlassGroup.canvas.w,
+      canvasH: peerSplitGlassGroup.canvas.h,
+      minScale: peerSplitGlassGroup.scaling.minScale,
+    },
   });
 } else {
   mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, { target, context });

@@ -13,6 +13,14 @@
     value: number;         // 0–1 normalized
     label: string;         // 'Po' | 'SWR' | 'ALC' | 'COMP'
     displayValue: string;  // '35W' | '1.2' | '-8'
+    /**
+     * Segment palette. MOR-2255 gave this prop a real writer:
+     * `semantic/MetersSurface.svelte` passes the active design language's own
+     * `MeterDisplay.zones`. The `DEFAULT_ZONES` default below stays and is not
+     * dead — it is the "no design language active" fallback, the same role
+     * `DEFAULT_METER_DISPLAY` (`./meter-display.ts`) plays for
+     * `LinearSMeter.svelte`'s `display` prop.
+     */
     zones?: readonly Zone[];
     compact?: boolean;
     showPeak?: boolean;    // MOR-1282: optional peak-hold marker

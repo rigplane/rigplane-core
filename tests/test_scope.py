@@ -789,7 +789,8 @@ class TestScopeCommandBuilders:
         assert frame[6] == 0x02
 
     def test_scope_set_span(self, cmd_map) -> None:
-        frame = scope_set_span(3, cmd_map=cmd_map)  # index 3 = 25000 Hz
+        presets = load_rig(RIG_DIR / "ic7610.toml").scope_span_presets_hz
+        frame = scope_set_span(3, cmd_map=cmd_map, presets=presets)  # 25000 Hz
         assert frame[4] == 0x27
         assert frame[5] == 0x15
         # BCD-encoded 25000 Hz (little-endian): 00 50 02 00 00

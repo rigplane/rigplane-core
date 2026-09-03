@@ -126,12 +126,16 @@ const noopChildren = ((_anchor: unknown) => ({
 
 /** Mounts `ScaledStage` at the given native size inside the current
  *  `containerSize`, and captures the holder element for later resizes. */
-function mountStage(nativeW: number, nativeH: number, opts?: { anchor?: 'top-left' | 'center' }): HTMLElement {
+function mountStage(
+  nativeW: number,
+  nativeH: number,
+  opts?: { anchor?: 'top-left' | 'center'; minScale?: number },
+): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
   const component = mount(ScaledStage, {
     target,
-    props: { nativeW, nativeH, anchor: opts?.anchor, children: noopChildren },
+    props: { nativeW, nativeH, anchor: opts?.anchor, minScale: opts?.minScale, children: noopChildren },
   });
   flushSync();
   components.push(component);
@@ -265,7 +269,7 @@ describe('ScaledStage — anchor prop (MOR-2251)', () => {
   });
 });
 
-describe('ScaledStage — .scaled-stage declares flex-shrink: 0 (MOR-2251)', () => {
+describe('ScaledStage — .scaled-stage-box declares flex-shrink: 0 (MOR-2251, moved by MOR-2270)', () => {
   // This is a TEXT pin on the component's own <style> block, the same
   // idiom `PeerSplitLayout.component.test.ts`'s `declarationsFor` uses
   // (read that file before touching this one). It verifies the
@@ -277,11 +281,11 @@ describe('ScaledStage — .scaled-stage declares flex-shrink: 0 (MOR-2251)', () 
   // component <style> during a mount ... every element's getComputedStyle
   // reads the UA default regardless of what any <style> block declares").
   // A comment claiming this test proves the stage cannot reflow would be
-  // false. What it does prove: the declaration is the ENTIRE mechanism —
-  // no other property makes `.scaled-stage` shrink-proof, and the grid
-  // case (see the property's own comment in ScaledStage.svelte) needs no
-  // second declaration — so deleting this line is the only regression path
-  // for this fix, and this pin fails exactly on that deletion.
+  // false.
+  //
+  // MOR-2270 moved the declaration from `.scaled-stage` to the wrapper:
+  // `flex-shrink` only ever applies to a flex ITEM, and the holder's child
+  // is now `.scaled-stage-box`, not `.scaled-stage`.
   const source = readFileSync('src/primitives/stage/ScaledStage.svelte', 'utf8');
   const styleBlock = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
   const css = styleBlock.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -301,8 +305,149 @@ describe('ScaledStage — .scaled-stage declares flex-shrink: 0 (MOR-2251)', () 
     throw new Error(`no rule for selector "${selector}" in ScaledStage.svelte's <style> block`);
   }
 
-  it('declares flex-shrink: 0', () => {
-    const stage = declarationsFor('.scaled-stage');
-    expect(stage['flex-shrink']).toBe('0');
+  it('declares flex-shrink: 0 on the wrapper', () => {
+    const box = declarationsFor('.scaled-stage-box');
+    expect(box['flex-shrink']).toBe('0');
+  });
+
+  it('the holder declares overflow: auto in the stylesheet, not per measurement', () => {
+    // MOR-2270 removed the MOR-2259 inline gate. `auto` is now a plain
+    // stylesheet declaration; `mountsNoInlineOverflow` below pins the other
+    // half — that no inline value is written back onto the element.
+    const holder = declarationsFor('.scaled-stage-holder');
+    expect(holder.overflow).toBe('auto');
+  });
+});
+
+describe('ScaledStage — the minScale floor (MOR-2259)', () => {
+  it('holds the floor when the host is too small for the fit', () => {
+    containerSize = { width: 320, height: 135 };
+    const target = mountStage(1280, 540, { minScale: 0.5 });
+    expect(readTransform(target)).toBe('scale(0.5)');
+  });
+
+  it('omitting minScale leaves the same host at the unfloored fit, exactly', () => {
+    // The default-preservation control, one mount apart from the floored
+    // case above: same host, same native size, no floor prop.
+    containerSize = { width: 320, height: 135 };
+    const target = mountStage(1280, 540);
+    expect(readTransform(target)).toBe('scale(0.25)');
+  });
+
+  it('releases the floor once the host grows enough to fit above it', () => {
+    containerSize = { width: 320, height: 135 };
+    const target = mountStage(1280, 540, { minScale: 0.5 });
+    expect(readTransform(target)).toBe('scale(0.5)');
+
+    resizeContainer(960, 405);
+
+    expect(readTransform(target)).toBe('scale(0.75)');
+  });
+
+  it('anchor="center" translates to the host origin while the floor is active', () => {
+    // native 1280x540 held at 0.5 is a 640x270 box in a 524x221 host — it
+    // overflows on both axes, so centring has nothing to split and the box
+    // must start at the origin for the overflow to be scrollable.
+    containerSize = { width: 524, height: 221 };
+    const target = mountStage(1280, 540, { anchor: 'center', minScale: 0.5 });
+    expect(readTransform(target)).toBe('translate(0px, 0px) scale(0.5)');
+  });
+});
+
+describe('ScaledStage — the wrapper carries the painted size (MOR-2270)', () => {
+  // The scrolling area of `.scaled-stage-holder` is computed from its
+  // descendants' UNTRANSFORMED layout boxes — MEASURED in Chrome 152, not
+  // reasoned from the spec: an 802x337 holder over a single 1280x540 child
+  // scaled 0.624421 reports `scrollWidth`/`scrollHeight` 1280x540, under
+  // `overflow: auto` and `overflow: hidden` alike; the same holder over a
+  // wrapper sized 799.259x337.187 (native x scale) with that same scaled
+  // child inside reports 802x337, i.e. exactly its client box. That is what
+  // this wrapper is for, and it is the part jsdom cannot show: it lays
+  // nothing out, so what is pinned below is the input Chrome's computation
+  // reads — the wrapper's own declared box — not the scrolling area it
+  // produces.
+  //
+  // The two host boxes are the ones `LcdLayout variant="peer-split"` gives
+  // this holder in a real browser, re-derived for MOR-2270 rather than
+  // trusted from MOR-2259: client 802x337 at a 1280x800 viewport, client
+  // 522x219 at 1000x800.
+  const NATIVE_W = 1280;
+  const NATIVE_H = 540;
+  const FLOOR = 0.5;
+
+  const holderOf = (target: HTMLElement) => target.querySelector<HTMLElement>('.scaled-stage-holder')!;
+  const boxOf = (target: HTMLElement) => target.querySelector<HTMLElement>('.scaled-stage-box')!;
+  const stageOf = (target: HTMLElement) => target.querySelector<HTMLElement>('.scaled-stage')!;
+
+  it('sizes the wrapper to native x scale while the stage keeps its native box', () => {
+    containerSize = { width: 802, height: 337 };
+    const target = mountStage(NATIVE_W, NATIVE_H, { minScale: FLOOR });
+
+    // The floor is idle here: height is the binding axis and its ratio is
+    // above the floor, so the scale is that ratio exactly.
+    const scale = readScale(target);
+    expect(scale).toBe(337 / NATIVE_H);
+    expect(scale).toBeGreaterThan(FLOOR);
+
+    // The wrapper is the painted box...
+    expect(boxOf(target).style.width).toBe(`${NATIVE_W * scale}px`);
+    expect(boxOf(target).style.height).toBe(`${NATIVE_H * scale}px`);
+    // ...and it fits inside the host on both axes, which is what makes the
+    // holder's `overflow: auto` inert at this host.
+    expect(NATIVE_W * scale).toBeLessThanOrEqual(802);
+    expect(NATIVE_H * scale).toBeLessThanOrEqual(337);
+
+    // ...while the stage inside it keeps the native box the transform scales.
+    expect(stageOf(target).style.width).toBe(`${NATIVE_W}px`);
+    expect(stageOf(target).style.height).toBe(`${NATIVE_H}px`);
+    expect(stageOf(target).style.transform).toBe(`scale(${scale})`);
+  });
+
+  it('sizes the wrapper past the host on both axes while the floor clamps', () => {
+    containerSize = { width: 522, height: 219 };
+    const target = mountStage(NATIVE_W, NATIVE_H, { minScale: FLOOR });
+
+    expect(readScale(target)).toBe(FLOOR);
+    // The wrapper is larger than the host on both axes, so the part outside
+    // it is only reachable because the holder scrolls.
+    expect(boxOf(target).style.width).toBe(`${NATIVE_W * FLOOR}px`);
+    expect(boxOf(target).style.height).toBe(`${NATIVE_H * FLOOR}px`);
+    expect(NATIVE_W * FLOOR).toBeGreaterThan(522);
+    expect(NATIVE_H * FLOOR).toBeGreaterThan(219);
+  });
+
+  it('follows the host box rather than being fixed at mount', () => {
+    containerSize = { width: 522, height: 219 };
+    const target = mountStage(NATIVE_W, NATIVE_H, { minScale: FLOOR });
+    expect(boxOf(target).style.width).toBe(`${NATIVE_W * FLOOR}px`);
+
+    resizeContainer(802, 337);
+
+    const scale = readScale(target);
+    expect(boxOf(target).style.width).toBe(`${NATIVE_W * scale}px`);
+    expect(boxOf(target).style.height).toBe(`${NATIVE_H * scale}px`);
+  });
+
+  it('writes no inline overflow onto the holder — the MOR-2259 gate is gone', () => {
+    containerSize = { width: 100, height: 100 };
+    const target = mountStage(NATIVE_W, NATIVE_H);
+
+    expect(holderOf(target).style.overflow).toBe('');
+  });
+
+  it('nests holder > wrapper > stage, each with exactly one child', () => {
+    // The transform must stay INSIDE the wrapper: a wrapper below the
+    // transform, or the two merged back into one element, both restore the
+    // untransformed 1280x540 layout box as the holder's scrolling area.
+    containerSize = { width: 802, height: 337 };
+    const target = mountStage(NATIVE_W, NATIVE_H);
+
+    const holder = holderOf(target);
+    const box = boxOf(target);
+    const stage = stageOf(target);
+    expect(holder.children.length).toBe(1);
+    expect(holder.firstElementChild).toBe(box);
+    expect(box.firstElementChild).toBe(stage);
+    expect(box.style.transform).toBe('');
   });
 });

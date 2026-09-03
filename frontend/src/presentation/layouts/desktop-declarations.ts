@@ -164,10 +164,7 @@ export const desktopV2Layout: LayoutManifest = {
   stageSizing: { mode: 'fluid', responsiveBreakpoints: [] },
   /**
    * No fallback: terminal by construction, same reasoning as `mobile` and
-   * `lcd-cockpit`. `compatibleTopologies` above covers all four canonical
-   * classes (no topology ever fails), and `fluid` sizing always fits a
-   * viewport (`fitsViewport`) — so a fallback hop would be unreachable and
-   * would only mask a real failure, never resolve one.
+   * `lcd-cockpit`.
    */
   fallbackLayoutId: null,
 };

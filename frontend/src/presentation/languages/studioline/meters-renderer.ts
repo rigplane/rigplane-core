@@ -1,16 +1,37 @@
 /**
  * `studioline` meter renderer (MOR-1073, VFO slice) — a two-tone fill split
- * at S9, a 1px peak tick, and the scale rendered as sparse text ticks BELOW
- * the rail rather than as marks on it.
+ * at S9.
  *
  * Pure geometry, expressed as fractions of the track so the consumer owns
  * the pixel width. Ballistics are NOT here: smoothing is a per-grammar
  * tuning applied at the smoother (MOR-977 §1.1), not a renderer behaviour.
  */
-import type { DesignLanguageTokens, RendererViewModel } from '../contract';
+import type { DesignLanguageTokens, RendererViewModel, Zone } from '../contract';
 
-/** Sparse text ticks — the rail itself carries no marks. */
-export const STUDIOLINE_SCALE_TICKS = [1, 3, 5, 7, 9] as const;
+/**
+ * MOR-2255 (slice A): studioline's bar-gauge zone palette. These three values
+ * are the ones `BarGauge` already draws — `DEFAULT_ZONES` in
+ * `components-v2/meters/bar-gauge-utils.ts` — so wiring the palette through
+ * this seam changes no pixel. Giving each language its own palette is a
+ * separate ticket. The literal is repeated in `fieldline` and `segmentline`
+ * rather than shared through a constant (coordinator ruling, MOR-2255): a
+ * language declares its own data.
+ */
+export const STUDIOLINE_METER_ZONES: readonly Zone[] = [
+  { end: 0.6, color: '#14A665' },
+  { end: 0.8, color: '#F2CF4A' },
+  { end: 1.0, color: '#F14C42' },
+];
+
+/**
+ * Peak-hold: a 1px tick, in contrast with `fieldline`'s whole-segment hold —
+ * read directly (not through `design-language-renderers.ts`'s `renderSlot`
+ * extraction, which never pulls this field) by
+ * `fieldline/__tests__/meters-renderer.test.ts`'s own cross-language
+ * comparison (`theirs.peakWidthPx`), which is why this constant and the
+ * `peakWidthPx` field below survived the MOR-2250 dead-field sweep that
+ * removed `peak`/`scaleTicks` (no consumer, anywhere, for either).
+ */
 export const PEAK_TICK_WIDTH_PX = 1;
 
 export interface StudiolineMeter {
@@ -43,9 +64,10 @@ export interface StudiolineMeter {
    */
   readonly toneBelowS9: string;
   readonly toneAboveS9: string;
-  readonly peak: number | null;
+  /** MOR-2255: `STUDIOLINE_METER_ZONES`, the `MeterDisplay` field `BarGauge`
+   *  colors its segments from. */
+  readonly zones: readonly Zone[];
   readonly peakWidthPx: number;
-  readonly scaleTicks: readonly number[];
   readonly unknown: boolean;
 }
 
@@ -61,7 +83,6 @@ export function renderMeter(
 ): StudiolineMeter {
   const max = finiteNumber(viewModel.fields, 'max') ?? 15;
   const value = finiteNumber(viewModel.fields, 'value');
-  const peak = finiteNumber(viewModel.fields, 'peak');
   return {
     kind: 'studioline-meter',
     trackWidth: tokens.meters.trackWidth,
@@ -73,9 +94,8 @@ export function renderMeter(
     overTone: tokens.tx.tuning,
     toneBelowS9: tokens.rx.active,
     toneAboveS9: tokens.tx.tuning,
-    peak: peak === null ? null : clampFraction(peak, max),
+    zones: STUDIOLINE_METER_ZONES,
     peakWidthPx: PEAK_TICK_WIDTH_PX,
-    scaleTicks: STUDIOLINE_SCALE_TICKS,
     unknown: value === null,
   };
 }

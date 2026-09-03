@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+import contextlib
+import time
+from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -35,7 +38,12 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
+from rigplane.core.state_store import (
+    FreshnessClock,
+    FreshnessState,
+    SnapshotDelta,
+    StateStore,
+)
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import get_radio_profile
 from rigplane.runtime._state_queries import acquisition_query_from_wire_tuple
@@ -2161,11 +2169,11 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
 ):
     """MOR-1501 acceptance criterion.
 
-    Simulates the real IC-7300 acquisition profile's 22 non-polling
+    Simulates the real IC-7300 acquisition profile's 24 non-polling
     ``field_policies`` fields populating from a cold connect (empty store).
     Before adaptive pacing, the flat 30s re-derivation interval combined
     with the unchanged 5-field burst cap gave this profile a ~120s tail
-    (``ceil(22 / 5) == 5`` waves, 30s apart), even though each field's true
+    (five 5-field-capped waves, 30s apart), even though each field's true
     CI-V round-trip cost is ~1.1s — the interval, not the serial link, was
     the bottleneck. With the 5s adaptive interval the same 5 waves complete
     in ~20-25s. This drives the scheduler/service pair directly (no real
@@ -2190,9 +2198,10 @@ def test_state_freshness_service_ic7300_non_polling_populate_completes_within_25
     # (MOR-1501) — guards against silent membership drift changing the
     # shape of this regression test without anyone noticing. MOR-2144 removes
     # only the unsupported APF path; the supported NB level stays scheduled.
+    # MOR-2234 adds tone_freq/tsql_freq, taking the count from 22 to 24.
     assert apf_path not in acquisition.field_policies
     assert nb_level_path in acquisition.field_policies
-    assert len(non_polling_paths) == 22
+    assert len(non_polling_paths) == 24
 
     clock = FreshnessClock(start=2000.0)
     store = StateStore(freshness_clock=clock)
@@ -3126,6 +3135,55 @@ def test_ic7300_real_profile_vox_delay_is_primed_and_executor_builds_multibyte_f
     assert acquisition_query(0x1A, sub=0x05, data=b"\x01\x91") in sent
 
 
+def test_ic7300_real_profile_primes_tone_and_tsql_freq_and_sends_1b_reads() -> None:
+    """MOR-2234 group B: the scheduler must actually ask for tone/TSQL freq.
+
+    ``rigs/ic7300.toml`` declares ``get_tone_freq``/``get_tsql_freq`` and
+    ``runtime/_civ_rx.py`` decodes the ``0x1B`` replies, but neither path
+    appeared in any ``[state_acquisition.capabilities]`` list, so
+    ``capability_for`` returned the default UNKNOWN and no acquisition
+    mechanism ever reached them. Driving the real scheduler over a full
+    round-robin sweep of ``field_policies`` must queue both paths and the
+    CI-V executor must emit their declared ``1B 00`` / ``1B 01`` reads.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic7300.toml").to_profile().state_acquisition
+    assert acquisition is not None
+
+    tone_freq = FieldPath.receiver("main", "operator_controls", "tone_freq")
+    tsql_freq = FieldPath.receiver("main", "operator_controls", "tsql_freq")
+    for path in (tone_freq, tsql_freq):
+        capability = acquisition.capability_for(path)
+        assert capability.is_unavailable is False
+        assert capability.can_poll is False
+        assert capability.command_response_observable is True
+
+    clock = FreshnessClock(start=400.0)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+
+    # prime_unobserved caps each call at a burst limit and advances a
+    # round-robin cursor, so one call need not reach every policy field.
+    # len(field_policies) calls bound a full sweep from any start offset.
+    request_by_path: dict[FieldPath, Any] = {}
+    for _ in range(len(acquisition.field_policies)):
+        for request in scheduler.prime_unobserved(observed_paths=()):
+            for path in request.paths:
+                request_by_path.setdefault(path, request)
+    assert {tone_freq, tsql_freq} <= set(request_by_path)
+
+    # Both paths coalesce into one request (same scope/family/receiver/
+    # method/policy key), so one execution covers them.
+    request = request_by_path[tone_freq]
+    assert request_by_path[tsql_freq] is request
+    assert request.acquisition_method == "command_response"
+
+    executor, sent = recording_executor(get_radio_profile("IC-7300"))
+    execution = asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
+    assert execution.failed_paths == ()
+    assert acquisition_query(0x1B, sub=0x00, receiver=0) in sent
+    assert acquisition_query(0x1B, sub=0x01, receiver=0) in sent
+
+
 def test_ic7610_real_profile_vfo_global_query_for_path() -> None:
     executor, sent = recording_executor(get_radio_profile("IC-7610"))
 
@@ -3399,3 +3457,96 @@ async def test_ic7300_executor_preserves_dedupe_for_plain_profile_route() -> Non
         assert power not in result.sent_paths
 
     assert sent == [acquisition_query(0x16, sub=0x44)]
+
+
+@contextlib.contextmanager
+def _recorded_freshness_ticks() -> Iterator[list[float]]:
+    """Record a monotonic timestamp for every ``StateFreshnessService.tick``."""
+
+    stamps: list[float] = []
+    real_tick = StateFreshnessService.tick
+
+    def _tick(
+        service: StateFreshnessService, *, now: float | None = None
+    ) -> SnapshotDelta:
+        stamps.append(time.monotonic())
+        return real_tick(service, now=now)
+
+    with patch.object(StateFreshnessService, "tick", _tick):
+        yield stamps
+
+
+@pytest.mark.asyncio
+async def test_second_run_does_not_add_a_second_ticking_loop() -> None:
+    """Two concurrent ``run()`` calls on one service tick as one loop.
+
+    Combined mode (``rigplane web --rigctld``) shares a single
+    ``StateFreshnessService`` between the two seats and each seat starts its
+    own driver task over it (``web/web_startup.py: start_web_server`` and
+    ``rigctld/server.py: RigctldServer._start_state_freshness_task``).
+
+    The discriminator is the gap between consecutive ticks, not their count.
+    ``asyncio.sleep`` does not return early, so one loop leaves at least
+    ``interval_seconds`` between ticks however loaded the host is; two loops
+    started back to back share a sleep phase and tick in closely spaced
+    pairs, which drives the minimum gap towards zero.
+    """
+
+    interval = 0.02
+    service = StateFreshnessService(store=StateStore(), interval_seconds=interval)
+
+    with _recorded_freshness_ticks() as stamps:
+        first = asyncio.create_task(service.run(), name="web-state-freshness")
+        second = asyncio.create_task(service.run(), name="rigctld-state-freshness")
+        try:
+            await asyncio.sleep(interval * 12)
+        finally:
+            first.cancel()
+            second.cancel()
+            await asyncio.gather(first, second, return_exceptions=True)
+
+    assert len(stamps) >= 3
+    gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:])]
+    assert min(gaps) >= interval * 0.9, f"ticks overlapped: gaps={gaps}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cancel_web_first", [True, False], ids=["web-first", "rigctld-first"]
+)
+async def test_freshness_driving_survives_the_first_seat_stopping(
+    cancel_web_first: bool,
+) -> None:
+    """Ticking outlives the first cancellation, in either order.
+
+    One of the two tasks holds the loop and the other waits for it.
+    Cancelling in both orders covers both roles without the test having to
+    depend on which task took which. Whichever goes first, the survivor
+    keeps ticking; once both are cancelled, nothing ticks.
+    """
+
+    interval = 0.02
+    service = StateFreshnessService(store=StateStore(), interval_seconds=interval)
+
+    with _recorded_freshness_ticks() as stamps:
+        web = asyncio.create_task(service.run(), name="web-state-freshness")
+        rigctld = asyncio.create_task(service.run(), name="rigctld-state-freshness")
+        first, second = (web, rigctld) if cancel_web_first else (rigctld, web)
+        try:
+            await asyncio.sleep(interval * 4)
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+
+            after_first_stop = len(stamps)
+            await asyncio.sleep(interval * 4)
+            assert len(stamps) > after_first_stop, "ticking stopped with a task live"
+
+            second.cancel()
+            await asyncio.gather(second, return_exceptions=True)
+            after_both_stopped = len(stamps)
+            await asyncio.sleep(interval * 4)
+            assert len(stamps) == after_both_stopped, "ticking outlived both tasks"
+        finally:
+            web.cancel()
+            rigctld.cancel()
+            await asyncio.gather(web, rigctld, return_exceptions=True)
