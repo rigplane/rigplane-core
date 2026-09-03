@@ -397,8 +397,7 @@ class YaesuCatPoller:
             observations = tuple(
                 item
                 for item in observations
-                if item.path
-                not in (_TX_TARGET_PATH, YAESU_PTT_PATH, OBSERVED_PTT_PATH)
+                if item.path not in (_TX_TARGET_PATH, YAESU_PTT_PATH, OBSERVED_PTT_PATH)
             )
             self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
