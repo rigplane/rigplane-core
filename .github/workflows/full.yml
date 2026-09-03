@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
 jobs:
   observed-ptt-green:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/yaesu-observed-ptt-red-proof'
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
     env:
@@ -46,6 +47,27 @@ jobs:
           ROOT = Path.cwd().resolve()
           EVIDENCE = Path(os.environ["YAESU_PROOF"])
           SELECTED = ("tests/test_yaesu_cat_observation_adapter.py", "tests/test_yaesu_cat_poller.py")
+          REQUIRED_NODES = {
+              "tests/test_yaesu_cat_observation_adapter.py::test_medium_canonical_ptt_has_exactly_one_publication[False]",
+              "tests/test_yaesu_cat_observation_adapter.py::test_medium_canonical_ptt_has_exactly_one_publication[True]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_capture_only_reconnect_uses_current_generation",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_store_only_generation_discards_held_read",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_current_generation_held_read_publishes_after_release[TX0-off]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_current_generation_held_read_publishes_after_release[TX1-on]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX0-None-off-False]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX1-None-on-True]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX2-None-on-True]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX9-None-unknown-True]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX0-state_map4-unknown-False]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX7-state_map5-off-False]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX0-state_map6-on-True]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX1-state_map7-unknown-True]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value[integer-one]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value[valid-on]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value[integer-zero]",
+              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value[valid-off]",
+              *{f"tests/test_yaesu_cat_poller.py::test_canonical_ptt_requires_qualified_readback[qualification{index}]" for index in range(6)},
+          }
           PROJECT_MODULES = {
               "test_yaesu_cat_observation_adapter": SELECTED[0],
               "test_yaesu_cat_poller": SELECTED[1],
@@ -99,10 +121,10 @@ jobs:
                   if not path_name:
                       continue
                   path = Path(path_name).resolve()
-                  if path.is_relative_to(ROOT):
-                      relative = str(path.relative_to(ROOT))
-                      assert relative in before and hashlib.sha256(path.read_bytes()).hexdigest() == before[relative], (name, relative)
-                      records.setdefault(name, relative)
+                  assert path.is_relative_to(ROOT), (name, str(path))
+                  relative = str(path.relative_to(ROOT))
+                  assert relative in before and hashlib.sha256(path.read_bytes()).hexdigest() == before[relative], (name, relative)
+                  records.setdefault(name, relative)
               return records
 
           def pytest_sessionstart(session):
@@ -119,8 +141,13 @@ jobs:
               prefixes = tuple(path + "::" for path in SELECTED)
               assert collected and all(node.startswith(prefixes) for node in collected), collected
               assert all(any(node.startswith(path + "::") for node in collected) for path in SELECTED), collected
-              save("manifest.json", dict(source=SOURCE, tree=TREE, selection=SELECTED, nodes=collected))
+              assert len(collected) == len(set(collected)), collected
+              assert REQUIRED_NODES <= set(collected), sorted(REQUIRED_NODES - set(collected))
+              save("manifest.json", dict(source=SOURCE, tree=TREE, selection=SELECTED, required_nodes=sorted(REQUIRED_NODES), nodes=collected))
               save("imports-before.json", imports())
+
+          def pytest_deselected(items):
+              append("deselected.jsonl", dict(nodes=[item.nodeid for item in items]))
 
           @pytest.hookimpl(hookwrapper=True)
           def pytest_runtest_makereport(item, call):
@@ -138,23 +165,54 @@ jobs:
               command = ["uv", "run", "--frozen", "pytest", "-p", "yaesu_green_probe", "-q", "-o", "addopts=", "-o", f"cache_dir={EVIDENCE / 'pytest-cache'}", "--basetemp", str(EVIDENCE / "basetemp"), "--tb=short", "--color=no", "--timeout=30", "--timeout-method=thread", *SELECTED, f"--junitxml={EVIDENCE / 'green.xml'}"]
               environment = dict(os.environ, PYTEST_ADDOPTS="", PYTHONPATH=str(EVIDENCE) + os.pathsep + os.environ.get("PYTHONPATH", ""))
               started = time.monotonic()
-              process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+              process = None
+              output = ""
               deadline_hit, signal_sent = False, None
               try:
-                  output, _ = process.communicate(timeout=600)
-              except subprocess.TimeoutExpired:
-                  deadline_hit, signal_sent = True, "SIGKILL"
-                  os.killpg(process.pid, signal.SIGKILL)
-                  output, _ = process.communicate()
-              try:
-                  os.killpg(process.pid, 0)
-              except ProcessLookupError:
-                  group_absent = True
-              else:
-                  group_absent = False
-              (EVIDENCE / "green.txt").write_text(output)
-              save("supervisor.json", dict(command=command, pid=process.pid, returncode=process.returncode, elapsed_seconds=time.monotonic() - started, deadline_seconds=600, deadline_hit=deadline_hit, signal_sent=signal_sent, reaped=True, process_group_absent=group_absent, deadline_signal_boundary="unexercised" if not deadline_hit else "exercised"))
-              return process.returncode
+                  process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                  try:
+                      output, _ = process.communicate(timeout=600)
+                  except subprocess.TimeoutExpired:
+                      deadline_hit = True
+              finally:
+                  record = dict(command=command, pid=process.pid if process else None, elapsed_seconds=time.monotonic() - started, deadline_seconds=600, deadline_hit=deadline_hit, signal_sent=signal_sent, signals=[])
+                  if process is not None:
+                      def gone():
+                          try:
+                              while os.waitpid(-process.pid, os.WNOHANG)[0]:
+                                  pass
+                          except ChildProcessError:
+                              pass
+                          try:
+                              os.killpg(process.pid, 0)
+                          except ProcessLookupError:
+                              return process.poll() is not None
+                          return False
+                      for action in (signal.SIGTERM, signal.SIGKILL):
+                          if gone():
+                              break
+                          record["signals"].append(action.name)
+                          try:
+                              os.killpg(process.pid, action)
+                          except ProcessLookupError:
+                              pass
+                          deadline = time.monotonic() + 3
+                          while not gone() and time.monotonic() < deadline:
+                              time.sleep(0.02)
+                      try:
+                          tail, _ = process.communicate(timeout=3)
+                          output += tail
+                      except subprocess.TimeoutExpired:
+                          record["communicate_timeout"] = True
+                      record.update(returncode=process.poll(), reaped=process.poll() is not None, process_group_absent=gone())
+                  else:
+                      record.update(returncode=None, reaped=False, process_group_absent=False)
+                  record["deadline_signal_boundary"] = "unexercised" if not deadline_hit else "exercised"
+                  (EVIDENCE / "green.txt").write_text(output)
+                  save("supervisor.json", record)
+              if not record["reaped"] or not record["process_group_absent"]:
+                  raise RuntimeError("supervisor did not reap the pytest process group")
+              return record["returncode"]
 
           def validate():
               before, after = json.loads((EVIDENCE / "before.json").read_text()), inventory()
@@ -167,8 +225,11 @@ jobs:
               manifest = json.loads((EVIDENCE / "manifest.json").read_text())
               nodes = manifest["nodes"]
               assert manifest["selection"] == list(SELECTED) and nodes
+              assert manifest["required_nodes"] == sorted(REQUIRED_NODES)
               collection = [json.loads(line) for line in (EVIDENCE / "collection.jsonl").read_text().splitlines()]
               assert collection and all(row["outcome"] == "passed" for row in collection), collection
+              deselected = [json.loads(line) for line in (EVIDENCE / "deselected.jsonl").read_text().splitlines()] if (EVIDENCE / "deselected.jsonl").exists() else []
+              assert not deselected, deselected
               phases = [json.loads(line) for line in (EVIDENCE / "phases.jsonl").read_text().splitlines()]
               expected = collections.Counter((node, phase) for node in nodes for phase in ("setup", "call", "teardown"))
               actual = collections.Counter((row["node"], row["phase"]) for row in phases)
@@ -180,6 +241,11 @@ jobs:
               suite = xml.find("testsuite") or xml
               assert int(suite.get("tests", "-1")) == len(nodes)
               assert all(not xml.findall(".//" + tag) for tag in ("failure", "error", "skipped"))
+              def junit_key(node):
+                  parts = node.split("::")
+                  return (".".join([parts[0][:-3].replace("/", "."), *parts[1:-1]]), parts[-1])
+              cases = xml.findall(".//testcase")
+              assert collections.Counter((case.get("classname"), case.get("name")) for case in cases) == collections.Counter(junit_key(node) for node in nodes)
               supervisor = json.loads((EVIDENCE / "supervisor.json").read_text())
               assert supervisor["returncode"] == 0 and supervisor["reaped"] and supervisor["process_group_absent"]
               assert not supervisor["deadline_hit"] and supervisor["signal_sent"] is None
