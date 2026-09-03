@@ -16,6 +16,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.audio.route import AudioConfigSource, AudioStreamContract
 from rigplane.core.radio_protocol import AudioCapable
 from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
     FieldPath,
     Observation,
     SourceMetadata,
@@ -167,6 +168,7 @@ def _capable_radio() -> SimpleNamespace:
         get_powerstat=AsyncMock(return_value=True),
         set_powerstat=AsyncMock(),
         native_power_unit="raw_255",
+        supports_command=MagicMock(return_value=True),
         set_rf_gain=AsyncMock(),
         set_af_level=AsyncMock(),
         set_squelch=AsyncMock(),
@@ -314,9 +316,47 @@ def _capable_radio() -> SimpleNamespace:
 class _QueueRecorder:
     def __init__(self) -> None:
         self.items: list[object] = []
+        self.metadata: list[dict[str, object]] = []
 
-    def put(self, item: object) -> None:
+    def put(
+        self,
+        item: object,
+        *,
+        command_id: str | None = None,
+        source: str | None = None,
+        session_id: str | None = None,
+        command_service: object | None = None,
+    ) -> None:
         self.items.append(item)
+        self.metadata.append(
+            {
+                "command_id": command_id,
+                "source": source,
+                "session_id": session_id,
+                "command_service": command_service,
+            }
+        )
+
+
+def _assert_canonical_level_intent(
+    command: object,
+    *,
+    name: str,
+    level: int,
+    receiver: int,
+) -> None:
+    field = {
+        "set_af_level": "af_level",
+        "set_rf_gain": "rf_gain",
+        "set_sql": "squelch",
+        "set_squelch": "squelch",
+    }[name]
+    canonical_name = "set_squelch" if name == "set_sql" else name
+    assert isinstance(command, CommandIntent)
+    assert command.name == canonical_name
+    assert command.params[field] == level
+    assert type(command.params[field]) is int
+    assert command.params["receiver"] == receiver
 
 
 def _control_handler(
@@ -479,8 +519,8 @@ def _scope_frame() -> ScopeFrame:
             # 77 must pass through unchanged.
             "set_rf_gain",
             {"level": 77, "receiver": 1},
-            SetRfGain,
-            {"level": 77, "receiver": 1},
+            CommandIntent,
+            {"rf_gain": 77, "receiver": 1},
             {"level": 77, "receiver": 1},
         ),
         (
@@ -490,15 +530,15 @@ def _scope_frame() -> ScopeFrame:
             # 255) == 153), not pass through unchanged.
             "set_af_level",
             {"level": 0.6, "receiver": 1},
-            SetAfLevel,
-            {"level": 153, "receiver": 1},
+            CommandIntent,
+            {"af_level": 153, "receiver": 1},
             {"level": 153, "receiver": 1},
         ),
         (
             "set_sql",
             {"level": 55, "receiver": 1},
-            SetSquelch,
-            {"level": 55, "receiver": 1},
+            CommandIntent,
+            {"squelch": 55, "receiver": 1},
             {"level": 55, "receiver": 1},
         ),
         (
@@ -764,6 +804,19 @@ async def test_enqueue_command_variants(
     assert result == expected_result
     assert len(queue.items) == 1
     cmd = queue.items[0]
+    if expected_type is CommandIntent:
+        field = {
+            "set_af_level": "af_level",
+            "set_rf_gain": "rf_gain",
+            "set_sql": "squelch",
+        }[name]
+        _assert_canonical_level_intent(
+            cmd,
+            name=name,
+            level=expected_attrs[field],
+            receiver=expected_attrs["receiver"],
+        )
+        return
     assert isinstance(cmd, expected_type)
     for key, value in expected_attrs.items():
         assert getattr(cmd, key) == value
@@ -881,7 +934,7 @@ async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
         # JSON *float* is the frontend's normalized 0.0-1.0 wire contract
         # (radio-intents.ts) and converts to the raw 0-255 scale.
         ("set_rf_power", {"level": 0.5}, SetPower, 128),
-        ("set_af_level", {"level": 0.25, "receiver": 0}, SetAfLevel, 64),
+        ("set_af_level", {"level": 0.25, "receiver": 0}, CommandIntent, 64),
     ],
 )
 async def test_enqueue_normalized_level_controls_convert_to_raw_wire_scale(
@@ -897,8 +950,16 @@ async def test_enqueue_normalized_level_controls_convert_to_raw_wire_scale(
     result = await handler._enqueue_command(name, params)
 
     assert result["level"] == expected_level
-    assert isinstance(queue.items[-1], expected_type)
-    assert queue.items[-1].level == expected_level
+    if expected_type is CommandIntent:
+        _assert_canonical_level_intent(
+            queue.items[-1],
+            name=name,
+            level=expected_level,
+            receiver=0,
+        )
+    else:
+        assert isinstance(queue.items[-1], expected_type)
+        assert queue.items[-1].level == expected_level
 
 
 @pytest.mark.asyncio
@@ -909,13 +970,13 @@ async def test_enqueue_normalized_level_controls_convert_to_raw_wire_scale(
         # int passes through unchanged, never scaled as if normalized
         # (radio-intents.ts declares 'integer'; PR #2491 confirmed
         # set_rf_gain sends a raw integer).
-        ("set_rf_gain", {"level": 128, "receiver": 0}, SetRfGain, 128),
-        ("set_squelch", {"level": 191, "receiver": 0}, SetSquelch, 191),
+        ("set_rf_gain", {"level": 128, "receiver": 0}, CommandIntent, 128),
+        ("set_squelch", {"level": 191, "receiver": 0}, CommandIntent, 191),
         # MOR-1579: set_af_level is type-dispatched — a JSON *int* is the
         # documented HTTP/WS raw 0-255 contract (docs/api/command-catalog.md,
         # live-hardware validation recipe's level:35→raw 0035 example) and
         # also passes through unchanged.
-        ("set_af_level", {"level": 72, "receiver": 0}, SetAfLevel, 72),
+        ("set_af_level", {"level": 72, "receiver": 0}, CommandIntent, 72),
     ],
 )
 async def test_enqueue_raw_level_controls_pass_through_unscaled(
@@ -931,16 +992,24 @@ async def test_enqueue_raw_level_controls_pass_through_unscaled(
     result = await handler._enqueue_command(name, params)
 
     assert result["level"] == expected_level
-    assert isinstance(queue.items[-1], expected_type)
-    assert queue.items[-1].level == expected_level
+    if expected_type is CommandIntent:
+        _assert_canonical_level_intent(
+            queue.items[-1],
+            name=name,
+            level=expected_level,
+            receiver=0,
+        )
+    else:
+        assert isinstance(queue.items[-1], expected_type)
+        assert queue.items[-1].level == expected_level
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "params", "expected_type"),
     [
-        ("set_rf_gain", {"level": 1, "receiver": 0}, SetRfGain),
-        ("set_squelch", {"level": 1, "receiver": 0}, SetSquelch),
+        ("set_rf_gain", {"level": 1, "receiver": 0}, CommandIntent),
+        ("set_squelch", {"level": 1, "receiver": 0}, CommandIntent),
     ],
 )
 async def test_enqueue_raw_level_one_is_not_reinterpreted_as_full_scale(
@@ -962,8 +1031,16 @@ async def test_enqueue_raw_level_one_is_not_reinterpreted_as_full_scale(
     result = await handler._enqueue_command(name, params)
 
     assert result["level"] == 1
-    assert isinstance(queue.items[-1], expected_type)
-    assert queue.items[-1].level == 1
+    if expected_type is CommandIntent:
+        _assert_canonical_level_intent(
+            queue.items[-1],
+            name=name,
+            level=1,
+            receiver=0,
+        )
+    else:
+        assert isinstance(queue.items[-1], expected_type)
+        assert queue.items[-1].level == 1
 
 
 async def test_enqueue_af_level_int_one_is_raw_but_float_one_is_full_scale() -> None:
@@ -980,13 +1057,17 @@ async def test_enqueue_af_level_int_one_is_raw_but_float_one_is_full_scale() -> 
 
     result = await handler._enqueue_command("set_af_level", {"level": 1, "receiver": 0})
     assert result["level"] == 1
-    assert queue.items[-1].level == 1
+    _assert_canonical_level_intent(
+        queue.items[-1], name="set_af_level", level=1, receiver=0
+    )
 
     result = await handler._enqueue_command(
         "set_af_level", {"level": 1.0, "receiver": 0}
     )
     assert result["level"] == 255
-    assert queue.items[-1].level == 255
+    _assert_canonical_level_intent(
+        queue.items[-1], name="set_af_level", level=255, receiver=0
+    )
 
 
 @pytest.mark.asyncio

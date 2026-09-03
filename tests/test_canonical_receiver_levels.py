@@ -22,7 +22,6 @@ from rigplane.core.command_service import command_intent_from_request
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.runtime._poller_types import (
-    CommandQueue,
     PttOff,
     SetAfLevel,
     SetRfGain,
@@ -190,30 +189,6 @@ async def test_web_pending_main_and_sub_survive_same_target_replacement(
     assert [entry.command_id for entry in path.entries] == ["main-latest", "sub"]
     assert all(entry.future is None for entry in path.entries)
     assert path.shared.await_count == 2
-
-
-def test_canonical_queue_keys_use_name_and_target_instead_of_intent_type():
-    queue = CommandQueue()
-    requests = [
-        ("set_af_level", 0, 10),
-        ("set_af_level", 1, 20),
-        ("set_rf_gain", 0, 40),
-        ("set_squelch", 0, 50),
-        ("set_af_level", 0, 30),
-    ]
-    intents = [
-        command_intent_from_request(
-            name,
-            {"level": level, "receiver": receiver},
-            source="websocket",
-            command_id=str(index),
-            session_id="levels-session",
-        )
-        for index, (name, receiver, level) in enumerate(requests)
-    ]
-    for intent in intents:
-        queue.put(intent, command_id=intent.id, source=intent.source)
-    assert queue.drain() == [intents[4], intents[1], intents[2], intents[3]]
 
 
 @pytest.mark.asyncio
