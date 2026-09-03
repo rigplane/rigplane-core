@@ -277,8 +277,10 @@ nothing prompts for them; each drop has a cost paid later:
   pytest and ruff under its `core` path filter and `mypy --strict
   src/rigplane/web` under its `frontend` one. `quick.yml` triggers only on
   push/PR to `main`, so a pushed branch gets no run until a PR exists:
-  push, open the PR as a draft, let `quick` run, then `gh pr ready`.
-  Single test files may run locally; the full suite may not.
+  push, open the PR as a draft, let `quick` run, `gh pr ready`, then
+  dispatch the review — the verifier reviews a ready PR, never a draft
+  (AGENTS.md, "Draft PRs must not merge"). Single test files may run
+  locally; the full suite may not.
 
 Dropping a phase is the owner's call, not the coordinator's. Announce the drop
 and why, before the work, rather than reporting it afterwards.

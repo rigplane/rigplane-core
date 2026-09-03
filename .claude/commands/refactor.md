@@ -77,11 +77,15 @@ The suite result is CI's, so the PR opens here — before REVIEW, not after it.
    and `mypy --strict src/rigplane/web` under its `frontend` one
 3. Compare pass/fail counts against Phase 2 baseline
 4. Any new failure = behavior change → rollback all, mark FAILED
+5. With `quick` green at this head, `gh pr ready`: the verifier reviews a ready
+   PR, never a draft (AGENTS.md, "Draft PRs must not merge ... run `gh pr
+   ready`, then complete checks and review")
 
 ### Phase 6: REVIEW
 
-Dispatch the `verifier` role (`.claude/agents/verifier.md`) — the
-implementation agent never reviews its own work (CLAUDE.md §Language & Git).
+Dispatch the `verifier` role (`.claude/agents/verifier.md`) on the PR Phase 5
+took out of draft — the implementation agent never reviews its own work
+(CLAUDE.md §Language & Git).
 Have it confirm:
 - Improved readability or reduced duplication
 - No unintended changes (`git diff` review)
@@ -92,9 +96,11 @@ Relay its verdict and write `review.md`.
 
 ### Phase 7: PR
 
-- `gh pr ready` on the draft opened in Phase 5
 - PR body: what improved, what didn't change, and the `quick` run the test
   evidence comes from
+- The verdict is bound to a SHA: `Agent Review: PASS <sha>` must name the PR's
+  current head, so a push after Phase 6 needs a fresh verdict (CLAUDE.md
+  §Language & Git)
 
 ## Post-pipeline
 

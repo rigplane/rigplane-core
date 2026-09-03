@@ -48,9 +48,13 @@ The post-change result is CI's, so the PR opens here — before REVIEW, not afte
 - If regression detected → back to EXECUTE (counts toward retry limit); push
   the fix and read the `quick` run on the new head
 - Do NOT proceed to REVIEW with regressions
+- With `quick` green at this head, `gh pr ready`: the verifier reviews a ready
+  PR, never a draft (AGENTS.md, "Draft PRs must not merge ... run `gh pr
+  ready`, then complete checks and review")
 
 ### Phase 5: REVIEW
-Dispatch the `verifier` role (`.claude/agents/verifier.md`).
+Dispatch the `verifier` role (`.claude/agents/verifier.md`) — on the PR Phase 4
+took out of draft.
 - The verifier did not write the change and must not be the builder
 - Review all changes against the plan; check safety, correctness, layering
 - Have the verifier report its verdict back as text; you relay it
@@ -68,9 +72,16 @@ pytest suite, `ruff check`, `ruff format`, and `mypy`.
 - If a gate fails → back to EXECUTE (max 2 fix cycles), then read the `quick`
   run on the new head
 
-### Phase 7: PR
-- `gh pr ready` on the draft opened in Phase 4
-- Check the PR body still references the issue: `Closes #$ARGUMENTS`
+### Phase 7: PR (merge readiness)
+The PR is already open and out of draft since Phase 4; this phase is what makes
+it mergeable.
+- PR body references the issue: `Closes #$ARGUMENTS`, and says why the change
+  is one unit of work if it crosses the soft threshold in CLAUDE.md §Guardrails
+- Re-derive the size at the head you pushed — `git diff --stat
+  origin/main...HEAD` — since CLAUDE.md §Guardrails measures per PR at that head
+- The verdict is bound to that head: the `Agent Review: PASS <sha>` comment must
+  name the PR's current head, so a push after Phase 5 needs a fresh verdict
+  (CLAUDE.md §Language & Git)
 
 ## Post-pipeline
 
