@@ -450,6 +450,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_session: Any = None
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
+        # MOR-2222: last scope-display mode published from the waveform
+        # stream, per receiver (0=MAIN, 1=SUB) — lets the stream
+        # change-detect before writing to the StateStore.
+        self._scope_stream_last_mode: dict[int, int] = {}
         # Raw CI-V pipe listeners (MOR-164): receive inbound on-wire frame bytes.
         self._raw_civ_listeners: list[Callable[[bytes], Any]] = []
         # External CAT-session ownership (MOR-166 slice 2): when True, cooperating

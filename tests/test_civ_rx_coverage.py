@@ -34,6 +34,7 @@ import asyncio
 import dataclasses
 import time
 from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -68,7 +69,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
-from rigplane.core.state_store import FreshnessState, StateSnapshot
+from rigplane.core.state_store import FreshnessState, StateSnapshot, StateStore
 from rigplane.types import CivFrame, Mode, ScopeFixedEdge, bcd_encode
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
@@ -109,6 +110,50 @@ def _make_frame(
         data=data,
         receiver=receiver,
     )
+
+
+def _make_scope_waveform_frame(
+    *,
+    receiver: int = 0,
+    mode: int,
+    start_hz: int = 14_000_000,
+    end_hz: int = 14_350_000,
+) -> CivFrame:
+    """Build a single-packet (LAN-style, seq=seqMax=1) ``0x27``/``0x00``
+    waveform frame, per ``rigplane.scope._ReceiverState.feed``'s sequence-1
+    layout: ``[receiver, seq_bcd, seqMax_bcd, mode, start(5), end(5), oor,
+    pixels...]``. ``mode`` != 0 so the assembler does not remap start/end
+    into center +/- bandwidth (only mode 0 does that).
+    """
+    raw_payload = (
+        bytes([0x01, 0x01, mode])
+        + bcd_encode(start_hz)
+        + bcd_encode(end_hz)
+        + bytes([0x00])  # out_of_range = False
+        + b"\x00"  # one pixel byte
+    )
+    return _make_frame(cmd=0x27, sub=0x00, data=bytes([receiver]) + raw_payload)
+
+
+@contextmanager
+def _spy_state_store_apply(radio: IcomRadio) -> Generator[MagicMock, None, None]:
+    """Spy on ``StateStore.apply`` calls made through ``radio``.
+
+    ``StateStore`` uses ``__slots__`` (no ``apply`` slot), so an
+    instance-level ``patch.object(radio._state_store, "apply", ...)`` fails
+    with "attribute is read-only" — this patches the class method instead,
+    with a wrapper that still calls through to the real implementation
+    bound to ``radio``'s own store.
+    """
+    original_apply = StateStore.apply
+    store = radio._state_store
+
+    def _call_through(observation: Observation) -> Any:
+        return original_apply(store, observation)
+
+    spy = MagicMock(side_effect=_call_through)
+    with patch.object(StateStore, "apply", spy):
+        yield spy
 
 
 def _bcd2(value: int) -> bytes:
@@ -3874,9 +3919,77 @@ def test_scope_control_observation_backed(
 
 
 def test_scope_waterfall_data_emits_no_observations(radio: IcomRadio) -> None:
-    """0x27 sub 0x00 (waterfall pixel data) must never reach the StateStore."""
+    """0x27 sub 0x00 never decodes via ``_observations_from_frame`` — the
+    typed-getter response path (`_scope_control_observations`) is only
+    reached for subs 0x12-0x1F; ``_route_civ_frame`` short-circuits sub
+    0x00 before that dispatch (see that function's docstring).
+
+    MOR-2222 adds a separate, later path — the waveform-stream mode
+    republish in ``_route_civ_frame`` / `_publish_scope_mode_observation` —
+    that *does* write ``scope_controls.global.display.mode`` from sub 0x00
+    frames. That path is not exercised through
+    ``_observations_from_frame`` and is covered instead by
+    ``test_scope_waveform_mode_change_emits_single_observation`` below.
+    """
     frame = _make_frame(cmd=0x27, sub=0x00, data=b"\x00\x01\x01" + b"\x00" * 16)
     assert radio._civ_runtime._observations_from_frame(frame) == ()
+
+
+async def test_scope_waveform_mode_change_emits_single_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2222: a waveform frame with a changed mode publishes exactly one
+    ``scope_controls.global.display.mode`` StateStore observation."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(mode=1)
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    mode_calls = [
+        call
+        for call in apply_spy.call_args_list
+        if str(call.args[0].path) == "scope_controls.global.display.mode"
+    ]
+    assert len(mode_calls) == 1
+    assert mode_calls[0].args[0].value == 1
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.mode")
+    assert field.value == 1
+    assert field.freshness is FreshnessState.FRESH
+
+
+async def test_scope_waveform_mode_unchanged_emits_no_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2222: a second waveform frame with the same mode is a no-op —
+    the stream change-detects before writing, since it runs at up to
+    ~15 fps and every write would otherwise thrash the StateStore."""
+    first = _make_scope_waveform_frame(mode=1)
+    await radio._civ_runtime._route_civ_frame(first, generation=radio._civ_epoch)
+
+    with _spy_state_store_apply(radio) as apply_spy:
+        second = _make_scope_waveform_frame(mode=1)
+        await radio._civ_runtime._route_civ_frame(second, generation=radio._civ_epoch)
+
+    assert apply_spy.call_count == 0
+
+
+async def test_scope_waveform_frame_never_emits_edge_or_span_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2222: the waveform stream republishes ``mode`` only — edge/span
+    frequencies have no existing scope-control field to land in (``edge``
+    is a preset index, ``fixed_edge`` a preset-table record) and this slice
+    deliberately does not invent one. Guards the "do not invent" rule."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(
+            mode=1, start_hz=14_000_000, end_hz=14_350_000
+        )
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    applied_paths = {str(call.args[0].path) for call in apply_spy.call_args_list}
+    assert "scope_controls.global.display.edge" not in applied_paths
+    assert "scope_controls.global.display.span" not in applied_paths
+    assert "scope_controls.global.display.fixed_edge" not in applied_paths
 
 
 def test_scope_control_observations_project_public(radio: IcomRadio) -> None:

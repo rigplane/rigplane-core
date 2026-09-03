@@ -1599,6 +1599,9 @@ class CivRuntime:
             )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
+                self._publish_scope_mode_observation(
+                    scope_frame, receiver=receiver, frame=frame
+                )
                 self._publish_scope_frame(scope_frame)
             return
 
@@ -3258,6 +3261,37 @@ class CivRuntime:
         recorder = getattr(self._host, "_state_diagnostics", None)
         if isinstance(recorder, StateDiagnosticsRecorder):
             recorder.record(kind, source, **details)
+
+    def _publish_scope_mode_observation(
+        self, scope_frame: ScopeFrame, *, receiver: int, frame: CivFrame
+    ) -> None:
+        """Emit a change-detected ``scope_controls.global.display.mode`` write.
+
+        MOR-2222 moved the ``scope_controls.global.display.*`` paths out of
+        the acquisition cadence (no more periodic ``0x27`` polls): the
+        scope's own reads own them now. The waveform stream (``0x27``/
+        ``0x00``) is the one unsolicited source that keeps ``mode`` current
+        while it runs, so this republishes it — once per change, not once
+        per frame, since the stream runs at up to ~15 fps. Only ``mode`` is
+        republished: edge/span frequencies have no existing scope-control
+        field to land in (``edge`` is a preset index 1-4, ``fixed_edge`` a
+        preset-table record with its own range_index/edge/start/end shape)
+        and MOR-2222 deliberately does not invent one — those stay
+        display-only, carried to the web through the spectrum stream itself
+        (``ScopeFrame``), not the StateStore.
+        """
+        last_modes = self._host._scope_stream_last_mode
+        if last_modes.get(receiver) == scope_frame.mode:
+            return
+        last_modes[receiver] = scope_frame.mode
+        observation = self._observation(
+            FieldPath.scope_control("display", "mode"),
+            scope_frame.mode,
+            frame=frame,
+        )
+        changeset = self._host._state_store.apply(observation)
+        self._record_scheduler_result_for_observation(observation, changeset)
+        self._notify_state_store_changed(changeset)
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""
