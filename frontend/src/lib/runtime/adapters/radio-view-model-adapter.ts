@@ -805,8 +805,6 @@ function deriveRadioWideIndicators(
   caps: Capabilities,
   structuralReceivers: readonly ReceiverId[],
   operationalReceivers: readonly ReceiverId[],
-  split: Fact,
-  dualWatch: Fact,
   tx: MetersTxAuthority | null | undefined,
   txAux: TxAuxViewModel | undefined,
   ritXit: RitXitViewModel | undefined,
@@ -831,18 +829,18 @@ function deriveRadioWideIndicators(
   const hasVfoPair = caps.vfoScheme !== 'single';
   const equalizeStructural = hasVfoPair && hasCap(caps, 'vfo_equalize');
   const swapStructural = hasVfoPair && hasCap(caps, 'vfo_swap');
-  const splitStructural = hasVfoPair && hasCap(caps, 'split');
-  const dualWatchStructural = dualReceiver && hasCap(caps, 'dual_rx')
-    && hasCap(caps, 'dual_watch');
+  // A primitive split/DW capability does not prove that a provider consumes
+  // the composite quick intent. No backend-neutral declaration exists yet,
+  // so production must fail closed even though the existing frontend handler
+  // facade remains available for explicitly admitted synthetic models/tests.
+  const compositeUnavailable = availability(false, false);
   const actions: DualActionBlockViewModel = {
     main: availability(dualReceiver, mainOperational),
     sub: availability(dualReceiver, subOperational),
     equalize: availability(equalizeStructural, state !== null),
     swap: availability(swapStructural, state !== null),
-    split: availability(splitStructural, split.status === 'known'),
-    dualWatch: availability(
-      dualWatchStructural, subOperational && dualWatch.status === 'known',
-    ),
+    quickSplit: compositeUnavailable,
+    quickDualWatch: compositeUnavailable,
     speak: availability(hasCap(caps, 'speech'), true),
   };
 
@@ -1637,7 +1635,7 @@ export function toRadioViewModel(
   );
   const radioWideIndicators = deriveRadioWideIndicators(
     state, caps, topology.structuralReceivers, topology.operationalReceivers,
-    split, dualWatch, tx, txAux, ritXit, antenna,
+    tx, txAux, ritXit, antenna,
   );
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
   disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));

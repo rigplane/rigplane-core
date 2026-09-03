@@ -272,31 +272,51 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
     expect(shared.xitOffset.reading).toEqual({ status: 'known', value: 0 });
   });
 
-  it.each([
-    ['missing', (statuses: Record<string, FieldStatus>) => { delete statuses.ritFreq; }],
-    ['unobserved', (statuses: Record<string, FieldStatus>) => {
-      statuses.ritFreq = { ...fresh, observed: false };
-    }],
-    ['stale', (statuses: Record<string, FieldStatus>) => { statuses.ritFreq = stale; }],
-  ] as const)('%s shared leaf remains unknown', (_label, mutate) => {
+  const sharedLeafCases = [
+    ['txAntenna', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.antenna],
+    ['tunerStatus', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.atu],
+    ['ritOn', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.ritActive],
+    ['ritFreq', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.ritOffset],
+    ['ritTx', (shared: NonNullable<RadioViewModel['radioWideIndicators']>) => shared.xitActive],
+  ] as const;
+  const rejectedStatuses = [
+    ['missing', undefined],
+    ['observed false', { ...fresh, observed: false }],
+    ['stale', stale],
+    ['explicit unavailable', { ...fresh, availability: 'missing' as const }],
+  ] as const;
+
+  it.each(sharedLeafCases)('%s requires its own observed/fresh/available leaf', (path, select) => {
+    for (const [label, rejected] of rejectedStatuses) {
+      const state = radioWideState();
+      const fieldStatus = { ...state.fieldStatus } as Record<string, FieldStatus>;
+      if (rejected === undefined) delete fieldStatus[path];
+      else fieldStatus[path] = rejected;
+      const field = select(model({ ...state, fieldStatus }, RADIO_WIDE_CAPS).radioWideIndicators!);
+      expect(field.reading, label).toEqual({ status: 'unknown' });
+      expect(field.availability.operational, label).toBe(false);
+    }
+  });
+
+  it('the shared RIT offset gate applies independently to both displayed aggregates', () => {
     const state = radioWideState();
     const fieldStatus = { ...state.fieldStatus } as Record<string, FieldStatus>;
-    mutate(fieldStatus);
+    fieldStatus.ritFreq = { ...fresh, observed: false };
     const shared = model({ ...state, fieldStatus }, RADIO_WIDE_CAPS).radioWideIndicators!;
     expect(shared.ritOffset.reading).toEqual({ status: 'unknown' });
     expect(shared.xitOffset.reading).toEqual({ status: 'unknown' });
     expect(shared.ritOffset.availability.operational).toBe(false);
   });
 
-  it('derives action structural/operational gates from the real topology and facts', () => {
+  it('publishes exact primitive action availability and fails composite Quick actions closed', () => {
     const actions = model(radioWideState(), RADIO_WIDE_CAPS).radioWideIndicators!.actions;
     expect(actions).toEqual({
       main: { structural: true, operational: true },
       sub: { structural: true, operational: true },
       equalize: { structural: true, operational: true },
       swap: { structural: true, operational: true },
-      split: { structural: true, operational: true },
-      dualWatch: { structural: true, operational: true },
+      quickSplit: { structural: false, operational: false },
+      quickDualWatch: { structural: false, operational: false },
       speak: { structural: true, operational: true },
     });
 
@@ -306,15 +326,53 @@ describe('radio-wide indicators and DUAL actions are singleton contract facts (M
     ).radioWideIndicators!.actions;
     expect(unavailableSub.main).toEqual({ structural: true, operational: true });
     expect(unavailableSub.sub).toEqual({ structural: true, operational: false });
-    expect(unavailableSub.dualWatch).toEqual({ structural: false, operational: false });
+    expect(unavailableSub.quickDualWatch).toEqual({ structural: false, operational: false });
   });
 
-  it('removes unsupported actions instead of publishing fake-enabled controls', () => {
+  it.each([
+    ['vfo_equalize', 'equalize'],
+    ['vfo_swap', 'swap'],
+    ['speech', 'speak'],
+  ] as const)('removing %s removes only the %s action', (capability, action) => {
+    const actions = model(radioWideState(), {
+      ...RADIO_WIDE_CAPS,
+      capabilities: RADIO_WIDE_CAPS.capabilities.filter((tag) => tag !== capability),
+    }).radioWideIndicators!.actions;
+    expect(actions[action]).toEqual({ structural: false, operational: false });
+    const expectedPresent = {
+      equalize: action !== 'equalize', swap: action !== 'swap', speak: action !== 'speak',
+    } as const;
+    expect(actions.equalize).toEqual({ structural: expectedPresent.equalize, operational: expectedPresent.equalize });
+    expect(actions.swap).toEqual({ structural: expectedPresent.swap, operational: expectedPresent.swap });
+    expect(actions.speak).toEqual({ structural: expectedPresent.speak, operational: expectedPresent.speak });
+    expect(actions.main).toEqual({ structural: true, operational: true });
+    expect(actions.sub).toEqual({ structural: true, operational: true });
+    expect(actions.quickSplit).toEqual({ structural: false, operational: false });
+    expect(actions.quickDualWatch).toEqual({ structural: false, operational: false });
+  });
+
+  it('publishes an exact per-action absence matrix for unsupported controls', () => {
     const noActions = model(
       radioWideState(),
       caps({ vfoScheme: 'single', receivers: 1, antennas: 1, capabilities: ['tx'] }),
     ).radioWideIndicators!.actions;
-    expect(Object.values(noActions).every((entry) => !entry.structural && !entry.operational)).toBe(true);
+    expect(noActions).toEqual({
+      main: { structural: false, operational: false },
+      sub: { structural: false, operational: false },
+      equalize: { structural: false, operational: false },
+      swap: { structural: false, operational: false },
+      quickSplit: { structural: false, operational: false },
+      quickDualWatch: { structural: false, operational: false },
+      speak: { structural: false, operational: false },
+    });
+  });
+
+  it('never emits deprecated receiver RF state in live output', () => {
+    const view = model(radioWideState(), RADIO_WIDE_CAPS, RECEIVING);
+    expect(view.receiverIndicators).toBeDefined();
+    for (const indicator of view.receiverIndicators ?? []) {
+      expect(Object.hasOwn(indicator, 'rfState')).toBe(false);
+    }
   });
 });
 

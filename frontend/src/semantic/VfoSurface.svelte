@@ -37,6 +37,7 @@
 
 <script lang="ts">
   import { t } from '$lib/i18n';
+  import { vfoEqualLabel, vfoSwapLabel } from '../components-v2/vfo/vfo-ops-utils';
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
@@ -141,8 +142,9 @@
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
      * (copy one VFO onto the other), swap, and the two composite "quick"
-     * triggers the backend performs atomically as equalize-then-toggle-on
-     * (`quick_split` / `quick_dualwatch`, epic #774).
+     * frontend intents (`quick_split` / `quick_dualwatch`, epic #774).
+     * A semantic availability declaration admits the callback; this surface
+     * does not infer backend/provider consumption from primitive fact caps.
      *
      * INTENTS, like every other callback here: this surface names what the
      * operator asked for and knows nothing about how it is sent. None is a TX
@@ -197,11 +199,8 @@
     sub: { structural: false, operational: false },
     equalize: { structural: hasVfoPair, operational: Boolean(onEqualizeVfos) },
     swap: { structural: hasVfoPair, operational: Boolean(onSwapVfos) },
-    split: { structural: hasVfoPair, operational: viewModel.split.status === 'known' },
-    dualWatch: {
-      structural: hasVfoPair && hasDualReceiver,
-      operational: viewModel.dualWatch.status === 'known',
-    },
+    quickSplit: { structural: false, operational: false },
+    quickDualWatch: { structural: false, operational: false },
     speak: { structural: false, operational: false },
   });
   let hasDualActions = $derived(Object.values(dualActions).some((action) => action.structural));
@@ -467,13 +466,13 @@
    * unrelated unknown would invent a dependency the radio does not have.
    */
   function quickSplit(): void {
-    if (relativeIdentityUnknown || !dualActions.split.operational
+    if (relativeIdentityUnknown || !dualActions.quickSplit.operational
       || viewModel.split.status !== 'known') return;
     onQuickSplit?.();
   }
 
   function quickDualWatch(): void {
-    if (relativeIdentityUnknown || !dualActions.dualWatch.operational
+    if (relativeIdentityUnknown || !dualActions.quickDualWatch.operational
       || viewModel.dualWatch.status !== 'known') return;
     onQuickDualWatch?.();
   }
@@ -758,38 +757,40 @@
         {/if}
         {#if dualActions.equalize.structural}
           <button type="button" class="vfo-op" data-vfo-equalize data-dual-action="equalize"
-            aria-label={t('core.vfo.ops.equalize')}
+            aria-label={vfoEqualLabel(viewModel.vfoScheme)}
             title={equalizeReason} aria-describedby={reasonId('equalize', equalizeReason)}
             disabled={!dualActions.equalize.operational || !onEqualizeVfos} onclick={equalizeVfos}>
-            A=B
+            {vfoEqualLabel(viewModel.vfoScheme)}
           </button>
         {/if}
         {#if dualActions.swap.structural}
           <button type="button" class="vfo-op" data-vfo-swap data-dual-action="swap"
-            aria-label={t('core.vfo.ops.swap')}
+            aria-label={vfoSwapLabel(viewModel.vfoScheme)}
             title={swapReason} aria-describedby={reasonId('swap', swapReason)}
             disabled={!dualActions.swap.operational || !onSwapVfos} onclick={swapVfos}>
-            A/B
+            {vfoSwapLabel(viewModel.vfoScheme)}
           </button>
         {/if}
-        {#if dualActions.split.structural}
+        {#if dualActions.quickSplit.structural}
           <button
-            type="button" class="vfo-op" data-vfo-quick-split data-dual-action="split"
+            type="button" class="vfo-op" data-vfo-quick-split data-dual-action="quick-split"
+            aria-label="Quick split"
             title={quickSplitReason} aria-describedby={reasonId('quick-split', quickSplitReason)}
-            disabled={relativeIdentityUnknown || !dualActions.split.operational || !onQuickSplit}
+            disabled={relativeIdentityUnknown || !dualActions.quickSplit.operational || !onQuickSplit}
             onclick={quickSplit}
           >
-            {t('core.vfo.split.label')}
+            Quick split
           </button>
         {/if}
-        {#if dualActions.dualWatch.structural}
+        {#if dualActions.quickDualWatch.structural}
           <button
-            type="button" class="vfo-op" data-vfo-quick-dual-watch data-dual-action="dual-watch"
+            type="button" class="vfo-op" data-vfo-quick-dual-watch data-dual-action="quick-dual-watch"
+            aria-label="Quick dual watch"
             title={quickDualWatchReason} aria-describedby={reasonId('quick-dual-watch', quickDualWatchReason)}
-            disabled={relativeIdentityUnknown || !dualActions.dualWatch.operational || !onQuickDualWatch}
+            disabled={relativeIdentityUnknown || !dualActions.quickDualWatch.operational || !onQuickDualWatch}
             onclick={quickDualWatch}
           >
-            {t('core.vfo.dualWatch.label')}
+            Quick dual watch
           </button>
         {/if}
         {#if dualActions.speak.structural}

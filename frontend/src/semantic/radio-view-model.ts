@@ -1003,6 +1003,12 @@ export type ReceiverIndicatorField<T> = TxAuxField<T>;
 export interface ReceiverIndicatorViewModel {
   receiver: ReceiverId;
   availability: Availability;
+  /**
+   * @deprecated Pre-MOR-2309 payload compatibility only. Live adapters no
+   * longer emit receiver-scoped RF authority; consumers must use the one
+   * radio-wide `radioWideIndicators.rfState` fact.
+   */
+  rfState?: MeterRfState;
   sMeter: ReceiverIndicatorField<number>;
   bandwidthHz: ReceiverIndicatorField<number>;
   /** Capability label when declared for the ordinal; raw ordinal otherwise. */
@@ -1031,8 +1037,9 @@ export interface DualActionBlockViewModel {
   sub: RadioWideActionAvailability;
   equalize: RadioWideActionAvailability;
   swap: RadioWideActionAvailability;
-  split: RadioWideActionAvailability;
-  dualWatch: RadioWideActionAvailability;
+  /** Composite quick intents, distinct from the ordinary split/DW facts. */
+  quickSplit: RadioWideActionAvailability;
+  quickDualWatch: RadioWideActionAvailability;
   speak: RadioWideActionAvailability;
 }
 
@@ -1415,13 +1422,16 @@ function validateTxAux(value: unknown, path: string): TxAuxViewModel {
 function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'receiver', 'availability', 'sMeter', 'bandwidthHz', 'agcMode',
+    'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz', 'agcMode',
     'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
     'digiSel', 'ipPlus',
   ], path);
   return {
     receiver: oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`),
     availability: validateAvailability(v.availability, `${path}.availability`),
+    ...(v.rfState !== undefined
+      ? { rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`) }
+      : {}),
     sMeter: validateTxAuxField(v.sMeter, `${path}.sMeter`, num),
     bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
     agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
@@ -1443,14 +1453,16 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
 
 function validateDualActionBlock(value: unknown, path: string): DualActionBlockViewModel {
   const v = record(value, path);
-  exactKeys(v, ['main', 'sub', 'equalize', 'swap', 'split', 'dualWatch', 'speak'], path);
+  exactKeys(v, [
+    'main', 'sub', 'equalize', 'swap', 'quickSplit', 'quickDualWatch', 'speak',
+  ], path);
   return {
     main: validateAvailability(v.main, `${path}.main`),
     sub: validateAvailability(v.sub, `${path}.sub`),
     equalize: validateAvailability(v.equalize, `${path}.equalize`),
     swap: validateAvailability(v.swap, `${path}.swap`),
-    split: validateAvailability(v.split, `${path}.split`),
-    dualWatch: validateAvailability(v.dualWatch, `${path}.dualWatch`),
+    quickSplit: validateAvailability(v.quickSplit, `${path}.quickSplit`),
+    quickDualWatch: validateAvailability(v.quickDualWatch, `${path}.quickDualWatch`),
     speak: validateAvailability(v.speak, `${path}.speak`),
   };
 }

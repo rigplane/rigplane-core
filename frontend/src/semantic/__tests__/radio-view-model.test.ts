@@ -51,6 +51,12 @@ describe('validateRadioViewModel', () => {
     expect(model.receiverIndicators?.[0].digiSel.reading).toEqual({ status: 'known', value: false });
   });
 
+  it('accepts and preserves the exact pre-MOR-2309 receiver RF payload shape', () => {
+    const legacy = { ...receiverIndicator(), rfState: 'receiving' as const };
+    const model = validateRadioViewModel({ ...valid(), receiverIndicators: [legacy] });
+    expect(model.receiverIndicators?.[0]).toEqual(legacy);
+  });
+
   it('rejects duplicate receiver-indicator entries and extra raw keys', () => {
     expect(() => validateRadioViewModel({
       ...valid(), receiverIndicators: [receiverIndicator(), receiverIndicator()],
@@ -75,8 +81,8 @@ describe('validateRadioViewModel', () => {
       sub: { structural: true, operational: false },
       equalize: { structural: true, operational: true },
       swap: { structural: true, operational: true },
-      split: { structural: true, operational: true },
-      dualWatch: { structural: true, operational: false },
+      quickSplit: { structural: true, operational: true },
+      quickDualWatch: { structural: true, operational: false },
       speak: { structural: false, operational: false },
     },
   });
@@ -102,6 +108,16 @@ describe('validateRadioViewModel', () => {
         actions: {
           ...radioWideIndicators().actions,
           speak: { structural: 'yes', operational: true },
+        },
+      },
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(),
+      radioWideIndicators: {
+        ...radioWideIndicators(),
+        actions: {
+          ...radioWideIndicators().actions,
+          split: { structural: true, operational: true },
         },
       },
     })).toThrow(TypeError);

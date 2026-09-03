@@ -48,6 +48,13 @@
     return field.reading.status === 'known' ? String(field.reading.value) : '—';
   }
 
+  function aggregateState(
+    active: TxAuxField<boolean>, offset: TxAuxField<number>,
+  ): 'known' | 'unknown' {
+    return active.reading.status === 'known' && offset.reading.status === 'known'
+      ? 'known' : 'unknown';
+  }
+
 </script>
 
 {#if indicator}
@@ -157,12 +164,12 @@
         </span>
       {/if}
       {#if radioWide.ritActive.availability.structural || radioWide.ritOffset.availability.structural}
-        <span class="fact" data-indicator-fact="rit" data-state={radioWide.ritActive.reading.status}>
+        <span class="fact" data-indicator-fact="rit" data-state={aggregateState(radioWide.ritActive, radioWide.ritOffset)}>
           RIT {sharedBoolean(radioWide.ritActive)} {sharedNumber(radioWide.ritOffset)} Hz
         </span>
       {/if}
       {#if radioWide.xitActive.availability.structural || radioWide.xitOffset.availability.structural}
-        <span class="fact" data-indicator-fact="xit" data-state={radioWide.xitActive.reading.status}>
+        <span class="fact" data-indicator-fact="xit" data-state={aggregateState(radioWide.xitActive, radioWide.xitOffset)}>
           XIT {sharedBoolean(radioWide.xitActive)} {sharedNumber(radioWide.xitOffset)} Hz
         </span>
       {/if}

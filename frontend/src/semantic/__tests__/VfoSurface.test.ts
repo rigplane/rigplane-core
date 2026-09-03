@@ -154,7 +154,7 @@ function withRadioWide(
       xitActive: indicatorField(true), xitOffset: indicatorField(0),
       actions: {
         main: available, sub: available, equalize: available, swap: available,
-        split: available, dualWatch: available, speak: available,
+        quickSplit: available, quickDualWatch: available, speak: available,
         ...actionOverrides,
       },
     },
@@ -173,17 +173,49 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
     expect(global.querySelectorAll('[data-dual-action]')).toHaveLength(7);
   });
 
-  it('invokes each existing DUAL callback exactly once', () => {
+  it('keeps exact action order, accessible names, tab order, and one-to-one callbacks', () => {
     const callbacks = {
       onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
       onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
       onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
     };
     const target = mountSurface({ viewModel: withRadioWide(), ...callbacks });
-    for (const action of ['main', 'sub', 'equalize', 'swap', 'split', 'dual-watch', 'speak']) {
+    const cases = [
+      ['main', 'MAIN', 'onSelectMainReceiver'],
+      ['sub', 'SUB', 'onSelectSubReceiver'],
+      ['equalize', 'M=S', 'onEqualizeVfos'],
+      ['swap', 'M↔S', 'onSwapVfos'],
+      ['quick-split', 'Quick split', 'onQuickSplit'],
+      ['quick-dual-watch', 'Quick dual watch', 'onQuickDualWatch'],
+      ['speak', 'SPEAK', 'onSpeak'],
+    ] as const;
+    const buttons = [...target.querySelectorAll<HTMLButtonElement>('[data-dual-action]')];
+    expect(buttons.map((button) => button.dataset.dualAction)).toEqual(cases.map(([id]) => id));
+    expect(buttons.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
+      .toEqual(cases.map(([, label]) => label));
+    expect(buttons.map((button) => button.tabIndex)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    for (const [action, , selected] of cases) {
+      for (const callback of Object.values(callbacks)) callback.mockClear();
       target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
+      for (const [name, callback] of Object.entries(callbacks)) {
+        expect(callback, `${action} -> ${name}`).toHaveBeenCalledTimes(name === selected ? 1 : 0);
+      }
     }
-    for (const callback of Object.values(callbacks)) expect(callback).toHaveBeenCalledOnce();
+  });
+
+  it('uses AB identities for equalize/swap without conflating receiver selection', () => {
+    const target = mountSurface({
+      viewModel: withRadioWide('1/ab', {
+        main: { structural: false, operational: false },
+        sub: { structural: false, operational: false },
+      }),
+      onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
+      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
+    });
+    expect(target.querySelector('[data-dual-action="main"]')).toBeNull();
+    expect(target.querySelector('[data-dual-action="sub"]')).toBeNull();
+    expect(target.querySelector('[data-dual-action="equalize"]')?.textContent?.trim()).toBe('A=B');
+    expect(target.querySelector('[data-dual-action="swap"]')?.textContent?.trim()).toBe('A↔B');
   });
 
   it('omits structurally unsupported actions and guards operationally disabled callbacks', () => {
@@ -201,6 +233,40 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
     sub.disabled = false;
     sub.click();
     expect(onSelectSubReceiver).not.toHaveBeenCalled();
+  });
+
+  it('omits every structural-false action and guards every forced disabled click', () => {
+    const callbacks = {
+      onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
+      onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
+      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
+    };
+    const actionMap = [
+      ['main', 'main', 'onSelectMainReceiver'], ['sub', 'sub', 'onSelectSubReceiver'],
+      ['equalize', 'equalize', 'onEqualizeVfos'], ['swap', 'swap', 'onSwapVfos'],
+      ['quick-split', 'quickSplit', 'onQuickSplit'],
+      ['quick-dual-watch', 'quickDualWatch', 'onQuickDualWatch'],
+      ['speak', 'speak', 'onSpeak'],
+    ] as const;
+    for (const [dom, key, handler] of actionMap) {
+      const absent = mountSurface({
+        viewModel: withRadioWide('2/main_sub', {
+          [key]: { structural: false, operational: false },
+        }), ...callbacks,
+      });
+      expect(absent.querySelector(`[data-dual-action="${dom}"]`)).toBeNull();
+
+      const disabled = mountSurface({
+        viewModel: withRadioWide('2/main_sub', {
+          [key]: { structural: true, operational: false },
+        }), ...callbacks,
+      });
+      const button = disabled.querySelector<HTMLButtonElement>(`[data-dual-action="${dom}"]`)!;
+      expect(button.disabled).toBe(true);
+      button.disabled = false;
+      button.click();
+      expect(callbacks[handler]).not.toHaveBeenCalled();
+    }
   });
 });
 

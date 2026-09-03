@@ -125,7 +125,7 @@ function shared(): RadioWideIndicatorsViewModel {
     xitActive: known(true), xitOffset: known(0),
     actions: {
       main: AVAILABLE, sub: AVAILABLE, equalize: AVAILABLE, swap: AVAILABLE,
-      split: AVAILABLE, dualWatch: AVAILABLE, speak: AVAILABLE,
+      quickSplit: AVAILABLE, quickDualWatch: AVAILABLE, speak: AVAILABLE,
     },
   };
 }
@@ -155,5 +155,20 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     for (const fact of ['atu', 'rit', 'xit']) {
       expect(root.querySelector(`[data-indicator-fact="${fact}"]`)?.textContent).toContain('—');
     }
+  });
+
+  it('marks RIT/XIT aggregate state unknown when either constituent is unknown', () => {
+    const root = render({
+      radioWide: {
+        ...shared(), ritActive: known(false), ritOffset: unknown(),
+        xitActive: unknown(), xitOffset: known(0),
+      },
+    });
+    const rit = root.querySelector('[data-indicator-fact="rit"]');
+    const xit = root.querySelector('[data-indicator-fact="xit"]');
+    expect(rit?.getAttribute('data-state')).toBe('unknown');
+    expect(rit?.textContent).toContain('RIT OFF — Hz');
+    expect(xit?.getAttribute('data-state')).toBe('unknown');
+    expect(xit?.textContent).toContain('XIT — 0 Hz');
   });
 });
