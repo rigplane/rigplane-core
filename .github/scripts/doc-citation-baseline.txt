@@ -702,7 +702,6 @@ docs/plans/discovery-artifacts/external-usage.md	tests/test_radio_coverage.py:18
 docs/plans/discovery-artifacts/external-usage.md	tests/test_radio_coverage.py:204
 docs/plans/discovery-artifacts/external-usage.md	tests/test_reconnect.py:8
 docs/plans/discovery-artifacts/external-usage.md	tests/test_rig_ic7300.py:12
-docs/plans/discovery-artifacts/external-usage.md	tests/test_shared_state_runtime.py:7
 docs/plans/discovery-artifacts/external-usage.md	tests/test_state_queries.py:9
 docs/plans/discovery-artifacts/external-usage.md	tests/test_sync_coverage.py:9
 docs/plans/discovery-artifacts/external-usage.md	tests/test_tx_band_edge.py:16

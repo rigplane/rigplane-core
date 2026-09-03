@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { STUDIOLINE_TOKENS } from '../tokens';
-import { PEAK_TICK_WIDTH_PX, STUDIOLINE_SCALE_TICKS, renderMeter } from '../meters-renderer';
+import { PEAK_TICK_WIDTH_PX, renderMeter } from '../meters-renderer';
 
 const render = (fields: Record<string, number | null>) =>
   renderMeter({ kind: 'meter', fields }, STUDIOLINE_TOKENS);
@@ -43,13 +43,14 @@ describe('the meter is a continuous rail', () => {
     expect(render({ value: -3, max: 15 }).fill).toBe(0);
   });
 
-  it('holds the peak as a 1px tick, not a second fill', () => {
-    expect(render({ value: 4, peak: 12, max: 15 })).toMatchObject({ peak: 0.8, peakWidthPx: PEAK_TICK_WIDTH_PX });
-    expect(render({ value: 4 }).peak).toBeNull();
-  });
-
-  it('renders the scale as sparse text ticks below the rail', () => {
-    expect(render({ value: 4 }).scaleTicks).toEqual(STUDIOLINE_SCALE_TICKS);
+  // MOR-2250 (PR 2 of 2): `peak`/`scaleTicks` were deleted as dead fields
+  // (no consumer anywhere — `renderSlot`'s `display` extraction never pulled
+  // them, and nothing else read them either); `peakWidthPx` survived that
+  // sweep because `fieldline/__tests__/meters-renderer.test.ts` DOES read it
+  // (`theirs.peakWidthPx`, a cross-language comparison) — pinned directly
+  // here too, not just via that indirect check.
+  it('reports the 1px peak-tick width', () => {
+    expect(render({ value: 4 }).peakWidthPx).toBe(PEAK_TICK_WIDTH_PX);
   });
 
   it('renders an unobserved reading as unknown, never as a rail at zero', () => {

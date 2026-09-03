@@ -504,19 +504,6 @@ Poll interval is backend-specific:
 - LAN backends: `25ms` fast cycle (`_FAST_INTERVAL`)
 - serial backends: `100ms` fast cycle (`_FAST_INTERVAL_SERIAL`)
 
-LAN meter polling uses a two-tier strategy:
-
-- High tier (most cycles):
-  - RX path: S-meter (`0x15 0x02`)
-  - TX path: rotates RF power (`0x15 0x11`), SWR (`0x15 0x12`), ALC (`0x15 0x13`)
-- Low tier (every 5th high cycle while RX): rotates COMP (`0x15 0x14`), Vd (`0x15 0x15`), Id (`0x15 0x16`)
-
-Serial meter polling keeps a simpler high-priority loop focused on responsiveness:
-S-meter, RF power, S-meter, SWR.
-
-Practical implication: S-meter and TX safety meters update most frequently, while
-secondary telemetry (COMP/Vd/Id) is intentionally sampled less often.
-
 ### State polling and conditional requests
 
 - Polling uses `If-None-Match` with the previous `ETag`.

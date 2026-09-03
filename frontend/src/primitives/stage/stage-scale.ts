@@ -5,10 +5,9 @@
  * never larger than its authored size. Kept here, DOM-free, so the formula
  * is unit-tested without mounting a component.
  *
- * This primitive does not resolve a minimum viable size (no `minScale`) —
- * that decision belongs to the layout-resolution module under
- * `presentation/layouts/`, which this file deliberately does not import,
- * keeping the primitive free of the layout contract.
+ * The minimum viable scale is not resolved here: it arrives as an optional
+ * argument, so this file still imports nothing at all — no layout and no
+ * group contract.
  */
 
 export interface StageBox {
@@ -21,17 +20,26 @@ export const MAX_STAGE_SCALE = 1;
 
 /**
  * Returns the uniform scale factor that fits `native` inside `host` — the
- * shorter of the two axis ratios wins — capped at `MAX_STAGE_SCALE` so the
- * stage never grows past its authored size.
+ * shorter of the two axis ratios wins — floored at `minScale` when the
+ * caller declares one, then capped at `MAX_STAGE_SCALE`. The cap is applied
+ * LAST, so it wins: a `minScale` above `MAX_STAGE_SCALE` returns
+ * `MAX_STAGE_SCALE`, never the floor.
  *
- * Returns 0 for a host that has not been measured yet (zero-size box) or a
- * degenerate native size (zero width or height).
+ * With no `minScale`, the result is the unfloored fit for every input,
+ * including 0 for a host that has not been measured yet (zero-size box). A
+ * degenerate native size (zero width or height) returns 0 whether or not a
+ * floor is given. `stage-scale.test.ts` pins each of those three cases.
  */
-export function computeStageScale(host: StageBox, native: StageBox): number {
+export function computeStageScale(host: StageBox, native: StageBox, minScale?: number): number {
   if (native.width <= 0 || native.height <= 0) return 0;
   const fitWidth = host.width / native.width;
   const fitHeight = host.height / native.height;
-  return Math.min(fitWidth, fitHeight, MAX_STAGE_SCALE);
+  const fit = Math.min(fitWidth, fitHeight, MAX_STAGE_SCALE);
+  if (minScale === undefined) return fit;
+  // `Math.min` outermost: flooring an already-capped fit can exceed the cap
+  // again, which is how a caller's floor above 1 would render the stage
+  // larger than its authored size.
+  return Math.min(Math.max(fit, minScale), MAX_STAGE_SCALE);
 }
 
 export interface StageOffset {
@@ -49,10 +57,16 @@ export interface StageOffset {
  * axis, independent of the host's own layout mode (flex, grid, or plain
  * flow): it depends only on the measured `host` box, not on how an ancestor
  * positioned it.
+ *
+ * Each axis is clamped at 0. A `minScale` floor can hold the scaled box
+ * LARGER than `host`, where half the leftover is negative and would place
+ * the box's start edge before the host's origin. Clamped, the box starts at
+ * the origin instead. `stage-scale.test.ts` pins the both-axes and the
+ * per-axis case.
  */
 export function computeStageCenterOffset(host: StageBox, native: StageBox, scale: number): StageOffset {
   return {
-    x: (host.width - native.width * scale) / 2,
-    y: (host.height - native.height * scale) / 2,
+    x: Math.max(0, (host.width - native.width * scale) / 2),
+    y: Math.max(0, (host.height - native.height * scale) / 2),
   };
 }

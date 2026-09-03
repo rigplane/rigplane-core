@@ -78,16 +78,6 @@ if TYPE_CHECKING:
     from ..types import CivFrame
 
 
-_SCOPE_SPAN_PRESETS_HZ: tuple[int, ...] = (
-    2_500,
-    5_000,
-    10_000,
-    25_000,
-    50_000,
-    100_000,
-    250_000,
-    500_000,
-)
 _SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
     50_000_000,
     28_000_000,
@@ -540,10 +530,22 @@ def scope_set_span(
     from_addr: int = CONTROLLER_ADDR,
     *,
     cmd_map: CommandMap,
+    presets: tuple[int, ...],
     receiver: int | None = None,
 ) -> bytes:
-    _validate_scope_range("scope span", span, 0, 7)
-    span_hz = _SCOPE_SPAN_PRESETS_HZ[span]
+    """Build the 0x27 0x15 SET frame for span-preset index *span*.
+
+    ``presets`` is the radio's declared span table
+    (``profiles.RadioProfile.scope_span_presets_hz``, from ``rigs/*.toml``
+    ``[scope].span_presets_hz``), supplied by the caller because
+    ``commands/`` may not import ``profiles/`` (``.importlinter``). It is
+    the only source of both the legal index range and the Hz value put on
+    the wire, so a profile that declares no presets rejects every index
+    through the same ``_validate_scope_range`` error every other
+    out-of-range span raises.
+    """
+    _validate_scope_range("scope span", span, 0, len(presets) - 1)
+    span_hz = presets[span]
     span_bcd = bcd_encode(span_hz)
     return _build_from_map(
         cmd_map,
@@ -964,17 +966,19 @@ def parse_scope_mode_response(
     return _decode_scope_value(frame, sub, minimum=0, maximum=3, command=command)
 
 
-def _span_index_for_hz(hz: int) -> int | None:
-    """Return the scope-span preset index (0-7) for an exact Hz match.
+def _span_index_for_hz(hz: int, presets: tuple[int, ...]) -> int | None:
+    """Return the span-preset index (0-7) of ``hz`` within ``presets``.
 
     Single source of truth for the Hz<->span-index mapping: reused (never
     duplicated) by both ``parse_scope_span_response`` below -- the 0x15
     reply-path decoder -- and the waveform-stream span derivation
     (``runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation``,
-    MOR-2222/MOR-2256). ``_SCOPE_SPAN_PRESETS_HZ`` is a hardcoded module
-    constant, not profile-declared data; moving it into per-profile TOML
-    is tracked separately as MOR-2258 rather than duplicated here or
-    invented as new profile schema for this change.
+    MOR-2256). ``presets`` is caller-supplied rather than a module
+    constant: the span table is
+    ``profiles.RadioProfile.scope_span_presets_hz`` (``rigs/*.toml``:
+    ``[scope].span_presets_hz``), and ``commands/`` may not import
+    ``profiles/`` (``.importlinter``), so every caller reads it off the
+    resolved profile and passes it in.
 
     Returns ``None`` on no exact match -- callers decide whether that is
     an error (the reply path still raises, unchanged) or a silent no-op
@@ -996,20 +1000,36 @@ def _span_index_for_hz(hz: int) -> int | None:
     ``commands/__init__.py`` re-exports the name).
     """
     try:
-        return _SCOPE_SPAN_PRESETS_HZ.index(hz)
+        return list(presets).index(hz)
     except ValueError:
         return None
 
 
 def parse_scope_span_response(
-    frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_SPAN
+    frame: CivFrame,
+    presets: tuple[int, ...],
+    *,
+    command: int = _CMD_SCOPE,
+    sub: int = _SUB_SCOPE_SPAN,
 ) -> tuple[int | None, int]:
+    """Decode a 0x27 0x15 span reply into ``(receiver, span index)``.
+
+    ``presets`` is the radio's declared span table -- see
+    ``scope_set_span`` above for why it is a parameter and not a module
+    constant. Both reply shapes are bounded by it: the one-byte form is
+    already an index and is range-checked against ``len(presets)``, and
+    the five-byte BCD form is matched exactly against the table by
+    ``_span_index_for_hz``. No match raises ``ValueError``, unchanged --
+    a profile that declares no presets therefore decodes no span at all.
+    """
     data = _parse_scope_frame(frame, sub, command=command)
     receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(1, 5))
     if len(payload) == 1:
-        return receiver, _validate_scope_range("scope span", payload[0], 0, 7)
+        return receiver, _validate_scope_range(
+            "scope span", payload[0], 0, len(presets) - 1
+        )
     hz = bcd_decode(payload)
-    span = _span_index_for_hz(hz)
+    span = _span_index_for_hz(hz, presets)
     if span is None:
         raise ValueError(f"Unknown scope span frequency {hz}")
     return receiver, span

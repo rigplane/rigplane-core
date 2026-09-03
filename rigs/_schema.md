@@ -221,6 +221,27 @@ freshness_ttl_seconds = 4.0
 reconciliation_priority = "command_response"
 ```
 
+## `[scope]` — Panoramic Scope Settings
+
+Optional section. Reference-level range and span presets for the panoramic
+scope, where the radio supports one.
+
+| Field             | Type    | Required | Description                                              |
+|-------------------|---------|----------|-----------------------------------------------------------|
+| `ref_min_db`      | float   | no       | Minimum scope reference level, dB.                         |
+| `ref_max_db`      | float   | no       | Maximum scope reference level, dB.                         |
+| `ref_step_db`     | float   | no       | Scope reference level step size, dB.                       |
+| `span_presets_hz` | int[]   | no       | Scope span presets in Hz, index-ordered (index 0-7 matches the CI-V `0x27 0x15` span code the radio itself uses). Must be non-empty and strictly ascending. |
+
+`span_presets_hz` is the only place these values live. The
+waveform-stream span derivation (`runtime/_civ_rx.py:
+CivRuntime._publish_scope_span_observation`) resolves a frame's displayed
+width to a span index against it, and the 0x15 reply-path decoder/encoder
+(`commands/scope.py: parse_scope_span_response`/`scope_set_span`) take it
+as an argument — `commands/` may not import `profiles/`, so the runtime
+reads the resolved profile and passes the list in. A profile that omits
+this key therefore decodes and encodes no span at all.
+
 ## `[attenuator]` — Attenuator Steps
 
 Optional section. Defines available attenuator values for the radio.
