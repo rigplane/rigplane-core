@@ -608,8 +608,9 @@ const manifest = {
     + 'reports on the rAF ballistics loop, not on the composition. The composition itself is '
     + 'pinned only by the pixel baselines of the same names in '
     + '`tests/e2e/visual/visual-baselines.spec.ts`, which per `fixtures/approved-baselines/'
-    + 'README.md` catch only changes above ~1024 differing pixels (~32x32 px at 1280x800) and '
-    + 'cannot see whole-frame brightness/contrast drift at all.',
+    + 'README.md` catch only changes above `maxDiffPixelRatio` of the frame — ~1024 differing '
+    + 'pixels (~32x32 px) at 1280x800, ~880 (~29x29) at 1100x800 — and cannot see whole-frame '
+    + 'brightness/contrast drift at all.',
   ],
   viewports: VIEWPORTS,
   summary: {

@@ -52,6 +52,11 @@ interface Spec {
  * token resolution from dark — see MOR-1073/1074 — and none of the original
  * 12 exercised it) and a fault × non-default-language capture (fault only
  * ever appeared in the default language before).
+ *
+ * MOR-2243 appends the two `peer-split-chassis` rows, which sit outside that
+ * grid entirely: a different layout (`PeerSplitLayout`, not the cockpit),
+ * captured at two frame sizes because at 1280x800 the stage transform
+ * resolves to the identity.
  */
 const COCKPIT: Spec[] = [
   { name: 'dual-main-sub--desktop', fixture: 'topology-2-main-sub' },

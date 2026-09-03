@@ -693,14 +693,11 @@ export function runAssertions(
  * that has no such element, and `root()`'s non-null assertion turned that
  * missing element into a TypeError that killed the whole capture run rather
  * than a value this loop could skip. Passing the id in makes the probe
- * independent of whether the optional assertion step ran first; the default
- * keeps every existing caller on the value it already resolved. A missing
+ * independent of whether the optional assertion step ran first. A missing
  * root is reported as `__rootMissing` rather than as an empty probe, so it
  * stays distinguishable from a root that simply carries none of the targets.
  */
-export function styleProbe(
-  rootTestId: string = currentRootTestId,
-): Record<string, Record<string, string>> {
+export function styleProbe(rootTestId: string): Record<string, Record<string, string>> {
   const targets: Record<string, string> = {
     key: '[data-testid="rx-tx-key"]',
     unkey: '[data-testid="rx-tx-unkey"]',
