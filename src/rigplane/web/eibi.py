@@ -377,7 +377,7 @@ def _parse_fcc_pipe(raw: str) -> list[dict[str, Any]]:
 
 
 def _curl_download(url: str) -> str:
-    """Download via curl subprocess (more reliable for FCC)."""
+    """Download using a curl subprocess."""
     import subprocess
 
     result = subprocess.run(

@@ -655,8 +655,7 @@ class RadioPoller:
                 resolve_query=acquisition_query_resolver_for_profile(self._profile),
                 supports_cmd29=self._profile.supports_cmd29,
             )
-        # Set by default — cleared at _run() start, re-set after initial fetch.
-        # This prevents EnableScope from hanging in tests that don't call start().
+        # Initial state is fetched during connect, so scope commands are ready now.
         self._initial_fetch_done = asyncio.Event()
         self._initial_fetch_done.set()
         self._scope_enable_deferred = False
@@ -1133,9 +1132,8 @@ class RadioPoller:
     def _adaptive_gap(self) -> float:
         """Return gap adjusted for queue pressure.
 
-        At pressure < 0.5: return base gap unchanged.
-        At pressure 0.5-0.7: linear interpolation from 1x to 2x gap.
-        At pressure > 0.7: return 2x gap.
+        Below 0.5, return the base gap. Up to ``PRESSURE_THRESHOLD``,
+        interpolate from 1x to 2x; at or above the threshold, return 2x.
         """
         try:
             raw = self._radio.queue_pressure  # type: ignore[attr-defined]

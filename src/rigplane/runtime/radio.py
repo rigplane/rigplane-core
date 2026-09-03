@@ -68,7 +68,6 @@ from rigplane.runtime.callable_support import supports_callable
 from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
 from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
 
-# Import split modules
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._control_phase import (
     CONNINFO_SIZE,  # noqa: F401 (re-export for tests)
@@ -4664,12 +4663,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         await self._send_fire_and_forget(
             self._commands.set_rx_antenna_ant2(enabled, to_addr=self._radio_addr)
         )
-
-    # commands/config.py, migrated onto the bound command map (MOR-2006
-    # Steps 5..N module 1, plan §4): requests go through
-    # ``self._commands.<builder>`` and replies through
-    # ``self._expect_shape`` (§6 population 1), rather than the literal
-    # ``command=``/``sub=``/``prefix=`` values every getter below still uses.
 
     async def get_acc1_mod_level(self) -> int:
         """Read ACC1 modulation level (0-255)."""

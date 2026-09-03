@@ -284,10 +284,7 @@ class DiagnosticsHandler:
         filename = _bundle_filename(now_unix)
         bundle_path = staging_dir / filename
 
-        # build_bundle does not currently accept includes/excludes; the
-        # contract is forward-compatible: client sends them, server
-        # silently honours when discovery layer adds support. For now we
-        # record them on the session for future filtering.
+        # Accepted for API compatibility; bundle generation currently ignores them.
         _ = includes
         _ = excludes
 
