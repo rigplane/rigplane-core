@@ -15,6 +15,7 @@ from rigplane.backends.rigctld_client.observations import (
     RigctldClientObservationAdapter,
 )
 from rigplane.core.command_service import CommandService, command_intent_from_request
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
@@ -24,7 +25,12 @@ from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
 from rigplane.runtime.managed_tx_fence import TxAbortFence
-from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
+from rigplane.runtime.managed_tx_state import (
+    ActuationOperation,
+    ActuationResult,
+    ManagedTxIntentKind,
+    ManagedTxOutcome,
+)
 from test_rigctld_ingress_scheduling import (
     _FREQUENCY,
     _WAIT_TIMEOUT,
@@ -118,6 +124,49 @@ async def _finish(action, *args):
     await asyncio.wait_for(action(*args), _WAIT_TIMEOUT)
 
 
+def _quiesce_before_stop(poller):
+    closing = False
+    parked = asyncio.Event()
+
+    def wrap(original):
+        idle = asyncio.Event()
+        idle.set()
+
+        async def batch():
+            if closing:
+                await parked.wait()
+            idle.clear()
+            try:
+                await original()
+            finally:
+                idle.set()
+
+        return batch, idle
+
+    poller._poll_medium, medium_idle = wrap(poller._poll_medium)
+    poller._poll_slow, slow_idle = wrap(poller._poll_slow)
+
+    async def quiesce():
+        nonlocal closing
+        closing = True
+        await asyncio.gather(medium_idle.wait(), slow_idle.wait())
+
+    return quiesce
+
+
+class _RecordingLane(ManagedTxEffectLane):
+    def __init__(self, radio):
+        super().__init__(radio)
+        self.settlements = []
+
+    async def settle(self, effect, *, deadline_monotonic, is_current=None):
+        settled = await super().settle(
+            effect, deadline_monotonic=deadline_monotonic, is_current=is_current
+        )
+        self.settlements.append((effect, settled))
+        return settled
+
+
 @pytest.fixture
 async def managed(tmp_path):
     async with FakeRigctldServer() as provider, AsyncExitStack() as cleanup:
@@ -127,8 +176,9 @@ async def managed(tmp_path):
         radio = _GatedProvider(transport, store)
         default = _DefaultExecutor()
         service = CommandService(executor=default, state_store=store)
+        lane = _RecordingLane(radio)
         authority = ManagedTxAuthority(
-            ManagedTxEffectLane(radio),
+            lane,
             ManagedTxTotConfigStore(tmp_path / "tot.json"),
             fence,
             provider_generation=store.provider_generation,
@@ -140,13 +190,16 @@ async def managed(tmp_path):
             await transport.connect()
             adapter = RigctldClientObservationAdapter(radio)
             observed = await adapter.read_ptt()
-            store.apply(replace(observed, provider_generation=store.provider_generation))
+            store.apply(
+                replace(observed, provider_generation=store.provider_generation)
+            )
             poller = radio.create_observation_poller(
                 callback=lambda batch: [store.apply(item) for item in batch],
                 command_queue=queue,
             )
             poller.bind_provider_generation(capture=lambda: store.provider_generation)
             cleanup.push_async_callback(_finish, poller.stop)
+            cleanup.push_async_callback(_finish, _quiesce_before_stop(poller))
             await poller.start()
             server = RigctldServer(
                 radio,
@@ -178,6 +231,7 @@ async def managed(tmp_path):
                 poller=poller,
                 fence=fence,
                 authority=authority,
+                lane=lane,
                 service=service,
                 default=default,
                 server=server,
@@ -236,6 +290,115 @@ async def test_real_authority_fixture_uses_provider_ptt(managed):
     assert not (await rig.authority.snapshot()).state.release_required
 
 
+async def _key_owner(rig):
+    owner = "rigctld-client-1"
+    worker = await rig.authority.submit_ptt(True, owner)
+    rig.tasks.append(worker)
+    transition, settled = await asyncio.wait_for(worker, 2)
+    assert transition.outcome is ManagedTxOutcome.ACCEPTED
+    assert settled is not None and settled.result is ActuationResult.ACCEPTED
+    assert settled.operation is ActuationOperation.PTT_ON
+    assert settled.token == transition.effects[0].token
+    assert rig.lane.settlements[-1][1] is settled
+    state = (await rig.authority.snapshot()).state
+    assert state.intent.kind is ManagedTxIntentKind.PTT
+    assert state.intent.owner_token == owner
+    assert state.pending_effect is None
+    assert rig.provider.state.ptt == 1
+    assert rig.server._next_client_id == 1
+    return owner
+
+
+async def test_active_owner_off_provider_error_retains_release_debt(managed):
+    rig = managed
+    owner = await _key_owner(rig)
+    rig.provider.behavior.malformed_responses["T 0"] = b"RPRT -6\n"
+    try:
+        worker = await rig.authority.submit_ptt(False, owner)
+        rig.tasks.append(worker)
+        transition, settled = await asyncio.wait_for(worker, 2)
+        assert transition.outcome is ManagedTxOutcome.ACCEPTED
+        assert settled is not None and settled.result is ActuationResult.UNCERTAIN
+        assert settled.operation is ActuationOperation.FORCE_RECEIVE
+        assert settled.token == transition.effects[0].token
+        assert rig.lane.settlements[-1][1] is settled
+        state = (await rig.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+        assert state.release_required and state.pending_effect is None
+        assert _writes(rig) == ["T 1", "T 0"]
+        assert rig.provider.state.ptt == 1
+    finally:
+        rig.provider.behavior.malformed_responses.pop("T 0", None)
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "result", "off_reply"),
+    [
+        (False, ActuationResult.ACCEPTED, b"RPRT 0\n"),
+        (True, ActuationResult.UNCERTAIN, b"RPRT -9\n"),
+    ],
+    ids=["accepted", "uncertain"],
+)
+async def test_active_owner_off_settles_while_frequency_is_pending(
+    managed, provider_error, result, off_reply
+):
+    rig = managed
+    owner = await _key_owner(rig)
+    observed = await RigctldClientObservationAdapter(rig.radio).read_ptt()
+    assert observed.value is True
+    rig.store.apply(
+        replace(observed, provider_generation=rig.store.provider_generation)
+    )
+    terminal = asyncio.Event()
+    events = []
+
+    def observe(event):
+        if (
+            event.source == "rigctld"
+            and event.target == FieldPath.global_("tx_state", "ptt")
+            and event.details.get("session_id") == owner
+            and event.state in {"acknowledged", "failed", "timed_out"}
+        ):
+            events.append(event)
+            terminal.set()
+
+    unsubscribe = rig.service.subscribe_lifecycle(observe)
+    ready = asyncio.Event()
+    replies = asyncio.create_task(_collect_replies(rig.reader, rig.radio, 2, ready))
+    rig.tasks.append(replies)
+    if provider_error:
+        rig.provider.behavior.malformed_responses["T 0"] = b"RPRT -6\n"
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+        rig.writer.write(f"F {_FREQUENCY}\nT 0\n".encode())
+        await rig.writer.drain()
+        await asyncio.wait_for(rig.radio.frequency_entered.wait(), 2)
+        await asyncio.wait_for(terminal.wait(), 2)
+        assert not rig.radio.frequency_finished.is_set()
+        assert _writes(rig) == ["T 1", "T 0"]
+        effect, settled = rig.lane.settlements[-1]
+        assert effect.operation is ActuationOperation.FORCE_RECEIVE
+        assert settled is not None and settled.token == effect.token
+        assert settled.operation is effect.operation and settled.result is result
+        state = (await rig.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+        assert state.pending_effect is None
+        assert state.release_required is provider_error
+        assert rig.provider.state.ptt == int(provider_error)
+        assert [event.state for event in events] == [
+            "failed" if provider_error else "acknowledged"
+        ]
+        rig.radio.release_frequency.set()
+        assert await asyncio.wait_for(replies, 2) == [
+            (b"RPRT 0\n", True),
+            (off_reply, True),
+        ]
+    finally:
+        rig.radio.release_frequency.set()
+        rig.provider.behavior.malformed_responses.pop("T 0", None)
+        unsubscribe()
+
+
 async def test_real_provider_poller_drains_injected_queue(managed):
     rig = managed
     completion = asyncio.get_running_loop().create_future()
@@ -268,7 +431,9 @@ async def test_frequency_provider_rejection_preserves_terminal_error(managed):
     [(False, b"RPRT 0\n"), (True, b"RPRT -7\n")],
     ids=["frequency-success", "frequency-provider-error"],
 )
-async def test_pending_on_is_revoked_by_pipelined_off(managed, provider_error, first_reply):
+async def test_pending_on_is_revoked_by_pipelined_off(
+    managed, provider_error, first_reply
+):
     rig = managed
     if provider_error:
         rig.provider.behavior.malformed_responses[f"F {_FREQUENCY}"] = b"RPRT -6\n"

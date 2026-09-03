@@ -6,8 +6,6 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import pytest
-
 from rigplane.core.exceptions import ConnectionError as ProviderConnectionError
 from rigplane.rigctld import protocol
 from rigplane.rigctld.contract import RigctldConfig
@@ -89,45 +87,6 @@ async def _collect_replies(
         line = await reader.readline()
         replies.append((line, radio.frequency_finished.is_set()))
     return replies
-
-
-@pytest.mark.parametrize(
-    ("fail_frequency", "first_reply"),
-    [(False, b"RPRT 0\n"), (True, b"RPRT -6\n")],
-    ids=["frequency-success", "frequency-provider-error"],
-)
-async def test_pipelined_off_reaches_provider_before_held_frequency_finishes(
-    fail_frequency: bool, first_reply: bytes
-) -> None:
-    radio = _GatedRadio(fail_frequency=fail_frequency)
-    async with _connected(radio) as (reader, writer):
-        ready = asyncio.Event()
-        replies = asyncio.create_task(_collect_replies(reader, radio, 2, ready))
-        try:
-            await asyncio.wait_for(ready.wait(), timeout=_WAIT_TIMEOUT)
-            writer.write(f"F {_FREQUENCY}\nT 0\n".encode("ascii"))
-            await writer.drain()
-            await asyncio.wait_for(
-                radio.frequency_entered.wait(), timeout=_WAIT_TIMEOUT
-            )
-            await asyncio.wait_for(
-                radio.ptt_off_written.wait(), timeout=_WAIT_TIMEOUT
-            )
-            assert not radio.frequency_finished.is_set()
-            assert radio.calls == ["frequency entered", "ptt off"]
-
-            radio.release_frequency.set()
-            received = await asyncio.wait_for(replies, timeout=_WAIT_TIMEOUT)
-            assert received == [(first_reply, True), (b"RPRT 0\n", True)]
-            assert radio.calls == [
-                "frequency entered",
-                "ptt off",
-                "frequency finished",
-            ]
-        finally:
-            radio.release_frequency.set()
-            replies.cancel()
-            await asyncio.gather(replies, return_exceptions=True)
 
 
 async def test_frequency_provider_failure_is_not_an_enqueue_ack() -> None:
