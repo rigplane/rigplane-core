@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import unittest
 
 
@@ -22,6 +24,63 @@ REBRAND_YML = ROOT / ".github" / "workflows" / "rebrand-gate.yml"
 
 
 class QuickPathFilterContractTest(unittest.TestCase):
+    def docs_quick_script(self) -> str:
+        workflow = DOCS_QUICK_YML.read_text(encoding="utf-8")
+        marker = "          script: |\n"
+        start = workflow.index(marker) + len(marker)
+        lines = []
+        for line in workflow[start:].splitlines():
+            if line and not line.startswith("            "):
+                break
+            lines.append(line[12:] if line.startswith("            ") else "")
+        return "\n".join(lines)
+
+    def run_docs_quick_script(
+        self, *, heads: list[str], files: list[dict[str, str]]
+    ) -> dict[str, object]:
+        runner = r"""
+const script = process.argv[1];
+const scenario = JSON.parse(process.argv[2]);
+const statuses = [];
+const info = [];
+const github = {
+  paginate: async () => scenario.files,
+  rest: {
+    pulls: {
+      get: async () => ({data: {head: {sha: scenario.heads.shift()}}}),
+      listFiles: async () => undefined,
+    },
+    repos: {
+      createCommitStatus: async (status) => statuses.push(status),
+    },
+  },
+};
+const context = {
+  repo: {owner: 'rigplane', repo: 'rigplane-core'},
+  payload: {pull_request: {number: 3132}},
+  serverUrl: 'https://github.test',
+  runId: 1,
+};
+const core = {info: (message) => info.push(message)};
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+new AsyncFunction('github', 'context', 'core', script)(github, context, core)
+  .then(() => process.stdout.write(JSON.stringify({statuses, info})))
+  .catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+        completed = subprocess.run(
+            [
+                "node",
+                "-e",
+                runner,
+                self.docs_quick_script(),
+                json.dumps({"heads": heads, "files": files}),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)
+
     def assert_docs_only(self, paths: list[str]) -> None:
         self.assertEqual(
             CLASSIFIER.classify(paths),
@@ -131,10 +190,41 @@ class QuickPathFilterContractTest(unittest.TestCase):
         self.assertIn("github.paginate", docs_quick)
         self.assertIn("github.rest.repos.createCommitStatus", docs_quick)
         self.assertIn("files.length === 0 || !files.every", docs_quick)
-        self.assertIn("sha: pull.head.sha", docs_quick)
+        self.assertIn("previous_filename === undefined", docs_quick)
+        self.assertIn("currentPull.head.sha !== headSha", docs_quick)
+        self.assertIn("sha: headSha", docs_quick)
         self.assertNotIn("sha: github.sha", docs_quick)
         self.assertNotIn("actions/checkout", docs_quick)
         self.assertNotIn("setup-uv", docs_quick)
+
+    def test_docs_only_publisher_rejects_renames_and_head_races(self) -> None:
+        initial_head = "a" * 40
+        later_head = "b" * 40
+        stable = self.run_docs_quick_script(
+            heads=[initial_head, initial_head],
+            files=[{"filename": "docs/guide.md"}],
+        )
+        self.assertEqual(
+            [status["sha"] for status in stable["statuses"]], [initial_head]
+        )
+
+        renamed_code = self.run_docs_quick_script(
+            heads=[initial_head],
+            files=[
+                {
+                    "filename": "docs/guide.md",
+                    "previous_filename": "src/rigplane/radio.py",
+                }
+            ],
+        )
+        self.assertEqual(renamed_code["statuses"], [])
+
+        raced = self.run_docs_quick_script(
+            heads=[initial_head, later_head],
+            files=[{"filename": "docs/guide.md"}],
+        )
+        self.assertEqual(raced["statuses"], [])
+        self.assertIn("head changed", raced["info"][0])
 
     def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
         citation = DOC_CITATION_YML.read_text(encoding="utf-8")

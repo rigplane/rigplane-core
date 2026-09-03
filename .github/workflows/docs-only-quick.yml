@@ -22,11 +22,12 @@ jobs:
           script: |
             const {owner, repo} = context.repo;
             const pullNumber = context.payload.pull_request.number;
-            const {data: pull} = await github.rest.pulls.get({
+            const {data: initialPull} = await github.rest.pulls.get({
               owner,
               repo,
               pull_number: pullNumber,
             });
+            const headSha = initialPull.head.sha;
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner,
               repo,
@@ -55,14 +56,26 @@ jobs:
                 documentationExact.has(filename)
               );
             };
-            if (files.length === 0 || !files.every(({filename}) => isDocumentation(filename))) {
+            const isDocumentationFile = ({filename, previous_filename}) =>
+              isDocumentation(filename) &&
+              (previous_filename === undefined || isDocumentation(previous_filename));
+            if (files.length === 0 || !files.every(isDocumentationFile)) {
               core.info('Not a documentation-only pull request; quick.yml owns the required context.');
+              return;
+            }
+            const {data: currentPull} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            });
+            if (currentPull.head.sha !== headSha) {
+              core.info('Pull request head changed during docs-only classification; no status was published.');
               return;
             }
             await github.rest.repos.createCommitStatus({
               owner,
               repo,
-              sha: pull.head.sha,
+              sha: headSha,
               state: 'success',
               context: 'quick',
               description: 'Documentation-only change; product checks are not selected.',
