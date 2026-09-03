@@ -67,6 +67,12 @@ from rigplane.runtime._scope_runtime import ScopeRuntimeMixin
 from rigplane.runtime.callable_support import supports_callable
 from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
 from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
+from rigplane.runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+)
 
 # Import split modules
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -1520,11 +1526,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self,
         civ_frame: bytes,
         wait_response: bool = True,
+        *,
+        is_current: "Callable[[], bool] | None" = None,
     ) -> CivFrame | None:
         """Delegate to CI-V runtime (for tests and internal callers)."""
         return await self._civ_runtime.execute_civ_raw(
             civ_frame,
             wait_response=wait_response,
+            is_current=is_current,
         )
 
     def _update_state_cache_from_frame(self, frame: CivFrame) -> None:
@@ -1541,6 +1550,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         wait_response: bool = True,
         timeout: float | None = None,
         wait_dispatch: bool = True,
+        is_current: "Callable[[], bool] | None" = None,
     ) -> CivFrame | None:
         """Delegate to CI-V runtime (keeps existing call sites unchanged)."""
         return await self._civ_runtime.send_civ_raw(
@@ -1551,6 +1561,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             wait_response=wait_response,
             timeout=timeout,
             wait_dispatch=wait_dispatch,
+            is_current=is_current,
         )
 
     async def _send_civ_expect(
@@ -3472,6 +3483,39 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: "Callable[[], bool]",
+    ) -> ActuationResult:
+        """Execute one authority-tokened Icom TX semantic on the urgent lane."""
+        del token  # Authority owns token identity; the adapter owns no generation.
+        try:
+            if operation in (
+                ActuationOperation.PTT_ON,
+                ActuationOperation.TRANSMIT_ON,
+            ):
+                civ = self._commands.ptt_on(to_addr=self._radio_addr)
+            elif operation is ActuationOperation.FORCE_RECEIVE:
+                civ = self._commands.ptt_off(to_addr=self._radio_addr)
+            elif operation is AbortOperation.STOP_CW:
+                civ = self._commands.stop_cw(to_addr=self._radio_addr)
+            elif operation is AbortOperation.STOP_TUNE:
+                civ = self._commands.set_tuner_status(0, to_addr=self._radio_addr)
+            else:
+                return ActuationResult.REJECTED
+        except CommandError:
+            return ActuationResult.REJECTED
+        await self._send_civ_raw(
+            civ,
+            priority=Priority.IMMEDIATE,
+            wait_response=False,
+            is_current=is_current,
+        )
+        return ActuationResult.ACCEPTED
 
     async def read_transmit_state(self) -> TxStateReading:
         """One solicited CI-V transmit-state observation.

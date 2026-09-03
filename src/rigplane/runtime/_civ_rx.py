@@ -976,11 +976,14 @@ class CivRuntime:
         self,
         civ_frame: bytes,
         wait_response: bool = True,
+        *,
+        is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (public API)."""
         return await self._execute_civ_raw(
             civ_frame,
             wait_response=wait_response,
+            is_current=is_current,
         )
 
     async def execute_civ_transaction(
@@ -1181,6 +1184,7 @@ class CivRuntime:
         wait_response: bool = True,
         timeout: "float | None" = None,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response (public API)."""
         return await self._send_civ_raw(
@@ -1191,6 +1195,7 @@ class CivRuntime:
             wait_response=wait_response,
             timeout=timeout,
             wait_dispatch=wait_dispatch,
+            is_current=is_current,
         )
 
     async def _send_civ_frame_now(
@@ -3574,6 +3579,7 @@ class CivRuntime:
         wait_response: bool = True,
         timeout: "float | None" = None,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Enqueue a CI-V command and wait for its response."""
         if self._host._civ_transport is None or not self._host._connected:
@@ -3582,7 +3588,11 @@ class CivRuntime:
         self._ensure_civ_runtime()
 
         if self._host._commander is None:
-            coro = self._execute_civ_raw(civ_frame, wait_response=wait_response)
+            coro = self._execute_civ_raw(
+                civ_frame,
+                wait_response=wait_response,
+                is_current=is_current,
+            )
             if timeout is not None:
                 return await asyncio.wait_for(coro, timeout=timeout)
             return await coro
@@ -3595,6 +3605,7 @@ class CivRuntime:
             wait_response=wait_response,
             timeout=timeout,
             wait_dispatch=wait_dispatch,
+            is_current=is_current,
         )
 
     @staticmethod
@@ -3659,6 +3670,8 @@ class CivRuntime:
         self,
         civ_frame: bytes,
         wait_response: bool = True,
+        *,
+        is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (serialized by worker)."""
         assert self._host._civ_transport is not None
@@ -3674,6 +3687,8 @@ class CivRuntime:
                 or self._host._civ_epoch != epoch
             ):
                 raise ConnectionError("CI-V execution belongs to a retired session")
+            if is_current is not None and not is_current():
+                raise ConnectionError("managed TX attempt is stale")
 
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
