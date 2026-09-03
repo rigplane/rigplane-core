@@ -5,8 +5,8 @@ Supports both CI-V (wire bytes) and Yaesu CAT (text templates) in a unified sche
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 __all__ = [
     "CivCommandSpec",
@@ -14,33 +14,6 @@ __all__ = [
     "AbsentCommandSpec",
     "CommandSpec",
 ]
-
-
-class _ValueVariants(Mapping[int, tuple[int, ...]]):
-    """Small immutable mapping that remains safe under snapshot deepcopy."""
-
-    __slots__ = ("_items",)
-
-    def __init__(self, source: Mapping[int, tuple[int, ...]]) -> None:
-        self._items = tuple((key, tuple(wire)) for key, wire in source.items())
-
-    def __getitem__(self, key: int) -> tuple[int, ...]:
-        for candidate, wire in self._items:
-            if candidate == key:
-                return wire
-        raise KeyError(key)
-
-    def __iter__(self) -> Iterator[int]:
-        return (key for key, _ in self._items)
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    def __deepcopy__(self, memo: dict[int, object]) -> _ValueVariants:
-        return self
-
-    def __hash__(self) -> int:
-        return hash(frozenset(self._items))
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,19 +28,25 @@ class CivCommandSpec:
     bytes: tuple[int, ...]
     """CI-V wire bytes (e.g., (0x03,) for get_freq)."""
 
-    value_variants: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
-    """Optional complete wire tuples selected by an integer semantic value."""
+    value_variants: (
+        tuple[tuple[int, tuple[int, ...]], ...] | Mapping[int, Iterable[int]]
+    ) = ()
+    """Optional ``(semantic value, complete wire tuple)`` pairs.
+
+    Mapping inputs are accepted for convenient construction, then detached
+    into a tuple-only representation so dataclass projections remain immutable,
+    deepcopy-safe, and JSON-safe.
+    """
 
     def __post_init__(self) -> None:
-        """Detach and freeze the optional nested variant mapping."""
+        """Detach and freeze the optional nested variant input."""
+        source = self.value_variants
+        items = source.items() if isinstance(source, Mapping) else source
         object.__setattr__(
             self,
             "value_variants",
-            _ValueVariants(self.value_variants),
+            tuple(sorted((key, tuple(wire)) for key, wire in items)),
         )
-
-    def __hash__(self) -> int:
-        return hash((self.bytes, frozenset(self.value_variants.items())))
 
 
 @dataclass(frozen=True, slots=True)

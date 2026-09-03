@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
+import json
 import textwrap
 from pathlib import Path
 
@@ -131,7 +133,55 @@ class TestCivCommandSpec:
     """Tests for CI-V command specifications (existing format)."""
 
     def test_legacy_constructor_defaults_to_no_value_variants(self):
-        assert CivCommandSpec(bytes=(0x03,)).value_variants == {}
+        spec = CivCommandSpec(bytes=(0x03,))
+
+        assert spec.value_variants == ()
+        projection = dataclasses.asdict(spec)
+        assert projection == {"bytes": (0x03,), "value_variants": ()}
+        assert json.loads(json.dumps(projection)) == {
+            "bytes": [0x03],
+            "value_variants": [],
+        }
+        assert copy.deepcopy(spec) == spec
+
+    def test_populated_value_variants_have_json_safe_detached_projection(self):
+        variants = {
+            0: [0x1A, 0x06, 0x00, 0x00],
+            1: [0x1A, 0x06, 0x01, 0x01],
+        }
+        spec = CivCommandSpec(bytes=(0x1A, 0x06), value_variants=variants)
+
+        variants[0][3] = 0xFF
+        variants[2] = [0x1A, 0x06, 0x02, 0x02]
+
+        expected = (
+            (0, (0x1A, 0x06, 0x00, 0x00)),
+            (1, (0x1A, 0x06, 0x01, 0x01)),
+        )
+        assert spec.value_variants == expected
+        projection = dataclasses.asdict(spec)
+        assert projection == {
+            "bytes": (0x1A, 0x06),
+            "value_variants": expected,
+        }
+        assert json.loads(json.dumps(projection)) == {
+            "bytes": [0x1A, 0x06],
+            "value_variants": [
+                [0, [0x1A, 0x06, 0x00, 0x00]],
+                [1, [0x1A, 0x06, 0x01, 0x01]],
+            ],
+        }
+        assert copy.deepcopy(spec) == spec
+        assert hash(copy.deepcopy(spec)) == hash(spec)
+        reordered = CivCommandSpec(
+            bytes=(0x1A, 0x06),
+            value_variants={
+                1: [0x1A, 0x06, 0x01, 0x01],
+                0: [0x1A, 0x06, 0x00, 0x00],
+            },
+        )
+        assert reordered == spec
+        assert hash(reordered) == hash(spec)
 
     def test_load_civ_commands(self, tmp_path):
         """CI-V commands load as CivCommandSpec."""
@@ -189,13 +239,13 @@ class TestCivCommandSpec:
         spec = rig.commands["set_data_mode"]
         assert isinstance(spec, CivCommandSpec)
         assert spec.bytes == (0x1A, 0x06)
-        assert spec.value_variants == {
-            0: (0x1A, 0x06, 0x00, 0x00),
-            1: (0x1A, 0x06, 0x01, 0x01),
-        }
+        assert spec.value_variants == (
+            (0, (0x1A, 0x06, 0x00, 0x00)),
+            (1, (0x1A, 0x06, 0x01, 0x01)),
+        )
         with pytest.raises(TypeError):
-            spec.value_variants[0] = (0x1A, 0x06, 0x00)  # type: ignore[index]
-        assert copy.deepcopy(spec.value_variants) is spec.value_variants
+            spec.value_variants[0] = (0, (0x1A, 0x06, 0x00))  # type: ignore[index]
+        assert copy.deepcopy(spec.value_variants) == spec.value_variants
 
     @pytest.mark.parametrize(
         ("declaration", "path"),
