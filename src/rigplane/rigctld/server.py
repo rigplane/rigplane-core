@@ -688,6 +688,7 @@ class RigctldServer:
                 report_executor_missing=self._report_acquisition_executor_missing,
                 report_executor_error=self._report_acquisition_executor_error,
                 report_sent=self._report_acquisition_sent,
+                claimant=self,
             )
             self._acquisition_drain = drain
         return drain
