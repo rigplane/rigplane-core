@@ -63,9 +63,9 @@ jobs:
       - name: Install focused test dependencies
         id: install
         run: |
-          printf '%s\n' 'uv python install 3.11' 'uv sync --frozen --all-extras' > "$ARTIFACT_DIR/dependency-commands.txt"
+          printf '%s\n' 'uv python install 3.11' 'HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras' > "$ARTIFACT_DIR/dependency-commands.txt"
           uv python install 3.11
-          uv sync --frozen --all-extras
+          HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras
 
       - name: Exact focused CALL-failure oracle
         run: |
