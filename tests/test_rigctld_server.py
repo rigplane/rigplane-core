@@ -738,9 +738,42 @@ class TestLifecycle:
         tick_interval = 0.05
         window = 1.2
         steps = round(window / tick_interval)
-        for _ in range(steps):
+        for step in range(steps):
+            diagnostic_step = step in (5, 6, 7)
+            if diagnostic_step:
+                now = clock.now()
+                due = scheduler.diagnostics()["cadenceByPath"][str(ptt)][
+                    "nextDueMonotonic"
+                ]
+                pending_before = tuple(
+                    request.id
+                    for request in scheduler.pending_requests()
+                    if ptt in request.paths
+                )
+                sends_before = sum(
+                    (command, sub) == (0x1C, 0x00)
+                    for _, command, sub in radio.civ_sends
+                )
             service.tick(now=clock.now())
+            if diagnostic_step:
+                pending_after_tick = tuple(
+                    request.id
+                    for request in scheduler.pending_requests()
+                    if ptt in request.paths
+                )
             await srv._drain_state_acquisition_once()
+            if diagnostic_step:
+                sends_after = sum(
+                    (command, sub) == (0x1C, 0x00)
+                    for _, command, sub in radio.civ_sends
+                )
+                print(
+                    f"CADENCE_DIAG step={step} now={now!r} due={due!r} "
+                    f"due_minus_now={due - now!r} "
+                    f"pending_before={pending_before!r} "
+                    f"pending_after_tick={pending_after_tick!r} "
+                    f"sends_before={sends_before} sends_after={sends_after}"
+                )
             # Stand in for the CI-V ingress that credits an answered read;
             # without it the request stays queued and the cadence group is
             # deduped out forever, so only the first poll would ever show.
