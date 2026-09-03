@@ -129,6 +129,7 @@ from test_web_managed_tx_owner import _KEY, _TEARDOWN, _poller, _Radio, _Supervi
 # dispatch bodies; the interlock seat now lives at its head, so the RF
 # premise is stated once here (see the fixture docstring in conftest.py).
 pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+_OBSERVED_RF_STATE = RadioPoller._current_rf_state
 
 
 def _seed_fresh_rx(poller: RadioPoller) -> None:
@@ -144,6 +145,78 @@ def _seed_fresh_rx(poller: RadioPoller) -> None:
             provider_generation=store.provider_generation,
         )
     )
+
+
+def _web_queue_turn_poller(monkeypatch, queue, *, store=None):
+    poller = RadioPoller(_make_radio(), queue, state_store=store)
+    monkeypatch.setattr(poller, "_current_rf_state", _OBSERVED_RF_STATE.__get__(poller))
+    boundary = asyncio.Event()
+
+    async def query_boundary():
+        boundary.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(poller, "_fetch_nb_controls", AsyncMock())
+    monkeypatch.setattr(poller, "_fetch_mod_inputs", AsyncMock())
+    monkeypatch.setattr(poller, "_adaptive_gap", lambda: 0)
+    monkeypatch.setattr(poller, "_send_query", query_boundary)
+    return poller, boundary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["cancel", "replace", "error"])
+async def test_web_loop_claims_live_pending_finite_turn(mode, monkeypatch):
+    from test_command_queue_execution import assert_live_pending_turn
+
+    queue = CommandQueue()
+    poller, boundary = _web_queue_turn_poller(monkeypatch, queue)
+    _seed_fresh_rx(poller)
+    await assert_live_pending_turn(
+        queue,
+        poller._run,
+        lambda leaf: monkeypatch.setattr(poller, "_execute", leaf),
+        mode=mode,
+        boundary=boundary,
+    )
+
+
+@pytest.mark.asyncio
+async def test_web_loop_releases_held_entry_after_finite_current_turn(monkeypatch):
+    from test_command_queue_execution import wait_for_event_or_exit
+    from test_radio_poller_tx_interlock import _observe_ptt
+    from rigplane.runtime._poller_types import CommandQueueEntry
+
+    clock, queue = FreshnessClock(start=10.0), CommandQueue()
+    store = StateStore(freshness_clock=clock)
+    poller, boundary = _web_queue_turn_poller(monkeypatch, queue, store=store)
+    reply = asyncio.get_running_loop().create_future()
+    held, seen = SetSplit(True), []
+    _observe_ptt(store, True, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([CommandQueueEntry(held, reply)]) == []
+    clock.advance(0.1)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == []
+    clock.advance(1.0)
+    _observe_ptt(store, False, observed_at=clock.now())
+
+    async def leaf(command, **_kwargs):
+        seen.append(command)
+        if command == SetFreq(1):
+            queue.put_ordered(SetFreq(3))
+
+    monkeypatch.setattr(poller, "_execute", leaf)
+    queue.put_ordered(SetFreq(1))
+    queue.put_ordered(SetFreq(2))
+    task = asyncio.create_task(poller._run())
+    try:
+        await wait_for_event_or_exit(boundary, task)
+        assert seen == [SetFreq(1), SetFreq(2), held]
+        assert reply.result() is None
+        assert [e.command for e in queue.drain_entries()] == [SetFreq(3)]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        reply.cancel()
 
 
 @pytest.mark.asyncio
