@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,6 +15,7 @@ from rigplane.backends.rigctld_client.radio import (
     RigctldClientRadio,
 )
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
+from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
@@ -64,6 +64,17 @@ def _radio(
     radio.supports_command = MagicMock(return_value=supported)
     radio.set_repeater_shift = AsyncMock(side_effect=error)
     return radio
+
+
+def _icom_poller(radio: MagicMock) -> RadioPoller:
+    server = WebServer(radio, WebConfig())
+    poller = RadioPoller(
+        radio, server.command_queue, state_store=server.command_state_store
+    )
+    poller._acquisition_scheduler = AcquisitionScheduler(  # noqa: SLF001
+        profile=radio.profile.state_acquisition
+    )
+    return poller
 
 
 async def _drain_yaesu(server: WebServer, radio: object) -> None:
@@ -228,12 +239,7 @@ async def test_all_three_drains_execute_the_same_neutral_intent() -> None:
         )
         assert str(intent.target) == "receiver.1.operator_controls.repeater_shift"
         if drain == "icom":
-            poller = SimpleNamespace(
-                _radio=radio,
-                _enforce_tx_interlock=lambda command: None,
-                _provider_generation=lambda: 0,
-            )
-            await RadioPoller._execute(poller, intent)  # type: ignore[arg-type] # noqa: SLF001
+            await _icom_poller(radio)._execute(intent)  # noqa: SLF001
         elif drain == "yaesu":
             poller = YaesuCatPoller.__new__(YaesuCatPoller)
             poller._radio = radio  # type: ignore[attr-defined]
@@ -336,14 +342,10 @@ async def test_icom_drain_rejects_non_admitted_policy_before_radio_invocation(
         radio, "set_repeater_shift", {"direction": 3}, source="http"
     )
     _install_non_admitted_descriptor(monkeypatch)
-    poller = SimpleNamespace(
-        _radio=radio,
-        _enforce_tx_interlock=lambda command: None,
-        _provider_generation=lambda: 0,
-    )
+    poller = _icom_poller(radio)
 
     with pytest.raises(CommandError, match="is not admitted"):
-        await RadioPoller._execute(poller, intent)  # type: ignore[arg-type] # noqa: SLF001
+        await poller._execute(intent)  # noqa: SLF001
     radio.set_repeater_shift.assert_not_awaited()
 
 
@@ -590,7 +592,12 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
     from rigplane.runtime import _poller_types as runtime_types
     from rigplane.web import radio_poller
 
-    assert set(command_descriptors()) == {"set_repeater_shift"}
+    assert set(command_descriptors()) == {
+        "set_repeater_shift",
+        "set_af_level",
+        "set_rf_gain",
+        "set_squelch",
+    }
     descriptor = command_descriptors()["set_repeater_shift"]
     assert descriptor.tx_policy is DescriptorTxPolicy.TX_SAFE
     policy_field = next(

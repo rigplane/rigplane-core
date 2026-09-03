@@ -18,6 +18,8 @@ from rigplane.core.acquisition_scheduler import AcquisitionPriority, Acquisition
 from rigplane.core.command_dispatch import (
     _af_level_from_param as _af_level_from_param,
     _raw_int_level_from_param as _raw_int_level_from_param,
+    bind_command_intent,
+    command_descriptor,
 )
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import (
@@ -1138,6 +1140,15 @@ def command_intent_from_request(
 ) -> CommandIntent:
     """Normalize a production command request into a backend-neutral intent."""
 
+    if command_descriptor(name) is not None:
+        return bind_command_intent(
+            name,
+            params,
+            source=source,
+            command_id=command_id,
+            session_id=session_id,
+            timeout=timeout,
+        )
     normalized = dict(params)
     if session_id is not None:
         normalized["session_id"] = session_id
@@ -1168,12 +1179,6 @@ def command_intent_from_request(
         normalized["ptt"] = True
     elif command_name == "ptt_off":
         normalized["ptt"] = False
-    elif command_name == "set_rf_gain":
-        normalized["rf_gain"] = _raw_int_level_from_param(normalized["level"])
-    elif command_name == "set_af_level":
-        normalized["af_level"] = _af_level_from_param(normalized["level"])
-    elif command_name in ("set_sql", "set_squelch"):
-        normalized["squelch"] = _raw_int_level_from_param(normalized["level"])
     elif command_name in ("set_att", "set_attenuator", "set_attenuator_level"):
         raw_value = (
             normalized["db"]
@@ -1309,12 +1314,6 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         return FieldPath.receiver(receiver, "freq_mode", "filter_width")
     if name in ("set_ptt", "ptt", "ptt_on", "ptt_off"):
         return FieldPath.global_("tx_state", "ptt")
-    if name == "set_rf_gain":
-        return FieldPath.receiver(receiver, "operator_controls", "rf_gain")
-    if name == "set_af_level":
-        return FieldPath.receiver(receiver, "operator_controls", "af_level")
-    if name in ("set_sql", "set_squelch"):
-        return FieldPath.receiver(receiver, "operator_controls", "squelch")
     if name in ("set_att", "set_attenuator", "set_attenuator_level"):
         return FieldPath.receiver(receiver, "operator_controls", "att")
     if name == "set_preamp":

@@ -11,6 +11,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
+from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     CommandSource,
@@ -21,6 +22,7 @@ __all__ = [
     "Command",
     "CommandQueue",
     "CommandQueueEntry",
+    "canonicalize_level_command",
     # -- command dataclasses (alphabetical) --
     "DisableScope",
     "EnableScope",
@@ -966,6 +968,33 @@ Command: TypeAlias = (
     | QuickSplitTrigger
     | Speak
 )
+
+
+def canonicalize_level_command(
+    command: Command,
+    radio: DispatchRadio,
+    *,
+    command_id: str | None = None,
+    source: CommandSource = "websocket",
+    session_id: str | None = None,
+) -> Command:
+    match command:
+        case SetAfLevel(level=level, receiver=receiver):
+            name = "set_af_level"
+        case SetRfGain(level=level, receiver=receiver):
+            name = "set_rf_gain"
+        case SetSquelch(level=level, receiver=receiver):
+            name = "set_squelch"
+        case _:
+            return command
+    return prepare_command_intent(
+        radio,
+        name,
+        {"level": level, "receiver": receiver},
+        source=source,
+        command_id=command_id,
+        session_id=session_id,
+    )
 
 
 # ------------------------------------------------------------------
