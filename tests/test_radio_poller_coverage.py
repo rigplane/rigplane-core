@@ -1907,7 +1907,9 @@ async def test_finite_command_turn_composes_with_acquisition_error_backoff(
     queue.put_ordered(SetFreq(14_074_000), future=first)
     queue.wait = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
     with (
-        patch("rigplane.web.radio_poller.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        patch(
+            "rigplane.web.radio_poller.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep,
         caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"),
     ):
         task = asyncio.create_task(poller._run())  # noqa: SLF001
