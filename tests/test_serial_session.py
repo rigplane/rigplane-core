@@ -140,9 +140,7 @@ async def test_send_tracked_forwards_currency_to_serial_writer() -> None:
         await link.send(query)
         await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
         pending = asyncio.create_task(
-            transport.send_tracked(
-                _wrap_civ_frame(frame, seq=0), is_current=is_current
-            )
+            transport.send_tracked(_wrap_civ_frame(frame, seq=0), is_current=is_current)
         )
         tasks.append(pending)
         await asyncio.sleep(0)
