@@ -538,6 +538,79 @@ describe('MOR-1474 — unknown TX target names the reason through the catalog', 
   });
 });
 
+/* ── MOR-2231 — the TX controls wear the shared `control-button.css`
+   hardware-button vocabulary. These are pins on the CLASSES and `data-*`
+   attributes only: every gate, handler and aria attribute above is unchanged
+   and still covered by its own test. ─────────────────────────────────────── */
+
+describe('MOR-2231 — TX controls carry the shared control-button vocabulary', () => {
+  it('the key action is a hardware-surface pill with a red dot indicator', () => {
+    // Kill-mutation: drop any one of the class/attribute applications on
+    // `.rx-tx-key`. Without `v2-control-button` the element inherits no
+    // button face at all; without `data-surface`/`data-indicator-*` the
+    // hardware gradient and the keyed dot never paint.
+    withSurface(topologyFixtures['1/single'], IDLE_RX, (s) => {
+      const key = s.key();
+      expect(key.classList.contains('rx-tx-key')).toBe(true);
+      expect(key.classList.contains('v2-control-button')).toBe(true);
+      expect(key.classList.contains('v2-control-button--pill')).toBe(true);
+      expect(key.dataset.surface).toBe('hardware');
+      expect(key.dataset.indicatorStyle).toBe('dot');
+      expect(key.dataset.indicatorColor).toBe('red');
+    });
+  });
+
+  it('the key action\'s data-active tracks the authority, exactly as aria-pressed does', () => {
+    // Kill-mutation: hard-code `data-active="false"` (or drop it). The dot
+    // lighting up IS the keyed signal on a hardware surface, so a static
+    // value would show an idle button while the transmitter is keyed.
+    for (const [tx, expected] of [
+      [IDLE_RX, 'false'],
+      [snap({ phase: 'key-confirm-pending', mayOwnKey: true, txRisk: 'uncertain' }), 'true'],
+      [snap({ phase: 'active', mayOwnKey: true, txRisk: 'confirmed-on', radioTx: 'on' }), 'true'],
+    ] as const) {
+      withSurface(topologyFixtures['1/single'], tx, (s) => {
+        expect(s.key().dataset.active).toBe(expected);
+        expect(s.key().getAttribute('aria-pressed')).toBe(expected);
+      });
+    }
+  });
+
+  it('the unkey action is a hardware-surface pill too, and stays ungated', () => {
+    // Kill-mutation: drop the classes from `.rx-tx-unkey`, leaving one styled
+    // and one unstyled button side by side in the same actions row.
+    withSurface(topologyFixtures['1/single'], IDLE_RX, (s) => {
+      const unkey = s.unkey();
+      expect(unkey.classList.contains('v2-control-button')).toBe(true);
+      expect(unkey.classList.contains('v2-control-button--pill')).toBe(true);
+      expect(unkey.dataset.surface).toBe('hardware');
+      // The styling must not have introduced a gate (section 2's own doctrine).
+      expect(unkey.disabled).toBe(false);
+      expect(unkey.hasAttribute('aria-disabled')).toBe(false);
+    });
+  });
+
+  it.each([
+    [IDLE_RX, 'receiving', 'green', 'false'],
+    [snap({ radioTx: 'on' }), 'transmitting', 'red', 'true'],
+    [snap({ txRisk: 'uncertain' }), 'uncertain', 'amber', 'true'],
+    [snap({ radioTx: 'unknown' }), 'unknown', 'muted', 'true'],
+  ] as const)('the RF badge paints %#: %s as a %s indicator', (tx, rf, color, active) => {
+    // Kill-mutation: a constant `color`/`active`, or dropping the badge class.
+    // The badge must move with `rfState()` — and the span carrying it must keep
+    // carrying the state as TEXT too (the forced-colors pin above), which is
+    // why this reads the label text on the same element.
+    withSurface(topologyFixtures['1/single'], tx, (s) => {
+      expect(s.state().dataset.rf).toBe(rf);
+      const label = s.state().querySelector('[data-testid="rx-tx-rf-label"]') as HTMLElement;
+      expect(label.classList.contains('v2-status-indicator')).toBe(true);
+      expect(label.dataset.color).toBe(color);
+      expect(label.dataset.active).toBe(active);
+      expect(label.textContent?.trim()).not.toBe('');
+    });
+  });
+});
+
 describe('MOR-1474 — every key-blocked reason resolves to operator-legible copy', () => {
   const ALL_CODES: readonly KeyBlockedReason[] = [
     'tx-target-unknown', 'tx-permit-denied', 'tx-permit-unknown',
