@@ -12,8 +12,10 @@ defines the GitHub execution plane; it does not create a second backlog or
 roadmap.
 
 That precedence changes only control-plane ownership. All other `CLAUDE.md`
-commands, architecture, testing, hygiene, protected-main, PR, check, exact-head
-`Agent Review Gate`, and guarded merge rules remain binding.
+commands, architecture, hygiene, protected-main, exact-head `Agent Review
+Gate`, and guarded merge rules remain binding. The batching and CI cadence in
+this document and `AGENTS.md` supersede older draft-first CI and per-merge
+`main`-wait instructions; safety and acceptance gates remain binding.
 
 ## Control-plane boundary
 
@@ -64,15 +66,37 @@ Every non-trivial PR must link its Linear issue, directly or through an allowed
 atomic GitHub execution issue. Keep PR text focused on the implementation,
 checks, review, and merge evidence.
 
-Before opening a PR:
+The coordinator's initial dispatch records the Linear owner, current acceptance
+criteria and dependencies, exact file lease, and verification matrix. The
+builder then owns routine decisions within that contract and escalates only a
+real contract, scope, ownership, dependency, or safety collision.
+
+Combine related child tickets in one branch and PR when they share one semantic
+contract, file lease, and verification matrix. Link every covered Linear child
+and reconcile each one after merge. Keep unrelated contracts, unleased paths,
+compatibility breaks, and TX/PTT or hardware safety work separate.
+
+Before opening the final PR:
 
 1. Fetch and inspect the repository state; use a fresh issue branch/worktree,
    never shared `main`.
 2. Confirm the Linear acceptance criteria still match the bounded change.
-3. Run the focused verification appropriate to the changed paths and check the
-   diff for unintended changes.
+3. Run focused changed-scope verification on the Mac mini and check the diff
+   for unintended changes. Intentional RED and development iterations do not
+   run the full suite.
 4. Ensure public/open-core boundaries are preserved and redact private bench or
    environment details from public artifacts.
+5. Push the final candidate and open it Ready, or mark it Ready once. Draft
+   pushes do not run the expensive self-hosted `quick` or `visual` jobs;
+   `ready_for_review` starts the candidate's one natural required run.
+
+The immutable final head gets one natural `quick`; `visual` runs only for its
+affected paths, and `full` is reserved for a release or an explicitly recorded
+cross-cutting risk. The independent reviewer consumes those artifacts and does
+not rerun suites. A substantive correction creates a new final head, which gets
+its own natural required run and exact-head review. Movement on `main` alone is
+not a reason to refresh a branch or repeat its checks/review; do that only for
+an actual conflict, proven base-sensitive dependency, or concrete interaction.
 
 Before merging a non-trivial PR:
 
@@ -82,15 +106,20 @@ Before merging a non-trivial PR:
    comment beginning `Agent Review: PASS <full-40-hex-head-SHA>` only after
    a PASS result. Report CI state as found; do not wait for it to finish
    (AGENTS.md § Protected main and review gate).
-3. Coordinator, immediately before merging: confirm the PR is non-draft,
-   all required checks are green, and the exact-head `Agent Review Gate` is
-   green. On `main` itself, also confirm the previous merge's `Tests
-   (quick)` run has **started**, not merely queued — a queued run would
-   otherwise be displaced by this merge's own push (AGENTS.md § Protected
-   main and review gate; tracked as MOR-2048).
-4. Merge with the expected head SHA guarded by the platform.
+3. Coordinator or merge operator: confirm the PR is non-draft, all required
+   checks are green, and the exact-head `Agent Review Gate` is green.
+4. Merge with `--match-head-commit` against the expected head SHA. A merge
+   operator may train-merge file-disjoint, independently green PRs without
+   waiting for or rerunning intermediate `main` quick runs.
 5. Re-read Linear acceptance criteria and reconcile Linear status deliberately;
    a merged PR or closed GitHub issue alone is not acceptance.
+
+After the final train merge, require one aggregate `main` quick on that final
+batch head. A real conflict, proven interaction between train members, or final
+aggregate failure stops the train for diagnosis. Recent draft/head churn
+produced multiple cancelled and duplicate full quick runs on the single shared
+runner; Ready-only PR CI and one final aggregate run remove that queue churn
+without weakening exact-head review or required checks.
 
 `main` remains protected. A `BLOCKED` review identifies the problem, required
 fixes, and verification; refresh review and checks after changing the head.

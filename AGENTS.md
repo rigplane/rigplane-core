@@ -54,8 +54,10 @@ dependencies, priority, milestones, acceptance criteria, and status. Resolve
 the Linear owner and its acceptance criteria before starting non-trivial work.
 
 This precedence is limited to control-plane ownership. All other `CLAUDE.md`
-commands, architecture, testing, hygiene, protected-main, PR, check, exact-head
-`Agent Review Gate`, and guarded merge rules remain binding.
+commands, architecture, hygiene, protected-main, exact-head `Agent Review
+Gate`, and guarded merge rules remain binding. The delivery batching and CI
+cadence below supersede older draft-first CI and per-merge `main`-wait language
+in `CLAUDE.md`; safety, required checks, and independent review remain binding.
 
 GitHub is the execution plane: branch, commit, PR, diff, checks, independent
 review, and merge evidence. Do not create a GitHub planning issue before
@@ -67,6 +69,36 @@ Planning-only GitHub issues must be retired: record the Linear issue that owns
 their scope and close them as superseded, without transferring planning status
 back to GitHub. See `docs/internals/github-project-workflow.md` for the
 execution-plane checklist and migration rule.
+
+## Delivery batching and CI cadence
+
+The coordinator dispatches a lane once with its Linear owner, current
+acceptance criteria and dependencies, exact file lease, and verification
+matrix. Within that contract the builder acts autonomously. Escalate only an
+actual contract, scope, path-ownership, dependency, or safety collision; routine
+implementation, focused checks, PR text, and handoff do not need another lease
+round trip.
+
+Batch related changes in one branch and PR when they share one semantic
+contract, file lease, and verification matrix. Link every covered child Linear
+ticket and reconcile each child explicitly. Do not use batching to combine
+unrelated contracts, cross an unleased path, hide a compatibility break, or
+weaken TX/PTT and hardware safety boundaries.
+
+Development RED and correction loops use focused changed-scope checks on the
+Mac mini plus changed-scope lint/type checks. Do not run the full `quick` suite
+for an intentional RED or every draft push. In the normal path, push the final
+candidate, open or mark the PR Ready once, and let that immutable head receive
+one natural `quick` run. `visual` runs only for its affected paths; `full` is
+reserved for releases or an explicitly recorded cross-cutting risk. A fresh
+independent verifier reviews the exact head and consumes the existing CI
+evidence without rerunning suites. A correction changes the head and therefore
+gets the one natural required run and fresh exact-head review for that new
+candidate.
+
+Movement on `main` alone does not invalidate an unchanged PR head. Refresh the
+branch and its checks/review only for an actual merge conflict, a proven
+base-sensitive dependency, or a concrete code interaction.
 
 ## Multi-agent Git hygiene
 
@@ -135,10 +167,10 @@ implementation agent may not be the review agent.
   than a shared queue: this repository's three self-hosted workflows
   serialize behind a single runner of its own, and a review session that
   waits on that queue can still lose an hour or more for nothing.
-- On that same shared runner, a test that fails once with no repeat on a
-  clean rerun (e.g. `tests/test_mor1499_coalesce_keys.py`, one such case on
-  2026-08-30) is more often runner load than a regression; the same test
-  failing twice is evidence about the code, not the machine.
+- Do not rerun an entire suite merely to classify a failure. Diagnose it from
+  the existing artifact and a focused reproduction on the Mac mini. A repaired
+  final head receives its natural required workflow run; a full-suite rerun is
+  reserved for concrete evidence of runner failure.
 - The implementation agent must address BLOCKED feedback, push updates, and
   rerun or wait for checks before merge.
 - A PASS may still carry corrections, marked REQUIRED BEFORE MERGE or MANDATORY
@@ -200,45 +232,15 @@ implementation agent may not be the review agent.
   push, not whether a *queued* one is. All four cancelled `main` runs
   sampled on 2026-08-30 died this way — queued, not mid-run. Measured and
   tracked as MOR-2048; see that ticket rather than re-deriving the counts.
-- Before merging to `main`, check
-  `gh run list --workflow=quick.yml --branch=main --limit 3` and wait for
-  the current head's run to have **started** — that is the durable bar,
-  not a fixed wall-clock wait, since queue time is unbounded. `quick.yml`'s
-  `cancel-in-progress` key is now scoped to non-`main` refs, so a push to
-  `main` no longer cancels an already-started run from an earlier push to
-  `main` — once started, that run runs to completion on its own. What a
-  push to `main` can still cancel is a run that has not started yet (see
-  above, MOR-2048); that is exactly why "started", not "completed", is the
-  bar — waiting for full completion adds time on the single shared runner
-  without buying more certainty. Do not `gh run rerun` a run cancelled on
-  `main`'s queue this way; rerunning re-requests a run for the old,
-  superseded commit in the same concurrency group, which can cancel the
-  *current* head's queued run instead of restoring anything — verify the
-  current head's own run, which covers every intervening change together.
-- The remaining race is the queued-run half from above (MOR-2048): a run
-  can still be cancelled in the gap between checking its status and
-  executing the merge, while it waits for a runner. Fuse the check and the
-  merge into one shell invocation so that gap is seconds, not the minutes
-  between a monitor firing and an operator acting (substitute the PR
-  number):
-
-  ```bash
-  st=$(gh run list --workflow=quick.yml --branch=main --limit 1 --json status --jq '.[0].status')
-  if [ "$st" = "queued" ]; then echo "ABORT: main run still queued, not started ($st)"; exit 1; fi
-  head_sha=$(gh pr view <N> --json headRefOid --jq .headRefOid)
-  gh pr merge <N> --squash --match-head-commit "$head_sha"
-  ```
-
-  This is **not atomic** — a run can move from "nothing queued yet" to
-  "queued" in the gap between the read and the merge — but it closes the
-  window every cancelled run sampled so far actually died in (above:
-  queued, not mid-run). Delete the branch afterward only when no child PR
-  is based on it (above); passing `--delete-branch` here unconditionally
-  would break that rule the moment a child PR exists. Treat this as the
-  stopgap for the queued half of the race (MOR-2048), not for the
-  started-run half that the ref-scoped `cancel-in-progress` already fixed
-  — it is retired only when MOR-2048 is, not automatically alongside that
-  fix.
+- The merge operator may train-merge file-disjoint PRs whose immutable heads
+  each have an exact-head PASS and every required PR check green. Guard every
+  merge with `--match-head-commit`. Do not wait for or rerun intermediate
+  `main` quick runs: queued intermediate runs may be displaced by the next
+  train merge and are not acceptance evidence. After the final merge, require
+  one aggregate `main` quick on the final batch head. An actual conflict,
+  proven interaction between train members, or failure on that final aggregate
+  head stops the train for diagnosis. This keeps exact-head protection while
+  avoiding the queued-run churn tracked in MOR-2048.
 - After a merge, if a run on `main` looks cancelled or otherwise
   unverified and you want to know whether an earlier PR run already
   covered the code that landed, compare
@@ -256,8 +258,9 @@ implementation agent may not be the review agent.
   by `issue_comment` carries `headBranch=main`, so `gh run list --branch
   <feature>` cannot show it and its silence proves nothing about whether the
   gate re-ran.
-- Draft PRs must not merge. Determine why the PR is draft, finish the missing
-  work, run `gh pr ready`, then complete checks and review.
+- Draft PRs must not merge and do not run the expensive self-hosted `quick` or
+  `visual` jobs. Finish focused development checks first, then open or mark the
+  final candidate Ready; the `ready_for_review` event starts its required CI.
 
 ## Release branches
 

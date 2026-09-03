@@ -19,6 +19,7 @@ name: Visual regression (pixel-diff)
 on:
   pull_request:
     branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "frontend/**"
       - ".github/workflows/visual.yml"
@@ -35,6 +36,10 @@ concurrency:
 
 jobs:
   visual:
+    # Draft pushes do not consume the shared Mac mini. ready_for_review starts
+    # the blocking visual run for the final candidate; manual regeneration is
+    # still available through workflow_dispatch.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
     steps:
