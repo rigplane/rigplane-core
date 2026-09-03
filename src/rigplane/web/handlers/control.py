@@ -1459,7 +1459,9 @@ class ControlHandler:
                 raise RuntimeError("no command queue available")
             queue = self._server.command_queue
             future: asyncio.Future[None] | None = (
-                asyncio.get_running_loop().create_future() if wait_for_completion else None
+                asyncio.get_running_loop().create_future()
+                if wait_for_completion
+                else None
             )
             raw_session_id = intent.params.get("session_id")
             session_id = None if raw_session_id is None else str(raw_session_id)

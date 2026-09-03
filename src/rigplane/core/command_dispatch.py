@@ -181,7 +181,9 @@ def _af_level_from_param(value: Any) -> int:
 
 
 def _bind_level(field: str, params: Mapping[str, Any]) -> dict[str, Any]:
-    normalize = _af_level_from_param if field == "af_level" else _raw_int_level_from_param
+    normalize = (
+        _af_level_from_param if field == "af_level" else _raw_int_level_from_param
+    )
     level = normalize(params["level"])
     return {"level": level, field: level, "receiver": int(params.get("receiver", 0))}
 

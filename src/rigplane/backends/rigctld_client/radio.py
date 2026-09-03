@@ -539,7 +539,9 @@ def _readback_paths_match(readback_path: FieldPath, overlay_path: FieldPath) -> 
 
 def _physical_command_targets_path(command: Any, path: FieldPath) -> bool:
     if isinstance(command, CommandIntent):
-        return command.target is not None and _readback_paths_match(command.target, path)
+        return command.target is not None and _readback_paths_match(
+            command.target, path
+        )
     command_name = type(command).__name__.lower()
     target_name = path.name.replace("_", "")
     return target_name in command_name or (target_name, command_name) in (

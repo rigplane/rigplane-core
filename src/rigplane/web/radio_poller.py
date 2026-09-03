@@ -2081,7 +2081,11 @@ class RadioPoller:
         command_service: CommandService | None = None,
     ) -> None:
         cmd = canonicalize_level_command(
-            cmd, self._radio, command_id=command_id, source=source, session_id=session_id
+            cmd,
+            self._radio,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
         )
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
