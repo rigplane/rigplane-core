@@ -1,2 +1,2 @@
-import { normalizeLayoutMode } from '$lib/runtime/adapters/layout-mode-adapter';
+import { normalizeLayoutMode } from '$lib/stores/layout.svelte';
 export const lintBoundaryProbe = normalizeLayoutMode;
