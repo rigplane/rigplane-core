@@ -335,3 +335,30 @@ async def test_public_owner_up_settles_release(rig):
     assert [op for _, op in rig.actuator.calls] == [
         ActuationOperation.PTT_ON, ActuationOperation.FORCE_RECEIVE,
     ]
+
+
+async def test_non_builtin_owner_is_rejected_without_equality_or_registration(rig):
+    equality_calls = []
+
+    class DangerousStr(str):
+        def __eq__(self, other: object) -> bool:
+            equality_calls.append(other)
+            raise AssertionError("owner equality must not run")
+
+    owner = DangerousStr("operator")
+    assert owner
+    before = await rig.managed.snapshot()
+    with pytest.raises(TypeError):
+        await submit(rig, True, owner)
+    with pytest.raises(TypeError):
+        await submit(rig, False, owner)
+    with pytest.raises(TypeError):
+        await rig.managed.ptt_down(owner)
+    with pytest.raises(TypeError):
+        await rig.managed.ptt_up(owner)
+    with pytest.raises(TypeError):
+        await rig.managed.owner_disconnect(owner)
+    assert not equality_calls
+    assert rig.fence._next_number == 0 and not rig.fence._cancellations
+    assert not rig.actuator.calls
+    assert await rig.managed.snapshot() == before
