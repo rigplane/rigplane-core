@@ -66,7 +66,9 @@ def _canonical_ptt_path(
     *,
     state_map: dict[str, str] | None = None,
     later_field: bool = False,
-) -> tuple[YaesuCatRadio, YaesuCatPoller, StateStore, FreshnessClock, list[Observation]]:
+) -> tuple[
+    YaesuCatRadio, YaesuCatPoller, StateStore, FreshnessClock, list[Observation]
+]:
     radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
     legacy = FieldPath.global_("tx_state", "ptt")
     width = FieldPath.active("main", "freq_mode", "filter_width")
@@ -184,7 +186,12 @@ async def test_canonical_ptt_rejects_malformed_or_conflicting_typed_reading(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "error", ["NOTTX", CatParseError("bad TX"), CatCommandRejected("reject")]
+    "error",
+    [
+        "NOTTX",
+        CatParseError("TX{state};", "bad TX", "mismatch"),
+        CatCommandRejected("reject"),
+    ],
 )
 @pytest.mark.parametrize("later_failure", [False, True])
 async def test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails(
@@ -200,7 +207,9 @@ async def test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails(
         await poller._emit_medium_observations()  # noqa: SLF001
         emitted.clear()
         radio._transport.query.reset_mock()  # noqa: SLF001
-        radio._transport.query.side_effect = error if isinstance(error, Exception) else None  # noqa: SLF001
+        radio._transport.query.side_effect = (
+            error if isinstance(error, Exception) else None
+        )  # noqa: SLF001
         radio._transport.query.return_value = error  # noqa: SLF001
         if later_failure:
             radio.read_filter_width = AsyncMock(side_effect=CatTimeoutError("later"))
@@ -210,7 +219,9 @@ async def test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails(
             await poller._emit_medium_observations()  # noqa: SLF001
         assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
         assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
-        assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+        assert [call.args[0] for call in radio._transport.query.await_args_list] == [
+            "TX;"
+        ]  # noqa: SLF001
 
 
 @pytest.mark.asyncio
