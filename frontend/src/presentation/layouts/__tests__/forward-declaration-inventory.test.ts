@@ -78,10 +78,16 @@ const peerSplitShellSource = readFileSync('src/skins/segmentline/PeerSplitLayout
  * Deliberately NOT `true`: a prober that ignores both halves would report a
  * DOM-backed inventory for a shell that had gone back to a hardcoded id, or for
  * a manifest that had dropped its VFO zone.
+ *
+ * MOR-2231 widened the mount pattern to accept ATTRIBUTES on the tag (the
+ * `regions` prop, which decides only whether `vfo`/`rxTx` gain a zone element
+ * — never whether the semantic vertical mounts). What this half asserts is
+ * unchanged: the mount is the first thing inside `{#if semanticDeck}`, and
+ * `semanticDeck` is the manifest-derived gate the line above pins.
  */
 const shellResolvesThroughManifest =
   /let declared = \$derived\(declaredSurfaces\(getLayout\(skinId\)\)\);/.test(radioLayoutSource)
-  && /\{#if semanticDeck\}\s*<SemanticRadioSurfaces \/>/.test(radioLayoutSource);
+  && /\{#if semanticDeck\}\s*<SemanticRadioSurfaces[^>]*\/>/.test(radioLayoutSource);
 const sharedShellMounts = (manifest: LayoutManifest): boolean =>
   shellResolvesThroughManifest && manifest.zones.some((z) => z.surfaces.includes('vfo'));
 
