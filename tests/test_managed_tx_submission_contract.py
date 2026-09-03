@@ -83,7 +83,7 @@ async def test_ptt_registration_ack_settles_on_pre_registration_error() -> None:
                 _registered=registered,
             )
         with pytest.raises(TypeError) as registration_error:
-            await registered
+            await asyncio.wait_for(registered, 0.2)
         assert registration_error.value is submission_error.value
     finally:
         await finish(managed)
