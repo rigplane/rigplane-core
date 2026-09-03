@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: bb8044d5edeb39981e6c7683a2eac20e24dabc7d
+          ref: e51aaa9f47902309a6a9cbdc2fa3e0a588454962
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -35,14 +35,17 @@ jobs:
         run: |
           checked_head=$(git rev-parse HEAD)
           echo "checked_head=$checked_head"
-          if [ "$checked_head" != "bb8044d5edeb39981e6c7683a2eac20e24dabc7d" ]; then
+          if [ "$checked_head" != "e51aaa9f47902309a6a9cbdc2fa3e0a588454962" ]; then
             echo "unexpected checkout: $checked_head" >&2
             exit 1
           fi
           uv run ruff --version
           set +e
           uv run ruff format --diff \
-            tests/test_receiver_command_admission.py > formatter.patch
+            src/rigplane/runtime/radio.py \
+            src/rigplane/backends/yaesu_cat/radio.py \
+            src/rigplane/backends/rigctld_client/radio.py \
+            src/rigplane/core/radio_protocol.py > formatter.patch
           rc=$?
           set -e
           echo "ruff_exit=$rc"
@@ -68,5 +71,5 @@ jobs:
       - name: Upload formatter patch
         uses: actions/upload-artifact@v7
         with:
-          name: canonical-att-admission-format-bb8044d5
+          name: canonical-att-admission-format-e51aaa9f
           path: formatter.patch
