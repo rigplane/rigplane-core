@@ -59,8 +59,12 @@ function topologyErrors({quick, review, worker}) {
   ) {
     errors.push('worker must retain its read-only job token');
   }
-  if (!workerJob.includes('persist-credentials: false')) {
-    errors.push('candidate checkout must not persist credentials');
+  const nonPersistedCredentials = workerJob.match(/persist-credentials: false/gu) ?? [];
+  if (
+    nonPersistedCredentials.length !== 2 ||
+    workerJob.includes('persist-credentials: true')
+  ) {
+    errors.push('both control and candidate checkouts must not persist credentials');
   }
   if (!workerJob.includes('rev-list --parents -n 1 HEAD')) {
     errors.push('worker must bind the merge commit to exact parents');
