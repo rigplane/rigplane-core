@@ -339,9 +339,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._profile.model,
         )
 
-    def supports_command(self, command: str) -> bool:
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Return support derived from this radio's profile and call graph."""
-        return supports_callable(self._profile, command)
+        supported = supports_callable(self._profile, command)
+        if receiver is None:
+            return supported
+        if (
+            not supported
+            or command not in {"set_af_level", "set_rf_gain", "set_squelch"}
+            or isinstance(receiver, bool)
+            or not isinstance(receiver, int)
+            or not self._profile.supports_receiver(receiver)
+            or not callable(getattr(self, command, None))
+            or not self._profile.supports_capability(command.removeprefix("set_"))
+        ):
+            return False
+        command_map = self._profile.command_map
+        if command_map is None or not command_map.has(command):
+            return False
+        from rigplane.commands._frame import decode_wire_tuple
+
+        opcode, sub, _ = decode_wire_tuple(command_map.get(command))
+        return receiver == 0 or self._profile.supports_cmd29(opcode, sub)
 
     def _stop_token_renewal(self) -> None:
         """Delegate to control-phase runtime."""

@@ -106,6 +106,7 @@ async def test_ic7300_main_write_and_sub_rejection(command):
         writes.append(frame)
 
     radio._connected = True
+    radio._civ_transport = object()
     radio._send_civ_raw = write
     try:
         assert radio.supports_command(command, receiver=0)
