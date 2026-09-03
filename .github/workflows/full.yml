@@ -8,6 +8,9 @@ jobs:
     runs-on: [self-hosted, linux, build]
     env:
       SOURCE_SHA: 04bb81d6255b8f7b0d89e7338852d07b3abed437
+      SOURCE_TREE: 150c3865a35c984a2bcb9c1d9a83d7574bcedb78
+      DIAG_BASE_SHA: 4d8fc0c24fd927dfd7c8fb94418b427303aab314
+      DIAG_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -15,7 +18,11 @@ jobs:
           fetch-depth: 0
 
       - name: Verify pinned source
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test "$DIAG_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse "$DIAG_SHA^")" = "$DIAG_BASE_SHA"
 
       - name: Prove mutation and restoration structurally
         env:
@@ -24,6 +31,17 @@ jobs:
           set -eu
           source_file=src/rigplane/runtime/_civ_rx.py
           original_sha="$(git rev-parse HEAD)"
+          record_manifest() {
+            test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+            test "$(git hash-object tests/test_civ_rx_coverage.py)" = "$(git rev-parse "$SOURCE_SHA:tests/test_civ_rx_coverage.py")"
+            {
+              printf 'phase=%s\nsource_sha=%s\nsource_tree=%s\n' "$1" "$SOURCE_SHA" "$SOURCE_TREE"
+              printf 'diag_sha=%s\ndiag_parent=%s\ndiag_tree=%s\n' "$DIAG_SHA" "$DIAG_BASE_SHA" "$(git rev-parse "$DIAG_SHA^{tree}")"
+              printf 'run_id=%s\nrun_attempt=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+              printf 'original_source_blob=%s\ncurrent_source_blob=%s\n' "$(git rev-parse "$SOURCE_SHA:$source_file")" "$(git hash-object "$source_file")"
+              printf 'test_blob=%s\n' "$(git hash-object tests/test_civ_rx_coverage.py)"
+            } > "$1-manifest.txt"
+          }
           restore_source() {
             label="$1"
             git restore --source="$SOURCE_SHA" --worktree -- "$source_file"
@@ -34,6 +52,7 @@ jobs:
               printf 'head_sha=%s\n' "$(git rev-parse HEAD)"
               printf 'source_diff=clean\n'
             } > "$label-restoration.txt"
+            record_manifest "$label-restoration"
           }
           trap 'restore_source final' EXIT
 
@@ -44,49 +63,139 @@ jobs:
 
           run_selected() {
             label="$1"
+            record_manifest "$label"
             proof_cache="$(mktemp -d)"
             export UV_CACHE_DIR="$proof_cache/uv"
             export PYTHONPYCACHEPREFIX="$proof_cache/pycache"
             uv sync --all-extras --frozen
+            export phases_file="$label-phases.json"
             set +e
-            uv run pytest -q --junitxml="$label.xml" \
+            uv run python - -q --junitxml="$label.xml" \
               tests/test_civ_rx_coverage.py::test_civ_ptt_readback_emits_canonical_observed_state \
               tests/test_civ_rx_coverage.py::test_unsolicited_civ_ptt_readback_has_unsolicited_provenance \
               tests/test_civ_rx_coverage.py::test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames \
               tests/test_civ_rx_coverage.py::test_old_civ_epoch_ptt_readback_cannot_restore_observed_state \
               tests/test_civ_rx_coverage.py::test_old_store_generation_ptt_readback_cannot_restore_observed_state \
               tests/test_civ_rx_coverage.py::test_observed_ptt_expires_to_unknown_after_its_store_max_age \
-              tests/test_civ_rx_coverage.py::test_malformed_ptt_payloads_preserve_legacy_behavior
+              tests/test_civ_rx_coverage.py::test_malformed_ptt_payloads_preserve_legacy_behavior <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          import pytest
+
+          phases = []
+
+          class PhaseRecorder:
+              @pytest.hookimpl(hookwrapper=True)
+              def pytest_runtest_makereport(self, item, call):
+                  result = yield
+                  report = result.get_result()
+                  phase = {"nodeid": report.nodeid, "when": report.when, "outcome": report.outcome}
+                  if call.excinfo is not None:
+                      error = call.excinfo.value
+                      site = call.excinfo.traceback[-1]
+                      phase.update(
+                          exception_type=f"{type(error).__module__}.{type(error).__name__}",
+                          message=str(error),
+                          path=Path(site.path).resolve().relative_to(Path.cwd()).as_posix(),
+                          line=site.lineno + 1,
+                      )
+                  phases.append(phase)
+
+          result = pytest.main(sys.argv[1:], plugins=[PhaseRecorder()])
+          Path(os.environ["phases_file"]).write_text(json.dumps(phases, indent=2) + "\n")
+          raise SystemExit(result)
+          PY
             pytest_rc=$?
             set -e
             export pytest_rc
             export junit_file="$label.xml"
           }
 
+          assert_selected_green() {
+          uv run python - <<'PY'
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          expected_cases = {
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[off]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[on]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[empty]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[two]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[ff]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[double-off]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[double-on]"),
+              ("tests.test_civ_rx_coverage", "test_unsolicited_civ_ptt_readback_has_unsolicited_provenance"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames"),
+              ("tests.test_civ_rx_coverage", "test_old_civ_epoch_ptt_readback_cannot_restore_observed_state"),
+              ("tests.test_civ_rx_coverage", "test_old_store_generation_ptt_readback_cannot_restore_observed_state"),
+              ("tests.test_civ_rx_coverage", "test_observed_ptt_expires_to_unknown_after_its_store_max_age"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[two]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]"),
+          }
+          root = ET.parse(os.environ["junit_file"]).getroot()
+          cases = list(root.iter("testcase"))
+          identities = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
+          failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
+          errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
+          skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
+          if os.environ.get("pytest_rc") != "0":
+              raise SystemExit(f"expected pytest exit 0, got {os.environ.get('pytest_rc')}")
+          if identities != expected_cases or len(cases) != 17:
+              raise SystemExit(f"unexpected selected identities/count: {sorted(identities)!r} {len(cases)}")
+          if failed or errors or skipped:
+              raise SystemExit(
+                  f"unexpected result: failures={sorted(failed)!r} "
+                  f"errors={sorted(errors)!r} skips={sorted(skipped)!r}"
+              )
+          phases = json.loads(Path(os.environ["phases_file"]).read_text())
+          expected_phases = {
+              (f"tests/test_civ_rx_coverage.py::{name}", when)
+              for _, name in expected_cases for when in ("setup", "call", "teardown")
+          }
+          if len(phases) != 51 or {(p["nodeid"], p["when"]) for p in phases} != expected_phases:
+              raise SystemExit("unexpected green phase identities/count")
+          if any(p["outcome"] != "passed" or "exception_type" in p for p in phases):
+              raise SystemExit("unexpected non-passing green phase")
+          PY
+          }
+
+          run_selected baseline
+          assert_selected_green
+
           uv run python - <<'PY'
           from pathlib import Path
 
           path = Path("src/rigplane/runtime/_civ_rx.py")
-          old = '''                    normalize_observed_ptt(
-                        False
-                        if frame.data == b"\\x00"
-                        else True
-                        if frame.data == b"\\x01"
-                        else None
-                    ),
-          '''
-          new = '''                    normalize_observed_ptt(bool(frame.data and frame.data[0])),
-          '''
+          old = (
+              '                    normalize_observed_ptt(\n'
+              '                        False\n'
+              '                        if frame.data == b"\\x00"\n'
+              '                        else True\n'
+              '                        if frame.data == b"\\x01"\n'
+              '                        else None\n'
+              '                    ),\n'
+          )
+          new = '                    normalize_observed_ptt(bool(frame.data and frame.data[0])),\n'
           text = path.read_text()
           if text.count(old) != 1:
-              raise SystemExit("negative mutation target was not unique")
+              raise SystemExit(f"negative mutation target count: {text.count(old)} (expected 1)")
           path.write_text(text.replace(old, new))
           PY
           git diff -- "$source_file" > negative.patch
           run_selected negative
           uv run python - <<'PY'
+          import json
           import os
           import xml.etree.ElementTree as ET
+          from pathlib import Path
 
           expected_failed = {
               "test_civ_ptt_readback_emits_canonical_observed_state[empty]",
@@ -147,73 +256,61 @@ jobs:
                   raise SystemExit(
                       f"unexpected failure message for {case.attrib['name']}: {message!r}"
                   )
+          phases = json.loads(Path(os.environ["phases_file"]).read_text())
+          expected_phases = {
+              (f"tests/test_civ_rx_coverage.py::{name}", when)
+              for name in expected_names for when in ("setup", "call", "teardown")
+          }
+          if len(phases) != 51 or {(p["nodeid"], p["when"]) for p in phases} != expected_phases:
+              raise SystemExit("unexpected negative phase identities/count")
+          for phase in phases:
+              name = phase["nodeid"].split("::", 1)[1]
+              if phase["when"] != "call" or name not in expected_failed:
+                  if phase["outcome"] != "passed" or "exception_type" in phase:
+                      raise SystemExit(f"unexpected control/setup/teardown failure: {phase!r}")
+                  continue
+              line = 1221 if name.startswith("test_civ_ptt_readback_") else 1375
+              value = expected_failure_values[name]
+              message = f"assert <{value}: '{value.rsplit('.', 1)[1].lower()}'> is <ObservedPtt.UNKNOWN: 'unknown'>"
+              if (
+                  phase["outcome"] != "failed"
+                  or phase.get("exception_type") != "builtins.AssertionError"
+                  or phase.get("path") != "tests/test_civ_rx_coverage.py"
+                  or phase.get("line") != line
+                  or phase.get("message", "").splitlines()[0:1] != [message]
+              ):
+                  raise SystemExit(f"unexpected negative CALL/type/site/message: {phase!r}")
           PY
           restore_source negative
 
           run_selected restored
-          uv run python - <<'PY'
-          import os
-          import xml.etree.ElementTree as ET
-
-          expected_cases = {
-              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[off]"),
-              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[on]"),
-              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[empty]"),
-              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[two]"),
-              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[ff]"),
-              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[double-off]"),
-              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[double-on]"),
-              ("tests.test_civ_rx_coverage", "test_unsolicited_civ_ptt_readback_has_unsolicited_provenance"),
-              ("tests.test_civ_rx_coverage", "test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames"),
-              ("tests.test_civ_rx_coverage", "test_old_civ_epoch_ptt_readback_cannot_restore_observed_state"),
-              ("tests.test_civ_rx_coverage", "test_old_store_generation_ptt_readback_cannot_restore_observed_state"),
-              ("tests.test_civ_rx_coverage", "test_observed_ptt_expires_to_unknown_after_its_store_max_age"),
-              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]"),
-              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[two]"),
-              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]"),
-              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]"),
-              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]"),
-          }
-          root = ET.parse(os.environ["junit_file"]).getroot()
-          cases = list(root.iter("testcase"))
-          identities = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
-          failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
-          errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
-          skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
-          if os.environ.get("pytest_rc") != "0":
-              raise SystemExit(f"expected pytest exit 0, got {os.environ.get('pytest_rc')}")
-          if identities != expected_cases:
-              raise SystemExit(f"unexpected selected identities: {sorted(identities)!r}")
-          if failed or errors or skipped:
-              raise SystemExit(
-                  f"unexpected result: failures={sorted(failed)!r} "
-                  f"errors={sorted(errors)!r} skips={sorted(skipped)!r}"
-              )
-          PY
+          assert_selected_green
 
           uv run python - <<'PY'
           from pathlib import Path
 
           path = Path("src/rigplane/runtime/_civ_rx.py")
-          old = '''                    normalize_observed_ptt(
-                        False
-                        if frame.data == b"\\x00"
-                        else True
-                        if frame.data == b"\\x01"
-                        else None
-                    ),
-          '''
-          new = '''                    normalize_observed_ptt(
-                        True
-                        if frame.data == b"\\x01"
-                        else False
-                        if frame.data == b"\\x00"
-                        else None
-                    ),
-          '''
+          old = (
+              '                    normalize_observed_ptt(\n'
+              '                        False\n'
+              '                        if frame.data == b"\\x00"\n'
+              '                        else True\n'
+              '                        if frame.data == b"\\x01"\n'
+              '                        else None\n'
+              '                    ),\n'
+          )
+          new = (
+              '                    normalize_observed_ptt(\n'
+              '                        True\n'
+              '                        if frame.data == b"\\x01"\n'
+              '                        else False\n'
+              '                        if frame.data == b"\\x00"\n'
+              '                        else None\n'
+              '                    ),\n'
+          )
           text = path.read_text()
           if text.count(old) != 1:
-              raise SystemExit("positive mutation target was not unique")
+              raise SystemExit(f"positive mutation target count: {text.count(old)} (expected 1)")
           path.write_text(text.replace(old, new))
           PY
           git diff -- "$source_file" > positive.patch
@@ -259,18 +356,25 @@ jobs:
           if len(cases) != 17:
               raise SystemExit(f"expected 17 selected cases, got {len(cases)}")
           PY
+          assert_selected_green
           restore_source positive
+          run_selected final-restored
+          assert_selected_green
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: icom-observed-ptt-mutation-proof
           path: |
+            baseline.xml
             negative.xml
             positive.xml
             negative.patch
             positive.patch
             restored.xml
+            final-restored.xml
+            *-phases.json
+            *-manifest.txt
             negative-restoration.txt
             positive-restoration.txt
             final-restoration.txt
