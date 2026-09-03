@@ -274,8 +274,10 @@ jobs:
     permissions:
       contents: read
     env:
-      SOURCE_PIN: 786a6e0d663d37f9a46c5948562d921a265ae6ea
-      UV_PYTHON: '3.11'
+      SOURCE_PIN: 4e4c1782bf90ba5517d5d193c0344a23c4c8ff66
+      SOURCE_BASE: 786a6e0d663d37f9a46c5948562d921a265ae6ea
+      SOURCE_TREE: 2c6c74005327bb818907ce00d7ccae8cc84124ce
+      UV_PYTHON: '3.11.16'
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONOPTIMIZE: '0'
     steps:
@@ -302,7 +304,7 @@ jobs:
           path: harness
       - uses: actions/checkout@v6
         with:
-          ref: 786a6e0d663d37f9a46c5948562d921a265ae6ea
+          ref: 4e4c1782bf90ba5517d5d193c0344a23c4c8ff66
           fetch-depth: 0
           persist-credentials: false
           path: source
@@ -314,14 +316,17 @@ jobs:
           git rev-parse 'HEAD^{tree}' > "$ARTIFACT_DIR/source-tree.txt"
           git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/source-before.status"
           test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
           test ! -s "$ARTIFACT_DIR/source-before.status"
-          git -C ../harness merge-base --is-ancestor "$SOURCE_PIN" "$GITHUB_SHA"
+          git merge-base --is-ancestor "$SOURCE_BASE" "$SOURCE_PIN"
+          git -C ../harness merge-base --is-ancestor "$SOURCE_BASE" "$GITHUB_SHA"
           sha256sum ../harness/.github/diagnostics/icom_lower_executor_proof.py \
             > "$ARTIFACT_DIR/harness-sha256.txt"
           sha256sum src/rigplane/commands/commander.py src/rigplane/runtime/_civ_rx.py \
             tests/test_commander.py tests/test_radio.py > "$ARTIFACT_DIR/source-sha256.txt"
       - uses: astral-sh/setup-uv@v8.1.0
         with:
+          version: '0.12.9'
           enable-cache: false
       - uses: actions/setup-node@v6
         with:
@@ -330,7 +335,8 @@ jobs:
         working-directory: source
         run: |
           uv --version | tee "$ARTIFACT_DIR/uv-version.txt"
-          uv python install 3.11
+          test "$(uv --version | cut -d ' ' -f 2)" = '0.12.9'
+          uv python install 3.11.16
           # Root installation may run the existing hatch frontend build hook.
           uv sync --locked --all-extras \
             > "$ARTIFACT_DIR/install.stdout.log" 2> "$ARTIFACT_DIR/install.stderr.log"

@@ -12,15 +12,19 @@ import importlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 
 import pytest
 
 
-PIN = "786a6e0d663d37f9a46c5948562d921a265ae6ea"
+PIN = "4e4c1782bf90ba5517d5d193c0344a23c4c8ff66"
+SOURCE_BASE = "786a6e0d663d37f9a46c5948562d921a265ae6ea"
+SOURCE_TREE = "2c6c74005327bb818907ce00d7ccae8cc84124ce"
 CFILE = "tests/test_commander.py"
 RFILE = "tests/test_radio.py"
 C = CFILE + "::"
@@ -28,6 +32,12 @@ R = RFILE + "::TestCapturedExecuteLifetime::"
 COMMANDER = "src/rigplane/commands/commander.py"
 RUNTIME = "src/rigplane/runtime/_civ_rx.py"
 OWNED = (COMMANDER, RUNTIME, CFILE, RFILE)
+BLOBS = {
+    COMMANDER: "0b8c3f8de482d7438dbe428defac8bc9b07fd4c6",
+    RUNTIME: "5e3822cc2d0a53d7e066afabf6802dd54f0bbd1d",
+    CFILE: "fdaa860c1704c7207d5a6b8178157a338e2125a3",
+    RFILE: "9a658283603e3ced73868b6e828fc7c74bc1ab63",
+}
 
 ROWS = [
     (C + "test_stop_joins_cancel_resistant_execute_before_worker_exit", ["returns", "raises"]),
@@ -50,6 +60,7 @@ CONTROLS = [
     C + "test_wait_dispatch_true_still_awaits_result",
     C + "test_dedupe_returns_existing_future",
     RFILE + "::TestResponseDeadlineOpensAtSend::test_pacing_gap_is_not_charged_to_the_answer_window",
+    C + "test_stop_accepts_terminal_execute_without_release",
 ]
 
 # Each edit is (file, exact old text, exact replacement), checked before pytest.
@@ -62,17 +73,17 @@ MUTANTS = [
          "                    _fail_item(item, exc)\n                    if worker.cancelling():\n                        raise asyncio.CancelledError\n",
          "                    _fail_item(item, exc)\n"),
     ], {C + f"test_stop_joins_cancel_resistant_execute_before_worker_exit[{suffix}]":
-        (81, "cancel-resistant execute left stopping worker parked") for suffix in ("returns", "raises")}),
+        (97, "cancel-resistant execute left stopping worker parked") for suffix in ("returns", "raises")}),
     ("M2-unshielded-join", [
         (COMMANDER, "                await asyncio.shield(worker)\n", "                await worker\n"),
     ], {C + "test_overlapping_stop_keeps_actual_worker_until_execute_unwinds[cancel-waiter]":
-        (118, "cancelled stop waiter terminated actual worker")}),
+        (139, "cancelled stop waiter added a worker cancellation request")}),
     ("M3-restart-identity", [
         (COMMANDER,
          "            if self._worker is worker and (worker is None or worker.done()):\n",
          "            if worker is None or worker.done():\n"),
     ], {C + "test_old_stop_preserves_restart_from_worker_done_callback":
-        (166, "old stop erased restarted worker")}),
+        (231, "old stop erased restarted worker")}),
     ("M4-grace-check", [
         (RUNTIME,
          "            await asyncio.sleep(0.005)\n            if check_current is not None:\n                check_current()\n",
@@ -94,6 +105,10 @@ MUTANTS = [
          "                if not pending.done():\n                    pending.cancel()\n                elif not pending.cancelled():\n                    pending.exception()\n", ""),
     ], {R + f"test_generation_retirement_retrieves_detached_blocking_exception[{suffix}]":
         (1667, "retired blocking waiter exception was not retrieved") for suffix in ("pacing", "send")}),
+    ("M8-early-join-success", [
+        (COMMANDER, "                await asyncio.shield(worker)\n", "                await asyncio.sleep(0)\n"),
+    ], {C + f"test_stop_joins_cancel_resistant_execute_before_worker_exit[{suffix}]":
+        (42, "successful stop did not join captured worker and execute") for suffix in ("returns", "raises")}),
 ]
 EQUIVALENT = [(RUNTIME, "                or self._host._civ_epoch != epoch\n",
                "                or not (self._host._civ_epoch == epoch)\n")]
@@ -117,6 +132,43 @@ def snapshot(root):
 
 def status(root):
     return command(["git", "status", "--porcelain=v1", "--untracked-files=all"], root)
+
+
+def process_group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def run_pytest(args, root, env, stdout, stderr, evidence, state):
+    state["quiescent"] = False
+    process = subprocess.Popen(args, cwd=root, env=env, stdout=stdout, stderr=stderr,
+                               start_new_session=True)
+    state["pid"] = state["pgid"] = process.pid
+    try:
+        returncode = process.wait(timeout=180)
+    finally:
+        group_alive = process_group_exists(process.pid)
+        state["group_alive_after_wait"] = group_alive
+        if group_alive:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=10)
+        deadline = time.monotonic() + 5
+        while process_group_exists(process.pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        state["returncode"] = process.returncode
+        state["quiescent"] = process.poll() is not None and not process_group_exists(process.pid)
+        write_json(evidence / "process-quiescence.json", state)
+        if not state["quiescent"]:
+            raise RuntimeError("test process group not confirmed stopped; restoration forbidden")
+    if group_alive:
+        raise RuntimeError("pytest left live process descendants")
+    return returncode
 
 
 def junit_key(node):
@@ -215,24 +267,33 @@ def main():
     artifacts = Path(os.environ["ARTIFACT_DIR"]).resolve()
     variants = Path(os.environ["PROOF_VARIANTS"]).resolve()
     assert os.environ["SOURCE_PIN"] == PIN
-    assert sys.version_info[:2] == (3, 11), sys.version
+    assert os.environ["SOURCE_BASE"] == SOURCE_BASE
+    assert os.environ["SOURCE_TREE"] == SOURCE_TREE
+    assert sys.version_info[:3] == (3, 11, 16), sys.version
+    assert sys.implementation.name == "cpython" and sys.platform == "linux"
     assert os.environ["GITHUB_REF"] == "refs/heads/codex/icom-lower-executor-proof"
+    assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+    command(["git", "merge-base", "--is-ancestor", SOURCE_BASE, PIN], seed)
+    for file, blob in BLOBS.items():
+        assert command(["git", "rev-parse", f"{PIN}:{file}"], seed).decode().strip() == blob, file
     originals = {file: command(["git", "show", f"{PIN}:{file}"], seed) for file in OWNED}
     hashes = {file: sha(data) for file, data in originals.items()}
     assert command(["git", "rev-parse", "HEAD"], seed).decode().strip() == PIN
     source_tree = command(["git", "rev-parse", "HEAD^{tree}"], seed)
+    assert source_tree.decode().strip() == SOURCE_TREE
     assert snapshot(seed) == hashes and not status(seed)
     assert len(CASES) == len(set(CASES)) == 23
-    assert len(CONTROLS) == len(set(CONTROLS)) == 4
+    assert len(CONTROLS) == len(set(CONTROLS)) == 5
     assert not set(CASES) & set(CONTROLS)
+    assert len(MUTANTS) == len({label for label, _, _ in MUTANTS}) == 8
     full = {node: None for node in [*CASES, *CONTROLS]}
     plan = [("baseline", [], full)]
     for label, edits, failures in MUTANTS:
         assert set(failures) <= set(CASES)
         plan.append((label, edits, {**dict.fromkeys(CONTROLS), **failures}))
     plan += [("equivalent", EQUIVALENT, full), ("restored", [], full)]
-    assert len(plan) == 10 and sum(len(expected) for _, _, expected in plan) == 119
-    assert sum(value is not None for _, _, expected in plan for value in expected.values()) == 10
+    assert len(plan) == 11 and sum(len(expected) for _, _, expected in plan) == 136
+    assert sum(value is not None for _, _, expected in plan for value in expected.values()) == 12
     prepared = {}
     for label, edits, expected in plan:
         contents = dict(originals)
@@ -251,9 +312,10 @@ def main():
                 assert "assert " in lines[line - 1], (label, node, line)
                 assert message in "\n".join(lines[line - 1:line + 3]), (label, node, message)
         prepared[label] = contents
-    write_json(artifacts / "preflight.json", {"source": PIN, "hashes": hashes,
+    write_json(artifacts / "preflight.json", {"source": PIN, "source_base": SOURCE_BASE,
+        "source_tree": SOURCE_TREE, "blobs": BLOBS, "hashes": hashes,
         "plan": plan, "anchors": sum(len(edits) for _, edits, _ in plan),
-        "invocations": 10, "executions": 119, "expected_pass": 109, "expected_call_failures": 10})
+        "invocations": 11, "executions": 136, "expected_pass": 124, "expected_call_failures": 12})
     write_json(artifacts / "environment.json", {"python": sys.version, "implementation": sys.implementation.name, "executable": sys.executable,
         "pytest": pytest.__version__, "script": str(Path(__file__).resolve()),
         "script_sha256": sha(Path(__file__).read_bytes()),
@@ -268,6 +330,7 @@ def main():
             command(["git", "clone", "--shared", "--no-checkout", str(seed), str(root)], variants)
             command(["git", "-c", "core.hooksPath=/dev/null", "checkout", "--detach", PIN], root)
             contents = prepared[label]
+            process_state = {"quiescent": True, "pid": None, "pgid": None}
             try:
                 (evidence / "source-head.txt").write_bytes(command(["git", "rev-parse", "HEAD"], root))
                 (evidence / "source-tree.txt").write_bytes(command(["git", "rev-parse", "HEAD^{tree}"], root))
@@ -300,18 +363,22 @@ def main():
                     "pycache": env["PYTHONPYCACHEPREFIX"], "pytest_cache": pytest_cache, "pythonpath": env["PYTHONPATH"]})
                 with (evidence / "stdout.log").open("w") as stdout, (evidence / "stderr.log").open("w") as stderr:
                     try:
-                        result = subprocess.run(args, cwd=root, env=env, stdout=stdout, stderr=stderr, timeout=180)
+                        returncode = run_pytest(args, root, env, stdout, stderr, evidence, process_state)
                     except subprocess.TimeoutExpired:
                         (evidence / "exit.txt").write_text("INVALID: outer timeout\n")
                         raise
-                (evidence / "exit.txt").write_text(str(result.returncode) + "\n")
+                (evidence / "exit.txt").write_text(str(returncode) + "\n")
                 write_json(evidence / "hashes-after-test.json", snapshot(root))
                 assert snapshot(root) == variant_hashes, "test changed owned source"
-                record = {"invocation": label, **validate(evidence, root, expected, result.returncode)}
+                record = {"invocation": label, **validate(evidence, root, expected, returncode)}
             except BaseException as error:
                 write_json(evidence / "verdict.json", {"status": "INVALID", "exception": type(error).__name__, "detail": str(error)})
                 raise
             finally:
+                if not process_state["quiescent"]:
+                    write_json(evidence / "verdict.json", {"status": "INVALID", "stage": "process-cleanup",
+                        "restoration": "skipped", "process": process_state})
+                    raise RuntimeError("live test processes not excluded; source restoration skipped")
                 try:
                     try:
                         actual = snapshot(root)
@@ -345,10 +412,10 @@ def main():
             records.append(record)
             write_json(evidence / "verdict.json", {"status": "PASS", **record})
             print(json.dumps(record), flush=True)
-        assert len(records) == 10
-        assert sum(row["cases"] for row in records) == 119
-        assert sum(row["passed"] for row in records) == 109
-        assert sum(row["expected_call_failures"] for row in records) == 10
+        assert len(records) == 11
+        assert sum(row["cases"] for row in records) == 136
+        assert sum(row["passed"] for row in records) == 124
+        assert sum(row["expected_call_failures"] for row in records) == 12
         write_json(artifacts / "verdict.json", {"status": "PASS", "records": records})
     finally:
         write_json(artifacts / "completed-invocations.json", records)
@@ -356,6 +423,10 @@ def main():
 
 
 if __name__ == "__main__":
+    def interrupt(signum, _frame):
+        raise KeyboardInterrupt(f"diagnostic interrupted by signal {signum}")
+
+    signal.signal(signal.SIGTERM, interrupt)
     try:
         main()
     except BaseException as error:
