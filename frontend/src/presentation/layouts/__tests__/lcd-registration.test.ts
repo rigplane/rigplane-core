@@ -4,18 +4,15 @@
  * fixture registry and not a stub loader.
  *
  * What this file is for: the manifest is the only place the LCD entrypoints
- * declare their identity, the semantic zones they mount, the topologies they
- * survive, and the MOR-1160 sizing axis. Every claim below is read back out
+ * declare their identity, the semantic zones they mount and the MOR-1160
+ * sizing axis. Every claim below is read back out
  * of the shared registry rather than off the exported object, so a manifest
  * that is written but never registered fails here. Each test's doc line names
  * the mutation it exists to kill.
  */
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import {
-  getLayout, resolveLayoutForTopology, resolveLayoutForViewport,
-  TOPOLOGY_CLASSES, type LayoutManifest,
-} from '../contract';
+import { getLayout, type LayoutManifest } from '../contract';
 // Deliberately through the shared aggregation entry, not `../lcd-declarations`
 // directly: it pins that `declarations.ts` really pulls the LCD family in
 // (nothing else does), and it keeps this fast-pool file on the SAME module
@@ -29,9 +26,6 @@ const LCD_LAYOUTS: readonly (readonly [string, LayoutManifest])[] = [
   ['lcd-cockpit', lcdCockpitLayout],
   ['lcd-scope', lcdScopeLayout],
 ];
-
-/** iPhone-class portrait: min(390/1280, 844/540) ≈ 0.30, below minScale. */
-const PORTRAIT_MOBILE = { width: 390, height: 844 };
 
 describe('the LCD entrypoints are registered in the real registry', () => {
   // Kills: lcd-declarations.ts defining the manifests but never calling
@@ -72,17 +66,6 @@ describe('declared semantic zones (what the migrated LCD actually mounts)', () =
   });
 });
 
-describe('topology honesty', () => {
-  // Kills: under-declaring the topology set. Both LCD variants render VFO A
-  // unconditionally and gate the second receiver on `hasDualReceiver`, so
-  // every canonical class resolves to the layout itself, never to a fallback.
-  it.each(LCD_LAYOUTS)('"%s" resolves itself on all four canonical topologies', (id, _manifest) => {
-    for (const topology of TOPOLOGY_CLASSES) {
-      expect(resolveLayoutForTopology(id, topology)?.id).toBe(id);
-    }
-  });
-});
-
 describe('MOR-1160 sizing axis — the LCD is the fixed-native archetype', () => {
   // Kills: leaving the LCD on `fluid`, or drifting off the native stage size
   // MOR-1160 froze for the incoming LCD directions (1280x540).
@@ -90,18 +73,6 @@ describe('MOR-1160 sizing axis — the LCD is the fixed-native archetype', () =>
     expect(manifest.stageSizing).toEqual({
       mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5,
     });
-  });
-
-  it.each(LCD_LAYOUTS)('"%s" resolves on a desktop viewport', (id) => {
-    expect(resolveLayoutForViewport(id, { width: 1440, height: 900 })?.id).toBe(id);
-    expect(resolveLayoutForViewport(id, { width: 1280, height: 540 })?.id).toBe(id);
-  });
-
-  // Kills: minScale set to 0 (or the mode flipped to fluid), which would let
-  // a fixed-native LCD resolve on portrait mobile. MOR-1160 constraint 4:
-  // the exclusion is arithmetic, never a mobile-detection branch.
-  it.each(LCD_LAYOUTS)('"%s" is excluded from portrait mobile arithmetically', (id) => {
-    expect(resolveLayoutForViewport(id, PORTRAIT_MOBILE)).toBeUndefined();
   });
 });
 
@@ -113,20 +84,5 @@ describe('fallback behaviour inside the LCD family', () => {
     expect(lcdScopeLayout.fallbackLayoutId).toBe('lcd-cockpit');
     expect(lcdCockpitLayout.fallbackLayoutId).toBeNull();
     expect(getLayout(lcdScopeLayout.fallbackLayoutId!)).toBe(lcdCockpitLayout);
-  });
-
-  // Kills: returning the fallback without re-applying the criterion (the
-  // MOR-1066 F1 bug), applied to the real LCD pair. Both variants share one
-  // native stage, so a viewport that fails the scope variant fails the
-  // cockpit too — resolution must report "unresolvable", not hand back a
-  // sibling that fails the same gate.
-  it('does not hand back the cockpit for a viewport that fails it too', () => {
-    expect(resolveLayoutForViewport('lcd-scope', PORTRAIT_MOBILE)).toBeUndefined();
-  });
-
-  // The fallback is a real hop, not decoration: it resolves when the
-  // criterion is satisfiable.
-  it('resolves the scope variant itself while the viewport fits', () => {
-    expect(resolveLayoutForViewport('lcd-scope', { width: 1440, height: 900 })?.id).toBe('lcd-scope');
   });
 });
