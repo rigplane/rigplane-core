@@ -2739,8 +2739,13 @@ class CivRuntime:
             # responses so the Web TX authority gate cannot treat an ACK, setter
             # success, or unrelated response as radio truth.
             source = "poll_response"
+        max_age_path = (
+            FieldPath.global_("tx_state", "ptt")
+            if path == OBSERVED_PTT_PATH
+            else path
+        )
         max_age = _OBSERVATION_MAX_AGE_SECONDS.get(
-            (path.scope.value, path.family.value, path.name)
+            (max_age_path.scope.value, max_age_path.family.value, max_age_path.name)
         )
         if path == FieldPath.global_("tx_state", "tx_target"):
             # MOR-2223: single source shared with
