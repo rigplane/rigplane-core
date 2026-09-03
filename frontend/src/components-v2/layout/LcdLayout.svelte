@@ -52,9 +52,13 @@
   // value, so a resolution failure (unreachable today — see above) falls
   // back to the cockpit center AND keeps its usual SemanticRadioSurfaces
   // slot, rather than losing the VFO/TX affordance entirely.
-  let peerSplitCanvas = $derived(
+  //
+  // MOR-2259 carries the group's `minScale` down the same path as its
+  // canvas: one resolved object, so the floor cannot be plumbed from a
+  // different source than the size it floors.
+  let peerSplitStage = $derived(
     variant === 'peer-split' && peerSplitGroup && peerSplitGroup.scaling.mode === 'fixed-native'
-      ? peerSplitGroup.canvas
+      ? { canvas: peerSplitGroup.canvas, minScale: peerSplitGroup.scaling.minScale }
       : undefined,
   );
 
@@ -108,7 +112,7 @@
       <div
         class="lcd-slot"
         data-lcd-variant={variant}
-        style:aspect-ratio={peerSplitCanvas ? `${peerSplitCanvas.w} / ${peerSplitCanvas.h}` : undefined}
+        style:aspect-ratio={peerSplitStage ? `${peerSplitStage.canvas.w} / ${peerSplitStage.canvas.h}` : undefined}
       >
         <div
           class="lcd-frame lcd-mode-{displayMode}"
@@ -117,8 +121,12 @@
         >
           {#if variant === 'scope'}
             <AmberScope />
-          {:else if peerSplitCanvas}
-            <PeerSplitLayout canvasW={peerSplitCanvas.w} canvasH={peerSplitCanvas.h} />
+          {:else if peerSplitStage}
+            <PeerSplitLayout
+              canvasW={peerSplitStage.canvas.w}
+              canvasH={peerSplitStage.canvas.h}
+              minScale={peerSplitStage.minScale}
+            />
           {:else}
             <AmberCockpit />
           {/if}
@@ -135,7 +143,7 @@
          here by SemanticRadioSurfaces — no new TX path. `peer-split`'s glass
          (`PeerSplitLayout.svelte`) mounts its own `SemanticRadioSurfaces
          strips="dual"` instead, so this slot is suppressed whenever that
-         glass actually mounts (`peerSplitCanvas`, MOR-2153 PR-1 / MOR-2253
+         glass actually mounts (`peerSplitStage`, MOR-2153 PR-1 / MOR-2253
          slice 1) — each SemanticRadioSurfaces instance takes a
          distinct TX-lease `sourceId` from its own module-level counter
          (`components-v2/wiring/SemanticRadioSurfaces.svelte`), so two
@@ -146,7 +154,7 @@
          amber glass (`cockpit`/`scope`) keeps its legacy presentation for
          this slice; MOR-1162 redesigns it. -->
     <div class="content-right">
-      {#if !peerSplitCanvas}
+      {#if !peerSplitStage}
         <div class="semantic-slot">
           <SemanticRadioSurfaces />
         </div>
@@ -258,7 +266,7 @@
   }
 
   /* `peer-split`'s glass (`PeerSplitLayout.svelte`) is a fixed-native stage
-     sized from `peerSplitCanvas` (script above), not the fluid 16/7.5 the
+     sized from `peerSplitStage` (script above), not the fluid 16/7.5 the
      amber cockpit/scope variants were tuned for. Matching the slot to the
      glass's own ratio means the frame hits `ScaledStage`'s max-scale-1 clamp
      on both axes at once instead of one axis being starved by a mismatched
@@ -273,7 +281,7 @@
      primitive nor a fixed-native sizing literal appears in this file, which
      is exactly what let a plain CSS number slip past it once already).
      Replaced with the `style:aspect-ratio` binding on the element above,
-     computed from the same `peerSplitCanvas` the glass mount itself uses —
+     computed from the same `peerSplitStage` the glass mount itself uses —
      one JS value, not two independent numbers. `undefined` (any variant but
      `peer-split`) makes Svelte's `style:` directive omit the inline
      property entirely, so the base rule below applies unchanged. */
