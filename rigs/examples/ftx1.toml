@@ -22,17 +22,6 @@ variant = "yaesu_enhanced"   # Yaesu extensions on top of CI-V
 # Yaesu uses CI-V framing but different sub-commands and data encoding
 # Key difference: mode registers are hex-string based (0x01-0x0I)
 
-[spectrum]
-seq_max = 0
-amp_max = 255
-data_len_max = 850
-modes = [
-    "3dss_center", "3dss_cursor", "3dss_fixed",
-    "center_expand", "center_normal", "center_expand2",
-    "cursor_expand", "cursor_normal", "cursor_expand2",
-    "fixed_expand", "fixed_normal",
-]
-
 # ═══ Layer 1: CAPABILITIES ═══════════════════════════════════════
 
 [capabilities]
@@ -68,8 +57,6 @@ features = [
     "tuner",
     # Metering
     "meters",
-    # Scope
-    "scope",
     # Tone
     "repeater_tone",
     "tsql",
