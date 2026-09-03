@@ -13,7 +13,11 @@ from rigplane.core.command_service import (
     CommandService,
     command_intent_from_request,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.core.state_store import StateStore
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
