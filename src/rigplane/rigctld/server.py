@@ -22,7 +22,6 @@ import time
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from ..commands.commander import Priority
 from ..core.acquisition_scheduler import (
     AcquisitionExecutionResult,
     AcquisitionExecutor,
@@ -32,20 +31,20 @@ from ..core.acquisition_scheduler import (
     RadioStateModelService,
     StateFreshnessService,
     civ_acquisition_executor_for_provider,
+    derive_tx_active,
     provider_uses_civ_acquisition,
 )
 from ..profiles import RadioProfile
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import FieldPath
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
-from ..core.state_store import FreshnessState, StateStore
+from ..core.state_store import StateStore
 from ..radio_protocol import (
     CivCommandCapable,
     StateModelCapable,
     StateModelService,
     StateStoreCapable,
 )
-from ..runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
 from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
     wire_parts_for_query,
@@ -64,27 +63,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PTT_REREAD_INTERVAL_SECONDS", "RigctldServer", "run_rigctld_server"]
+__all__ = ["RigctldServer", "run_rigctld_server"]
 
-# MOR-1903: standalone rigctld had no cadence poller of any kind —
-# ``due_requests()`` is called only by the web radio poller, so nothing ever
-# sent a ``0x1C/0x00`` read after connect, the strict resolver behind the
-# MOR-1881 DEFER gate (and the BLOCK pre-gate guarding key-down) stayed UNKNOWN
-# forever, and every frequency / mode / VFO / split / RIT write and every
-# ``T 1`` was refused with ``RPRT -9``.
-#
-# The TTL is read from ``_civ_rx``'s own table, never copied; a quarter of it
-# puts two reads in every freshness window, so one lost reply cannot open a gap
-# (a cadence at or above the TTL would reproduce the web deployment's
-# known-then-unknown sawtooth, which refuses most writes). It is a background
-# poller and is sent as one: ``Priority.BACKGROUND`` to yield the shared CI-V
-# lane to user commands, an unkey above all (MOR-497i), and
-# ``wait_dispatch=False`` so parking on the Commander future cannot push the
-# send past the very TTL this cadence exists to stay inside (MOR-497ii).
-PTT_OBSERVATION_TTL_SECONDS: float = _OBSERVATION_MAX_AGE_SECONDS[
-    ("global", "tx_state", "ptt")
-]
-PTT_REREAD_INTERVAL_SECONDS: float = PTT_OBSERVATION_TTL_SECONDS / 4.0
+# ``AcquisitionScheduler.due_requests`` stamps every profile-cadence request
+# with this reason. ``AcquisitionScheduler._coalesce`` appends to ``reasons``
+# and leaves the scalar ``reason`` at the first writer's value, so the scalar
+# cannot tell a merged request from an unmerged one; a ``reasons`` tuple equal
+# to this one alone can. Pinned by
+# ``test_external_cat_session_stands_the_cadence_down_but_not_a_user_read``.
+_POLICY_CADENCE_REASON = "policy-cadence"
 
 
 class _AcquisitionExecutorUnavailable(RuntimeError):
@@ -192,7 +179,6 @@ class RigctldServer:
         self._state_store_freshness_task: asyncio.Task[None] | None = None
         self._acquisition_executor: AcquisitionExecutor | None = None
         self._state_acquisition_drain_task: asyncio.Task[None] | None = None
-        self._ptt_reread_task: asyncio.Task[None] | None = None
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
@@ -466,94 +452,6 @@ class RigctldServer:
             name="rigctld-state-freshness",
         )
 
-    def _start_ptt_reread_task(self) -> None:
-        """Start the client-gated CI-V PTT re-read, if this radio supports it.
-
-        CI-V only; the Yaesu leg is MOR-1903-B.
-        """
-        if self._ptt_reread_task is not None:
-            return
-        if not isinstance(self._radio, CivCommandCapable):
-            return
-        self._ptt_reread_task = asyncio.get_running_loop().create_task(
-            self._run_ptt_reread(),
-            name="rigctld-ptt-reread",
-        )
-
-    async def _stop_ptt_reread_task(self) -> None:
-        task, self._ptt_reread_task = self._ptt_reread_task, None
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.debug("rigctld PTT re-read task failed before stop", exc_info=True)
-
-    async def _run_ptt_reread(self) -> None:
-        """Drive the *request* only; nothing here writes to the StateStore.
-
-        If the radio never answers, RF truth stays UNKNOWN and the gate keeps
-        refusing — absence is never filled in (MOR-1900).
-        """
-        while True:
-            try:
-                await asyncio.sleep(PTT_REREAD_INTERVAL_SECONDS)
-                await self._send_ptt_reread_once()
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                # A dead link or mid-teardown transport must not kill the
-                # driver; the next tick retries, honestly UNKNOWN meanwhile.
-                logger.debug("rigctld PTT re-read failed: %s", exc, exc_info=True)
-
-    async def _send_ptt_reread_once(self) -> None:
-        """Emit one ``0x1C/0x00`` read on the poller lane, if we may.
-
-        Not via ``_send_one_state_query``: that carries bounded on-demand
-        requests on the user-command lane, the wrong lane for a cadence.
-
-        Two independent triggers can reach this method: the scheduled tick
-        in ``_run_ptt_reread`` and the connect-triggered immediate re-read in
-        ``_accept_client``. They are not serialized against each other, so
-        both can put a ``0x1C/0x00`` request on the wire close together.
-        That is harmless: the read carries no side effect and the reply is
-        idempotent, so a duplicate in-flight request changes nothing the
-        gate or the StateStore observes.
-        """
-        radio = self._radio
-        # Parity with the lazy poller start: an idle server stays off the wire.
-        if self._client_count <= 0 or not isinstance(radio, CivCommandCapable):
-            return
-        # A Hamlib bridge owns the byte stream; our reads must not pollute it
-        # (MOR-166 slice 2). ``is True``, matching every sibling poller, so a
-        # duck-typed radio never quiesces by accident.
-        if getattr(radio, "external_cat_session_active", False) is True:
-            return
-        await radio.send_civ(
-            0x1C,
-            sub=0x00,
-            wait_response=False,
-            priority=Priority.BACKGROUND,
-            wait_dispatch=False,
-        )
-
-    async def _send_ptt_reread_once_on_connect(self) -> None:
-        """Spawn target for the connect-triggered re-read in ``_accept_client``.
-
-        Same exception discipline as the scheduled-tick caller,
-        ``_run_ptt_reread``: a dead or mid-teardown transport must not
-        surface as an unretrieved task exception on
-        ``RigctldServer._spawn``'s done-callback, which only discards the
-        task and never retrieves its result.
-        """
-        try:
-            await self._send_ptt_reread_once()
-        except Exception as exc:
-            logger.debug("rigctld PTT re-read failed: %s", exc, exc_info=True)
-
     def _start_state_acquisition_drain_task(self) -> None:
         if (
             self._acquisition_scheduler is None
@@ -671,40 +569,24 @@ class RigctldServer:
             link_healthy=False,
         )
 
-    def _derive_tx_active(self) -> bool:
-        """Derive the canonical tx_active fact for the scheduler's dispatch gate.
-
-        MOR-1532: standalone rigctld never calls
-        ``AcquisitionScheduler.due_requests()`` (MOR-1903 gave this seat one
-        cadence of its own -- the PTT re-read -- but it bypasses the scheduler
-        entirely), so its scheduler's cached ``_tx_active`` never
-        left the ``__init__`` default of ``True`` -- the MOR-1531
-        ``tx_only`` reconciliation gate stayed permanently open in that
-        mode. Derived identically to the web poller (MOR-1525 / PR #2438):
-        the canonical ``global.tx_state.ptt`` observation, FRESH-gated. Fail
-        closed: unobserved/stale/unknown ptt -> tx_active False, the honest
-        direction when the fact isn't known.
-        """
-
-        store = self._state_store
-        if store is None:
-            return False
-        try:
-            ptt_field = store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
-        except KeyError:
-            return False
-        return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
-
     async def _drain_state_acquisition_once(self) -> None:
         scheduler = self._acquisition_scheduler
         if scheduler is None:
             return
         now = time.monotonic()
+        # A Hamlib bridge owns the byte stream; the cadence reads this seat
+        # gained must not pollute it (MOR-166 slice 2). The deleted PTT
+        # re-read stood down on this exact flag. ``is True``, matching every
+        # sibling poller, so a duck-typed radio never quiesces by accident.
+        external_cat_owns_wire = (
+            getattr(self._radio, "external_cat_session_active", False) is True
+        )
+        store = self._state_store
         # MOR-1532: keep the scheduler's tx_active cache current on this
-        # drain path too -- see note_tx_active()'s docstring for why calling
-        # it here can never disagree with the web poller's due_requests()
-        # call in combined (shared-scheduler) mode.
-        scheduler.note_tx_active(self._derive_tx_active())
+        # drain path too. Same ``derive_tx_active`` over the same canonical
+        # store as the freshness tick's own cadence call, so the two writers
+        # cannot disagree about one store state.
+        scheduler.note_tx_active(False if store is None else derive_tx_active(store))
         # MOR-1533: dispatch must use the tx_active-gated view; crediting an
         # already-sent answer (runtime._civ_rx, driven by this radio's own
         # CI-V pump) uses the unfiltered pending_requests() instead, so an
@@ -716,6 +598,8 @@ class RigctldServer:
                 del self._acquisition_in_flight[request_id]
 
         for request in pending:
+            if external_cat_owns_wire and request.reasons == (_POLICY_CADENCE_REASON,):
+                continue
             sent_paths: frozenset[FieldPath] = frozenset()
             sent_at = 0.0
             existing = self._acquisition_in_flight.get(request.id)
@@ -876,7 +760,6 @@ class RigctldServer:
         logger.info("rigctld listening on %s:%d", addr[0], addr[1])
         self._start_state_freshness_task()
         self._start_state_acquisition_drain_task()
-        self._start_ptt_reread_task()
 
         # Poller starts lazily on first client connection to avoid idle
         # CI-V traffic/noise when no CAT clients are connected.
@@ -898,8 +781,6 @@ class RigctldServer:
         ):
             self._state_store.begin_provider_generation()
             self._fallback_state_store_attached = False
-
-        await self._stop_ptt_reread_task()
 
         if self._state_acquisition_drain_task is not None:
             self._state_acquisition_drain_task.cancel()
@@ -1015,18 +896,6 @@ class RigctldServer:
         task = loop.create_task(self._handle_client(reader, writer))
         self._client_tasks.add(task)
         self._client_count += 1
-
-        # The re-read cadence otherwise ticks on its own clock from server
-        # start: a client connecting just before the next scheduled tick
-        # could find RF truth UNKNOWN and have its first DEFER-family write
-        # refused (RPRT -9). Firing one read on the zero-to-one transition
-        # closes that window instead of waiting out up to a full
-        # PTT_REREAD_INTERVAL_SECONDS; the scheduled cadence continues
-        # unchanged afterward. This can race a tick already in flight and
-        # put two 0x1C/0x00 requests on the wire close together -- harmless,
-        # since the read is idempotent and carries no side effect.
-        if self._client_count == 1 and self._ptt_reread_task is not None:
-            self._spawn(self._send_ptt_reread_once_on_connect())
 
         # Optional WSJT-X compatibility pre-warm for first client:
         # if radio is in USB/LSB/RTTY with DATA off, enable DATA mode upfront
