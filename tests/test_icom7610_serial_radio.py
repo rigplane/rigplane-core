@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
@@ -174,6 +175,13 @@ class _FakeSerialCivLink:
         send_no = len(self.sent_frames)
         for response in self._responses_by_send.pop(send_no, []):
             self._responses.put_nowait(response)
+
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("Serial CI-V write is no longer current.")
+        await self.send(frame)
 
     async def receive(self, timeout: float | None = None) -> bytes | None:
         if not self.connected:

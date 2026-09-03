@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import struct
+from collections.abc import Callable
 
 import pytest
 
@@ -18,6 +19,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.exceptions import CommandError
 from serial_stub import SerialMockRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -48,6 +50,13 @@ class _FakeSerialCivLink:
     async def send(self, frame: bytes) -> None:
         _ = frame
         return None
+
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("Serial CI-V write is no longer current.")
+        await self.send(frame)
 
     async def receive(self, timeout: float | None = None) -> bytes | None:
         await asyncio.sleep(0.02 if timeout is None else min(timeout, 0.02))
