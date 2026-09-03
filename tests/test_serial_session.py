@@ -10,9 +10,13 @@ X6200's CI-V parser for ~5-10s.
 
 from __future__ import annotations
 
+import asyncio
 import struct
+from collections.abc import Callable
 
 import pytest
+
+from test_serial_civ_link import _FakeWriter, _cleanup_writes, _make_link
 
 from rigplane.backends.icom7610.drivers.serial_session import (
     _CIV_HEADER_SIZE,
@@ -21,6 +25,7 @@ from rigplane.backends.icom7610.drivers.serial_session import (
     _unwrap_civ_frame,
     _wrap_civ_frame,
 )
+from rigplane.exceptions import CommandError
 
 
 def _build_openclose_packet(*, open_stream: bool) -> bytes:
@@ -46,6 +51,13 @@ class _RecordingCivLink:
     async def send(self, frame: bytes) -> None:
         self.sent.append(bytes(frame))
 
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("Serial CI-V write is no longer current.")
+        await self.send(frame)
+
     async def receive(self, *, timeout: float = 5.0) -> bytes:  # pragma: no cover
         raise NotImplementedError
 
@@ -54,6 +66,84 @@ class _RecordingCivLink:
 
     async def disconnect(self) -> None:  # pragma: no cover
         pass
+
+
+@pytest.mark.asyncio
+async def test_send_tracked_waits_for_actual_serial_drain() -> None:
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(writer=_FakeWriter(drain_gate=gate))
+    transport = SerialCivTransport(link)
+    frame = b"\xfe\xfe\x98\xe0\x1c\x00\x00\xfd"
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        pending = asyncio.create_task(
+            transport.send_tracked(_wrap_civ_frame(frame, seq=0))
+        )
+        tasks.append(pending)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        assert writer.writes == [frame]
+        assert not pending.done(), "send_tracked returned at enqueue, before drain"
+        assert transport.send_seq == 0
+        gate.set()
+        await asyncio.wait_for(pending, timeout=1)
+        assert transport.send_seq == 1
+    finally:
+        await _cleanup_writes(link, tasks, writer)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_at", ["write", "drain"])
+async def test_send_tracked_propagates_actual_serial_io_failure(
+    failure_at: str,
+) -> None:
+    failure = OSError(f"serial {failure_at} failed")
+    writer = _FakeWriter(
+        write_error=failure if failure_at == "write" else None,
+        drain_error=failure if failure_at == "drain" else None,
+    )
+    link, _, _ = await _make_link(writer=writer)
+    transport = SerialCivTransport(link)
+    frame = b"\xfe\xfe\x98\xe0\x1c\x00\x00\xfd"
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        pending = asyncio.create_task(
+            transport.send_tracked(_wrap_civ_frame(frame, seq=0))
+        )
+        tasks.append(pending)
+        result = await asyncio.wait_for(
+            asyncio.gather(pending, return_exceptions=True), timeout=1
+        )
+        await asyncio.wait_for(writer.write_started.wait(), timeout=1)
+        assert writer.writes == ([] if failure_at == "write" else [frame])
+        assert result[0] is failure, "serial I/O failure was lost after enqueue"
+        assert transport.send_seq == 0
+        assert transport._udp_error_count == 1
+    finally:
+        await _cleanup_writes(link, tasks, writer)
+
+
+@pytest.mark.asyncio
+async def test_send_tracked_forwards_currency_to_serial_writer() -> None:
+    link, _, writer = await _make_link()
+    transport = SerialCivTransport(link)
+    frame = b"\xfe\xfe\x98\xe0\x1c\x00\x01\xfd"
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        pending = asyncio.create_task(
+            transport.send_tracked(
+                _wrap_civ_frame(frame, seq=0), is_current=lambda: False
+            )
+        )
+        tasks.append(pending)
+        result = await asyncio.wait_for(
+            asyncio.gather(pending, return_exceptions=True), timeout=1
+        )
+        assert writer.writes == [], "transport dropped final-write currency"
+        assert isinstance(result[0], CommandError)
+        assert not writer.closed
+        assert link.ready
+    finally:
+        await _cleanup_writes(link, tasks, writer)
 
 
 @pytest.mark.asyncio

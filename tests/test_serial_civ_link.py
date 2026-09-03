@@ -13,6 +13,11 @@ from rigplane.backends.icom7610.drivers.serial_civ_link import (
     SerialFrameOverflowError,
     SerialFrameTimeoutError,
 )
+from rigplane.exceptions import CommandError
+
+_ON = b"\x98\xe0\x1c\x00\x01"
+_OFF = b"\x98\xe0\x1c\x00\x00"
+_QUERY = b"\x98\xe0\x03"
 
 
 class _FakeReader:
@@ -33,20 +38,47 @@ class _FakeReader:
 
 
 class _FakeWriter:
-    def __init__(self, *, drain_gate: asyncio.Event | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        drain_gate: asyncio.Event | None = None,
+        write_error: OSError | None = None,
+        drain_error: OSError | None = None,
+        resist_cancel: bool = False,
+    ) -> None:
         self.writes: list[bytes] = []
         self.closed = False
         self._drain_gate = drain_gate
+        self._write_error = write_error
+        self._drain_error = drain_error
+        self._resist_cancel = resist_cancel
+        self.write_started = asyncio.Event()
+        self.drain_started = asyncio.Event()
+        self.close_called = asyncio.Event()
 
     def write(self, data: bytes) -> None:
+        self.write_started.set()
+        if self.closed:
+            raise ConnectionError("write on closed serial writer")
+        if self._write_error is not None:
+            raise self._write_error
         self.writes.append(bytes(data))
 
     async def drain(self) -> None:
+        self.drain_started.set()
         if self._drain_gate is not None:
-            await self._drain_gate.wait()
+            try:
+                await self._drain_gate.wait()
+            except asyncio.CancelledError:
+                if not self._resist_cancel:
+                    raise
+                await self._drain_gate.wait()
+        if self._drain_error is not None:
+            raise self._drain_error
 
     def close(self) -> None:
         self.closed = True
+        self.close_called.set()
 
     async def wait_closed(self) -> None:
         return None
@@ -74,6 +106,230 @@ async def _make_link(
     )
     await link.connect()
     return link, fake_reader, fake_writer
+
+
+def _wire(payload: bytes) -> bytes:
+    return b"\xfe\xfe" + payload + b"\xfd"
+
+
+async def _cleanup_writes(
+    link: SerialCivLink,
+    tasks: list[asyncio.Task[None]],
+    *writers: _FakeWriter,
+    old_worker: asyncio.Task[None] | None = None,
+) -> None:
+    for writer in writers:
+        if writer._drain_gate is not None:
+            writer._drain_gate.set()
+    # Release controlled drains before cancellation, including the fake which
+    # deliberately resists cancellation. This helper is cleanup only.
+    for _ in range(3):
+        await asyncio.sleep(0)
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    if old_worker is not None and old_worker is not link._writer_task:
+        old_worker.cancel()
+        await asyncio.gather(old_worker, return_exceptions=True)
+    await link.disconnect()
+
+
+def _install_replacement(link: SerialCivLink, writer: _FakeWriter) -> None:
+    # Controlled transport-identity replacement, without any authority callback.
+    link._reader = _FakeReader()
+    link._writer = writer
+    link._write_queue = asyncio.Queue(maxsize=link._max_write_queue)
+    link._connected = True
+    link._healthy = True
+    link._writer_task = asyncio.create_task(link._writer_loop())
+
+
+@pytest.mark.asyncio
+async def test_send_written_waits_for_drain_and_preserves_raw_enqueue() -> None:
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(writer=_FakeWriter(drain_gate=gate))
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        written = asyncio.create_task(link.send_written(_ON))
+        tasks.append(written)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        await link.send(_QUERY)
+        assert writer.writes == [_wire(_ON)]
+        assert not written.done(), "send_written completed before drain"
+        gate.set()
+        await asyncio.wait_for(written, timeout=1)
+        await asyncio.wait_for(link.send_written(_OFF), timeout=1)
+        assert writer.writes == [_wire(_ON), _wire(_QUERY), _wire(_OFF)]
+    finally:
+        await _cleanup_writes(link, tasks, writer)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("guard_failure", ["false", "raises"])
+async def test_send_written_rechecks_guard_at_writer(guard_failure: str) -> None:
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(writer=_FakeWriter(drain_gate=gate))
+    current = True
+    failure = RuntimeError("guard failed at final write")
+    tasks: list[asyncio.Task[None]] = []
+
+    def is_current() -> bool:
+        if not current and guard_failure == "raises":
+            raise failure
+        return current
+
+    try:
+        await link.send(_QUERY)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        pending = asyncio.create_task(link.send_written(_ON, is_current=is_current))
+        tasks.append(pending)
+        await asyncio.sleep(0)
+        assert not pending.done()
+        current = False
+        gate.set()
+        result = await asyncio.wait_for(
+            asyncio.gather(pending, return_exceptions=True), timeout=1
+        )
+        assert writer.writes == [_wire(_QUERY)], "stale ON reached serial writer"
+        if guard_failure == "raises":
+            assert result[0] is failure
+        else:
+            assert isinstance(result[0], CommandError)
+        assert not writer.closed
+        assert link.ready
+        await asyncio.wait_for(link.send_written(_OFF), timeout=1)
+        assert writer.writes == [_wire(_QUERY), _wire(_OFF)]
+    finally:
+        await _cleanup_writes(link, tasks, writer)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ["queue", "writer", "both"])
+async def test_send_written_captures_session_before_backpressure(
+    replacement: str,
+) -> None:
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(
+        queue_size=1, writer=_FakeWriter(drain_gate=gate)
+    )
+    newer = _FakeWriter()
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        await link.send(_QUERY)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        await link.send(_QUERY)
+        pending = asyncio.create_task(link.send_written(_ON, is_current=lambda: True))
+        tasks.append(pending)
+        await asyncio.sleep(0)
+        assert not pending.done()
+        if replacement in {"queue", "both"}:
+            link._write_queue = asyncio.Queue(maxsize=1)
+        if replacement in {"writer", "both"}:
+            link._writer = newer
+        result = await asyncio.wait_for(
+            asyncio.gather(pending, return_exceptions=True), timeout=1
+        )
+        assert writer.writes == [_wire(_QUERY)]
+        assert newer.writes == [], "old queued ON crossed serial session identity"
+        assert isinstance(result[0], ConnectionError)
+        assert not newer.closed
+        assert link.connected
+    finally:
+        await _cleanup_writes(link, tasks, writer, newer)
+        writer.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("waiting_for_space", [False, True])
+async def test_cancelled_queued_write_keeps_active_neighbor_and_successor(
+    waiting_for_space: bool,
+) -> None:
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(
+        queue_size=1, writer=_FakeWriter(drain_gate=gate)
+    )
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        await link.send(_QUERY)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        if waiting_for_space:
+            await link.send(_QUERY)
+        pending = asyncio.create_task(link.send_written(_ON))
+        tasks.append(pending)
+        await asyncio.sleep(0)
+        assert not pending.done()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert not writer.closed, "queued cancellation retired active neighbor"
+        assert link.ready
+        gate.set()
+        await asyncio.wait_for(link.send_written(_OFF), timeout=1)
+        queries = [_wire(_QUERY)] * (2 if waiting_for_space else 1)
+        assert writer.writes == [*queries, _wire(_OFF)]
+    finally:
+        await _cleanup_writes(link, tasks, writer)
+
+
+@pytest.mark.asyncio
+async def test_active_write_cancellation_closes_captured_not_replacement() -> None:
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(writer=_FakeWriter(drain_gate=gate))
+    newer = _FakeWriter()
+    old_worker = link._writer_task
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        pending = asyncio.create_task(link.send_written(_ON))
+        tasks.append(pending)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        _install_replacement(link, newer)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, timeout=1)
+        assert writer.closed, "active cancellation left captured writer open"
+        assert not newer.closed, "old cancellation closed replacement writer"
+        assert link._writer is newer
+        assert link.ready
+        await asyncio.wait_for(link.send_written(_OFF), timeout=1)
+        assert writer.writes == [_wire(_ON)]
+        assert newer.writes == [_wire(_OFF)]
+    finally:
+        await _cleanup_writes(link, tasks, writer, newer, old_worker=old_worker)
+
+
+@pytest.mark.asyncio
+async def test_replacement_off_follows_last_possible_old_session_on() -> None:
+    gate = asyncio.Event()
+    writer = _FakeWriter(drain_gate=gate, resist_cancel=True)
+    link, _, _ = await _make_link(writer=writer)
+    newer = _FakeWriter()
+    old_worker = link._writer_task
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        pending = asyncio.create_task(link.send_written(_ON))
+        tasks.append(pending)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        await link.send(_ON)
+        pending.cancel()
+        await asyncio.wait_for(writer.close_called.wait(), timeout=1)
+        _install_replacement(link, newer)
+        await asyncio.wait_for(link.send_written(_OFF), timeout=1)
+        assert writer.closed
+        assert writer.writes == [_wire(_ON)]
+        assert newer.writes == [_wire(_OFF)]
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, timeout=1)
+        # A further completed write puts the assertion after the released old
+        # drain as well as after the replacement's receive command.
+        await asyncio.wait_for(link.send_written(_QUERY), timeout=1)
+        assert writer.writes == [_wire(_ON)], "old queued ON escaped after new OFF"
+        assert newer.writes == [_wire(_OFF), _wire(_QUERY)]
+        assert not newer.closed
+        assert link.ready
+    finally:
+        await _cleanup_writes(link, tasks, writer, newer, old_worker=old_worker)
 
 
 @pytest.mark.asyncio
