@@ -211,7 +211,9 @@ class ManagedTxAuthority:
         submission = asyncio.create_task(submit())
 
         def own_submission(task: asyncio.Task[ManagedTxSubmission]) -> None:
-            if not task.cancelled():
+            if task.cancelled():
+                worker.cancel()
+            else:
                 task.exception()
 
         submission.add_done_callback(own_submission)
