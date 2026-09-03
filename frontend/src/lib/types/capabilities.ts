@@ -183,6 +183,7 @@ export interface Capabilities {
   dataModeLabels?: Record<string, string>;
   keyboard?: KeyboardConfig | null;
   antennas?: number;      // Number of antenna ports
+  hasRxAntenna?: boolean;
   scopeSource?: string | null;  // "hardware", "audio_fft", or null
   audioFftAvailable?: boolean;  // true when audio FFT scope is available (even with hardware scope)
   scopeConfig?: ScopeConfig;
@@ -447,6 +448,9 @@ export function validateCapabilities(value: unknown): Capabilities {
   requireBoolean(raw.tx, '$.tx');
   requireStringArray(raw.capabilities, '$.capabilities');
   requireInteger(raw.receivers, '$.receivers', true);
+  if (Object.prototype.hasOwnProperty.call(raw, 'hasRxAntenna')) {
+    requireBoolean(raw.hasRxAntenna, '$.hasRxAntenna');
+  }
 
   const txAudioFields = [
     'audioTx',

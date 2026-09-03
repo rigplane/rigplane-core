@@ -779,6 +779,7 @@ class RigConfig:
             rules=self.rules,
             keyboard=self.keyboard,
             antenna_tx_count=self.antenna_tx_count,
+            antenna_has_rx_ant=self.antenna_has_rx_ant,
             transceiver_count=self.transceiver_count,
             scope_ref_min_db=self.scope_ref_min_db,
             scope_ref_max_db=self.scope_ref_max_db,

@@ -1,4 +1,6 @@
 import asyncio
+import gc
+import inspect
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,152 @@ async def finish(managed: ManagedTxAuthority) -> None:
     if state.release_required or state.intent.kind is not ManagedTxIntentKind.RX:
         await managed.force_off()
     await managed.close()
+
+
+async def wait_for_submission_cleanup(managed: ManagedTxAuthority) -> None:
+    for _ in range(10):
+        if not managed._abort_fence._cancellations and not managed._settlement_tasks:
+            return
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_submit_ptt_remains_a_coroutine_accepted_by_create_task() -> None:
+    managed, _, _, _, fence, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    assert inspect.iscoroutinefunction(ManagedTxAuthority.submit_ptt)
+    coroutine = managed.submit_ptt(True, "owner", ready=ready)
+    assert inspect.iscoroutine(coroutine)
+    admission = asyncio.create_task(coroutine)
+    try:
+        await asyncio.sleep(0)
+        assert fence._cancellations and not lane.effects
+        admission.cancel()
+        await asyncio.gather(admission, return_exceptions=True)
+        await wait_for_submission_cleanup(managed)
+        assert not fence._cancellations and not managed._settlement_tasks
+    finally:
+        ready.cancel()
+        await asyncio.gather(admission, return_exceptions=True)
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_unawaited_submit_ptt_coroutine_is_inert() -> None:
+    managed, _, _, _, fence, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    pending = managed.submit_ptt(True, "owner", ready=ready)
+    try:
+        assert inspect.iscoroutine(pending)
+        assert not fence._cancellations and not managed._settlement_tasks
+        pending.close()
+        ready.set_result(None)
+        await asyncio.sleep(0)
+        assert not lane.effects
+    finally:
+        if isinstance(pending, asyncio.Task):
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        elif inspect.iscoroutine(pending):
+            pending.close()
+        if not ready.done():
+            ready.cancel()
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_start_ptt_submission_registers_membership_before_return() -> None:
+    managed, _, _, _, fence, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    submission = None
+    try:
+        submission = managed.start_ptt_submission(True, "owner", ready=ready)
+        assert isinstance(submission, asyncio.Task)
+        assert any(
+            scope == "owner" for _cancellation, scope in fence._cancellations.values()
+        )
+        assert len(managed._settlement_tasks) == 1
+        assert not ready.done() and not lane.effects
+    finally:
+        if submission is not None:
+            submission.cancel()
+            await asyncio.gather(submission, return_exceptions=True)
+        ready.cancel()
+        await wait_for_submission_cleanup(managed)
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_start_ptt_immediate_cancel_drains_before_ready_can_run() -> None:
+    managed, _, _, _, fence, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    submission = managed.start_ptt_submission(True, "owner", ready=ready)
+    submission.cancel()
+    ready.set_result(None)
+    try:
+        await asyncio.gather(submission, return_exceptions=True)
+        await wait_for_submission_cleanup(managed)
+        assert not fence._cancellations
+        assert not managed._settlement_tasks
+        assert not lane.effects
+    finally:
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_ignored_closed_start_task_is_owned_but_await_still_raises() -> None:
+    managed, _, _, _, fence, _ = authority()
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    unhandled: list[dict[str, object]] = []
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    try:
+        await managed.close()
+        ignored = managed.start_ptt_submission(True, "ignored")
+        for _ in range(10):
+            if ignored.done():
+                break
+            await asyncio.sleep(0)
+        assert ignored.done() and not unhandled
+        del ignored
+        gc.collect()
+        await asyncio.sleep(0)
+        assert not unhandled
+
+        awaited = managed.start_ptt_submission(True, "awaited")
+        with pytest.raises(RuntimeError, match="closed") as raised:
+            await awaited
+        assert raised.value is awaited.exception()
+        await wait_for_submission_cleanup(managed)
+        assert not fence._cancellations and not managed._settlement_tasks
+        assert not unhandled
+    finally:
+        loop.set_exception_handler(previous_handler)
+        await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_same_owner_t0_cancels_started_t1_before_ready() -> None:
+    managed, _, _, _, fence, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    t1 = managed.start_ptt_submission(True, "owner", ready=ready)
+    try:
+        assert fence._cancellations and not lane.effects
+        t0 = managed.start_ptt_submission(False, "owner")
+        release = await asyncio.wait_for(t0, 0.2)
+        assert release.outcome is ManagedTxOutcome.REJECTED
+        assert await release.wait_settlement() is None
+        with pytest.raises(asyncio.CancelledError):
+            await t1
+        ready.set_result(None)
+        await wait_for_submission_cleanup(managed)
+        assert not fence._cancellations and not managed._settlement_tasks
+        assert not lane.effects
+    finally:
+        if not ready.done():
+            ready.cancel()
+        await asyncio.gather(t1, return_exceptions=True)
+        await finish(managed)
 
 
 @pytest.mark.asyncio
