@@ -20,9 +20,10 @@ export const MAX_STAGE_SCALE = 1;
 
 /**
  * Returns the uniform scale factor that fits `native` inside `host` — the
- * shorter of the two axis ratios wins — capped at `MAX_STAGE_SCALE` so the
- * stage never grows past its authored size, and floored at `minScale` when
- * the caller declares one.
+ * shorter of the two axis ratios wins — floored at `minScale` when the
+ * caller declares one, then capped at `MAX_STAGE_SCALE`. The cap is applied
+ * LAST, so it wins: a `minScale` above `MAX_STAGE_SCALE` returns
+ * `MAX_STAGE_SCALE`, never the floor.
  *
  * With no `minScale`, the result is the unfloored fit for every input,
  * including 0 for a host that has not been measured yet (zero-size box). A
@@ -34,7 +35,11 @@ export function computeStageScale(host: StageBox, native: StageBox, minScale?: n
   const fitWidth = host.width / native.width;
   const fitHeight = host.height / native.height;
   const fit = Math.min(fitWidth, fitHeight, MAX_STAGE_SCALE);
-  return minScale === undefined ? fit : Math.max(fit, minScale);
+  if (minScale === undefined) return fit;
+  // `Math.min` outermost: flooring an already-capped fit can exceed the cap
+  // again, which is how a caller's floor above 1 would render the stage
+  // larger than its authored size.
+  return Math.min(Math.max(fit, minScale), MAX_STAGE_SCALE);
 }
 
 export interface StageOffset {

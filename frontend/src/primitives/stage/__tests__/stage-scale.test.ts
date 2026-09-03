@@ -109,6 +109,21 @@ describe('computeStageScale — the minScale floor (MOR-2259)', () => {
     expect(scale).toBe(MAX_STAGE_SCALE);
   });
 
+  it('caps a floor declared ABOVE MAX_STAGE_SCALE instead of letting it lift the stage', () => {
+    // The case above cannot see this: a 0.5 floor is below the cap, so it
+    // passes whichever order the two are applied in. Flooring last —
+    // `Math.max(Math.min(fit, MAX), minScale)` — returns the floor itself
+    // here, i.e. the stage rendered at twice its authored size, which is
+    // the guarantee `MAX_STAGE_SCALE` and `ScaledStage.svelte`'s header
+    // both state.
+    expect(computeStageScale({ width: 4000, height: 4000 }, { width: 1280, height: 540 }, 2))
+      .toBe(MAX_STAGE_SCALE);
+    // Same ordering, but with a host far too small for the fit, so the
+    // floor is the binding term before the cap rather than after it.
+    expect(computeStageScale({ width: 100, height: 100 }, { width: 1280, height: 540 }, 1.5))
+      .toBe(MAX_STAGE_SCALE);
+  });
+
   it('omitting minScale leaves the unfloored fit, to the exact value', () => {
     // The default-preservation proof: the same host/native the floored case
     // above turns into 0.5 must still be exactly 0.25 with no floor given.
