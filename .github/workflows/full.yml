@@ -2,7 +2,7 @@ name: Tests (full matrix)
 on:
   workflow_dispatch:
 jobs:
-  observed-ptt-red:
+  observed-ptt-green:
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
     env:
@@ -10,13 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 1b06c7f1aea091aff9a0eb1bc78f5b178697bd24
+          ref: 7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v8.1.0
       - name: Prepare isolated evidence and exact source
         run: |
-          test "$(git rev-parse HEAD)" = 1b06c7f1aea091aff9a0eb1bc78f5b178697bd24
-          test "$(git rev-parse HEAD^{tree})" = a33b46574f7f366d1a72fbe5d8561e8728f732e0
+          test "$(git rev-parse HEAD)" = 7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5
+          test "$(git rev-parse HEAD^{tree})" = b0decf16e8583b278524ddc1fdf8f176530163ca
           test -z "$(git status --porcelain)"
           proof_dir=$(mktemp -d "$RUNNER_TEMP/yaesu-observed-ptt.XXXXXX")
           echo "YAESU_PROOF=$proof_dir" >> "$GITHUB_ENV"
@@ -24,59 +24,39 @@ jobs:
           echo "PYTHONPYCACHEPREFIX=$proof_dir/pycache" >> "$GITHUB_ENV"
       - name: Dependencies
         run: uv sync --frozen --all-extras
-      - name: Prepare exact phase collector
+      - name: Prepare exact GREEN collector and bounded supervisor
         run: |
-          cat > "$YAESU_PROOF/yaesu_red_probe.py" <<'PY'
+          cat > "$YAESU_PROOF/yaesu_green_probe.py" <<'PY'
           import collections
           import hashlib
           import json
           import os
           from pathlib import Path
+          import signal
           import subprocess
           import sys
+          import time
           import xml.etree.ElementTree as ET
 
           import pytest
 
-          SOURCE = "1b06c7f1aea091aff9a0eb1bc78f5b178697bd24"
-          TREE = "a33b46574f7f366d1a72fbe5d8561e8728f732e0"
+          SOURCE = "7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5"
+          TREE = "b0decf16e8583b278524ddc1fdf8f176530163ca"
           BASE = "b28bd8a41d36b05a71e3ef77169345cdc8f5740b"
           ROOT = Path.cwd().resolve()
           EVIDENCE = Path(os.environ["YAESU_PROOF"])
-          FILE = "tests/test_yaesu_cat_poller.py"
-          EXPECTED = {}
-
-          def group(name, ids, message, line, marker_line):
-              for case in ids:
-                  node = FILE + "::test_canonical_ptt_" + name + "[" + case + "]"
-                  EXPECTED[node] = dict(phase="call", exception="builtins.AssertionError",
-                      file=FILE, function="test_canonical_ptt_" + name,
-                      message=message, line=line, marker_line=marker_line)
-
-          group("real_read_reaches_store_with_legacy_and_shared_ttl", [
-              "TX0-None-off-False", "TX1-None-on-True", "TX2-None-on-True",
-              "TX9-None-unknown-True", "TX0-state_map4-unknown-False",
-              "TX7-state_map5-off-False", "TX0-state_map6-on-True",
-              "TX1-state_map7-unknown-True"], "PTT_READ_PUBLICATION", 204, 204)
-          group("typed_reading_requires_strict_value", [
-              "integer-one", "valid-on", "integer-zero", "valid-off"],
-              "PTT_TYPED_READER", 239, 239)
-          group("read_error_reaches_store_even_if_later_field_fails", [
-              "False-NOTTX", "False-error1", "False-error2",
-              "True-NOTTX", "True-error1", "True-error2"],
-              "PTT_READ_ERROR_PUBLICATION", 292, 294)
-          group("transport_failure_preserves_reconnect_path", ["error0", "error1"],
-              "PTT_TRANSPORT_ERROR_PUBLICATION", 315, 317)
-          group("reconnect_discards_late_old_read", ["False"],
-              "PTT_BOUNDARY_INVALIDATION", 383, 385)
-          group("reconnect_discards_late_old_read", ["True"],
-              "PTT_BOUNDARY_PUBLICATION", 386, 391)
-          group("current_generation_held_read_publishes_after_release", ["TX0-off", "TX1-on"],
-              "PTT_CURRENT_COMPLETION_PUBLICATION", 439, 441)
-          for control in ["fixture_has_valid_non_meter_policy[False]",
-                          "fixture_has_valid_non_meter_policy[True]",
-                          "cancelled_read_does_not_emit_success"]:
-              EXPECTED[FILE + "::test_canonical_ptt_" + control] = None
+          SELECTED = ("tests/test_yaesu_cat_observation_adapter.py", "tests/test_yaesu_cat_poller.py")
+          PROJECT_MODULES = {
+              "test_yaesu_cat_observation_adapter": SELECTED[0],
+              "test_yaesu_cat_poller": SELECTED[1],
+              "rigplane.backends.yaesu_cat.radio": "src/rigplane/backends/yaesu_cat/radio.py",
+              "rigplane.backends.yaesu_cat.poller": "src/rigplane/backends/yaesu_cat/poller.py",
+              "rigplane.backends.yaesu_cat.observations": "src/rigplane/backends/yaesu_cat/observations.py",
+              "rigplane.core.tx_observation": "src/rigplane/core/tx_observation.py",
+              "rigplane.core.state_store": "src/rigplane/core/state_store.py",
+              "rigplane.core.observation_adapter": "src/rigplane/core/observation_adapter.py",
+              "rigplane.core.command_service": "src/rigplane/core/command_service.py",
+          }
 
           def save(name, value):
               (EVIDENCE / name).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
@@ -94,149 +74,146 @@ jobs:
               carrier = os.environ["GITHUB_SHA"]
               assert git("merge-base", carrier, SOURCE) == BASE
               assert git("diff", "--name-only", BASE, carrier) == ".github/workflows/full.yml"
+              tracked = git("ls-files", "-z").split("\0")
               hashes = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
-                        for name in git("ls-files", "-z").split("\0")
-                        if name.endswith(".py") or name in ("pyproject.toml", "uv.lock", "rigs/ftx1.toml")}
+                        for name in tracked if name.endswith(".py") or name in ("pyproject.toml", "uv.lock", "rigs/ftx1.toml")}
               return dict(source=head, source_tree=tree, status=status, carrier=carrier,
                           carrier_tree=git("rev-parse", carrier + "^{tree}"), common_base=BASE,
                           workflow_sha256=hashlib.sha256(subprocess.check_output(
-                              ["git", "show", carrier + ":.github/workflows/full.yml"])).hexdigest(),
-                          hashes=hashes)
+                              ["git", "show", carrier + ":.github/workflows/full.yml"])).hexdigest(), hashes=hashes)
 
           def imports():
-              records = {}
               before = json.loads((EVIDENCE / "before.json").read_text())["hashes"]
-              for name, module in sorted(sys.modules.items()):
-                  if not (name == "rigplane" or name.startswith("rigplane.") or name == "test_yaesu_cat_poller"):
-                      continue
+              records = {}
+              for name, expected_path in PROJECT_MODULES.items():
+                  module = sys.modules.get(name)
+                  assert module is not None and getattr(module, "__file__", None), name
                   path = Path(module.__file__).resolve()
-                  assert path.is_relative_to(ROOT), (name, str(path))
-                  relative = str(path.relative_to(ROOT))
-                  assert relative in before and hashlib.sha256(path.read_bytes()).hexdigest() == before[relative], (name, relative)
-                  records[name] = relative
-              required = {"test_yaesu_cat_poller", "rigplane.backends.yaesu_cat.radio",
-                          "rigplane.backends.yaesu_cat.poller", "rigplane.backends.yaesu_cat.observations",
-                          "rigplane.core.tx_observation", "rigplane.core.state_store",
-                          "rigplane.core.observation_adapter", "rigplane.core.command_service"}
-              assert required <= records.keys(), records.keys()
+                  assert path == ROOT / expected_path, (name, str(path), expected_path)
+                  assert hashlib.sha256(path.read_bytes()).hexdigest() == before[expected_path], name
+                  records[name] = expected_path
+              for name, module in sorted(sys.modules.items()):
+                  if not (name == "rigplane" or name.startswith("rigplane.")):
+                      continue
+                  path_name = getattr(module, "__file__", None)
+                  if not path_name:
+                      continue
+                  path = Path(path_name).resolve()
+                  if path.is_relative_to(ROOT):
+                      relative = str(path.relative_to(ROOT))
+                      assert relative in before and hashlib.sha256(path.read_bytes()).hexdigest() == before[relative], (name, relative)
+                      records.setdefault(name, relative)
               return records
 
           def pytest_sessionstart(session):
               assert pytest.__version__ == "9.0.2" and sys.version_info[:2] == (3, 11)
               assert sys.implementation.name == "cpython"
-              assert len(EXPECTED) == 27 and sum(site is not None for site in EXPECTED.values()) == 24
-              save("manifest.json", dict(source=SOURCE, tree=TREE, expected=EXPECTED))
               save("before.json", inventory())
-              save("runtime.json", dict(python=sys.version, executable=sys.executable,
-                   pytest=pytest.__version__, root=str(ROOT), argv=sys.argv,
-                   run_id=os.environ.get("GITHUB_RUN_ID"), run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT"),
-                   instrument_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()))
+              save("runtime.json", dict(python=sys.version, executable=sys.executable, pytest=pytest.__version__, root=str(ROOT), argv=sys.argv, run_id=os.environ.get("GITHUB_RUN_ID"), run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT"), instrument_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), selection=SELECTED, contract="complete selected modules; all collected nodes PASS"))
 
           def pytest_collectreport(report):
-              append("collection.jsonl", dict(node=report.nodeid, outcome=report.outcome))
+              append("collection.jsonl", dict(node=report.nodeid, outcome=report.outcome, longrepr=str(report.longrepr) if report.failed else None))
 
           def pytest_collection_finish(session):
-              save("collected.json", [item.nodeid for item in session.items])
+              collected = [item.nodeid for item in session.items]
+              prefixes = tuple(path + "::" for path in SELECTED)
+              assert collected and all(node.startswith(prefixes) for node in collected), collected
+              assert all(any(node.startswith(path + "::") for node in collected) for path in SELECTED), collected
+              save("manifest.json", dict(source=SOURCE, tree=TREE, selection=SELECTED, nodes=collected))
               save("imports-before.json", imports())
 
           @pytest.hookimpl(hookwrapper=True)
           def pytest_runtest_makereport(item, call):
               report = (yield).get_result()
-              row = dict(node=item.nodeid, phase=report.when, outcome=report.outcome,
-                         xfail=getattr(report, "wasxfail", None))
-              if call.excinfo is not None:
-                  last = call.excinfo.traceback[-1]
-                  row.update(exception=f"{call.excinfo.type.__module__}.{call.excinfo.type.__name__}",
-                             message=str(call.excinfo.value), path=str(Path(last.path).resolve()),
-                             line=last.lineno + 1, function=last.name)
-              append("phases.jsonl", row)
+              append("phases.jsonl", dict(node=item.nodeid, phase=report.when, outcome=report.outcome, xfail=getattr(report, "wasxfail", None), longrepr=str(report.longrepr) if report.failed else None))
+
+          def pytest_warning_recorded(warning_message, when, nodeid, location):
+              append("warnings.jsonl", dict(category=warning_message.category.__name__, message=str(warning_message.message), when=when, node=nodeid, location=location))
 
           def pytest_sessionfinish(session, exitstatus):
               save("imports-after.json", imports())
               save("session.json", dict(exitstatus=int(exitstatus)))
 
+          def execute():
+              command = ["uv", "run", "--frozen", "pytest", "-p", "yaesu_green_probe", "-q", "-o", "addopts=", "-o", f"cache_dir={EVIDENCE / 'pytest-cache'}", "--basetemp", str(EVIDENCE / "basetemp"), "--tb=short", "--color=no", "--timeout=30", "--timeout-method=thread", *SELECTED, f"--junitxml={EVIDENCE / 'green.xml'}"]
+              environment = dict(os.environ, PYTEST_ADDOPTS="", PYTHONPATH=str(EVIDENCE) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+              started = time.monotonic()
+              process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+              deadline_hit, signal_sent = False, None
+              try:
+                  output, _ = process.communicate(timeout=600)
+              except subprocess.TimeoutExpired:
+                  deadline_hit, signal_sent = True, "SIGKILL"
+                  os.killpg(process.pid, signal.SIGKILL)
+                  output, _ = process.communicate()
+              try:
+                  os.killpg(process.pid, 0)
+              except ProcessLookupError:
+                  group_absent = True
+              else:
+                  group_absent = False
+              (EVIDENCE / "green.txt").write_text(output)
+              save("supervisor.json", dict(command=command, pid=process.pid, returncode=process.returncode, elapsed_seconds=time.monotonic() - started, deadline_seconds=600, deadline_hit=deadline_hit, signal_sent=signal_sent, reaped=True, process_group_absent=group_absent, deadline_signal_boundary="unexercised" if not deadline_hit else "exercised"))
+              return process.returncode
+
           def validate():
-              before = json.loads((EVIDENCE / "before.json").read_text())
-              after = inventory()
+              before, after = json.loads((EVIDENCE / "before.json").read_text()), inventory()
               save("after.json", after)
               assert after == before, "source/carrier changed"
-              assert (EVIDENCE / "exit-code.txt").read_text().strip() == "1"
-              assert json.loads((EVIDENCE / "session.json").read_text()) == {"exitstatus": 1}
-              assert json.loads((EVIDENCE / "manifest.json").read_text()) == dict(source=SOURCE, tree=TREE, expected=EXPECTED)
+              assert (EVIDENCE / "exit-code.txt").read_text().strip() == "0"
+              assert json.loads((EVIDENCE / "session.json").read_text()) == {"exitstatus": 0}
               assert json.loads((EVIDENCE / "imports-before.json").read_text())
               assert json.loads((EVIDENCE / "imports-after.json").read_text())
-              collected = json.loads((EVIDENCE / "collected.json").read_text())
-              assert collections.Counter(collected) == collections.Counter(EXPECTED.keys()), collected
+              manifest = json.loads((EVIDENCE / "manifest.json").read_text())
+              nodes = manifest["nodes"]
+              assert manifest["selection"] == list(SELECTED) and nodes
               collection = [json.loads(line) for line in (EVIDENCE / "collection.jsonl").read_text().splitlines()]
               assert collection and all(row["outcome"] == "passed" for row in collection), collection
               phases = [json.loads(line) for line in (EVIDENCE / "phases.jsonl").read_text().splitlines()]
-              assert collections.Counter((row["node"], row["phase"]) for row in phases) == collections.Counter(
-                  (node, phase) for node in EXPECTED for phase in ("setup", "call", "teardown"))
-              for row in phases:
-                  site = EXPECTED[row["node"]] if row["phase"] == "call" else None
-                  assert row["xfail"] is None, row
-                  if site is None:
-                      assert row["outcome"] == "passed" and "exception" not in row, row
-                  else:
-                      assert row["outcome"] == "failed" and row["exception"] == site["exception"], row
-                      assert row["phase"] == site["phase"], row
-                      assert row["message"].splitlines()[0] == site["message"], row
-                      assert row["path"] == str(ROOT / site["file"]) and row["line"] == site["line"], row
-                      assert row["function"] == site["function"], row
-              xml = ET.parse(EVIDENCE / "red.xml").getroot()
-              assert not xml.findall(".//error") and not xml.findall(".//skipped")
-              wanted = {(FILE[:-3].replace("/", "."), node.split("::")[1]): site for node, site in EXPECTED.items()}
-              cases = xml.findall(".//testcase")
-              assert collections.Counter((case.get("classname"), case.get("name")) for case in cases) == collections.Counter(wanted.keys())
-              for case in cases:
-                  assert len(case.findall("failure")) == int(wanted[(case.get("classname"), case.get("name"))] is not None)
+              expected = collections.Counter((node, phase) for node in nodes for phase in ("setup", "call", "teardown"))
+              actual = collections.Counter((row["node"], row["phase"]) for row in phases)
+              assert actual == expected, (actual, expected)
+              assert all(row["outcome"] == "passed" and row["xfail"] is None and row["longrepr"] is None for row in phases), phases
+              warnings = [json.loads(line) for line in (EVIDENCE / "warnings.jsonl").read_text().splitlines()] if (EVIDENCE / "warnings.jsonl").exists() else []
+              assert not warnings, warnings
+              xml = ET.parse(EVIDENCE / "green.xml").getroot()
+              suite = xml.find("testsuite") or xml
+              assert int(suite.get("tests", "-1")) == len(nodes)
+              assert all(not xml.findall(".//" + tag) for tag in ("failure", "error", "skipped"))
+              supervisor = json.loads((EVIDENCE / "supervisor.json").read_text())
+              assert supervisor["returncode"] == 0 and supervisor["reaped"] and supervisor["process_group_absent"]
+              assert not supervisor["deadline_hit"] and supervisor["signal_sent"] is None
 
           if __name__ == "__main__":
               try:
+                  code = execute()
+                  (EVIDENCE / "exit-code.txt").write_text(str(code) + "\n")
                   validate()
               except BaseException as error:
                   save("verdict.json", dict(status="INVALID", reason=repr(error)))
                   raise
-              save("verdict.json", dict(status="EXPECTED_RED", source=SOURCE, tree=TREE,
-                   call_assertion_failures=24, passed=3))
-              print("EXPECTED RED: 24 exact CALL AssertionErrors; PASS controls: 3; errors/skips: 0")
+              save("verdict.json", dict(status="GREEN", source=SOURCE, tree=TREE, selection=SELECTED, contract="all collected nodes passed without warnings, skips, xfails, or phase errors"))
+              print("GREEN: complete selected-module collection passed; inspect manifest.json for actual node census")
           PY
-      - name: Exact source and targeted RED
+      - name: Exact source and complete GREEN selection
         run: |
-          set +e
-          PYTEST_ADDOPTS= PYTHONPATH="$YAESU_PROOF${PYTHONPATH:+:$PYTHONPATH}" uv run --frozen pytest \
-            -p yaesu_red_probe -q -o addopts= -o "cache_dir=$YAESU_PROOF/pytest-cache" \
-            --tb=short --color=no --timeout=30 --timeout-method=thread \
-            tests/test_yaesu_cat_poller.py::test_canonical_ptt_fixture_has_valid_non_meter_policy \
-            tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl \
-            tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value \
-            tests/test_yaesu_cat_poller.py::test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails \
-            tests/test_yaesu_cat_poller.py::test_canonical_ptt_transport_failure_preserves_reconnect_path \
-            tests/test_yaesu_cat_poller.py::test_canonical_ptt_cancelled_read_does_not_emit_success \
-            tests/test_yaesu_cat_poller.py::test_canonical_ptt_reconnect_discards_late_old_read \
-            tests/test_yaesu_cat_poller.py::test_canonical_ptt_current_generation_held_read_publishes_after_release \
-            --junitxml="$YAESU_PROOF/red.xml" > "$YAESU_PROOF/red.txt" 2>&1
-          result=$?
-          set -e
-          echo "$result" > "$YAESU_PROOF/exit-code.txt"
-          cat "$YAESU_PROOF/red.txt"
-      - name: Classify exact phases and structural JUnit
-        run: uv run --frozen python "$YAESU_PROOF/yaesu_red_probe.py"
+          uv run --frozen python "$YAESU_PROOF/yaesu_green_probe.py"
+          cat "$YAESU_PROOF/green.txt"
       - name: Formatting diagnostic
         if: always() && env.YAESU_PROOF != ''
         run: |
-          uv run --frozen ruff check tests/test_tx_observation.py tests/test_yaesu_cat_poller.py
-          uv run --frozen ruff format --diff tests/test_tx_observation.py tests/test_yaesu_cat_poller.py > "$YAESU_PROOF/format.diff" || true
+          uv run --frozen ruff check tests/test_yaesu_cat_observation_adapter.py tests/test_yaesu_cat_poller.py
+          uv run --frozen ruff format --diff tests/test_yaesu_cat_observation_adapter.py tests/test_yaesu_cat_poller.py > "$YAESU_PROOF/format.diff"
           cat "$YAESU_PROOF/format.diff"
       - uses: actions/upload-artifact@v4
         if: always() && env.YAESU_PROOF != ''
         with:
-          name: yaesu-observed-ptt-red
+          name: yaesu-observed-ptt-green
           path: |
             ${{ env.YAESU_PROOF }}/*.json
             ${{ env.YAESU_PROOF }}/*.jsonl
             ${{ env.YAESU_PROOF }}/*.txt
             ${{ env.YAESU_PROOF }}/*.xml
             ${{ env.YAESU_PROOF }}/*.diff
-            ${{ env.YAESU_PROOF }}/yaesu_red_probe.py
+            ${{ env.YAESU_PROOF }}/yaesu_green_probe.py
           retention-days: 14
