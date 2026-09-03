@@ -9,6 +9,9 @@ permissions:
 jobs:
   formatter:
     runs-on: [self-hosted, linux, build]
+    timeout-minutes: 10
+    env:
+      UV_PYTHON: "3.11"
     steps:
       - uses: actions/checkout@v6
         with:
