@@ -243,6 +243,88 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
   });
 });
 
+const RADIO_WIDE_CAPS = caps({
+  antennas: 1,
+  capabilities: [
+    ...DUAL, 'tuner', 'rit', 'xit', 'split', 'dual_watch',
+    'vfo_equalize', 'vfo_swap', 'speech',
+  ],
+});
+
+function radioWideState(overrides: Partial<ServerState> = {}): ServerState {
+  const base = observedState();
+  const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
+  for (const path of ['tunerStatus', 'ritOn', 'ritTx', 'ritFreq', 'txAntenna']) {
+    fieldStatus[path] = fresh;
+  }
+  return {
+    ...base,
+    tunerStatus: 0, ritOn: false, ritTx: true, ritFreq: 0, txAntenna: 1,
+    fieldStatus,
+    ...overrides,
+  } as ServerState;
+}
+
+describe('radio-wide indicators and DUAL actions are singleton contract facts (MOR-2309)', () => {
+  it('preserves one-port ANT, ATU off, false RIT and zero shared offset as known values', () => {
+    const shared = model(radioWideState(), RADIO_WIDE_CAPS).radioWideIndicators!;
+    expect(shared.antenna).toEqual({
+      reading: { status: 'known', value: 1 },
+      availability: { structural: true, operational: true },
+    });
+    expect(shared.atu.reading).toEqual({ status: 'known', value: 'off' });
+    expect(shared.ritActive.reading).toEqual({ status: 'known', value: false });
+    expect(shared.ritOffset.reading).toEqual({ status: 'known', value: 0 });
+    expect(shared.xitActive.reading).toEqual({ status: 'known', value: true });
+    expect(shared.xitOffset.reading).toEqual({ status: 'known', value: 0 });
+  });
+
+  it.each([
+    ['missing', (statuses: Record<string, FieldStatus>) => { delete statuses.ritFreq; }],
+    ['unobserved', (statuses: Record<string, FieldStatus>) => {
+      statuses.ritFreq = { ...fresh, observed: false };
+    }],
+    ['stale', (statuses: Record<string, FieldStatus>) => { statuses.ritFreq = stale; }],
+  ] as const)('%s shared leaf remains unknown', (_label, mutate) => {
+    const state = radioWideState();
+    const fieldStatus = { ...state.fieldStatus } as Record<string, FieldStatus>;
+    mutate(fieldStatus);
+    const shared = model({ ...state, fieldStatus }, RADIO_WIDE_CAPS).radioWideIndicators!;
+    expect(shared.ritOffset.reading).toEqual({ status: 'unknown' });
+    expect(shared.xitOffset.reading).toEqual({ status: 'unknown' });
+    expect(shared.ritOffset.availability.operational).toBe(false);
+  });
+
+  it('derives action structural/operational gates from the real topology and facts', () => {
+    const actions = model(radioWideState(), RADIO_WIDE_CAPS).radioWideIndicators!.actions;
+    expect(actions).toEqual({
+      main: { structural: true, operational: true },
+      sub: { structural: true, operational: true },
+      equalize: { structural: true, operational: true },
+      swap: { structural: true, operational: true },
+      split: { structural: true, operational: true },
+      dualWatch: { structural: true, operational: true },
+      speak: { structural: true, operational: true },
+    });
+
+    const unavailableSub = model(
+      radioWideState(),
+      { ...RADIO_WIDE_CAPS, capabilities: RADIO_WIDE_CAPS.capabilities.filter((tag) => tag !== 'dual_rx') },
+    ).radioWideIndicators!.actions;
+    expect(unavailableSub.main).toEqual({ structural: true, operational: true });
+    expect(unavailableSub.sub).toEqual({ structural: true, operational: false });
+    expect(unavailableSub.dualWatch).toEqual({ structural: false, operational: false });
+  });
+
+  it('removes unsupported actions instead of publishing fake-enabled controls', () => {
+    const noActions = model(
+      radioWideState(),
+      caps({ vfoScheme: 'single', receivers: 1, antennas: 1, capabilities: ['tx'] }),
+    ).radioWideIndicators!.actions;
+    expect(Object.values(noActions).every((entry) => !entry.structural && !entry.operational)).toBe(true);
+  });
+});
+
 describe('topology is derived from real capabilities', () => {
   it.each(Object.keys(TOPOLOGY_CAPS))('%s is reachable and validator-clean', (id) => {
     const view = model(observedState(), TOPOLOGY_CAPS[id]);
@@ -727,7 +809,7 @@ describe('the emitted model carries only contract data', () => {
     // The validator rejects extra keys, so this is belt-and-braces on shape.
     expect(Object.keys(view).sort()).toEqual([
       'activeReceiver', 'disabledReasons', 'dualWatch', 'receiverIndicators',
-      'scope', 'scopeControls', 'split',
+      'radioWideIndicators', 'scope', 'scopeControls', 'split',
       'topologyId', 'txPermit', 'txTarget', 'vfoScheme', 'vfos',
     ]);
   });

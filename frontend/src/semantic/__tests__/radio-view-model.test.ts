@@ -61,6 +61,53 @@ describe('validateRadioViewModel', () => {
     })).toThrow(TypeError);
   });
 
+  const fact = <T>(value: T, structural = true, operational = true) => ({
+    reading: operational ? { status: 'known' as const, value } : { status: 'unknown' as const },
+    availability: { structural, operational },
+  });
+
+  const radioWideIndicators = () => ({
+    antenna: fact(1),
+    atu: fact<'off' | 'on' | 'tuning'>('off'),
+    ritActive: fact(false), ritOffset: fact(0),
+    xitActive: fact(true), xitOffset: fact(0),
+    actions: {
+      main: { structural: true, operational: true },
+      sub: { structural: true, operational: false },
+      equalize: { structural: true, operational: true },
+      swap: { structural: true, operational: true },
+      split: { structural: true, operational: true },
+      dualWatch: { structural: true, operational: false },
+      speak: { structural: false, operational: false },
+    },
+  });
+
+  it('round-trips the singleton radio-wide contract without collapsing false or zero', () => {
+    const model = validateRadioViewModel({
+      ...valid(), radioWideIndicators: radioWideIndicators(),
+    });
+    expect(model.radioWideIndicators?.antenna.reading).toEqual({ status: 'known', value: 1 });
+    expect(model.radioWideIndicators?.ritActive.reading).toEqual({ status: 'known', value: false });
+    expect(model.radioWideIndicators?.ritOffset.reading).toEqual({ status: 'known', value: 0 });
+    expect(model.radioWideIndicators?.actions.sub).toEqual({ structural: true, operational: false });
+  });
+
+  it('rejects undeclared radio-wide fields and malformed action availability', () => {
+    expect(() => validateRadioViewModel({
+      ...valid(), radioWideIndicators: { ...radioWideIndicators(), rawState: {} },
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(),
+      radioWideIndicators: {
+        ...radioWideIndicators(),
+        actions: {
+          ...radioWideIndicators().actions,
+          speak: { structural: 'yes', operational: true },
+        },
+      },
+    })).toThrow(TypeError);
+  });
+
   it('accepts an unknown txTarget with its reason preserved', () => {
     const model = {
       ...valid(),
