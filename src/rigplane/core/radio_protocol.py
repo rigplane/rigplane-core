@@ -94,6 +94,7 @@ __all__ = [
     "AdvancedControlCapable",
     "DspControlCapable",
     "AntennaControlCapable",
+    "AttenuatorObservationProjectable",
     "CwControlCapable",
     "VoiceControlCapable",
     "SystemControlCapable",
@@ -1682,6 +1683,15 @@ class DspControlCapable(Protocol):
 
     async def get_nb_width(self, receiver: int = 0) -> int:
         """Get NB width (0-255)."""
+        ...
+
+
+@runtime_checkable
+class AttenuatorObservationProjectable(Protocol):
+    """Optional projection from a bound ATT input to its observation value."""
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        """Project an already-bound integer without validation or I/O."""
         ...
 
 
