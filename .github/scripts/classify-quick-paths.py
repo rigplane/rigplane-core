@@ -14,17 +14,6 @@ from typing import Sequence
 
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
-DOC_SUFFIXES = {".md", ".rst"}
-DOC_EXACT = {
-    ".github/scripts/doc-citation-baseline.txt",
-    ".github/scripts/doc-citation-dangling-baseline.txt",
-    ".github/scripts/doc-link-baseline.txt",
-    "AUTHORS",
-    "COPYING",
-    "LICENSE",
-    "LICENSE.txt",
-    "NOTICE",
-}
 CI_EXACT = {"tests/test_ci_path_filters.py"}
 CORE_EXACT = {"pyproject.toml", "uv.lock", ".importlinter"}
 
@@ -41,11 +30,20 @@ def _parts(path: str) -> tuple[str, ...]:
 
 
 def is_documentation(path: str) -> bool:
-    parts = _parts(path)
-    suffix = PurePosixPath(path).suffix.lower()
-    return (
-        parts[0] in {"docs", ".claude"} or suffix in DOC_SUFFIXES or path in DOC_EXACT
+    _parts(path)
+    module = Path(__file__).with_name("docs-only-paths.js")
+    completed = subprocess.run(
+        ["node", "-e", "const p=require(process.argv[1]); process.stdout.write(JSON.stringify(p.isDocumentation(process.argv[2])));", str(module), path],
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    if completed.returncode != 0:
+        raise ClassificationError("trusted documentation predicate failed")
+    try:
+        return bool(json.loads(completed.stdout))
+    except json.JSONDecodeError as exc:
+        raise ClassificationError("trusted documentation predicate returned invalid JSON") from exc
 
 
 def is_ci_control(path: str) -> bool:
@@ -76,12 +74,15 @@ def classify(paths: Sequence[str]) -> dict[str, bool]:
     normalized = list(dict.fromkeys(paths))
     if not normalized:
         raise ClassificationError("the exact diff contains no changed paths")
-    return {
+    result = {
         "core": any(is_core(path) for path in normalized),
         "frontend": any(is_frontend(path) for path in normalized),
         "ci": any(is_ci_control(path) for path in normalized),
         "docs": all(is_documentation(path) for path in normalized),
     }
+    if not result["docs"] and not any(result[name] for name in ("core", "frontend", "ci")):
+        raise ClassificationError("non-documentation diff selected no substantive quick class")
+    return result
 
 
 def _ensure_commit(repo: Path, sha: str) -> None:

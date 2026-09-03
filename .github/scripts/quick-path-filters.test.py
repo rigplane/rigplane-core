@@ -18,6 +18,7 @@ SPEC.loader.exec_module(CLASSIFIER)
 
 QUICK_YML = ROOT / ".github" / "workflows" / "quick.yml"
 DOCS_QUICK_YML = ROOT / ".github" / "workflows" / "docs-only-quick.yml"
+DOCS_PATHS_JS = ROOT / ".github" / "scripts" / "docs-only-paths.js"
 VISUAL_YML = ROOT / ".github" / "workflows" / "visual.yml"
 DOC_CITATION_YML = ROOT / ".github" / "workflows" / "doc-citation-gate.yml"
 REBRAND_YML = ROOT / ".github" / "workflows" / "rebrand-gate.yml"
@@ -36,7 +37,7 @@ class QuickPathFilterContractTest(unittest.TestCase):
         return "\n".join(lines)
 
     def run_docs_quick_script(
-        self, *, heads: list[str], files: list[dict[str, str]]
+        self, *, heads: list[str], files: list[dict[str, str]], changed_files: int | None = None
     ) -> dict[str, object]:
         runner = r"""
 const script = process.argv[1];
@@ -47,10 +48,11 @@ const github = {
   paginate: async () => scenario.files,
   rest: {
     pulls: {
-      get: async () => ({data: {head: {sha: scenario.heads.shift()}}}),
+      get: async () => ({data: {head: {sha: scenario.heads.shift()}, changed_files: scenario.changedFiles}}),
       listFiles: async () => undefined,
     },
     repos: {
+      getContent: async () => ({data: {type: 'file', encoding: 'base64', content: Buffer.from(require('fs').readFileSync('.github/scripts/docs-only-paths.js')).toString('base64')}}),
       createCommitStatus: async (status) => statuses.push(status),
     },
   },
@@ -73,7 +75,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 "-e",
                 runner,
                 self.docs_quick_script(),
-                json.dumps({"heads": heads, "files": files}),
+                json.dumps({"heads": heads, "files": files, "changedFiles": len(files) if changed_files is None else changed_files}),
             ],
             check=True,
             capture_output=True,
@@ -100,7 +102,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         for name, paths in cases.items():
             with self.subTest(name=name):
                 self.assert_docs_only(paths)
-        for path in ("README.MD", "docs/guide.RsT"):
+        for path in ("README.MD", "docs/guide.RsT", "mkdocs.yml"):
             with self.subTest(path=path):
                 self.assert_docs_only([path])
 
@@ -127,6 +129,9 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 self.assertRaises(CLASSIFIER.ClassificationError),
             ):
                 CLASSIFIER.classify([unsafe])
+        for unknown in ("CODEOWNERS", ".gitignore"):
+            with self.subTest(unknown=unknown), self.assertRaises(CLASSIFIER.ClassificationError):
+                CLASSIFIER.classify([unknown])
 
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
@@ -148,6 +153,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
     def test_docs_only_quick_status_is_api_only_and_quick_ignores_docs(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         docs_quick = DOCS_QUICK_YML.read_text(encoding="utf-8")
+        docs_paths = DOCS_PATHS_JS.read_text(encoding="utf-8")
         for pattern in (
             '      - "docs/**"',
             '      - ".claude/**"',
@@ -171,6 +177,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             '      - "LICENSE"',
             '      - "LICENSE.txt"',
             '      - "NOTICE"',
+            '      - "mkdocs.yml"',
         ):
             with self.subTest(pattern=pattern):
                 self.assertEqual(quick.count(pattern), 2)
@@ -183,14 +190,16 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "LICENSE",
             "LICENSE.txt",
             "NOTICE",
+            "mkdocs.yml",
         ):
             with self.subTest(exact=exact):
-                self.assertIn(f"'{exact}'", docs_quick)
+                self.assertIn(f'"{exact}"', docs_paths)
         self.assertIn("github.rest.pulls.listFiles", docs_quick)
         self.assertIn("github.paginate", docs_quick)
         self.assertIn("github.rest.repos.createCommitStatus", docs_quick)
-        self.assertIn("files.length === 0 || !files.every", docs_quick)
-        self.assertIn("previous_filename === undefined", docs_quick)
+        self.assertIn("files.length !== changedFiles", docs_quick)
+        self.assertIn("changedFiles >= 3000", docs_quick)
+        self.assertIn("docs-only-paths.js", docs_quick)
         self.assertIn("currentPull.head.sha !== headSha", docs_quick)
         self.assertIn("sha: headSha", docs_quick)
         self.assertNotIn("sha: github.sha", docs_quick)
@@ -225,6 +234,15 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         )
         self.assertEqual(raced["statuses"], [])
         self.assertIn("head changed", raced["info"][0])
+
+        incomplete = self.run_docs_quick_script(
+            heads=[initial_head], files=[{"filename": "docs/guide.md"}], changed_files=2
+        )
+        self.assertEqual(incomplete["statuses"], [])
+        capped = self.run_docs_quick_script(
+            heads=[initial_head], files=[{"filename": "docs/guide.md"}], changed_files=3000
+        )
+        self.assertEqual(capped["statuses"], [])
 
     def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
         citation = DOC_CITATION_YML.read_text(encoding="utf-8")

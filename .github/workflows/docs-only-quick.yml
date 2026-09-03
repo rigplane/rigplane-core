@@ -28,38 +28,29 @@ jobs:
               pull_number: pullNumber,
             });
             const headSha = initialPull.head.sha;
+            const changedFiles = initialPull.changed_files;
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner,
               repo,
               pull_number: pullNumber,
               per_page: 100,
             });
-            const documentationExact = new Set([
-              '.github/scripts/doc-citation-baseline.txt',
-              '.github/scripts/doc-citation-dangling-baseline.txt',
-              '.github/scripts/doc-link-baseline.txt',
-              'AUTHORS',
-              'COPYING',
-              'LICENSE',
-              'LICENSE.txt',
-              'NOTICE',
-            ]);
-            const isDocumentation = (filename) => {
-              if (typeof filename !== 'string') return false;
-              const parts = filename.split('/');
-              const suffix = filename.slice(filename.lastIndexOf('.')).toLowerCase();
-              return (
-                parts[0] === 'docs' ||
-                parts[0] === '.claude' ||
-                suffix === '.md' ||
-                suffix === '.rst' ||
-                documentationExact.has(filename)
-              );
-            };
-            const isDocumentationFile = ({filename, previous_filename}) =>
-              isDocumentation(filename) &&
-              (previous_filename === undefined || isDocumentation(previous_filename));
-            if (files.length === 0 || !files.every(isDocumentationFile)) {
+            if (!Number.isSafeInteger(changedFiles) || changedFiles <= 0 || changedFiles >= 3000 || files.length !== changedFiles) {
+              core.info('Documentation file enumeration is incomplete; no status was published.');
+              return;
+            }
+            const {data: predicateFile} = await github.rest.repos.getContent({
+              owner, repo, path: '.github/scripts/docs-only-paths.js', ref: '${{ github.workflow_sha }}',
+            });
+            if (Array.isArray(predicateFile) || predicateFile.type !== 'file' || predicateFile.encoding !== 'base64' || typeof predicateFile.content !== 'string') {
+              throw new Error('Trusted docs-only predicate content is invalid.');
+            }
+            const predicateModule = {exports: {}};
+            new Function('module', 'exports', Buffer.from(predicateFile.content, 'base64').toString('utf8'))(predicateModule, predicateModule.exports);
+            if (typeof predicateModule.exports.allDocumentationFiles !== 'function') {
+              throw new Error('Trusted docs-only predicate export is invalid.');
+            }
+            if (!predicateModule.exports.allDocumentationFiles(files)) {
               core.info('Not a documentation-only pull request; quick.yml owns the required context.');
               return;
             }
