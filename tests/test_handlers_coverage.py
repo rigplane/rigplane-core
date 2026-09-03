@@ -14,6 +14,8 @@ from rigplane.audio.bus import AudioBus
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles import resolve_radio_profile
 from rigplane.audio.route import AudioConfigSource, AudioStreamContract
+from rigplane.core.command_dispatch import CommandUnsupportedError
+from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_protocol import AudioCapable
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -51,7 +53,6 @@ from rigplane.web.radio_poller import (
     SelectVfo,
     SetAgc,
     SetAgcTimeConstant,
-    SetAttenuator,
     SetAutoNotch,
     SetBand,
     SetCompressor,
@@ -199,6 +200,7 @@ def _capable_radio() -> SimpleNamespace:
         stop_cw_text=AsyncMock(),
         set_attenuator=AsyncMock(),
         set_attenuator_level=AsyncMock(),
+        project_attenuator_observation_value=lambda db: int(db),
         get_attenuator_level=AsyncMock(return_value=0),
         set_preamp=AsyncMock(),
         get_preamp=AsyncMock(return_value=0),
@@ -335,6 +337,31 @@ class _QueueRecorder:
                 "command_service": command_service,
             }
         )
+
+
+class _AttenuatorIngressRadio:
+    def __init__(
+        self,
+        *,
+        model: str = "IC-7610",
+        projection: object = None,
+        admitted_receiver: int | None = 0,
+    ) -> None:
+        self.profile = resolve_radio_profile(model=model)
+        self.model = self.profile.model
+        self.capabilities = set(self.profile.capabilities)
+        self.projection_calls: list[int] = []
+        self.support_calls: list[tuple[str, int | None]] = []
+        self._projection = projection if projection is not None else (lambda db: db)
+        self._admitted_receiver = admitted_receiver
+
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
+        self.support_calls.append((command, receiver))
+        return receiver == self._admitted_receiver
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        self.projection_calls.append(db)
+        return self._projection(db)
 
 
 def _assert_canonical_level_intent(
@@ -606,15 +633,15 @@ def _scope_frame() -> ScopeFrame:
         (
             "set_att",
             {"db": 12, "receiver": 1},
-            SetAttenuator,
-            {"db": 12, "receiver": 1},
+            CommandIntent,
+            {"db": 12, "att": 12, "receiver": 1},
             {"db": 12, "receiver": 1},
         ),
         (
             "set_attenuator",
             {"db": 12, "receiver": 1},
-            SetAttenuator,
-            {"db": 12, "receiver": 1},
+            CommandIntent,
+            {"db": 12, "att": 12, "receiver": 1},
             {"db": 12, "receiver": 1},
         ),
         (
@@ -804,6 +831,14 @@ async def test_enqueue_command_variants(
     assert len(queue.items) == 1
     cmd = queue.items[0]
     if expected_type is CommandIntent:
+        if name in ("set_att", "set_attenuator"):
+            assert cmd.name == "set_attenuator_level"
+            for key, value in expected_attrs.items():
+                assert cmd.params[key] == value
+            assert cmd.target == FieldPath.receiver(
+                str(expected_attrs["receiver"]), "operator_controls", "att"
+            )
+            return
         field = {
             "set_af_level": "af_level",
             "set_rf_gain": "rf_gain",
@@ -819,6 +854,132 @@ async def test_enqueue_command_variants(
     assert isinstance(cmd, expected_type)
     for key, value in expected_attrs.items():
         assert getattr(cmd, key) == value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "params", "expected_db"),
+    [
+        ("set_att", {"level": 20, "db": 3, "receiver": 0}, 20),
+        ("set_attenuator", {"db": 6, "receiver": 0}, 6),
+        ("set_att", {"level": 3, "receiver": 0}, 3),
+        ("set_attenuator", {"receiver": 0}, 0),
+        ("set_att", {"value": 99, "receiver": 0}, 0),
+    ],
+    ids=("level-wins", "db-only", "level-only", "missing-defaults-zero", "value-only"),
+)
+async def test_att_web_aliases_bind_one_canonical_intent(
+    name: str, params: dict[str, object], expected_db: int
+) -> None:
+    queue = _QueueRecorder()
+    radio = _AttenuatorIngressRadio()
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    result = await handler._enqueue_command(name, params)
+
+    assert result == {"db": expected_db, "receiver": 0}
+    assert len(queue.items) == 1
+    intent = queue.items[0]
+    assert isinstance(intent, CommandIntent)
+    assert intent.name == "set_attenuator_level"
+    assert intent.params["db"] == expected_db
+    assert intent.params["att"] == expected_db
+    assert intent.params["receiver"] == 0
+    assert intent.target == FieldPath.receiver("0", "operator_controls", "att")
+    assert radio.projection_calls == [expected_db]
+    assert radio.support_calls == [("set_attenuator_level", 0)]
+    assert queue.metadata[0]["future"] is None
+
+
+@pytest.mark.asyncio
+async def test_att_web_projection_uses_provider_native_expectation() -> None:
+    queue = _QueueRecorder()
+    radio = _AttenuatorIngressRadio(model="FTX-1", projection=lambda db: int(db > 0))
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    result = await handler._enqueue_command("set_attenuator", {"db": 20})
+
+    assert result == {"db": 20, "receiver": 0}
+    intent = queue.items[0]
+    assert isinstance(intent, CommandIntent)
+    assert intent.params["db"] == 20
+    assert intent.params["att"] == 1
+    assert type(intent.params["att"]) is int
+    assert radio.projection_calls == [20]
+    service = handler._command_service  # noqa: SLF001
+    session_id = intent.params.get("session_id")
+    assert intent.source == "websocket"
+    assert isinstance(session_id, str)
+    overlays = service.pending_overlays(
+        source=intent.source,
+        session_id=session_id,
+        command_id=intent.id,
+        path=intent.target,
+    )
+    expectations = service.readback_expectations(
+        source=intent.source,
+        session_id=session_id,
+        command_id=intent.id,
+    )
+    assert len(overlays) == 1
+    assert len(expectations) == 1
+    for item in (*overlays, *expectations):
+        assert item.source == intent.source
+        assert item.session_id == session_id
+        assert item.command_id == intent.id
+        assert item.path == intent.target
+        assert type(item.value) is int
+        assert item.value == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "projection",
+    [None, lambda db: True, lambda db: 1.0],
+    ids=("missing", "bool-result", "float-result"),
+)
+async def test_att_web_refuses_missing_or_non_integer_projection(
+    projection: object,
+) -> None:
+    queue = _QueueRecorder()
+    radio = _AttenuatorIngressRadio(projection=projection)
+    if projection is None:
+        radio.project_attenuator_observation_value = None
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    with pytest.raises(CommandError):
+        await handler._enqueue_command("set_att", {"db": 20})
+
+    assert queue.items == []
+    assert handler._command_service.lifecycle_events() == ()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_att_web_explicit_none_receiver_fails_before_enqueue() -> None:
+    queue = _QueueRecorder()
+    handler = _control_handler(
+        radio=_AttenuatorIngressRadio(), server=SimpleNamespace(command_queue=queue)
+    )
+
+    with pytest.raises(TypeError):
+        await handler._enqueue_command("set_att", {"db": 20, "receiver": None})
+
+    assert queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_att_web_sub_refusal_happens_before_queue_effects() -> None:
+    queue = _QueueRecorder()
+    radio = _AttenuatorIngressRadio(model="FTX-1", admitted_receiver=0)
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
+
+    with pytest.raises(CommandUnsupportedError):
+        await handler._enqueue_command("set_att", {"db": 20, "receiver": 1})
+
+    assert queue.items == []
+    assert radio.projection_calls == []
+    assert radio.support_calls == [("set_attenuator_level", 1)]
+    assert handler._command_service.lifecycle_events() == ()  # noqa: SLF001
 
 
 @pytest.mark.asyncio
