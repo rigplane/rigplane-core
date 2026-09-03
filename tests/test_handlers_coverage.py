@@ -49,7 +49,6 @@ from rigplane.web.radio_poller import (
     QuickDwTrigger,
     QuickSplitTrigger,
     SelectVfo,
-    SetAfLevel,
     SetAgc,
     SetAgcTimeConstant,
     SetAttenuator,
@@ -83,7 +82,6 @@ from rigplane.web.radio_poller import (
     SetPbtOuter,
     SetPower,
     SetPreamp,
-    SetRfGain,
     SetRitFrequency,
     SetRitStatus,
     SetRitTxStatus,
@@ -92,7 +90,6 @@ from rigplane.web.radio_poller import (
     SetScopeVbw,
     SetSplit,
     Speak,
-    SetSquelch,
     SetVox,
     SwitchScopeReceiver,
     VfoEqualize,
@@ -322,6 +319,7 @@ class _QueueRecorder:
         self,
         item: object,
         *,
+        future: asyncio.Future[None] | None = None,
         command_id: str | None = None,
         source: str | None = None,
         session_id: str | None = None,
@@ -330,6 +328,7 @@ class _QueueRecorder:
         self.items.append(item)
         self.metadata.append(
             {
+                "future": future,
                 "command_id": command_id,
                 "source": source,
                 "session_id": session_id,
