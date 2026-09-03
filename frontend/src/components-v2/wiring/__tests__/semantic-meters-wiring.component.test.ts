@@ -337,22 +337,42 @@ describe('meter TX relevance follows the App TX authority and nothing else', () 
 
   // MUTATION KILLED: any second derivation — a surface that computed relevance
   // itself would not move when the ONLY thing that changed is the authority.
+  //
+  // `swr` is deliberately absent from the `[data-meter-tile]` loop below
+  // (MOR-2250 PR 2): it no longer has its own tile — it renders on the
+  // S-meter's shared bar (`data-testid="meter-signal"`'s `<svg
+  // data-lower-fault>`), whose own `data-relevant` is the S-meter's, not
+  // SWR's. `relevance()` can't see it because there's no `[data-meter-tile]`
+  // for it to read; the composed-tree "no second derivation" guarantee for
+  // SWR specifically is re-asserted just below instead, through the real
+  // rendered `data-lower-fault` attribute on the same mounted tree — not a
+  // unit-level mock. (`MetersSurface.test.ts` and
+  // `LinearSMeter.lower-scale.test.ts` separately cover the fault VALUE
+  // logic at the unit level; this block only needs to prove the composed
+  // tree wires the same authority through to this DOM location.)
   it('flips every TX-gated meter when the App authority says the radio is transmitting', () => {
     render();
     expect(rfState()).toBe('receiving');
     const rx = relevance();
     expect(rx.signal).toBe('true');
     expect(rx.power).toBe('false');
+    expect(q<SVGSVGElement>('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
 
     push({ radioTx: 'on', txRisk: 'confirmed-on', phase: 'active', mayOwnKey: true });
     expect(rfState()).toBe('transmitting');
     const tx = relevance();
     expect(tx.signal).toBe('false');
-    for (const field of ['power', 'swr', 'alc', 'drainCurrent', 'compression']) {
+    for (const field of ['power', 'alc', 'drainCurrent', 'compression']) {
       expect(tx[field]).toBe('true');
     }
     // Vd is the station supply rail, relevant in every RF state.
     expect(tx.drainVoltage).toBe('true');
+    // SWR's own relevance flip reaches the shared bar's `data-lower-fault`
+    // through the same real authority chain — still `'false'` here (no fault
+    // condition set up in this scenario), but present and boolean-valued,
+    // proving the composed tree actually renders it rather than losing the
+    // attribute entirely once SWR left the `[data-meter-tile]` loop.
+    expect(q<SVGSVGElement>('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
   });
 
   // MUTATION KILLED: collapsing 'uncertain' onto 'receiving' — the boolean
