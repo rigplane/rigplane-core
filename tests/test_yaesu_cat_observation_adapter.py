@@ -215,6 +215,7 @@ class _SideEffectingYaesuRadio:
         "vox",
         "compressor",
         "rit",
+        "xit",
         "tuner",
         "dial_lock",
         "cw",
