@@ -5,6 +5,7 @@ import pytest
 
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
@@ -23,6 +24,88 @@ async def finish(managed: ManagedTxAuthority) -> None:
     if state.release_required or state.intent.kind is not ManagedTxIntentKind.RX:
         await managed.force_off()
     await managed.close()
+
+
+class MembershipAck(asyncio.Future[None]):
+    def __init__(self, fence: TxAbortFence, owner: str) -> None:
+        super().__init__()
+        self._fence = fence
+        self._owner = owner
+
+    def set_result(self, result: None) -> None:
+        assert any(
+            scope == self._owner
+            for _cancellation, scope in self._fence._cancellations.values()
+        )
+        super().set_result(result)
+
+
+@pytest.mark.asyncio
+async def test_ptt_registration_ack_precedes_ready_and_closes_owner_cancel_race() -> (
+    None
+):
+    managed, _, _, _, fence, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    registered = MembershipAck(fence, "owner")
+    admission = asyncio.create_task(
+        managed.submit_ptt(
+            True,
+            "owner",
+            ready=ready,
+            _registered=registered,
+        )
+    )
+    try:
+        await asyncio.wait_for(asyncio.shield(registered), 0.2)
+        assert not ready.done() and not admission.done() and not lane.effects
+
+        release = await asyncio.wait_for(managed.submit_ptt(False, "owner"), 0.2)
+        assert release.outcome is ManagedTxOutcome.REJECTED
+        assert await release.wait_settlement() is None
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(admission, 0.2)
+        assert not lane.effects
+    finally:
+        ready.cancel()
+        await asyncio.gather(admission, return_exceptions=True)
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_ptt_registration_ack_settles_on_pre_registration_error() -> None:
+    managed, _, _, _, _, _ = authority()
+    registered = asyncio.get_running_loop().create_future()
+    try:
+        with pytest.raises(TypeError) as submission_error:
+            await managed.submit_ptt(  # type: ignore[arg-type]
+                True,
+                7,
+                _registered=registered,
+            )
+        with pytest.raises(TypeError) as registration_error:
+            await registered
+        assert registration_error.value is submission_error.value
+    finally:
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_ptt_registration_ack_settles_on_pre_registration_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    managed, _, _, _, _, _ = authority()
+    registered = asyncio.get_running_loop().create_future()
+
+    def cancel_before_registration(*_args: object, **_kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(managed, "_begin_ptt_operation", cancel_before_registration)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await managed.submit_ptt(True, "owner", _registered=registered)
+        assert registered.cancelled()
+    finally:
+        await finish(managed)
 
 
 @pytest.mark.asyncio
