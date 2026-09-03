@@ -318,7 +318,7 @@ jobs:
         run: |
           uv --version | tee "$ARTIFACT_DIR/uv-version.txt"
           uv python install 3.11
-          uv sync --locked --all-extras \
+          uv sync --locked --all-extras --no-install-project \
             > "$ARTIFACT_DIR/install.stdout.log" 2> "$ARTIFACT_DIR/install.stderr.log"
           uv run --no-sync ruff --version | tee "$ARTIFACT_DIR/ruff-version.txt"
 
