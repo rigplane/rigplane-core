@@ -386,6 +386,48 @@ async def test_write_currency_is_checked_after_stale_drain(
         await _finish_exchanges(transport, (stream,), tasks)
 
 
+async def test_managed_actuator_forwards_live_currency_to_final_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, stream)
+    radio = RigctldClientRadio(host="127.0.0.1", transport=transport)
+    entered, release = asyncio.Event(), asyncio.Event()
+    current, tasks = [True], []
+    drain = transport._drain_stale
+
+    async def delayed_drain(*args) -> None:
+        entered.set()
+        await release.wait()
+        await drain(*args)
+
+    monkeypatch.setattr(transport, "_drain_stale", delayed_drain)
+    stream.responses.put_nowait(b"RPRT 0\n")
+    try:
+        assert callable(radio.actuate)
+        lane = ManagedTxEffectLane(radio)
+        tasks.append(
+            asyncio.create_task(
+                lane.settle(
+                    ManagedTxEffect(
+                        ActuationOperation.PTT_ON, EffectToken(7, 3, "on")
+                    ),
+                    deadline_monotonic=asyncio.get_running_loop().time() + 3,
+                    is_current=lambda: current[0],
+                )
+            )
+        )
+        await _exchange_progress(tasks[0], entered)
+        current[0] = False
+        release.set()
+        result = await asyncio.wait_for(tasks[0], 1)
+        assert stream.writes == [] and stream.closes == 0 and transport.connected
+        assert result.result is ActuationResult.UNCERTAIN
+    finally:
+        release.set()
+        await _finish_exchanges(transport, (stream,), tasks)
+
+
 async def test_tokened_queue_cannot_retarget_or_drain_replacement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
