@@ -339,9 +339,9 @@ class ManagedTxAuthority:
             if intent.name in _ANTENNA_WRITE_NAMES:
                 return False
             if intent.name == "set_tuner_status":
-                return intent.params.get("value") == 0
+                return intent.params.get("value") != 0
             if intent.name == "set_func" and intent.params.get("func") == "TUNER":
-                return intent.params.get("on") is False
+                return intent.params.get("on") is not False
             return True
 
     def is_effect_current(
