@@ -273,10 +273,12 @@ class Radio(Protocol):
         through their own backend command inventory.
 
         ``receiver=None`` retains name-only support. An explicit receiver
-        opts into target admission for ``set_af_level``, ``set_rf_gain`` and
-        ``set_squelch``: it must be an integer (not bool) in the provider's
-        topology with an executable write route. Other commands return False
-        for this opt-in query; their name-only support is unchanged.
+        opts into target admission for ``set_af_level``, ``set_rf_gain``,
+        ``set_squelch`` and ``set_attenuator_level``: it must be an integer
+        (not bool) in the provider's topology with an executable write route.
+        This is structural eligibility, not current-frequency applicability.
+        Other commands return False for this opt-in query; their name-only
+        support is unchanged.
         """
         ...
 

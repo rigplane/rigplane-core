@@ -738,12 +738,21 @@ class YaesuCatRadio:
             "set_af_level",
             "set_rf_gain",
             "set_squelch",
+            "set_attenuator_level",
         }:
             return False
         try:
             key = self._receiver_level_write_key(command, receiver)
         except (TypeError, ValueError):
             return False
+        if command == "set_attenuator_level":
+            if (
+                receiver != 0
+                or not self.profile.supports_capability("attenuator")
+                or not callable(getattr(self, "set_attenuator", None))
+            ):
+                return False
+            key = "set_attenuator"
         return self._has_write_command(key)
 
     def _receiver_level_write_key(self, command: str, receiver: int) -> str:
