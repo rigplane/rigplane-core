@@ -1156,7 +1156,7 @@ def _nudge_filter(width: int) -> int:
     Two encodings share this check:
 
     * Discrete *table index* (FTX-1, ``width <= 30``, valid range 0-23): pick a
-      different in-range index by stepping toward the middle of the range. The
+      different index by adding or subtracting five without going negative. The
       old ``width + 200`` produced an out-of-range index (e.g. 19 -> 219) that
       the radio silently ignored, so the check falsely reported "did not react".
     * Width in *Hz* (Icom, ``width > 30``): keep the historical ±200 Hz nudge.

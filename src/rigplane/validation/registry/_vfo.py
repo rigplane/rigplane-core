@@ -17,7 +17,6 @@ from rigplane.validation.registry._types import CheckKind, CheckSpec, ValueRule
 from rigplane.validation.schema import FailureDomain, ValidationLevel
 
 CHECKS: tuple[CheckSpec, ...] = (
-    # split.set
     CheckSpec(
         check_id="split.set",
         capability="split",
@@ -50,7 +49,6 @@ CHECKS: tuple[CheckSpec, ...] = (
         hamlib_token=None,
         tx_adjacent=False,
     ),
-    # dual_watch.set
     CheckSpec(
         check_id="dual_watch.set",
         capability="dual_watch",

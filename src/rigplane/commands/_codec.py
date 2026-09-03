@@ -9,15 +9,7 @@ from typing import Any, Sequence
 
 
 def _level_bcd_encode(value: int) -> bytes:
-    """Encode a 0-255 level as 2-byte BCD (0x00 0x00 to 0x02 0x55).
-
-    Each byte holds two BCD digits: high nibble = tens, low nibble = units.
-    Byte 0 = hundreds and tens, Byte 1 = tens and units... actually:
-    Byte 0 = (d2 << 4 | d1), Byte 1 = (d0 << 4 | 0)? No --
-    Looking at wfview: bcdHexToUChar reads 2 bytes as hundreds, tens, units.
-    128 -> 0x01 0x28: byte0=0x01 (0,1), byte1=0x28 (2,8). So:
-    byte0 high=0, low=1 -> 0*10+1=01, byte1 high=2, low=8 -> 28. Total=128.
-    """
+    """Encode a 0-255 level as two packed-BCD bytes."""
     if not 0 <= value <= 255:
         raise ValueError(f"Level must be 0-255, got {value}")
     d = f"{value:04d}"  # e.g. "0128"

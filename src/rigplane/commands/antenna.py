@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 def get_antenna_1(
     to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
-    """Build ANT1 select/read command (0x12 0x00) WITHOUT data byte."""
+    """Build an ANT1 read command with selector byte 0x00."""
     return _build_from_map(
         cmd_map,
         "get_antenna",
@@ -79,7 +79,7 @@ def set_antenna_1(
 def get_antenna_2(
     to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
-    """Build ANT2 select/read command (0x12 0x01) WITHOUT data byte."""
+    """Build an ANT2 read command with selector byte 0x01."""
     return _build_from_map(
         cmd_map,
         "get_antenna",

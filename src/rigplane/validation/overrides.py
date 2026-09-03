@@ -166,7 +166,7 @@ def _apply_to_existing(
     tx_adjacent = base.tx_adjacent
     if patch.tx_adjacent is not None:
         if gated and patch.tx_adjacent is False:
-            rejected = True  # keep the safe generated tx_adjacent (True)
+            rejected = True  # keep the generated tx_adjacent value
         else:
             tx_adjacent = patch.tx_adjacent
 
