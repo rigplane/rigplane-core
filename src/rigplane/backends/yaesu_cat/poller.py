@@ -350,6 +350,8 @@ class YaesuCatPoller:
         observation = YaesuObservationAdapter.from_radio(
             self._radio
         ).observed_ptt_observation(None)
+        if provider_generation is None:
+            provider_generation = self._captured_provider_generation()
         observations = self._stamp_provider_generation(
             (observation,), provider_generation
         )

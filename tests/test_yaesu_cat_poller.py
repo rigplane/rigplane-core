@@ -434,6 +434,35 @@ async def test_canonical_ptt_boundary_sink_failure_preserves_reconnect(
 
 
 @pytest.mark.asyncio
+async def test_canonical_ptt_capture_only_reconnect_uses_current_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
+    poller.bind_provider_generation(capture=lambda: store.provider_generation)
+    generation = store.begin_provider_generation()
+    assert generation > 0
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio._transport._maybe_reconnect_needed = lambda: True  # noqa: SLF001
+
+    async def reconnect() -> None:
+        assert store.provider_generation == generation
+        assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+        assert [(item.value, item.provider_generation) for item in emitted] == [
+            (ObservedPtt.UNKNOWN, generation)
+        ]
+        await asyncio.sleep(0)
+        radio._transport.stats.reconnects += 1  # noqa: SLF001
+
+    radio._transport.reconnect = AsyncMock(side_effect=reconnect)  # noqa: SLF001
+    await poller._try_reconnect()  # noqa: SLF001
+    radio._transport.reconnect.assert_awaited_once_with()  # noqa: SLF001
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+    assert store.provider_generation == generation
+    assert store.snapshot().field(OBSERVED_PTT_PATH).provider_generation == generation
+    assert radio._transport.stats.reconnects == 1  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_canonical_ptt_cancelled_read_does_not_emit_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -510,6 +539,47 @@ async def test_canonical_ptt_reconnect_discards_late_old_read(
         item.path in (OBSERVED_PTT_PATH, FieldPath.global_("tx_state", "ptt"))
         for item in emitted[boundary:]
     )
+
+
+@pytest.mark.asyncio
+async def test_canonical_ptt_store_only_generation_discards_held_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    started = asyncio.get_running_loop().create_future()
+    release: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+    async def delayed(*args: object, **kwargs: object) -> str:
+        started.set_result(asyncio.current_task())
+        return await release
+
+    radio._transport.query.side_effect = delayed  # noqa: SLF001
+    task = asyncio.create_task(poller._emit_medium_observations())  # noqa: SLF001
+    try:
+        assert await asyncio.wait_for(asyncio.shield(started), 5.0) is task
+        assert not task.done() and not release.done()
+        assert store.provider_generation == 0
+        assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+        assert project_observed_ptt(store.snapshot()) is ObservedPtt.ON
+        assert store.begin_provider_generation() == 1
+        assert not task.done() and not release.done()
+        assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+        assert emitted == []
+        release.set_result("TX1")
+        assert await asyncio.wait_for(asyncio.shield(task), 5.0) is True
+    finally:
+        if not release.done():
+            release.set_result("TX1")
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.done() and not task.cancelled() and task.exception() is None
+    assert store.provider_generation == 1
+    assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+    assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+    assert emitted == []
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
 
 
 @pytest.mark.asyncio
