@@ -13,6 +13,12 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-03 — managed command queue (tree `3c997a9d`)
+
+- [2026-09-03-mechanism-audit-managed-command-queue.md](2026-09-03-mechanism-audit-managed-command-queue.md)
+  — shared definitions, missing whole-operation claim/lifetime surfaces, and
+  incomplete managed ingress migration; no implementation or runtime proof.
+
 ## 2026-09-02 — Icom STOP CW NAK handling (tree `4cbd5ba4`)
 
 - [2026-09-02-mechanism-audit-icom-stop-cw.md](2026-09-02-mechanism-audit-icom-stop-cw.md)
