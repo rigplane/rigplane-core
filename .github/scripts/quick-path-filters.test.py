@@ -22,9 +22,17 @@ DOCS_PATHS_JS = ROOT / ".github" / "scripts" / "docs-only-paths.js"
 VISUAL_YML = ROOT / ".github" / "workflows" / "visual.yml"
 DOC_CITATION_YML = ROOT / ".github" / "workflows" / "doc-citation-gate.yml"
 REBRAND_YML = ROOT / ".github" / "workflows" / "rebrand-gate.yml"
+BASE_GATES_TEST = ROOT / ".github" / "scripts" / "base-controlled-gates-v1.test.js"
 
 
 class QuickPathFilterContractTest(unittest.TestCase):
+    def test_base_controlled_gate_contracts(self) -> None:
+        subprocess.run(
+            ["node", "--test", str(BASE_GATES_TEST)],
+            cwd=ROOT,
+            check=True,
+        )
+
     def quick_ignore_blocks(self) -> list[list[str]]:
         blocks: list[list[str]] = []
         lines = QUICK_YML.read_text(encoding="utf-8").splitlines()
