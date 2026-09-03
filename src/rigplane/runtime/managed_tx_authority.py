@@ -208,7 +208,6 @@ class ManagedTxAuthority:
                 elif error := task.exception():
                     _registered.set_exception(error)
 
-            submission.add_done_callback(settle_unstarted)
         return submission
 
     async def _start_ptt_operation(
