@@ -91,7 +91,6 @@ async def test_legacy_end_does_not_release_active_raw_transaction_owner(
     poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
     poller._execute = AsyncMock()  # noqa: SLF001
     poller._send_query = AsyncMock()  # noqa: SLF001
-    poller._poll_unselected_slot = AsyncMock()  # noqa: SLF001
 
     task = asyncio.create_task(
         radio.send_civ_transaction(0x03, expect="data", timeout=1.0)
@@ -135,7 +134,6 @@ async def test_raw_transaction_quiesces_web_poller_and_defers_queue_until_releas
     _seed_fresh_rx(store)
     poller._execute = AsyncMock()  # noqa: SLF001
     poller._send_query = AsyncMock()  # noqa: SLF001
-    poller._poll_unselected_slot = AsyncMock()  # noqa: SLF001
 
     task = asyncio.create_task(
         radio.send_civ_transaction(0x03, expect="data", timeout=1.0)
