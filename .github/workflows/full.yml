@@ -81,8 +81,10 @@ jobs:
             if path.is_relative_to(root): return str(path.relative_to(root))
             return '<external>/'+('/'.join(path.parts[-2:]))
           def imports():
-            root=Path.cwd().resolve(); expected=json.loads(Path(os.environ['YAESU_EXPECTED_SNAPSHOT']).read_text());records={}
-            for name,want in REQUIRED_IMPORTS.items():
+            root=Path.cwd().resolve();expected=json.loads(Path(os.environ['YAESU_EXPECTED_SNAPSHOT']).read_text());selection=json.loads(os.environ['YAESU_SELECTION']);required=dict(REQUIRED_IMPORTS);records={}
+            for name,want in (('test_yaesu_cat_observation_adapter',SELECTED[0]),('test_yaesu_cat_poller',SELECTED[1])):
+              if not any(item==want or item.startswith(want+'::') for item in selection):required.pop(name)
+            for name,want in required.items():
               module=sys.modules.get(name);assert module is not None and getattr(module,'__file__',None),name
               path=Path(module.__file__).resolve();assert path==root/want,(name,str(path),want);actual=sha(path);assert actual==expected[want],(name,actual,expected[want]);records[name]={'path':want,'sha256':actual}
             for name,module in sorted(sys.modules.items()):
