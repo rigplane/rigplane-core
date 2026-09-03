@@ -127,10 +127,115 @@ class ManagedTxAuthority:
         self._scheduler_task = asyncio.create_task(self._scheduler())
 
     async def ptt_down(self, owner: str) -> ManagedTxOutcome:
-        return await self._ingress("ptt_down", owner)
+        transition, _ = await (await self.submit_ptt(True, owner))
+        return transition.outcome
 
     async def ptt_up(self, owner: str) -> ManagedTxOutcome:
-        return await self._ingress("ptt_up", owner)
+        transition, _ = await (await self.submit_ptt(False, owner))
+        return transition.outcome
+
+    async def submit_ptt(
+        self, on: bool, owner: str, *, ready: asyncio.Future[Any] | None = None
+    ) -> asyncio.Task[tuple[ManagedTxTransition, ActuationSettled | None]]:
+        """Return an owned operation; OFF waits for admission, not settlement."""
+        if type(on) is not bool or type(owner) is not str:
+            raise TypeError("PTT requires a bool and a builtin str owner")
+        if not owner:
+            raise ValueError("PTT intent requires an owner token")
+        if ready is not None and not isinstance(ready, asyncio.Future):
+            raise TypeError("PTT readiness must be an existing Future or Task")
+        generation = self._provider_generation
+        token = self._abort_fence.issue() if on else None
+        admitted: asyncio.Future[None] | None = (
+            None if on else asyncio.get_running_loop().create_future()
+        )
+        if not on:
+            self._cancel_pending_ptt(owner)
+
+        async def run() -> tuple[ManagedTxTransition, ActuationSettled | None]:
+            execution: asyncio.Task[ActuationSettled | None] | None = None
+            try:
+                if on and ready is not None:
+                    await asyncio.wait((ready,))
+                async with self._lock:
+                    self._require_ingress_open_locked()
+                    if token is not None and not (
+                        self._provider_generation == generation
+                        and self._abort_fence.is_current(token)
+                        and self._abort_fence.remove(token)
+                    ):
+                        return ManagedTxTransition(
+                            self._state, ManagedTxOutcome.REJECTED
+                        ), None
+                    transition, full_force = self._transition_locked(
+                        "ptt_down" if on else "ptt_up", owner
+                    )
+                    if transition is None:
+                        transition = ManagedTxTransition(
+                            self._state, ManagedTxOutcome.REJECTED
+                        )
+                    self._wakeup.wake()
+                    execution = asyncio.create_task(
+                        self._execute(transition.effects, full_force=full_force)
+                    )
+                    if admitted is not None and not admitted.done():
+                        admitted.set_result(None)
+                return transition, await asyncio.shield(execution)
+            except asyncio.CancelledError:
+                if execution is not None:
+                    await self._drain_cancelled(execution)
+                raise
+
+        def finished(
+            task: asyncio.Task[tuple[ManagedTxTransition, ActuationSettled | None]],
+        ) -> None:
+            if token is not None:
+                self._abort_fence.remove(token)
+            error = None if task.cancelled() else task.exception()
+            if admitted is not None and not admitted.done():
+                if task.cancelled():
+                    admitted.cancel()
+                elif error is not None:
+                    admitted.set_exception(error)
+                else:
+                    admitted.set_result(None)
+
+        worker = asyncio.create_task(run())
+        worker.add_done_callback(finished)
+        if token is not None:
+
+            def cancel_pending() -> None:
+                worker.cancel()
+
+            try:
+                self._abort_fence.register(token, cancel_pending, scope=owner)
+            except BaseException:
+                worker.cancel()
+                raise
+        if admitted is not None:
+            try:
+                await admitted
+            except asyncio.CancelledError:
+                worker.cancel()
+                await self._drain_cancelled(worker)
+                raise
+        return worker
+
+    def _cancel_pending_ptt(self, owner: str) -> None:
+        self._pending_abort_cleanup.append(self._abort_fence.cancel_scope(owner))
+        self._start_abort_cleanup()
+
+    @staticmethod
+    async def _drain_cancelled(task: asyncio.Task[Any]) -> None:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not task.cancelled():
+            task.exception()
 
     async def transmit_on(self) -> ManagedTxOutcome:
         return await self._ingress("transmit_on")
@@ -158,6 +263,7 @@ class ManagedTxAuthority:
         )
 
     async def owner_disconnect(self, owner: str) -> ManagedTxOutcome:
+        self._cancel_pending_ptt(owner)
         async with self._lock:
             self._require_ingress_open_locked()
             if self._state.intent != ManagedTxIntent.ptt(owner):
@@ -470,7 +576,9 @@ class ManagedTxAuthority:
 
     async def _execute(
         self, effects: tuple[ManagedTxEffect, ...], *, full_force: bool
-    ) -> None:
+    ) -> ActuationSettled | None:
+        original_effects = effects
+        original_settlement = None
         while True:
             self._start_abort_cleanup()
             deadline = self._clock() + self._attempt_timeout
@@ -498,6 +606,12 @@ class ManagedTxAuthority:
                     ),
                 ):
                     events.append(settled)
+                    if any(
+                        settled.token == requested.token
+                        and settled.operation is requested.operation
+                        for requested in original_effects
+                    ):
+                        original_settlement = settled
                 if full_force:
                     events.extend(
                         item for item in await asyncio.gather(*aborts) if item
@@ -509,7 +623,7 @@ class ManagedTxAuthority:
                     and self._shutdown_termination.is_set()
                 ):
                     self._terminated = True
-                    return
+                    return None
                 for event in events:
                     transition = self._reduce_locked(event)
                     if (
@@ -523,7 +637,7 @@ class ManagedTxAuthority:
                 self._refresh_retry_locked()
                 self._wakeup.wake()
             if followup is None:
-                return
+                return original_settlement
             effects, full_force = followup.effects, True
 
     async def _scheduler(self) -> None:
