@@ -25,6 +25,7 @@ from ...core.state_pipeline_contracts import (
 )
 from ...core.tx_observation import TxStateReading
 from ...radio_state import RadioState
+from ...runtime._poller_types import canonicalize_level_command
 from ...runtime.callable_support import supports_explicit_callable
 from ...runtime.managed_tx_state import (
     AbortOperation,
@@ -326,6 +327,7 @@ class RigctldClientObservationPoller:
         return tuple(annotated)
 
     async def _execute_command(self, cmd: Any) -> None:
+        cmd = canonicalize_level_command(cmd, self._radio)
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
             return
@@ -333,14 +335,12 @@ class RigctldClientObservationPoller:
             PttOff,
             PttOn,
             SelectVfo,
-            SetAfLevel,
             SetAttenuator,
             SetFreq,
             SetMode,
             SetNB,
             SetNR,
             SetPreamp,
-            SetRfGain,
         )
 
         match cmd:
@@ -358,10 +358,6 @@ class RigctldClientObservationPoller:
                 await self._radio.set_ptt(False)
             case SelectVfo(vfo=vfo):
                 await self._radio.set_vfo_slot(vfo)
-            case SetRfGain(level=level, receiver=rx):
-                await self._radio.set_rf_gain(level, receiver=rx)
-            case SetAfLevel(level=level, receiver=rx):
-                await self._radio.set_af_level(level, receiver=rx)
             case SetPreamp(level=level, receiver=rx):
                 await self._radio.set_preamp(level, receiver=rx)
             case SetAttenuator(db=db, receiver=rx):
@@ -542,6 +538,8 @@ def _readback_paths_match(readback_path: FieldPath, overlay_path: FieldPath) -> 
 
 
 def _physical_command_targets_path(command: Any, path: FieldPath) -> bool:
+    if isinstance(command, CommandIntent):
+        return command.target is not None and _readback_paths_match(command.target, path)
     command_name = type(command).__name__.lower()
     target_name = path.name.replace("_", "")
     return target_name in command_name or (target_name, command_name) in (

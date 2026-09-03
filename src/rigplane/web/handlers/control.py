@@ -13,8 +13,6 @@ from ..._bounded_queue import BoundedQueue
 from ...core.command_service import (
     CommandExecutionResult,
     CommandService,
-    _af_level_from_param,
-    _raw_int_level_from_param,
     command_intent_from_request,
 )
 from ...core.command_dispatch import (
@@ -45,7 +43,6 @@ from ..radio_poller import (  # noqa: TID251
     SelectVfo,
     SendCiv,
     SetAcc1ModLevel,
-    SetAfLevel,
     SetAgc,
     SetAgcTimeConstant,
     SetAntenna1,
@@ -85,7 +82,6 @@ from ..radio_poller import (  # noqa: TID251
     SetPower,
     SetPowerstat,
     SetPreamp,
-    SetRfGain,
     SetRitFrequency,
     SetRitStatus,
     SetRitTxStatus,
@@ -104,7 +100,6 @@ from ..radio_poller import (  # noqa: TID251
     SetScopeHold,
     SetScopeVbw,
     SetSplit,
-    SetSquelch,
     SetSystemDate,
     SetSystemTime,
     SetTwinPeak,
@@ -179,8 +174,6 @@ from ...capabilities import (
     CAP_DATA_MODE,
     CAP_DUAL_WATCH,
     CAP_POWER_CONTROL,
-    CAP_RF_GAIN,
-    CAP_SQUELCH,
     CAP_SYSTEM_SETTINGS,
     CAP_TUNER,
     CAP_TUNING_STEP,
@@ -217,9 +210,12 @@ class RadioNotReadyError(RuntimeError):
 @dataclass(slots=True)
 class _ControlCommandExecutor:
     handler: "ControlHandler"
+    wait_for_completion: bool = True
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
-        return await self.handler._execute_intent(intent)  # noqa: SLF001
+        return await self.handler._execute_intent(  # noqa: SLF001
+            intent, wait_for_completion=self.wait_for_completion
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1446,16 +1442,25 @@ class ControlHandler:
                 session_id=self._session_id if source == "websocket" else None,
                 power_max_watts=power_max_watts,
             )
-        result = await self._command_service.execute(intent)
+        executor = (
+            _ControlCommandExecutor(self, wait_for_completion=False)
+            if descriptor is not None and descriptor.queue_policy == "coalesced"
+            else None
+        )
+        result = await self._command_service.execute(intent, executor=executor)
         return dict(result.executor_result.details or {})
 
-    async def _execute_intent(self, intent: CommandIntent) -> CommandExecutionResult:
+    async def _execute_intent(
+        self, intent: CommandIntent, *, wait_for_completion: bool = True
+    ) -> CommandExecutionResult:
         descriptor = command_descriptor(intent.name)
         if descriptor is not None:
             if self._server is None:
                 raise RuntimeError("no command queue available")
             queue = self._server.command_queue
-            future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            future: asyncio.Future[None] | None = (
+                asyncio.get_running_loop().create_future() if wait_for_completion else None
+            )
             raw_session_id = intent.params.get("session_id")
             session_id = None if raw_session_id is None else str(raw_session_id)
             enqueue_command_intent(
@@ -1468,6 +1473,8 @@ class ControlHandler:
                 command_service=self._command_service,
                 timeout=intent.timeout,
             )
+            if future is None:
+                return CommandExecutionResult(details=descriptor.result(intent))
             try:
                 await asyncio.wait_for(future, timeout=intent.timeout)
             except asyncio.CancelledError:
@@ -2386,48 +2393,6 @@ class ControlHandler:
         radio: "Radio | None",
     ) -> dict[str, Any] | None:
         match name:
-            case "set_rf_gain":
-                if radio is None:
-                    raise RuntimeError("radio connection not available")
-                if CAP_RF_GAIN not in radio.capabilities:
-                    raise ValueError(
-                        "command set_rf_gain is not supported by this radio "
-                        "(missing rf_gain capability)"
-                    )
-                level = _raw_int_level_from_param(params["level"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("rf_gain", "set_rf_gain")
-                self._ensure_receiver_supported(rx)
-                q.put(SetRfGain(level, receiver=rx))
-                return {"level": level, "receiver": rx}
-            case "set_af_level":
-                if radio is None:
-                    raise RuntimeError("radio connection not available")
-                if CAP_AF_LEVEL not in radio.capabilities:
-                    raise ValueError(
-                        "command set_af_level is not supported by this radio "
-                        "(missing af_level capability)"
-                    )
-                level = _af_level_from_param(params["level"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("af_level", "set_af_level")
-                self._ensure_receiver_supported(rx)
-                q.put(SetAfLevel(level, receiver=rx))
-                return {"level": level, "receiver": rx}
-            case "set_sql" | "set_squelch":
-                if radio is None:
-                    raise RuntimeError("radio connection not available")
-                if CAP_SQUELCH not in radio.capabilities:
-                    raise ValueError(
-                        f"command {name!r} is not supported by this radio "
-                        "(missing squelch capability)"
-                    )
-                level = _raw_int_level_from_param(params["level"])
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("squelch", name)
-                self._ensure_receiver_supported(rx)
-                q.put(SetSquelch(level, receiver=rx))
-                return {"level": level, "receiver": rx}
             case "set_mic_gain":
                 level = int(params["level"])
                 q.put(SetMicGain(level))
