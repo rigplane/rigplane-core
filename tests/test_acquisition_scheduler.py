@@ -8,6 +8,7 @@ import time
 from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -20,6 +21,7 @@ from rigplane.core.acquisition_scheduler import (
     MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
+    derive_tx_active,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -3550,3 +3552,187 @@ async def test_freshness_driving_survives_the_first_seat_stopping(
             web.cancel()
             rigctld.cancel()
             await asyncio.gather(web, rigctld, return_exceptions=True)
+
+
+def _tx_only_swr_profile(swr: FieldPath) -> RadioAcquisitionProfile:
+    """One reconciliation-only ``tx_only`` global meter, no poll cadence."""
+
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=(FieldCapability(path=swr, command_response_observable=True),),
+        field_policies={swr: AcquisitionPolicy(tx_only=True)},
+        default_policy=AcquisitionPolicy(),
+    )
+
+
+@pytest.mark.parametrize("tick_first", [True, False])
+@pytest.mark.parametrize(
+    ("transmitting", "expected_dispatchable"),
+    [(False, 0), (True, 1)],
+)
+def test_both_tx_active_writers_agree_over_one_store(
+    tick_first: bool,
+    transmitting: bool,
+    expected_dispatchable: int,
+) -> None:
+    """The tick and rigctld's drain cannot leave the cache in disagreement.
+
+    ``AcquisitionScheduler.due_requests`` assigns the cached transmit fact
+    before the dedup that makes request emission idempotent, so whichever
+    writer runs last decides it. Both writers now derive that fact with
+    ``derive_tx_active`` over the same canonical field, so neither ordering
+    changes the dispatch gate.
+    """
+
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(freshness_clock=clock)
+    swr = FieldPath.global_("meters", "swr")
+    scheduler = AcquisitionScheduler(
+        profile=_tx_only_swr_profile(swr), clock=FreshnessClock(start=100.0)
+    )
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+
+    store.apply(
+        _observation(
+            FieldPath.global_("tx_state", "ptt"),
+            transmitting,
+            at=100.0,
+            max_age=1000.0,
+        )
+    )
+    queued = scheduler.ensure_fresh(
+        swr,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+    assert queued.status is AcquisitionStatus.QUEUED
+
+    writers = [
+        lambda: service.tick(now=100.0),
+        lambda: scheduler.note_tx_active(derive_tx_active(store)),
+    ]
+    if not tick_first:
+        writers.reverse()
+
+    # After EVERY writer, not only after the last one: a reading that only
+    # holds once both have run cannot tell "both agree" from "the second one
+    # corrected the first".
+    gate_after_each = []
+    for writer in writers:
+        writer()
+        gate_after_each.append(len(scheduler.dispatchable_requests()))
+
+    assert gate_after_each == [expected_dispatchable, expected_dispatchable]
+
+
+# ---------------------------------------------------------------------------
+# MOR-2280: the wall-clock meter flush moved from ``RadioPoller._send_query``
+# into the freshness tick, and standalone rigctld gained the coalescer it
+# releases from (F14, pinned in tests/test_rigctld_server.py).
+# ---------------------------------------------------------------------------
+
+
+def _radio_with_coalescer(
+    coalescer: MeterObservationCoalescer, store: StateStore
+) -> SimpleNamespace:
+    """A radio double exposing the two attributes the flush reaches through."""
+
+    return SimpleNamespace(
+        _meter_observation_coalescer=coalescer,
+        _civ_runtime=SimpleNamespace(
+            flush_due_meter_observations=lambda *, now: coalescer.flush_due(
+                store, now=now
+            )
+        ),
+    )
+
+
+def test_freshness_tick_releases_a_meter_sample_once_its_window_elapses() -> None:
+    """The tick is what releases a burst's last sample.
+
+    ``flush_due`` only releases a path whose latest pending sample has aged
+    past its window, and the flush on arrival runs at that sample's own
+    timestamp — so the newest sample of a burst is never due on arrival. Some
+    clock-driven caller has to release it; since MOR-2280 that caller is the
+    tick.
+    """
+
+    store = StateStore()
+    swr = FieldPath.global_("meters", "swr")
+    coalescer = MeterObservationCoalescer()
+    radio = _radio_with_coalescer(coalescer, store)
+    coalescer.record(
+        _observation(swr, 1.4, at=100.0), MeterCoalescingPolicy(window_seconds=0.2)
+    )
+    service = StateFreshnessService(store=store, radio=radio)
+
+    # Inside the window: held, and the store has never seen the path.
+    service.tick(now=100.1)
+    with pytest.raises(KeyError):
+        store.snapshot().field(swr)
+
+    # Past the window: the tick's own clock releases it into the store.
+    service.tick(now=100.3)
+
+    assert store.snapshot().field(swr).value == 1.4
+
+
+def test_freshness_tick_passes_its_own_timestamp_to_the_meter_flush() -> None:
+    """The flush is driven by the tick's clock, not by ``time.monotonic()``.
+
+    A flush that took its own reading would release on wall-clock time while
+    the caller drove the rest of the tick from a seeded clock.
+    """
+
+    store = StateStore()
+    seen: list[float] = []
+    radio = SimpleNamespace(
+        _meter_observation_coalescer=MeterObservationCoalescer(),
+        _civ_runtime=SimpleNamespace(
+            flush_due_meter_observations=lambda *, now: seen.append(now)
+        ),
+    )
+    service = StateFreshnessService(store=store, radio=radio)
+
+    service.tick(now=812.5)
+
+    assert seen == [812.5]
+
+
+def test_freshness_tick_survives_a_failing_meter_flush() -> None:
+    """A raising flush must not stop freshness decay.
+
+    ``run()`` catches only ``CancelledError``, so an exception escaping the
+    flush would end the loop that ages the store.
+    """
+
+    store = StateStore()
+    radio = SimpleNamespace(
+        _meter_observation_coalescer=MeterObservationCoalescer(),
+        _civ_runtime=SimpleNamespace(
+            flush_due_meter_observations=_raise_on_flush,
+        ),
+    )
+    service = StateFreshnessService(store=store, radio=radio)
+
+    assert service.tick(now=900.0) is not None
+
+
+def _raise_on_flush(*, now: float) -> None:
+    raise RuntimeError(f"flush failed at {now}")
+
+
+def test_freshness_service_without_a_radio_still_ticks() -> None:
+    """``radio`` is optional because a production path leaves it unset.
+
+    ``web/server.py: WebServer.__init__`` builds this service before
+    ``WebServer._bootstrap_state_acquisition`` runs, without a radio; that
+    bootstrap returns without replacing it when no radio is attached, and
+    ``web/web_startup.py: start_web_server`` starts the driver task either way.
+    """
+
+    store = StateStore()
+    service = StateFreshnessService(store=store)
+
+    assert service.tick(now=100.0) is not None

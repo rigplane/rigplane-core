@@ -32,13 +32,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
-    CAP_AF_LEVEL,
     CAP_AGC,
     CAP_ANTENNA,
     CAP_APF,
@@ -62,10 +63,8 @@ from ..capabilities import (
     CAP_POWER_CONTROL,
     CAP_PREAMP,
     CAP_REPEATER_TONE,
-    CAP_RF_GAIN,
     CAP_RX_ANTENNA,
     CAP_SCOPE,
-    CAP_SQUELCH,
     CAP_SSB_TX_BW,
     CAP_SYSTEM_SETTINGS,
     CAP_TSQL,
@@ -79,6 +78,7 @@ from ..commands.commander import Priority
 from ..core.command_service import (
     CommandService,
 )
+from ..core.acquisition_drain import AcquisitionDrain
 from ..core.command_dispatch import execute_command_intent
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
@@ -86,7 +86,6 @@ from ..core.acquisition_scheduler import (
     AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
-    MeterObservationCoalescer,
     civ_acquisition_executor_for_provider,
 )
 from ..core.state_pipeline_contracts import (
@@ -360,7 +359,7 @@ from .._poller_types import (  # noqa: E402
     SelectVfo,
     SendCiv,
     SetAcc1ModLevel,
-    SetAfLevel,
+    SetAfLevel as SetAfLevel,
     SetAfMute,
     SetAgc,
     SetAgcTimeConstant,
@@ -425,7 +424,7 @@ from .._poller_types import (  # noqa: E402
     SetRefAdjust,
     SetRepeaterTone,
     SetRepeaterTsql,
-    SetRfGain,
+    SetRfGain as SetRfGain,
     SetRitFrequency,
     SetRitStatus,
     SetRitTxStatus,
@@ -445,7 +444,7 @@ from .._poller_types import (  # noqa: E402
     SetScopeSpan,
     SetScopeVbw,
     SetSplit,
-    SetSquelch,
+    SetSquelch as SetSquelch,
     SetSsbTxBandwidth,
     SetSystemDate,
     SetSystemTime,
@@ -464,33 +463,14 @@ from .._poller_types import (  # noqa: E402
     SwitchScopeReceiver,
     VfoEqualize,
     VfoSwap,
+    canonicalize_level_command,
+    execute_command_queue_entry,
 )
 
 
 # ------------------------------------------------------------------
 # MOR-1484: post-write readback jump-queue
 # ------------------------------------------------------------------
-#
-# Forces a fresh readback of the field(s) a write command just changed
-# instead of waiting out that field's normal poll cadence -- the "pending
-# frequency echo" / "slider readouts trail ~1s" symptom the ticket measured
-# on freq/mode/rfGain/squelch. These are the operator-facing writes in this
-# dispatch that carry no ``CommandService`` optimistic-overlay + confirming-
-# observation path the way nb/nr/att/preamp/agc/mic_gain/etc already do (see
-# the "read-after-write via overlays + ... observation" comments on those
-# ``case`` arms below) -- without a forced readback they only refresh on the
-# field's normal cadence tick.
-#
-# Table-driven so covering another command later is a new entry here, not a
-# new call site: ``_request_post_write_readback`` (called once, generically,
-# at the end of ``_execute`` below) looks up ``type(cmd)`` and, on a hit,
-# builds the written ``FieldPath`` set and calls
-# ``AcquisitionScheduler.ensure_fresh`` at ``USER`` priority -- the
-# scheduler's highest rank (``_PRIORITY_RANK`` in ``acquisition_scheduler.py``)
-# -- so the request jumps ahead of whatever BACKGROUND/RECONCILIATION/
-# NORMAL-tier cadence work is already queued and is picked up by the very
-# next ``_send_scheduler_requests`` drain, instead of waiting out the
-# field's own cadence.
 def _post_write_receiver_id(cmd: Any) -> str:
     """Return the ``main``/``sub`` receiver_id spelling.
 
@@ -511,16 +491,6 @@ _POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] 
     ),
     SetMode: lambda cmd: (
         FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "mode"),
-    ),
-    SetRfGain: lambda cmd: (
-        FieldPath.receiver(
-            _post_write_receiver_id(cmd), "operator_controls", "rf_gain"
-        ),
-    ),
-    SetSquelch: lambda cmd: (
-        FieldPath.receiver(
-            _post_write_receiver_id(cmd), "operator_controls", "squelch"
-        ),
     ),
     # MOR-1484 review R1: att/preamp carry the #2452 armed affordance, whose
     # ONLY confirming path back to the StateStore is this cadence poll --
@@ -637,6 +607,7 @@ class RadioPoller:
         )
         self._acquisition_executor = acquisition_executor
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
+        self._acquisition_drain: AcquisitionDrain | None = None
         # MOR-874: monotonic time of the FIRST healthy-link deadline expiry per
         # in-flight request id. Seeds the bounded grace window
         # (``_ACQUISITION_HEALTHY_GRACE_SECONDS``) after which a still-uncredited
@@ -816,7 +787,7 @@ class RadioPoller:
             )
 
     def _stage_tx_interlocked_entries(
-        self, entries: list[CommandQueueEntry]
+        self, entries: list[CommandQueueEntry], *, advance_held: bool = True
     ) -> list[CommandQueueEntry]:
         """Stage DEFER entries before advancing the existing held slot."""
         has_defer = self._deferred_tx_lane.pending is not None or any(
@@ -853,6 +824,8 @@ class RadioPoller:
                 self._terminate_deferred_entry(previous, defer_result.outcome)
             self._emit_deferred_entry_held(entry, expires_at=defer_result.expires_at)
 
+        if not advance_held:
+            return ready
         observe_result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
         if (
             observe_result is None
@@ -870,6 +843,9 @@ class RadioPoller:
         return ready
 
     async def _execute_queued_entry(self, entry: CommandQueueEntry) -> None:
+        await execute_command_queue_entry(entry, self._execute_queued_entry_action)
+
+    async def _execute_queued_entry_action(self, entry: CommandQueueEntry) -> None:
         # MOR-1884: the interlock seat lives at the head of ``_execute`` now,
         # so queued commands and uncommanded internal emits share one seat.
         await self._execute(
@@ -879,8 +855,6 @@ class RadioPoller:
             session_id=entry.session_id,
             command_service=entry.command_service,
         )
-        if entry.future is not None and not entry.future.done():
-            entry.future.set_result(None)
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
         """Derive a finite tuple window from this provider's expected cadence."""
@@ -1416,27 +1390,21 @@ class RadioPoller:
             logger.debug("radio-poller: %s reconfirm failed", label, exc_info=True)
 
     def _request_post_write_readback(self, cmd: Command) -> None:
-        """Jump the scheduler queue for the field(s) ``cmd`` just wrote (MOR-1484).
-
-        Table-driven counterpart to :meth:`_reconfirm_scope_field` for
-        non-scope fields: looks ``type(cmd)`` up in
-        ``_POST_WRITE_READBACK_FIELDS`` and, on a hit, calls
-        ``AcquisitionScheduler.ensure_fresh`` at ``AcquisitionPriority.USER``
-        (the scheduler's highest rank) for the FieldPath(s) it names. Fire-
-        and-queue like ``ensure_fresh`` itself — this never awaits a backend
-        read; it only ensures the request is queued ahead of any pending
-        BACKGROUND/RECONCILIATION/NORMAL-tier cadence work so the next
-        ``_send_scheduler_requests`` drain fetches a confirmed value instead
-        of waiting out the field's normal cadence. A miss (command not in
-        the table, or no scheduler attached) is a silent no-op.
-        """
         scheduler = self._acquisition_scheduler
         if scheduler is None:
             return
-        build_paths = _POST_WRITE_READBACK_FIELDS.get(type(cmd))
-        if build_paths is None:
-            return
-        paths = build_paths(cmd)
+        if isinstance(cmd, CommandIntent):
+            paths = tuple(
+                replace(path, receiver_id="sub" if path.receiver_id == "1" else "main")
+                if path.receiver_id in ("0", "1")
+                else path
+                for path in cmd.expected_observations
+            )
+        else:
+            build_paths = _POST_WRITE_READBACK_FIELDS.get(type(cmd))
+            if build_paths is None:
+                return
+            paths = build_paths(cmd)
         if type(cmd) is SetMode and CAP_FILTER_WIDTH in self._caps:
             filter_width = FieldPath.active(
                 _post_write_receiver_id(cmd), "freq_mode", "filter_width"
@@ -1740,6 +1708,27 @@ class RadioPoller:
         _backoff = 0.0
         _MAX_BACKOFF = 5.0  # max pause when radio is disconnected
 
+        def entries_for_turn() -> Iterator[CommandQueueEntry]:
+            for _ in range(self._queue.pending_count):
+                entry = self._queue.take_entry()
+                if entry is None:
+                    break
+                yield from self._stage_tx_interlocked_entries(
+                    [entry], advance_held=False
+                )
+            yield from self._stage_tx_interlocked_entries([])
+
+        async def execute_entry(entry: CommandQueueEntry) -> None:
+            try:
+                await self._execute_queued_entry_action(entry)
+            except Exception as exc:
+                self._mark_queued_command_failed(
+                    entry,
+                    exc,
+                    timed_out=isinstance(exc, (TimeoutError, RigplaneTimeoutError)),
+                )
+                raise
+
         # Initial state is now fetched by CoreRadio._fetch_initial_state()
         # during connect(). Just signal readiness immediately.
         self._scope_enable_deferred = False
@@ -1784,49 +1773,33 @@ class RadioPoller:
                     await asyncio.sleep(self._adaptive_gap())
                     continue
 
-                # 1. Drain command queue (fire-and-forget writes)
-                queued = self._queue.drain_entries() if self._queue.has_commands else []
-                ready = self._stage_tx_interlocked_entries(queued)
-                if ready:
-                    for entry in ready:
-                        cmd = entry.command
-                        if entry.future is not None and entry.future.cancelled():
-                            logger.debug(
-                                "radio-poller: skipping cancelled queued cmd: %s",
-                                type(cmd).__name__,
-                            )
-                            continue
-                        try:
-                            await self._execute_queued_entry(entry)
-                            _backoff = 0.0
-                        except (TimeoutError, RigplaneTimeoutError) as exc:
-                            self._mark_queued_command_failed(
-                                entry,
-                                exc,
-                                timed_out=True,
-                            )
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            logger.warning(
-                                "radio-poller: cmd timeout: %s",
-                                type(cmd).__name__,
-                                exc_info=True,
-                            )
-                        except (ConnectionError, RadioConnectionError) as exc:
-                            self._mark_queued_command_failed(entry, exc)
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                        except Exception as exc:
-                            self._mark_queued_command_failed(entry, exc)
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            logger.warning(
-                                "radio-poller: cmd error: %s",
-                                type(cmd).__name__,
-                                exc_info=True,
-                            )
-                        await asyncio.sleep(self._adaptive_gap())
+                # 1. Claim a finite live-pending turn, then release held work.
+                for entry in entries_for_turn():
+                    cmd = entry.command
+                    if entry.future is not None and entry.future.cancelled():
+                        logger.debug(
+                            "radio-poller: skipping cancelled queued cmd: %s",
+                            type(cmd).__name__,
+                        )
+                        continue
+                    try:
+                        await execute_command_queue_entry(entry, execute_entry)
+                        _backoff = 0.0
+                    except (TimeoutError, RigplaneTimeoutError):
+                        logger.warning(
+                            "radio-poller: cmd timeout: %s",
+                            type(cmd).__name__,
+                            exc_info=True,
+                        )
+                    except (ConnectionError, RadioConnectionError):
+                        _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                    except Exception:
+                        logger.warning(
+                            "radio-poller: cmd error: %s",
+                            type(cmd).__name__,
+                            exc_info=True,
+                        )
+                    await asyncio.sleep(self._adaptive_gap())
 
                 # If disconnected, back off to avoid log spam
                 if _backoff > 0:
@@ -2118,8 +2091,16 @@ class RadioPoller:
         session_id: str | None = None,
         command_service: CommandService | None = None,
     ) -> None:
+        cmd = canonicalize_level_command(
+            cmd,
+            self._radio,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+        )
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
+            self._request_post_write_readback(cmd)
             return
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
@@ -2428,18 +2409,6 @@ class RadioPoller:
                     )
                 if CAP_POWER_CONTROL in self._caps:
                     await radio.set_rf_power(level)
-            case SetRfGain(level=level, receiver=rx):
-                if CAP_RF_GAIN in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_rf_gain")
-                    await radio.set_rf_gain(level, receiver=rx)
-            case SetAfLevel(level=level, receiver=rx):
-                if CAP_AF_LEVEL in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_af_level")
-                    await radio.set_af_level(level, receiver=rx)
-            case SetSquelch(level=level, receiver=rx):
-                if CAP_SQUELCH in self._caps:
-                    self._ensure_receiver_supported(rx, operation="set_squelch")
-                    await radio.set_squelch(level, receiver=rx)
             case SetNB(on=on, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_nb")
                 if CAP_NB in self._caps:
@@ -3470,27 +3439,7 @@ class RadioPoller:
             case Speak(mode=what):
                 await _r.get_speech(what)
 
-        # MOR-1484: jump the scheduler queue for whatever field(s) this
-        # write just changed (table-driven no-op for any command not in
-        # ``_POST_WRITE_READBACK_FIELDS``). Placed after the match rather
-        # than per-case so covering another command is a table entry, not a
-        # new call site; safe here because none of the mapped commands
-        # (``SetFreq``/``SetMode``/``SetRfGain``/``SetSquelch``) return early
-        # out of the match above.
         self._request_post_write_readback(cmd)
-
-    def _flush_due_meter_observations(self) -> None:
-        coalescer = getattr(self._radio, "_meter_observation_coalescer", None)
-        if not isinstance(coalescer, MeterObservationCoalescer):
-            return
-        runtime = getattr(self._radio, "_civ_runtime", None)
-        flush_due = getattr(runtime, "flush_due_meter_observations", None)
-        if not callable(flush_due):
-            return
-        try:
-            flush_due(now=time.monotonic())
-        except Exception:
-            logger.debug("radio-poller: meter coalescer flush failed", exc_info=True)
 
     def _acquisition_request_expired(
         self,
@@ -3536,178 +3485,236 @@ class RadioPoller:
             ready_timeout = 2.0
         return (now - float(last_civ)) <= float(ready_timeout)
 
+    def _record_acquisition_failure(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        reason: str,
+        failed_paths: tuple[FieldPath, ...] | frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in failed_paths],
+            reason=reason,
+            provider=request.provider,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason=reason,
+            failed_paths=failed_paths,
+            now=now,
+        )
+
+    def _report_acquisition_expiry(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> bool:
+        """Report one fired deadline; return whether it ends the request.
+
+        MOR-874: when the deadline fires but the CI-V link is healthy, this
+        is (usually) a false timeout — the radio answered and the deadline
+        raced under load. Suppress the false-timeout -> adaptive-decay chain
+        and keep the request in flight so the returning observation can
+        credit it.
+
+        But the health gate reads the GLOBAL last-CI-V timestamp, so under
+        external-CAT load it reads healthy ~permanently; a request whose
+        specific answer is genuinely lost would then be pinned forever. Bound
+        the suppression with a grace window: once it elapses with the request
+        still uncredited, fall back to a REAL timeout (drop it so the
+        scheduler re-queues/re-sends and normal failure accounting/decay
+        applies).
+
+        rigctld injects no expiry report and keeps every timeout terminal —
+        see ``RigctldServer._record_acquisition_failure``'s MOR-874 comment
+        and test_a_timed_out_request_is_terminal_even_on_a_healthy_civ_link.
+        """
+
+        link_healthy = self._civ_link_healthy(now=now)
+        grace_expired = False
+        if link_healthy:
+            grace_started = self._acquisition_healthy_grace_started.get(request.id)
+            if grace_started is None:
+                self._acquisition_healthy_grace_started[request.id] = now
+                grace_started = now
+            if now - grace_started >= _ACQUISITION_HEALTHY_GRACE_SECONDS:
+                grace_expired = True
+        # Treat a grace-expired healthy expiry exactly like an unhealthy one:
+        # count it, drop it, let cadence advance.
+        timeout_is_real = (not link_healthy) or grace_expired
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in request.paths],
+            reason="acquisition_request_timeout",
+            link_healthy=link_healthy,
+            grace_expired=grace_expired,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_request_timeout",
+            failed_paths=sent_paths or frozenset(request.paths),
+            now=now,
+            link_healthy=not timeout_is_real,
+        )
+        return timeout_is_real
+
+    def _forget_acquisition_grace(self, request_id: str) -> None:
+        """Drop the grace clock of a request the drain dropped (MOR-874).
+
+        Called wherever ``AcquisitionDrain`` removes a ledger entry, so the
+        map never outlives the flight it tracks.
+        """
+
+        self._acquisition_healthy_grace_started.pop(request_id, None)
+
+    def _report_acquisition_executor_missing(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        now: float,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_executor_missing",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in request.paths],
+            provider=request.provider,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_executor_missing",
+            now=now,
+        )
+
+    def _report_acquisition_executor_error(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        error: BaseException,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        """Record a send that raised, then re-raise it unchanged.
+
+        Before MOR-2293 this seat had no ``try/except`` here, so every
+        executor exception reached the per-``_send_query`` handlers in
+        ``_run``. Those are not merely a log: they are how ``_run`` learns the
+        link is down — its ``(ConnectionError, RadioConnectionError)`` backoff
+        branch, MOR-1440's branch for any exception raised while the radio is
+        disconnected, and the reconnection probe that clears the backoff on a
+        ``_send_query()`` that returns. Once a scheduler is attached
+        ``_send_query`` has no other body, so swallowing anything here would
+        make that probe always succeed and announce a restored connection to a
+        radio that is still down.
+
+        So every exception is recorded and re-raised, with no type list: which
+        exceptions can reach here is decided by call sites downstream of
+        ``_civ``, and a list kept in this file would neither derive from them
+        nor redden when they change. Raising also skips the drain's forget
+        step, leaving the ledger entry exactly as the pre-change code left it.
+        Pinned by
+        test_send_query_still_raises_any_executor_failure_out_of_the_drain.
+
+        What the migration adds over the pre-change path is this diagnostic
+        and the scheduler failure report; what it takes away is nothing.
+        """
+
+        failed_paths = (
+            tuple(path for path in request.paths if path not in sent_paths)
+            or request.paths
+        )
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in failed_paths],
+            reason="acquisition_executor_error",
+            provider=request.provider,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_executor_error",
+            failed_paths=failed_paths,
+            now=now,
+        )
+        raise error
+
+    def _report_acquisition_sent(
+        self,
+        request: AcquisitionRequest,
+        *,
+        paths: tuple[FieldPath, ...],
+        pending_request_count: int,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_request_sent",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in paths],
+            pending_request_count=pending_request_count,
+        )
+
+    def _state_acquisition_drain(self) -> AcquisitionDrain:
+        """Return this seat's drain, built on first use.
+
+        Scheduler and executor are read through callables: both are resolved
+        during ``__init__`` but the scheduler may also be attached to the
+        radio afterwards.
+
+        This seat sends everything the scheduler hands it. Its external-CAT
+        stand-down is the whole-iteration ``continue`` in ``_run``, which
+        holds back queued commands as well as reads, so no dispatch filter
+        belongs here.
+        """
+
+        drain = self._acquisition_drain
+        if drain is None:
+            drain = AcquisitionDrain(
+                scheduler=lambda: self._acquisition_scheduler,
+                executor=lambda: self._acquisition_executor,
+                store=lambda: self._state_store,
+                in_flight=self._acquisition_in_flight,
+                expired=self._acquisition_request_expired,
+                dispatchable=lambda pending: pending,
+                report_failure=self._record_acquisition_failure,
+                report_executor_missing=self._report_acquisition_executor_missing,
+                report_executor_error=self._report_acquisition_executor_error,
+                report_sent=self._report_acquisition_sent,
+                report_expiry=self._report_acquisition_expiry,
+                on_forget=self._forget_acquisition_grace,
+            )
+            self._acquisition_drain = drain
+        return drain
+
     async def _send_scheduler_requests(self) -> None:
-        scheduler = self._acquisition_scheduler
-        if scheduler is None:
-            return
-        now = time.monotonic()
-        # MOR-1525: gate tx_only cadence membership (TX/PA meters: power, SWR,
-        # ALC, comp) on the CANONICAL ``global.tx_state.ptt`` observation, not
-        # the legacy RadioState.ptt mirror the MOR-1485 comment above used to
-        # justify. The mirror was live-proven to desync from the canonical
-        # fact: after a TX it stayed True while the StateStore's own
-        # observation had already flipped False in RX, so the tx_only group
-        # kept polling at ~1s cadence during confirmed RX (operator-visible
-        # as the SWR readout flapping 0<->1, MOR-1525). Read the same field
-        # ``build_public_state_payload_from_snapshot`` serves to the UI, so
-        # this can never disagree with what the operator is shown. Fail
-        # closed: unobserved/stale/unknown ptt -> tx_active False, so
-        # tx_only meters stay idle rather than spuriously poll — the honest
-        # direction when the fact isn't known.
-        try:
-            ptt_field = self._state_store.snapshot().field(
-                FieldPath.global_("tx_state", "ptt")
-            )
-        except KeyError:
-            tx_active = False
-        else:
-            tx_active = ptt_field.freshness is FreshnessState.FRESH and bool(
-                ptt_field.value
-            )
-        scheduler.due_requests(now=now, tx_active=tx_active)
-        # MOR-1533: dispatch must use the tx_active-gated view. Crediting an
-        # already-sent answer (runtime._civ_rx) uses the unfiltered
-        # pending_requests() instead, so an answer landing after de-key is
-        # never blinded by this gate -- see dispatchable_requests()'s
-        # docstring.
-        pending = scheduler.dispatchable_requests()
-        pending_ids = {request.id for request in pending}
-        for request_id in tuple(self._acquisition_in_flight):
-            if request_id not in pending_ids:
-                del self._acquisition_in_flight[request_id]
-                # MOR-874: request left flight (credited / dropped) — drop its
-                # grace bookkeeping so the map never leaks.
-                self._acquisition_healthy_grace_started.pop(request_id, None)
-
-        for request in pending:
-            sent_paths: frozenset[FieldPath] = frozenset()
-            sent_at = 0.0
-            existing = self._acquisition_in_flight.get(request.id)
-            if existing is not None:
-                sent_paths, sent_at = existing
-                if self._acquisition_request_expired(
-                    request,
-                    sent_at=sent_at,
-                    now=now,
-                ):
-                    # MOR-874: when the deadline fires but the CI-V link is
-                    # healthy, this is (usually) a false timeout — the radio
-                    # answered and the deadline raced under load. Suppress the
-                    # false-timeout -> adaptive-decay chain and keep the request
-                    # in flight so the returning observation can credit it.
-                    #
-                    # But the health gate reads the GLOBAL last-CI-V timestamp,
-                    # so under external-CAT load it reads healthy ~permanently;
-                    # a request whose specific answer is genuinely lost would
-                    # then be pinned forever. Bound the suppression with a grace
-                    # window: once it elapses with the request still uncredited,
-                    # fall back to a REAL timeout (drop it so the scheduler
-                    # re-queues/re-sends and normal failure accounting/decay
-                    # applies).
-                    link_healthy = self._civ_link_healthy(now=now)
-                    grace_expired = False
-                    if link_healthy:
-                        grace_started = self._acquisition_healthy_grace_started.get(
-                            request.id
-                        )
-                        if grace_started is None:
-                            self._acquisition_healthy_grace_started[request.id] = now
-                            grace_started = now
-                        if now - grace_started >= _ACQUISITION_HEALTHY_GRACE_SECONDS:
-                            grace_expired = True
-                    # Treat a grace-expired healthy expiry exactly like an
-                    # unhealthy one: count it, drop it, let cadence advance.
-                    timeout_is_real = (not link_healthy) or grace_expired
-                    self._record_state_diagnostic(
-                        "acquisition_request_failed",
-                        "web.radio_poller",
-                        request_id=request.id,
-                        paths=[str(path) for path in request.paths],
-                        reason="acquisition_request_timeout",
-                        link_healthy=link_healthy,
-                        grace_expired=grace_expired,
-                    )
-                    scheduler.record_acquisition_failure(
-                        request,
-                        reason="acquisition_request_timeout",
-                        failed_paths=sent_paths or frozenset(request.paths),
-                        now=now,
-                        link_healthy=not timeout_is_real,
-                    )
-                    if timeout_is_real:
-                        self._acquisition_in_flight.pop(request.id, None)
-                        self._acquisition_healthy_grace_started.pop(request.id, None)
-                        continue
-                    # Healthy link, still within grace: leave in flight, skip
-                    # re-send this cycle (no extra CI-V traffic — important not
-                    # to compete with external CAT).
-                    sent_paths = sent_paths.intersection(request.paths)
-                    if all(path in sent_paths for path in request.paths):
-                        continue
-                else:
-                    sent_paths = sent_paths.intersection(request.paths)
-
-            if all(path in sent_paths for path in request.paths):
-                continue
-
-            executor = self._acquisition_executor
-            if executor is None:
-                self._record_state_diagnostic(
-                    "acquisition_executor_missing",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in request.paths],
-                    provider=request.provider,
-                )
-                scheduler.record_acquisition_failure(
-                    request,
-                    reason="acquisition_executor_missing",
-                    now=now,
-                )
-                continue
-
-            result = await executor.execute(
-                request,
-                already_sent_paths=sent_paths,
-            )
-            newly_sent = tuple(result.sent_paths)
-            failed_paths = tuple(result.failed_paths)
-            if failed_paths:
-                reason = result.failure_reason or "acquisition_request_failed"
-                self._record_state_diagnostic(
-                    "acquisition_request_failed",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in failed_paths],
-                    reason=reason,
-                    provider=request.provider,
-                )
-                scheduler.record_acquisition_failure(
-                    request,
-                    reason=reason,
-                    failed_paths=failed_paths,
-                    now=now,
-                )
-
-            if newly_sent:
-                self._acquisition_in_flight[request.id] = (
-                    sent_paths.union(newly_sent),
-                    now,
-                )
-                self._record_state_diagnostic(
-                    "acquisition_request_sent",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in newly_sent],
-                    # MOR-1533: dispatchable_requests(), matching this
-                    # drain's own dispatch view -- not the unfiltered
-                    # pending_requests(), which would also count entries
-                    # this drain will never send (withheld tx_only hints).
-                    pending_request_count=len(scheduler.dispatchable_requests()),
-                )
+        # MOR-2280: this seat does not call ``due_requests`` -- the profile's
+        # cadence is emitted by ``StateFreshnessService.tick`` and a pass
+        # dispatches what it finds queued. The drain refreshes the cached
+        # transmit fact itself, which that call used to keep current: ``_run``
+        # waits at most ``_fast_interval`` (0.025 s on LAN) between passes
+        # against the freshness service's 0.05 s tick, so a pass usually lands
+        # BETWEEN ticks, and gating on the fact the last tick left would miss
+        # a de-key by up to one tick and send the tx_only group
+        # (power/SWR/ALC/comp) during confirmed RX -- the MOR-1525 SWR-flap
+        # loop. See
+        # test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain.
+        await self._state_acquisition_drain().run_once()
 
     async def _send_query(self) -> None:
-        self._flush_due_meter_observations()
         if self._acquisition_scheduler is not None:
             await self._send_scheduler_requests()
             return

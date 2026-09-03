@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -50,9 +51,12 @@ __all__ = [
     "RadioStateModelService",
     "StateFreshnessService",
     "civ_acquisition_executor_for_provider",
+    "derive_tx_active",
     "provider_uses_civ_acquisition",
 ]
 
+
+logger = logging.getLogger(__name__)
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
 
@@ -379,9 +383,8 @@ class AcquisitionScheduler:
         self._external_cat_paused = False
         self._external_cat_owner: str | None = None
         self._external_cat_reason = ""
-        # MOR-1531: last ``tx_active`` observed by ``due_requests`` (the web
-        # poller's cadence-drain call) or ``note_tx_active`` (rigctld's own
-        # drain, MOR-1532). ``dispatchable_requests()`` reads this cached
+        # MOR-1531: last ``tx_active`` reported by ``due_requests`` or
+        # ``note_tx_active``. ``dispatchable_requests()`` reads this cached
         # value to gate RECONCILIATION-priority requests for
         # ``tx_only``-policy fields -- see that method's docstring;
         # ``pending_requests()`` (unfiltered, MOR-1533) never reads it.
@@ -520,8 +523,7 @@ class AcquisitionScheduler:
         """Return queued requests eligible for dispatch, in execution order.
 
         MOR-1531: while the last ``tx_active`` reported to ``due_requests``
-        (the web poller's cadence-drain call) or ``note_tx_active`` (rigctld's
-        own drain, MOR-1532) is False, ``RECONCILIATION``-priority requests
+        or ``note_tx_active`` is False, ``RECONCILIATION``-priority requests
         for ``tx_only``-policy fields are withheld from the returned tuple
         (root cause of the live SWR-flap, MOR-1525). ``StateStore.
         mark_stale_due`` has no notion of ``tx_only`` and emits a "stale"
@@ -565,21 +567,11 @@ class AcquisitionScheduler:
     def note_tx_active(self, tx_active: bool) -> None:
         """Update the cached ``tx_active`` gate without driving cadence polling.
 
-        MOR-1532: standalone rigctld has no cadence-poll concept of its own
-        -- it never calls :meth:`due_requests` -- so a scheduler instance
-        owned by a standalone rigctld server never updated ``_tx_active``
-        away from the ``__init__`` default of ``True``, leaving
-        :meth:`dispatchable_requests`'s ``tx_only`` gate (MOR-1531)
-        permanently open in that mode. rigctld's drain calls this every
-        cycle with ``tx_active`` derived the same way the web poller does
-        (canonical ``global.tx_state.ptt``, FRESH-gated).
-
-        In combined (``rigplane web --rigctld``) mode the two servers share
-        this scheduler instance, and ``due_requests()`` (driven by the web
-        poller) already keeps ``_tx_active`` current every cycle; rigctld
-        calling this method too changes nothing, since both derive
-        ``tx_active`` from the identical canonical fact -- no second source
-        of truth, no fight over the cached value.
+        rigctld's acquisition drain calls this every cycle so its dispatch
+        gate reads the transmit fact as of the drain rather than as of the
+        last freshness tick. It and the tick's own cadence call both derive
+        that fact with :func:`derive_tx_active` over the canonical
+        ``global.tx_state.ptt``.
         """
 
         self._tx_active = tx_active
@@ -599,21 +591,12 @@ class AcquisitionScheduler:
         opinion on where that comes from.
         """
 
-        # MOR-1531: remember the caller's tx_active for this drain cycle so
-        # dispatchable_requests() -- called immediately afterward by the web
-        # radio_poller's drain loop, the one caller of due_requests() -- can
-        # gate RECONCILIATION requests for tx_only fields using the exact
-        # same value, without a second tx_active source of truth.
-        #
-        # rigctld never calls due_requests() itself (it has no cadence-poll
-        # concept of its own). In STANDALONE mode its scheduler is its own;
-        # its drain calls note_tx_active() every cycle instead (MOR-1532),
-        # so it does NOT keep the __init__ default forever -- correcting an
-        # earlier claim here that it did. In COMBINED (`rigplane web
-        # --rigctld`) mode the two servers share this exact scheduler
-        # instance, so this due_requests() call already keeps _tx_active
-        # current for both drains; see note_tx_active()'s docstring for why
-        # rigctld also calling it there can never disagree.
+        # MOR-1531: remember the caller's tx_active so
+        # dispatchable_requests() gates RECONCILIATION requests for tx_only
+        # fields on the same value, without a second source of truth. The
+        # assignment is unconditional and precedes the dedup below, so a
+        # second writer with a different value wins -- see
+        # note_tx_active()'s docstring.
         self._tx_active = tx_active
         timestamp = self._clock.now() if now is None else now
         groups = self._due_poll_groups(timestamp, tx_active=tx_active)
@@ -1568,6 +1551,21 @@ class MeterObservationCoalescer:
         }
 
 
+def derive_tx_active(store: StateStore) -> bool:
+    """Return the canonical transmit fact the scheduler's TX gates read.
+
+    ``global.tx_state.ptt`` in ``store``, FRESH-gated. Fails closed:
+    unobserved, stale or unknown ptt yields False, so ``tx_only`` cadence
+    groups stay idle rather than poll on a fact nobody has established.
+    """
+
+    try:
+        ptt_field = store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
+    except KeyError:
+        return False
+    return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
+
+
 class StateFreshnessService:
     """Advance StateStore freshness and enqueue reconciliation requests.
 
@@ -1613,6 +1611,7 @@ class StateFreshnessService:
         "_interval_seconds",
         "_next_prime_monotonic",
         "_on_delta",
+        "_radio",
         "_scheduler",
         "_store",
     )
@@ -1624,10 +1623,12 @@ class StateFreshnessService:
         scheduler: AcquisitionScheduler | None = None,
         interval_seconds: float = 0.05,
         on_delta: Callable[[SnapshotDelta], None] | None = None,
+        radio: object | None = None,
     ) -> None:
         _validate_positive(interval_seconds, label="interval_seconds")
         self._store = store
         self._scheduler = scheduler
+        self._radio = radio
         self._interval_seconds = interval_seconds
         self._on_delta = on_delta
         # -inf so the first tick always primes immediately, regardless of
@@ -1636,7 +1637,13 @@ class StateFreshnessService:
         self._driver_lock: asyncio.Lock = asyncio.Lock()
 
     def tick(self, *, now: float | None = None) -> SnapshotDelta:
-        """Advance stale fields once and queue reconciliation through scheduler.
+        """Advance freshness once and drive the profile's acquisition cadence.
+
+        One tick releases due meter samples, re-primes never-observed
+        fields, ages the store, queues the reconciliations that ageing
+        produced, and calls :meth:`AcquisitionScheduler.due_requests` (when
+        a scheduler was wired) with the transmit fact
+        :func:`derive_tx_active` reads from the same store.
 
         Invariant: ``now`` (explicit or defaulted) must come from the same
         monotonic domain as ``self._next_prime_monotonic`` — callers that
@@ -1647,13 +1654,54 @@ class StateFreshnessService:
         """
 
         timestamp = time.monotonic() if now is None else now
+        self.flush_due_meter_samples(now=timestamp)
         self._reprime_unobserved_if_due(now=timestamp)
         delta = self._store.mark_stale_due(now=now)
         for request in delta.reconciliation_requests:
             self._queue_reconciliation(request)
+        scheduler = self._scheduler
+        if scheduler is not None:
+            scheduler.due_requests(
+                now=timestamp,
+                tx_active=derive_tx_active(self._store),
+            )
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
+
+    def flush_due_meter_samples(self, *, now: float | None = None) -> None:
+        """Release meter samples whose coalescing window has elapsed.
+
+        :class:`MeterObservationCoalescer` holds a burst's samples until one
+        ages past the window, and the flush that runs on arrival uses that
+        sample's own timestamp — so the newest sample of a burst is never due
+        on arrival and needs a clock-driven release. Reached through the
+        radio the service was constructed with; a service built without one
+        (or over a radio with no coalescer) does nothing here.
+        """
+
+        # ``web/server.py: WebServer.__init__`` builds a service with no radio
+        # and ``web/web_startup.py: start_web_server`` ticks it whether or not
+        # the bootstrap replaced it, so None reaches here in a radio-less web
+        # process. ``getattr`` below would tolerate None too; this returns on
+        # the documented case rather than falling through it.
+        radio = self._radio
+        if radio is None:
+            return
+        coalescer = getattr(radio, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return
+        runtime = getattr(radio, "_civ_runtime", None)
+        flush_due = getattr(runtime, "flush_due_meter_observations", None)
+        if not callable(flush_due):
+            return
+        try:
+            flush_due(now=time.monotonic() if now is None else now)
+        except Exception:
+            # The freshness loop must survive a failing flush: run() only
+            # catches CancelledError, so an exception here would stop the
+            # decay of every field.
+            logger.debug("state freshness: meter flush failed", exc_info=True)
 
     def _reprime_unobserved_if_due(self, *, now: float) -> None:
         """Re-derive the never-observed-field prime at an adaptive interval.

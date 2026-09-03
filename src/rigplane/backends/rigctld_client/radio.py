@@ -25,6 +25,7 @@ from ...core.state_pipeline_contracts import (
 )
 from ...core.tx_observation import TxStateReading
 from ...radio_state import RadioState
+from ...runtime._poller_types import canonicalize_level_command
 from ...runtime.callable_support import supports_explicit_callable
 from ...runtime.managed_tx_state import (
     AbortOperation,
@@ -173,7 +174,29 @@ class RigctldClientObservationPoller:
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
-        observations.append(await adapter.read_ptt())
+        try:
+            ptt = await adapter.read_ptt()
+        except Exception:
+            if self._provider_generation_is_current(provider_generation):
+                unknown = adapter.observed_ptt_observation(None)
+                try:
+                    self._callback(
+                        self._stamp_provider_generation((unknown,), provider_generation)
+                    )
+                except Exception:
+                    logger.warning(
+                        "rigctld-client PTT error observation publication failed",
+                        exc_info=True,
+                    )
+            raise
+        if self._provider_generation_is_current(provider_generation):
+            observed_ptt = adapter.observed_ptt_observation(
+                ptt.value, timestamp_monotonic=ptt.timestamp_monotonic
+            )
+            self._callback(
+                self._stamp_provider_generation((observed_ptt,), provider_generation)
+            )
+        observations.append(ptt)
         active_vfo = await adapter.read_active_vfo()
         if active_vfo is not None:
             observations.append(active_vfo)
@@ -326,6 +349,7 @@ class RigctldClientObservationPoller:
         return tuple(annotated)
 
     async def _execute_command(self, cmd: Any) -> None:
+        cmd = canonicalize_level_command(cmd, self._radio)
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
             return
@@ -333,14 +357,12 @@ class RigctldClientObservationPoller:
             PttOff,
             PttOn,
             SelectVfo,
-            SetAfLevel,
             SetAttenuator,
             SetFreq,
             SetMode,
             SetNB,
             SetNR,
             SetPreamp,
-            SetRfGain,
         )
 
         match cmd:
@@ -358,10 +380,6 @@ class RigctldClientObservationPoller:
                 await self._radio.set_ptt(False)
             case SelectVfo(vfo=vfo):
                 await self._radio.set_vfo_slot(vfo)
-            case SetRfGain(level=level, receiver=rx):
-                await self._radio.set_rf_gain(level, receiver=rx)
-            case SetAfLevel(level=level, receiver=rx):
-                await self._radio.set_af_level(level, receiver=rx)
             case SetPreamp(level=level, receiver=rx):
                 await self._radio.set_preamp(level, receiver=rx)
             case SetAttenuator(db=db, receiver=rx):
@@ -542,6 +560,10 @@ def _readback_paths_match(readback_path: FieldPath, overlay_path: FieldPath) -> 
 
 
 def _physical_command_targets_path(command: Any, path: FieldPath) -> bool:
+    if isinstance(command, CommandIntent):
+        return command.target is not None and _readback_paths_match(
+            command.target, path
+        )
     command_name = type(command).__name__.lower()
     target_name = path.name.replace("_", "")
     return target_name in command_name or (target_name, command_name) in (
@@ -661,7 +683,13 @@ class RigctldClientRadio:
 
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         if receiver is not None and (
-            command not in {"set_af_level", "set_rf_gain", "set_squelch"}
+            command
+            not in {
+                "set_af_level",
+                "set_rf_gain",
+                "set_squelch",
+                "set_attenuator_level",
+            }
             or isinstance(receiver, bool)
             or not isinstance(receiver, int)
             or receiver != 0
@@ -888,6 +916,9 @@ class RigctldClientRadio:
         self._require_main_receiver(receiver, "get_attenuator_level")
         line = (await self._transport.query("l ATT", response_lines=1))[0]
         return _parse_int_level(line, "attenuator")
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return db
 
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_attenuator_level")

@@ -326,8 +326,6 @@ class YaesuCatTransport:
                 line = await self.readline(timeout=drain_timeout)
             except CatTimeoutError:
                 break  # Silence — buffer is clean
-            except CatTransportError:
-                break  # Port error — bail out
             drained += 1
             if line == "?":
                 self._stats.record_error(f"rejected: {command}")

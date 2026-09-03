@@ -285,8 +285,10 @@ async def test_unknown_deferred_command_fails_closed_without_entering_lane() -> 
     before = service.lifecycle_events()
 
     assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
-    with pytest.raises(CommandError, match="RF state is unknown"):
+    with pytest.raises(CommandError, match="RF state is unknown") as excinfo:
         await poller._execute_queued_entry(entry)  # noqa: SLF001
+    assert entry.future is not None
+    assert entry.future.exception() is excinfo.value
 
     assert poller._stage_tx_interlocked_entries([]) == []  # noqa: SLF001
     assert service.lifecycle_events() == before
@@ -592,6 +594,8 @@ async def test_refused_ptt_on_emits_machine_readable_failed_lifecycle() -> None:
 
     with pytest.raises(TxInterlockRefusal) as excinfo:
         await poller._execute_queued_entry(entry)  # noqa: SLF001
+    assert entry.future is not None
+    assert entry.future.exception() is excinfo.value
     poller._mark_queued_command_failed(entry, excinfo.value)  # noqa: SLF001
 
     event = service.lifecycle_events()[-1]
