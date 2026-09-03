@@ -33,6 +33,7 @@ profile's map, plain or empty.
 
 from __future__ import annotations
 
+import copy
 import functools
 import inspect
 import itertools
@@ -175,6 +176,7 @@ class TestCommandMapEquality:
             0x00,
             0x00,
         )
+        assert copy.deepcopy(command_map) is command_map
 
 
 class TestBoundCommandsGetattr:

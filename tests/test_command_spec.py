@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import textwrap
 from pathlib import Path
 
@@ -194,6 +195,7 @@ class TestCivCommandSpec:
         }
         with pytest.raises(TypeError):
             spec.value_variants[0] = (0x1A, 0x06, 0x00)  # type: ignore[index]
+        assert copy.deepcopy(spec.value_variants) is spec.value_variants
 
     @pytest.mark.parametrize(
         ("declaration", "path"),

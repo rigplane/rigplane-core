@@ -119,6 +119,10 @@ class CommandMap:
             )
         )
 
+    def __deepcopy__(self, memo: dict[int, object]) -> CommandMap:
+        """Return this immutable map when snapshot code deep-copies a radio."""
+        return self
+
 
 @dataclass(frozen=True, slots=True)
 class ReverseLookupResult:

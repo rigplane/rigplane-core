@@ -5,9 +5,8 @@ Supports both CI-V (wire bytes) and Yaesu CAT (text templates) in a unified sche
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from types import MappingProxyType
 
 __all__ = [
     "CivCommandSpec",
@@ -15,6 +14,33 @@ __all__ = [
     "AbsentCommandSpec",
     "CommandSpec",
 ]
+
+
+class _ValueVariants(Mapping[int, tuple[int, ...]]):
+    """Small immutable mapping that remains safe under snapshot deepcopy."""
+
+    __slots__ = ("_items",)
+
+    def __init__(self, source: Mapping[int, tuple[int, ...]]) -> None:
+        self._items = tuple((key, tuple(wire)) for key, wire in source.items())
+
+    def __getitem__(self, key: int) -> tuple[int, ...]:
+        for candidate, wire in self._items:
+            if candidate == key:
+                return wire
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[int]:
+        return (key for key, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _ValueVariants:
+        return self
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self._items))
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,9 +63,7 @@ class CivCommandSpec:
         object.__setattr__(
             self,
             "value_variants",
-            MappingProxyType(
-                {key: tuple(wire) for key, wire in self.value_variants.items()}
-            ),
+            _ValueVariants(self.value_variants),
         )
 
     def __hash__(self) -> int:
