@@ -468,7 +468,6 @@ class TestLifecycle:
         await srv.start()
         try:
             assert srv._rig_handler is not None
-            assert srv._poller is None
             assert srv._rig_handler._cache is not radio.state_cache
         finally:
             await srv.stop()

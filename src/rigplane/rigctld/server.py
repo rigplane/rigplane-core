@@ -156,7 +156,6 @@ class RigctldServer:
         config: Server configuration; defaults to RigctldConfig().
         _protocol: Override the protocol module (for testing).
         _handler: Override the handler instance (for testing).
-        _poller: Override the poller instance (for testing).
         _circuit_breaker: Override the circuit breaker (for testing).
     """
 
@@ -167,7 +166,6 @@ class RigctldServer:
         *,
         _protocol: Any = None,
         _handler: Any = None,
-        _poller: Any = None,
         _circuit_breaker: Any = None,
     ) -> None:
         self._radio = radio
@@ -179,7 +177,6 @@ class RigctldServer:
         # Injected for testing; populated lazily in start() if None.
         self._protocol: Any = _protocol
         self._rig_handler: Any = _handler
-        self._poller: Any = _poller
         self._circuit_breaker: CircuitBreaker | None = _circuit_breaker
         self._server_was_running: bool = False
         self._state_store: StateStore | None = None
@@ -918,10 +915,6 @@ class RigctldServer:
                 pass
             self._state_store_freshness_task = None
 
-        if self._poller is not None:
-            await self._poller.stop()
-            self._poller = None
-
         # Listener down, then the live sessions, then the wait. The order is
         # the release guarantee, not tidiness (MOR-1014): since 3.12
         # ``wait_closed()`` returns only once every accepted connection has
@@ -1016,10 +1009,6 @@ class RigctldServer:
         self._client_tasks.add(task)
         self._client_count += 1
 
-        # Start poller when the first client connects.
-        if self._poller is not None and self._client_count == 1:
-            self._spawn(self._poller.start())
-
         # The re-read cadence otherwise ticks on its own clock from server
         # start: a client connecting just before the next scheduled tick
         # could find RF truth UNKNOWN and have its first DEFER-family write
@@ -1044,23 +1033,11 @@ class RigctldServer:
         self._client_tasks.discard(task)
         self._client_count -= 1
 
-        # Stop poller when no clients remain.
-        if self._poller is not None and self._client_count <= 0:
-            self._client_count = 0
-            try:
-                self._spawn(self._poller.stop())
-            except RuntimeError:
-                # Loop already closed during shutdown.
-                pass
-
     async def _wsjtx_compat_prewarm(self) -> None:
         """Best-effort DATA-mode prewarm for WSJT-X compatibility mode."""
         get_mode = get_mode_reader(self._radio, _mode_to_name)
         if get_mode is None:
             return
-        poller = self._poller
-        if poller is not None:
-            poller.write_busy = True
         try:
             mode_name, _ = await get_mode()
             data_on = await self._radio.get_data_mode()
@@ -1084,8 +1061,6 @@ class RigctldServer:
                     source=self._config.wsjtx_data_mod_input,
                 )
                 await self._radio.set_data_mode(data_mode)
-                if poller is not None:
-                    poller.hold_for(1.5)
                 logger.info(
                     "WSJT-X compat prewarm: DATA%s enabled (base mode=%s)",
                     data_mode,
@@ -1093,9 +1068,6 @@ class RigctldServer:
                 )
         except Exception as exc:
             logger.debug("WSJT-X compat prewarm skipped/failed: %s", exc)
-        finally:
-            if poller is not None:
-                poller.write_busy = False
 
     # ------------------------------------------------------------------
     # Per-client coroutine
@@ -1184,9 +1156,6 @@ class RigctldServer:
                     continue
 
                 # ── execute with command timeout ─────────────────────
-                poller_hold = bool(cmd.is_set and self._poller is not None)
-                if poller_hold:
-                    self._poller.write_busy = True
                 t_start = time.monotonic()
                 try:
                     resp = await asyncio.wait_for(
@@ -1207,17 +1176,6 @@ class RigctldServer:
                     writer.write(proto.format_error(HamlibError.EIO))
                     await writer.drain()
                     continue
-                finally:
-                    if poller_hold:
-                        # Packet mode transitions can make CI-V briefly unresponsive.
-                        # Keep poller paused for a settle window to avoid
-                        # immediate get_frequency storms.
-                        if _is_packet_mode_set(cmd):
-                            try:
-                                self._poller.hold_for(3.0)
-                            except Exception:
-                                logger.debug("hold_for failed", exc_info=True)
-                        self._poller.write_busy = False
 
                 # ── session-state wiring (vfo_opt handshake) ─────────
                 # When the handler advertised vfo_opt via ``\chk_vfo`` →

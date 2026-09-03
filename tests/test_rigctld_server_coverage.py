@@ -5,7 +5,6 @@ Covers:
 - circuit_breaker_state property: None and non-None (lines 92-96)
 - start() auto-init when protocol/handler is None (lines 104-122)
 - _accept_client wsjtx_compat prewarm first client (line 230)
-- _on_client_done RuntimeError on loop.create_task (lines 240-246)
 - _wsjtx_compat_prewarm: all branches (lines 248-269)
 - quit command in _handle_client (lines 343-345)
 - ConnectionResetError in _handle_client (lines 422-425)
@@ -13,7 +12,6 @@ Covers:
 - Rate-limited response (EIO) in _handle_client
 - Command timeout in _handle_client
 - parse_error raises generic Exception → EPROTO
-- Poller hold_for on PKT set commands (lines 389-393)
 """
 
 from __future__ import annotations
@@ -31,9 +29,6 @@ from rigplane.rigctld.server import RigctldServer, _is_packet_mode_set
 # ---------------------------------------------------------------------------
 
 _FREQ_CMD = RigctldCommand(short_cmd="f", long_cmd="get_freq", is_set=False)
-_PKT_CMD = RigctldCommand(
-    short_cmd="M", long_cmd="set_mode", args=("PKTUSB",), is_set=True
-)
 _FREQ_RESP = RigctldResponse(values=["14074000"], error=0)
 _RESPONSE_BYTES = b"14074000\nRPRT 0\n"
 _ERROR_BYTES_ENIMPL = b"RPRT -4\n"
@@ -229,7 +224,6 @@ async def test_start_creates_protocol_and_handler_when_none(
     try:
         assert srv._protocol is not None
         assert srv._rig_handler is not None
-        assert srv._poller is None
     finally:
         await srv.stop()
 
@@ -366,45 +360,6 @@ async def test_handler_exception_returns_eio(
         await writer.drain()
         data = await asyncio.wait_for(reader.read(256), timeout=1.0)
         assert b"RPRT -6" in data  # EIO
-    finally:
-        await _close(writer)
-        await srv.stop()
-
-
-# ---------------------------------------------------------------------------
-# Poller hold_for on PKT set mode (lines 389-393)
-# ---------------------------------------------------------------------------
-
-
-async def test_pkt_set_mode_calls_poller_hold_for(
-    mock_radio: MagicMock, cfg: RigctldConfig
-) -> None:
-    """set_mode with PKT* must call poller.hold_for(3.0) after execution."""
-    proto = MagicMock(name="protocol")
-    proto.parse_line.return_value = _PKT_CMD
-    proto.format_response.return_value = _RESPONSE_BYTES
-    proto.format_error.side_effect = lambda err: f"RPRT {err}\n".encode()
-    handler = _make_handler()
-    mock_poller = MagicMock()
-    mock_poller.write_busy = False
-    mock_poller.hold_for = MagicMock()
-    mock_poller.start = AsyncMock()
-    mock_poller.stop = AsyncMock()
-
-    srv = RigctldServer(
-        mock_radio,
-        cfg,
-        _protocol=proto,
-        _handler=handler,
-        _poller=mock_poller,
-    )
-    await srv.start()
-    try:
-        reader, writer = await _connect(srv)
-        writer.write(b"M PKTUSB\n")
-        await writer.drain()
-        await asyncio.wait_for(reader.read(256), timeout=1.0)
-        mock_poller.hold_for.assert_called_with(3.0)
     finally:
         await _close(writer)
         await srv.stop()

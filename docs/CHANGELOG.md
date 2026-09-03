@@ -13,12 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **The `rigctld` server's `_poller` constructor hook is deleted.** Removed
+  from `rigplane.rigctld.server`: the `_poller` keyword argument of
+  `RigctldServer.__init__`, the `self._poller` attribute, and the poller
+  start/stop and `write_busy`/`hold_for` pacing sites that read it in
+  `RigctldServer.stop`, `RigctldServer._on_client_done`,
+  `RigctldServer._wsjtx_compat_prewarm` and `RigctldServer._handle_client`.
+  Passing `_poller=` to `RigctldServer` now raises `TypeError`.
 - **The `rigctld` `RadioPoller` is deleted.** Removed: `rigplane.rigctld.poller`
   (the module, its `RadioPoller` class, `_mode_to_hamlib_str`,
   `_get_mode_reader`, and `_STATS_LOG_INTERVAL`) and its `## RadioPoller`
-  section in `docs/api/rigctld.md`. At the parent commit nothing under
-  `src/` constructs the class; `RigctldServer`'s `_poller` constructor hook
-  stays and is removed in the follow-up.
+  section in `docs/api/rigctld.md`. At that entry's parent commit nothing
+  under `src/` constructed the class.
 - **The misnamed `tx_freq_monitor` field and commands are deleted; XFC is
   the real transmit-frequency monitor (MOR-2246).** Removed: the
   `TransceiverStatusCapable` protocol (and its `rigplane.TransceiverStatusCapable`
