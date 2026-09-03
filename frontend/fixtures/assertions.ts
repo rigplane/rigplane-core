@@ -686,8 +686,19 @@ export function runAssertions(
  * Resolved paint of the controls that carry the most safety weight, recorded
  * per capture so a `prefers-contrast` / `forced-colors` variant is provable in
  * TEXT and not only in pixels.
+ *
+ * MOR-2243 — `rootTestId` is explicit because `currentRootTestId` is only ever
+ * assigned by `runAssertions`, which a fixture without an `expect` never calls
+ * (`fixtures/main.ts`). This probe then read the stale default against a page
+ * that has no such element, and `root()`'s non-null assertion turned that
+ * missing element into a TypeError that killed the whole capture run rather
+ * than a value this loop could skip. Passing the id in makes the probe
+ * independent of whether the optional assertion step ran first; the default
+ * keeps every existing caller on the value it already resolved.
  */
-export function styleProbe(): Record<string, Record<string, string>> {
+export function styleProbe(
+  rootTestId: string = currentRootTestId,
+): Record<string, Record<string, string>> {
   const targets: Record<string, string> = {
     key: '[data-testid="rx-tx-key"]',
     unkey: '[data-testid="rx-tx-unkey"]',
@@ -701,8 +712,9 @@ export function styleProbe(): Record<string, Record<string, string>> {
     txBadge: '[data-vfo-tx-badge]',
   };
   const out: Record<string, Record<string, string>> = {};
+  const scope = document.querySelector<HTMLElement>(`[data-testid="${rootTestId}"]`);
   for (const [name, sel] of Object.entries(targets)) {
-    const el = q<HTMLElement>(sel);
+    const el = scope?.querySelector<HTMLElement>(sel);
     if (!el) continue;
     const cs = getComputedStyle(el);
     out[name] = {

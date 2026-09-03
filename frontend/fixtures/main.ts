@@ -244,7 +244,9 @@ window.__harness = {
         + 'confirms the harness mounted, not that the composition is correct.',
     }]),
   tokens: tokenSnapshot,
-  paint: styleProbe,
+  // Explicit root: `styleProbe` otherwise falls back to the id `runAssertions`
+  // last set, and peer-split fixtures never call it (see `assert` above).
+  paint: () => styleProbe(ROOT_TEST_ID),
   calls: () => harness.calls,
   /** A stable identifier per focusable control, in DOM order — the tab sequence. */
   focusOrder: () => [...document.querySelectorAll<HTMLElement>(
