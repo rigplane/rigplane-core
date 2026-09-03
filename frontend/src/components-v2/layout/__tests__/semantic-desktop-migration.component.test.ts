@@ -1041,9 +1041,11 @@ describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () 
    * sidebars and the settings modal (scoped per container, since
    * `rx-audio`/`dsp`/`cw` exist in both sidebars), plus this batch's own two
    * hosts, which carry no `data-panel-id`. It is NOT an inventory of
-   * everywhere `declared` reaches - it does not scan `.bottom-dock`, the
-   * legacy VFO header, or the status bar's other indicators, so a guard
-   * placed on any of those is invisible here.
+   * everywhere `declared` reaches: it does not scan `.bottom-dock`
+   * (`MetersDockPanel`, retired on `declared.has('meters')`), the legacy VFO
+   * header (`declared.has('vfo')`), the status bar's other indicators, or
+   * `BandSelector`'s `hamBands={!declared.has('band')}` prop. `BEFORE_HOSTS`
+   * below pins what it does find.
    */
   const hosts = (t: HTMLElement): string[] => [
     ...['.left-sidebar', '.right-sidebar', '.settings-modal'].flatMap(
@@ -1142,17 +1144,30 @@ describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () 
     expect(t.querySelector(SPECTRUM)!.getAttribute('data-hide-scope-controls')).toBe('true');
   });
 
-  // THE ASYMMETRY, given a row that can fail. Over the five selectors `hosts()`
-  // scans — and only those — both declarations together lose EXACTLY one entry
-  // and gain none, so a `declared.has('scopeControls')` mount gate added to a
-  // sidebar panel, a settings-modal section or the spectrum panel reddens this
-  // even though every row above stays green. A guard placed on a host `hosts()`
-  // does not scan does not: the batch-3 delta row forty lines above names its
-  // own three containers for the same reason.
+  // THE ASYMMETRY, given a row that can fail — and given an explicit statement
+  // of how far it can see, because the reach is much smaller than "everywhere
+  // `declared` goes". Under this fixture `hosts()` finds exactly the seven
+  // entries below: batches 2 and 3 already retired most sidebar panels, and
+  // the rest of each sidebar's DEFAULT order never mounts here. So the first
+  // assertion pins the reachable set itself. A `declared.has('scopeControls')`
+  // mount gate placed on one of these seven reddens the delta; one placed
+  // anywhere else — the status bar's other indicators, `.bottom-dock`, the
+  // legacy VFO header, or a sidebar panel this fixture never renders — is
+  // INVISIBLE to this row. Both directions are measured, not argued.
+  const BEFORE_HOSTS = [
+    '.left-sidebar band',
+    '.right-sidebar memory',
+    '.settings-modal desktop-language',
+    '.settings-modal desktop-vfo-ops',
+    '.settings-modal desktop-workspace',
+    'content-center spectrum-panel',
+    'status-bar scope-indicator',
+  ];
+
   it('the host delta is exactly the status bar scope indicator', () => {
     const before = hosts(renderAll(PRE_BATCH_4));
     const after = hosts(renderAll('sdr-test'));
-    expect(before.length).toBeGreaterThan(1);
+    expect(before).toEqual(BEFORE_HOSTS);
     expect(before.filter((p) => !after.includes(p))).toEqual(['status-bar scope-indicator']);
     expect(after.filter((p) => !before.includes(p))).toEqual([]);
   });
