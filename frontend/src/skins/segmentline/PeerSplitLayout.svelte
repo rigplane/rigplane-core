@@ -19,14 +19,20 @@
   import ScaledStage from '../../primitives/stage/ScaledStage.svelte';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
 
-  /** Matches `SEGMENTLINE_GLASS_STAGE` in
-   *  `presentation/layouts/segmentline-declarations.ts` — duplicated here
-   *  because `ScaledStage` takes `nativeW`/`nativeH` as props and reads no
-   *  manifest (the manifest's own native-size declaration stays
-   *  declaration-only outside `presentation/layouts/` per MOR-1247; see
-   *  that file's own header). */
-  const NATIVE_W = 1280;
-  const NATIVE_H = 540;
+  /**
+   * Canvas size comes from the shell (`components-v2/layout/LcdLayout.svelte`),
+   * which resolves it from the `peer-split-glass` instrument group through
+   * the `peer-split` manifest's zone reference (MOR-2253 slice 1). This
+   * replaces this component's own former `NATIVE_W`/`NATIVE_H` constants,
+   * which duplicated `SEGMENTLINE_GLASS_STAGE` in `presentation/layouts/
+   * segmentline-declarations.ts` as a second, independent literal
+   * (instrument-group ADR §4, F2).
+   */
+  interface Props {
+    canvasW: number;
+    canvasH: number;
+  }
+  let { canvasW, canvasH }: Props = $props();
 
   /** Wall-clock only — see the file header. `Date`, not radio state. */
   function clockLabel(date: Date): { utc: string; local: string } {
@@ -46,7 +52,7 @@
 </script>
 
 <div class="peer-split-holder">
-  <ScaledStage nativeW={NATIVE_W} nativeH={NATIVE_H}>
+  <ScaledStage nativeW={canvasW} nativeH={canvasH}>
     <div class="peer-split-glass" data-testid="peer-split-glass">
       <div class="peer-split-clock" data-testid="peer-split-clock" aria-label="Clock">
         <span data-testid="peer-split-clock-utc">{clock.utc}</span>

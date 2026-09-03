@@ -12,6 +12,7 @@
  */
 import type { Component } from 'svelte';
 import { isValidLanguageId as isValidProductId } from '../languages/contract';
+import type { GroupId } from '../groups/contract';
 
 /** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical;
  *  `txAux` added by MOR-1265, `meters` by MOR-1273, `rxAudio` by MOR-1279,
@@ -50,6 +51,16 @@ export type TopologyClass = (typeof TOPOLOGY_CLASSES)[number];
 export interface LayoutZone {
   readonly id: string;
   readonly surfaces: readonly SemanticSurfaceName[];
+  /**
+   * MOR-2253 slice 1 — the `InstrumentGroup` (`../groups/contract.ts`)
+   * mounted in this zone, resolved by id rather than importing the group
+   * (the manifest stays a declaration, never a value pulled in from another
+   * presentation module). Optional: most zones mount bare semantic surfaces
+   * with no group. `validateZones` below checks only `id`/`surfaces` — this
+   * field is not exact-key-checked (no `hasExactPlainKeys` call touches a
+   * zone object), so adding it needed no validator change.
+   */
+  readonly group?: GroupId;
 }
 
 /**
@@ -77,7 +88,15 @@ export interface LayoutManifest {
   readonly schemaVersion: 1;
   readonly id: string;
   readonly displayName: string;
-  readonly loader: () => Promise<{ default: Component }>;
+  // `Component<any>`, not the bare `Component` (implicitly `Component<{}>`):
+  // MOR-2253 slice 1 gave `PeerSplitLayout.svelte` required `canvasW`/
+  // `canvasH` props (its former native-size constants, now the shell's
+  // job), and `Props` is checked contravariantly here — a loader whose
+  // component requires props is not assignable to one requiring none. The
+  // validator only ever checks `typeof manifest.loader === 'function'`
+  // (below), never the loaded component's prop shape, so this widens
+  // nothing this contract actually enforces.
+  readonly loader: () => Promise<{ default: Component<any> }>;
   readonly zones: readonly LayoutZone[];
   readonly compatibleTopologies: readonly TopologyClass[];
   readonly requiredSemanticSurfaces: readonly SemanticSurfaceName[];
