@@ -90,9 +90,19 @@ jobs:
       # of the pixel-diff step (their conditions are mutually exclusive),
       # writing into frontend/fixtures/approved-baselines/ via that config's
       # `snapshotPathTemplate`.
+      #
+      # `=all` is load-bearing: the bare `--update-snapshots` flag selects
+      # mode `changed`, which is comparator-gated and so writes nothing for
+      # exactly the sub-floor change this route exists to re-pin. Mode `all`
+      # skips the comparator and rewrites every baseline whose raw bytes
+      # differ from the freshly-rendered capture. That includes the
+      # same-tree antialiasing noise fixtures/approved-baselines/README.md
+      # records (3-123 differing pixels per capture), so the tradeoff is
+      # accepted deliberately: each dispatch re-pins every capture rather
+      # than only the ones that actually changed.
       - name: Regenerate approved baselines
         if: github.event.inputs.regenerate == 'true'
-        run: cd frontend && npm run test:e2e:visual -- --update-snapshots
+        run: cd frontend && npm run test:e2e:visual -- --update-snapshots=all
 
       # always(): upload whatever the step above wrote even if it exited
       # non-zero, so a partial re-pin is still downloadable.
