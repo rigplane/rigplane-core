@@ -1178,11 +1178,7 @@ set_tsql_freq = [0x1B, 0x01]
 
 # ── Data Mode ──
 get_data_mode = [0x1A, 0x06]
-set_data_mode = [0x1A, 0x06]
-# IC-7300 Advanced Manual (11a) p.19-10: DATA OFF and DATA1 each carry
-# their matching filter selector in the SET payload.
-set_data_mode_off = [0x1A, 0x06, 0x00, 0x00]
-set_data_mode_data1 = [0x1A, 0x06, 0x01, 0x01]
+set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00, 0x00], "1" = [0x1A, 0x06, 0x01, 0x01] } }
 
 # ── Scope ──
 get_scope_wave = [0x27, 0x00]

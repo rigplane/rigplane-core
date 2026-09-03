@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from rigplane.commands import set_data_mode
+from rigplane.commands._frame import _build_from_map
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import resolve_radio_profile
@@ -16,7 +17,12 @@ from rigplane.web.server import WebServer
 
 
 def _without(command_map: CommandMap, name: str) -> CommandMap:
-    return CommandMap({key: command_map.get(key) for key in command_map if key != name})
+    commands = {key: command_map.get(key) for key in command_map}
+    variants = {
+        1: (0x1A, 0x06, 0x01, 0x01),
+    }
+    assert name == "0"
+    return CommandMap(commands, value_variants={"set_data_mode": variants})
 
 
 def test_ic7300_data_off_has_documented_filter_byte() -> None:
@@ -43,12 +49,69 @@ def test_ic7300_data1_uses_documented_filter_one() -> None:
     ) == bytes.fromhex("fefe94e01a060101fd")
 
 
+def test_ic7300_exposes_one_command_name_for_all_data_values() -> None:
+    profile = resolve_radio_profile(model="IC-7300")
+
+    assert profile.supports_command("set_data_mode")
+    assert not profile.supports_command("set_data_mode_off")
+    assert not profile.supports_command("set_data_mode_data1")
+    assert len(profile.command_names) == 320
+    assert len(profile.command_map) == 320
+    assert list(profile.command_map).count("set_data_mode") == 1
+    assert all(not name.startswith("set_data_mode_") for name in profile.command_map)
+
+
 def test_declared_data_domain_fails_closed_when_variant_is_removed() -> None:
     profile = resolve_radio_profile(model="IC-7300")
-    without_off = _without(profile.command_map, "set_data_mode_off")
+    without_off = _without(profile.command_map, "0")
 
     with pytest.raises(ValueError, match="not declared"):
         BoundCommands(without_off).set_data_mode(0, to_addr=profile.civ_addr)
+
+
+@pytest.mark.parametrize(
+    ("variants", "expected"),
+    [
+        (
+            {
+                0: (0x1A, 0x06, 0x00),
+                1: (0x1A, 0x06, 0x01, 0x01),
+            },
+            "fefe94e01a0600fd",
+        ),
+        (
+            {
+                0: (0x1A, 0x06, 0x00, 0x00),
+                1: (0x1A, 0x06, 0x01, 0x02),
+            },
+            "fefe94e01a060102fd",
+        ),
+    ],
+)
+def test_wire_output_tracks_the_declared_variant_bytes(
+    variants: dict[int, tuple[int, ...]], expected: str
+) -> None:
+    value = 0 if expected.endswith("0600fd") else 1
+    command_map = CommandMap(
+        {"set_data_mode": (0x1A, 0x06)},
+        value_variants={"set_data_mode": variants},
+    )
+
+    assert set_data_mode(value, to_addr=0x94, cmd_map=command_map) == bytes.fromhex(
+        expected
+    )
+
+
+def test_variant_builder_requires_value_and_forbids_appended_data() -> None:
+    command_map = CommandMap(
+        {"set_x": (0x1A, 0x06)},
+        value_variants={"set_x": {0: (0x1A, 0x06, 0x00, 0x00)}},
+    )
+
+    with pytest.raises(ValueError, match="requires a declared value"):
+        _build_from_map(command_map, "set_x", to_addr=0x94)
+    with pytest.raises(ValueError, match="cannot combine"):
+        _build_from_map(command_map, "set_x", to_addr=0x94, value=0, data=b"\xff")
 
 
 @pytest.mark.parametrize("mode", range(4))
@@ -65,6 +128,10 @@ def test_data_mode_rejects_values_outside_the_legacy_wire_domain() -> None:
         set_data_mode(
             4, to_addr=0x94, cmd_map=CommandMap({"set_data_mode": (0x1A, 0x06)})
         )
+
+    profile = resolve_radio_profile(model="IC-7300")
+    with pytest.raises(ValueError, match="0-3"):
+        BoundCommands(profile.command_map).set_data_mode(4, to_addr=profile.civ_addr)
 
 
 @pytest.mark.asyncio

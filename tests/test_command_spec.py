@@ -129,6 +129,9 @@ get_mode = { cat = { read = "MD0;" } }
 class TestCivCommandSpec:
     """Tests for CI-V command specifications (existing format)."""
 
+    def test_legacy_constructor_defaults_to_no_value_variants(self):
+        assert CivCommandSpec(bytes=(0x03,)).value_variants == {}
+
     def test_load_civ_commands(self, tmp_path):
         """CI-V commands load as CivCommandSpec."""
         p = _write_toml(tmp_path, _MINIMAL_CIV_TOML)
@@ -174,6 +177,84 @@ class TestCivCommandSpec:
 
         with pytest.raises(RigLoadError, match="must be all integers"):
             load_rig(p)
+
+    def test_value_variants_load_as_one_immutable_civ_spec(self, tmp_path):
+        toml = (
+            _MINIMAL_CIV_TOML
+            + '\nset_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00, 0x00], "1" = [0x1A, 0x06, 0x01, 0x01] } }\n'
+        )
+        rig = load_rig(_write_toml(tmp_path, toml, "variants.toml"))
+
+        spec = rig.commands["set_data_mode"]
+        assert isinstance(spec, CivCommandSpec)
+        assert spec.bytes == (0x1A, 0x06)
+        assert spec.value_variants == {
+            0: (0x1A, 0x06, 0x00, 0x00),
+            1: (0x1A, 0x06, 0x01, 0x01),
+        }
+        with pytest.raises(TypeError):
+            spec.value_variants[0] = (0x1A, 0x06, 0x00)  # type: ignore[index]
+
+    @pytest.mark.parametrize(
+        ("declaration", "path"),
+        [
+            (
+                "set_data_mode = { bytes = [0x1A, 0x06], value_variants = {} }",
+                r"variants\.toml: \[commands\]\.set_data_mode\.value_variants",
+            ),
+            (
+                'set_data_mode = { bytes = [], value_variants = { "0" = [0x1A, 0x06, 0x00] } }',
+                r"variants\.toml: \[commands\]\.set_data_mode\.bytes",
+            ),
+            (
+                'set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "01" = [0x1A, 0x06, 0x01] } }',
+                r"variants\.toml: \[commands\]\.set_data_mode\.value_variants\.01",
+            ),
+            (
+                'set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, true] } }',
+                r"variants\.toml: \[commands\]\.set_data_mode\.value_variants\.0",
+            ),
+            (
+                'set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x100] } }',
+                r"variants\.toml: \[commands\]\.set_data_mode\.value_variants\.0",
+            ),
+            (
+                'set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06] } }',
+                r"variants\.toml: \[commands\]\.set_data_mode\.value_variants\.0",
+            ),
+            (
+                'set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x07, 0x00] } }',
+                r"variants\.toml: \[commands\]\.set_data_mode\.value_variants\.0",
+            ),
+            (
+                'set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00], "1" = [0x1A, 0x06, 0x00] } }',
+                r"variants\.toml: \[commands\]\.set_data_mode\.value_variants\.1",
+            ),
+            (
+                'set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00] }, extra = true }',
+                r"variants\.toml: \[commands\]\.set_data_mode",
+            ),
+            (
+                "set_data_mode = { bytes = [0x1A, 0x06] }",
+                r"variants\.toml: \[commands\]\.set_data_mode",
+            ),
+            (
+                'set_data_mode = { cat = { write = "DM{mode};" }, bytes = [0x1A, 0x06] }',
+                r"variants\.toml: \[commands\]\.set_data_mode",
+            ),
+            (
+                'set_data_mode = { value_variants = { "0" = [0x1A, 0x06, 0x00] } }',
+                r"variants\.toml: \[commands\]\.set_data_mode",
+            ),
+        ],
+    )
+    def test_invalid_value_variant_shapes_name_the_exact_profile_path(
+        self, tmp_path: Path, declaration: str, path: str
+    ) -> None:
+        toml = _MINIMAL_CIV_TOML + "\n" + declaration + "\n"
+
+        with pytest.raises(RigLoadError, match=path):
+            load_rig(_write_toml(tmp_path, toml, "variants.toml"))
 
 
 class TestCatCommandSpec:

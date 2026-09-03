@@ -102,6 +102,20 @@ class TestLoadRig:
         rig = load_rig(p)
         assert rig.model == "IC-7300"
 
+    def test_command_override_reuses_value_variant_parser(self, tmp_path):
+        toml = _MINIMAL_TOML.replace(
+            "[commands.overrides]\n",
+            '[commands.overrides]\nset_freq = { bytes = [0x05], value_variants = { "7" = [0x05, 0x07] } }\n',
+        )
+
+        rig = load_rig(_write_toml(tmp_path, toml, "override.toml"))
+        command_map = rig.to_command_map()
+
+        assert command_map.get("set_freq") == (0x05,)
+        assert command_map._get_value_variant("set_freq", 7) == (0x05, 0x07)
+        assert set(command_map) == {"get_freq", "set_freq"}
+        assert len(command_map) == 2
+
     def test_tx_interlock_tightening_defaults_empty(self, tmp_path):
         rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
 

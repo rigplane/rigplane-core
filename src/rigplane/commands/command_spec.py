@@ -5,7 +5,9 @@ Supports both CI-V (wire bytes) and Yaesu CAT (text templates) in a unified sche
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 
 __all__ = [
     "CivCommandSpec",
@@ -26,6 +28,22 @@ class CivCommandSpec:
 
     bytes: tuple[int, ...]
     """CI-V wire bytes (e.g., (0x03,) for get_freq)."""
+
+    value_variants: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
+    """Optional complete wire tuples selected by an integer semantic value."""
+
+    def __post_init__(self) -> None:
+        """Detach and freeze the optional nested variant mapping."""
+        object.__setattr__(
+            self,
+            "value_variants",
+            MappingProxyType(
+                {key: tuple(wire) for key, wire in self.value_variants.items()}
+            ),
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.bytes, frozenset(self.value_variants.items())))
 
 
 @dataclass(frozen=True, slots=True)

@@ -105,6 +105,23 @@ selector byte, or a constant payload byte. Only a value the caller
 supplies at the call site (e.g. a level to encode) is appended on top of
 the tuple.
 
+One existing command may instead declare complete wire tuples selected by a
+semantic integer value:
+
+```toml
+[commands]
+set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00, 0x00], "1" = [0x1A, 0x06, 0x01, 0x01] } }
+```
+
+The inline descriptor contains exactly `bytes` and `value_variants`. The base
+and every variant are non-empty arrays of bytes; the variant table is
+non-empty, uses canonical decimal integer keys, has unique values, and every
+variant strictly extends the base prefix. `RigConfig.to_command_map` carries
+the variant table without adding command names. `_build_from_map` selects a
+complete variant only for builders that pass a semantic value, rejects an
+undeclared value, and does not combine a selected variant with appended data.
+Legacy byte-array entries keep their existing append behavior.
+
 Every CI-V profile in `rigs/` that declares `ptt_on`/`ptt_off` carries the
 full three-byte prefix, payload byte included —
 `ptt_on = [0x1C, 0x00, 0x01]`, `ptt_off = [0x1C, 0x00, 0x00]` — so
