@@ -657,8 +657,6 @@ class AcquisitionScheduler:
             )
         return tuple(queued)
 
-    poll_due_requests = due_requests
-
     def prime_unobserved(
         self,
         observed_paths: Iterable[FieldPath],
@@ -1016,8 +1014,6 @@ class AcquisitionScheduler:
             "cadenceByGroup": cadence_by_group,
             "requestPressureByPriorityFamily": self._request_pressure(),
         }
-
-    to_diagnostics = diagnostics
 
     def pause_external_cat(
         self,

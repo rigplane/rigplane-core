@@ -877,8 +877,7 @@ Before the first implementation code change, complete an audit gate covering:
 
 - all Icom `_RADIO_STATE_HANDLERS`, `_notify_change(...)` sites, and direct
   `RadioState` writes;
-- Web `RadioPoller` revision, mutation, `mark_polled`, and `bump_revision`
-  sites;
+- Web `RadioPoller` revision, mutation, and `bump_revision` sites;
 - Web server public-state building, ETag, broadcast, delta, radio connect, and
   power paths;
 - frontend HTTP/WS/store revision logic, optimistic overlays, restart handling,
@@ -935,7 +934,7 @@ Required Web audit surfaces:
 - `web/handlers/control`: initial WebSocket state, command ACK behavior,
   subscription behavior, and any direct fallback state payload generation.
 - `web/radio_poller`: command execution, acquisition queries, optimistic
-  mutations, `mark_polled`, and all revision bump sites.
+  mutations, and all revision bump sites.
 - `web/_delta_encoder`: delta encoding must remain a transport projection, not
   the owner of canonical state revision.
 - `web/runtime_helpers`: public state schema projection and backward-compatible

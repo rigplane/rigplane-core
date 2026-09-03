@@ -30,6 +30,9 @@ data_len_max = 475
 [audio]
 codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 
+[scope]
+span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+
 # ── Capabilities ─────────────────────────────────────────────────
 # Feature tags determine which UI panels and controls are rendered.
 # Grouped by functional area.
