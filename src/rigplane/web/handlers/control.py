@@ -148,7 +148,6 @@ from ..radio_poller import (  # noqa: TID251
     SetAfMute,
     SetTuningStep,
     SetXfcStatus,
-    SetTxFreqMonitor,
     SetUtcOffset,
     SetQuickSplit,
     SetQuickDualWatch,
@@ -185,7 +184,6 @@ from ...capabilities import (
     CAP_SYSTEM_SETTINGS,
     CAP_TUNER,
     CAP_TUNING_STEP,
-    CAP_TX,
     CAP_XFC,
 )
 from ...radio_protocol import CivCommandCapable, MemoryCapable, PowerControlCapable
@@ -463,8 +461,6 @@ class ControlHandler:
             "get_band_edge_freq",
             "get_xfc_status",
             "set_xfc_status",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
             "get_quick_split",
             "set_quick_split",
             "get_quick_dual_watch",
@@ -1856,16 +1852,6 @@ class ControlHandler:
         on = await radio.get_xfc_status()
         return {"on": on}
 
-    async def _ro_get_tx_freq_monitor(
-        self, params: dict[str, Any], radio: "Radio | None"
-    ) -> dict[str, Any]:
-        if radio is None:
-            raise RuntimeError("radio connection not available")
-        if CAP_TX not in radio.capabilities:
-            raise RuntimeError("radio does not support this command")
-        on = await radio.get_tx_freq_monitor()
-        return {"on": on}
-
     async def _ro_cw_auto_tune(
         self, params: dict[str, Any], radio: "Radio | None"
     ) -> dict[str, Any]:
@@ -1907,7 +1893,6 @@ class ControlHandler:
         "get_utc_offset": _ro_get_utc_offset,
         "get_band_edge_freq": _ro_get_band_edge_freq,
         "get_xfc_status": _ro_get_xfc_status,
-        "get_tx_freq_monitor": _ro_get_tx_freq_monitor,
         "cw_auto_tune": _ro_cw_auto_tune,
     }
 
@@ -2906,10 +2891,6 @@ class ControlHandler:
             case "set_xfc_status":
                 on = bool(params["on"])
                 q.put(SetXfcStatus(on))
-                return {"on": on}
-            case "set_tx_freq_monitor":
-                on = bool(params["on"])
-                q.put(SetTxFreqMonitor(on))
                 return {"on": on}
             case "get_quick_split":
                 q.put(QuickSplit())

@@ -76,7 +76,6 @@ from .._queue_pressure import PRESSURE_THRESHOLD
 from ..commands._frame import decode_wire_tuple
 from ..commands.command_map import CommandMap
 from ..commands.commander import Priority
-from ..commands.scope import SCOPE_RECEIVER_SELECTOR_SUBS
 from ..core.command_service import (
     CommandService,
 )
@@ -111,9 +110,12 @@ from ..core.tx_target import (
     TxTarget,
     UnknownTxTarget,
 )
-from .._state_queries import acquisition_query_resolver_for_profile
 from ..profiles import RadioProfile, resolve_radio_profile
-from ..runtime._state_queries import tx_target_max_age
+from ..runtime._state_queries import (
+    acquisition_query_resolver_for_profile,
+    tx_target_max_age,
+    wire_parts_for_query,
+)
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,
@@ -202,7 +204,6 @@ __all__ = [
     "SetTunerStatus",
     "SetTuningStep",
     "SetXfcStatus",
-    "SetTxFreqMonitor",
     "SetUtcOffset",
     "SetQuickSplit",
     "SetQuickDualWatch",
@@ -455,7 +456,6 @@ from .._poller_types import (  # noqa: E402
     SetTunerStatus,
     SetTuningStep,
     SetTwinPeak,
-    SetTxFreqMonitor,
     SetUsbModLevel,
     SetUtcOffset,
     SetVox,
@@ -1289,60 +1289,26 @@ class RadioPoller:
         response still arrives via the CI-V RX path.
 
         The lossless query envelope keeps the CI-V sub-command, payload data,
-        and optional cmd29 receiver route separate.
+        and optional cmd29 receiver route separate. Wire-frame assembly
+        (cmd29 wrap, 0x27 scope-receiver substitution) is shared with the
+        other two acquisition senders via ``wire_parts_for_query``.
+
+        Scope control queries need receiver prefix (00=MAIN, 01=SUB).
+        ``build_state_queries`` emits MAIN because it runs at connect, before
+        the radio has said which scope is selected; where the poller has
+        state to read the live selection from, that replaces the default.
         """
-        if query.receiver is not None:
-            inner = bytes([query.receiver, query.command])
-            if query.sub is None:
-                await self._civ(
-                    0x29,
-                    data=inner + query.data,
-                    priority=priority,
-                    wait_dispatch=False,
-                )
-            else:
-                await self._civ(
-                    0x29,
-                    data=inner + bytes([query.sub]) + query.data,
-                    priority=priority,
-                    wait_dispatch=False,
-                )
-        elif (
-            query.command == 0x27
-            and query.sub in SCOPE_RECEIVER_SELECTOR_SUBS
-            and query.data
-        ):
-            # Scope control queries need receiver prefix (00=MAIN, 01=SUB).
-            # ``build_state_queries`` emits MAIN because it runs at connect,
-            # before the radio has said which scope is selected; where the
-            # poller has state to read the live selection from, that
-            # replaces the default.
-            scope_rx = 0
-            if self._radio_state:
-                scope_rx = self._radio_state.scope_controls.receiver
-            await self._civ(
-                query.command,
-                sub=query.sub,
-                data=bytes([scope_rx]) + query.data[1:],
-                priority=priority,
-                wait_dispatch=False,
-            )
-        elif query.sub is None:
-            await self._civ(
-                query.command,
-                sub=None,
-                data=query.data,
-                priority=priority,
-                wait_dispatch=False,
-            )
-        else:
-            await self._civ(
-                query.command,
-                sub=query.sub,
-                data=query.data,
-                priority=priority,
-                wait_dispatch=False,
-            )
+        scope_rx = 0
+        if self._radio_state:
+            scope_rx = self._radio_state.scope_controls.receiver
+        command, sub, data = wire_parts_for_query(query, scope_rx)
+        await self._civ(
+            command,
+            sub=sub,
+            data=data,
+            priority=priority,
+            wait_dispatch=False,
+        )
 
     # Per-getter timeout for scope-control fetches.  The IC-7610 scope stream
     # (~225 pkt/s) sometimes drops individual control responses; a long wait
@@ -3522,10 +3488,6 @@ class RadioPoller:
                     self._radio_state.tuning_step = step
             case SetXfcStatus(on=on):
                 await _r.set_xfc_status(on)
-            case SetTxFreqMonitor(on=on):
-                await _r.set_tx_freq_monitor(on)
-                if self._radio_state:
-                    self._radio_state.tx_freq_monitor = on
             case SetUtcOffset(hours=hours, minutes=minutes, is_negative=is_negative):
                 await _r.set_utc_offset(hours, minutes, is_negative)
             case QuickSplit():

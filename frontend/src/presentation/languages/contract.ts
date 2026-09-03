@@ -54,6 +54,8 @@ export interface StateFeedbackTokens { readonly idle: string; readonly active: s
 export interface MeterDisplay {
   readonly segmentCount: number; // integer >= 1
   readonly segmentGapPx: number; // >= 0
+  readonly toneBelowS9: string; // CSS color, segments below the S9 crossover
+  readonly toneAboveS9: string; // CSS color, segments at/above the S9 crossover
 }
 
 export const REQUIRED_TOKEN_GROUPS = [

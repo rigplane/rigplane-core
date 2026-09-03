@@ -1151,12 +1151,6 @@
     "observed": false,
     "storePath": "global.slow_state.tx_band_edges"
   },
-  "txFreqMonitor": {
-    "availability": "missing",
-    "freshness": "unknown",
-    "observed": false,
-    "storePath": "global.tx_state.tx_freq_monitor"
-  },
   "txTarget": {
     "availability": "missing",
     "freshness": "unknown",

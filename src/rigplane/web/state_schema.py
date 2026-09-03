@@ -302,7 +302,6 @@ class ServerStatePublic(_Strict):
     tuningStep: int = 0
     overflow: bool = False
     tunerStatus: int = 0
-    txFreqMonitor: bool = False
     ritFreq: int = 0
     ritOn: bool = False
     ritTx: bool = False

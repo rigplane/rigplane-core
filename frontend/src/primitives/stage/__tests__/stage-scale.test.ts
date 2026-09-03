@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeStageScale, MAX_STAGE_SCALE } from '../stage-scale';
+import { computeStageCenterOffset, computeStageScale, MAX_STAGE_SCALE } from '../stage-scale';
 
 describe('computeStageScale', () => {
   it('is width-constrained when the host is relatively narrow', () => {
@@ -57,5 +57,34 @@ describe('computeStageScale', () => {
       const scale = computeStageScale({ width: 640, height: 540 }, { width: 1280, height: 540 });
       expect(scale).toBe(0.5);
     });
+  });
+});
+
+describe('computeStageCenterOffset', () => {
+  it('returns zero offset when the scaled box exactly fills the host (scale 1, matching size)', () => {
+    // Scale-1 control: a centred box that already fills its host needs no
+    // shift — the formula must degrade to a no-op here, not just at some
+    // shrunk scale.
+    const offset = computeStageCenterOffset({ width: 200, height: 200 }, { width: 200, height: 200 }, 1);
+    expect(offset).toEqual({ x: 0, y: 0 });
+  });
+
+  it('splits the leftover host space evenly on both axes for a square shrink', () => {
+    // native 200x200 at scale 0.5 -> 100x100 scaled box inside a 300x300
+    // host: 200px of leftover space per axis, 100px on each side.
+    const offset = computeStageCenterOffset({ width: 300, height: 300 }, { width: 200, height: 200 }, 0.5);
+    expect(offset).toEqual({ x: 100, y: 100 });
+  });
+
+  it('computes independent offsets per axis for a non-square host (letterboxing)', () => {
+    // native 1280x540 at scale 0.5 -> 640x270 scaled box. Host 1000x400:
+    // leftover width 360 (180 each side), leftover height 130 (65 each side).
+    const offset = computeStageCenterOffset({ width: 1000, height: 400 }, { width: 1280, height: 540 }, 0.5);
+    expect(offset).toEqual({ x: 180, y: 65 });
+  });
+
+  it('returns zero offset for a degenerate (unmeasured) host', () => {
+    const offset = computeStageCenterOffset({ width: 0, height: 0 }, { width: 200, height: 200 }, 0);
+    expect(offset).toEqual({ x: 0, y: 0 });
   });
 });
