@@ -92,6 +92,64 @@ async def test_send_tracked_waits_for_actual_serial_drain() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_disconnect_retains_close_error_and_writer_lifetime() -> None:
+    gate, close_gate = asyncio.Event(), asyncio.Event()
+    failure = OSError("serial close failed")
+    writer = _FakeWriter(
+        drain_gate=gate, resist_cancel=True, close_gate=close_gate, close_error=failure
+    )
+    link, _, _ = await _make_link(writer=writer)
+    worker = link._writer_task
+    assert worker is not None
+    transport = SerialCivTransport(link)
+    frame = b"\xfe\xfe\x98\xe0\x1c\x00\x01\xfd"
+    operation = asyncio.create_task(
+        transport.send_tracked(_wrap_civ_frame(frame, seq=0))
+    )
+    tasks = [operation]
+    try:
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        caller = asyncio.create_task(transport.disconnect())
+        tasks.append(caller)
+        await asyncio.wait_for(writer.close_called.wait(), timeout=1)
+        done, _ = await asyncio.wait({caller, operation, worker}, timeout=0.05)
+        assert not done, "close error ended teardown before the active writer"
+        assert link._retirement is not None
+        cleanup = link._retirement[1]
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert caller.cancelled()
+        assert not operation.done()
+        assert not worker.done()
+        assert not cleanup.done()
+        joiner = asyncio.create_task(transport.disconnect())
+        tasks.append(joiner)
+        done, _ = await asyncio.wait({joiner}, timeout=0.05)
+        assert not done, "cancelled teardown caller erased writer retirement"
+        gate.set()
+        await asyncio.wait_for(writer.wait_closed_started.wait(), timeout=1)
+        result = await asyncio.wait_for(
+            asyncio.gather(operation, return_exceptions=True), timeout=1
+        )
+        assert isinstance(result[0], ConnectionError)
+        assert worker.done()
+        assert not cleanup.done()
+        assert not joiner.done()
+        assert transport.send_seq == 0
+        assert writer.writes == [frame]
+        close_gate.set()
+        result = await asyncio.wait_for(
+            asyncio.gather(joiner, return_exceptions=True), timeout=1
+        )
+        assert result[0] is failure
+        assert cleanup.done()
+        assert not transport.ready
+    finally:
+        await _cleanup_writes(link, tasks, writer, old_worker=worker)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure_at", ["write", "drain"])
 async def test_send_tracked_propagates_actual_serial_io_failure(
     failure_at: str,

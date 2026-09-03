@@ -46,6 +46,7 @@ class _FakeWriter:
         drain_error: OSError | RuntimeError | None = None,
         resist_cancel: bool = False,
         close_gate: asyncio.Event | None = None,
+        close_error: OSError | None = None,
     ) -> None:
         self.writes: list[bytes] = []
         self.closed = False
@@ -54,6 +55,7 @@ class _FakeWriter:
         self._drain_error = drain_error
         self._resist_cancel = resist_cancel
         self._close_gate = close_gate
+        self._close_error = close_error
         self.write_started = asyncio.Event()
         self.drain_started = asyncio.Event()
         self.close_called = asyncio.Event()
@@ -82,8 +84,10 @@ class _FakeWriter:
             raise self._drain_error
 
     def close(self) -> None:
-        self.closed = True
         self.close_called.set()
+        if self._close_error is not None:
+            raise self._close_error
+        self.closed = True
 
     async def wait_closed(self) -> None:
         self.wait_closed_started.set()
@@ -408,13 +412,46 @@ async def test_retired_worker_exits_after_cancel_resistant_drain_error(
 
 
 @pytest.mark.asyncio
+async def test_idle_disconnect_joins_worker_before_raising_close_error() -> None:
+    close_gate = asyncio.Event()
+    failure = OSError("serial close failed")
+    writer = _FakeWriter(close_gate=close_gate, close_error=failure)
+    link, _, _ = await _make_link(writer=writer)
+    old_worker = link._writer_task
+    assert old_worker is not None
+    await asyncio.sleep(0)
+    assert not old_worker.done()
+    stopping = asyncio.create_task(link.disconnect())
+    try:
+        await asyncio.wait_for(writer.close_called.wait(), timeout=1)
+        done, _ = await asyncio.wait({stopping}, timeout=0.05)
+        assert not done, "close error escaped before idle writer retirement"
+        await asyncio.wait_for(writer.wait_closed_started.wait(), timeout=1)
+        assert old_worker.done()
+        assert not stopping.done()
+        assert not link.ready
+        assert writer.writes == []
+        close_gate.set()
+        result = await asyncio.wait_for(
+            asyncio.gather(stopping, return_exceptions=True), timeout=1
+        )
+        assert result[0] is failure
+        assert old_worker.done()
+    finally:
+        await _cleanup_writes(link, [stopping], writer, old_worker=old_worker)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("initiator", ["disconnect", "active-cancel"])
+@pytest.mark.parametrize("close_raises", [False, True])
 async def test_overlapping_disconnect_joins_drain_and_wait_closed(
     initiator: str,
+    close_raises: bool,
 ) -> None:
     gate, close_gate = asyncio.Event(), asyncio.Event()
+    failure = OSError("serial close failed") if close_raises else None
     writer = _FakeWriter(
-        drain_gate=gate, resist_cancel=True, close_gate=close_gate
+        drain_gate=gate, resist_cancel=True, close_gate=close_gate, close_error=failure
     )
     link, _, _ = await _make_link(writer=writer)
     old_worker = link._writer_task
@@ -430,18 +467,23 @@ async def test_overlapping_disconnect_joins_drain_and_wait_closed(
         else:
             pending.cancel()
             first = pending
-        await writer.cancel_resisted.wait()
+        await asyncio.wait_for(writer.close_called.wait(), timeout=1)
         second = asyncio.create_task(link.disconnect())
         tasks.append(second)
         done, _ = await asyncio.wait({first, second}, timeout=0.05)
         assert not done, "overlapping disconnect skipped active drain retirement"
         assert not old_worker.done()
+        await asyncio.wait_for(writer.cancel_resisted.wait(), timeout=1)
+        assert link._retirement is not None
+        cleanup = link._retirement[1]
+        assert not cleanup.done()
         _install_replacement(link, newer)
         gate.set()
         await writer.wait_closed_started.wait()
         done, _ = await asyncio.wait({first, second}, timeout=0.05)
         assert not done, "overlapping disconnect skipped captured wait_closed"
         assert old_worker.done()
+        assert not cleanup.done()
         assert not newer.closed
         assert link.ready
         close_gate.set()
@@ -452,8 +494,15 @@ async def test_overlapping_disconnect_joins_drain_and_wait_closed(
             assert isinstance(results[0], asyncio.CancelledError)
         else:
             assert isinstance(results[0], ConnectionError)
-            assert results[1] is None
-        assert results[-1] is None
+            if close_raises:
+                assert results[1] is failure
+            else:
+                assert results[1] is None
+        if close_raises:
+            assert results[-1] is failure
+        else:
+            assert results[-1] is None
+        assert cleanup.done()
         assert not newer.closed
         assert link._writer is newer
         await link.send_written(_OFF)
