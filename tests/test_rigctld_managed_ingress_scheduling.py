@@ -33,8 +33,11 @@ from rigplane.runtime.managed_tx_state import (
 )
 from test_rigctld_ingress_scheduling import (
     _FREQUENCY,
+    _IngressTrace,
     _WAIT_TIMEOUT,
     _collect_replies,
+    _ingress_checkpoint,
+    _trace_server_ingress,
 )
 
 
@@ -86,8 +89,9 @@ class _DefaultExecutor:
 
 
 class _ReceiptFence(TxAbortFence):
-    def __init__(self):
+    def __init__(self, trace):
         super().__init__()
+        self.trace = trace
         self.registered = asyncio.Event()
         self.revoked = asyncio.Event()
         self.scopes = []
@@ -95,28 +99,33 @@ class _ReceiptFence(TxAbortFence):
     def register(self, token, cancellation, *, scope=None):
         super().register(token, cancellation, scope=scope)
         self.scopes.append(scope)
+        self.trace.record("authority_registered", scope)
         self.registered.set()
 
     def cancel_scope(self, scope):
         cleanup = super().cancel_scope(scope)
+        self.trace.record("authority_revoked", scope)
         self.revoked.set()
         return cleanup
 
 
 class _GatedProvider(RigctldClientRadio):
-    def __init__(self, transport, store):
+    def __init__(self, transport, store, trace):
         super().__init__(host="127.0.0.1", transport=transport)
         self.state_store = store
+        self.trace = trace
         self.frequency_entered = asyncio.Event()
         self.release_frequency = asyncio.Event()
         self.frequency_finished = asyncio.Event()
 
     async def set_freq(self, freq, receiver=0):
+        self.trace.record("provider_entered", "set_freq")
         self.frequency_entered.set()
         try:
             await self.release_frequency.wait()
             await super().set_freq(freq, receiver=receiver)
         finally:
+            self.trace.record("provider_settled", "set_freq")
             self.frequency_finished.set()
 
 
@@ -155,16 +164,33 @@ def _quiesce_before_stop(poller):
 
 
 class _RecordingLane(ManagedTxEffectLane):
-    def __init__(self, radio):
+    def __init__(self, radio, trace):
         super().__init__(radio)
+        self.trace = trace
         self.settlements = []
 
     async def settle(self, effect, *, deadline_monotonic, is_current=None):
-        settled = await super().settle(
-            effect, deadline_monotonic=deadline_monotonic, is_current=is_current
-        )
+        self.trace.record("provider_entered", effect.operation)
+        try:
+            settled = await super().settle(
+                effect, deadline_monotonic=deadline_monotonic, is_current=is_current
+            )
+        finally:
+            self.trace.record("provider_settled", effect.operation)
         self.settlements.append((effect, settled))
         return settled
+
+
+class _RecordingQueue(CommandQueue):
+    def __init__(self, trace):
+        super().__init__()
+        self.trace = trace
+
+    def drain_entries(self):
+        entries = super().drain_entries()
+        for entry in entries:
+            self.trace.record("queue_claimed", type(entry.command).__name__)
+        return entries
 
 
 @pytest.fixture
@@ -172,11 +198,23 @@ async def managed(tmp_path):
     async with FakeRigctldServer() as provider, AsyncExitStack() as cleanup:
         transport = RigctldTransport(host=provider.host, port=provider.port)
         cleanup.push_async_callback(_finish, transport.close)
-        store, queue, fence = StateStore(), CommandQueue(), _ReceiptFence()
-        radio = _GatedProvider(transport, store)
+        trace = _IngressTrace()
+        store = StateStore()
+        queue = _RecordingQueue(trace)
+        fence = _ReceiptFence(trace)
+        radio = _GatedProvider(transport, store, trace)
         default = _DefaultExecutor()
         service = CommandService(executor=default, state_store=store)
-        lane = _RecordingLane(radio)
+        unsubscribe = service.subscribe_lifecycle(
+            lambda event: trace.record(
+                "intent_accepted" if event.state == "accepted" else event.state,
+                event.command_id,
+            )
+            if event.source == "rigctld"
+            else None
+        )
+        cleanup.callback(unsubscribe)
+        lane = _RecordingLane(radio, trace)
         authority = ManagedTxAuthority(
             lane,
             ManagedTxTotConfigStore(tmp_path / "tot.json"),
@@ -208,6 +246,7 @@ async def managed(tmp_path):
                 command_queue=queue,
                 command_service=service,
             )
+            _trace_server_ingress(server, trace)
             cleanup.push_async_callback(_finish, server.stop)
             await server.start()
             port = server._server.sockets[0].getsockname()[1]
@@ -224,6 +263,7 @@ async def managed(tmp_path):
             provider.commands_seen.clear()
             yield SimpleNamespace(
                 provider=provider,
+                trace=trace,
                 transport=transport,
                 radio=radio,
                 store=store,
@@ -253,6 +293,14 @@ def _writes(rig):
         for command in rig.provider.commands_seen
         if command.startswith(("F ", "T "))
     ]
+
+
+async def _assert_ingress_accepted(rig, commands):
+    await _ingress_checkpoint(rig.trace, commands)
+    accepted = [
+        detail for stage, detail in rig.trace.events if stage == "intent_accepted"
+    ]
+    assert len(accepted) == len(commands)
 
 
 async def test_injected_references_and_per_call_leaf_preserve_shared_default(managed):
@@ -370,9 +418,11 @@ async def test_active_owner_off_settles_while_frequency_is_pending(
         rig.provider.behavior.malformed_responses["T 0"] = b"RPRT -6\n"
     try:
         await asyncio.wait_for(ready.wait(), 2)
-        rig.writer.write(f"F {_FREQUENCY}\nT 0\n".encode())
+        commands = [f"F {_FREQUENCY}".encode(), b"T 0"]
+        rig.writer.write(b"\n".join(commands) + b"\n")
         await rig.writer.drain()
         await asyncio.wait_for(rig.radio.frequency_entered.wait(), 2)
+        await _assert_ingress_accepted(rig, commands)
         await asyncio.wait_for(terminal.wait(), 2)
         assert not rig.radio.frequency_finished.is_set()
         assert _writes(rig) == ["T 1", "T 0"]
@@ -388,11 +438,26 @@ async def test_active_owner_off_settles_while_frequency_is_pending(
         assert [event.state for event in events] == [
             "failed" if provider_error else "acknowledged"
         ]
+        assert (
+            "provider_settled",
+            ActuationOperation.FORCE_RECEIVE,
+        ) in rig.trace.events
+        assert ("provider_settled", "set_freq") not in rig.trace.events
+        assert not [
+            detail
+            for stage, detail in rig.trace.events
+            if stage == "response_written"
+        ]
         rig.radio.release_frequency.set()
         assert await asyncio.wait_for(replies, 2) == [
             (b"RPRT 0\n", True),
             (off_reply, True),
         ]
+        assert [
+            detail
+            for stage, detail in rig.trace.events
+            if stage == "response_written"
+        ] == [b"RPRT 0\n", off_reply]
     finally:
         rig.radio.release_frequency.set()
         rig.provider.behavior.malformed_responses.pop("T 0", None)
@@ -407,6 +472,7 @@ async def test_real_provider_poller_drains_injected_queue(managed):
     await asyncio.wait_for(rig.radio.frequency_entered.wait(), 5)
     assert not completion.done()
     assert _writes(rig) == []
+    assert ("queue_claimed", "SetFreq") in rig.trace.events
     rig.radio.release_frequency.set()
     await asyncio.wait_for(asyncio.shield(completion), 2)
     assert _writes(rig) == [f"F {_FREQUENCY}"]
@@ -441,15 +507,25 @@ async def test_pending_on_is_revoked_by_pipelined_off(
     replies = asyncio.create_task(_collect_replies(rig.reader, rig.radio, 3, ready))
     rig.tasks.append(replies)
     await asyncio.wait_for(ready.wait(), 2)
-    rig.writer.write(f"F {_FREQUENCY}\nT 1\nT 0\n".encode())
+    commands = [f"F {_FREQUENCY}".encode(), b"T 1", b"T 0"]
+    rig.writer.write(b"\n".join(commands) + b"\n")
     await rig.writer.drain()
     await asyncio.wait_for(rig.radio.frequency_entered.wait(), 2)
+    await _assert_ingress_accepted(rig, commands)
     await asyncio.wait_for(rig.fence.registered.wait(), 2)
     await asyncio.wait_for(rig.fence.revoked.wait(), 2)
     assert rig.fence.scopes == ["rigctld-client-1"]
     assert not rig.fence._cancellations
     assert not rig.radio.frequency_finished.is_set()
     assert "T 1" not in rig.provider.commands_seen
+    assert rig.trace.events.index(
+        ("authority_registered", "rigctld-client-1")
+    ) < rig.trace.events.index(("authority_revoked", "rigctld-client-1"))
+    assert not [
+        detail
+        for stage, detail in rig.trace.events
+        if stage == "response_written"
+    ]
     rig.radio.release_frequency.set()
     assert await asyncio.wait_for(replies, 2) == [
         (first_reply, True),
@@ -464,23 +540,30 @@ async def test_pending_on_is_revoked_by_pipelined_off(
 @pytest.mark.parametrize("ending", ["eof", "server-stop"])
 async def test_disconnect_revokes_pending_on(managed, ending):
     rig = managed
-    rig.writer.write(f"F {_FREQUENCY}\nT 1\n".encode())
-    await rig.writer.drain()
-    await asyncio.wait_for(rig.radio.frequency_entered.wait(), 2)
-    await asyncio.wait_for(rig.fence.registered.wait(), 2)
-    connections = tuple(rig.server._client_tasks)
-    assert len(connections) == 1
-    if ending == "eof":
-        rig.writer.close()
-        await asyncio.wait_for(rig.writer.wait_closed(), 2)
-    else:
-        rig.tasks.append(asyncio.create_task(rig.server.stop()))
-    await asyncio.wait_for(rig.fence.revoked.wait(), 2)
-    assert not rig.fence._cancellations
-    rig.radio.release_frequency.set()
-    await asyncio.wait_for(asyncio.gather(*connections, return_exceptions=True), 2)
-    assert "T 1" not in rig.provider.commands_seen
-    assert not (await rig.authority.snapshot()).state.release_required
+    commands = [f"F {_FREQUENCY}".encode(), b"T 1"]
+    try:
+        rig.writer.write(b"\n".join(commands) + b"\n")
+        await rig.writer.drain()
+        await asyncio.wait_for(rig.radio.frequency_entered.wait(), 2)
+        await _assert_ingress_accepted(rig, commands)
+        await asyncio.wait_for(rig.fence.registered.wait(), 2)
+        connections = tuple(rig.server._client_tasks)
+        assert len(connections) == 1
+        if ending == "eof":
+            rig.writer.close()
+            await asyncio.wait_for(rig.writer.wait_closed(), 2)
+        else:
+            rig.tasks.append(asyncio.create_task(rig.server.stop()))
+        await asyncio.wait_for(rig.fence.revoked.wait(), 2)
+        assert not rig.fence._cancellations
+        rig.radio.release_frequency.set()
+        await asyncio.wait_for(
+            asyncio.gather(*connections, return_exceptions=True), 2
+        )
+        assert "T 1" not in rig.provider.commands_seen
+        assert not (await rig.authority.snapshot()).state.release_required
+    finally:
+        rig.radio.release_frequency.set()
 
 
 async def test_sequential_frequency_then_ptt_preserves_wire_order(managed):
