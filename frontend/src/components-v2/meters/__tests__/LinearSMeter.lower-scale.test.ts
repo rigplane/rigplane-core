@@ -43,7 +43,7 @@ const SWR_TICKS = [
 ] as const;
 
 function descriptor(over: Partial<LowerScaleDescriptor> = {}): LowerScaleDescriptor {
-  return { label: 'SWR', ticks: SWR_TICKS, valueFraction: 0, fault: false, ...over };
+  return { label: 'SWR', ticks: SWR_TICKS, valueFraction: 0, fault: false, relevant: true, ...over };
 }
 
 function lowerSegs(target: HTMLElement) {
@@ -121,6 +121,38 @@ describe('LinearSMeter lowerScale prop — fault color', () => {
     const [fill] = lowerFills(target);
     expect(fill.getAttribute('fill')).toBe('var(--v2-accent-red, #ff4040)');
     expect(target.querySelector('svg')!.getAttribute('data-lower-fault')).toBe('true');
+  });
+});
+
+describe('LinearSMeter lowerScale prop — relevance dims the row, not the tile (MOR-2250 fix cycle)', () => {
+  // MUTATION KILLED: reading the S-meter tile's own `data-relevant` (a
+  // different field, set from `meters.signal.relevant` in the caller)
+  // instead of `lowerScale.relevant` — this component has no access to the
+  // tile's attribute at all, only the descriptor field, so a mutant that
+  // hardcodes the group's opacity to 1 regardless of `relevant` is the one
+  // this test kills.
+  it('dims the lower row\'s own <g> to the same 0.4 opacity the tile uses, and marks data-lower-relevant=false, when relevant is false', () => {
+    const target = mountMeter({ value: 0, lowerScale: descriptor({ relevant: false, valueFraction: 0.5 }) });
+    const group = target.querySelector('[data-lower-relevant]')!;
+    expect(group.getAttribute('data-lower-relevant')).toBe('false');
+    expect(group.getAttribute('opacity')).toBe('0.4');
+  });
+
+  it('renders the lower row at full opacity and data-lower-relevant=true when relevant is true', () => {
+    const target = mountMeter({ value: 0, lowerScale: descriptor({ relevant: true, valueFraction: 0.5 }) });
+    const group = target.querySelector('[data-lower-relevant]')!;
+    expect(group.getAttribute('data-lower-relevant')).toBe('true');
+    expect(group.getAttribute('opacity')).toBe('1');
+  });
+
+  // The row's structural elements (label/ticks) must still be present and
+  // identical under a dim — MOR-2250's layout-stability ruling is about
+  // geometry, not opacity; dimming must not also hide anything the
+  // structural-elements test above already pins for the bright case.
+  it('keeps the row\'s label and ticks present, only dimmed, while irrelevant', () => {
+    const target = mountMeter({ value: 0, lowerScale: descriptor({ relevant: false }) });
+    expect(target.querySelector('[data-lower-row-label]')?.textContent).toBe('SWR');
+    expect(lowerSegs(target)).toHaveLength(20);
   });
 });
 

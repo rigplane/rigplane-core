@@ -26,6 +26,18 @@
      *  see the `lowerScale` prop doc below for what "absent" means instead. */
     readonly valueFraction: number;
     readonly fault: boolean;
+    /**
+     * MOR-2250 fix cycle: this row's OWN relevance (the field's own
+     * fact-layer `relevant`, e.g. `meters.swr.relevant`) — NOT the S-meter
+     * tile's `data-relevant` (driven by `meters.signal.relevant`, a
+     * different field). The two were conflated before this fix: the row
+     * dimmed with the tile, so SWR read at full opacity while receiving
+     * (irrelevant) and at 40% while transmitting (the only state it has a
+     * reading, including a fault fill, at all). `relevant: false` dims only
+     * this row's own DOM group — see `data-lower-relevant` on the `<g>`
+     * below.
+     */
+    readonly relevant: boolean;
   }
 </script>
 
@@ -169,11 +181,17 @@
   // focusRing/rx/tx) models a generic alarm/fault tone, and `MeterDisplay`'s
   // `toneBelowS9`/`toneAboveS9` name a different concept — position relative
   // to the S9 crossover, not "past a fault threshold" — so reusing that pair
-  // would conflate two unrelated ideas. Two independent literals, not a
-  // shared constant, until a third caller needs one (rule of three).
+  // would conflate two unrelated ideas. Three independent literals now carry
+  // this exact value (`BarGauge.svelte`, `MetersDockPanel.svelte`, and this
+  // site) — not consolidated into a shared constant here; that call is left
+  // for a follow-up rather than folded into this fix.
   const LOWER_FAULT_COLOR = 'var(--v2-accent-red, #ff4040)';
   const LOWER_ACTIVE_COLOR = 'var(--v2-accent-green-medium)';
   const LOWER_DIM_COLOR = '#141414';
+  // Matches `MetersSurface.svelte`'s own `.meter-tile[data-relevant='false']
+  // { opacity: 0.4 }` CSS rule — same dim-not-hide value (MOR-977), applied
+  // here to the lower row's own DOM group instead of the enclosing tile.
+  const LOWER_ROW_DIM_OPACITY = 0.4;
 
   function lowerTickX(fraction: number): number {
     return BAR_X + fraction * BAR_WIDTH;
@@ -515,78 +533,90 @@
        RX/TX. Only the fill segments below (and their color) vary with the
        reading. -->
   {#if lowerScale}
-    <text
-      data-lower-row-label
-      x={BAR_X} y={LOWER_LABEL_Y}
-      font-family="'Roboto Mono', monospace"
-      font-size={LOWER_LABEL_FS}
-      font-weight="700"
-      fill="var(--v2-text-dim)"
-      text-anchor="start"
-      dominant-baseline="text-before-edge"
-    >{lowerScale.label}{lowerScale.unit ? ` ${lowerScale.unit}` : ''}</text>
-
-    {#each lowerScale.ticks as t}
-      {@const tx = lowerTickX(t.value)}
+    <!-- MOR-2250 fix cycle: the row's OWN dim, scoped to this `<g>` only —
+         independent of the S-meter tile's `data-relevant` (which dims the
+         WHOLE tile, including this row, via CSS on the enclosing
+         `.meter-tile` in MetersSurface.svelte). Structural elements below
+         still render unconditionally on `lowerScale`'s presence per the
+         layout-stability note above `lowerScale` in Props; only their
+         opacity, not their presence, depends on `relevant`. -->
+    <g
+      data-lower-relevant={lowerScale.relevant ? 'true' : 'false'}
+      opacity={lowerScale.relevant ? 1 : LOWER_ROW_DIM_OPACITY}
+    >
       <text
-        data-lower-tick-label={t.value}
-        x={tx} y={LOWER_LABEL_Y}
+        data-lower-row-label
+        x={BAR_X} y={LOWER_LABEL_Y}
         font-family="'Roboto Mono', monospace"
         font-size={LOWER_LABEL_FS}
         font-weight="700"
         fill="var(--v2-text-dim)"
-        text-anchor="middle"
+        text-anchor="start"
         dominant-baseline="text-before-edge"
-      >{t.label}</text>
-      <line
-        data-lower-tick-mark={t.value}
-        x1={tx} y1={LOWER_TICK_Y1}
-        x2={tx} y2={LOWER_TICK_Y2}
-        stroke="var(--v2-text-dim)"
-        stroke-width="0.9"
-        opacity="0.6"
-      />
-    {/each}
+      >{lowerScale.label}{lowerScale.unit ? ` ${lowerScale.unit}` : ''}</text>
 
-    <!-- Lower row track background -->
-    <rect
-      x={BAR_X} y={LOWER_TRACK_Y}
-      width={BAR_WIDTH} height={LOWER_TRACK_H}
-      rx="1"
-      fill="var(--v2-bg-darkest)"
-      stroke="var(--v2-bg-panel)"
-      stroke-width="1"
-    />
+      {#each lowerScale.ticks as t}
+        {@const tx = lowerTickX(t.value)}
+        <text
+          data-lower-tick-label={t.value}
+          x={tx} y={LOWER_LABEL_Y}
+          font-family="'Roboto Mono', monospace"
+          font-size={LOWER_LABEL_FS}
+          font-weight="700"
+          fill="var(--v2-text-dim)"
+          text-anchor="middle"
+          dominant-baseline="text-before-edge"
+        >{t.label}</text>
+        <line
+          data-lower-tick-mark={t.value}
+          x1={tx} y1={LOWER_TICK_Y1}
+          x2={tx} y2={LOWER_TICK_Y2}
+          stroke="var(--v2-text-dim)"
+          stroke-width="0.9"
+          opacity="0.6"
+        />
+      {/each}
 
-    <!-- Lower row segments -->
-    {#each Array(SEG_COUNT) as _, i}
-      {@const x = segX(i)}
-
-      <!-- Dim (inactive) — always present, same as the main bar's own dim rects -->
+      <!-- Lower row track background -->
       <rect
-        data-lower-segment={i}
-        {x} y={LOWER_TRACK_Y + 1}
-        width={SEG_W} height={LOWER_TRACK_H - 2}
-        fill={LOWER_DIM_COLOR}
+        x={BAR_X} y={LOWER_TRACK_Y}
+        width={BAR_WIDTH} height={LOWER_TRACK_H}
+        rx="1"
+        fill="var(--v2-bg-darkest)"
+        stroke="var(--v2-bg-panel)"
+        stroke-width="1"
       />
 
-      <!-- Fill — the one part of this row that depends on valueFraction/fault -->
-      {#if i < lowerFullSegs}
+      <!-- Lower row segments -->
+      {#each Array(SEG_COUNT) as _, i}
+        {@const x = segX(i)}
+
+        <!-- Dim (inactive) — always present, same as the main bar's own dim rects -->
         <rect
-          data-lower-fill={i}
+          data-lower-segment={i}
           {x} y={LOWER_TRACK_Y + 1}
           width={SEG_W} height={LOWER_TRACK_H - 2}
-          fill={lowerActiveColor()}
+          fill={LOWER_DIM_COLOR}
         />
-      {:else if i === lowerFullSegs && lowerFracSeg > 0.01}
-        <rect
-          data-lower-fill={i}
-          {x} y={LOWER_TRACK_Y + 1}
-          width={Math.max(1, SEG_W * lowerFracSeg)} height={LOWER_TRACK_H - 2}
-          fill={lowerActiveColor()}
-        />
-      {/if}
-    {/each}
+
+        <!-- Fill — the one part of this row that depends on valueFraction/fault -->
+        {#if i < lowerFullSegs}
+          <rect
+            data-lower-fill={i}
+            {x} y={LOWER_TRACK_Y + 1}
+            width={SEG_W} height={LOWER_TRACK_H - 2}
+            fill={lowerActiveColor()}
+          />
+        {:else if i === lowerFullSegs && lowerFracSeg > 0.01}
+          <rect
+            data-lower-fill={i}
+            {x} y={LOWER_TRACK_Y + 1}
+            width={Math.max(1, SEG_W * lowerFracSeg)} height={LOWER_TRACK_H - 2}
+            fill={lowerActiveColor()}
+          />
+        {/if}
+      {/each}
+    </g>
   {/if}
 
   <!-- Peak hold indicator -->

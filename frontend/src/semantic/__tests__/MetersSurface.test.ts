@@ -841,3 +841,36 @@ describe('the SWR shared lower-scale row (MOR-2250, PR 2 of 2)', () => {
     expect(rxViewBox).toBe(txViewBox);
   });
 });
+
+// ── 13. Fix cycle: SWR's own relevance dims its row, not the S-meter tile ──
+//
+// Replaces the pin the verifier found deleted without a replacement: before
+// MOR-2250 (PR 2 of 2), `s.tile('swr')!.dataset.relevant === 'false'` covered
+// this same fact through the (now-removed) standalone SWR `BarGauge` tile.
+// SWR no longer has a tile of its own (block 12 above pins that), so this
+// covers the fact through the shared row's own `data-lower-relevant`
+// instead — set from `meters.swr.relevant`, never from `meters.signal`'s.
+describe('SWR relevance drives the shared row\'s own dim (MOR-2250 fix cycle)', () => {
+  // MUTATION KILLED: reading `meters.signal.relevant` (the S-meter tile's
+  // own relevance) for the row instead of `meters.swr.relevant`. Under
+  // `base('transmitting')`, `signal.relevant` is false and `swr.relevant`
+  // is true (see `withMeters` in fixtures/topologies.ts) — a field swap
+  // flips this assertion.
+  it('marks the lower row NOT relevant when meters.swr.relevant is false while transmitting and observed', () => {
+    const view = withField(base('transmitting'), 'swr', { relevant: false });
+    withSurface(view, (s) => {
+      const group = s.signalSvg()!.querySelector('[data-lower-relevant]');
+      expect(group).not.toBeNull();
+      expect(group!.getAttribute('data-lower-relevant')).toBe('false');
+    });
+  });
+
+  it('marks the lower row relevant when meters.swr.relevant is true while transmitting and observed', () => {
+    const view = withField(base('transmitting'), 'swr', { relevant: true });
+    withSurface(view, (s) => {
+      const group = s.signalSvg()!.querySelector('[data-lower-relevant]');
+      expect(group).not.toBeNull();
+      expect(group!.getAttribute('data-lower-relevant')).toBe('true');
+    });
+  });
+});

@@ -19,7 +19,13 @@
       could drift and tell the operator "RX" beside a key button reading "TX".
       They are text AND shape, so the state survives forced-colors (MOR-977).
   (3) An unobserved meter renders as an explicit `?`, never as a gauge at
-      zero. "0 W into the antenna" and "not measured" are different claims.
+      zero, for every top-level tile in this file — "0 W into the antenna"
+      and "not measured" are different claims. SWR's shared lower row is
+      the one exception (MOR-2250, PR 2 of 2, owner ruling): it renders a
+      zero-fill row rather than a `?`, because the structural/absent
+      distinction is already made once, at the `present(meters.swr)` check
+      on the `<LinearSMeter>` mount below — the row itself never restates
+      it.
   (4) FAULT (MOR-1345): SWR/ALC over-threshold highlighting is a FACT this
       surface computes from the SAME `isSwrFault`/`isAlcFault` predicates the
       legacy dock's border reads (`meter-utils`, imported not copied), gated
@@ -120,14 +126,30 @@
    * `BarGauge` row used (`present`/`observed`/`rawOf` above and the
    * `FAULT_CHECKS` gating pattern this mirrors) — imported, not re-derived,
    * so the two can never disagree about what counts as a reading or a
-   * fault. `valueFraction` is NOT additionally gated on `relevant`: exactly
-   * like every other `METER_BARS` level, an irrelevant-but-observed reading
-   * still reports its real level — `relevant` only dims the enclosing tile
-   * (CSS opacity), it never zeroes the reading. This is unconditional on
-   * `rfState` — the caller passes it every render (see the `<LinearSMeter>`
-   * mount below); a `0` fraction while receiving is simply what
-   * `observed(meters.swr)` naturally resolves to when the radio has no
-   * known SWR sample outside TX, not a branch on TX state here.
+   * fault. `valueFraction` is NOT additionally gated on `relevant`: an
+   * irrelevant-but-observed reading still reports its real fill, the same
+   * discipline every `METER_BARS` field's own level follows (SWR itself
+   * left `METER_BARS` — see the note above it — but its lower row keeps the
+   * same rule). This is unconditional on `rfState` — the caller passes it
+   * every render (see the `<LinearSMeter>` mount below); a `0` fraction
+   * while receiving is simply what `observed(meters.swr)` naturally
+   * resolves to when the radio has no known SWR sample outside TX, not a
+   * branch on TX state here.
+   *
+   * `relevant` is passed through unchanged as its own descriptor field —
+   * NOT translated into a dim here. Fix cycle note: this row used to dim
+   * with the S-meter tile's OWN `data-relevant` (`meters.signal.relevant`,
+   * set on the mount below), which is a different field and was backwards
+   * for SWR: `meters.signal.relevant` is roughly `!onTx`-shaped (see the
+   * adapter's fail-closed TX-relevance doctrine, `deriveMeters` in
+   * `radio-view-model-adapter.ts`), while `meters.swr.relevant` fails
+   * CLOSED the other way — true in every rfState except a positively
+   * observed RX, which is also every state SWR has a reading (including a
+   * fault) at all. So the tile's relevance dimmed the row exactly when it
+   * mattered most, and left it bright when SWR isn't even observed.
+   * `LinearSMeter` now dims the lower row's own DOM group off THIS field
+   * instead — see `LowerScaleDescriptor.relevant` and the
+   * `<g data-lower-relevant>` wrapper in `LinearSMeter.svelte`.
    */
   function swrLowerScale(f: MeterField): LowerScaleDescriptor {
     const isObserved = observed(f);
@@ -137,6 +159,7 @@
       ticks: SWR_LOWER_SCALE_TICKS,
       valueFraction: isObserved ? swrLevel(raw) : 0,
       fault: isObserved && f.relevant && isSwrFault(raw),
+      relevant: f.relevant,
     };
   }
 
