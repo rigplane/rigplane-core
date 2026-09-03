@@ -74,7 +74,7 @@ done
 # 4. Re-run the comparator on Linux (or trust the just-copied images) to
 #    confirm 0 diffs, open each changed PNG to eyeball it, then commit.
 git status frontend/fixtures/approved-baselines/
-git add frontend/fixtures/approved-baselines/
+git add fixtures/approved-baselines/
 ```
 
 Do not regenerate this set on macOS for the pre-blocking re-pin — that reproduces the exact platform mismatch the Platform note warns about, just with a fresher timestamp.
