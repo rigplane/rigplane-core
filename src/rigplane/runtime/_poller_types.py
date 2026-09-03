@@ -988,7 +988,7 @@ class _CommandQueueSegment:
     kind: Literal["coalesced", "ordered"]
     ptt: list[CommandQueueEntry] = field(default_factory=list)
     dedup: dict[type | tuple[str, FieldPath | None], CommandQueueEntry] = field(
-        default_factory=dict
+        default_factory=dict,
     )
     ordered: list[CommandQueueEntry] = field(default_factory=list)
 
@@ -1078,7 +1078,9 @@ class CommandQueue:
         if isinstance(cmd, (PttOn, PttOff)):
             segment.ptt.append(entry)
         else:
-            key = (cmd.name, cmd.target) if isinstance(cmd, CommandIntent) else type(cmd)
+            key = (
+                (cmd.name, cmd.target) if isinstance(cmd, CommandIntent) else type(cmd)
+            )
             segment.dedup[key] = entry
         self._notify.set()
 
