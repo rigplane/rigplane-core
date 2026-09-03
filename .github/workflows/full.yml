@@ -53,10 +53,10 @@ jobs:
         with:
           enable-cache: false
 
-      - name: Install Python-only mock-test dependencies
+      - name: Install mock-test dependencies and package metadata
         run: |
           uv python install 3.11
-          uv sync --frozen --extra dev --no-install-project
+          uv sync --frozen --extra dev
 
       - name: Selected interface RED and structural JUnit oracle
         run: |
