@@ -56,6 +56,7 @@ def _make_radio() -> MagicMock:
         "notch",
         "split",
         "rit",
+        "xit",
         "tuner",
         "dial_lock",
         "cw",
@@ -1237,6 +1238,63 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_cw_pitch.assert_not_awaited()
     radio.read_break_in.assert_not_awaited()
     radio.read_break_in_delay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capabilities", "expected_paths"),
+    [
+        (
+            {"rit"},
+            {
+                "global.tx_state.rit_on",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (
+            {"xit"},
+            {
+                "global.tx_state.rit_tx",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (
+            {"rit", "xit"},
+            {
+                "global.tx_state.rit_on",
+                "global.tx_state.rit_tx",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (set(), set()),
+    ],
+)
+async def test_tx_controls_poll_scopes_clarifier_state_to_declared_capabilities(
+    capabilities: set[str], expected_paths: set[str]
+) -> None:
+    radio = _make_radio()
+    radio.capabilities = capabilities
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_tx_controls()
+
+    clarifier_observations = {
+        str(item.path): item.value
+        for item in observations
+        if str(item.path).startswith("global.tx_state.rit_")
+        or str(item.path) == "global.operator_controls.rit_freq"
+    }
+    assert set(clarifier_observations) == expected_paths
+    if capabilities:
+        radio.read_clarifier.assert_awaited_once()
+        radio.read_clarifier_freq.assert_awaited_once()
+    else:
+        radio.read_clarifier.assert_not_awaited()
+        radio.read_clarifier_freq.assert_not_awaited()
 
 
 @pytest.mark.asyncio

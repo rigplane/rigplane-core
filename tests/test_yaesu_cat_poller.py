@@ -667,6 +667,7 @@ def make_radio(
         "compressor",
         "cw",
         "rit",
+        "xit",
         "tuner",
         "meters",
         "repeater_tone",
@@ -2480,6 +2481,41 @@ async def test_observation_poller_uses_read_only_paths_when_getters_mutate_state
     assert radio.radio_state.split is False
     assert radio.radio_state.active == "MAIN"
     assert radio.radio_state.vfo_select == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capabilities", "expected"),
+    [
+        ({"rit"}, (True, True, -250)),
+        ({"xit"}, (False, False, -250)),
+        ({"rit", "xit"}, (True, False, -250)),
+        (set(), (False, True, 123)),
+    ],
+)
+async def test_legacy_slow_poll_scopes_clarifier_state_to_declared_capabilities(
+    capabilities: set[str], expected: tuple[bool, bool, int]
+) -> None:
+    radio = make_radio(clarifier=(True, False), clarifier_freq=-250)
+    radio.capabilities = capabilities
+    radio.radio_state.rit_on = False
+    radio.radio_state.rit_tx = True
+    radio.radio_state.rit_freq = 123
+    poller = YaesuCatPoller(radio)
+
+    await poller._poll_slow()  # noqa: SLF001
+
+    assert (
+        radio.radio_state.rit_on,
+        radio.radio_state.rit_tx,
+        radio.radio_state.rit_freq,
+    ) == expected
+    if capabilities:
+        radio.get_clarifier.assert_awaited_once()
+        radio.get_clarifier_freq.assert_awaited_once()
+    else:
+        radio.get_clarifier.assert_not_awaited()
+        radio.get_clarifier_freq.assert_not_awaited()
 
 
 @pytest.mark.asyncio
