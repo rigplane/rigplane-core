@@ -3,9 +3,55 @@ name: Tests (quick)
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - ".claude/**"
+      - "**/*.md"
+      - "**/*.mD"
+      - "**/*.Md"
+      - "**/*.MD"
+      - "**/*.rst"
+      - "**/*.rsT"
+      - "**/*.rSt"
+      - "**/*.rST"
+      - "**/*.RsT"
+      - "**/*.Rst"
+      - "**/*.RSt"
+      - "**/*.RST"
+      - ".github/scripts/doc-citation-baseline.txt"
+      - ".github/scripts/doc-citation-dangling-baseline.txt"
+      - ".github/scripts/doc-link-baseline.txt"
+      - "AUTHORS"
+      - "COPYING"
+      - "LICENSE"
+      - "LICENSE.txt"
+      - "NOTICE"
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review]
+    paths-ignore:
+      - "docs/**"
+      - ".claude/**"
+      - "**/*.md"
+      - "**/*.mD"
+      - "**/*.Md"
+      - "**/*.MD"
+      - "**/*.rst"
+      - "**/*.rsT"
+      - "**/*.rSt"
+      - "**/*.rST"
+      - "**/*.RsT"
+      - "**/*.Rst"
+      - "**/*.RSt"
+      - "**/*.RST"
+      - ".github/scripts/doc-citation-baseline.txt"
+      - ".github/scripts/doc-citation-dangling-baseline.txt"
+      - ".github/scripts/doc-link-baseline.txt"
+      - "AUTHORS"
+      - "COPYING"
+      - "LICENSE"
+      - "LICENSE.txt"
+      - "NOTICE"
 
 permissions:
   contents: read

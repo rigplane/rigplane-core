@@ -15,6 +15,7 @@ CLASSIFIER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CLASSIFIER)
 
 QUICK_YML = ROOT / ".github" / "workflows" / "quick.yml"
+DOCS_QUICK_YML = ROOT / ".github" / "workflows" / "docs-only-quick.yml"
 VISUAL_YML = ROOT / ".github" / "workflows" / "visual.yml"
 DOC_CITATION_YML = ROOT / ".github" / "workflows" / "doc-citation-gate.yml"
 REBRAND_YML = ROOT / ".github" / "workflows" / "rebrand-gate.yml"
@@ -40,6 +41,9 @@ class QuickPathFilterContractTest(unittest.TestCase):
         for name, paths in cases.items():
             with self.subTest(name=name):
                 self.assert_docs_only(paths)
+        for path in ("README.MD", "docs/guide.RsT"):
+            with self.subTest(path=path):
+                self.assert_docs_only([path])
 
     def test_mixed_docs_and_code_select_only_relevant_product_classes(self) -> None:
         self.assertEqual(
@@ -72,7 +76,6 @@ class QuickPathFilterContractTest(unittest.TestCase):
 
         self.assertIn(event_types, quick)
         self.assertIn(event_types, visual)
-        self.assertIn("runs-on: ubuntu-latest", quick)
         self.assertIn("needs: classify", quick)
         self.assertIn("needs.classify.outputs.docs != 'true'", quick)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)
@@ -82,6 +85,56 @@ class QuickPathFilterContractTest(unittest.TestCase):
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)
         self.assertNotIn('      - ".github/workflows/visual.yml"', visual)
+
+    def test_docs_only_quick_status_is_api_only_and_quick_ignores_docs(self) -> None:
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        docs_quick = DOCS_QUICK_YML.read_text(encoding="utf-8")
+        for pattern in (
+            '      - "docs/**"',
+            '      - ".claude/**"',
+            '      - "**/*.md"',
+            '      - "**/*.mD"',
+            '      - "**/*.Md"',
+            '      - "**/*.MD"',
+            '      - "**/*.rst"',
+            '      - "**/*.rsT"',
+            '      - "**/*.rSt"',
+            '      - "**/*.rST"',
+            '      - "**/*.RsT"',
+            '      - "**/*.Rst"',
+            '      - "**/*.RSt"',
+            '      - "**/*.RST"',
+            '      - ".github/scripts/doc-citation-baseline.txt"',
+            '      - ".github/scripts/doc-citation-dangling-baseline.txt"',
+            '      - ".github/scripts/doc-link-baseline.txt"',
+            '      - "AUTHORS"',
+            '      - "COPYING"',
+            '      - "LICENSE"',
+            '      - "LICENSE.txt"',
+            '      - "NOTICE"',
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(quick.count(pattern), 2)
+        for exact in (
+            ".github/scripts/doc-citation-baseline.txt",
+            ".github/scripts/doc-citation-dangling-baseline.txt",
+            ".github/scripts/doc-link-baseline.txt",
+            "AUTHORS",
+            "COPYING",
+            "LICENSE",
+            "LICENSE.txt",
+            "NOTICE",
+        ):
+            with self.subTest(exact=exact):
+                self.assertIn(f"'{exact}'", docs_quick)
+        self.assertIn("github.rest.pulls.listFiles", docs_quick)
+        self.assertIn("github.paginate", docs_quick)
+        self.assertIn("github.rest.repos.createCommitStatus", docs_quick)
+        self.assertIn("files.length === 0 || !files.every", docs_quick)
+        self.assertIn("sha: pull.head.sha", docs_quick)
+        self.assertNotIn("sha: github.sha", docs_quick)
+        self.assertNotIn("actions/checkout", docs_quick)
+        self.assertNotIn("setup-uv", docs_quick)
 
     def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
         citation = DOC_CITATION_YML.read_text(encoding="utf-8")

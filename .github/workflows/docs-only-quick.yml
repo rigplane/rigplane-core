@@ -1,0 +1,70 @@
+name: Docs-only quick status
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: read
+  statuses: write
+
+jobs:
+  publish-docs-only-quick-status:
+    # Keep the protected `quick` context green for an exact docs-only review
+    # head without allocating the self-hosted test runner or checking out code.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Publish docs-only quick status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const pullNumber = context.payload.pull_request.number;
+            const {data: pull} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            });
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: pullNumber,
+              per_page: 100,
+            });
+            const documentationExact = new Set([
+              '.github/scripts/doc-citation-baseline.txt',
+              '.github/scripts/doc-citation-dangling-baseline.txt',
+              '.github/scripts/doc-link-baseline.txt',
+              'AUTHORS',
+              'COPYING',
+              'LICENSE',
+              'LICENSE.txt',
+              'NOTICE',
+            ]);
+            const isDocumentation = (filename) => {
+              if (typeof filename !== 'string') return false;
+              const parts = filename.split('/');
+              const suffix = filename.slice(filename.lastIndexOf('.')).toLowerCase();
+              return (
+                parts[0] === 'docs' ||
+                parts[0] === '.claude' ||
+                suffix === '.md' ||
+                suffix === '.rst' ||
+                documentationExact.has(filename)
+              );
+            };
+            if (files.length === 0 || !files.every(({filename}) => isDocumentation(filename))) {
+              core.info('Not a documentation-only pull request; quick.yml owns the required context.');
+              return;
+            }
+            await github.rest.repos.createCommitStatus({
+              owner,
+              repo,
+              sha: pull.head.sha,
+              state: 'success',
+              context: 'quick',
+              description: 'Documentation-only change; product checks are not selected.',
+              target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+            });
