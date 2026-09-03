@@ -1424,7 +1424,18 @@ async def test_http_command_batch_timeout_cancels_unconsumed_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(web_server, "_COMMAND_BATCH_STEP_TIMEOUT", 0.001)
-    srv = WebServer(_radio(), WebConfig(host="127.0.0.1", port=0))
+    radio = _radio()
+    radio.set_freq = AsyncMock()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    captured = []
+    put_ordered = srv.command_queue.put_ordered
+
+    def capture_ordered(command, **kwargs):
+        result = put_ordered(command, **kwargs)
+        captured.append((command, kwargs["future"]))
+        return result
+
+    monkeypatch.setattr(srv.command_queue, "put_ordered", capture_ordered)
 
     writer = await _post_json(
         srv,
@@ -1437,10 +1448,16 @@ async def test_http_command_batch_timeout_cancels_unconsumed_step(
     assert writer.response_body["results"][0]["status"] == "timed_out"
     assert writer.response_body["results"][0]["error"] == "command_timeout"
 
-    [entry] = srv.command_queue.drain_entries()
-    assert entry.command == SetFreq(144_030_000, receiver=0)
-    assert entry.future is not None
-    assert entry.future.cancelled()
+    [(command, reply)] = captured
+    assert command == SetFreq(144_030_000, receiver=0)
+    assert isinstance(reply, asyncio.Future)
+    assert reply.cancelled()
+    await asyncio.sleep(0)
+    radio.set_freq.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
+    assert srv.command_queue.drain_entries() == [], (
+        "timed-out ordinary step must no longer be pending"
+    )
 
 
 @pytest.mark.asyncio

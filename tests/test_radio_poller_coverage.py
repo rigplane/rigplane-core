@@ -6506,3 +6506,21 @@ async def test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain() -
         "tx_only request reached the wire during confirmed RX -- the drain "
         "gated on the previous tick's transmit fact, not the drain's"
     )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_executes_cancelled_unkey_after_callback_turn() -> None:
+    poller, radio, queue = _tx_poller(None)
+    radio.set_freq = AsyncMock()
+    reply = asyncio.get_running_loop().create_future()
+    queue.put_ordered(PttOff(), future=reply)
+    queue.put(SetFreq(14_074_000))
+    reply.cancel()
+    await asyncio.sleep(0)
+
+    await poller.drain_tx_safety_commands(timeout=1.0)
+
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+    radio.set_freq.assert_not_awaited()
+    assert reply.cancelled()
+    assert not queue.has_commands

@@ -397,3 +397,25 @@ async def assert_live_pending_turn(
         for future in (reply, second):
             if future.done() and not future.cancelled():
                 future.exception()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "keep_pending"),
+    [(SetFreq(1), False), (PttOn(), False), (PttOff(), True)],
+    ids=["ordinary", "ptt-on", "ptt-off"],
+)
+async def test_cancelled_ordered_reply_keeps_only_legacy_unkey(command, keep_pending):
+    queue = CommandQueue()
+    reply = asyncio.get_running_loop().create_future()
+    queue.put_ordered(command, future=reply)
+    reply.cancel()
+    await asyncio.sleep(0)
+    entries = queue.drain_entries()
+    assert reply.cancelled()
+    expected = [command] if keep_pending else []
+    assert [entry.command for entry in entries] == expected, (
+        "cancel callback must remove ordinary and ON entries but retain legacy PttOff"
+    )
+    if keep_pending:
+        assert entries[0].future is reply
