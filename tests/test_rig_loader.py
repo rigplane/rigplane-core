@@ -1902,6 +1902,83 @@ class TestCodecPreference:
             load_rig(p)
 
 
+# ── [scope].span_presets_hz (MOR-2258) ──────────────────────────
+
+
+_SHIPPED_SCOPE_RIGS = ("ic7300.toml", "ic705.toml", "ic9700.toml", "ic7610.toml")
+_EXPECTED_SPAN_PRESETS_HZ = (
+    2500,
+    5000,
+    10000,
+    25000,
+    50000,
+    100000,
+    250000,
+    500000,
+)
+
+
+class TestScopeSpanPresets:
+    """[scope].span_presets_hz parsing, validation, and shipped-profile parity.
+
+    MOR-2258: the waveform-stream span derivation
+    (``runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation``)
+    reads ``RadioProfile.scope_span_presets_hz`` -- this is the field's
+    only production reader in this change; the 0x15 reply-path decoder/
+    encoder (``commands/scope.py: parse_scope_span_response``/
+    ``scope_set_span``) still use the hardcoded ``_SCOPE_SPAN_PRESETS_HZ``
+    module constant, unchanged (a follow-up threads them onto this field
+    too and removes the constant).
+    """
+
+    def test_defaults_to_empty_tuple_when_undeclared(self, tmp_path):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        rig = load_rig(p)
+        assert rig.scope_span_presets_hz == ()
+        assert rig.to_profile().scope_span_presets_hz == ()
+
+    def test_parses_declared_presets(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = [2500, 5000, 10000]\n"
+        p = _write_toml(tmp_path, toml)
+        rig = load_rig(p)
+        assert rig.scope_span_presets_hz == (2500, 5000, 10000)
+        assert rig.to_profile().scope_span_presets_hz == (2500, 5000, 10000)
+
+    def test_rejects_empty_array(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = []\n"
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            RigLoadError, match=r"\[scope\]\.span_presets_hz must be a non-empty"
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            "[500000, 250000, 100000]",  # descending
+            "[2500, 2500, 5000]",  # duplicate (not strictly ascending)
+        ],
+    )
+    def test_rejects_non_ascending(self, tmp_path, declaration):
+        toml = _MINIMAL_TOML + f"\n[scope]\nspan_presets_hz = {declaration}\n"
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            RigLoadError, match=r"\[scope\]\.span_presets_hz must be strictly ascending"
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize("name", _SHIPPED_SCOPE_RIGS)
+    def test_shipped_scope_rig_declares_the_eight_icom_presets(self, name):
+        """Every shipped scope-capable profile declares the same eight
+        Icom CI-V span presets (span code 0-7 -> Hz) that
+        ``commands/scope.py: _SCOPE_SPAN_PRESETS_HZ`` hardcodes -- this is
+        the parity a follow-up PR relies on when it removes that constant
+        in favor of this field."""
+        rig = load_rig(RIGS_DIR / name)
+        assert rig.scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
+        assert rig.to_profile().scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
+
+
 class TestAudioPolicy:
     """Per-profile [audio] codec and sample-rate policy (#1470)."""
 

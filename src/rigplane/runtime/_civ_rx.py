@@ -3364,16 +3364,21 @@ class CivRuntime:
         exact-division check (a remainder means this width did not come
         from that doubling and is untrustworthy) — not the raw
         difference, which is off by 2x (#3063 review, first round,
-        verified against both manuals). Matched EXACTLY against
-        ``commands/scope.py: _SCOPE_SPAN_PRESETS_HZ`` via the shared
+        verified against both manuals). Matched EXACTLY against this
+        profile's declared ``scope_span_presets_hz`` (``rigs/*.toml``:
+        ``[scope].span_presets_hz``, MOR-2258) via the shared
         ``_span_index_for_hz`` helper — the same lookup
-        ``parse_scope_span_response`` (the 0x15 reply path) uses, so the
-        stream and a typed-getter reply always agree on what index a
-        given Hz value maps to (MOR-2256). No match -> publish nothing,
-        and do not clear whatever the field last held: a non-matching
-        width is either drift outside the eight documented presets or an
-        unexpected source, not something to overwrite a confirmed value
-        with a guess.
+        ``parse_scope_span_response`` (the 0x15 reply path) uses against
+        the module-level ``_SCOPE_SPAN_PRESETS_HZ`` constant as of
+        MOR-2258 (a follow-up threads that path onto this same
+        profile-declared list too), so the stream and a typed-getter
+        reply agree on what index a given Hz value maps to. No match ->
+        publish nothing, and do not clear whatever the field last held:
+        a non-matching span is either drift outside the declared presets
+        or an unexpected source, not something to overwrite a confirmed
+        value with a guess. A profile with no declared presets (empty
+        tuple) never matches, so this is a silent no-op for any rig that
+        hasn't declared ``[scope].span_presets_hz``.
 
         Fixed mode (``scope_frame.mode != 0``) publishes nothing: unlike
         span, there is no declared table of legal (start_hz, end_hz) pairs
@@ -3382,10 +3387,7 @@ class CivRuntime:
         *band*, not to a specific stored (range, edge) preset, and a
         preset's actual edges are radio-side user-configured memory, not
         enumerable data. Publishing here would mean guessing which preset
-        is active, which MOR-2256 rules out. Moving the span table into
-        per-profile data (rather than reusing the existing hardcoded
-        ``commands/scope.py`` constant) is tracked separately as
-        MOR-2258.
+        is active, which MOR-2256 rules out.
 
         Same generation-binding and cache-after-ACCEPTED-apply ordering
         as ``_publish_scope_mode_observation`` above — see its docstring.
@@ -3396,7 +3398,8 @@ class CivRuntime:
         if width_hz % 2 != 0:
             return
         span_hz = width_hz // 2
-        span = _span_index_for_hz(span_hz)
+        presets = self._host._profile.scope_span_presets_hz
+        span = _span_index_for_hz(span_hz, presets)
         if span is None:
             return
         last_spans = self._host._scope_stream_last_span
