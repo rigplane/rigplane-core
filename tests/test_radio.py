@@ -1551,6 +1551,62 @@ class TestCapturedExecuteLifetime:
             current_tracker.fail_all(ConnectionError("test cleanup"))
 
     @pytest.mark.asyncio
+    async def test_retired_ack_grace_preserves_same_tracker_current_sink(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
+        entered, release = asyncio.Event(), asyncio.Event()
+        now = time.monotonic()
+        radio._civ_last_waiter_gc_monotonic = now
+        radio._civ_ack_sink_grace = 10.0
+        tracker.register_ack(wait=False)
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        stale = None
+
+        async def hold(_delay: float) -> None:
+            entered.set()
+            await release.wait()
+
+        try:
+            with (
+                patch.object(runtime, "start_pump"),
+                patch("rigplane.runtime._civ_rx.asyncio.sleep", hold),
+                patch(
+                    "rigplane.runtime._civ_rx.time",
+                    SimpleNamespace(monotonic=lambda: now),
+                ),
+            ):
+                stale = asyncio.create_task(runtime._execute_civ_raw(frame))
+                await entered.wait()
+                runtime.advance_generation("test ACK grace retirement")
+                assert radio._civ_request_tracker is tracker
+                assert tracker.ack_sink_count == 0
+                tracker.register_ack(wait=False)
+                now += 20.0
+                release.set()
+                _, waiting = await asyncio.wait({stale}, timeout=1)
+                assert mock_transport.sent_packets == []
+                assert not waiting, "retired ACK grace did not settle"
+                result = await asyncio.gather(stale, return_exceptions=True)
+                assert isinstance(result[0], ConnectionError)
+                assert tracker.ack_sink_count == 1, (
+                    "retired ACK grace dropped current-generation sink"
+                )
+                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
+                assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=ack))
+                assert tracker.pending_count == 0
+                assert tracker.timeout_count == 0
+        finally:
+            release.set()
+            if stale is not None:
+                if not stale.done():
+                    stale.cancel()
+                await asyncio.gather(stale, return_exceptions=True)
+            tracker.drop_ack_sinks()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("pause", ["pacing", "send"])
     async def test_generation_retirement_retrieves_detached_blocking_exception(
         self,
