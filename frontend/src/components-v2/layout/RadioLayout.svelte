@@ -492,13 +492,18 @@
     display: grid;
     grid-template-rows: 28px 200px minmax(0, 1fr) auto;
   }
-  .radio-layout.semantic-deck {
+  .radio-layout.semantic-deck:not(.sdr-test) {
     grid-template-rows: 28px 280px minmax(0, 1fr) auto;
   }
+  /* MOR-2231 (step 1, batch 5): `:not(.sdr-test)` on this rule and on the
+     promotion below hands the SDR face over to its own grid further down,
+     without relying on source order to break a specificity tie. No other
+     face can carry that class (`class:sdr-test={skinId === 'sdr-test'}`
+     above), so this changes nothing for `desktop-v2`. */
   /* Wide-viewport promotion: sidebars move up to flank the VFO row.
      Below 1680px we keep the stacked layout (VFO full-width, sidebars below). */
   @media (min-width: 1680px) {
-    .radio-layout.semantic-deck {
+    .radio-layout.semantic-deck:not(.sdr-test) {
       grid-template-columns: 228px minmax(0, 1fr) 228px;
       grid-template-rows: 28px 280px minmax(0, 1fr) auto;
       grid-template-areas:
@@ -507,17 +512,96 @@
         "left   center right"
         "dock   dock   dock";
     }
-    .radio-layout.semantic-deck > :global(.status-bar) { grid-area: status; }
-    .radio-layout.semantic-deck > .receiver-deck { grid-area: deck; }
-    .radio-layout.semantic-deck > .bottom-dock { grid-area: dock; }
+    .radio-layout.semantic-deck:not(.sdr-test) > :global(.status-bar) { grid-area: status; }
+    .radio-layout.semantic-deck:not(.sdr-test) > .receiver-deck { grid-area: deck; }
+    .radio-layout.semantic-deck:not(.sdr-test) > .bottom-dock { grid-area: dock; }
     /* Flatten content-row so its children become direct grid items. */
-    .radio-layout.semantic-deck > .content-row {
+    .radio-layout.semantic-deck:not(.sdr-test) > .content-row {
       display: contents;
     }
-    .radio-layout.semantic-deck > .content-row > .content-left { grid-area: left; }
-    .radio-layout.semantic-deck > .content-row > .content-right { grid-area: right; }
-    .radio-layout.semantic-deck > .content-row > .content-center { grid-area: center; }
+    .radio-layout.semantic-deck:not(.sdr-test) > .content-row > .content-left { grid-area: left; }
+    .radio-layout.semantic-deck:not(.sdr-test) > .content-row > .content-right { grid-area: right; }
+    .radio-layout.semantic-deck:not(.sdr-test) > .content-row > .content-center { grid-area: center; }
   }
+
+  /*
+    MOR-2231 (step 1, batch 5) — the SDR face's fourteen zones, laid out as
+    five regions: the VFO deck full width under the status bar, a left control
+    column, a centre column whose top holds the scope pair and whose body keeps
+    the legacy spectrum, a right column ending in the RX/TX authority, and a
+    full-width meters strip at the bottom.
+
+    MECHANISM. `.receiver-deck` and the wiring root both become
+    `display: contents`, so the `[data-zone-id]` boxes are direct grid items of
+    `.radio-layout` and this shell places each one. Five named grid AREAS would
+    not do it: fourteen items assigned to five areas land in five rectangles and
+    stack. The regions are what the explicit per-zone placement RENDERS as.
+
+    `display: contents` also drops `.receiver-deck`'s `overflow: hidden`, so
+    nothing clips the semantic column any more. That is deliberate — the clipped
+    deck was rejected — and deck sizing from a resolved canvas is MOR-2231
+    step 2.
+
+    The two direct children of the wiring root that are never wrapped in a
+    `.surface-zone` (`txFaultRecovery`, `txAdjacentAlerts`) get rows 8 and 9.
+    Without a placement they auto-place into an implicit row below the meters
+    strip. Both self-hide completely, so an absent one collapses its row.
+  */
+  .radio-layout.sdr-test {
+    grid-template-columns: 228px minmax(0, 1fr) 228px;
+    grid-template-rows: 28px auto auto auto auto auto auto auto auto auto;
+    /* Every row is content-sized, so the face is taller than the viewport with
+       fourteen surfaces on screen (measured: ~2.2x a 1000px-high viewport at
+       1920 wide). An `fr` row cannot help — there is no free space to
+       distribute, and the one this rule first carried collapsed to 0px and let
+       its items overlap the rows below. Scrolling the face is what keeps every
+       surface reachable; fitting it is deck sizing, MOR-2231 step 2. */
+    overflow-y: auto;
+  }
+  .radio-layout.sdr-test > .receiver-deck,
+  .radio-layout.sdr-test :global(.semantic-surfaces) {
+    display: contents;
+  }
+  /* Zones size to their content; the centre column's spectrum takes the slack. */
+  .radio-layout.sdr-test :global(.semantic-surfaces > [data-zone-id]) {
+    align-self: start;
+    min-width: 0;
+  }
+  .radio-layout.sdr-test > :global(.status-bar) { grid-area: 1 / 1 / 2 / -1; }
+  /* vfo-deck */
+  .radio-layout.sdr-test :global([data-zone-id='receiver-deck']) { grid-area: 2 / 1 / 3 / -1; }
+  /* left */
+  .radio-layout.sdr-test :global([data-zone-id='rf-front-end']) { grid-area: 3 / 1; }
+  .radio-layout.sdr-test :global([data-zone-id='filter']) { grid-area: 4 / 1; }
+  .radio-layout.sdr-test :global([data-zone-id='band']) { grid-area: 5 / 1; }
+  .radio-layout.sdr-test :global([data-zone-id='antenna']) { grid-area: 6 / 1; }
+  .radio-layout.sdr-test :global([data-zone-id='rit-xit-scan']) { grid-area: 7 / 1; }
+  /* centre-top, above the legacy spectrum this face keeps */
+  .radio-layout.sdr-test :global([data-zone-id='scope-controls']) { grid-area: 3 / 2; }
+  .radio-layout.sdr-test :global([data-zone-id='scope-display']) { grid-area: 4 / 2; }
+  .radio-layout.sdr-test > .content-row {
+    grid-area: 5 / 2 / 8 / 3;
+    /* A floor, not a measurement: the legacy spectrum canvas has no intrinsic
+       height, so a content-sized row collapses it to nothing. */
+    min-height: 320px;
+  }
+  /* right */
+  .radio-layout.sdr-test :global([data-zone-id='rx-audio']) { grid-area: 3 / 3; }
+  .radio-layout.sdr-test :global([data-zone-id='dsp']) { grid-area: 4 / 3; }
+  .radio-layout.sdr-test :global([data-zone-id='cw-keyer']) { grid-area: 5 / 3; }
+  .radio-layout.sdr-test :global([data-zone-id='tx-aux']) { grid-area: 6 / 3; }
+  .radio-layout.sdr-test :global([data-zone-id='rx-tx']) { grid-area: 7 / 3; }
+  /* the two zone-less status plates */
+  .radio-layout.sdr-test :global(.semantic-surfaces > .tx-fault-recovery) {
+    grid-area: 8 / 1 / 9 / -1;
+  }
+  .radio-layout.sdr-test :global(.semantic-surfaces > .mod-input-tx-warning) {
+    grid-area: 9 / 1 / 10 / -1;
+  }
+  /* meters-strip. Full width, and deliberately no `flex-direction` here: how
+     the meters lay out inside their own box is not this grid's business. */
+  .radio-layout.sdr-test :global([data-zone-id='meters']) { grid-area: 10 / 1 / 11 / -1; }
+
   .radio-layout, .radio-layout.semantic-deck {
     height: 100vh;
     background:
@@ -632,6 +716,32 @@
     .radio-layout {
       grid-template-rows: 28px auto minmax(0, auto) auto auto;
     }
+
+    /* MOR-2231 (step 1, batch 5): the SDR face's explicit narrow answer. One
+       column, with each region kept whole and in region order — deck, left,
+       centre-top, spectrum, right, status plates, meters. Left keeps rows 3-7,
+       so only the centre and right groups move. Falling back to source order
+       here would interleave left and right and float the meters strip up to
+       fifth place, which is what the batch's browser probe measured. */
+    .radio-layout.sdr-test {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: 28px repeat(17, auto);
+    }
+    .radio-layout.sdr-test :global([data-zone-id='scope-controls']) { grid-area: 8 / 1; }
+    .radio-layout.sdr-test :global([data-zone-id='scope-display']) { grid-area: 9 / 1; }
+    .radio-layout.sdr-test > .content-row { grid-area: 10 / 1; min-height: 660px; }
+    .radio-layout.sdr-test :global([data-zone-id='rx-audio']) { grid-area: 11 / 1; }
+    .radio-layout.sdr-test :global([data-zone-id='dsp']) { grid-area: 12 / 1; }
+    .radio-layout.sdr-test :global([data-zone-id='cw-keyer']) { grid-area: 13 / 1; }
+    .radio-layout.sdr-test :global([data-zone-id='tx-aux']) { grid-area: 14 / 1; }
+    .radio-layout.sdr-test :global([data-zone-id='rx-tx']) { grid-area: 15 / 1; }
+    .radio-layout.sdr-test :global(.semantic-surfaces > .tx-fault-recovery) {
+      grid-area: 16 / 1;
+    }
+    .radio-layout.sdr-test :global(.semantic-surfaces > .mod-input-tx-warning) {
+      grid-area: 17 / 1;
+    }
+    .radio-layout.sdr-test :global([data-zone-id='meters']) { grid-area: 18 / 1; }
 
     .content-row {
       grid-template-columns: 1fr;

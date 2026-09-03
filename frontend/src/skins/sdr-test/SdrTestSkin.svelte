@@ -9,8 +9,7 @@
   because RadioLayout is where the v3 resolution happens: since MOR-1313 it
   reads THIS entrypoint's manifest and suppresses, per declared zone, the
   legacy twin of every semantic surface the manifest mounts. `sdr-test`
-  declares the VFO/RX-TX pair in one zone (`main: [vfo, rxTx]`), so the
-  semantic surfaces replace `<VfoHeader>` and the sidebars' `<TxPanel>` does
+  declares the VFO/RX-TX pair, so the semantic surfaces replace `<VfoHeader>` and the sidebars' `<TxPanel>` does
   not render (MOR-1065). Why the TX twin follows the deck rather than its
   own zone declaration is the R9 key/unkey argument on RadioLayout's
   `declared` / `semanticRxTx` derivations, and is not repeated here.

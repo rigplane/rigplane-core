@@ -137,6 +137,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 
 import RadioLayout from '../RadioLayout.svelte';
+import SemanticRadioSurfaces from '../../wiring/SemanticRadioSurfaces.svelte';
 import { getCapabilities, hasAnyScope, hasCapability } from '$lib/stores/capabilities.svelte';
 import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixtures/topologies';
 import {
@@ -1175,6 +1176,148 @@ describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () 
   // R9: the last two zones in the vocabulary add no key/unkey authority.
   it('adds no key authority with the centre-top pair declared', () => {
     expect(renderAll('sdr-test').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+  });
+});
+/**
+ * MOR-2231 (step 1, batch 5) — the SDR face's fourteen zones laid out as five
+ * regions.
+ *
+ * WHAT THIS FILE CAN AND CANNOT SEE. The mechanism is CSS: under the SDR
+ * branch `.receiver-deck` and the wiring root both become `display: contents`,
+ * so the zone boxes are direct grid items of `.radio-layout` and the shell
+ * places each one. jsdom under this vitest config carries no stylesheets at
+ * all, so no row below can observe `display: contents`, a grid track, or a
+ * region boundary. Geometry is measured in a real engine instead (three
+ * viewport widths, recorded in the PR). What is left for jsdom is the two
+ * halves the CSS rests on: the DECLARATION reaching the DOM as a zone element
+ * (rows 1-2), and every declared zone actually being named by a placement rule
+ * (row 5) — an unplaced grid item is what the batch's browser probe measured
+ * landing in an implicit row below the meters strip.
+ *
+ * THE CONTROL DIFFERS IN EXACTLY ONE DIMENSION: the `regions` prop. Both sides
+ * resolve the SAME plan from the SAME `sdrTestLayout`, and neither mounts
+ * `RadioLayout`, so no CSS class differs either. That matters here and not
+ * before: `RadioLayout.svelte` derives `regions` and `class:sdr-test` from the
+ * same `skinId === 'sdr-test'` predicate, so a control routed through the shell
+ * cannot vary one without the other — and this batch is what makes the class
+ * load-bearing.
+ */
+describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", () => {
+  /** The vertical alone, so `regions` is the only thing that varies. */
+  function renderVertical(regions: boolean, workspace = DEFAULT_WORKSPACE): HTMLElement {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const plan = resolveSurfacePlan(sdrTestLayout, workspace);
+    mounted.push(mount(SemanticRadioSurfaces, {
+      target,
+      props: { regions },
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    }));
+    flushSync();
+    return target;
+  }
+
+  /** An imported/persisted workspace that hides `dsp` in its own zone. `dsp`
+   *  is not in `requiredSemanticSurfaces`, so `resolveSurfacePlan` does not
+   *  force it back and the zone resolves empty — the one reachable way to make
+   *  `zoneOwning()` answer null on this face. */
+  const DSP_HIDDEN = { ...DEFAULT_WORKSPACE, visibleSurfaces: { dsp: [] } };
+
+  // `deriveDsp` opens on any of nr / nb / notch / agc; without one the surface
+  // never renders and both subtraction rows below would pass vacuously — the
+  // failure the first draft of this describe actually hit.
+  beforeEach(() => {
+    h.caps = {
+      ...(capsFor('2/main_sub') as object),
+      capabilities: ['scope', 'audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'agc'],
+    } as Capabilities;
+  });
+
+  // NON-VACUITY for the two subtraction rows: with nothing subtracted this
+  // fixture really does render `dsp`, inside its declared zone.
+  it('renders dsp inside its declared zone with nothing subtracted', () => {
+    const t = renderVertical(true);
+    expect(t.querySelector('[data-zone-id="dsp"] [data-testid="dsp-surface"]')).not.toBeNull();
+  });
+
+  // MUTATION KILLED: dropping `regions` from the `zoned()` route for `vfo`/
+  // `rxTx`. Nothing else separates these two rows.
+  it('hosts vfo and rxTx in their declared zone elements when regions is set', () => {
+    const t = renderVertical(true);
+    expect(t.querySelector('[data-zone-id="receiver-deck"] [data-testid="vfo-surface"]'))
+      .not.toBeNull();
+    expect(t.querySelector('[data-zone-id="rx-tx"] [data-testid="rx-tx-surface"]'))
+      .not.toBeNull();
+  });
+
+  // The control for the row above: same plan, same manifest, same component,
+  // `regions` flipped and nothing else.
+  it('renders vfo and rxTx bare when regions is unset', () => {
+    const t = renderVertical(false);
+    const vfo = t.querySelector('[data-testid="vfo-surface"]');
+    const rxTx = t.querySelector('[data-testid="rx-tx-surface"]');
+    expect(vfo).not.toBeNull();
+    expect(rxTx).not.toBeNull();
+    expect(vfo!.closest('.surface-zone')).toBeNull();
+    expect(rxTx!.closest('.surface-zone')).toBeNull();
+    expect(t.querySelector('[data-zone-id="receiver-deck"]')).toBeNull();
+    expect(t.querySelector('[data-zone-id="rx-tx"]')).toBeNull();
+  });
+
+  // MUTATION KILLED: dropping `allowBare={!regions}` from the twelve optional
+  // `zoned()` calls on the single path. Under the shipped configuration that
+  // argument is never reached (every surface has a zone), so a subtraction is
+  // the only state that can tell the two apart.
+  it('drops a subtracted surface entirely when regions is set', () => {
+    const t = renderVertical(true, DSP_HIDDEN);
+    expect(t.querySelector('[data-zone-id="dsp"]')).toBeNull();
+    expect(t.querySelector('[data-testid="dsp-surface"]')).toBeNull();
+  });
+
+  // The control: without `regions` the same subtraction still renders the
+  // surface bare, which is the pre-batch behaviour every other face keeps.
+  it('still renders a subtracted surface bare when regions is unset', () => {
+    const t = renderVertical(false, DSP_HIDDEN);
+    const dsp = t.querySelector('[data-testid="dsp-surface"]');
+    expect(dsp).not.toBeNull();
+    expect(dsp!.closest('.surface-zone')).toBeNull();
+  });
+
+  /**
+   * The stylesheet half, read as a DERIVED list against the manifest rather
+   * than a hand-kept one: a zone declared with no placement rule becomes an
+   * auto-placed grid item, which is the failure the browser probe measured for
+   * the two status plates. This cannot see whether the placement is CORRECT —
+   * only that every declared zone has one.
+   */
+  const RADIO_LAYOUT_SOURCE = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
+  const placementFor = (id: string): RegExpMatchArray[] => [...RADIO_LAYOUT_SOURCE.matchAll(
+    new RegExp(`\\.radio-layout\\.sdr-test[^{]*\\[data-zone-id='${id}'\\][^{]*\\{[^}]*grid-area`, 'g'),
+  )];
+
+  it('names every declared sdr-test zone in a placement rule', () => {
+    // Non-vacuity: the same reader finds nothing for a zone id this manifest
+    // does not declare, so a match above is evidence and not an artifact.
+    expect(placementFor('primary-vfo')).toEqual([]);
+    const unplaced = sdrTestLayout.zones.map((z) => z.id).filter((id) => placementFor(id).length === 0);
+    expect(unplaced).toEqual([]);
+  });
+
+  // The two direct children of the wiring root that are never wrapped in a
+  // `.surface-zone` — `txFaultRecovery` and `txAdjacentAlerts` — need a
+  // placement of their own for the same reason. Both class names are read back
+  // out of the components that render them, so a rename cannot leave a dead
+  // selector behind.
+  it('names both zone-less status plates in a placement rule', () => {
+    for (const [cls, source] of [
+      ['tx-fault-recovery', 'src/components-v2/wiring/SemanticRadioSurfaces.svelte'],
+      ['mod-input-tx-warning', 'src/components-v2/panels/ModInputTxWarning.svelte'],
+    ] as const) {
+      expect(readFileSync(source, 'utf8'), cls).toContain(`class="${cls}"`);
+      expect(RADIO_LAYOUT_SOURCE, cls).toMatch(
+        new RegExp(`\\.radio-layout\\.sdr-test[^{]*\\.${cls}\\)[^{]*\\{[^}]*grid-area`),
+      );
+    }
   });
 });
 

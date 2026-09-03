@@ -135,6 +135,22 @@
     return zoneShowsSurface(surfacePlan(), zoneId, surface);
   }
   /**
+   * MOR-2231 (step 1, batch 5) — whether the single composition's OPTIONAL
+   * surfaces may still render outside a zone. See their render sites below.
+   *
+   * `regions` means the caller lays the zone boxes out as grid items, so a
+   * surface reaching that path with no zone would be an unplaced item. The
+   * reachable way for `zoneOwning()` to answer null there is a workspace
+   * SUBTRACTION that emptied the zone (an imported or persisted document;
+   * `resolveSurfacePlan` force-restores anything in `requiredSemanticSurfaces`).
+   *
+   * A mount with NO plan at all is excluded deliberately: no zone element
+   * exists then for ANY surface, so there is no arrangement to be unplaced
+   * beside — withholding the body would cost a readout and prevent nothing.
+   * That is also the condition every standalone mount of this component is in.
+   */
+  let allowBareSurfaces = $derived(!regions || surfacePlan() === null);
+  /**
    * MOR-1336 (v3-rework S4) — the DECLARED zone that mounts `surface`, or
    * `null` when no zone does.
    *
@@ -1494,20 +1510,32 @@
          the column — while still rendering unconditionally, so a fault raised
          by any lease source keeps a way out even if `rxTx` is absent. -->
     {@render txFaultRecovery()}
-    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
-    {@render zoned('meters', view?.meters !== undefined, metersSurface)}
-    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface)}
-    {@render zoned('filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface)}
-    {@render zoned('dsp', view?.dsp !== undefined, dspSurface)}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface)}
-    {@render zoned('band', view?.band !== undefined, bandSurface)}
-    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface)}
+    <!-- MOR-2231 (step 1, batch 5): the twelve OPTIONAL surfaces take
+         `allowBareSurfaces` (see its declaration above) instead of the bare
+         default. `vfo`/`rxTx` above keep the default: they are in
+         `requiredSemanticSurfaces`, which `resolveSurfacePlan` force-restores,
+         so no plan can leave either without a zone. -->
+    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface, allowBareSurfaces)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
+    {@render zoned(
+      'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
+      allowBareSurfaces,
+    )}
+    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
+    {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
+    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
     {@render zoned(
       'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+      allowBareSurfaces,
     )}
-    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface)}
-    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
-    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface)}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
+    {@render zoned(
+      'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
+      allowBareSurfaces,
+    )}
     {@render txAdjacentAlerts()}
   {/if}
 </div>
