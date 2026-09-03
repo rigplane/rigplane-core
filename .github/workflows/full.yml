@@ -146,7 +146,7 @@ jobs:
               message = failure.get("message", "")
               assert message.startswith(row["message_prefix"]), (key, message)
               if row["line"] == 215:
-                  assert message.endswith(" is None"), (key, message)
+                  assert message.splitlines()[0] == "assert RuntimeError('predecessor failed') is None", (key, message)
               trace = failure.text or ""
               assert re.search(r"(?m)^>\s+" + re.escape(row["statement"]) + r"[ \t]*$", trace), (key, "wrong failing statement", trace)
               frame = f"{test_file}:{row['line']}: AssertionError"
