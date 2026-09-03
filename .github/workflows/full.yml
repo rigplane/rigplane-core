@@ -274,7 +274,7 @@ jobs:
     permissions:
       contents: read
     env:
-      SOURCE_PIN: d0f7c33f6dd5f576676948f783bf11f9ea61ddc0
+      SOURCE_PIN: 4dac4f5c4420085e943d8141899c9616ad4ca3b6
       UV_PYTHON: '3.11'
       PYTHONDONTWRITEBYTECODE: '1'
     defaults:
@@ -284,7 +284,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: d0f7c33f6dd5f576676948f783bf11f9ea61ddc0
+          ref: 4dac4f5c4420085e943d8141899c9616ad4ca3b6
           fetch-depth: 0
           persist-credentials: false
           path: source
