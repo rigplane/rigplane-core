@@ -28,6 +28,7 @@ from ..core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionQuery,
+    MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
     civ_acquisition_executor_for_provider,
@@ -362,6 +363,12 @@ class RigctldServer:
             ("_acquisition_scheduler", scheduler),
             ("state_model_service", model_service),
             ("_state_freshness_service", freshness_service),
+            # MOR-2280 F14: standalone rigctld coalesces meter bursts as the
+            # web seat does. ``_bootstrap_state_acquisition`` returns before
+            # calling this when the radio already carries a
+            # ``state_model_service``, so a coalescer another seat attached
+            # over the same radio is never replaced here.
+            ("_meter_observation_coalescer", MeterObservationCoalescer()),
         ):
             try:
                 setattr(self._radio, name, value)
@@ -405,6 +412,7 @@ class RigctldServer:
         freshness_service = StateFreshnessService(
             store=self._state_store,
             scheduler=scheduler,
+            radio=self._radio,
         )
         self._acquisition_scheduler = scheduler
         self._state_model_service = model_service
