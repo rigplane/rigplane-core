@@ -10,7 +10,12 @@ const DOC_EXACT = new Set([
 function isDocumentation(path) {
   if (typeof path !== "string" || !path || path.startsWith("/") || path.split("/").includes("..")) return false;
   const parts = path.split("/");
-  return parts[0] === "docs" || parts[0] === ".claude" || /\.(md|rst)$/iu.test(path) || DOC_EXACT.has(path);
+  const dot = path.lastIndexOf(".");
+  const suffix = dot === -1 ? "" : path.slice(dot);
+  const asciiLowerSuffix = suffix.replace(/[A-Z]/g, (char) =>
+    String.fromCharCode(char.charCodeAt(0) + 32),
+  );
+  return parts[0] === "docs" || parts[0] === ".claude" || asciiLowerSuffix === ".md" || asciiLowerSuffix === ".rst" || DOC_EXACT.has(path);
 }
 
 function isDocumentationFile({filename, previous_filename: previousFilename}) {
