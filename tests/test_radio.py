@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -28,7 +29,7 @@ from rigplane.commands import (
 from rigplane.commander import Priority
 from rigplane.exceptions import CommandError, ConnectionError, TimeoutError
 from rigplane.core import tx_safety as tx
-from rigplane.core.civ import CivEvent, CivEventType
+from rigplane.core.civ import CivEvent, CivEventType, CivRequestTracker
 from rigplane.radio import IcomRadio
 from rigplane.types import (
     AgcMode,
@@ -1343,6 +1344,169 @@ class TestAckSinkRobustness:
             assert radio._civ_request_tracker.timeout_count == 0
         finally:
             await radio._civ_runtime.stop_pump()
+
+
+class TestCapturedExecuteLifetime:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "pause,wait_response",
+        [("pacing", False), ("pacing", True), ("ack-grace", True)],
+        ids=["pacing-ff", "pacing-blocking", "ack-grace"],
+    )
+    @pytest.mark.parametrize("change", ["transport", "epoch", "transport-and-tracker"])
+    async def test_stale_execute_refuses_before_formatter_and_preserves_tracker(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        pause: str,
+        wait_response: bool,
+        change: str,
+    ) -> None:
+        runtime = radio._civ_runtime
+        tracker = radio._civ_request_tracker
+        replacement = MockTransport()
+        entered, release = asyncio.Event(), asyncio.Event()
+        now = time.monotonic()
+        last_send = now
+        radio._last_civ_send_monotonic = now
+        radio._civ_last_waiter_gc_monotonic = now
+        radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
+        radio._civ_ack_sink_grace = 10.0
+        if pause == "ack-grace":
+            tracker.register_ack(wait=False)
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        tasks = []
+
+        async def hold(_delay: float) -> None:
+            entered.set()
+            await release.wait()
+
+        try:
+            with (
+                patch.object(runtime, "start_pump"),
+                patch.object(runtime, "_wrap_civ", wraps=runtime._wrap_civ) as wrap,
+                patch(
+                    "rigplane.runtime._civ_rx.time",
+                    SimpleNamespace(monotonic=lambda: now),
+                ),
+            ):
+                with patch("rigplane.runtime._civ_rx.asyncio.sleep", hold):
+                    stale = asyncio.create_task(
+                        runtime._execute_civ_raw(frame, wait_response)
+                    )
+                    tasks.append(stale)
+                    await entered.wait()
+                    if change.startswith("transport"):
+                        radio._civ_transport = replacement
+                    if change == "epoch":
+                        radio._civ_epoch += 1
+                    if change == "transport-and-tracker":
+                        radio._civ_request_tracker = CivRequestTracker()
+                        radio._civ_request_tracker.register_ack(wait=False)
+                    now += 20.0
+                    release.set()
+                    _, pending = await asyncio.wait({stale}, timeout=1)
+                    assert mock_transport.sent_packets == [], (
+                        "stale execute wrote old transport"
+                    )
+                    assert replacement.sent_packets == [], (
+                        "stale execute wrote replacement"
+                    )
+                    assert wrap.call_count == 0, "stale execute reached the formatter"
+                    assert not pending, "stale execute waited for a response"
+                    result = await asyncio.gather(stale, return_exceptions=True)
+                    assert isinstance(result[0], ConnectionError)
+                    assert tracker.timeout_count == 0
+                    assert radio._last_civ_send_monotonic == last_send
+                    assert radio._civ_send_seq == 0
+                    if pause == "pacing":
+                        assert tracker.pending_count == 0, (
+                            "stale execute leaked its waiter/sink"
+                        )
+                    if change == "transport-and-tracker":
+                        assert radio._civ_request_tracker.ack_sink_count == 1, (
+                            "stale grace dropped replacement sink"
+                        )
+                tracker.drop_ack_sinks()
+                current_tracker = radio._civ_request_tracker
+                current_tracker.drop_ack_sinks()
+                radio._civ_min_interval = 0.0
+                current = asyncio.create_task(
+                    runtime._execute_civ_raw(frame, wait_response)
+                )
+                tasks.append(current)
+                await asyncio.sleep(0)
+                active = radio._civ_transport
+                assert isinstance(active, MockTransport)
+                assert len(active.sent_packets) == 1
+                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
+                assert current_tracker.resolve(
+                    CivEvent(type=CivEventType.ACK, frame=ack)
+                )
+                _, pending = await asyncio.wait({current}, timeout=1)
+                assert not pending, "current command failed after stale refusal"
+                result = current.result()
+                assert result is (ack if wait_response else None)
+                assert current_tracker.pending_count == 0
+                assert not replacement.disconnected
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            tracker.fail_all(ConnectionError("test cleanup"))
+            radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pause", ["pacing", "send"])
+    async def test_cancelled_fire_and_forget_cleans_captured_ack_sink(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        pause: str,
+    ) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        runtime = radio._civ_runtime
+        tracker = radio._civ_request_tracker
+        radio._last_civ_send_monotonic = time.monotonic()
+        radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        task = None
+
+        async def hold(_value: float | bytes) -> None:
+            entered.set()
+            await release.wait()
+
+        target = asyncio if pause == "pacing" else mock_transport
+        method = "sleep" if pause == "pacing" else "send_tracked"
+        try:
+            with (
+                patch.object(runtime, "start_pump"),
+                patch.object(target, method, hold),
+            ):
+                task = asyncio.create_task(runtime._execute_civ_raw(frame, False))
+                await entered.wait()
+                assert tracker.ack_sink_count == 1
+                task.cancel()
+                _, pending = await asyncio.wait({task}, timeout=1)
+                assert not pending
+                assert task.cancelled()
+                assert tracker.pending_count == 0, (
+                    "cancelled fire-and-forget leaked ACK sink"
+                )
+                assert tracker.timeout_count == 0
+        finally:
+            release.set()
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            tracker.drop_ack_sinks()
 
 
 class TestResponseDeadlineOpensAtSend:

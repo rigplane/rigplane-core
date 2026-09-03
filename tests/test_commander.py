@@ -10,6 +10,153 @@ from rigplane.exceptions import ConnectionError
 from rigplane.types import CivFrame
 
 
+class _HeldExecute:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.release = asyncio.Event()
+        self.seen: list[bytes] = []
+        self.task: asyncio.Task[CivFrame | None] | None = None
+        self.fail = fail
+
+    async def __call__(self, payload: bytes, wait_response: bool) -> CivFrame | None:
+        self.seen.append(payload)
+        self.task = asyncio.current_task()
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            await self.release.wait()
+        if self.fail:
+            raise RuntimeError("late execute failure")
+        return None
+
+
+async def _cleanup_held_commander(
+    commander: IcomCommander,
+    execute: _HeldExecute,
+    worker: asyncio.Task[None],
+    tasks: list[asyncio.Task],
+) -> None:
+    execute.release.set()
+    # Cleanup may issue another cancellation; no verdict observes this phase.
+    for _ in range(2):
+        for task in [*tasks, worker]:
+            if not task.done():
+                task.cancel()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    await asyncio.gather(*tasks, worker, return_exceptions=True)
+    await commander.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True], ids=["returns", "raises"])
+async def test_stop_joins_cancel_resistant_execute_before_worker_exit(
+    failure: bool,
+) -> None:
+    execute = _HeldExecute(fail=failure)
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    worker = c._worker
+    assert worker is not None
+    send = asyncio.create_task(c.send(b"held"))
+    tasks = [send]
+    try:
+        await execute.started.wait()
+        queued = asyncio.create_task(c.send(b"queued"))
+        tasks.append(queued)
+        await asyncio.sleep(0)
+        stop = asyncio.create_task(c.stop())
+        tasks.append(stop)
+        await execute.cancelled.wait()
+        done, _ = await asyncio.wait({stop, worker}, timeout=0.05)
+        assert not done, "stop returned before actual execute completed"
+        execute.release.set()
+        _, pending = await asyncio.wait({stop, worker, send, queued}, timeout=1)
+        assert not pending, "cancel-resistant execute left stopping worker parked"
+        assert execute.task is not None and execute.task.done()
+        assert execute.seen == [b"held"], "stopped queue dispatched a later command"
+        assert isinstance(queued.exception(), ConnectionError)
+        assert c._worker is None
+        assert c._queue is None
+    finally:
+        await _cleanup_held_commander(c, execute, worker, tasks)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cancel_first", [False, True], ids=["concurrent", "cancel-waiter"]
+)
+async def test_overlapping_stop_keeps_actual_worker_until_execute_unwinds(
+    cancel_first: bool,
+) -> None:
+    execute = _HeldExecute()
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    worker = c._worker
+    assert worker is not None
+    send = asyncio.create_task(c.send(b"held"))
+    tasks = [send]
+    try:
+        await execute.started.wait()
+        first = asyncio.create_task(c.stop())
+        tasks.append(first)
+        await execute.cancelled.wait()
+        if cancel_first:
+            first.cancel()
+            await asyncio.wait({first}, timeout=0.05)
+            assert not worker.done(), "cancelled stop waiter terminated actual worker"
+            assert c._worker is worker, "cancelled stop waiter lost worker handle"
+        second = asyncio.create_task(c.stop())
+        tasks.append(second)
+        done, _ = await asyncio.wait({second, worker}, timeout=0.05)
+        assert not done, "overlapping stop did not join the held execute"
+        execute.release.set()
+        _, pending = await asyncio.wait(set(tasks) | {worker}, timeout=1)
+        assert not pending, "overlapping stops did not settle after execute"
+        assert execute.task is not None and execute.task.done()
+        assert execute.seen == [b"held"]
+        assert c._worker is None
+        assert c._queue is None
+        await c.stop()
+    finally:
+        await _cleanup_held_commander(c, execute, worker, tasks)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["stopping", "dead"])
+async def test_send_refuses_stopping_or_dead_worker(state: str) -> None:
+    execute = _HeldExecute()
+    c = IcomCommander(execute, min_interval=0.0)
+    c.start()
+    worker = c._worker
+    assert worker is not None
+    tasks = []
+    try:
+        if state == "stopping":
+            tasks.append(asyncio.create_task(c.send(b"held")))
+            await execute.started.wait()
+            tasks.append(asyncio.create_task(c.stop()))
+            await execute.cancelled.wait()
+        else:
+            await asyncio.sleep(0)
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        late = asyncio.create_task(c.send(b"late", wait_dispatch=False))
+        tasks.append(late)
+        _, pending = await asyncio.wait({late}, timeout=1)
+        assert not pending, "send waited on an unavailable worker"
+        result = await asyncio.gather(late, return_exceptions=True)
+        assert isinstance(result[0], ConnectionError), (
+            "send admitted an unavailable worker"
+        )
+        assert b"late" not in execute.seen
+    finally:
+        await _cleanup_held_commander(c, execute, worker, tasks)
+
+
 @pytest.mark.asyncio
 async def test_priority_ordering() -> None:
     order: list[bytes] = []
