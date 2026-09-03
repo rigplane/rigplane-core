@@ -170,7 +170,7 @@ class ManagedTxAuthority:
         await submission.wait_settlement()
         return submission.outcome
 
-    def submit_ptt(
+    async def submit_ptt(
         self,
         on: bool,
         owner: str,
@@ -178,7 +178,7 @@ class ManagedTxAuthority:
         ready: asyncio.Future[Any] | None = None,
     ) -> ManagedTxSubmission:
         """Return admission after starting the authority-owned submission."""
-        return self.start_ptt_submission(on, owner, ready=ready)
+        return await self.start_ptt_submission(on, owner, ready=ready)
 
     def start_ptt_submission(
         self,
