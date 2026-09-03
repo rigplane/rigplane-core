@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,6 +21,17 @@ from rigplane.backends.rigctld_client.radio import (
 from rigplane.exceptions import CommandError
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.exceptions import TimeoutError as RadioTimeoutError
+from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
+from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+from rigplane.runtime.managed_tx_fence import TxAbortFence
+from rigplane.runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+    ManagedTxEffect,
+)
 
 
 def test_supports_command_gates_vfo_operations_on_observed_provider_support() -> None:
@@ -159,8 +171,10 @@ class _ExchangeStream:
         self.responses: asyncio.Queue[bytes | Exception] = asyncio.Queue()
         self.cancel_on_entry: asyncio.Task | None = None
         self.writes: list[bytes] = []
+        self.written: asyncio.Queue[bytes] = asyncio.Queue()
         self.closes = 0
         self.reads = 0
+        self.stale_reads = 0
 
     def _enter(self) -> None:
         self.entered.set()
@@ -168,6 +182,7 @@ class _ExchangeStream:
             self.cancel_on_entry.cancel("cancel exchange")
 
     async def read(self, size: int) -> bytes:
+        self.stale_reads += 1
         if self.phase == "stale":
             self._enter()
             await self.release.wait()
@@ -185,6 +200,7 @@ class _ExchangeStream:
 
     def write(self, data: bytes) -> None:
         self.writes.append(data)
+        self.written.put_nowait(data)
 
     async def drain(self) -> None:
         if self.phase == "write":
@@ -230,6 +246,334 @@ async def _finish_exchanges(
             task.cancel()
     await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
     await asyncio.wait_for(transport.close(), 1)
+
+
+async def _exchange_progress(task: asyncio.Task, entered: asyncio.Event) -> None:
+    waiter = asyncio.create_task(entered.wait())
+    try:
+        await asyncio.wait(
+            (task, waiter), timeout=1, return_when=asyncio.FIRST_COMPLETED
+        )
+        if task.done():
+            await task
+        assert entered.is_set(), "request did not reach the intended exchange boundary"
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
+@pytest.mark.parametrize("active_kind", ["query", "command"])
+async def test_urgent_exchange_preserves_active_frame_and_each_fifo(
+    active_kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, stream)
+    radio = RigctldClientRadio(host="127.0.0.1", transport=transport)
+    active = (
+        transport.query("f", response_lines=1)
+        if active_kind == "query"
+        else transport.command("F 1")
+    )
+    tasks = [asyncio.create_task(active)]
+    try:
+        await _exchange_progress(tasks[0], stream.entered)
+        first = b"f\n" if active_kind == "query" else b"F 1\n"
+        assert await stream.written.get() == first
+        tasks.extend(
+            asyncio.create_task(transport.command(command))
+            for command in ("F 2", "F 3")
+        )
+        tasks.append(
+            asyncio.create_task(
+                radio.actuate(
+                    EffectToken(7, 3, "off"),
+                    ActuationOperation.FORCE_RECEIVE,
+                    is_current=lambda: True,
+                )
+            )
+        )
+        tasks.append(asyncio.create_task(transport.command("F 9", urgent=True)))
+        await asyncio.sleep(0)
+        for task in tasks[1:]:
+            if task.done():
+                await task
+        assert stream.writes == [first], "urgent interleaved an active exchange"
+        stream.responses.put_nowait(
+            b"14074000\n" if active_kind == "query" else b"RPRT 0\n"
+        )
+        await asyncio.wait_for(tasks[0], 1)
+        tasks.append(asyncio.create_task(transport.command("F 4")))
+        for expected in (b"T 0\n", b"F 9\n", b"F 2\n", b"F 3\n", b"F 4\n"):
+            assert await asyncio.wait_for(stream.written.get(), 1) == expected
+            stream.responses.put_nowait(b"RPRT 0\n")
+        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+    finally:
+        await _finish_exchanges(transport, (stream,), tasks)
+
+
+@pytest.mark.parametrize("after_grant", [False, True], ids=["queued", "granted"])
+@pytest.mark.parametrize("urgent", [False, True], ids=["normal", "urgent"])
+async def test_cancelled_admission_releases_only_its_reservation(
+    after_grant: bool, urgent: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, stream)
+    owner = transport._exchange()
+    await owner.__aenter__()
+    released = False
+    tasks = []
+    try:
+        tasks.append(asyncio.create_task(transport.command("T 1", urgent=urgent)))
+        await asyncio.sleep(0)
+        if tasks[0].done():
+            await tasks[0]
+        tasks.append(asyncio.create_task(transport.command("T 0")))
+        await asyncio.sleep(0)
+        if after_grant:
+            await owner.__aexit__(None, None, None)
+            released = True
+        tasks[0].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[0], 1)
+        if not released:
+            await owner.__aexit__(None, None, None)
+            released = True
+        assert await asyncio.wait_for(stream.written.get(), 1) == b"T 0\n"
+        assert stream.closes == 0 and transport.connected
+        stream.responses.put_nowait(b"RPRT 0\n")
+        await asyncio.wait_for(tasks[1], 1)
+        assert stream.writes == [b"T 0\n"]
+    finally:
+        if not released:
+            await owner.__aexit__(None, None, None)
+        await _finish_exchanges(transport, (stream,), tasks)
+
+
+@pytest.mark.parametrize("failure", ["false", "raises"])
+async def test_write_currency_is_checked_after_stale_drain(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, stream)
+    entered, release = asyncio.Event(), asyncio.Event()
+    current = [True]
+    drain = transport._drain_stale
+
+    async def delayed_drain(*args) -> None:
+        entered.set()
+        await release.wait()
+        await drain(*args)
+
+    def is_current() -> bool:
+        if not current[0] and failure == "raises":
+            raise ValueError("currency unavailable")
+        return current[0]
+
+    monkeypatch.setattr(transport, "_drain_stale", delayed_drain)
+    tasks = []
+    try:
+        tasks.append(
+            asyncio.create_task(transport.command("T 1", is_current=is_current))
+        )
+        await _exchange_progress(tasks[0], entered)
+        current[0] = False
+        release.set()
+        with pytest.raises((CommandError, ValueError)):
+            await asyncio.wait_for(tasks[0], 1)
+        assert stream.writes == [] and stream.closes == 0 and transport.connected
+    finally:
+        release.set()
+        await _finish_exchanges(transport, (stream,), tasks)
+
+
+async def test_tokened_queue_cannot_retarget_or_drain_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old, replacement = _ExchangeStream(), _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, old, replacement)
+    owner = transport._exchange()
+    await owner.__aenter__()
+    released = False
+    tasks = []
+    try:
+        tasks.append(
+            asyncio.create_task(transport.command("T 1", is_current=lambda: True))
+        )
+        await asyncio.sleep(0)
+        if tasks[0].done():
+            await tasks[0]
+        await transport.close()
+        await transport.connect()
+        await owner.__aexit__(None, None, None)
+        released = True
+        with pytest.raises(CommandError):
+            await asyncio.wait_for(tasks[0], 1)
+        assert old.writes == replacement.writes == []
+        assert replacement.stale_reads == replacement.reads == replacement.closes == 0
+        assert transport.connected
+        replacement.responses.put_nowait(b"RPRT 0\n")
+        await transport.command("T 0")
+        assert replacement.writes == [b"T 0\n"]
+    finally:
+        if not released:
+            await owner.__aexit__(None, None, None)
+        await _finish_exchanges(transport, (old, replacement), tasks)
+
+
+@pytest.mark.parametrize("operation", list(ActuationOperation), ids=lambda op: op.value)
+@pytest.mark.parametrize(
+    "reply",
+    [b"RPRT 0\n", b"RPRT -6\n", b"malformed\n"],
+    ids=["accepted", "rprt_error", "malformed"],
+)
+async def test_managed_actuator_uses_canonical_rigctld_outcomes(
+    operation: ActuationOperation, reply: bytes
+) -> None:
+    on = operation is not ActuationOperation.FORCE_RECEIVE
+    command = "T 1" if on else "T 0"
+    behavior = FakeRigctldBehavior(malformed_responses={command: reply})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        radio = RigctldClientRadio(host=server.host, transport=transport)
+        await transport.connect()
+        try:
+            assert callable(radio.actuate)
+            lane = ManagedTxEffectLane(radio)
+            effect = ManagedTxEffect(operation, EffectToken(7, 3, "attempt"))
+            result = await lane.settle(
+                effect, deadline_monotonic=asyncio.get_running_loop().time() + 3
+            )
+            expected = (
+                ActuationResult.ACCEPTED
+                if reply == b"RPRT 0\n"
+                else ActuationResult.UNCERTAIN
+            )
+            assert result.result is expected
+            assert server.commands_seen == [command]
+        finally:
+            await transport.close()
+
+
+async def test_controlled_authority_replacement_keeps_debt_after_late_on_rprt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered, release, late_settled = (asyncio.Event() for _ in range(3))
+    write_response = fake_rigctld._write_response
+
+    async def delayed_response(writer, data: bytes) -> None:
+        if data == b"RPRT 0\n" and not entered.is_set():
+            entered.set()
+            await release.wait()
+            try:
+                await write_response(writer, data)
+            finally:
+                late_settled.set()
+        else:
+            await write_response(writer, data)
+
+    monkeypatch.setattr(fake_rigctld, "_write_response", delayed_response)
+    behavior = FakeRigctldBehavior(malformed_responses={"T 0": b"RPRT -6\n"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        radio = RigctldClientRadio(host=server.host, transport=transport)
+        await transport.connect()
+        managed, tasks = None, []
+        try:
+            assert callable(radio.actuate)
+            managed = ManagedTxAuthority(
+                ManagedTxEffectLane(radio),
+                ManagedTxTotConfigStore(tmp_path / "tot.json"),
+                TxAbortFence(),
+                provider_generation=7,
+            )
+            await managed._stop_scheduler(managed._scheduler_task)
+            tasks.append(asyncio.create_task(managed.transmit_on()))
+            await _exchange_progress(tasks[0], entered)
+            assert server.commands_seen == ["T 1"]
+            await asyncio.wait_for(managed.force_off(), 1)
+            await asyncio.wait_for(tasks[0], 1)
+            assert (await managed.snapshot()).state.release_required
+            await transport.connect()
+            await managed.provider_unavailable()
+            await asyncio.wait_for(managed.provider_available(8), 1)
+            before = (await managed.snapshot()).state
+            assert before.release_required
+            assert before.last_actuation.result is ActuationResult.UNCERTAIN
+            release.set()
+            await asyncio.wait_for(late_settled.wait(), 1)
+            assert (await managed.snapshot()).state == before
+            behavior.malformed_responses.clear()
+            await asyncio.wait_for(managed.force_off(), 1)
+            assert server.commands_seen == ["T 1", "T 0", "T 0"]
+            assert not (await managed.snapshot()).state.release_required
+        finally:
+            release.set()
+            behavior.malformed_responses.clear()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
+            if managed is not None:
+                await transport.connect()
+                await managed.force_off()
+                await managed.close()
+            await transport.close()
+
+
+@pytest.mark.parametrize("operation", list(AbortOperation), ids=lambda op: op.value)
+async def test_rigctld_unsupported_abort_does_not_emit_a_command(
+    operation: AbortOperation, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, stream)
+    radio = RigctldClientRadio(host="127.0.0.1", transport=transport)
+    try:
+        result = await radio.actuate(
+            EffectToken(7, 3, "abort"), operation, is_current=lambda: True
+        )
+        assert result is ActuationResult.REJECTED and stream.writes == []
+    finally:
+        await transport.close()
+
+
+async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
+    tmp_path: Path,
+) -> None:
+    async with FakeRigctldServer() as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        radio = RigctldClientRadio(host=server.host, transport=transport)
+        await transport.connect()
+        managed = None
+        finish_cleanup = asyncio.Event()
+        try:
+            assert callable(radio.actuate)
+            fence = TxAbortFence()
+            fence.register(fence.issue(), finish_cleanup.wait)
+            managed = ManagedTxAuthority(
+                ManagedTxEffectLane(radio),
+                ManagedTxTotConfigStore(tmp_path / "tot.json"),
+                fence,
+                provider_generation=7,
+            )
+            await managed._stop_scheduler(managed._scheduler_task)
+            await asyncio.wait_for(managed.transmit_on(), 1)
+            assert server.commands_seen == ["T 1"]
+            assert (await managed.snapshot()).state.release_required
+            await asyncio.wait_for(managed.force_off(), 1)
+            state = (await managed.snapshot()).state
+            assert server.commands_seen == ["T 1", "T 0"]
+            assert not finish_cleanup.is_set() and not state.release_required
+            assert state.last_actuation.operation is ActuationOperation.FORCE_RECEIVE
+            assert state.last_actuation.result is ActuationResult.ACCEPTED
+            assert {error.operation for error in state.abort_errors} == set(
+                AbortOperation
+            )
+        finally:
+            finish_cleanup.set()
+            if managed is not None:
+                await managed.force_off()
+                await managed.close()
+            await transport.close()
 
 
 @pytest.mark.parametrize(

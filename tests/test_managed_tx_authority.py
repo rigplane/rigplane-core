@@ -1,5 +1,6 @@
 import asyncio
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pytest
@@ -99,6 +100,8 @@ class FakeLane:
         self.results: deque[ActuationResult] = deque()
         self.effects: list[ManagedTxEffect] = []
         self.aborts: list[tuple[EffectToken, AbortOperation]] = []
+        self.guards: list[Callable[[], bool] | None] = []
+        self.abort_guards: list[Callable[[], bool] | None] = []
         self.abort_results: dict[AbortOperation, ActuationResult] = {}
         self.stale_once = False
         self.gates: deque[asyncio.Event | None] = deque()
@@ -111,8 +114,13 @@ class FakeLane:
         return gate
 
     async def settle(
-        self, effect: ManagedTxEffect, *, deadline_monotonic: float
+        self,
+        effect: ManagedTxEffect,
+        *,
+        deadline_monotonic: float,
+        is_current: Callable[[], bool] | None = None,
     ) -> ActuationSettled:
+        self.guards.append(is_current)
         self.effects.append(effect)
         self.log.append(("effect", effect.operation))
         self.started.put_nowait(effect)
@@ -139,7 +147,9 @@ class FakeLane:
         operation: AbortOperation,
         *,
         deadline_monotonic: float,
+        is_current: Callable[[], bool] | None = None,
     ) -> AbortFailed | None:
+        self.abort_guards.append(is_current)
         self.aborts.append((token, operation))
         self.log.append(("abort", operation))
         result = self.abort_results.get(operation, ActuationResult.ACCEPTED)
@@ -914,7 +924,7 @@ async def test_real_fence_releases_before_cleanup_and_shutdown_waits_for_cleanup
     retired: list[int] = []
 
     class Actuator:
-        async def actuate(self, token, operation):
+        async def actuate(self, token, operation, *, is_current=None):
             assert not fence.is_current(old)
             state = (await managed.snapshot()).state
             assert state.intent.kind is ManagedTxIntentKind.RX
@@ -1023,7 +1033,7 @@ async def test_late_physical_on_retains_debt_until_a_fresh_off(
     writes: list[tuple[str, EffectToken]] = []
 
     class Actuator:
-        async def actuate(self, token, operation):
+        async def actuate(self, token, operation, *, is_current=None):
             if operation is ActuationOperation.TRANSMIT_ON:
                 started.set()
                 try:
@@ -1136,7 +1146,7 @@ async def test_repeated_force_off_and_retry_leave_cleanup_owned_until_close() ->
     calls: list[EffectToken] = []
 
     class Actuator:
-        async def actuate(self, token, operation):
+        async def actuate(self, token, operation, *, is_current=None):
             if operation is ActuationOperation.FORCE_RECEIVE:
                 calls.append(token)
                 if len(calls) == 1:
@@ -1226,3 +1236,95 @@ async def test_cancelled_close_can_be_rejoined_until_cleanup_finishes(
         if second is not None:
             await second
     assert managed._closed and not managed._closing
+
+
+@pytest.mark.parametrize(
+    "release", ["ptt_up", "offline_ptt_up", "force_off", "replace"]
+)
+async def test_effect_currency_tracks_pending_owner_release(release: str) -> None:
+    managed, _, _, _, fence, lane = authority(seconds=None)
+    await managed._stop_scheduler(managed._scheduler_task)
+    allow_on, allow_off = lane.block_next(), asyncio.Event()
+    on = asyncio.create_task(managed.ptt_down("owner"))
+    releasing = None
+    try:
+        old = await asyncio.wait_for(lane.started.get(), 1)
+        guard = lane.guards[0]
+        assert callable(guard), "authority did not supply per-attempt currency"
+        assert guard()
+        epoch = fence.epoch
+        assert await managed.ptt_up("other") is ManagedTxOutcome.REJECTED
+        assert guard() and fence.epoch == epoch
+        if release == "offline_ptt_up":
+            managed._provider_generation = None
+            assert await managed.ptt_up("owner") is ManagedTxOutcome.ACCEPTED
+            assert managed._state.pending_effect is None
+        else:
+            lane.gates.append(allow_off)
+
+            async def replace_provider() -> None:
+                await managed.provider_unavailable()
+                await managed.provider_available(8)
+
+            releasing = asyncio.create_task(
+                replace_provider()
+                if release == "replace"
+                else managed.force_off()
+                if release == "force_off"
+                else managed.ptt_up("owner")
+            )
+            current = await asyncio.wait_for(lane.started.get(), 1)
+            assert current.operation is ActuationOperation.FORCE_RECEIVE
+            assert callable(lane.guards[-1]) and lane.guards[-1]()
+            if release == "ptt_up":
+                assert old.token.effect_epoch == current.token.effect_epoch
+                assert old.token.attempt_id != current.token.attempt_id
+        assert not guard(), "old ON stayed writable after its pending effect changed"
+        if release in {"ptt_up", "offline_ptt_up"}:
+            assert fence.epoch == epoch
+    finally:
+        allow_on.set()
+        allow_off.set()
+        await asyncio.wait_for(
+            asyncio.gather(on, *(() if releasing is None else (releasing,))), 1
+        )
+        if managed._provider_generation is None:
+            await managed.provider_available(8)
+        await managed.force_off()
+        await managed.close()
+
+
+async def test_abort_currency_ends_when_current_force_receive_settles() -> None:
+    managed, _, _, _, _, lane = authority(seconds=None)
+    try:
+        await managed.force_off()
+        assert len(lane.abort_guards) == len(AbortOperation)
+        assert managed._state.current_abort_token is not None
+        assert managed._state.pending_effect is None
+        for guard in lane.abort_guards:
+            assert callable(guard), "abort attempt has no runtime currency"
+            assert not guard(), "diagnostic abort token outlived release-write currency"
+    finally:
+        await managed.close()
+
+
+async def test_shutdown_currency_observes_termination_synchronously() -> None:
+    managed, _, _, _, _, lane = authority(seconds=None)
+    allow_off, termination = lane.block_next(), asyncio.Event()
+    task = asyncio.create_task(
+        managed.shutdown(
+            retire_provider=lambda _: asyncio.sleep(0), termination=termination
+        )
+    )
+    try:
+        current = await asyncio.wait_for(lane.started.get(), 1)
+        assert current.operation is ActuationOperation.FORCE_RECEIVE
+        guard = lane.guards[-1]
+        assert callable(guard), "shutdown OFF has no runtime currency"
+        assert managed._shutting_down and guard()
+        termination.set()
+        assert not guard(), "termination must fence writes without another loop turn"
+    finally:
+        termination.set()
+        allow_off.set()
+        await asyncio.wait_for(task, 1)
