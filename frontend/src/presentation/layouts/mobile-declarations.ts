@@ -19,10 +19,7 @@ import { registerLayout, type LayoutManifest } from './contract';
 /**
  * MOR-1160, fluid side. Mobile chrome reflows; it is not an instrument stage
  * scaled as one letterboxed block, so it declares no native size and no
- * `minScale` — and therefore always fits (`fitsViewport`: breakpoints are
- * reflow hints, not a hard gate in v1). That is what makes mobile the only
- * viable destination for a fixed-native layout's one validated fallback hop
- * off a portrait phone, where the LCD stage fails arithmetically.
+ * `minScale`.
  *
  * The single breakpoint is the one reflow the shell actually implements:
  * `MobileRadioLayout` switches to its spectrum-dominant landscape arrangement
@@ -56,8 +53,6 @@ export const mobileLayout: LayoutManifest = {
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
   stageSizing: MOBILE_FLUID_SIZING,
-  // Terminal by construction: a fluid layout never fails a viewport, so a hop
-  // off mobile would be unreachable and would only mask a real failure.
   fallbackLayoutId: null,
 };
 

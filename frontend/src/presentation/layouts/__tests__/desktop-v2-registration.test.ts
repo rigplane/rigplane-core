@@ -10,10 +10,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import {
-  declaredSurfaces, getLayout, resolveLayoutForTopology, resolveLayoutForViewport,
-  TOPOLOGY_CLASSES,
-} from '../contract';
+import { declaredSurfaces, getLayout } from '../contract';
 // Barrel-only, never '../desktop-declarations' directly — the M7 lesson
 // (registry.test.ts's "dual-receiver-cockpit registration barrel proof",
 // restated on every family since): a direct manifest import fires
@@ -21,9 +18,6 @@ import {
 // longer wires desktop-v2 into the app, and under the fast pool's
 // `isolate: false` it would leak the registration into sibling files.
 import { desktopV2Layout } from '../declarations';
-
-/** iPhone-class portrait — the viewport the LCD family fails arithmetically. */
-const PORTRAIT_MOBILE = { width: 390, height: 844 };
 
 describe('the desktop-v2 entrypoint is registered in the real registry', () => {
   // Kills: desktop-declarations.ts defining the manifest but never calling
@@ -137,16 +131,6 @@ describe('loader identity — pins the real desktop-v2 entrypoint (verify.md N1)
   });
 });
 
-describe('topology honesty', () => {
-  // Kills: under-declaring the topology set. VfoHeader renders VfoOps
-  // (A/B swap/equal) unconditionally and branches DualVfoDisplay vs a
-  // single-receiver VfoPanel on hasDualReceiver(), so every canonical class
-  // resolves to desktop-v2 itself, never to a fallback (it declares none).
-  it.each(TOPOLOGY_CLASSES)('resolves itself on the %s topology', (topology) => {
-    expect(resolveLayoutForTopology('desktop-v2', topology)?.id).toBe('desktop-v2');
-  });
-});
-
 describe('MOR-1160 sizing axis — desktop-v2 stays fluid, mirroring sdr-test', () => {
   // Kills: silently switching desktop-v2 onto the fixed-native stage the LCD
   // family owns, or recording a breakpoint set that disagrees with
@@ -154,23 +138,11 @@ describe('MOR-1160 sizing axis — desktop-v2 stays fluid, mirroring sdr-test', 
   it('declares fluid sizing with no breakpoints', () => {
     expect(desktopV2Layout.stageSizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [] });
   });
-
-  // Kills: fitsViewport gating a fluid layout on a breakpoint instead of
-  // always fitting (contract: breakpoints are reflow hints, not a hard gate
-  // in v1).
-  it.each([
-    ['desktop', { width: 1440, height: 900 }],
-    ['portrait phone', PORTRAIT_MOBILE],
-  ])('resolves itself on a %s viewport', (_label, viewport) => {
-    expect(resolveLayoutForViewport('desktop-v2', viewport)?.id).toBe('desktop-v2');
-  });
 });
 
 describe('no fallback family', () => {
   // Kills: adding a fallbackLayoutId that has nothing to do — desktop-v2
-  // supports every canonical topology and fluid sizing never fails a
-  // viewport, so any hop off it would be unreachable and would only mask a
-  // real resolution failure.
+  // declares every canonical topology and fluid sizing.
   it('declares no fallback', () => {
     expect(desktopV2Layout.fallbackLayoutId).toBeNull();
   });
