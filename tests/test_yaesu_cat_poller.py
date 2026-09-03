@@ -2238,11 +2238,18 @@ async def test_fast_poll_reads_tx_meters_when_ptt_active() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("command", "state_field", "sub_write", "main_write", "query"),
+    (
+        "command",
+        "state_field",
+        "sub_write",
+        "main_write",
+        "sub_query",
+        "main_query",
+    ),
     [
-        ("set_af_level", "af_level", "AG1123;", "AG0123;", "AG1123"),
-        ("set_rf_gain", "rf_gain", "RG1123;", "RG0123;", "RG1123"),
-        ("set_squelch", "squelch", "SQ1123;", "SQ0123;", "SQ1123"),
+        ("set_af_level", "af_level", "AG1123;", "AG0123;", "AG1123", "AG0077"),
+        ("set_rf_gain", "rf_gain", "RG1123;", "RG0123;", "RG1123", "RG0077"),
+        ("set_squelch", "squelch", "SQ1123;", "SQ0123;", "SQ1123", "SQ0077"),
     ],
 )
 async def test_ftx1_level_controls_route_receiver_through_web_queue(
@@ -2250,10 +2257,12 @@ async def test_ftx1_level_controls_route_receiver_through_web_queue(
     state_field: str,
     sub_write: str,
     main_write: str,
-    query: str,
+    sub_query: str,
+    main_query: str,
 ) -> None:
     """Web level controls preserve their MAIN/SUB target through CAT dispatch."""
-    radio, handler, poller, store, _accept = _real_ftx1_control_path()
+    radio, handler, poller, store, accept = _real_ftx1_control_path()
+    main_before = getattr(radio.radio_state.main, state_field)
 
     await handler._enqueue_command(  # noqa: SLF001
         command,
@@ -2264,12 +2273,29 @@ async def test_ftx1_level_controls_route_receiver_through_web_queue(
 
     radio._transport.write.assert_awaited_once_with(sub_write)  # noqa: SLF001
     assert getattr(radio.radio_state.sub, state_field) == 123
+    assert getattr(radio.radio_state.main, state_field) == main_before
     assert store.snapshot().fields == ()
 
-    radio._transport.query = AsyncMock(return_value=query)  # noqa: SLF001
-    read_level = await getattr(radio, f"read_{state_field}")(1)
-    assert read_level == 123
-    radio._transport.query.assert_awaited_once_with(sub_write[:3] + ";")  # noqa: SLF001
+    radio._transport.query = AsyncMock(side_effect=(sub_query, main_query))  # noqa: SLF001
+    read_sub = await getattr(radio, f"read_{state_field}")(1)
+    read_main = await getattr(radio, f"read_{state_field}")(0)
+    assert (read_sub, read_main) == (123, 77)
+    radio._transport.query.assert_has_awaits(  # noqa: SLF001
+        [mock_call(sub_write[:3] + ";"), mock_call(main_write[:3] + ";")]
+    )
+
+    profile = radio.profile.state_acquisition
+    assert profile is not None
+    sub_path = FieldPath.receiver("sub", "operator_controls", state_field)
+    observed = ProviderObservationAdapter(
+        profile,
+        source="yaesu_poll_response",
+        transport="serial",
+    ).observation(sub_path, read_sub, native_id=f"read_{state_field}")
+    accept((replace(observed, provider_generation=store.provider_generation),))
+    field = store.snapshot().field(sub_path)
+    assert field.value == 123
+    assert field.quality == ("confirmed",)
 
     await handler._enqueue_command(  # noqa: SLF001
         command,
@@ -2283,6 +2309,51 @@ async def test_ftx1_level_controls_route_receiver_through_web_queue(
         mock_call(main_write),
     ]
     assert getattr(radio.radio_state.main, state_field) == 123
+    assert getattr(radio.radio_state.sub, state_field) == 123
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["set_af_level", "set_rf_gain", "set_squelch"])
+async def test_ftx1_level_controls_reject_invalid_receiver_before_wire(
+    command: str,
+) -> None:
+    """Public control admission rejects unsupported receiver indexes."""
+    radio, handler, poller, _store, _accept = _real_ftx1_control_path()
+
+    with pytest.raises(ValueError, match="receiver=2 is not supported"):
+        await handler._enqueue_command(  # noqa: SLF001
+            command,
+            {"level": 123, "receiver": 2},
+            command_id=f"{command}-invalid-receiver",
+        )
+    await poller._drain_commands()  # noqa: SLF001
+
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_ftx1_level_control_missing_sub_profile_key_fails_before_wire() -> None:
+    """A missing SUB command template fails before a CAT write."""
+    radio, handler, poller, _store, _accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    radio._config = replace(  # noqa: SLF001
+        radio._config,  # noqa: SLF001
+        commands={
+            name: spec
+            for name, spec in radio._config.commands.items()  # noqa: SLF001
+            if name != "set_af_level_sub"
+        },
+    )
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "set_af_level",
+        {"level": 123, "receiver": 1},
+        command_id="set-af-missing-sub-template",
+    )
+    await poller._drain_commands()  # noqa: SLF001
+
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+    assert service.lifecycle_events()[-1].state == "failed"
 
 
 @pytest.mark.asyncio
