@@ -28,7 +28,8 @@ No fast path. PLAN is always mandatory.
 
 ### Phase 2: VALIDATE PRECONDITIONS
 
-1. Run `uv run pytest tests/ -q --tb=short` — capture baseline (must pass)
+1. Take the baseline from the `quick.yml` run on `main` that CLAUDE.md
+   §Agent working rules names as the baseline (must be green)
 2. If target area lacks tests → generate minimal regression tests first (`/generate-tests file <path>`)
 3. Baseline must be green before proceeding. If not → STOP.
 
@@ -49,7 +50,9 @@ no new abstractions unless explicitly targeted.
 
 1. Dispatch the `builder` role (`.claude/agents/builder.md`) with
    `refactor-plan.md` as its spec; apply changes one step at a time
-2. After each step: `uv run pytest tests/ -q --tb=short -x`
+2. After each step: run the targeted files — the tests covering what that step
+   touched — locally, `uv run pytest <paths> --tb=short -x`. The full suite is
+   CI's (CLAUDE.md §Agent working rules)
 3. If tests fail after any step:
    - Rollback that step: `git checkout -- <changed files>`
    - Mark step as failed in `progress.md`
@@ -64,10 +67,14 @@ Rules:
 
 ### Phase 5: TEST
 
-1. Run full suite: `uv run pytest tests/ -q --tb=short`
-2. Run lint and type checks: `uv run ruff check src/ tests/`,
-   `uv run ruff format --check src/ tests/`,
-   `uv run mypy --strict src/rigplane/web`
+The suite result is CI's, so the PR opens here — before REVIEW, not after it.
+
+1. Commit (`refactor: <area description>`), push, then `gh pr create --draft`:
+   `quick.yml` triggers on push/PR to `main`, so the branch has no run of its
+   own until the PR exists (CLAUDE.md §Agent working rules)
+2. Read the gates off that PR's `quick` run at this head: it runs the pytest
+   suite, `ruff check` and `ruff format --check` under its `core` path filter,
+   and `mypy --strict src/rigplane/web` under its `frontend` one
 3. Compare pass/fail counts against Phase 2 baseline
 4. Any new failure = behavior change → rollback all, mark FAILED
 
@@ -85,8 +92,9 @@ Relay its verdict and write `review.md`.
 
 ### Phase 7: PR
 
-- Commit: `refactor: <area description>`
-- PR body: what improved, what didn't change, test evidence
+- `gh pr ready` on the draft opened in Phase 5
+- PR body: what improved, what didn't change, and the `quick` run the test
+  evidence comes from
 
 ## Post-pipeline
 

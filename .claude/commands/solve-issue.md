@@ -29,7 +29,7 @@ belong to the coordinator, not to a subagent.
 - Enter Plan Mode first — do NOT start coding
 - Design the minimal fix from the research findings
 - **STOP if the plan crosses the hard ceiling** in CLAUDE.md §Guardrails, or needs an architecture change
-- Record the pre-change baseline: run the standard suite from CLAUDE.md §Commands and keep the pass/fail counts in the run's working notes, so Phase 4 REGCHECK has something to compare against
+- Record the pre-change baseline: the `quick.yml` run on `main` that CLAUDE.md §Agent working rules names as the baseline. Keep its pass/fail counts in the run's working notes, so Phase 4 REGCHECK has something to compare against
 
 ### Phase 3: EXECUTE
 Dispatch the `builder` role (`.claude/agents/builder.md`) with the plan as its spec.
@@ -37,9 +37,16 @@ Dispatch the `builder` role (`.claude/agents/builder.md`) with the plan as its s
 - Max 2 attempts per change
 
 ### Phase 4: REGCHECK (mandatory)
-Run `/regression-check` (see `.claude/commands/regression-check.md`).
+The post-change result is CI's, so the PR opens here — before REVIEW, not after it.
+- Commit with a conventional message: `fix(#$ARGUMENTS): ...` or `feat(#$ARGUMENTS): ...`
+- Push, then `gh pr create --draft` with `Closes #$ARGUMENTS` in the body:
+  `quick.yml` triggers on push/PR to `main`, so the branch has no run of its
+  own until the PR exists (CLAUDE.md §Agent working rules)
+- Run `/regression-check` (see `.claude/commands/regression-check.md`), which
+  takes its numbers from that PR's `quick` run at this head
 - Compare test results against baseline
-- If regression detected → back to EXECUTE (counts toward retry limit)
+- If regression detected → back to EXECUTE (counts toward retry limit); push
+  the fix and read the `quick` run on the new head
 - Do NOT proceed to REVIEW with regressions
 
 ### Phase 5: REVIEW
@@ -50,15 +57,20 @@ Dispatch the `verifier` role (`.claude/agents/verifier.md`).
 - If it reports needed changes → back to EXECUTE (max 2 review loops)
 
 ### Phase 6: TEST
-Run the gates yourself, from CLAUDE.md § Commands: the standard pytest suite,
-`ruff check`, `ruff format`, and `mypy`.
-- If the working tree is unchanged since REGCHECK, reuse that full-suite result (do not re-run an identical suite on the same code) and run only lint, format, and type check; any code change after REGCHECK requires a fresh full run
-- If a gate fails → back to EXECUTE (max 2 fix cycles)
+Read the four gates off the `quick` run for the head under review: the standard
+pytest suite, `ruff check`, `ruff format`, and `mypy`.
+- `quick.yml` runs pytest and ruff under its `core` path filter and
+  `mypy --strict src/rigplane/web` under its `frontend` one; a gate whose
+  filter did not match has no result in that run, and CLAUDE.md §Commands
+  gives where the missing mypy is picked up
+- If the head is unchanged since REGCHECK, this is the same run — read it again
+  rather than asking for another; a new head gets its own `quick` run
+- If a gate fails → back to EXECUTE (max 2 fix cycles), then read the `quick`
+  run on the new head
 
 ### Phase 7: PR
-- Commit with a conventional message: `fix(#$ARGUMENTS): ...` or `feat(#$ARGUMENTS): ...`
-- Push and create the PR via `gh pr create`
-- PR body references the issue: `Closes #$ARGUMENTS`
+- `gh pr ready` on the draft opened in Phase 4
+- Check the PR body still references the issue: `Closes #$ARGUMENTS`
 
 ## Post-pipeline
 
