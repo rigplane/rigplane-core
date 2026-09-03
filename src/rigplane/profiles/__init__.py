@@ -411,6 +411,14 @@ class RadioProfile:
     scope_ref_min_db: float | None = None
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
+    # MOR-2258: scope span presets (Hz), index-ordered to match the CI-V
+    # 0x27/0x15 span code. Sole source of the Hz<->index mapping: read by
+    # the waveform-stream span derivation (runtime/_civ_rx.py:
+    # CivRuntime._publish_scope_span_observation) and passed into
+    # commands/scope.py: parse_scope_span_response / scope_set_span,
+    # which take it as a parameter because commands/ may not import
+    # profiles/ (.importlinter).
+    scope_span_presets_hz: tuple[int, ...] = ()
     # Per-profile RX codec preference override (#797). When non-None, the first
     # entry is used as the initial ``audio_codec`` for radios created under this
     # profile (unless the caller passes an explicit non-default value). Values

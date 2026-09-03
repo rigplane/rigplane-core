@@ -248,7 +248,10 @@ Definition: any external import path where the segment immediately after
 `icom_lan.` (or the trailing component within a subpackage) starts with `_`.
 These are shim landmines for Phase 2.
 
-- Total leak occurrences in `tests/`: **43** (across **15** test files)
+- One entry was removed from the `tests/` list in §5.1 below, because the
+  file it cited (`tests/test_shared_state_runtime.py`) was deleted; that
+  list is therefore no longer the complete verbatim scan its heading
+  describes, and the total that stood here is not restated.
 - Total leak occurrences in `docs/`: **0**
 - Total leak occurrences in `icom-lan-pro`: **0**
 

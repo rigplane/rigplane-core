@@ -29,6 +29,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   together with the module-level `_is_packet_mode_set` helper that gated the
   packet-mode hold. Passing `_poller=` to `RigctldServer` now raises
   `TypeError`.
+- **`rigplane.commands.parse_scope_span_response` and
+  `rigplane.commands.scope_set_span` require the span-preset table as an
+  argument (MOR-2258).** The module constant that held the eight Icom
+  CI-V span values (span code 0-7 -> Hz) inside
+  `src/rigplane/commands/scope.py` is deleted; the table now lives only in
+  `rigs/*.toml` (`[scope].span_presets_hz`) and reaches these two
+  functions as `RadioProfile.scope_span_presets_hz`, passed in by the
+  caller because `commands/` may not import `profiles/`
+  (`.importlinter`). `parse_scope_span_response` takes it as a second
+  positional parameter, `scope_set_span` as a required keyword-only
+  `presets=`; both raise `TypeError` if it is omitted. The legal span
+  index range is now `0..len(presets) - 1` rather than a fixed `0..7`.
+  Every caller in this repository (`runtime/_civ_rx.py: CivRuntime`,
+  `runtime/_scope_runtime.py: ScopeRuntimeMixin`) reads the resolved
+  profile and passes it; an external caller must do the same. At this
+  commit every shipped profile that declares `get_scope_span`
+  (`ic7300`, `ic705`, `ic7610`, `ic9700`) also declares
+  `[scope].span_presets_hz` with the same eight values, so no shipped
+  radio changes behaviour.
 - **The `rigctld` `RadioPoller` is deleted.** Removed: `rigplane.rigctld.poller`
   (the module, its `RadioPoller` class, `_mode_to_hamlib_str`,
   `_get_mode_reader`, and `_STATS_LOG_INTERVAL`) and its `## RadioPoller`

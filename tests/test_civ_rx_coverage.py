@@ -49,7 +49,6 @@ from rigplane.commands import (
     parse_civ_frame,
     parse_scope_span_response,
 )
-from rigplane.commands.scope import _SCOPE_SPAN_PRESETS_HZ
 from rigplane.commands.tone import _encode_tone_freq
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
@@ -82,6 +81,14 @@ from rigplane.web.radio_poller import CommandQueue, RadioPoller
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+# The eight Icom CI-V scope span presets the ``radio`` fixture's IC-7610
+# profile declares (``rigs/ic7610.toml``: ``[scope].span_presets_hz``).
+# ``test_span_presets_match_the_fixture_profile`` below is what ties this
+# literal to that profile, so a profile edit cannot silently leave these
+# parametrisations testing a table no radio uses.
+_SPAN_PRESETS_HZ = (2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000)
 
 
 @pytest.fixture  # type: ignore[untyped-decorator]
@@ -4018,7 +4025,7 @@ async def test_scope_waveform_fixed_mode_emits_no_span_edge_or_fixed_edge(
     assert "scope_controls.global.display.fixed_edge" not in applied_paths
 
 
-@pytest.mark.parametrize("preset_index", range(len(_SCOPE_SPAN_PRESETS_HZ)))
+@pytest.mark.parametrize("preset_index", range(len(_SPAN_PRESETS_HZ)))
 async def test_scope_waveform_center_mode_span_matches_reply_path_parity(
     radio: IcomRadio, preset_index: int
 ) -> None:
@@ -4033,13 +4040,15 @@ async def test_scope_waveform_center_mode_span_matches_reply_path_parity(
     span table encodes), not half of it -- so ``end_hz`` below is a real
     preset value, not an invented half-span. Both this stream path and
     the reply path resolve through the same ``_span_index_for_hz``
-    helper against ``_SCOPE_SPAN_PRESETS_HZ``, so parity here also
-    guards against the two drifting apart in the future.
+    helper against the profile's declared ``scope_span_presets_hz``, so
+    parity here also guards against the two drifting apart in the future.
     """
-    preset_hz = _SCOPE_SPAN_PRESETS_HZ[preset_index]
+    preset_hz = _SPAN_PRESETS_HZ[preset_index]
 
     reply_frame = _make_frame(cmd=0x27, sub=0x15, data=b"\x00" + bcd_encode(preset_hz))
-    _receiver, expected_index = parse_scope_span_response(reply_frame)
+    _receiver, expected_index = parse_scope_span_response(
+        reply_frame, radio._profile.scope_span_presets_hz
+    )
     assert expected_index == preset_index  # sanity: table order is the index
 
     with _spy_state_store_apply(radio) as apply_spy:
@@ -4061,12 +4070,20 @@ async def test_scope_waveform_center_mode_span_matches_reply_path_parity(
     assert field.freshness is FreshnessState.FRESH
 
 
+def test_span_presets_match_the_fixture_profile(radio: IcomRadio) -> None:
+    """``_SPAN_PRESETS_HZ`` above -- which parametrises the
+    parity test and annotates the expected indices below -- is the table
+    the ``radio`` fixture's own profile declares, not a second copy that
+    could drift from ``rigs/ic7610.toml``."""
+    assert radio._profile.scope_span_presets_hz == _SPAN_PRESETS_HZ
+
+
 async def test_scope_waveform_center_mode_unknown_width_emits_no_span(
     radio: IcomRadio,
 ) -> None:
     """MOR-2256: a center-mode frame whose (correctly-decoded) span has
-    no exact match in ``_SCOPE_SPAN_PRESETS_HZ`` publishes nothing — not
-    a nearest-value guess. 999 Hz is not one of the eight declared
+    no exact match in the profile's ``scope_span_presets_hz`` publishes
+    nothing — not a nearest-value guess. 999 Hz is not one of the eight declared
     presets (2500/5000/10000/25000/50000/100000/250000/500000); ``end_hz``
     here is the raw span field itself (see the parity test above for the
     encoding), so no doubling/halving is involved in choosing this value."""
@@ -4147,10 +4164,10 @@ async def test_scope_waveform_out_of_range_center_frame_emits_no_span(
     set, so ``ScopeFrame.start_freq_hz``/``end_freq_hz`` are then the
     raw, unexpanded ``[center, span]`` pair, not real edges. The
     verifier's example: center 450 kHz, span 500 kHz (matching
-    ``_SCOPE_SPAN_PRESETS_HZ[7]``), OOR set -- computing
+    the largest declared preset), OOR set -- computing
     ``end_freq_hz - start_freq_hz`` as if these were edges gives
     ``500_000 - 450_000 == 50_000``, halved to 25_000, which wrongly
-    matches index 3 (``_SCOPE_SPAN_PRESETS_HZ[3] == 25_000``) instead of
+    matches index 3 (the fourth declared preset is 25_000 Hz) instead of
     publishing nothing."""
     with _spy_state_store_apply(radio) as apply_spy:
         frame = _make_scope_waveform_frame(
@@ -4176,7 +4193,7 @@ async def test_scope_waveform_span_observation_survives_connect_generation(
     await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
 
     field = radio._state_store.snapshot().field("scope_controls.global.display.span")
-    assert field.value == 1  # _SCOPE_SPAN_PRESETS_HZ.index(5000)
+    assert field.value == 1  # _SPAN_PRESETS_HZ.index(5000)
     assert field.freshness is FreshnessState.FRESH
 
 
@@ -4222,7 +4239,7 @@ async def test_scope_waveform_span_rejected_apply_retries_on_next_frame(
     await radio._civ_runtime._route_civ_frame(second, generation=radio._civ_epoch)
 
     field = radio._state_store.snapshot().field("scope_controls.global.display.span")
-    assert field.value == 2  # _SCOPE_SPAN_PRESETS_HZ.index(10000)
+    assert field.value == 2  # _SPAN_PRESETS_HZ.index(10000)
     assert field.freshness is FreshnessState.FRESH
 
 
