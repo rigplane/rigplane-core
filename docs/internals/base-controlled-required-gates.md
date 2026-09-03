@@ -2,7 +2,6 @@
 
 Issue [#3136](https://github.com/rigplane/rigplane-core/issues/3136) records a circular trust boundary: a pull request can
 modify the same `pull_request` workflow or helper that publishes its required `quick` or `Agent Review Gate` success.
-
 ## Stage 1 is observation-only
 
 Stage 1 leaves branch protection and the legacy publishers unchanged. The two
@@ -15,7 +14,7 @@ required checks**:
 | --- | --- | --- | --- |
 | `quick` | legacy workflow or docs-only publisher | legacy PR workflow | yes, app 15368 |
 | `Agent Review Gate` | legacy PR/comment workflow | API-only, with candidate-controlled PR source | yes, app 15368 |
-| `quick-v2-observe` | base-owned observation workflow | same-repository PRs only, read-only self-hosted job | no |
+| `quick-v2-observe` | base-owned API metadata observer | none | no |
 | `Agent Review Gate v2 observe` | base-owned API-only observation workflow | none | no |
 
 GitHub branch protection can bind a status/check to a context and app ID, but every repository workflow publishes as
@@ -23,25 +22,35 @@ GitHub Actions app ID `15368`. A candidate-controlled workflow can publish eithe
 identity. Context plus app ID does not prove which workflow made the decision. The `*-observe` names make their
 non-authoritative role explicit; no protection-switch command targets them.
 
-The quick observation controller reads complete PR file metadata, loads policy from the exact PR base SHA, and requires
-that SHA to equal live `main`. Documentation-only changes remain API-only. Same-repository code/CI uses a separate job
-with `contents: read`, no persisted credential, referenced secrets, or privileged candidate command. Before candidate
-execution, it proves the merge parents equal the admitted base and head. The hosted publisher rereads PR and `main`.
+The quick v2 workflow is metadata-only and schedules zero self-hosted jobs. It never checks out or executes pull-request
+or fork code and never reads a candidate artifact, log, or cache. Its `pull_request_target` path initializes opened,
+reopened, synchronized, ready, draft, and base-edited pull requests; title- and body-only edits are no-ops. Its
+`workflow_run` path consumes completed runs from the canonical legacy `Tests (quick)` workflow and ignores main pushes.
 
-Fork PRs never execute on the shared self-hosted runner. Hosted infrastructure classifies their metadata, skips the
-worker, and fails observation explicitly. Promotion requires an isolated fork path or a policy keeping forks unmergeable.
+The read-only producer and status publisher independently run `quick-v2-metadata-policy-v1.js: assess`. Each rereads
+live `main`, the pull request, canonical workflow and check-suite identity, latest run/attempt, and complete paginated
+job topology. Publication requires identical assessments and the still-current exact head.
 
-The worker uses `git ls-tree` to compare object ID, object type, and file mode
-for every immutable control. This rejects content edits, deletion, regular-file
-to symlink changes, and executable-bit changes:
+`quick-v2-metadata-policy-v1.js: getTreeEntry` walks trusted base controls: parents must be `040000` trees and files
+must be `100644` blobs. Missing, duplicate, truncated, executable, symlink, and gitlink entries fail closed. Candidate
+trees are metadata-only and these entries must match the base blobs:
 
-- `.github/workflows/quick-v2.yml`
-- `.github/workflows/agent-review-gate-v2.yml`
-- `.github/scripts/base-controlled-gates-v1.test.js`
+- `.github/workflows/quick.yml`
+- `.github/scripts/classify-quick-paths.py`
 - `.github/scripts/base-gate-policy-v1.js`
-- `.github/scripts/quick-v2-worker-v1.sh`
-- `.github/scripts/verify-immutable-controls-v1.sh`
-- `.github/scripts/agent-review-gate.js`
+- `.github/workflows/quick-v2.yml`
+- `.github/scripts/quick-v2-metadata-policy-v1.js`
+
+The trusted base classifier predicts whether substantive `quick` must run. Workflow-level success with that job skipped
+is unknown/failure. Stale head/base, fork, cancellation, changed control, incomplete pagination, ambiguous association,
+non-current attempt, or route/job disagreement cannot publish success.
+
+The observation logs these metrics from the independently bound assessment:
+
+- `route_job_concordance`: trusted route versus the complete observed job topology;
+- `terminal_binding_coverage`: terminal run ID and attempt bound to exact pull/head/base;
+- zero self-hosted v2 minutes (`v2_self_hosted_minutes: 0`);
+- zero false-success and stale-head publication (`false_success_publications: 0`, `stale_head_publications: 0`).
 
 ## Unique authority required before promotion
 
