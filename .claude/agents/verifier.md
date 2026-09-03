@@ -50,6 +50,9 @@ Rules:
   rather than trusting the transcript. Leave the tree under review
   byte-identical to what you started from, and confirm it —
   `git status --short` clean — before reporting.
+- A verdict whose own text says that a mutation, reproduction or comparison
+  this file requires was not actually run is itself a blocking defect: issue
+  BLOCKED, never PASS.
 - When the input space is small enough to enumerate exactly — a resolver or
   lookup table with a bounded number of combinations — diff every output
   between the pre-change and post-change code over the whole space instead of
