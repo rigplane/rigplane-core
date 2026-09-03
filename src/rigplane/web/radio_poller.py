@@ -3596,12 +3596,23 @@ class RadioPoller:
         sent_paths: frozenset[FieldPath],
         now: float,
     ) -> None:
-        """Record a send that raised, instead of letting it leave the drain.
+        """Record a send that raised, and re-raise what ``_run`` acts on.
 
-        Before MOR-2293 this seat had no ``try/except`` here and the
-        exception unwound to ``_run``'s catch-all: no diagnostic, no failure
-        accounting, and the rest of the pass skipped. Pinned by
-        test_executor_exception_is_recorded_and_drops_the_in_flight_entry.
+        Before MOR-2293 this seat had no ``try/except`` here, so every
+        executor exception reached the per-``_send_query`` handlers in
+        ``_run``. Those are not merely a log: a connection or timeout error
+        is how ``_run`` learns the link is down (its backoff branch, MOR-1440's
+        dead-serial-link branch, and the reconnection probe that clears the
+        backoff on a ``_send_query()`` that returns). Once a scheduler is
+        attached ``_send_query`` has no other body, so swallowing these would
+        make that probe always succeed. They are recorded here and re-raised;
+        raising also skips the drain's forget step, leaving the ledger entry
+        exactly as the pre-change code left it. Pinned by
+        test_send_query_still_raises_a_dead_link_error_out_of_the_drain.
+
+        Anything else is recorded and swallowed — the shared drain's rule —
+        which is this migration's one behaviour change on this path. Pinned
+        by test_executor_exception_is_recorded_and_drops_the_in_flight_entry.
         """
 
         failed_paths = (
@@ -3624,6 +3635,14 @@ class RadioPoller:
             failed_paths=failed_paths,
             now=now,
         )
+        # The same two pairs ``_run`` itself matches on, one line apart, for
+        # the queued-command path (``(TimeoutError, RigplaneTimeoutError)``)
+        # and for ``_send_query`` (``(ConnectionError, RadioConnectionError)``).
+        if isinstance(
+            error,
+            (ConnectionError, RadioConnectionError, TimeoutError, RigplaneTimeoutError),
+        ):
+            raise error
 
     def _report_acquisition_sent(
         self,
