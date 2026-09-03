@@ -98,8 +98,7 @@ describe('declared semantic zones (what the migrated entrypoint actually mounts)
     // MOR-2231 (step 1, batch 3) — the right column's four, same shape. The id
     // drift argument above applies unchanged to `rxAudio`/`dsp`/`cwKeyer`. It
     // does NOT apply to `txAux`: no `declared.has('txAux')` predicate exists,
-    // so a drifted id there loses the host without retiring anything, and this
-    // row is the only guard that would catch it.
+    // so a drifted id there loses the host without retiring anything.
     ['rxAudio', 'rx-audio'],
     ['dsp', 'dsp'],
     ['cwKeyer', 'cw-keyer'],
