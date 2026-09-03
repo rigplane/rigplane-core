@@ -23,7 +23,6 @@ from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.protocol import parse_line
 from rigplane.rigctld.server import RigctldServer
-from rigplane.runtime._poller_types import CommandQueue
 
 
 class _NoTruthProbe:
@@ -66,7 +65,6 @@ async def context():
     default = _DefaultExecutor()
     refs = dict(
         managed_tx_authority=_NoTruthProbe(),
-        command_queue=CommandQueue(),
         command_service=CommandService(executor=default, state_store=store),
     )
     radio = _RecordingRadio(store)
@@ -79,10 +77,10 @@ async def context():
 
 @pytest.mark.parametrize(
     "present",
-    [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1)],
+    [(1, 0), (0, 1)],
 )
 def test_partial_managed_context_is_rejected_before_bootstrap(present):
-    names = ("managed_tx_authority", "command_queue", "command_service")
+    names = ("managed_tx_authority", "command_service")
     refs = {
         name: _NoTruthProbe() if supplied else None
         for name, supplied in zip(names, present, strict=True)
@@ -98,7 +96,6 @@ def test_managed_context_rejects_custom_handler():
             object(),
             _handler=object(),
             managed_tx_authority=_NoTruthProbe(),
-            command_queue=_NoTruthProbe(),
             command_service=_NoTruthProbe(),
         )
 
@@ -114,6 +111,8 @@ async def test_server_start_forwards_exact_managed_references(context):
         for name, value in context.refs.items():
             assert getattr(server, "_" + name) is value
             assert getattr(handler, "_" + name) is value
+        assert not hasattr(server, "_command_queue")
+        assert not hasattr(handler, "_command_queue")
         assert handler._state_store is context.store
     finally:
         await server.stop()
