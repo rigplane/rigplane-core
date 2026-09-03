@@ -731,8 +731,6 @@ function deriveReceiverIndicators(
   caps: Capabilities,
   structuralReceivers: readonly ReceiverId[],
   operationalReceivers: readonly ReceiverId[],
-  tx: MetersTxAuthority | null | undefined,
-  txTarget: TxTargetViewModel,
 ): readonly ReceiverIndicatorViewModel[] {
   const hasFilters = (caps.filters?.length ?? 0) > 0;
   const hasAgc = hasCap(caps, 'agc');
@@ -773,15 +771,9 @@ function deriveReceiverIndicators(
       ? undefined
       : (caps.agcLabels?.[String(agcOrdinal)] ?? agcOrdinal);
 
-    const rfState = receiverOperational && tx !== null && tx !== undefined
-      && txTarget.status === 'known' && txTarget.receiver === receiver
-      ? meterRfState(tx)
-      : 'unknown';
-
     return {
       receiver,
       availability: { structural: true, operational: receiverOperational },
-      rfState,
       // Every structural receiver owns one S-meter shell. The reading stays
       // unknown until its own leaf passes the strict gate; numeric zero is a
       // valid calibrated S9 reading and is preserved by numOrUndef.
@@ -815,6 +807,7 @@ function deriveRadioWideIndicators(
   operationalReceivers: readonly ReceiverId[],
   split: Fact,
   dualWatch: Fact,
+  tx: MetersTxAuthority | null | undefined,
   txAux: TxAuxViewModel | undefined,
   ritXit: RitXitViewModel | undefined,
   antenna: AntennaViewModel | undefined,
@@ -854,6 +847,7 @@ function deriveRadioWideIndicators(
   };
 
   return {
+    rfState: tx ? meterRfState(tx) : 'unknown',
     antenna: antennaFact,
     atu: txAux?.atu ?? absentAtu,
     ritActive: ritXit?.ritActive ?? absentBoolean,
@@ -1639,11 +1633,11 @@ export function toRadioViewModel(
   const scopeDisplay = deriveScopeDisplay(caps, scopeDisplaySnapshot);
   const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
   const receiverIndicators = deriveReceiverIndicators(
-    state, caps, topology.structuralReceivers, topology.operationalReceivers, tx, txTarget,
+    state, caps, topology.structuralReceivers, topology.operationalReceivers,
   );
   const radioWideIndicators = deriveRadioWideIndicators(
     state, caps, topology.structuralReceivers, topology.operationalReceivers,
-    split, dualWatch, txAux, ritXit, antenna,
+    split, dualWatch, tx, txAux, ritXit, antenna,
   );
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
   disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));

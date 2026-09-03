@@ -250,8 +250,8 @@ public_fields = ["server.ritFreq", "server.ritOn", "server.ritTx"]
 ws_property = "state_update RIT/XIT fields"
 selector = "shared RIT/XIT view model"
 pending = "control lifecycle only"
-surfaces = ["frontend/src/semantic/RitXitScanSurface.svelte", "frontend/src/components-v2/panels/RitXitPanel.svelte"]
-automated_proof = "RIT/XIT family matrix"
+surfaces = ["frontend/src/semantic/RitXitScanSurface.svelte", "frontend/src/semantic/VfoIndicatorRow.svelte", "frontend/src/components-v2/panels/RitXitPanel.svelte"]
+automated_proof = "RIT/XIT family matrix plus strict singleton radio-wide admission"
 hardware_proof = "MOR-1410 representative readback"
 gap_owner = "MOR-1407,MOR-1408,MOR-1409"
 
@@ -301,8 +301,8 @@ public_fields = ["server.txAntenna", "server.rxAntenna1", "server.rxAntenna2"]
 ws_property = "state_update antenna fields"
 selector = "shared antenna view model"
 pending = "control lifecycle only; write-only cannot fabricate confirmation"
-surfaces = ["frontend/src/semantic/AntennaSurface.svelte", "frontend/src/components-v2/panels/AntennaPanel.svelte"]
-automated_proof = "supported/write-only antenna matrix"
+surfaces = ["frontend/src/semantic/AntennaSurface.svelte", "frontend/src/semantic/VfoIndicatorRow.svelte", "frontend/src/components-v2/panels/AntennaPanel.svelte"]
+automated_proof = "supported/write-only antenna matrix plus strict singleton radio-wide admission"
 hardware_proof = "MOR-1410 where safely supported"
 gap_owner = "MOR-1407,MOR-1408,MOR-1409"
 
@@ -486,10 +486,10 @@ field_paths = []
 field_path_gaps = []
 public_fields = []
 ws_property = "none unless provider emits a registered Observation"
-selector = "none"
+selector = "capability-gated radio-wide action block; no radio-truth selector"
 pending = "request lifecycle only"
-surfaces = []
-automated_proof = "ACK isolation and existing command safety tests"
+surfaces = ["frontend/src/semantic/VfoSurface.svelte"]
+automated_proof = "capability gate, exact-once existing handler binding, ACK isolation and existing command safety tests"
 hardware_proof = "excluded from automated acceptance"
 gap_owner = "MOR-1409"
 

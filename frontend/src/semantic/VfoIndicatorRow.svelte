@@ -6,16 +6,18 @@
 <script lang="ts">
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type {
-    ReceiverIndicatorField, ReceiverIndicatorViewModel,
+    RadioWideIndicatorsViewModel, ReceiverIndicatorField,
+    ReceiverIndicatorViewModel, TxAuxField,
   } from './radio-view-model';
 
   interface Props {
-    indicator: ReceiverIndicatorViewModel;
+    indicator?: ReceiverIndicatorViewModel;
+    radioWide?: RadioWideIndicatorsViewModel;
   }
 
-  let { indicator }: Props = $props();
+  let { indicator, radioWide }: Props = $props();
 
-  const rfLabel = (state: ReceiverIndicatorViewModel['rfState']): string =>
+  const rfLabel = (state: RadioWideIndicatorsViewModel['rfState']): string =>
     state === 'transmitting' ? 'TX'
       : state === 'receiving' ? 'RX'
         : state === 'uncertain' ? 'TX?'
@@ -37,8 +39,18 @@
     const state = booleanState(field);
     return state === 'unknown' ? '—' : state.toUpperCase();
   }
+
+  function sharedBoolean(field: TxAuxField<boolean>): string {
+    return field.reading.status === 'known' ? (field.reading.value ? 'ON' : 'OFF') : '—';
+  }
+
+  function sharedNumber(field: TxAuxField<number>): string {
+    return field.reading.status === 'known' ? String(field.reading.value) : '—';
+  }
+
 </script>
 
+{#if indicator}
 <section
   class="indicator-row"
   data-testid="vfo-indicator-row"
@@ -48,12 +60,6 @@
 >
   <header>
     <strong>{indicator.receiver}</strong>
-    <span
-      class:tx={indicator.rfState === 'transmitting'}
-      class:rx={indicator.rfState === 'receiving'}
-      class="rf-lamp"
-      data-indicator-rf={indicator.rfState}
-    >{rfLabel(indicator.rfState)}</span>
     {#if indicator.bandwidthHz.availability.structural}
       <span
         class="fact"
@@ -124,6 +130,45 @@
     {/if}
   </div>
 </section>
+{/if}
+
+{#if radioWide}
+  <section
+    class="indicator-row shared-indicators"
+    data-testid="vfo-shared-indicators"
+    aria-label="Radio-wide indicators"
+  >
+    <div class="facts" aria-label="Radio-wide facts">
+      <span
+        class:tx={radioWide.rfState === 'transmitting'}
+        class:rx={radioWide.rfState === 'receiving'}
+        class="rf-lamp"
+        data-indicator-fact="rf-authority"
+        data-indicator-rf={radioWide.rfState}
+      >{rfLabel(radioWide.rfState)}</span>
+      {#if radioWide.antenna.availability.structural}
+        <span class="fact" data-indicator-fact="antenna" data-state={radioWide.antenna.reading.status}>
+          ANT {sharedNumber(radioWide.antenna)}
+        </span>
+      {/if}
+      {#if radioWide.atu.availability.structural}
+        <span class="fact" data-indicator-fact="atu" data-state={radioWide.atu.reading.status}>
+          TUNE {radioWide.atu.reading.status === 'known' ? radioWide.atu.reading.value.toUpperCase() : '—'}
+        </span>
+      {/if}
+      {#if radioWide.ritActive.availability.structural || radioWide.ritOffset.availability.structural}
+        <span class="fact" data-indicator-fact="rit" data-state={radioWide.ritActive.reading.status}>
+          RIT {sharedBoolean(radioWide.ritActive)} {sharedNumber(radioWide.ritOffset)} Hz
+        </span>
+      {/if}
+      {#if radioWide.xitActive.availability.structural || radioWide.xitOffset.availability.structural}
+        <span class="fact" data-indicator-fact="xit" data-state={radioWide.xitActive.reading.status}>
+          XIT {sharedBoolean(radioWide.xitActive)} {sharedNumber(radioWide.xitOffset)} Hz
+        </span>
+      {/if}
+    </div>
+  </section>
+{/if}
 
 <style>
   .indicator-row {

@@ -6,6 +6,8 @@ import type { ServerState } from '$lib/types/state';
 
 const h = vi.hoisted(() => ({
   state: null as unknown, caps: null as unknown, noop: vi.fn(), listeners: new Set<() => void>(),
+  main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(), split: vi.fn(),
+  dualWatch: vi.fn(), speak: vi.fn(),
 }));
 const group = new Proxy({}, { get: () => h.noop });
 
@@ -36,7 +38,13 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   getModInputTxGuardHandlers: () => ({ onSetLan: h.noop, onDismiss: h.noop }),
 }));
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
-  bindSemanticSurfaceHandlers: () => new Proxy({}, { get: () => group }),
+  bindSemanticSurfaceHandlers: () => new Proxy({}, { get: (_target, family) => family === 'vfo'
+    ? new Proxy({}, { get: (_vfo, handler) => ({
+      onMainVfoClick: h.main, onSubVfoClick: h.sub, onEqual: h.equalize, onSwap: h.swap,
+      onQuickSplit: h.split, onQuickDw: h.dualWatch,
+    } as Record<PropertyKey, unknown>)[handler] ?? h.noop })
+    : group }),
+  getSystemHandlers: () => ({ onSpeak: h.speak }),
   getBreakInDelayControlFeedback: () => null, getPendingFrequencyHz: () => null,
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
@@ -49,19 +57,22 @@ const slot = (frequency: number) => ({ freqHz: frequency, mode: 'USB', filterNum
 function state(): ServerState {
   const paths = ['active', 'split', 'dualWatch', 'main.freqHz', 'main.mode', 'main.filter',
     'sub.freqHz', 'sub.mode', 'sub.filter', 'main.activeSlot', 'sub.activeSlot',
-    'main.sMeter', 'sub.sMeter'];
+    'main.sMeter', 'sub.sMeter', 'tunerStatus', 'ritOn', 'ritTx', 'ritFreq', 'txAntenna'];
   for (const rx of ['main', 'sub']) for (const vfo of ['vfoA', 'vfoB']) {
     paths.push(`${rx}.${vfo}.freqHz`, `${rx}.${vfo}.mode`, `${rx}.${vfo}.filterNum`);
   }
   const receiver = (frequency: number) => ({ ...slot(frequency), filter: 1, activeSlot: 'A',
     vfoA: slot(frequency), vfoB: slot(frequency + 50_000), sMeter: -12 });
   return { active: 'MAIN', split: false, dualWatch: false,
+    tunerStatus: 0, ritOn: false, ritTx: true, ritFreq: 0, txAntenna: 1,
     main: receiver(14_200_000), sub: receiver(7_100_000),
     fieldStatus: Object.fromEntries(paths.map((path) => [path, fresh])) } as unknown as ServerState;
 }
 function caps(vfoScheme: Capabilities['vfoScheme'], receivers: number, dual = receivers === 2): Capabilities {
-  return { model: 'fixture', scope: false, audio: false, tx: false,
-    capabilities: dual ? ['dual_rx'] : [], receivers, vfoScheme,
+  const common = ['vfo_equalize', 'vfo_swap', 'split', 'speech', 'tuner', 'rit', 'xit'];
+  return { model: 'fixture', scope: false, audio: false, tx: true,
+    capabilities: dual ? ['dual_rx', 'dual_watch', ...common] : common, receivers, vfoScheme,
+    antennas: 1,
     freqRanges: [], modes: [], filters: [], scopeSource: null, audioFftAvailable: false,
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false } } as unknown as Capabilities;
@@ -77,7 +88,12 @@ function render(capabilities: Capabilities): void {
 const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')]
   .map((row) => row.dataset.indicatorReceiver);
 
-beforeEach(() => { h.listeners.clear(); h.noop.mockReset(); });
+beforeEach(() => {
+  h.listeners.clear();
+  for (const mock of [
+    h.noop, h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch, h.speak,
+  ]) mock.mockReset();
+});
 afterEach(() => { if (component) unmount(component); component = null; document.body.innerHTML = ''; });
 
 describe('production receiver-indicator partitioning', () => {
@@ -101,5 +117,23 @@ describe('production receiver-indicator partitioning', () => {
     expect(rowReceivers(target)).toEqual(['MAIN', 'SUB']);
     expect(sub.dataset.indicatorOperational).toBe('false');
     expect(sub.querySelector('[data-testid="receiver-s-meter-unknown"]')).not.toBeNull();
+  });
+
+  it('mounts one shared row/action block and binds every existing DUAL handler once', () => {
+    render(caps('main_sub', 2));
+    expect(target.querySelectorAll('[data-testid="vfo-shared-indicators"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-dual-action-block]')).toHaveLength(1);
+    for (const action of ['main', 'sub', 'equalize', 'swap', 'split', 'dual-watch', 'speak']) {
+      target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
+    }
+    for (const mock of [h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch, h.speak]) {
+      expect(mock).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('keeps unavailable SUB and unsupported actions absent/disabled in production wiring', () => {
+    render(caps('main_sub', 2, false));
+    expect(target.querySelector<HTMLButtonElement>('[data-dual-action="sub"]')?.disabled).toBe(true);
+    expect(target.querySelector('[data-dual-action="dual-watch"]')).toBeNull();
   });
 });

@@ -79,7 +79,6 @@ function receiverIndicator(receiver: ReceiverId): ReceiverIndicatorViewModel {
   return {
     receiver,
     availability: { structural: true, operational: true },
-    rfState: receiver === 'MAIN' ? 'receiving' : 'unknown',
     sMeter: indicatorField(receiver === 'MAIN' ? 0 : -31),
     bandwidthHz: indicatorField(receiver === 'MAIN' ? 2400 : 500),
     agcMode: indicatorField(receiver === 'MAIN' ? 0 : 2),
@@ -138,6 +137,70 @@ describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
     expect(target.querySelectorAll('[data-vfo-split]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-vfo-dual-watch]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-indicator-fact="antenna"], [data-indicator-fact="tune"], [data-indicator-fact="rit"], [data-indicator-fact="xit"]')).toHaveLength(0);
+  });
+});
+
+function withRadioWide(
+  id: TopologyFixtureId = '2/main_sub',
+  actionOverrides: Partial<NonNullable<RadioViewModel['radioWideIndicators']>['actions']> = {},
+): RadioViewModel {
+  const base = withReceiverIndicators(id);
+  const available = { structural: true, operational: true };
+  return validateRadioViewModel({
+    ...base,
+    radioWideIndicators: {
+      rfState: 'receiving', antenna: indicatorField(1), atu: indicatorField('off'),
+      ritActive: indicatorField(false), ritOffset: indicatorField(0),
+      xitActive: indicatorField(true), xitOffset: indicatorField(0),
+      actions: {
+        main: available, sub: available, equalize: available, swap: available,
+        split: available, dualWatch: available, speak: available,
+        ...actionOverrides,
+      },
+    },
+  });
+}
+
+describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', () => {
+  it('renders one shared row and one seven-action block only in the radio-wide mount', () => {
+    const viewModel = withRadioWide();
+    const strip = mountSurface({ viewModel, showRadioWideFacts: false, indicatorReceiver: 'MAIN' });
+    const global = mountSurface({ viewModel, showVfoList: false });
+    expect(strip.querySelector('[data-testid="vfo-shared-indicators"]')).toBeNull();
+    expect(strip.querySelector('[data-dual-action-block]')).toBeNull();
+    expect(global.querySelectorAll('[data-testid="vfo-shared-indicators"]')).toHaveLength(1);
+    expect(global.querySelectorAll('[data-dual-action-block]')).toHaveLength(1);
+    expect(global.querySelectorAll('[data-dual-action]')).toHaveLength(7);
+  });
+
+  it('invokes each existing DUAL callback exactly once', () => {
+    const callbacks = {
+      onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
+      onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
+      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
+    };
+    const target = mountSurface({ viewModel: withRadioWide(), ...callbacks });
+    for (const action of ['main', 'sub', 'equalize', 'swap', 'split', 'dual-watch', 'speak']) {
+      target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
+    }
+    for (const callback of Object.values(callbacks)) expect(callback).toHaveBeenCalledOnce();
+  });
+
+  it('omits structurally unsupported actions and guards operationally disabled callbacks', () => {
+    const onSelectSubReceiver = vi.fn();
+    const target = mountSurface({
+      viewModel: withRadioWide('2/main_sub', {
+        sub: { structural: true, operational: false },
+        speak: { structural: false, operational: false },
+      }),
+      onSelectSubReceiver,
+    });
+    const sub = target.querySelector<HTMLButtonElement>('[data-dual-action="sub"]')!;
+    expect(sub.disabled).toBe(true);
+    expect(target.querySelector('[data-dual-action="speak"]')).toBeNull();
+    sub.disabled = false;
+    sub.click();
+    expect(onSelectSubReceiver).not.toHaveBeenCalled();
   });
 });
 

@@ -34,6 +34,7 @@
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
+    getSystemHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
@@ -187,6 +188,7 @@
 
   const semanticHandlers = bindSemanticSurfaceHandlers();
   const vfo = semanticHandlers.vfo;
+  const systemIntents = getSystemHandlers();
   /** MOR-1307: the shipped band vocabulary, composed rather than forked. */
   const band = semanticHandlers.band;
   /**
@@ -845,6 +847,9 @@
             onSwapVfos={vfo.onSwap}
             onQuickSplit={vfo.onQuickSplit}
             onQuickDualWatch={vfo.onQuickDw}
+            onSelectMainReceiver={vfo.onMainVfoClick}
+            onSelectSubReceiver={vfo.onSubVfoClick}
+            onSpeak={systemIntents.onSpeak}
           />
         </div>
       {/if}
@@ -872,6 +877,9 @@
         onSwapVfos={vfo.onSwap}
         onQuickSplit={vfo.onQuickSplit}
         onQuickDualWatch={vfo.onQuickDw}
+        onSelectMainReceiver={vfo.onMainVfoClick}
+        onSelectSubReceiver={vfo.onSubVfoClick}
+        onSpeak={systemIntents.onSpeak}
         {pendingFrequencyHz}
       />
     {/if}

@@ -67,7 +67,7 @@ describe('validateRadioViewModel', () => {
   });
 
   const radioWideIndicators = () => ({
-    antenna: fact(1),
+    rfState: 'receiving' as const, antenna: fact(1),
     atu: fact<'off' | 'on' | 'tuning'>('off'),
     ritActive: fact(false), ritOffset: fact(0),
     xitActive: fact(true), xitOffset: fact(0),

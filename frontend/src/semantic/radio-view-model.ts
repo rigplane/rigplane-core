@@ -1003,7 +1003,6 @@ export type ReceiverIndicatorField<T> = TxAuxField<T>;
 export interface ReceiverIndicatorViewModel {
   receiver: ReceiverId;
   availability: Availability;
-  rfState: MeterRfState;
   sMeter: ReceiverIndicatorField<number>;
   bandwidthHz: ReceiverIndicatorField<number>;
   /** Capability label when declared for the ordinal; raw ordinal otherwise. */
@@ -1045,6 +1044,8 @@ export interface DualActionBlockViewModel {
  * ANT fact even though it has no antenna-selection surface.
  */
 export interface RadioWideIndicatorsViewModel {
+  /** One live RF fact from the existing App authority; never `ptt` or assignment. */
+  rfState: MeterRfState;
   antenna: AntennaField<number>;
   atu: TxAuxField<AtuStatus>;
   ritActive: RitXitField<boolean>;
@@ -1414,14 +1415,13 @@ function validateTxAux(value: unknown, path: string): TxAuxViewModel {
 function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz', 'agcMode',
+    'receiver', 'availability', 'sMeter', 'bandwidthHz', 'agcMode',
     'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
     'digiSel', 'ipPlus',
   ], path);
   return {
     receiver: oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`),
     availability: validateAvailability(v.availability, `${path}.availability`),
-    rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
     sMeter: validateTxAuxField(v.sMeter, `${path}.sMeter`, num),
     bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
     agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
@@ -1458,9 +1458,10 @@ function validateDualActionBlock(value: unknown, path: string): DualActionBlockV
 function validateRadioWideIndicators(value: unknown, path: string): RadioWideIndicatorsViewModel {
   const v = record(value, path);
   exactKeys(v, [
-    'antenna', 'atu', 'ritActive', 'ritOffset', 'xitActive', 'xitOffset', 'actions',
+    'rfState', 'antenna', 'atu', 'ritActive', 'ritOffset', 'xitActive', 'xitOffset', 'actions',
   ], path);
   return {
+    rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
     antenna: validateTxAuxField(v.antenna, `${path}.antenna`, num),
     atu: validateTxAuxField(v.atu, `${path}.atu`, (candidate, candidatePath) =>
       oneOf(candidate, ATU_STATUSES, candidatePath)),

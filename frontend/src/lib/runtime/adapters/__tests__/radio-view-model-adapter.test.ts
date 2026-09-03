@@ -217,29 +217,22 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
     expect(main?.sMeter.availability.operational).toBe(false);
   });
 
-  it('uses App authority only: ptt cannot override TX/RX, and assignment alone lights nothing', () => {
+  it('uses one App-authority RF fact only: ptt and assignment cannot override it', () => {
     const pttFalse = indicatorState({ ptt: false });
     const pttTrue = indicatorState({ ptt: true });
     const transmitting = model(
       pttFalse, INDICATOR_CAPS, { radioTx: 'on', txRisk: 'none' },
-    ).receiverIndicators!;
-    expect(transmitting.map((indicator) => indicator.rfState)).toEqual(['transmitting', 'unknown']);
+    ).radioWideIndicators!;
+    expect(transmitting.rfState).toBe('transmitting');
 
-    const receiving = model(pttTrue, INDICATOR_CAPS, RECEIVING).receiverIndicators!;
-    expect(receiving.map((indicator) => indicator.rfState)).toEqual(['receiving', 'unknown']);
+    const receiving = model(pttTrue, INDICATOR_CAPS, RECEIVING).radioWideIndicators!;
+    expect(receiving.rfState).toBe('receiving');
 
-    const assignmentOnly = model(pttTrue, INDICATOR_CAPS).receiverIndicators!;
-    expect(assignmentOnly.map((indicator) => indicator.rfState)).toEqual(['unknown', 'unknown']);
-  });
-
-  it('moves authoritative RX with the addressed target without labelling the other receiver RX', () => {
-    const state = indicatorState({
+    const assignmentOnly = model(indicatorState({
+      ptt: true,
       txTarget: { status: 'known', receiver: 'SUB', slot: 'A', frequencyHz: 14_300_000 },
-    });
-    const indicators = model(state, INDICATOR_CAPS, RECEIVING).receiverIndicators!;
-    expect(indicators.map((indicator) => [indicator.receiver, indicator.rfState])).toEqual([
-      ['MAIN', 'unknown'], ['SUB', 'receiving'],
-    ]);
+    }), INDICATOR_CAPS).radioWideIndicators!;
+    expect(assignmentOnly.rfState).toBe('unknown');
   });
 });
 
@@ -268,6 +261,7 @@ function radioWideState(overrides: Partial<ServerState> = {}): ServerState {
 describe('radio-wide indicators and DUAL actions are singleton contract facts (MOR-2309)', () => {
   it('preserves one-port ANT, ATU off, false RIT and zero shared offset as known values', () => {
     const shared = model(radioWideState(), RADIO_WIDE_CAPS).radioWideIndicators!;
+    expect(shared.rfState).toBe('unknown');
     expect(shared.antenna).toEqual({
       reading: { status: 'known', value: 1 },
       availability: { structural: true, operational: true },
