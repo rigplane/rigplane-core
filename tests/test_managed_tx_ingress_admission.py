@@ -193,16 +193,36 @@ async def test_on_cancel_does_not_cancel_readiness_predecessor(rig):
 
 
 @pytest.mark.parametrize("failure", ["cancel", "error"])
-async def test_failed_predecessor_prevents_on_and_removes_registration(rig, failure):
+async def test_failed_predecessor_completion_allows_independent_on(rig, failure):
     ready = ready_future(rig)
     worker = await submit(rig, True, "A", ready=ready)
+    await checkpoint()
+    assert not ready.done() and not worker.done()
+    assert not rig.actuator.calls
     if failure == "cancel":
         ready.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await ready
     else:
-        ready.set_exception(RuntimeError("predecessor failed"))
-    await prevented(worker)
-    assert not rig.fence._cancellations and not rig.actuator.calls
-    assert not (await rig.managed.snapshot()).state.release_required
+        error = RuntimeError("predecessor failed")
+        ready.set_exception(error)
+        with pytest.raises(RuntimeError) as original:
+            await ready
+        assert original.value is error
+    done, _ = await asyncio.wait((worker,), timeout=1)
+    assert worker in done
+    assert not worker.cancelled()
+    assert worker.exception() is None
+    transition, settled = await worker
+    assert transition.outcome is ManagedTxOutcome.ACCEPTED
+    assert isinstance(settled, ActuationSettled)
+    assert settled.result is ActuationResult.ACCEPTED
+    assert settled.token == transition.effects[0].token
+    assert rig.actuator.calls == [(settled.token, ActuationOperation.PTT_ON)]
+    assert not rig.fence._cancellations
+    state = (await rig.managed.snapshot()).state
+    assert state.intent.kind is ManagedTxIntentKind.PTT
+    assert state.intent.owner_token == "A" and state.release_required
 
 
 async def test_pending_only_disconnect_revokes_owner_while_rx_clean(rig):
