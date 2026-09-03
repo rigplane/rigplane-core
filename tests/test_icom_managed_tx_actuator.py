@@ -100,11 +100,11 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
     [
         (
             ActuationOperation.FORCE_RECEIVE,
-            (0x31, 0x01, b"\xa0"),
+            (0x31, None, b"\x01\xa0"),
             Priority.FORCE_RELEASE,
         ),
-        (AbortOperation.STOP_CW, (0x32, 0x02, b"\xff"), Priority.ABORT),
-        (AbortOperation.STOP_TUNE, (0x33, 0x03, b"\x00"), Priority.ABORT),
+        (AbortOperation.STOP_CW, (0x32, None, b"\x02\xff"), Priority.ABORT),
+        (AbortOperation.STOP_TUNE, (0x33, None, b"\x03\x00"), Priority.ABORT),
     ],
 )
 async def test_release_and_abort_operations_use_profile_bytes_at_strict_priority(
