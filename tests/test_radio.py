@@ -1461,6 +1461,96 @@ class TestCapturedExecuteLifetime:
             radio._civ_request_tracker.fail_all(ConnectionError("test cleanup"))
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("pause", ["send-return", "response-timeout"])
+    async def test_retired_execute_does_not_account_against_replacement(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        pause: str,
+    ) -> None:
+        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
+        replacement, current_tracker = MockTransport(), CivRequestTracker()
+        entered, release = asyncio.Event(), asyncio.Event()
+        radio._civ_min_interval = 0.0
+        frame = build_civ_frame(
+            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
+        )
+        tasks = []
+        original_send = mock_transport.send_tracked
+
+        async def send_then_hold(data: bytes) -> None:
+            await original_send(data)
+            if pause == "send-return":
+                entered.set()
+                await release.wait()
+
+        async def controlled_timeout(pending, *, timeout):
+            if pause == "response-timeout":
+                entered.set()
+                await release.wait()
+            pending.cancel()
+            raise asyncio.TimeoutError
+
+        runtime_asyncio = SimpleNamespace(
+            wait_for=controlled_timeout,
+            sleep=asyncio.sleep,
+            TimeoutError=asyncio.TimeoutError,
+            CancelledError=asyncio.CancelledError,
+        )
+        try:
+            with patch.object(runtime, "start_pump"):
+                with (
+                    patch.object(mock_transport, "send_tracked", send_then_hold),
+                    patch("rigplane.runtime._civ_rx.asyncio", runtime_asyncio),
+                ):
+                    stale = asyncio.create_task(runtime._execute_civ_raw(frame))
+                    tasks.append(stale)
+                    await entered.wait()
+                    assert tracker.pending_count == 1
+                    radio._civ_transport = replacement
+                    radio._civ_epoch += 1
+                    radio._civ_request_tracker = current_tracker
+                    current_tracker.register_ack(wait=False)
+                    last_send = time.monotonic() + 100.0
+                    radio._last_civ_send_monotonic = last_send
+                    release.set()
+                    _, pending = await asyncio.wait({stale}, timeout=1)
+                    assert len(mock_transport.sent_packets) == 1
+                    assert replacement.sent_packets == [], "retired execute resent"
+                    assert not pending, "retired execute did not settle"
+                    result = await asyncio.gather(stale, return_exceptions=True)
+                    assert isinstance(result[0], ConnectionError), (
+                        "retired completion was not a connection refusal"
+                    )
+                    assert radio._last_civ_send_monotonic == last_send
+                    assert tracker.timeout_count == current_tracker.timeout_count == 0
+                    assert tracker.pending_count == 0, "retired waiter leaked"
+                    assert current_tracker.ack_sink_count == 1
+                current_tracker.drop_ack_sinks()
+                radio._last_civ_send_monotonic = 0.0
+                current = asyncio.create_task(runtime._execute_civ_raw(frame))
+                tasks.append(current)
+                await asyncio.sleep(0)
+                assert len(replacement.sent_packets) == 1
+                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
+                assert current_tracker.resolve(
+                    CivEvent(type=CivEventType.ACK, frame=ack)
+                )
+                _, pending = await asyncio.wait({current}, timeout=1)
+                assert not pending, "current command failed after retired completion"
+                assert current.result() is ack
+                assert current_tracker.pending_count == 0
+                assert not replacement.disconnected
+        finally:
+            release.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            tracker.fail_all(ConnectionError("test cleanup"))
+            current_tracker.fail_all(ConnectionError("test cleanup"))
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("pause", ["pacing", "send"])
     async def test_cancelled_fire_and_forget_cleans_captured_ack_sink(
         self,
