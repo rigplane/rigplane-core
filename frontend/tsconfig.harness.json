@@ -1,9 +1,5 @@
 {
   /**
-   * Type-checks `fixtures/**` and `tests/**`, which `tsconfig.app.json`
-   * (include: `src/**`) and `tsconfig.node.json` (include: `vite.config.ts`)
-   * both leave out.
-   *
    * Reached only via the explicit `tsc -p` in `package.json`'s `check`
    * script: `tsconfig.json` is `"files": []`, and its `references` are not
    * followed without `tsc --build`, which nothing here runs.
