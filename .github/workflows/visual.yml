@@ -23,9 +23,29 @@ on:
     paths:
       - "frontend/**"
       - "!frontend/*.md"
+      - "!frontend/*.mD"
+      - "!frontend/*.Md"
+      - "!frontend/*.MD"
       - "!frontend/*.rst"
+      - "!frontend/*.rsT"
+      - "!frontend/*.rSt"
+      - "!frontend/*.rST"
+      - "!frontend/*.RsT"
+      - "!frontend/*.Rst"
+      - "!frontend/*.RSt"
+      - "!frontend/*.RST"
       - "!frontend/**/*.md"
+      - "!frontend/**/*.mD"
+      - "!frontend/**/*.Md"
+      - "!frontend/**/*.MD"
       - "!frontend/**/*.rst"
+      - "!frontend/**/*.rsT"
+      - "!frontend/**/*.rSt"
+      - "!frontend/**/*.rST"
+      - "!frontend/**/*.RsT"
+      - "!frontend/**/*.Rst"
+      - "!frontend/**/*.RSt"
+      - "!frontend/**/*.RST"
   workflow_dispatch:
     inputs:
       regenerate:
@@ -55,6 +75,18 @@ jobs:
           filters: |
             frontend:
               - 'frontend/**'
+              - '!frontend/**/*.md'
+              - '!frontend/**/*.mD'
+              - '!frontend/**/*.Md'
+              - '!frontend/**/*.MD'
+              - '!frontend/**/*.rst'
+              - '!frontend/**/*.rsT'
+              - '!frontend/**/*.rSt'
+              - '!frontend/**/*.rST'
+              - '!frontend/**/*.RsT'
+              - '!frontend/**/*.Rst'
+              - '!frontend/**/*.RSt'
+              - '!frontend/**/*.RST'
 
       - name: Select manual visual run
         id: manual
