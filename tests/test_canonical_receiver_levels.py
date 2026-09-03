@@ -21,12 +21,7 @@ from rigplane.core.command_dispatch import CommandUnsupportedError
 from rigplane.core.command_service import command_intent_from_request
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
-from rigplane.runtime._poller_types import (
-    PttOff,
-    SetAfLevel,
-    SetRfGain,
-    SetSquelch,
-)
+from rigplane.runtime._poller_types import PttOff, SetAfLevel, SetRfGain, SetSquelch
 from rigplane.runtime.radio import CoreRadio
 from rigplane.web import radio_poller as icom_poller
 from rigplane.web.handlers.control import ControlHandler
