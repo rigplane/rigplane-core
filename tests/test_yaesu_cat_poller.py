@@ -1098,6 +1098,34 @@ def _set_fresh_ptt_observation(poller: YaesuCatPoller, *, active: bool) -> None:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["cancel", "replace", "error", "readback"])
+async def test_yaesu_drain_claims_live_pending_finite_turn(mode, monkeypatch):
+    from test_command_queue_execution import assert_live_pending_turn
+
+    queue = CommandQueue()
+    poller = YaesuCatPoller(make_radio(), command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=False)
+
+    def install_readback(note):
+        original = poller._track_receiver_select_readback
+
+        def track(entry):
+            original(entry)
+            if entry.command == SetFreq(1):
+                note()
+
+        monkeypatch.setattr(poller, "_track_receiver_select_readback", track)
+
+    await assert_live_pending_turn(
+        queue,
+        poller._drain_commands,
+        lambda leaf: monkeypatch.setattr(poller, "_execute_command", leaf),
+        mode=mode,
+        install_readback=install_readback,
+    )
+
+
 async def _drain_with_ptt(
     poller: YaesuCatPoller,
     clock: list[float],
@@ -1115,6 +1143,37 @@ async def _drain_with_ptt(
             poller._current_tx_target_generation()  # noqa: SLF001
         )
     await poller._drain_commands()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_releases_held_entry_before_finite_current_turn(monkeypatch):
+    clock, queue, seen = [20.0], CommandQueue(), []
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    poller = YaesuCatPoller(make_radio(), command_queue=queue)
+    reply = asyncio.get_running_loop().create_future()
+    held = SetSplit(True)
+
+    async def leaf(command):
+        seen.append(command)
+        if command == SetFreq(1):
+            queue.put_ordered(SetFreq(3))
+
+    monkeypatch.setattr(poller, "_execute_command", leaf)
+    queue.put_ordered(held, future=reply)
+    try:
+        await _drain_with_ptt(poller, clock, 20.0, True)
+        await _drain_with_ptt(poller, clock, 20.1, False)
+        assert not reply.done()
+        queue.put_ordered(SetFreq(1))
+        queue.put_ordered(SetFreq(2))
+        await _drain_with_ptt(poller, clock, 21.1, False)
+        assert seen == [held, SetFreq(1), SetFreq(2)]
+        assert reply.result() is None
+        assert [e.command for e in queue.drain_entries()] == [SetFreq(3)]
+    finally:
+        reply.cancel()
 
 
 @pytest.mark.asyncio

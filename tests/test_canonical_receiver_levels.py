@@ -69,14 +69,25 @@ def _path(monkeypatch, backend="yaesu", config="ftx1"):
     shared = AsyncMock(wraps=module.execute_command_intent)
     monkeypatch.setattr(module, "execute_command_intent", shared)
     entries = []
-    drain_entries = server.command_queue.drain_entries
+    if backend == "icom":
+        drain_entries = server.command_queue.drain_entries
 
-    def capture_entries():
-        drained = drain_entries()
-        entries.extend(drained)
-        return drained
+        def capture_entries():
+            drained = drain_entries()
+            entries.extend(drained)
+            return drained
 
-    monkeypatch.setattr(server.command_queue, "drain_entries", capture_entries)
+        monkeypatch.setattr(server.command_queue, "drain_entries", capture_entries)
+    else:
+        take_entry = server.command_queue.take_entry
+
+        def capture_entry():
+            entry = take_entry()
+            if entry is not None:
+                entries.append(entry)
+            return entry
+
+        monkeypatch.setattr(server.command_queue, "take_entry", capture_entry)
 
     async def drain():
         if backend == "icom":

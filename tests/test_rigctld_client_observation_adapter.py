@@ -72,6 +72,36 @@ class _NoopCommandExecutor:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["cancel", "replace", "error", "readback"])
+async def test_rigctld_drain_claims_live_pending_finite_turn(mode, monkeypatch):
+    from test_command_queue_execution import assert_live_pending_turn
+
+    queue = CommandQueue()
+    radio = RigctldClientRadio(host="127.0.0.1", port=4532)
+    poller = RigctldClientObservationPoller(
+        radio, lambda _: None, medium_interval=1, slow_interval=1, command_queue=queue
+    )
+
+    def install_readback(note):
+        original = poller._track_readback_entry
+
+        def track(command, correlation):
+            original(command, correlation)
+            if command == SetFreq(1):
+                note()
+
+        monkeypatch.setattr(poller, "_track_readback_entry", track)
+
+    await assert_live_pending_turn(
+        queue,
+        poller._drain_commands,
+        lambda leaf: monkeypatch.setattr(poller, "_execute_command", leaf),
+        mode=mode,
+        install_readback=install_readback,
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_reads_emit_hamlib_observations() -> None:
     async with FakeRigctldServer() as server:
         radio = RigctldClientRadio(host=server.host, port=server.port)
