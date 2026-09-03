@@ -928,17 +928,45 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
       });
     });
 
-    // MUTATION KILLED: reverting the CSS selector to
-    // `.meter-tile[data-relevant='false']` (dropping the
-    // `:not([data-meter='signal'])` qualifier) — the S-meter tile's computed
-    // opacity becomes '0.4' again, reinstating the ancestor half of the
-    // compounding bug. Verified by hand: with the qualifier removed, this
-    // assertion observes '0.4' instead of the empty string below.
-    it('does not dim the S-meter tile through the shared rule any more, even though data-relevant is false', () => {
+    // MUTATION KILLED: dropping the whole
+    // `:not([data-meter='signal'][data-observed='true'])` qualifier from the
+    // CSS selector — the OBSERVED S-meter tile's computed opacity becomes
+    // '0.4' again, reinstating the ancestor half of the compounding bug.
+    // Verified by hand: with the qualifier removed, this assertion observes
+    // '0.4' instead of the empty string below.
+    it('does not dim the OBSERVED S-meter tile through the shared rule any more, even though data-relevant is false', () => {
       withSurface(base('transmitting'), (s) => {
         const tile = s.tile('signal')!;
         expect(tile.dataset.relevant).toBe('false'); // block 3's pin still holds: the fact reaches the DOM
+        expect(tile.dataset.observed).toBe('true'); // `LinearSMeter` is mounted, so it owns the dim
         expect(getComputedStyle(tile).opacity).not.toBe('0.4');
+      });
+    });
+
+    // Fix cycle 4 (F1): the UNOBSERVED half of the same tile. With no known
+    // reading, `MetersSurface` renders the `<span class="meter-unknown">S ?`
+    // fallback instead of `<LinearSMeter>` — so the `relevant` prop that
+    // carries the tile's dim in the observed branch does not exist, and this
+    // ancestor rule is the only thing left that can dim it. Reachable: a
+    // radio that stops reporting the S-meter while keyed, and the cold-start
+    // `rfState='unknown'` window.
+    //
+    // MUTATION KILLED: narrowing the selector's `:not(...)` back to
+    // `:not([data-meter='signal'])` (dropping the `[data-observed='true']`
+    // half) — this tile's computed opacity falls back to the empty string
+    // and the assertion below fails. That mutation leaves the test above
+    // green, which is exactly why this case needed its own test.
+    it('still dims the UNOBSERVED S-meter tile through the shared rule when it is irrelevant', () => {
+      const view = withField(base('transmitting'), 'signal', { unknown: true, relevant: false });
+      withSurface(view, (s) => {
+        const tile = s.tile('signal')!;
+        expect(tile.dataset.relevant).toBe('false');
+        expect(tile.dataset.observed).toBe('false');
+        // The `{:else}` fallback really did render — no `LinearSMeter`, so
+        // nothing inside the tile carries a dim of its own.
+        expect(s.signalSvg()).toBeNull();
+        expect(tile.querySelector('.meter-unknown')).not.toBeNull();
+        expect(getComputedStyle(tile).opacity).toBe('0.4');
       });
     });
   });
@@ -948,9 +976,10 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
   //     presentation attributes into computed style, verified empirically:
   //     `getComputedStyle(g).opacity` returns '' for every `<g opacity=...>`
   //     here regardless of the actual attribute).  Combined with (C) below
-  //     (the two groups are siblings, never nested), a correct value on each
-  //     group's OWN attribute plus no nesting is the full non-compounding
-  //     guarantee: nothing else remains that COULD multiply them.
+  //     (no main-bar group contains the lower row, or vice versa), a correct
+  //     value on each group's OWN attribute plus no nesting is the full
+  //     non-compounding guarantee: nothing else remains that COULD multiply
+  //     them.
   //
   // MUTATION KILLED: feeding `meters.swr.relevant` into the main-bar group
   // or `meters.signal.relevant` into the lower-row group (a field swap) —
@@ -962,10 +991,13 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
     expect(view.meters!.signal.relevant).toBe(false);
     expect(view.meters!.swr.relevant).toBe(true);
     withSurface(view, (s) => {
-      const mainGroup = s.signalSvg()!.querySelector('[data-main-relevant]')!;
+      const mainGroups = [...s.signalSvg()!.querySelectorAll('[data-main-relevant]')];
       const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
-      expect(mainGroup.getAttribute('data-main-relevant')).toBe('false');
-      expect(mainGroup.getAttribute('opacity')).toBe('0.4');
+      expect(mainGroups).toHaveLength(2);
+      for (const mainGroup of mainGroups) {
+        expect(mainGroup.getAttribute('data-main-relevant')).toBe('false');
+        expect(mainGroup.getAttribute('opacity')).toBe('0.4');
+      }
       expect(lowerGroup.getAttribute('data-lower-relevant')).toBe('true');
       expect(lowerGroup.getAttribute('opacity')).toBe('1');
     });
@@ -976,26 +1008,36 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
     expect(view.meters!.signal.relevant).toBe(true);
     expect(view.meters!.swr.relevant).toBe(false);
     withSurface(view, (s) => {
-      const mainGroup = s.signalSvg()!.querySelector('[data-main-relevant]')!;
+      const mainGroups = [...s.signalSvg()!.querySelectorAll('[data-main-relevant]')];
       const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
-      expect(mainGroup.getAttribute('opacity')).toBe('1');
+      expect(mainGroups).toHaveLength(2);
+      for (const mainGroup of mainGroups) expect(mainGroup.getAttribute('opacity')).toBe('1');
       expect(lowerGroup.getAttribute('opacity')).toBe('0.4');
     });
   });
 
   // ── (C) Structural guarantee: neither group is an ancestor of the other ──
-  // MUTATION KILLED: nesting the lower-row `<g>` back inside the main-bar
-  // `<g>` (or vice versa) — `Node.contains()` would then report one group
-  // containing the other, which this test forbids in both directions. This
-  // is the property the fix is actually built on: with no ancestor
-  // relationship between the two, CSS opacity compounding is structurally
-  // impossible, not just avoided by the current attribute values.
-  it('renders data-main-relevant and data-lower-relevant as siblings, neither containing the other', () => {
+  // `LinearSMeter` emits the main-bar content as TWO `<g data-main-relevant>`
+  // groups, split only because `{#if lowerScale}` sits between them in the
+  // markup. Fix cycle 4 (F2): this test checks BOTH of them — a `querySelector`
+  // (singular) reads only the first, so nesting the lower row inside the
+  // SECOND main group reinstates the compounding bug undetected.
+  //
+  // MUTATION KILLED: moving the lower-row `<g data-lower-relevant>` inside
+  // the SECOND `<g data-main-relevant>` in `LinearSMeter.svelte` — the count
+  // assertion still passes (still two main groups) but the second group's
+  // `contains(lowerGroup)` becomes true. Confirmed by hand that this
+  // mutation left the pre-fix, `querySelector`-based version of this test
+  // green.
+  it('renders every data-main-relevant group as a sibling of data-lower-relevant, neither containing the other', () => {
     withSurface(base('transmitting'), (s) => {
-      const mainGroup = s.signalSvg()!.querySelector('[data-main-relevant]')!;
+      const mainGroups = [...s.signalSvg()!.querySelectorAll('[data-main-relevant]')];
       const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
-      expect(mainGroup.contains(lowerGroup)).toBe(false);
-      expect(lowerGroup.contains(mainGroup)).toBe(false);
+      expect(mainGroups).toHaveLength(2);
+      for (const mainGroup of mainGroups) {
+        expect(mainGroup.contains(lowerGroup)).toBe(false);
+        expect(lowerGroup.contains(mainGroup)).toBe(false);
+      }
     });
   });
 });

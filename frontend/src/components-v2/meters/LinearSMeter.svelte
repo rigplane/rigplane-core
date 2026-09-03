@@ -31,7 +31,7 @@
      * fact-layer `relevant`, e.g. `meters.swr.relevant`) — independent of
      * the `relevant` PROP below, which dims the main bar. The two drive two
      * SIBLING `<g>` groups (`data-lower-relevant` here, `data-main-relevant`
-     * on the main-bar group), neither an ancestor of the other, so their
+     * on the main-bar groups), neither an ancestor of the other, so their
      * opacities can never compound: each renders at exactly its own fact's
      * value, never the product of both.
      */
@@ -74,14 +74,13 @@
      * MOR-2250 fix cycle 2: independent dim for the MAIN bar content — the
      * label, scale labels, ticks, segments, peak line and value readout;
      * everything in this component that is NOT the `lowerScale` row.
-     * Defaults to `true` so every caller that does not pass it (VfoPanel,
-     * MobileRadioLayout, MetersDockPanel — none of them pass this prop)
-     * keeps rendering at full opacity, unchanged. `MetersSurface.svelte` is
-     * the only caller that passes `false`, sourced from
-     * `meters.signal.relevant`: the S-meter tile's own dimming moved from
-     * that tile's CSS into this prop so it can never compound with
-     * `lowerScale.relevant`'s independent dim — see the sibling
-     * `data-main-relevant` / `data-lower-relevant` groups below.
+     * Defaults to `true` so every caller that does not pass it (VfoPanel and
+     * MobileRadioLayout — neither passes this prop) keeps rendering at full
+     * opacity, unchanged. `MetersSurface.svelte` is the only caller that
+     * passes `false`, sourced from `meters.signal.relevant`: the S-meter
+     * tile's own dimming moved from that tile's CSS into this prop so it can
+     * never compound with `lowerScale.relevant`'s independent dim — see the
+     * sibling `data-main-relevant` / `data-lower-relevant` groups below.
      */
     relevant?: boolean;
   }
@@ -201,11 +200,10 @@
   const LOWER_FAULT_COLOR = 'var(--v2-accent-red, #ff4040)';
   const LOWER_ACTIVE_COLOR = 'var(--v2-accent-green-medium)';
   const LOWER_DIM_COLOR = '#141414';
-  // Matches `MetersSurface.svelte`'s own `.meter-tile[data-relevant='false']
-  // { opacity: 0.4 }` CSS rule — same dim-not-hide value (MOR-977). Shared by
-  // BOTH independent groups below (`data-main-relevant` and
-  // `data-lower-relevant`) so the two dims can never drift apart into two
-  // different literals.
+  // Matches the 0.4 that `MetersSurface.svelte`'s own `.meter-tile` dim rule
+  // uses — same dim-not-hide value (MOR-977). Shared by BOTH independent
+  // groups below (`data-main-relevant` and `data-lower-relevant`) so the two
+  // dims can never drift apart into two different literals.
   const DIM_OPACITY = 0.4;
 
   function lowerTickX(fraction: number): number {

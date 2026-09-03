@@ -144,9 +144,9 @@
    * `meters.swr.relevant` fails CLOSED the other way), and each now drives
    * its own independent, non-nested `<g>` inside `LinearSMeter`: this field
    * feeds `LowerScaleDescriptor.relevant` → `<g data-lower-relevant>`, while
-   * `meters.signal.relevant` feeds the separate `relevant` prop →
-   * `<g data-main-relevant>` (see the `<LinearSMeter>` mount below). Neither
-   * group is an ancestor of the other, so the two opacities can never
+   * `meters.signal.relevant` feeds the separate `relevant` prop → the
+   * `<g data-main-relevant>` groups (see the `<LinearSMeter>` mount below).
+   * Neither is an ancestor of the other, so the two opacities can never
    * compound — each field's dim reaches exactly its own row.
    */
   function swrLowerScale(f: MeterField): LowerScaleDescriptor {
@@ -269,14 +269,18 @@
   /* Dim, never hide: an irrelevant meter keeps its box so the dock cannot
      reflow across an RX/TX transition. Opacity survives forced-colors, and it
      is a second channel beside `data-relevant`, never the only one.
-     MOR-2250 fix cycle 2: `data-meter="signal"` is EXCLUDED here. That tile
-     wraps `LinearSMeter`, which nests its own independently-relevant lower
-     row (`meters.swr.relevant`) inside the same tile — dimming the tile via
-     this ancestor rule would compound with the row's own opacity (CSS
-     opacity multiplies down the DOM). The S-meter tile still carries
-     `data-relevant` (read by tests and tooling below), but the fact now
-     drives opacity through the `relevant` prop `LinearSMeter` applies to its
-     own sibling `<g>` groups instead of through this CSS rule. */
-  .meter-tile[data-relevant='false']:not([data-meter='signal']) { opacity: 0.4; }
+     The S-meter tile takes one of two dimming paths, never both (MOR-2250,
+     fix cycles 2 and 4), which is why the `:not(...)` below carries two
+     conditions. Observed: `LinearSMeter` is mounted and `relevant` reaches
+     it as a prop, dimming that component's own `<g data-main-relevant>`
+     groups — so this ancestor rule must skip the tile, or its opacity would
+     compound with the independently-relevant SWR row inside the same svg
+     (CSS opacity multiplies down the DOM). Unobserved: no `LinearSMeter` is
+     mounted, the `{:else}` `<span class="meter-unknown">` renders instead,
+     and nothing inside the tile dims — so this rule covers it like any
+     other tile. */
+  .meter-tile[data-relevant='false']:not([data-meter='signal'][data-observed='true']) {
+    opacity: 0.4;
+  }
   .meter-unknown { font-weight: 700; }
 </style>
