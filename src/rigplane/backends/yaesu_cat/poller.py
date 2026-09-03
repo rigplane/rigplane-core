@@ -1025,12 +1025,12 @@ class YaesuCatPoller:
                 await radio.set_powerstat(on)
 
             # ── Audio / RF Levels ──
-            case SetAfLevel(level=level):
-                await radio.set_af_level(level)
-            case SetRfGain(level=level):
-                await radio.set_rf_gain(level)
-            case SetSquelch(level=level):
-                await radio.set_squelch(level)
+            case SetAfLevel(level=level, receiver=receiver):
+                await radio.set_af_level(level, receiver)
+            case SetRfGain(level=level, receiver=receiver):
+                await radio.set_rf_gain(level, receiver)
+            case SetSquelch(level=level, receiver=receiver):
+                await radio.set_squelch(level, receiver)
             case SetMicGain(level=level):
                 await radio.set_mic_gain(level)
             case SetPower(level=level, unit=unit):

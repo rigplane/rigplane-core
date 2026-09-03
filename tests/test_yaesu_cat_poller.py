@@ -2237,6 +2237,55 @@ async def test_fast_poll_reads_tx_meters_when_ptt_active() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "state_field", "sub_write", "main_write", "query"),
+    [
+        ("set_af_level", "af_level", "AG1123;", "AG0123;", "AG1123"),
+        ("set_rf_gain", "rf_gain", "RG1123;", "RG0123;", "RG1123"),
+        ("set_squelch", "squelch", "SQ1123;", "SQ0123;", "SQ1123"),
+    ],
+)
+async def test_ftx1_level_controls_route_receiver_through_web_queue(
+    command: str,
+    state_field: str,
+    sub_write: str,
+    main_write: str,
+    query: str,
+) -> None:
+    """Web level controls preserve their MAIN/SUB target through CAT dispatch."""
+    radio, handler, poller, store, _accept = _real_ftx1_control_path()
+
+    await handler._enqueue_command(  # noqa: SLF001
+        command,
+        {"level": 123, "receiver": 1},
+        command_id=f"{command}-sub",
+    )
+    await poller._drain_commands()  # noqa: SLF001
+
+    radio._transport.write.assert_awaited_once_with(sub_write)  # noqa: SLF001
+    assert getattr(radio.radio_state.sub, state_field) == 123
+    assert store.snapshot().fields == ()
+
+    radio._transport.query = AsyncMock(return_value=query)  # noqa: SLF001
+    read_level = await getattr(radio, f"read_{state_field}")(1)
+    assert read_level == 123
+    radio._transport.query.assert_awaited_once_with(sub_write[:3] + ";")  # noqa: SLF001
+
+    await handler._enqueue_command(  # noqa: SLF001
+        command,
+        {"level": 123, "receiver": 0},
+        command_id=f"{command}-main",
+    )
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert radio._transport.write.await_args_list == [  # noqa: SLF001
+        mock_call(sub_write),
+        mock_call(main_write),
+    ]
+    assert getattr(radio.radio_state.main, state_field) == 123
+
+
+@pytest.mark.asyncio
 async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback() -> (
     None
 ):
