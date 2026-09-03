@@ -1,0 +1,40 @@
+name: Icom observed PTT format proof
+
+on:
+  push:
+    branches: [codex/icom-observed-ptt-format-proof]
+
+jobs:
+  format-proof:
+    runs-on: [self-hosted, linux, build]
+    env:
+      SOURCE_SHA: 4e8a0f9d5c4d746149d67db870a569e1b92f655c
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify pinned source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Capture formatter diff
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          proof_cache="$(mktemp -d)"
+          export UV_CACHE_DIR="$proof_cache/uv"
+          export PYTHONPYCACHEPREFIX="$proof_cache/pycache"
+          uv sync --all-extras --frozen
+          set +e
+          uv run ruff format --diff src/rigplane/runtime/_civ_rx.py tests/test_civ_rx_coverage.py > format.diff
+          format_rc=$?
+          set -e
+          test "$format_rc" = 1
+          test -s format.diff
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: icom-observed-ptt-format-proof
+          path: format.diff
