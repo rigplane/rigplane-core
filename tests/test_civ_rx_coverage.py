@@ -65,6 +65,11 @@ from rigplane.core.state_acquisition_policy import (
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.tx_target import KnownTxTarget
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    project_observed_ptt,
+)
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -75,7 +80,12 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
-from rigplane.core.state_store import FreshnessState, StateSnapshot, StateStore
+from rigplane.core.state_store import (
+    FreshnessClock,
+    FreshnessState,
+    StateSnapshot,
+    StateStore,
+)
 from rigplane.types import CivFrame, Mode, ScopeFixedEdge, bcd_encode
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
@@ -1256,6 +1266,191 @@ def test_current_generation_generic_civ_result_is_accepted(radio: IcomRadio) -> 
         "receiver.0.operator_controls.af_level"
     )
     assert field.provider_generation == current_store_generation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected", "source"),
+    (
+        (b"\x00", ObservedPtt.OFF, "poll_response"),
+        (b"\x01", ObservedPtt.ON, "poll_response"),
+        (b"", ObservedPtt.UNKNOWN, "command_response"),
+        (b"\x02", ObservedPtt.UNKNOWN, "command_response"),
+        (b"\xff", ObservedPtt.UNKNOWN, "command_response"),
+        (b"\x00\x00", ObservedPtt.UNKNOWN, "command_response"),
+        (b"\x01\x00", ObservedPtt.UNKNOWN, "command_response"),
+    ),
+    ids=("off", "on", "empty", "two", "ff", "double-off", "double-on"),
+)
+async def test_civ_ptt_readback_emits_canonical_observed_state(
+    radio: IcomRadio,
+    payload: bytes,
+    expected: ObservedPtt,
+    source: str,
+) -> None:
+    """PTT readback reaches the canonical state projection through the store."""
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(cmd=0x1C, sub=0x00, data=payload),
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+
+    snapshot = radio._state_store.snapshot()  # noqa: SLF001
+    observed = snapshot.field(OBSERVED_PTT_PATH)
+    assert observed.value is expected
+    assert observed.max_age == 1.0
+    assert observed.provider_generation == snapshot.provider_generation
+    assert observed.source.source == source
+    assert project_observed_ptt(snapshot) is expected
+
+    if payload in (b"\x00", b"\x01"):
+        assert snapshot.field("global.tx_state.ptt").value is (payload == b"\x01")
+
+
+@pytest.mark.asyncio
+async def test_unsolicited_civ_ptt_readback_has_unsolicited_provenance(
+    radio: IcomRadio,
+) -> None:
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x01", to_addr=0x00),
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+
+    snapshot = radio._state_store.snapshot()  # noqa: SLF001
+    observed = snapshot.field(OBSERVED_PTT_PATH)
+    assert observed.value is ObservedPtt.ON
+    assert observed.source.source == "civ_unsolicited"
+    assert snapshot.field("global.tx_state.ptt").value is True
+
+
+@pytest.mark.asyncio
+async def test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames(
+    radio: IcomRadio,
+) -> None:
+    """Only accepted PTT ingress from the configured radio can produce evidence."""
+    for frame in (
+        _make_frame(cmd=0xFB),
+        _make_frame(cmd=0xFA),
+        _make_frame(cmd=0x1D, sub=0x00, data=b"\x01"),
+        _make_frame(cmd=0x1C, sub=0x01, data=b"\x01"),
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x01", from_addr=0x94),
+        _make_frame(
+            cmd=0x1C,
+            sub=0x00,
+            data=b"\x01",
+            from_addr=CONTROLLER_ADDR,
+        ),
+    ):
+        await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+            frame,
+            generation=radio._civ_epoch,  # noqa: SLF001
+        )
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(OBSERVED_PTT_PATH)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_old_civ_epoch_ptt_readback_cannot_restore_observed_state(
+    radio: IcomRadio,
+) -> None:
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+    assert project_observed_ptt(radio._state_store.snapshot()) is ObservedPtt.ON  # noqa: SLF001
+
+    old_civ_generation = radio._civ_epoch  # noqa: SLF001
+    radio._civ_runtime.advance_generation("test replacement")  # noqa: SLF001
+    assert project_observed_ptt(radio._state_store.snapshot()) is ObservedPtt.UNKNOWN  # noqa: SLF001
+
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
+        generation=old_civ_generation,
+    )
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field(OBSERVED_PTT_PATH)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_old_store_generation_ptt_readback_cannot_restore_observed_state(
+    radio: IcomRadio,
+) -> None:
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+    assert project_observed_ptt(radio._state_store.snapshot()) is ObservedPtt.ON  # noqa: SLF001
+
+    old_store_generation = radio._state_store.provider_generation  # noqa: SLF001
+    radio._civ_runtime.advance_generation("test replacement")  # noqa: SLF001
+    assert project_observed_ptt(radio._state_store.snapshot()) is ObservedPtt.UNKNOWN  # noqa: SLF001
+
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
+        generation=radio._civ_epoch,  # noqa: SLF001
+        store_provider_generation=old_store_generation,
+    )
+
+    snapshot = radio._state_store.snapshot()  # noqa: SLF001
+    assert project_observed_ptt(snapshot) is ObservedPtt.UNKNOWN
+    with pytest.raises(KeyError):
+        snapshot.field(OBSERVED_PTT_PATH)
+
+
+@pytest.mark.asyncio
+async def test_observed_ptt_expires_to_unknown_after_its_store_max_age(
+    radio: IcomRadio,
+) -> None:
+    clock = FreshnessClock(start=100.0)
+    radio._state_store._freshness_clock = clock  # noqa: SLF001
+    with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=100.0):
+        await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+            _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
+            generation=radio._civ_epoch,  # noqa: SLF001
+        )
+    observed = radio._state_store.snapshot().field(OBSERVED_PTT_PATH)  # noqa: SLF001
+
+    clock.advance(observed.max_age - 0.001)
+    assert project_observed_ptt(radio._state_store.snapshot()) is ObservedPtt.ON  # noqa: SLF001
+    clock.advance(0.001)
+
+    assert project_observed_ptt(radio._state_store.snapshot()) is ObservedPtt.UNKNOWN  # noqa: SLF001
+    assert (
+        radio._state_store.snapshot().field(OBSERVED_PTT_PATH).freshness
+        is FreshnessState.FRESH
+    )  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "legacy_value"),
+    (
+        (b"", True),
+        (b"\x02", True),
+        (b"\xff", True),
+        (b"\x00\x00", False),
+        (b"\x01\x00", True),
+    ),
+    ids=("empty", "two", "ff", "double-off", "double-on"),
+)
+async def test_malformed_ptt_payloads_preserve_legacy_behavior(
+    radio: IcomRadio,
+    payload: bytes,
+    legacy_value: bool,
+) -> None:
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(cmd=0x1C, sub=0x00, data=b"\x01"),
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+    await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        _make_frame(cmd=0x1C, sub=0x00, data=payload),
+        generation=radio._civ_epoch,  # noqa: SLF001
+    )
+
+    snapshot = radio._state_store.snapshot()  # noqa: SLF001
+    assert snapshot.field("global.tx_state.ptt").value is legacy_value
+    assert snapshot.field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
 
 
 def test_old_generation_queued_meter_flush_mutates_nothing_after_reconnect(

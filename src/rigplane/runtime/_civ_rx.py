@@ -51,6 +51,7 @@ from rigplane.commands.scope import _span_index_for_hz
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import KnownTxTarget
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
     FieldChange,
@@ -2464,11 +2465,25 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x1C and frame.sub == 0x00 and frame.data:
+        elif frame.command == 0x1C and frame.sub == 0x00:
+            if frame.data:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "ptt"),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
             observations.append(
                 self._observation(
-                    FieldPath.global_("tx_state", "ptt"),
-                    bool(frame.data[0]),
+                    OBSERVED_PTT_PATH,
+                    normalize_observed_ptt(
+                        False
+                        if frame.data == b"\x00"
+                        else True
+                        if frame.data == b"\x01"
+                        else None
+                    ),
                     frame=frame,
                 )
             )
@@ -2743,8 +2758,11 @@ class CivRuntime:
             # responses so the Web TX authority gate cannot treat an ACK, setter
             # success, or unrelated response as radio truth.
             source = "poll_response"
+        max_age_path = (
+            FieldPath.global_("tx_state", "ptt") if path == OBSERVED_PTT_PATH else path
+        )
         max_age = _OBSERVATION_MAX_AGE_SECONDS.get(
-            (path.scope.value, path.family.value, path.name)
+            (max_age_path.scope.value, max_age_path.family.value, max_age_path.name)
         )
         if path == FieldPath.global_("tx_state", "tx_target"):
             # MOR-2223: single source shared with
