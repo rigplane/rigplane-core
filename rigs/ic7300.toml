@@ -271,6 +271,20 @@ command_response_observable = [
     "global.operator_controls.key_speed",
     "global.operator_controls.cw_pitch",
     "receiver.main.operator_toggles.twin_peak_filter",
+    # MOR-2234 group B: CTCSS tone / TSQL tone frequency (0x1B 0x00 / 0x1B
+    # 0x01). ``[commands]`` below declares get_tone_freq/get_tsql_freq,
+    # ``runtime/_state_queries.py: acquisition_query_resolver_for_profile``
+    # resolves both through _RECEIVER_CONTROL_GETTERS, and
+    # ``runtime/_civ_rx.py: CivRuntime._observations_from_frame`` decodes the
+    # 0x1B replies -- but neither path was in ANY list here, so
+    # ``capability_for`` returned the default UNKNOWN and neither
+    # ``due_requests`` nor ``prime_unobserved`` ever asked for them.
+    # Non-polling membership, not polling_only: reached by prime_unobserved
+    # off the matching field_policies entries below, and refreshed on
+    # command response. Pinned by
+    # test_ic7300_real_profile_primes_tone_and_tsql_freq_and_sends_1b_reads.
+    "receiver.main.operator_controls.tone_freq",
+    "receiver.main.operator_controls.tsql_freq",
 ]
 supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
@@ -653,6 +667,21 @@ reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_toggles.twin_peak_filter"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+# MOR-2234 group B: tone/TSQL frequency join the same non-polling
+# command_response membership as the CW keyer setpoints above, and copy
+# their 25.0s cadence/TTL pair verbatim.
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"
