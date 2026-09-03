@@ -314,16 +314,29 @@ def main():
             finally:
                 try:
                     try:
+                        actual = snapshot(root)
+                        matches_base = actual == hashes
+                        write_json(evidence / "base-comparison-before-restore.json", {
+                            "actual": actual, "base": hashes, "matches_base": matches_base,
+                            "expected_matches_base": not bool(edits),
+                        })
+                        assert matches_base is (not bool(edits)), "base comparison negative control failed"
                         (evidence / "before-restore.diff").write_bytes(command(["git", "diff", "HEAD"], root))
                         (evidence / "before-restore.status").write_bytes(status(root))
                     finally:
                         # Never write test files, including during restoration.
                         for file in (COMMANDER, RUNTIME):
                             (root / file).write_bytes(originals[file])
-                        write_json(evidence / "hashes-restored.json", snapshot(root))
+                        actual = snapshot(root)
+                        matches_base = actual == hashes
+                        write_json(evidence / "hashes-restored.json", actual)
+                        write_json(evidence / "base-comparison-restored.json", {
+                            "actual": actual, "base": hashes, "matches_base": matches_base,
+                            "expected_matches_base": True,
+                        })
                         (evidence / "restored.diff").write_bytes(command(["git", "diff", "HEAD"], root))
                         (evidence / "restored.status").write_bytes(status(root))
-                        assert snapshot(root) == hashes and not status(root), "restoration failed"
+                        assert matches_base and not status(root), "restoration failed"
                         command(["git", "diff", "--exit-code", "HEAD"], root)
                 except BaseException as error:
                     write_json(evidence / "verdict.json", {"status": "INVALID", "stage": "restoration",
