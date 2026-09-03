@@ -29,9 +29,14 @@
    *
    *  Colour is a SECOND channel only: `RF_LABEL` and `RF_MARK` still carry the
    *  state as text and shape, which `rx-tx-surface.component.test.ts`'s
-   *  'encodes RX/TX structurally, not by colour or class alone' case pins. */
+   *  'encodes RX/TX structurally, not by colour or class alone' case pins.
+   *
+   *  Every state is `active: true`. The base (non-active) `.v2-status-indicator`
+   *  rule paints text in `--v2-badge-inactive-text` over a transparent
+   *  background, which fails the fixture harness's 4.5:1
+   *  `contrast-text-rx-tx-rf-label` check (`fixtures/assertions.ts`). */
   const RF_BADGE: Record<RfState, { color: 'green' | 'red' | 'amber' | 'muted'; active: boolean }> = {
-    receiving: { color: 'green', active: false },
+    receiving: { color: 'green', active: true },
     transmitting: { color: 'red', active: true },
     uncertain: { color: 'amber', active: true },
     unknown: { color: 'muted', active: true },

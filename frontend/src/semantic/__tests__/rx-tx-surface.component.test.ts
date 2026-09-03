@@ -591,15 +591,19 @@ describe('MOR-2231 — TX controls carry the shared control-button vocabulary', 
   });
 
   it.each([
-    [IDLE_RX, 'receiving', 'green', 'false'],
+    [IDLE_RX, 'receiving', 'green', 'true'],
     [snap({ radioTx: 'on' }), 'transmitting', 'red', 'true'],
     [snap({ txRisk: 'uncertain' }), 'uncertain', 'amber', 'true'],
     [snap({ radioTx: 'unknown' }), 'unknown', 'muted', 'true'],
   ] as const)('the RF badge paints %#: %s as a %s indicator', (tx, rf, color, active) => {
-    // Kill-mutation: a constant `color`/`active`, or dropping the badge class.
-    // The badge must move with `rfState()` — and the span carrying it must keep
-    // carrying the state as TEXT too (the forced-colors pin above), which is
-    // why this reads the label text on the same element.
+    // Kill-mutation: a constant `color`, or dropping the badge class. The badge
+    // must move with `rfState()` — and the span carrying it must keep carrying
+    // the state as TEXT too (the forced-colors pin above), which is why this
+    // reads the label text on the same element.
+    // `active` is uniformly 'true' and so pins no per-state variation; the
+    // case it kills is `receiving` regressing to `active: false`, which drops
+    // the label onto the dim base `.v2-status-indicator` colour and fails the
+    // fixture harness's `contrast-text-rx-tx-rf-label` check.
     withSurface(topologyFixtures['1/single'], tx, (s) => {
       expect(s.state().dataset.rf).toBe(rf);
       const label = s.state().querySelector('[data-testid="rx-tx-rf-label"]') as HTMLElement;
