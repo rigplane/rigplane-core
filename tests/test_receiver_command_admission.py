@@ -294,7 +294,10 @@ async def test_attenuator_receiver_admission_matches_provider_route(
         radio = RigctldClientRadio(host="127.0.0.1", transport=sink)
 
     try:
-        assert radio.supports_command("set_attenuator_level", receiver=receiver) == expected
+        assert (
+            radio.supports_command("set_attenuator_level", receiver=receiver)
+            == expected
+        )
         assert writes == []
         if provider == "ftx1":
             assert radio._transport.writes == []
@@ -344,7 +347,8 @@ def test_ftx1_attenuator_admission_requires_an_executable_main_route(defect):
 
 
 @pytest.mark.parametrize(
-    "defect", ["command", "capability", "no_domain", "empty_domain", "route", "primitive"]
+    "defect",
+    ["command", "capability", "no_domain", "empty_domain", "route", "primitive"],
 )
 def test_ic7610_attenuator_admission_honors_setter_profile_requirements(defect):
     config = load_rig(RIGS / "ic7610.toml")
@@ -355,13 +359,17 @@ def test_ic7610_attenuator_admission_honors_setter_profile_requirements(defect):
         config = replace(
             config,
             commands={
-                key: value for key, value in config.commands.items() if key != "set_attenuator"
+                key: value
+                for key, value in config.commands.items()
+                if key != "set_attenuator"
             },
         )
     elif defect == "capability":
         config = replace(
             config,
-            capabilities=tuple(cap for cap in config.capabilities if cap != "attenuator"),
+            capabilities=tuple(
+                cap for cap in config.capabilities if cap != "attenuator"
+            ),
         )
     elif defect == "no_domain":
         config = replace(config, att_values=None)
