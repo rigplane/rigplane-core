@@ -125,6 +125,8 @@ async def test_per_call_executor_isolated_from_default_and_cleans_up(fail_overri
                 for event in service.lifecycle_events()
                 if event.command_id == command.id
             ] == ["accepted", "queued", "sent", terminal]
+        expected_active = 2 if fail_override else 3
+        assert service.terminate_active_commands("late cleanup") == expected_active
         assert service.terminate_active_commands("late cleanup") == 0
         assert store.snapshot().fields == before
     finally:
