@@ -169,7 +169,7 @@ def _count_self_civ_call_sites() -> int:
 
 
 def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
-    """Ratchet: exactly 10 raw ``self._civ(...)`` sites remain.
+    """Ratchet: exactly 6 raw ``self._civ(...)`` sites remain.
 
     The 8 hand-rolled ``self._civ(0x07, ...)`` VFO-switch frames that used
     to live in ``SetFreq``/``SetMode`` (the ``receiver!=0`` fallback dance
@@ -180,12 +180,19 @@ def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
     ``SwitchScopeReceiver`` was the 11th (MOR-2106): it now resolves
     ``set_scope_main_sub`` through ``_send_cmd`` instead of building
     ``0x27 0x12`` as a literal in ``_execute`` -- reusing ``_send_cmd``'s
-    existing two call sites below rather than adding a new one. The 10
-    that remain:
+    existing two call sites below rather than adding a new one.
+    ``_send_one_state_query`` used to hold 5 of its own branches (cmd29
+    wrap x2, the scope-receiver rewrite, and a sub-is-None/sub-is-set
+    split that only differed in whether ``sub=None`` was spelled out) --
+    those collapsed into the one call below when the wire-frame assembly
+    moved into the shared ``runtime._state_queries.wire_parts_for_query``,
+    also used by ``RigctldServer._send_one_state_query`` and
+    ``runtime.radio_initial_state.fetch_initial_state``. The 6 that
+    remain:
 
     - ``_send_cmd``: 2 — cmd29-wrapped vs. plain generic command dispatch.
-    - ``_send_one_state_query``: 5 — selected/unselected freq/mode state
-      reads plus the scope-receiver default read.
+    - ``_send_one_state_query``: 1 — dispatches whatever
+      ``wire_parts_for_query`` resolved.
     - ``_execute``: 2 — the BSR band-switch stored-freq read and
       ``SelectVfo``'s scope-follow (0x27 0x12).
     - ``_send_query``: 1 — the meter poll read.
@@ -193,7 +200,7 @@ def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
     Changing this literal deliberately means recounting the real call
     sites above, not just editing the number.
     """
-    assert _count_self_civ_call_sites() == 10
+    assert _count_self_civ_call_sites() == 6
 
 
 # ---------------------------------------------------------------------------

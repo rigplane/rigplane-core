@@ -46,7 +46,10 @@ from ..radio_protocol import (
     StateStoreCapable,
 )
 from ..runtime._civ_rx import _OBSERVATION_MAX_AGE_SECONDS
-from ..runtime._state_queries import acquisition_query_resolver_for_profile
+from ..runtime._state_queries import (
+    acquisition_query_resolver_for_profile,
+    wire_parts_for_query,
+)
 from ..startup_checks import assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
@@ -567,28 +570,25 @@ class RigctldServer:
     ) -> None:
         """Send a single acquisition-scheduler CI-V state query.
 
-        The lossless query envelope keeps the CI-V sub-command, payload data,
-        and optional cmd29 receiver route separate.
+        Wire-frame assembly (cmd29 wrap, 0x27 scope-receiver substitution)
+        is shared with the other two acquisition senders via
+        ``wire_parts_for_query``; the live scope receiver comes from the
+        radio's own ``RadioState`` mirror, matching what the web sender
+        (``RadioPoller._send_one_state_query``) and the initial fetch
+        (``runtime.radio_initial_state.fetch_initial_state``) read.
         """
         radio = self._radio
         if not isinstance(radio, CivCommandCapable):
             raise _AcquisitionExecutorUnavailable(
                 "radio does not support CI-V state acquisition sends"
             )
-        if query.receiver is not None:
-            inner = bytes([query.receiver, query.command])
-            if query.sub is not None:
-                inner += bytes([query.sub])
-            await radio.send_civ(
-                0x29,
-                data=inner + query.data,
-                wait_response=False,
-            )
-            return
+        command, sub, data = wire_parts_for_query(
+            query, self._radio.radio_state.scope_controls.receiver
+        )
         await radio.send_civ(
-            query.command,
-            sub=query.sub,
-            data=query.data,
+            command,
+            sub=sub,
+            data=data,
             wait_response=False,
         )
 
