@@ -220,6 +220,8 @@ function push(next: Partial<Snapshot>): void {
 }
 
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+/** SVG elements have `.dataset` too, but don't satisfy `q`'s `HTMLElement` bound. */
+const qSvg = (sel: string) => target.querySelector(sel) as SVGSVGElement | null;
 const rfState = (): string | undefined => q('[data-testid="meters-surface"]')!.dataset.rfState;
 /** `data-meter -> data-relevant` for every rendered tile. */
 const relevance = (): Record<string, string> => Object.fromEntries(
@@ -356,7 +358,7 @@ describe('meter TX relevance follows the App TX authority and nothing else', () 
     const rx = relevance();
     expect(rx.signal).toBe('true');
     expect(rx.power).toBe('false');
-    expect(q<SVGSVGElement>('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
+    expect(qSvg('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
 
     push({ radioTx: 'on', txRisk: 'confirmed-on', phase: 'active', mayOwnKey: true });
     expect(rfState()).toBe('transmitting');
@@ -372,7 +374,7 @@ describe('meter TX relevance follows the App TX authority and nothing else', () 
     // condition set up in this scenario), but present and boolean-valued,
     // proving the composed tree actually renders it rather than losing the
     // attribute entirely once SWR left the `[data-meter-tile]` loop.
-    expect(q<SVGSVGElement>('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
+    expect(qSvg('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
   });
 
   // MUTATION KILLED: collapsing 'uncertain' onto 'receiving' — the boolean
