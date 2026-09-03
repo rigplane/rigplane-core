@@ -8,7 +8,7 @@ jobs:
   green-proof:
     runs-on: [self-hosted, linux, build]
     env:
-      SOURCE_SHA: 19142f16cc030d68cd694564604bd34071efa1e7
+      SOURCE_SHA: 4e8a0f9d5c4d746149d67db870a569e1b92f655c
     steps:
       - uses: actions/checkout@v6
         with:
