@@ -1011,23 +1011,9 @@ get_tx_band_count = [0x1E, 0x00]          # source: IC-7300 Advanced Manual (11a
 get_tx_band_edge = [0x1E, 0x01]           # source: IC-7300 Advanced Manual (11a) p.19-7 (detail p.19-9)
 
 # ── VFO ──
-get_vfo = [0x07]
 set_vfo = [0x07]
 get_split = [0x0F]
 set_split = [0x0F]
-# Single receiver: no dual_watch, no main/sub band select, no main/sub tracking (D2, MOR-2014)
-get_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
-# set_dual_watch_off/set_dual_watch_on (not the bare set_dual_watch the
-# pre-migration fallback resolved -- MOR-2007 ruling 1 split the setter key)
-set_dual_watch_off = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
-set_dual_watch_on = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only" }
-# MOR-2117: the bare name dispatches to set_dual_watch_on/set_dual_watch_off
-# above, both already absent for the same reason -- without this row,
-# supports_command answered True for a name the profile otherwise denies.
-set_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table = 00/01/A0/B0 only; dispatches to set_dual_watch_on/set_dual_watch_off, both declared absent above" }
-get_main_sub_band = { absent = "IC-7300 Advanced Manual (11a) command table p.19-3: 0x07 table has no 0xD2" }
-get_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
-set_main_sub_tracking = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x5E" }
 
 # ── Tuning ──
 get_tuning_step = [0x10]
@@ -1040,23 +1026,6 @@ get_preamp = [0x16, 0x02]
 set_preamp = [0x16, 0x02]
 get_ip_plus = [0x16, 0x65]
 set_ip_plus = [0x16, 0x65]
-get_digisel = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x4E" }
-set_digisel = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x16 family has no 0x4E" }
-get_digisel_shift = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x13" }
-set_digisel_shift = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x13" }
-
-# ── Antenna ──
-# MOR-2118: no 0x12 antenna-select command on this radio.
-# - Manual: IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8 --
-#   no 0x12 row (table runs 11* attenuator then 13 speech); no ANT1/ANT2/
-#   "antenna select" anywhere in the document; one physical [ANT] connector.
-# - Bench, 2026-09-01, remote testbed, /dev/cu.usbserial-143310 @115200, addr
-#   0x94: 12 00, 12, and 12 01 each NAK'd (fe fe e0 94 fa fd); 03 answered
-#   fe fe e0 94 03 00 80 23 07 00 fd (DATA) before and after.
-get_antenna = { absent = "IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8: no 0x12 row, no ANT1/ANT2 selection documented, one physical [ANT] connector; bench 2026-09-01 addr 0x94: 12 00/12/12 01 each NAK'd, 03 answered DATA before and after" }
-set_antenna = { absent = "IC-7300 Advanced Manual (11a) CI-V command table pp.19-3..19-8: no 0x12 row, no ANT1/ANT2 selection documented, one physical [ANT] connector; bench 2026-09-01 addr 0x94: 12 00/12/12 01 each NAK'd, 03 answered DATA before and after" }
-get_rx_antenna_ant2 = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 0x16 0x53 row; single antenna jack" }
-set_rx_antenna_ant2 = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 0x16 0x53 row; single antenna jack" }
 
 # ── Audio / AF ──
 get_af_level = [0x14, 0x01]
@@ -1065,8 +1034,6 @@ get_rf_gain = [0x14, 0x02]
 set_rf_gain = [0x14, 0x02]
 get_squelch = [0x14, 0x03]
 set_squelch = [0x14, 0x03]
-get_af_mute = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 1A 09 row (read row-by-row)" }
-set_af_mute = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no 1A 09 row (read row-by-row)" }
 
 # ── DSP / Noise (NB, NR, Notch, APF, Twin Peak) ──
 get_nb = [0x16, 0x22]
@@ -1085,8 +1052,6 @@ get_notch_filter = [0x14, 0x0D]           # Notch position 0-255
 set_notch_filter = [0x14, 0x0D]
 get_manual_notch_width = [0x16, 0x57]     # 0=WIDE, 1=MID, 2=NAR
 set_manual_notch_width = [0x16, 0x57]
-get_apf_type_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family skips 04/05" }
-set_apf_type_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family skips 04/05" }
 get_twin_peak_filter = [0x16, 0x4F]
 set_twin_peak_filter = [0x16, 0x4F]
 
@@ -1112,8 +1077,6 @@ get_rf_power = [0x14, 0x0A]
 set_rf_power = [0x14, 0x0A]
 get_mic_gain = [0x14, 0x0B]
 set_mic_gain = [0x14, 0x0B]
-get_drive_gain = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x14" }
-set_drive_gain = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: 0x14 family has no 0x14" }
 get_compressor = [0x16, 0x44]
 set_compressor = [0x16, 0x44]
 get_compressor_level = [0x14, 0x0E]
@@ -1162,7 +1125,6 @@ set_tuner_status = [0x1C, 0x01]
 # ── Meters ──
 get_s_meter = [0x15, 0x02]
 get_s_meter_sql_status = [0x15, 0x01]
-get_s_meter_sql_status_04 = [0x15, 0x04]
 get_various_squelch = [0x15, 0x05]
 get_overflow_status = [0x15, 0x07]
 get_power_meter = [0x15, 0x11]
@@ -1188,7 +1150,6 @@ set_data_mode = [0x1A, 0x06]
 
 # ── Scope ──
 get_scope_wave = [0x27, 0x00]
-set_scope_wave = [0x27, 0x00]
 scope_on = [0x27, 0x10]
 scope_off = [0x27, 0x10]
 scope_data_output = [0x27, 0x11]
@@ -1208,11 +1169,6 @@ get_scope_during_tx = [0x27, 0x1B]
 get_scope_center_type = [0x27, 0x1C]
 get_scope_vbw = [0x27, 0x1D]
 get_scope_fixed_edge = [0x27, 0x1E]
-# MOR-2105: the 0x27 sub-command table (IC-7300 Advanced Manual (11a)
-# pp.19-7..19-8) runs 1E then 20 -- no 1F row. Live bench: scope_rbw.set
-# timed out with no answer, consistent with an unimplemented command.
-get_scope_rbw = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-7..19-8: 0x27 sub-command table runs 1E then 20, no 1F row" }
-set_scope_rbw = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-7..19-8: 0x27 sub-command table runs 1E then 20, no 1F row" }
 
 # ── Scan ──
 scan_start = [0x0E]
@@ -1224,7 +1180,6 @@ scan_set_resume = [0x0E]                  # source: IC-7300 Advanced Manual (11a
 # ── System / Power ──
 power_on = [0x18]
 power_off = [0x18]
-get_powerstat = { absent = "IC-7300 Advanced Manual (11a) p.19-4: 0x18 rows carry no read marker; live bench 2026-08-30: bare 0x18 query answered NAK(FA)" }
 get_transceiver_id = [0x19, 0x00]
 set_speech = [0x13]
 get_dial_lock = [0x16, 0x50]
@@ -1389,18 +1344,10 @@ get_acc1_mod_level = [0x1A, 0x05, 0x00, 0x64]
 set_acc1_mod_level = [0x1A, 0x05, 0x00, 0x64]
 get_usb_mod_level = [0x1A, 0x05, 0x00, 0x65]
 set_usb_mod_level = [0x1A, 0x05, 0x00, 0x65]
-# No LAN hardware on the IC-7300 (D2, MOR-2014)
-get_lan_mod_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no LAN hardware, no LAN row anywhere in the table" }
-set_lan_mod_level = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-2..19-8: no LAN hardware, no LAN row anywhere in the table" }
 get_data_off_mod_input = [0x1A, 0x05, 0x00, 0x66]
 set_data_off_mod_input = [0x1A, 0x05, 0x00, 0x66]
 get_data1_mod_input = [0x1A, 0x05, 0x00, 0x67]
 set_data1_mod_input = [0x1A, 0x05, 0x00, 0x67]
-# DATA-input family stops at DATA1 -- no DATA2/DATA3 split on IC-7300 (D2, MOR-2014)
-get_data2_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
-set_data2_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
-get_data3_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
-set_data3_mod_input = { absent = "IC-7300 Advanced Manual (11a) command table p.19-5: DATA-input family has only 0066/0067, no DATA1/2/3 split" }
 get_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 set_civ_transceive = [0x1A, 0x05, 0x00, 0x71]
 # MOR-2118: measured 2026-09-01 14:39-14:41 UTC, remote testbed. Owner
@@ -1426,10 +1373,6 @@ get_utc_offset = [0x1A, 0x05, 0x00, 0x96]
 set_utc_offset = [0x1A, 0x05, 0x00, 0x96]
 get_quick_split = [0x1A, 0x05, 0x00, 0x30]  # source: IC-7300 Advanced Manual (11a) p.19-4, control 0030 "quick split set" (the old hardcoded fallback sent 0x33, split lock, not this address)
 set_quick_split = [0x1A, 0x05, 0x00, 0x30]  # source: IC-7300 Advanced Manual (11a) p.19-4, control 0030 "quick split set" (the old hardcoded fallback sent 0x33, split lock, not this address)
-# Full 1A 05 submenu has no dual-watch item -- 0032 is FM split offset on this
-# radio (D2, MOR-2014)
-get_quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }
-set_quick_dual_watch = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-7: full 1A 05 submenu has no dual-watch item; 0032 on this radio is FM split offset" }
 get_dash_ratio = [0x1A, 0x05, 0x01, 0x61]  # source: IC-7300 Advanced Manual (11a) command table p.19-6, control 0161 (28..45); live bench 2026-08-30: read of 1A 05 01 61 answered 30
 set_dash_ratio = [0x1A, 0x05, 0x01, 0x61]  # source: IC-7300 Advanced Manual (11a) command table p.19-6, control 0161 (28..45); live bench 2026-08-30: read of 1A 05 01 61 answered 30
 get_nb_depth = [0x1A, 0x05, 0x01, 0x89]
@@ -1438,14 +1381,6 @@ get_nb_width = [0x1A, 0x05, 0x01, 0x90]
 set_nb_width = [0x1A, 0x05, 0x01, 0x90]
 get_vox_delay = [0x1A, 0x05, 0x01, 0x91]     # 0-20 (0.0-2.0 sec)
 set_vox_delay = [0x1A, 0x05, 0x01, 0x91]     # 0-20 (0.0-2.0 sec)
-# MOR-2190 temporary fail-closed overrides: these are direct findings from the
-# official manual, not inherited unsupported markers. The explicit entries
-# keep the profile's negative knowledge inspectable while replacement APIs are
-# deliberately deferred.
-get_scope_marker_position = { absent = "IC-7300 Advanced Manual (11a) command table p.19-4: 1A 05 0040 is Speech Speed (00=Low, 01=High), not scope marker position" }
-set_scope_marker_position = { absent = "IC-7300 Advanced Manual (11a) command table p.19-4: 1A 05 0040 is Speech Speed (00=Low, 01=High), not scope marker position" }
-get_ref_adjust = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-5: 1A 05 0070 is external-keypad RTTY Memory; reference frequency is 0058 with 0000..0255 domain" }
-set_ref_adjust = { absent = "IC-7300 Advanced Manual (11a) command table pp.19-4..19-5: 1A 05 0070 is external-keypad RTTY Memory; reference frequency is 0058 with 0000..0255 domain" }
 
 [protocol]
 type = "civ"
