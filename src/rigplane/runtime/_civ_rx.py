@@ -2582,7 +2582,9 @@ class CivRuntime:
             receiver, mode = parse_scope_mode_response(frame)
             pairs.append(("mode", mode))
         elif frame.sub == 0x15:
-            receiver, span = parse_scope_span_response(frame)
+            receiver, span = parse_scope_span_response(
+                frame, self._host._profile.scope_span_presets_hz
+            )
             pairs.append(("span", span))
         elif frame.sub == 0x16:
             receiver, edge = parse_scope_edge_response(frame)
@@ -3170,7 +3172,9 @@ class CivRuntime:
                 scope.receiver = receiver
             scope.mode = mode
         elif frame.sub == 0x15:
-            receiver, span = parse_scope_span_response(frame)
+            receiver, span = parse_scope_span_response(
+                frame, self._host._profile.scope_span_presets_hz
+            )
             if receiver is not None:
                 scope.receiver = receiver
             scope.span = span
@@ -3369,9 +3373,7 @@ class CivRuntime:
         ``[scope].span_presets_hz``, MOR-2258) via the shared
         ``_span_index_for_hz`` helper — the same lookup
         ``parse_scope_span_response`` (the 0x15 reply path) uses against
-        the module-level ``_SCOPE_SPAN_PRESETS_HZ`` constant as of
-        MOR-2258 (a follow-up threads that path onto this same
-        profile-declared list too), so the stream and a typed-getter
+        the same profile-declared list, so the stream and a typed-getter
         reply agree on what index a given Hz value maps to. No match ->
         publish nothing, and do not clear whatever the field last held:
         a non-matching span is either drift outside the declared presets
