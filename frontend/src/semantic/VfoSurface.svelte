@@ -776,7 +776,8 @@
             type="button" class="vfo-op" data-vfo-quick-split data-dual-action="quick-split"
             aria-label="Quick split"
             title={quickSplitReason} aria-describedby={reasonId('quick-split', quickSplitReason)}
-            disabled={relativeIdentityUnknown || !dualActions.quickSplit.operational || !onQuickSplit}
+            disabled={relativeIdentityUnknown || viewModel.split.status !== 'known'
+              || !dualActions.quickSplit.operational || !onQuickSplit}
             onclick={quickSplit}
           >
             Quick split
@@ -787,7 +788,8 @@
             type="button" class="vfo-op" data-vfo-quick-dual-watch data-dual-action="quick-dual-watch"
             aria-label="Quick dual watch"
             title={quickDualWatchReason} aria-describedby={reasonId('quick-dual-watch', quickDualWatchReason)}
-            disabled={relativeIdentityUnknown || !dualActions.quickDualWatch.operational || !onQuickDualWatch}
+            disabled={relativeIdentityUnknown || viewModel.dualWatch.status !== 'known'
+              || !dualActions.quickDualWatch.operational || !onQuickDualWatch}
             onclick={quickDualWatch}
           >
             Quick dual watch

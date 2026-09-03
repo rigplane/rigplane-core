@@ -1516,11 +1516,10 @@ describe('exactly one key authority on a partially declaring manifest (R9)', () 
  * MOR-1321 (S3a) — receiver-deck parity for the VFO ops.
  *
  * MOR-1313 put desktop-v2 on the v3 path and, with it, retired the legacy
- * `VfoOps` bridge from the deck: A=B, A↔B and the two composite quick triggers
- * left the flagship skin (A=B/A↔B survived only in the settings modal, which
- * the owner declined as parity). These assert the semantic deck carries them
- * again — end-to-end through the real RadioLayout mount, not just in the
- * surface's own unit tests.
+ * `VfoOps` bridge from the deck. These tests explicitly admit equalize/swap
+ * and prove that pair reaches the semantic deck end-to-end through the real
+ * RadioLayout mount. They separately prove both composite Quick actions stay
+ * absent without dedicated production reachability.
  */
 describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () => {
   const ADMITTED_OPS = ['equalize', 'swap'] as const;
