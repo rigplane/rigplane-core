@@ -29,7 +29,6 @@ from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.websocket import WS_OP_TEXT
 from test_web_command_batch_http import _post_json
 
-
 LEVELS = (
     ("set_af_level", "af_level", "AG"),
     ("set_rf_gain", "rf_gain", "RG"),
