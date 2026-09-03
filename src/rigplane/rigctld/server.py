@@ -132,22 +132,6 @@ def _mode_to_name(mode: object) -> str:
     return str(mode).upper()
 
 
-def _is_packet_mode_set(cmd: Any) -> bool:
-    """Return True for set_mode PKT* commands.
-
-    Used to hold poller writes a bit longer while radio applies DATA-mode
-    transitions (USB/LSB/RTTY -> PKT*).
-    """
-    try:
-        return (
-            getattr(cmd, "long_cmd", "") == "set_mode"
-            and bool(getattr(cmd, "args", ()))
-            and str(cmd.args[0]).upper().startswith("PKT")
-        )
-    except Exception:
-        return False
-
-
 class RigctldServer:
     """Asyncio TCP server implementing the hamlib NET rigctld protocol.
 

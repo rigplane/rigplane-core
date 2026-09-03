@@ -25,8 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RigctldServer.__init__`, the `self._poller` attribute, and the poller
   start/stop and `write_busy`/`hold_for` pacing sites that read it in
   `RigctldServer.stop`, `RigctldServer._on_client_done`,
-  `RigctldServer._wsjtx_compat_prewarm` and `RigctldServer._handle_client`.
-  Passing `_poller=` to `RigctldServer` now raises `TypeError`.
+  `RigctldServer._wsjtx_compat_prewarm` and `RigctldServer._handle_client`,
+  together with the module-level `_is_packet_mode_set` helper that gated the
+  packet-mode hold. Passing `_poller=` to `RigctldServer` now raises
+  `TypeError`.
 - **The `rigctld` `RadioPoller` is deleted.** Removed: `rigplane.rigctld.poller`
   (the module, its `RadioPoller` class, `_mode_to_hamlib_str`,
   `_get_mode_reader`, and `_STATS_LOG_INTERVAL`) and its `## RadioPoller`

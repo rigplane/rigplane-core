@@ -1,7 +1,6 @@
 """Extra coverage tests for rigctld/server.py.
 
 Covers:
-- _is_packet_mode_set(): edge cases — exception, non-PKT, PKT (lines 35-48)
 - circuit_breaker_state property: None and non-None (lines 92-96)
 - start() auto-init when protocol/handler is None (lines 104-122)
 - _accept_client wsjtx_compat prewarm first client (line 230)
@@ -22,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from rigplane.rigctld.contract import RigctldCommand, RigctldConfig, RigctldResponse
-from rigplane.rigctld.server import RigctldServer, _is_packet_mode_set
+from rigplane.rigctld.server import RigctldServer
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -122,57 +121,6 @@ async def test_start_aborts_before_listening_when_radio_not_ready() -> None:
         with pytest.raises(RuntimeError, match="startup aborted"):
             await srv.start()
     start_server.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# _is_packet_mode_set() — lines 35-48
-# ---------------------------------------------------------------------------
-
-
-class TestIsPacketModeSet:
-    def test_non_set_command_returns_false(self) -> None:
-        cmd = RigctldCommand(short_cmd="f", long_cmd="get_freq", is_set=False)
-        assert _is_packet_mode_set(cmd) is False
-
-    def test_set_mode_non_pkt_returns_false(self) -> None:
-        cmd = RigctldCommand(
-            short_cmd="M", long_cmd="set_mode", args=("USB",), is_set=True
-        )
-        assert _is_packet_mode_set(cmd) is False
-
-    def test_set_mode_pktusb_returns_true(self) -> None:
-        cmd = RigctldCommand(
-            short_cmd="M", long_cmd="set_mode", args=("PKTUSB",), is_set=True
-        )
-        assert _is_packet_mode_set(cmd) is True
-
-    def test_set_mode_pktlsb_returns_true(self) -> None:
-        cmd = RigctldCommand(
-            short_cmd="M", long_cmd="set_mode", args=("PKTLSB",), is_set=True
-        )
-        assert _is_packet_mode_set(cmd) is True
-
-    def test_set_mode_pktrtty_returns_true(self) -> None:
-        cmd = RigctldCommand(
-            short_cmd="M", long_cmd="set_mode", args=("PKTRTTY",), is_set=True
-        )
-        assert _is_packet_mode_set(cmd) is True
-
-    def test_non_set_mode_command_returns_false(self) -> None:
-        cmd = RigctldCommand(
-            short_cmd="F", long_cmd="set_freq", args=("14074000",), is_set=True
-        )
-        assert _is_packet_mode_set(cmd) is False
-
-    def test_exception_in_getattr_returns_false(self) -> None:
-        """Any exception during attribute access must be suppressed → False."""
-        bad = MagicMock()
-        bad.long_cmd = "set_mode"
-        # Use MagicMock for args so we can set __getitem__ to raise
-        mock_args = MagicMock()
-        mock_args.__getitem__ = MagicMock(side_effect=TypeError("boom"))
-        bad.args = mock_args
-        assert _is_packet_mode_set(bad) is False
 
 
 # ---------------------------------------------------------------------------
