@@ -20,6 +20,7 @@ from rigplane.core.acquisition_scheduler import (
     MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
+    derive_tx_active,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -3550,3 +3551,75 @@ async def test_freshness_driving_survives_the_first_seat_stopping(
             web.cancel()
             rigctld.cancel()
             await asyncio.gather(web, rigctld, return_exceptions=True)
+
+
+def _tx_only_swr_profile(swr: FieldPath) -> RadioAcquisitionProfile:
+    """One reconciliation-only ``tx_only`` global meter, no poll cadence."""
+
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=(FieldCapability(path=swr, command_response_observable=True),),
+        field_policies={swr: AcquisitionPolicy(tx_only=True)},
+        default_policy=AcquisitionPolicy(),
+    )
+
+
+@pytest.mark.parametrize("tick_first", [True, False])
+@pytest.mark.parametrize(
+    ("transmitting", "expected_dispatchable"),
+    [(False, 0), (True, 1)],
+)
+def test_both_tx_active_writers_agree_over_one_store(
+    tick_first: bool,
+    transmitting: bool,
+    expected_dispatchable: int,
+) -> None:
+    """The tick and rigctld's drain cannot leave the cache in disagreement.
+
+    ``AcquisitionScheduler.due_requests`` assigns the cached transmit fact
+    before the dedup that makes request emission idempotent, so whichever
+    writer runs last decides it. Both writers now derive that fact with
+    ``derive_tx_active`` over the same canonical field, so neither ordering
+    changes the dispatch gate.
+    """
+
+    clock = FreshnessClock(start=100.0)
+    store = StateStore(freshness_clock=clock)
+    swr = FieldPath.global_("meters", "swr")
+    scheduler = AcquisitionScheduler(
+        profile=_tx_only_swr_profile(swr), clock=FreshnessClock(start=100.0)
+    )
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+
+    store.apply(
+        _observation(
+            FieldPath.global_("tx_state", "ptt"),
+            transmitting,
+            at=100.0,
+            max_age=1000.0,
+        )
+    )
+    queued = scheduler.ensure_fresh(
+        swr,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+    assert queued.status is AcquisitionStatus.QUEUED
+
+    writers = [
+        lambda: service.tick(now=100.0),
+        lambda: scheduler.note_tx_active(derive_tx_active(store)),
+    ]
+    if not tick_first:
+        writers.reverse()
+
+    # After EVERY writer, not only after the last one: a reading that only
+    # holds once both have run cannot tell "both agree" from "the second one
+    # corrected the first".
+    gate_after_each = []
+    for writer in writers:
+        writer()
+        gate_after_each.append(len(scheduler.dispatchable_requests()))
+
+    assert gate_after_each == [expected_dispatchable, expected_dispatchable]
