@@ -65,6 +65,7 @@ from rigplane.backends.yaesu_cat import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTimeoutError
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core.tx_observation import TxStateReading
+from rigplane.exceptions import CommandError
 from rigplane.radio import IcomRadio
 
 # ---------------------------------------------------------------------------
@@ -182,6 +183,13 @@ class ScriptedCivLink:
             reply = civ_transmit_state_reply(self.answer, self.radio_addr)
             if reply is not None:
                 self._replies.put_nowait(reply)
+
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("Serial CI-V write is no longer current.")
+        await self.send(frame)
 
     async def receive(self, timeout: float | None = None) -> bytes | None:
         if not self.connected:
