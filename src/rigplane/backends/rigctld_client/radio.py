@@ -26,6 +26,12 @@ from ...core.state_pipeline_contracts import (
 from ...core.tx_observation import TxStateReading
 from ...radio_state import RadioState
 from ...runtime.callable_support import supports_explicit_callable
+from ...runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+)
 from .transport import RigctldTransport
 
 if TYPE_CHECKING:
@@ -773,7 +779,34 @@ class RigctldClientRadio:
         return ptt
 
     async def set_ptt(self, on: bool) -> None:
-        await self._transport.command(f"T {1 if on else 0}")
+        await self._set_ptt(on)
+
+    async def _set_ptt(
+        self,
+        on: bool,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        urgent: bool = False,
+    ) -> None:
+        await self._transport.command(
+            f"T {1 if on else 0}", is_current=is_current, urgent=urgent
+        )
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+            on = True
+        elif operation is ActuationOperation.FORCE_RECEIVE:
+            on = False
+        else:
+            return ActuationResult.REJECTED
+        await self._set_ptt(on, is_current=is_current, urgent=not on)
+        return ActuationResult.ACCEPTED
 
     async def read_transmit_state(self) -> TxStateReading:
         """One solicited transmit-state observation.

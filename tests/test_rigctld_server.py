@@ -581,6 +581,83 @@ class TestLifecycle:
             state_model_service=model_service,
         )
 
+    async def test_combined_seats_drive_the_shared_service_once(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """Both seats over one radio produce one ticking freshness loop.
+
+        Reproduces combined mode's shape (``rigplane web --rigctld``). The
+        radio carries the store it owns, plus the services the web seat
+        attaches to it in
+        ``web/server.py: WebServer._bootstrap_state_acquisition`` -- among
+        them the freshness service and its scheduler. The web seat's
+        ``web-state-freshness`` task
+        (``web/web_startup.py: start_web_server``) runs over that service;
+        ``RigctldServer.start`` then takes its reuse branch and starts
+        ``rigctld-state-freshness`` over the same instance.
+
+        The web HTTP listener is not started: the web seat's whole
+        contribution to *this defect* is that one task.
+
+        The discriminator is the gap between consecutive ticks: one loop
+        leaves at least ``interval_seconds`` between them, two loops started
+        back to back tick in closely spaced pairs.
+        """
+
+        interval = 0.02
+        store = StateStore()
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        scheduler = AcquisitionScheduler(profile=_acquisition_profile(freq))
+        model_service = RadioStateModelService(store=store, scheduler=scheduler)
+        freshness_service = StateFreshnessService(
+            store=store, scheduler=scheduler, interval_seconds=interval
+        )
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile",
+                (),
+                {"state_acquisition": _acquisition_profile(freq)},
+            )()
+        )
+        radio.state_store = store
+        radio.state_model_service = model_service
+        radio._state_freshness_service = freshness_service
+        radio._acquisition_scheduler = scheduler
+        fake_server = _FakeAsyncServer()
+
+        stamps: list[float] = []
+        real_tick = StateFreshnessService.tick
+
+        def _tick(service: StateFreshnessService, *, now: float | None = None) -> Any:
+            stamps.append(time.monotonic())
+            return real_tick(service, now=now)
+
+        with (
+            patch(
+                "rigplane.rigctld.server.asyncio.start_server",
+                new=AsyncMock(return_value=fake_server),
+            ),
+            patch("rigplane.rigctld.handler.RigctldHandler"),
+            patch.object(StateFreshnessService, "tick", _tick),
+        ):
+            web_task = asyncio.get_running_loop().create_task(
+                freshness_service.run(), name="web-state-freshness"
+            )
+            srv = RigctldServer(radio, cfg)
+            try:
+                await srv.start()
+                assert srv._state_freshness_service is freshness_service
+                assert srv._state_store_freshness_task is not None
+                await asyncio.sleep(interval * 12)
+            finally:
+                await srv.stop()
+                web_task.cancel()
+                await asyncio.gather(web_task, return_exceptions=True)
+
+        assert len(stamps) >= 3
+        gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:])]
+        assert min(gaps) >= interval * 0.9, f"ticks overlapped: gaps={gaps}"
+
     async def test_standalone_fallback_store_begin_and_detach_each_advance_once(
         self, cfg: RigctldConfig
     ) -> None:

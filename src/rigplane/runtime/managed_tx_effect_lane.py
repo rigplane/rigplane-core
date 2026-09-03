@@ -33,7 +33,11 @@ class ManagedTxActuator(Protocol):
     """Execute one runtime-tokened semantic operation."""
 
     async def actuate(
-        self, token: EffectToken, operation: _Operation
+        self,
+        token: EffectToken,
+        operation: _Operation,
+        *,
+        is_current: Callable[[], bool],
     ) -> ActuationResult: ...
 
 
@@ -49,6 +53,7 @@ class _Claim:
     operation: _Operation
     deadline: float
     result: asyncio.Future[_Outcome]
+    is_current: Callable[[], bool] | None = None
     driver: asyncio.Task[None] | None = None
     provider: asyncio.Task[ActuationResult] | None = None
     started: bool = False
@@ -77,9 +82,15 @@ class ManagedTxEffectLane:
         self._isolation: tuple[int, asyncio.Task[None]] | None = None
 
     async def settle(
-        self, effect: ManagedTxEffect, *, deadline_monotonic: float
+        self,
+        effect: ManagedTxEffect,
+        *,
+        deadline_monotonic: float,
+        is_current: Callable[[], bool] | None = None,
     ) -> ActuationSettled | None:
-        outcome = await self._settle(effect.token, effect.operation, deadline_monotonic)
+        outcome = await self._settle(
+            effect.token, effect.operation, deadline_monotonic, is_current
+        )
         if outcome is None:
             return None
         return ActuationSettled(
@@ -92,8 +103,9 @@ class ManagedTxEffectLane:
         operation: AbortOperation,
         *,
         deadline_monotonic: float,
+        is_current: Callable[[], bool] | None = None,
     ) -> AbortFailed | None:
-        outcome = await self._settle(token, operation, deadline_monotonic)
+        outcome = await self._settle(token, operation, deadline_monotonic, is_current)
         if outcome is None:
             return None
         if outcome.result is ActuationResult.ACCEPTED:
@@ -101,9 +113,13 @@ class ManagedTxEffectLane:
         return AbortFailed(token, operation, outcome.error or outcome.result.value)
 
     async def _settle(
-        self, token: EffectToken, operation: _Operation, deadline: float
+        self,
+        token: EffectToken,
+        operation: _Operation,
+        deadline: float,
+        is_current: Callable[[], bool] | None,
     ) -> _Outcome | None:
-        claim = await self._claim(token, operation, deadline)
+        claim = await self._claim(token, operation, deadline, is_current)
         if claim is None:
             return None
         try:
@@ -112,7 +128,11 @@ class ManagedTxEffectLane:
             return await self._cancel_waiter(claim)
 
     async def _claim(
-        self, token: EffectToken, operation: _Operation, deadline: float
+        self,
+        token: EffectToken,
+        operation: _Operation,
+        deadline: float,
+        is_current: Callable[[], bool] | None,
     ) -> _Claim | None:
         async with self._lock:
             scope = (token.provider_generation, token.effect_epoch)
@@ -134,7 +154,7 @@ class ManagedTxEffectLane:
                 return None
             self._slots[slot] = (token, operation)
             loop = asyncio.get_running_loop()
-            claim = _Claim(token, operation, deadline, loop.create_future())
+            claim = _Claim(token, operation, deadline, loop.create_future(), is_current)
             self._claims[(token, operation)] = claim
             if operation is ActuationOperation.FORCE_RECEIVE:
                 active_ons = tuple(
@@ -196,7 +216,11 @@ class ManagedTxEffectLane:
             isolation_pending = any(not task.done() for task in claim.isolation)
             claim.started = True
             claim.provider = asyncio.create_task(
-                self._actuator.actuate(claim.token, claim.operation)
+                self._actuator.actuate(
+                    claim.token,
+                    claim.operation,
+                    is_current=lambda: self._is_current(claim),
+                )
             )
             provider = claim.provider
         done, _ = await asyncio.wait(
@@ -242,6 +266,14 @@ class ManagedTxEffectLane:
                 claim.operation in _ON_OPERATIONS
                 and result is ActuationResult.UNCERTAIN
             ),
+        )
+
+    def _is_current(self, claim: _Claim) -> bool:
+        return (
+            self._claims.get((claim.token, claim.operation)) is claim
+            and not claim.result.done()
+            and self._clock() < claim.deadline
+            and (claim.is_current is None or claim.is_current())
         )
 
     async def _finish(

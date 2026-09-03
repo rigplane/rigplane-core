@@ -382,6 +382,25 @@ describe('the glass bezel keeps its own CSS after the chassis class it used to w
     const strips = declarationsFor('.peer-split-glass :global(.channel-strips.channel-strips)');
     expect(strips['grid-template-columns']).toBe('subgrid');
   });
+
+  // This file's `:global(.scaled-stage-holder)` rule gives the holder
+  // `flex: 1` so it claims the flex line instead of content-sizing to zero
+  // (see that rule's own comment). `flex` applies to a flex ITEM only, so
+  // the rule is load-bearing only while the holder is a DIRECT child of
+  // `.peer-split-holder`. The selector is a descendant combinator: it would
+  // keep matching, while silently doing nothing, if `ScaledStage` ever grew
+  // an element ABOVE its holder. MOR-2270 added a wrapper INSIDE the
+  // holder, which leaves this intact — this pin is what makes the next
+  // restructuring say so instead of collapsing the glass quietly.
+  it('keeps ScaledStage\'s holder a direct child of .peer-split-holder', () => {
+    render();
+    const outer = q<HTMLElement>('.peer-split-holder');
+    const holder = q<HTMLElement>('.scaled-stage-holder');
+    expect(outer).not.toBeNull();
+    expect(holder).not.toBeNull();
+    expect(holder!.parentElement).toBe(outer);
+    expect(declarationsFor('.peer-split-holder :global(.scaled-stage-holder)').flex).toBe('1');
+  });
 });
 
 describe('the glass forwards the shell-resolved scale floor to its stage (MOR-2259)', () => {

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+import contextlib
+import time
+from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -35,7 +38,12 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
+from rigplane.core.state_store import (
+    FreshnessClock,
+    FreshnessState,
+    SnapshotDelta,
+    StateStore,
+)
 from rigplane.commands.command_map import CommandMap
 from rigplane.profiles import get_radio_profile
 from rigplane.runtime._state_queries import acquisition_query_from_wire_tuple
@@ -3399,3 +3407,96 @@ async def test_ic7300_executor_preserves_dedupe_for_plain_profile_route() -> Non
         assert power not in result.sent_paths
 
     assert sent == [acquisition_query(0x16, sub=0x44)]
+
+
+@contextlib.contextmanager
+def _recorded_freshness_ticks() -> Iterator[list[float]]:
+    """Record a monotonic timestamp for every ``StateFreshnessService.tick``."""
+
+    stamps: list[float] = []
+    real_tick = StateFreshnessService.tick
+
+    def _tick(
+        service: StateFreshnessService, *, now: float | None = None
+    ) -> SnapshotDelta:
+        stamps.append(time.monotonic())
+        return real_tick(service, now=now)
+
+    with patch.object(StateFreshnessService, "tick", _tick):
+        yield stamps
+
+
+@pytest.mark.asyncio
+async def test_second_run_does_not_add_a_second_ticking_loop() -> None:
+    """Two concurrent ``run()`` calls on one service tick as one loop.
+
+    Combined mode (``rigplane web --rigctld``) shares a single
+    ``StateFreshnessService`` between the two seats and each seat starts its
+    own driver task over it (``web/web_startup.py: start_web_server`` and
+    ``rigctld/server.py: RigctldServer._start_state_freshness_task``).
+
+    The discriminator is the gap between consecutive ticks, not their count.
+    ``asyncio.sleep`` does not return early, so one loop leaves at least
+    ``interval_seconds`` between ticks however loaded the host is; two loops
+    started back to back share a sleep phase and tick in closely spaced
+    pairs, which drives the minimum gap towards zero.
+    """
+
+    interval = 0.02
+    service = StateFreshnessService(store=StateStore(), interval_seconds=interval)
+
+    with _recorded_freshness_ticks() as stamps:
+        first = asyncio.create_task(service.run(), name="web-state-freshness")
+        second = asyncio.create_task(service.run(), name="rigctld-state-freshness")
+        try:
+            await asyncio.sleep(interval * 12)
+        finally:
+            first.cancel()
+            second.cancel()
+            await asyncio.gather(first, second, return_exceptions=True)
+
+    assert len(stamps) >= 3
+    gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:])]
+    assert min(gaps) >= interval * 0.9, f"ticks overlapped: gaps={gaps}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cancel_web_first", [True, False], ids=["web-first", "rigctld-first"]
+)
+async def test_freshness_driving_survives_the_first_seat_stopping(
+    cancel_web_first: bool,
+) -> None:
+    """Ticking outlives the first cancellation, in either order.
+
+    One of the two tasks holds the loop and the other waits for it.
+    Cancelling in both orders covers both roles without the test having to
+    depend on which task took which. Whichever goes first, the survivor
+    keeps ticking; once both are cancelled, nothing ticks.
+    """
+
+    interval = 0.02
+    service = StateFreshnessService(store=StateStore(), interval_seconds=interval)
+
+    with _recorded_freshness_ticks() as stamps:
+        web = asyncio.create_task(service.run(), name="web-state-freshness")
+        rigctld = asyncio.create_task(service.run(), name="rigctld-state-freshness")
+        first, second = (web, rigctld) if cancel_web_first else (rigctld, web)
+        try:
+            await asyncio.sleep(interval * 4)
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+
+            after_first_stop = len(stamps)
+            await asyncio.sleep(interval * 4)
+            assert len(stamps) > after_first_stop, "ticking stopped with a task live"
+
+            second.cancel()
+            await asyncio.gather(second, return_exceptions=True)
+            after_both_stopped = len(stamps)
+            await asyncio.sleep(interval * 4)
+            assert len(stamps) == after_both_stopped, "ticking outlived both tasks"
+        finally:
+            web.cancel()
+            rigctld.cancel()
+            await asyncio.gather(web, rigctld, return_exceptions=True)

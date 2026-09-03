@@ -1609,6 +1609,7 @@ class StateFreshnessService:
     PRIME_REDERIVE_INTERVAL_SECONDS: float = 30.0
 
     __slots__ = (
+        "_driver_lock",
         "_interval_seconds",
         "_next_prime_monotonic",
         "_on_delta",
@@ -1632,6 +1633,7 @@ class StateFreshnessService:
         # -inf so the first tick always primes immediately, regardless of
         # what monotonic clock value the caller starts at.
         self._next_prime_monotonic = float("-inf")
+        self._driver_lock: asyncio.Lock = asyncio.Lock()
 
     def tick(self, *, now: float | None = None) -> SnapshotDelta:
         """Advance stale fields once and queue reconciliation through scheduler.
@@ -1709,12 +1711,26 @@ class StateFreshnessService:
         self._next_prime_monotonic = now + interval
 
     async def run(self) -> None:
-        """Run the periodic freshness loop until cancelled by the host."""
+        """Run the periodic freshness loop until cancelled by the host.
+
+        At most one loop ticks per instance. In combined mode
+        (``rigplane web --rigctld``) both seats are built over one radio and
+        share this service through it, then each starts its own driver task
+        over it (``web/web_startup.py: start_web_server`` and
+        ``rigctld/server.py: RigctldServer._start_state_freshness_task``,
+        whose guard sees only its own server instance). A concurrent second
+        call waits on the driver lock instead of ticking, and takes the loop
+        over if the driving call ends first, so cancelling one seat's task
+        does not stop the surviving seat's decay. Pinned by
+        ``test_second_run_does_not_add_a_second_ticking_loop`` and
+        ``test_freshness_driving_survives_the_first_seat_stopping``.
+        """
 
         try:
-            while True:
-                await asyncio.sleep(self._interval_seconds)
-                self.tick()
+            async with self._driver_lock:
+                while True:
+                    await asyncio.sleep(self._interval_seconds)
+                    self.tick()
         except asyncio.CancelledError:
             pass
 
