@@ -12,7 +12,6 @@
  */
 import type { Component } from 'svelte';
 import { isValidLanguageId as isValidProductId } from '../languages/contract';
-import type { GroupId } from '../groups/contract';
 
 /** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical;
  *  `txAux` added by MOR-1265, `meters` by MOR-1273, `rxAudio` by MOR-1279,
@@ -52,15 +51,20 @@ export interface LayoutZone {
   readonly id: string;
   readonly surfaces: readonly SemanticSurfaceName[];
   /**
-   * MOR-2253 slice 1 — the `InstrumentGroup` (`../groups/contract.ts`)
-   * mounted in this zone, resolved by id rather than importing the group
-   * (the manifest stays a declaration, never a value pulled in from another
-   * presentation module). Optional: most zones mount bare semantic surfaces
-   * with no group. `validateZones` below checks only `id`/`surfaces` — this
-   * field is not exact-key-checked (no `hasExactPlainKeys` call touches a
-   * zone object), so adding it needed no validator change.
+   * MOR-2253 slice 1 — the id of the `InstrumentGroup` (`../groups/
+   * contract.ts`) mounted in this zone. A plain `string`, not an imported
+   * `GroupId` type alias: `presentation/workspace/__tests__/purity.isolated
+   * .test.ts` and its two siblings (MOR-1077/78/79) pin this file's own
+   * import closure by hand, and even a type-only import of `../groups/
+   * contract` would pull that module into it — a real edge this manifest
+   * contract does not need, since the id is only ever compared as a string
+   * (`getGroup` in `../groups/contract.ts` also takes a bare `string`).
+   * Optional: most zones mount bare semantic surfaces with no group.
+   * `validateZones` below checks only `id`/`surfaces` — this field is not
+   * exact-key-checked (no `hasExactPlainKeys` call touches a zone object),
+   * so adding it needed no validator change.
    */
-  readonly group?: GroupId;
+  readonly group?: string;
 }
 
 /**

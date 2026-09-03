@@ -34,11 +34,6 @@ export interface InstrumentGroup {
   readonly scaling: GroupScaling;
 }
 
-/** A registered group's id — kebab-case, same naming policy as a layout id.
- *  Used by `../layouts/contract.ts: LayoutZone.group` to reference a group
- *  by id rather than importing it. */
-export type GroupId = string;
-
 const TOP_LEVEL_KEYS: readonly PropertyKey[] = ['schemaVersion', 'id', 'canvas', 'scaling'];
 const CANVAS_KEYS: readonly PropertyKey[] = ['w', 'h'];
 const FIXED_NATIVE_SCALING_KEYS: readonly PropertyKey[] = ['mode', 'minScale'];
