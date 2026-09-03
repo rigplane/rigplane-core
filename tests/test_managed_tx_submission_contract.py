@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import inspect
 from pathlib import Path
 
@@ -130,6 +131,10 @@ async def test_ignored_closed_start_task_is_owned_but_await_still_raises() -> No
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert ignored.done() and not unhandled
+        del ignored
+        gc.collect()
+        await asyncio.sleep(0)
+        assert not unhandled
 
         awaited = managed.start_ptt_submission(True, "awaited")
         with pytest.raises(RuntimeError, match="closed") as raised:

@@ -170,25 +170,36 @@ class ManagedTxAuthority:
         await submission.wait_settlement()
         return submission.outcome
 
-    def submit_ptt(
+    async def submit_ptt(
         self,
         on: bool,
         owner: str,
         *,
         ready: asyncio.Future[Any] | None = None,
-        _registered: asyncio.Future[None] | None = None,
+    ) -> ManagedTxSubmission:
+        """Return admission after starting the authority-owned submission."""
+        return await self.start_ptt_submission(on, owner, ready=ready)
+
+    def start_ptt_submission(
+        self,
+        on: bool,
+        owner: str,
+        *,
+        ready: asyncio.Future[Any] | None = None,
     ) -> asyncio.Task[ManagedTxSubmission]:
-        """Start an owned submission and acknowledge its pending membership."""
-        if _registered is not None:
-            if not isinstance(_registered, asyncio.Future):
-                raise TypeError("PTT registration acknowledgement must be a Future")
-            if _registered.done():
-                raise ValueError("PTT registration acknowledgement must be pending")
+        """Start a managed-ingress submission with membership installed.
+
+        Unlike :meth:`submit_ptt`, this synchronous seam guarantees that the
+        authority's canonical fence membership exists before it returns.
+        """
+        started = asyncio.get_running_loop().create_future()
+        worker, admitted = self._begin_ptt_operation(
+            on, owner, ready=ready, _started=started
+        )
 
         async def submit() -> ManagedTxSubmission:
-            worker, admitted = self._begin_ptt_operation(on, owner, ready=ready)
-            if _registered is not None:
-                _registered.set_result(None)
+            if not started.done():
+                started.set_result(None)
             try:
                 transition = await asyncio.shield(admitted)
             except asyncio.CancelledError:
@@ -198,17 +209,14 @@ class ManagedTxAuthority:
             return ManagedTxSubmission(transition, worker)
 
         submission = asyncio.create_task(submit())
-        if _registered is not None:
 
-            def settle_unstarted(task: asyncio.Task[ManagedTxSubmission]) -> None:
-                if _registered.done():
-                    return
-                if task.cancelled():
-                    _registered.cancel()
-                elif error := task.exception():
-                    _registered.set_exception(error)
+        def own_submission(task: asyncio.Task[ManagedTxSubmission]) -> None:
+            if task.cancelled():
+                worker.cancel()
+            else:
+                task.exception()
 
-            submission.add_done_callback(settle_unstarted)
+        submission.add_done_callback(own_submission)
         return submission
 
     async def _start_ptt_operation(
@@ -230,7 +238,12 @@ class ManagedTxAuthority:
         return worker
 
     def _begin_ptt_operation(
-        self, on: bool, owner: str, *, ready: asyncio.Future[Any] | None = None
+        self,
+        on: bool,
+        owner: str,
+        *,
+        ready: asyncio.Future[Any] | None = None,
+        _started: asyncio.Future[None] | None = None,
     ) -> tuple[_SubmissionCompletion, asyncio.Future[ManagedTxTransition]]:
         """Build the one cancellable operation and its admission signal."""
         if type(on) is not bool or type(owner) is not str:
@@ -250,6 +263,8 @@ class ManagedTxAuthority:
         async def run() -> tuple[ManagedTxTransition, ActuationSettled | None]:
             execution: asyncio.Task[ActuationSettled | None] | None = None
             try:
+                if _started is not None:
+                    await asyncio.wait((_started,))
                 if on and ready is not None:
                     await asyncio.wait((ready,))
                 async with self._lock:
