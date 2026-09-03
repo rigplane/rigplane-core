@@ -170,3 +170,117 @@ async def test_held_cleanup_does_not_starve_other_cancellations() -> None:
         result = await cleanup
     assert len(result.failures) == 1
     assert str(result.failures[0].error) == "cleanup failed"
+
+
+@pytest.mark.asyncio
+async def test_cancel_scope_revokes_equal_scope_before_cleanup_and_keeps_others() -> None:
+    fence = TxAbortFence()
+    owner = "operator-" + "same"
+    equal_owner = "".join(("operator-", "same"))
+    assert owner == equal_owner and owner is not equal_owner
+    selected, other, unscoped = fence.issue(), fence.issue(), fence.issue()
+    calls: list[str] = []
+    fence.register(selected, lambda: calls.append("selected"), scope=owner)
+    fence.register(other, lambda: calls.append("other"), scope="another-owner")
+    fence.register(unscoped, lambda: calls.append("unscoped"))
+
+    cleanup = fence.cancel_scope(equal_owner)
+    try:
+        assert fence.remove(selected) is False
+        assert fence.remove(other) is True
+        assert fence.remove(unscoped) is True
+        assert fence.is_current(selected)
+        assert fence.epoch == 0
+        assert calls == []
+    finally:
+        result = await cleanup
+    assert result.failures == ()
+    assert calls == ["selected"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_scope_cleanup_does_not_rescan_new_same_scope_registration() -> None:
+    fence = TxAbortFence()
+    old = fence.issue()
+    calls: list[str] = []
+    fence.register(old, lambda: calls.append("old"), scope="operator")
+
+    cleanup = fence.cancel_scope("operator")
+    try:
+        new = fence.issue()
+        fence.register(new, lambda: calls.append("new"), scope="operator")
+    finally:
+        result = await cleanup
+
+    assert result.failures == ()
+    assert calls == ["old"]
+    assert fence.remove(new) is True
+
+
+def test_cancel_scope_rejects_non_builtin_str_without_equality_probe() -> None:
+    class DangerousStr(str):
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("scope equality must not run")
+
+    fence = TxAbortFence()
+    unscoped = fence.issue()
+    fence.register(unscoped, lambda: None, scope=None)
+    for scope in (None, object(), DangerousStr("operator")):
+        with pytest.raises(TypeError):
+            fence.cancel_scope(scope)  # type: ignore[arg-type]
+    for scope in (object(), DangerousStr("operator")):
+        token = fence.issue()
+        with pytest.raises(TypeError):
+            fence.register(token, lambda: None, scope=scope)  # type: ignore[arg-type]
+        assert fence.remove(token) is False
+    assert fence.remove(unscoped) is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_scope_reports_cancellation_and_callback_failures() -> None:
+    fence = TxAbortFence()
+    cancellation_error, raising = fence.issue(), fence.issue()
+
+    def raise_cancellation_error() -> None:
+        raise asyncio.CancelledError()
+
+    async def fail() -> None:
+        raise RuntimeError("cleanup failed")
+
+    fence.register(cancellation_error, raise_cancellation_error, scope="operator")
+    fence.register(raising, fail, scope="operator")
+    result = await fence.cancel_scope("operator")
+
+    assert fence.remove(cancellation_error) is False
+    assert fence.remove(raising) is False
+    assert fence.is_current(cancellation_error) and fence.is_current(raising)
+    assert fence.epoch == 0
+    assert [type(failure.error) for failure in result.failures] == [
+        asyncio.CancelledError,
+        RuntimeError,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_force_off_invalidates_scoped_and_unscoped_callbacks_before_cleanup() -> (
+    None
+):
+    fence = TxAbortFence()
+    scoped, unscoped = fence.issue(), fence.issue()
+    calls: list[str] = []
+    fence.register(scoped, lambda: calls.append("scoped"), scope="operator")
+    fence.register(unscoped, lambda: calls.append("unscoped"), scope=None)
+
+    cleanup = fence.force_off()
+    try:
+        assert fence.epoch == 1
+        assert not fence.is_current(scoped)
+        assert not fence.is_current(unscoped)
+        assert fence.remove(scoped) is False
+        assert fence.remove(unscoped) is False
+        assert calls == []
+    finally:
+        result = await cleanup
+
+    assert result.failures == ()
+    assert calls == ["scoped", "unscoped"]
