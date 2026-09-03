@@ -85,7 +85,7 @@ Do not regenerate this set on macOS for the pre-blocking re-pin — that reprodu
 
 ```bash
 cd frontend
-npm run test:e2e:visual -- --update-snapshots
+npm run test:e2e:visual -- --update-snapshots=all
 git status fixtures/approved-baselines/
 # Open each changed PNG — confirm the diff is the change you intended.
 git add frontend/fixtures/approved-baselines/
