@@ -597,6 +597,7 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
         "set_af_level",
         "set_rf_gain",
         "set_squelch",
+        "set_att",
     }
     descriptor = command_descriptors()["set_repeater_shift"]
     assert descriptor.tx_policy is DescriptorTxPolicy.TX_SAFE
@@ -605,6 +606,45 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
     )
     assert policy_field.default is MISSING
     assert "set_repeater_shift" in ControlHandler._COMMANDS  # noqa: SLF001
+    attenuator = command_descriptors()["set_att"]
+    assert attenuator.name == "set_att"
+    assert attenuator.method_name == "set_attenuator_level"
+    assert attenuator.argument_names == ("db", "receiver")
+    assert attenuator.queue_policy == "coalesced"
+    assert attenuator.receiver_aware
+    assert attenuator.public_names == ("set_att", "set_attenuator")
+    assert command_descriptors()["set_squelch"].public_names == (
+        "set_sql",
+        "set_squelch",
+    )
+    assert "set_att" in ControlHandler._COMMANDS  # noqa: SLF001
+    assert "set_attenuator" in ControlHandler._COMMANDS  # noqa: SLF001
+    assert "set_attenuator_level" not in ControlHandler._COMMANDS  # noqa: SLF001
+    assert "set_preamp" in ControlHandler._COMMANDS  # noqa: SLF001
     assert not hasattr(runtime_types, "SetRepeaterShift")
     assert not hasattr(_poller_types, "SetRepeaterShift")
     assert not hasattr(radio_poller, "SetRepeaterShift")
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_db"),
+    [
+        ({"db": 20, "level": 3, "value": 1, "receiver": 1}, 3),
+        ({"level": 6, "value": 1}, 6),
+        ({"db": 12, "value": 1}, 12),
+        ({"value": 1}, 0),
+        ({}, 0),
+    ],
+    ids=("level-wins", "level-only", "db-only", "value-is-not-an-alias", "default"),
+)
+def test_att_helper_uses_public_precedence_through_canonical_binding(
+    params: dict[str, int], expected_db: int
+) -> None:
+    from rigplane.core.command_service import command_intent_from_request
+
+    intent = command_intent_from_request("set_att", params, source="public_api")
+
+    assert intent.name == "set_attenuator_level"
+    assert intent.params["db"] == expected_db
+    assert intent.params["att"] == expected_db
+    assert intent.params["receiver"] == params.get("receiver", 0)
