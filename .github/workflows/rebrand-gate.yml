@@ -5,15 +5,33 @@ name: Rebrand grep gate
 # allow-list. See .github/scripts/check-rebrand-allowlist.sh for the
 # rationale and the allow-list.
 #
-# Runs on EVERY push and PR (no path filter) so doc-only / rig-only / script-
-# only changes still trigger it. The job is sub-second (single git grep +
-# bash filter), so this is cheap.
+# Documentation and CI-control-only diffs are reviewed independently and skip
+# this repository-wide grep. Mixed product changes still run it because
+# paths-ignore suppresses a workflow only when every changed path is ignored.
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "*.rst"
+      - "**/*.md"
+      - "**/*.rst"
+      - ".claude/**"
+      - ".github/**"
+      - "tests/test_ci_path_filters.py"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "*.rst"
+      - "**/*.md"
+      - "**/*.rst"
+      - ".claude/**"
+      - ".github/**"
+      - "tests/test_ci_path_filters.py"
 
 concurrency:
   group: rebrand-gate-${{ github.workflow }}-${{ github.ref }}

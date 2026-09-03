@@ -124,15 +124,23 @@ gh workflow run focused.yml --ref main \
 ```
 
 This focused run is development evidence only. It never substitutes for the
-final Ready PR's natural required checks.
+final Ready PR's applicable required checks.
 
-The natural quick run classifies changed paths before installing dependencies:
-backend/core, frontend, and CI controls are separate. Pure frontend changes do
-not run backend suites; `src/rigplane/web/**` selects both sides of the boundary;
-CI-only changes under `.github/` run only workflow parser, injection/path
-contract, and control-compilation checks. The separate pixel-diff workflow is
-selected only by product files under `frontend/**`, not by edits to its own
-workflow definition.
+The natural quick workflow classifies changed paths on a GitHub-hosted runner
+before allocating the Mac mini: backend/core, frontend, CI controls, and
+documentation-only are separate. Pure frontend changes do not run backend
+suites; `src/rigplane/web/**` selects both sides of the boundary; CI-only
+changes under `.github/` run only workflow parser, injection/path contract, and
+control-compilation checks. The separate pixel-diff workflow is selected only
+by product files under `frontend/**`, not Markdown/RST or its own definition.
+
+If every changed path is documentation or documentation metadata, the required
+`quick` job is server-side skipped after classification. It allocates no Mac
+mini and runs no citation, link, Markdown, product, visual, or full checks;
+independent exact-head review is the substantive gate. Mixed documentation and
+code runs the normal checks selected by the code paths. A recent six-run
+docs-only sample executed 61,835 test cases (62,491 including skipped cases);
+the same shape under this contract executes zero product test cases.
 
 Before merging a non-trivial PR:
 

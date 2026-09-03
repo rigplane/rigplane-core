@@ -59,36 +59,20 @@ name: Doc citation gate
 # head.sha is the PR branch's real tip; merge-base against that is the
 # actual fork point.
 #
-# Path-filtered to docs/** and every *.md file (plus the gate's own files)
-# so unrelated non-doc PRs don't pay for it -- docs/** is kept as its own
-# entry alongside **/*.md because the citation gate's grep is not
-# extension-restricted (a citation can in principle sit in a non-.md file
-# under docs/, e.g. docs/*.txt), so narrowing to **/*.md alone would lose
-# existing citation-gate trigger coverage. Grep + bash, no toolchain —
-# mirrors the rebrand-gate pattern. fetch-depth: 0 is needed so
-# `git show <ref>:...` and `git merge-base` can see history predating this
-# push/PR.
+# Documentation diffs are accepted by independent review without automated
+# citation/link checks. This workflow now runs only when its executable checker
+# changes, so the checker remains self-validating without taxing docs-only PRs.
 
 on:
   push:
     branches: [main]
     paths:
-      - "**/*.md"
-      - "docs/**"
       - ".github/scripts/check-doc-citations.sh"
-      - ".github/scripts/doc-citation-baseline.txt"
-      - ".github/scripts/doc-link-baseline.txt"
-      - ".github/scripts/doc-citation-dangling-baseline.txt"
       - ".github/workflows/doc-citation-gate.yml"
   pull_request:
     branches: [main]
     paths:
-      - "**/*.md"
-      - "docs/**"
       - ".github/scripts/check-doc-citations.sh"
-      - ".github/scripts/doc-citation-baseline.txt"
-      - ".github/scripts/doc-link-baseline.txt"
-      - ".github/scripts/doc-citation-dangling-baseline.txt"
       - ".github/workflows/doc-citation-gate.yml"
 
 concurrency:

@@ -22,6 +22,10 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "frontend/**"
+      - "!frontend/*.md"
+      - "!frontend/*.rst"
+      - "!frontend/**/*.md"
+      - "!frontend/**/*.rst"
   workflow_dispatch:
     inputs:
       regenerate:

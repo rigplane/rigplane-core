@@ -128,8 +128,9 @@ gh workflow run focused.yml --ref main \
   -f vitest_targets='[]'
 ```
 
-The focused workflow does not replace required PR CI. The final Ready head
-still receives its one natural `quick` and, when selected by paths, `visual`.
+The focused workflow does not replace required PR CI. A final Ready product or
+CI-control head still receives its natural `quick` and, when selected by paths,
+`visual`.
 
 `quick.yml` keeps three independent path classes. `core` covers backend/source,
 tests, profiles, contracts, and Python project metadata; `frontend` covers
@@ -140,6 +141,14 @@ both core and frontend because it crosses that boundary. A CI-only change runs
 only the workflow parser, injection/path contract tests, and Python control
 compilation. Pixel-diff `visual` runs only for actual `frontend/**` changes,
 never because `visual.yml` itself changed.
+
+When every changed path is documentation or documentation metadata — including
+`docs/**`, Markdown/RST anywhere in the tree, `.claude/**`, and the doc-citation
+baseline files — only the GitHub-hosted classifier runs. The required `quick`
+job reports a server-side skipped/neutral context and never allocates the Mac
+mini. Do not run citation, link, Markdown, product, visual, or full automation;
+the exact-head independent review is the substantive gate. Documentation mixed
+with code follows the normal checks selected by the code paths.
 
 ## Multi-agent Git hygiene
 
