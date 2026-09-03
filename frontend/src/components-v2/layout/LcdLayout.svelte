@@ -30,11 +30,33 @@
   import StatusBar from './StatusBar.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
   import { getKeyboardHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { peerSplitLayout } from '../../presentation/layouts/segmentline-declarations';
+  import { getGroup } from '../../presentation/groups/contract';
 
   // Twin-skin variant selector (#887), widened to three by MOR-2153 PR-1.
   // Default preserves today's behavior. `scope` currently falls through to
   // cockpit until C-PR1 (#895) delivers a dedicated AmberScope component.
   let { variant = 'cockpit' }: { variant?: 'cockpit' | 'scope' | 'peer-split' } = $props();
+
+  // MOR-2253 slice 1: the peer-split glass's canvas comes from the
+  // `peer-split-glass` instrument group, resolved through the `peer-split`
+  // manifest's zone reference — never a hardcoded group id here (instrument-
+  // group ADR §4: "the variant branch resolves the group through the
+  // manifest instead of hardcoding an id"). `undefined` when no zone names a
+  // group, or the named group is not registered/fixed-native (defensive; no
+  // such case exists among registered layouts today).
+  const peerSplitGroupId = peerSplitLayout.zones.find((zone) => zone.group !== undefined)?.group;
+  const peerSplitGroup = peerSplitGroupId ? getGroup(peerSplitGroupId) : undefined;
+  // Gates BOTH the glass mount below and the right-sidebar suppression
+  // (MOR-2153 PR-1's former `variant === 'peer-split'` check) on the same
+  // value, so a resolution failure (unreachable today — see above) falls
+  // back to the cockpit center AND keeps its usual SemanticRadioSurfaces
+  // slot, rather than losing the VFO/TX affordance entirely.
+  let peerSplitCanvas = $derived(
+    variant === 'peer-split' && peerSplitGroup && peerSplitGroup.scaling.mode === 'fixed-native'
+      ? peerSplitGroup.canvas
+      : undefined,
+  );
 
   let radioState = $derived(runtime.state);
   let keyboardConfig = $derived(getKeyboardConfig());
@@ -83,7 +105,11 @@
     </div>
 
     <main class="content-center">
-      <div class="lcd-slot" data-lcd-variant={variant}>
+      <div
+        class="lcd-slot"
+        data-lcd-variant={variant}
+        style:aspect-ratio={peerSplitCanvas ? `${peerSplitCanvas.w} / ${peerSplitCanvas.h}` : undefined}
+      >
         <div
           class="lcd-frame lcd-mode-{displayMode}"
           data-lcd-variant={variant}
@@ -91,8 +117,8 @@
         >
           {#if variant === 'scope'}
             <AmberScope />
-          {:else if variant === 'peer-split'}
-            <PeerSplitLayout />
+          {:else if peerSplitCanvas}
+            <PeerSplitLayout canvasW={peerSplitCanvas.w} canvasH={peerSplitCanvas.h} />
           {:else}
             <AmberCockpit />
           {/if}
@@ -108,8 +134,9 @@
          surfaces (MOR-1063/1064). For `cockpit`/`scope`, wired exactly once
          here by SemanticRadioSurfaces — no new TX path. `peer-split`'s glass
          (`PeerSplitLayout.svelte`) mounts its own `SemanticRadioSurfaces
-         strips="dual"` instead, so this slot is suppressed for that variant
-         (MOR-2153 PR-1) — each SemanticRadioSurfaces instance takes a
+         strips="dual"` instead, so this slot is suppressed whenever that
+         glass actually mounts (`peerSplitCanvas`, MOR-2153 PR-1 / MOR-2253
+         slice 1) — each SemanticRadioSurfaces instance takes a
          distinct TX-lease `sourceId` from its own module-level counter
          (`components-v2/wiring/SemanticRadioSurfaces.svelte`), so two
          mounted instances would not crash, just silently duplicate the TX
@@ -119,7 +146,7 @@
          amber glass (`cockpit`/`scope`) keeps its legacy presentation for
          this slice; MOR-1162 redesigns it. -->
     <div class="content-right">
-      {#if variant !== 'peer-split'}
+      {#if !peerSplitCanvas}
         <div class="semantic-slot">
           <SemanticRadioSurfaces />
         </div>
@@ -230,17 +257,26 @@
     max-height: 100%;
   }
 
-  /* `peer-split`'s glass (`PeerSplitLayout.svelte`) is a fixed 1280x540
-     native stage (`ScaledStage nativeW={1280} nativeH={540}`), not the
-     fluid 16/7.5 the amber cockpit/scope variants were tuned for — 1280/540
-     ≈ 2.370 vs 16/7.5 ≈ 2.133. Matching the slot to the glass's own ratio
-     means the frame hits `ScaledStage`'s max-scale-1 clamp on both axes at
-     once instead of one axis being starved by a mismatched frame shape,
-     which minimises the dead space the fixed-native model already produces
-     rather than adding to it. */
-  .lcd-slot[data-lcd-variant='peer-split'] {
-    aspect-ratio: 1280 / 540;
-  }
+  /* `peer-split`'s glass (`PeerSplitLayout.svelte`) is a fixed-native stage
+     sized from `peerSplitCanvas` (script above), not the fluid 16/7.5 the
+     amber cockpit/scope variants were tuned for. Matching the slot to the
+     glass's own ratio means the frame hits `ScaledStage`'s max-scale-1 clamp
+     on both axes at once instead of one axis being starved by a mismatched
+     frame shape, which minimises the dead space the fixed-native model
+     already produces rather than adding to it.
+
+     MOR-2253 slice 1 F2 (verifier BLOCKED): this used to be a static rule
+     here — `.lcd-slot[data-lcd-variant='peer-split'] { aspect-ratio: 1280 /
+     540; }` — a SECOND live restatement of the canvas `SEGMENTLINE_GLASS_
+     STAGE` already resolves by reference 150-odd lines above, invisible to
+     the "declared once" contour scan (neither an import of the stage
+     primitive nor a fixed-native sizing literal appears in this file, which
+     is exactly what let a plain CSS number slip past it once already).
+     Replaced with the `style:aspect-ratio` binding on the element above,
+     computed from the same `peerSplitCanvas` the glass mount itself uses —
+     one JS value, not two independent numbers. `undefined` (any variant but
+     `peer-split`) makes Svelte's `style:` directive omit the inline
+     property entirely, so the base rule below applies unchanged. */
 
   .lcd-frame {
     flex: 1;

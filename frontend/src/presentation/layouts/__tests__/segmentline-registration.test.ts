@@ -14,9 +14,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
-  getLayout, resolveLayoutForTopology, resolveLayoutForViewport,
+  getLayout, listLayoutIds, resolveLayoutForTopology, resolveLayoutForViewport,
   TOPOLOGY_CLASSES,
 } from '../contract';
+import { getGroup, listGroupIds } from '../../groups/contract';
 // Deliberately through the shared aggregation entry, not `../segmentline-
 // declarations` directly: it pins that `declarations.ts` really registers
 // `peerSplitLayout` (nothing else does), and keeps this fast-pool file on
@@ -25,6 +26,10 @@ import {
 // module graph (and a phantom "layout not registered") happens. See
 // vite.config.ts #771 and `sdr-registration.test.ts`'s identical note.
 import { peerSplitLayout } from '../declarations';
+// MOR-2253 slice 1: the zone's `group` reference, read back from the same
+// declaration the manifest points at rather than a hand-typed literal id, so
+// a future rename of `peer-split-glass` cannot silently desync this pin.
+import { peerSplitGlassGroup } from '../../groups/declarations';
 // MOR-2151 review round: a new zone id has no guard of its own in this
 // ticket's files — it was caught only by `workspace/__tests__/contract.
 // test.ts`'s cross-file derivation (`WORKSPACE_ZONE_IDS` must equal the set
@@ -68,7 +73,9 @@ describe('declared semantic zones (minimal registration — MOR-2151)', () => {
   // shipping the archived draft's richer zone set (ten zones, three of them
   // all naming `vfo` alone) instead of this slice's single minimal zone.
   it('mounts vfo + rxTx in exactly one zone, under the stable `peer-columns` id', () => {
-    expect(peerSplitLayout.zones).toEqual([{ id: 'peer-columns', surfaces: ['vfo', 'rxTx'] }]);
+    expect(peerSplitLayout.zones).toEqual([
+      { id: 'peer-columns', surfaces: ['vfo', 'rxTx'], group: peerSplitGlassGroup.id },
+    ]);
     expect([...peerSplitLayout.requiredSemanticSurfaces].sort()).toEqual(['rxTx', 'vfo']);
   });
 
@@ -82,6 +89,88 @@ describe('declared semantic zones (minimal registration — MOR-2151)', () => {
   it('declares its zone id in the workspace zone-id registry', () => {
     for (const zone of peerSplitLayout.zones) {
       expect(WORKSPACE_ZONE_IDS as readonly string[]).toContain(zone.id);
+    }
+  });
+});
+
+// The structural half of the instrument-group ADR's "declared once" guard
+// (`docs/plans/2026-09-02-instrument-group-adr.md` §4): every manifest zone
+// referencing a group must agree with that group's own canvas/minScale. Read
+// back out of the shared registries (never hardcoding 1280/540/0.5 itself),
+// so a manifest and its referenced group disagreeing is what turns this red.
+//
+// Lives here rather than beside the group's own validator/registry tests
+// (`../../groups/__tests__/contract.test.ts`) because it must read
+// `LayoutManifest.stageSizing`, and `./stage-sizing-boundary.test.ts`'s own
+// MOR-1247 tripwire fails any file OUTSIDE `presentation/layouts/` that
+// names `stageSizing` at all — a file under `presentation/groups/__tests__/`
+// is exactly such a file (found by running the check there once and reading
+// the tripwire red).
+describe('the native canvas value equals the group the zone references (ADR §4)', () => {
+  // Kills: retargeting a manifest's stageSizing to a group by NAME
+  // (zone.group) without also retargeting its actual nativeW/nativeH/
+  // minScale VALUES to come from that same group — the two could drift
+  // independently.
+  it('every zone referencing a group agrees with that group\'s own canvas and minScale', () => {
+    const referencingZones = listLayoutIds()
+      .map((id) => getLayout(id)!)
+      .flatMap((manifest) => manifest.zones.map((zone) => ({ manifest, zone })))
+      .filter(({ zone }) => zone.group !== undefined);
+
+    // Kills: the whole check vacuously passing because no manifest zone
+    // actually references a group (e.g. the reference wiring never lands).
+    expect(referencingZones.length).toBeGreaterThan(0);
+
+    for (const { manifest, zone } of referencingZones) {
+      const group = getGroup(zone.group!);
+      expect(group, `zone "${zone.id}" on layout "${manifest.id}" references unregistered group "${zone.group}"`)
+        .toBeDefined();
+      expect(manifest.stageSizing.mode).toBe('fixed-native');
+      expect(group!.scaling.mode).toBe('fixed-native');
+      if (manifest.stageSizing.mode !== 'fixed-native' || group!.scaling.mode !== 'fixed-native') continue;
+      expect(manifest.stageSizing.nativeW).toBe(group!.canvas.w);
+      expect(manifest.stageSizing.nativeH).toBe(group!.canvas.h);
+      expect(manifest.stageSizing.minScale).toBe(group!.scaling.minScale);
+    }
+  });
+});
+
+// ADR §7's registry-derived-inventory shape, applied to the reverse
+// reference itself: `validateZones` (`../contract.ts`) checks `zone.surfaces`
+// against `SEMANTIC_SURFACE_NAMES`, but `zone.group` is checked against
+// nothing there — it is a plain `string` (ADR §4's own precedent: `id`/
+// `zone` are both undecorated `string` in the illustrative schema), so a
+// typo'd or stale id silently resolves to `undefined` at runtime with no
+// validator to catch it. Not validated inside `../contract.ts` itself: that
+// would need a VALUE import of the groups registry, and a type-only import
+// of it already pulled `presentation/groups/contract.ts` into the workspace
+// purity closure (MOR-1077/78/79) once already — this test is the guard
+// instead, kept as a test-only cross-registry read.
+//
+// Both sides are derived, never hand-listed: the declared side walks every
+// registered manifest's zones (not just peer-split's), and the registered
+// side is `listGroupIds()` itself — so a future group-referencing zone or a
+// renamed group id needs no matching edit here.
+describe('every zone-declared group id resolves in the registry (ADR §7 inventory shape)', () => {
+  // Kills: a `zone.group` value that names an id no `InstrumentGroup` ever
+  // registers (a typo, or a stale id left behind by a rename on one side
+  // only) — `validateZones` has no bounded-vocabulary check for this field,
+  // so nothing else in the manifest contract would catch it.
+  it('every zone-declared group id is in listGroupIds()', () => {
+    const declaredGroupIds = listLayoutIds()
+      .map((id) => getLayout(id)!)
+      .flatMap((manifest) => manifest.zones)
+      .map((zone) => zone.group)
+      .filter((group): group is string => group !== undefined);
+
+    // Kills: the whole check vacuously passing because no manifest zone
+    // actually declares a group.
+    expect(declaredGroupIds.length).toBeGreaterThan(0);
+
+    const registeredGroupIds = listGroupIds();
+    for (const groupId of declaredGroupIds) {
+      expect(registeredGroupIds, `zone declares group "${groupId}", which listGroupIds() does not contain`)
+        .toContain(groupId);
     }
   });
 });

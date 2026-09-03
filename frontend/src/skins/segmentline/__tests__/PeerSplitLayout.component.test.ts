@@ -188,10 +188,18 @@ let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 
+// MOR-2253 slice 1: canvas size is now a required prop from the shell
+// (`components-v2/layout/LcdLayout.svelte`), not a component-local constant —
+// 1280x540 hardcoded here matches this file's own pinned assertion below
+// (`.scaled-stage`'s inline `1280px`/`540px`), same as `../../../presentation/
+// layouts/__tests__/manifest-shape.test.ts` hardcodes the same numbers for
+// its own, unrelated fixture reasons (a `__tests__` file, excluded from the
+// production "declared once" scan in `presentation/groups/__tests__/
+// contract.test.ts`).
 function render(): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(PeerSplitLayout, { target });
+  component = mount(PeerSplitLayout, { target, props: { canvasW: 1280, canvasH: 540 } });
   flushSync();
 }
 
