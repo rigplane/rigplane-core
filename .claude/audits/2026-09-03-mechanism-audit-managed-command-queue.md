@@ -43,6 +43,9 @@ At this pin `runtime/tx_interlock.py: _DEFER_TYPES` excludes `SetFreq`, `SetMode
 returns `TX_SAFE` for them. `rigctld/handler.py: RigctldHandler._defer_write_gate`
 returns before RF lookup for non-DEFER commands. Its historical frequency prose
 is not evidence that a canonical frequency command is currently deferred.
+History verified with `git show`: public PR #2766 (`9fc909436dcd`) removed
+frequency/RIT-XIT from `_DEFER_TYPES`; PR #3019 (`2158205c7eb1`) removed
+mode/band/VFO controls and added `_OBSERVED_RF_ADMISSION_FREE_FAMILIES`.
 
 ## Deletions
 
