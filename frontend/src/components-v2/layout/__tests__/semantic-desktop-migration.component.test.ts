@@ -974,9 +974,8 @@ describe("the SDR face's right-column families are zone-owned (MOR-2231, batch 3
  *      plan: `zoneOwning()` reads the PLAN.
  *   2. SUPPRESSION for ONE of the two, and a PROP for the other.
  *
- * `scopeDisplay` retires exactly ONE host, and it is the first twin on this
- * face that is neither a sidebar panel nor a settings-modal section:
- * `StatusBar`'s scope indicator, `!declared.has('scopeDisplay')`. Its own
+ * `scopeDisplay` retires exactly ONE host: `StatusBar`'s scope indicator,
+ * `!declared.has('scopeDisplay')`. Its own
  * render gate is `hasAnyScope()`, which this file mocks FALSE by default — so
  * the fixture below turns it on. Without that the suppression row would pass
  * on an absence it did not cause.
@@ -1038,12 +1037,13 @@ describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () 
   const SPECTRUM = '.content-center .spectrum-panel-stub';
 
   /**
-   * Every legacy host `declared` can reach on this face: the two sidebars and
-   * the settings modal by `data-panel-id` (scoped per container, since
-   * `rx-audio`/`dsp`/`cw` exist in both sidebars), plus the two hosts this
-   * batch is about, which carry no `data-panel-id` of their own. With
-   * `StatusBar`, `LeftSidebar`, `RightSidebar` and `SpectrumPanel` that is
-   * every consumer `RadioLayout` hands `declared` to.
+   * FIVE selectors, and no more: `[data-panel-id]` inside each of the two
+   * sidebars and the settings modal (scoped per container, since
+   * `rx-audio`/`dsp`/`cw` exist in both sidebars), plus this batch's own two
+   * hosts, which carry no `data-panel-id`. It is NOT an inventory of
+   * everywhere `declared` reaches - it does not scan `.bottom-dock`, the
+   * legacy VFO header, or the status bar's other indicators, so a guard
+   * placed on any of those is invisible here.
    */
   const hosts = (t: HTMLElement): string[] => [
     ...['.left-sidebar', '.right-sidebar', '.settings-modal'].flatMap(
@@ -1142,10 +1142,13 @@ describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () 
     expect(t.querySelector(SPECTRUM)!.getAttribute('data-hide-scope-controls')).toBe('true');
   });
 
-  // THE ASYMMETRY, given a row that can fail. Both declarations together lose
-  // EXACTLY one host and gain none, so a `declared.has('scopeControls')` mount
-  // gate added anywhere `declared` reaches — or a second `scopeDisplay` guard —
-  // reddens this even though every row above stays green.
+  // THE ASYMMETRY, given a row that can fail. Over the five selectors `hosts()`
+  // scans — and only those — both declarations together lose EXACTLY one entry
+  // and gain none, so a `declared.has('scopeControls')` mount gate added to a
+  // sidebar panel, a settings-modal section or the spectrum panel reddens this
+  // even though every row above stays green. A guard placed on a host `hosts()`
+  // does not scan does not: the batch-3 delta row forty lines above names its
+  // own three containers for the same reason.
   it('the host delta is exactly the status bar scope indicator', () => {
     const before = hosts(renderAll(PRE_BATCH_4));
     const after = hosts(renderAll('sdr-test'));

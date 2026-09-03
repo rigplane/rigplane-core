@@ -60,8 +60,7 @@ describe('exactly the reviewed manifests declare a scopeDisplay zone (MOR-1365)'
   // review this literal exists to force: the same declaration retires that
   // face's status-bar scope indicator through the `declared.has(...)` channel
   // (`StatusBar.svelte`'s `{#if hasAnyScope() && !declared.has('scopeDisplay')}`).
-  // That is the only host it retires, and it is the first twin on this face
-  // that is neither a sidebar panel nor a settings-modal section.
+  // That is the only host it retires.
   const DECLARES_SCOPE_DISPLAY = ['desktop-v2', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface

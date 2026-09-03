@@ -79,9 +79,8 @@ export const sdrTestLayout: LayoutManifest = {
   // The two differ in what else the declaration does, and NEITHER matches the
   // batch-3 shape:
   //
-  //   `scopeDisplay` retires ONE host, and it is the first on this face that
-  //   is neither a sidebar panel nor a settings-modal section: `StatusBar`'s
-  //   scope indicator, `{#if hasAnyScope() && !declared.has('scopeDisplay')}`.
+  //   `scopeDisplay` retires ONE host: `StatusBar`'s scope indicator,
+  //   `{#if hasAnyScope() && !declared.has('scopeDisplay')}`.
   //   The twin is capability-gated on `hasAnyScope()`, so a radio with neither
   //   a hardware scope nor an audio-FFT source has no indicator to retire.
   //
