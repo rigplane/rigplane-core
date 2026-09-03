@@ -105,7 +105,11 @@
     </div>
 
     <main class="content-center">
-      <div class="lcd-slot" data-lcd-variant={variant}>
+      <div
+        class="lcd-slot"
+        data-lcd-variant={variant}
+        style:aspect-ratio={peerSplitCanvas ? `${peerSplitCanvas.w} / ${peerSplitCanvas.h}` : undefined}
+      >
         <div
           class="lcd-frame lcd-mode-{displayMode}"
           data-lcd-variant={variant}
@@ -253,17 +257,26 @@
     max-height: 100%;
   }
 
-  /* `peer-split`'s glass (`PeerSplitLayout.svelte`) is a fixed 1280x540
-     native stage (`ScaledStage nativeW={1280} nativeH={540}`), not the
-     fluid 16/7.5 the amber cockpit/scope variants were tuned for — 1280/540
-     ≈ 2.370 vs 16/7.5 ≈ 2.133. Matching the slot to the glass's own ratio
-     means the frame hits `ScaledStage`'s max-scale-1 clamp on both axes at
-     once instead of one axis being starved by a mismatched frame shape,
-     which minimises the dead space the fixed-native model already produces
-     rather than adding to it. */
-  .lcd-slot[data-lcd-variant='peer-split'] {
-    aspect-ratio: 1280 / 540;
-  }
+  /* `peer-split`'s glass (`PeerSplitLayout.svelte`) is a fixed-native stage
+     sized from `peerSplitCanvas` (script above), not the fluid 16/7.5 the
+     amber cockpit/scope variants were tuned for. Matching the slot to the
+     glass's own ratio means the frame hits `ScaledStage`'s max-scale-1 clamp
+     on both axes at once instead of one axis being starved by a mismatched
+     frame shape, which minimises the dead space the fixed-native model
+     already produces rather than adding to it.
+
+     MOR-2253 slice 1 F2 (verifier BLOCKED): this used to be a static rule
+     here — `.lcd-slot[data-lcd-variant='peer-split'] { aspect-ratio: 1280 /
+     540; }` — a SECOND live restatement of the canvas `SEGMENTLINE_GLASS_
+     STAGE` already resolves by reference 150-odd lines above, invisible to
+     the "declared once" contour scan (neither an import of the stage
+     primitive nor a fixed-native sizing literal appears in this file, which
+     is exactly what let a plain CSS number slip past it once already).
+     Replaced with the `style:aspect-ratio` binding on the element above,
+     computed from the same `peerSplitCanvas` the glass mount itself uses —
+     one JS value, not two independent numbers. `undefined` (any variant but
+     `peer-split`) makes Svelte's `style:` directive omit the inline
+     property entirely, so the base rule below applies unchanged. */
 
   .lcd-frame {
     flex: 1;
