@@ -964,6 +964,43 @@ def parse_scope_mode_response(
     return _decode_scope_value(frame, sub, minimum=0, maximum=3, command=command)
 
 
+def _span_index_for_hz(hz: int) -> int | None:
+    """Return the scope-span preset index (0-7) for an exact Hz match.
+
+    Single source of truth for the Hz<->span-index mapping: reused (never
+    duplicated) by both ``parse_scope_span_response`` below -- the 0x15
+    reply-path decoder -- and the waveform-stream span derivation
+    (``runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation``,
+    MOR-2222/MOR-2256). ``_SCOPE_SPAN_PRESETS_HZ`` is a hardcoded module
+    constant, not profile-declared data; moving it into per-profile TOML
+    is tracked separately as MOR-2258 rather than duplicated here or
+    invented as new profile schema for this change.
+
+    Returns ``None`` on no exact match -- callers decide whether that is
+    an error (the reply path still raises, unchanged) or a silent no-op
+    (the stream derivation publishes nothing). No tolerance: ``hz`` comes
+    from ``bcd_decode``, which round-trips losslessly to an exact integer,
+    so an exact-match table lookup is the correct comparison, not a
+    nearest-value one.
+
+    Underscore-prefixed although it has a caller outside this module
+    (``_civ_rx.py`` imports it directly, ``from rigplane.commands.scope
+    import _span_index_for_hz``): a public, non-``parse_*`` name with no
+    ``cmd_map`` parameter is exactly what
+    ``test_command_map_parity.py: _hardcode_only_builders`` inventories as
+    a byte-emitting command builder outside its parity sweep, and this
+    function builds no CI-V frame at all -- it is a pure Hz<->index
+    lookup. #3063 hit that census mismatch when this was public
+    (``span_index_for_hz``); the leading underscore is what excludes it
+    (that helper's own function-level filter, independent of whether
+    ``commands/__init__.py`` re-exports the name).
+    """
+    try:
+        return _SCOPE_SPAN_PRESETS_HZ.index(hz)
+    except ValueError:
+        return None
+
+
 def parse_scope_span_response(
     frame: CivFrame, *, command: int = _CMD_SCOPE, sub: int = _SUB_SCOPE_SPAN
 ) -> tuple[int | None, int]:
@@ -972,10 +1009,9 @@ def parse_scope_span_response(
     if len(payload) == 1:
         return receiver, _validate_scope_range("scope span", payload[0], 0, 7)
     hz = bcd_decode(payload)
-    try:
-        span = _SCOPE_SPAN_PRESETS_HZ.index(hz)
-    except ValueError as exc:
-        raise ValueError(f"Unknown scope span frequency {hz}") from exc
+    span = _span_index_for_hz(hz)
+    if span is None:
+        raise ValueError(f"Unknown scope span frequency {hz}")
     return receiver, span
 
 
