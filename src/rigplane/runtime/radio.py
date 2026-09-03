@@ -2337,7 +2337,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("af_level", operation="set_af_level")
         self._require_receiver(receiver, operation="set_af_level")
-        cmd29 = bool(self._level_command29("set_rf_gain", receiver=receiver))
+        cmd29 = bool(self._level_command29("set_af_level", receiver=receiver))
         civ = self._commands.set_af_level(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
