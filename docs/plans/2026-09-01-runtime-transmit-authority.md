@@ -55,7 +55,7 @@ Command names describe semantics; the UI continues to present an ON/OFF switch.
 |---|---|---|
 | Browser | gestures, audio/presentation, local countdown interpolation | authority, timers, retries, RF truth |
 | Server app composition root | exactly one configured radio, managed runtime, and authority | a second managed radio/runtime in the same instance |
-| Managed runtime | intent, debt, TOT, `TxAbortFence`, tokens, retry, API state | manufacturer wire vocabulary |
+| `ManagedTxAuthority` | intent, debt, TOT, `TxAbortFence`, tokens, retry, API state, managed admission | manufacturer wire vocabulary |
 | Provider adapter | execution of one tokened attempt, priority lane, normalized result | its own generation, epoch, attempt IDs, or product intent |
 | Rig profile + canonical backend | documented manufacturer vocabulary, provenance, semantic-to-wire mapping | runtime retry/deadline lifecycle |
 | State observer | canonical tri-state observation | authority transitions or admission |
@@ -64,11 +64,14 @@ The composition root constructs the authority once and reuses it across
 provider replacement. An assembly test must reject or make impossible a second
 managed runtime/radio in the same server instance.
 
-The stateful owner is attached to `runtime/managed_radio_runtime.py:
-ManagedRadioRuntime`. `core/tx_safety.py: TxSafetySupervisor` may be replaced or
-reduced to pure policy, but its observation-driven clearing/gating must not
-survive beside the new owner. `core/tx_authority.py: TransmitAuthority` must not
-remain as a parallel backend hazard authority.
+In the accepted architecture, `runtime/managed_tx_authority.py:
+ManagedTxAuthority` is the sole stateful owner. A
+`runtime/managed_radio_runtime.py: ManagedRadioRuntime` composition surface may
+delegate to it but must not retain authority state. `core/tx_safety.py:
+TxSafetySupervisor` may be replaced or reduced to pure policy, but its
+observation-driven clearing/gating must not survive beside the authority.
+`core/tx_authority.py: TransmitAuthority` must not remain as a parallel backend
+hazard authority.
 
 ## Authority and diagnostic state
 
@@ -320,9 +323,9 @@ implement it or that any provider accepts a requested operation.
 
 - Band, frequency, mode, VFO, and split mutations are admitted regardless of
   observed RF state.
-- Antenna switching and tuner ON, engage, or start are refused only while this
-  runtime holds managed `PTT(owner)` or `TRANSMIT` intent. `observed_ptt` does
-  not participate in that decision.
+- `ManagedTxAuthority` refuses antenna switching and tuner ON, engage, or
+  start only while it holds managed `PTT(owner)` or `TRANSMIT` intent.
+  `observed_ptt` does not participate in that decision.
 - Tuner OFF and `FORCE_OFF` are always admitted by this policy, regardless of
   managed intent or observed RF state.
 - The policy creates no deferred queue. A refused request is not retained for
@@ -349,12 +352,14 @@ ownership, or software TOT.
   software-TOT guarantees do not apply.
 
 Migration must converge existing managed TX ownership into
-`ManagedRadioRuntime`, replace the old hazard authority rather than wrap it,
+`ManagedTxAuthority`, replace the old hazard authority rather than wrap it,
 add the composition-root cardinality test, establish the profile-backed
-actuator, then route every managed Web/runtime TX ingress through it. Remove
-the old observed-RF admission machinery rather than create another gate. Apply
-the accepted relay-family policy through managed intent only; raw/direct paths
-remain out of scope.
+actuator, then route every managed Web/runtime TX ingress through it. A
+`ManagedRadioRuntime` composition surface may delegate but must not retain
+intent, debt, TOT, fence, or admission ownership. Remove the old observed-RF
+admission machinery rather than create another gate. Apply the accepted
+relay-family policy through managed intent only; raw/direct paths remain out of
+scope.
 
 ## Explicitly superseded decisions
 
