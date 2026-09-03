@@ -711,7 +711,7 @@ describe('accessibility basics', () => {
     // than letting an unrecognised button fall through to 'dualWatch', which is
     // what made this test read four phantom dualWatch entries when the ops row
     // first landed.
-    const OPS = ['equalize', 'swap', 'quick-split', 'quick-dual-watch'];
+    const OPS = ['equalize', 'swap'];
     const order = focusable.map(
       (el) => el.dataset.vfoSelect !== undefined
         ? `select:${el.closest('[data-vfo-tile]')?.getAttribute('data-vfo-receiver')}:${el.closest('[data-vfo-tile]')?.getAttribute('data-vfo-slot')}`

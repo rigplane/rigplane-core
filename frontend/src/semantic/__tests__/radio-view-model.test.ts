@@ -31,7 +31,6 @@ describe('validateRadioViewModel', () => {
   const receiverIndicator = () => ({
     receiver: 'MAIN' as const,
     availability: { structural: true, operational: true },
-    rfState: 'receiving' as const,
     sMeter: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
     bandwidthHz: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
     agcMode: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },

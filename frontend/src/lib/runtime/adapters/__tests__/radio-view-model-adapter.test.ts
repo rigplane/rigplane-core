@@ -159,7 +159,6 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
     expect(sub?.availability).toEqual({ structural: true, operational: false });
     expect(sub?.sMeter.reading).toEqual({ status: 'unknown' });
     expect(sub?.nbActive.reading).toEqual({ status: 'unknown' });
-    expect(sub?.rfState).toBe('unknown');
   });
 
   it('keeps deliberately different MAIN/SUB facts distinct across active-receiver switches', () => {
@@ -802,8 +801,8 @@ describe('the emitted model carries only contract data', () => {
     expect(Object.keys(view)).not.toContain('capabilities');
     // The validator rejects extra keys, so this is belt-and-braces on shape.
     expect(Object.keys(view).sort()).toEqual([
-      'activeReceiver', 'disabledReasons', 'dualWatch', 'receiverIndicators',
-      'radioWideIndicators', 'scope', 'scopeControls', 'split',
+      'activeReceiver', 'disabledReasons', 'dualWatch', 'radioWideIndicators',
+      'receiverIndicators', 'scope', 'scopeControls', 'split',
       'topologyId', 'txPermit', 'txTarget', 'vfoScheme', 'vfos',
     ]);
   });
