@@ -299,9 +299,7 @@ class TestYaesuCatTransport:
         cancelled = asyncio.create_task(
             transport.write("TX0;", tier=ExchangeTier.FORCE_RELEASE)
         )
-        abort = asyncio.create_task(
-            transport.write("KY;", tier=ExchangeTier.ABORT)
-        )
+        abort = asyncio.create_task(transport.write("KY;", tier=ExchangeTier.ABORT))
         ordinary = asyncio.create_task(transport.write("FB000000002;"))
         await asyncio.sleep(0)
         cancelled.cancel()
@@ -340,9 +338,7 @@ class TestYaesuCatTransport:
 
         active = asyncio.create_task(transport.write("FA000000001;"))
         await asyncio.wait_for(writer.first_drain_entered.wait(), 1)
-        stop_cw = asyncio.create_task(
-            transport.write("KY;", tier=ExchangeTier.ABORT)
-        )
+        stop_cw = asyncio.create_task(transport.write("KY;", tier=ExchangeTier.ABORT))
         stop_tune = asyncio.create_task(
             transport.write("AC000;", tier=ExchangeTier.ABORT)
         )

@@ -145,17 +145,13 @@ async def test_force_release_overtakes_queued_abort_without_preempting_active() 
 
     commander = IcomCommander(execute, min_interval=0.0)
     commander.start()
-    active = asyncio.create_task(
-        commander.send(b"active", priority=Priority.NORMAL)
-    )
+    active = asyncio.create_task(commander.send(b"active", priority=Priority.NORMAL))
     abort = None
     late_on = None
     force = None
     try:
         await asyncio.wait_for(entered.wait(), 1)
-        abort = asyncio.create_task(
-            commander.send(b"stop-cw", priority=Priority.ABORT)
-        )
+        abort = asyncio.create_task(commander.send(b"stop-cw", priority=Priority.ABORT))
         late_on = asyncio.create_task(
             commander.send(b"late-on", priority=Priority.IMMEDIATE)
         )
