@@ -1263,9 +1263,6 @@ class RadioPoller:
             await self._civ(command, sub=sub, data=payload)
         return True
 
-    def _supports_capability(self, capability: str) -> bool:
-        return capability in self._caps
-
     def _ensure_receiver_supported(self, receiver: int, *, operation: str) -> None:
         if self._profile.supports_receiver(receiver):
             return
