@@ -156,7 +156,7 @@ class ManagedTxAuthority:
             execution: asyncio.Task[ActuationSettled | None] | None = None
             try:
                 if on and ready is not None:
-                    await asyncio.shield(ready)
+                    await asyncio.wait((ready,))
                 async with self._lock:
                     self._require_ingress_open_locked()
                     if token is not None and not (
