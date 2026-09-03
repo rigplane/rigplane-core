@@ -30,7 +30,7 @@ from that answer (`docs/plans/2026-08-20-transmit-authority.md`, INV-13).
 
 | Concept | Definition site | Consumer/path | Divergence | Canonical candidate |
 | --- | --- | --- | --- | --- |
-| strict PTT normalization | `core/tx_observation.py: normalize_observed_ptt` | `RigctldClientObservationAdapter.observed_ptt_observation` | none: booleans map to ON/OFF; all other values map to UNKNOWN | existing normalizer |
+| strict PTT normalization | `core/tx_observation.py: normalize_observed_ptt` | `RigctldClientObservationAdapter.observed_ptt_observation` | none: `ObservedPtt` ON/OFF/UNKNOWN passes through; strict booleans map to ON/OFF and other values to UNKNOWN | existing normalizer |
 | provider metadata and TTL | `core/observation_adapter.py: ProviderObservationAdapter.observation` | rigctld adapter's `_adapter` and `observed_ptt_observation` | none: provider, transport, capability id, timestamp, and profile TTL come from one adapter | existing adapter |
 | current-generation publication | `backends/rigctld_client/radio.py: RigctldClientObservationPoller._poll_medium` | callback receives stamped observation only while captured generation is current | canonical diagnostic publish precedes later VFO awaits | existing poller/store generation gate |
 | polling declaration | `backends/rigctld_client/observations.py: build_external_rigctld_acquisition_profile` | acquisition policy capability lookup | this pin adds only `OBSERVED_PTT_PATH` with `polling=True` | declared canonical field |
@@ -61,9 +61,10 @@ it makes no dead-code or vestigial-fork verdict.
 `backends/rigctld_client/observations.py:
 RigctldClientObservationAdapter.observed_ptt_observation`; and
 `backends/rigctld_client/radio.py: RigctldClientObservationPoller._poll_medium`.
-**Consumers:** the rigctld poller creates the canonical observation; the
-StateStore projection consumes current, fresh evidence. The legacy boolean
-projection remains for migration consumers only.
+**Consumers:** the rigctld poller is the production publication path.
+`project_observed_ptt` and `legacy_ptt_bool` have in-repository literal test
+consumers only; external and dynamic consumers are unknown. This is not an API
+deletion claim or a production-projection cutover claim.
 **Divergence:** none established. The product change is the missing
 `FieldCapability(OBSERVED_PTT_PATH, polling=True)`, not a new normalizer,
 adapter, store, poll loop, or TX owner.
@@ -86,12 +87,12 @@ rigctld reply proves physical RF state or permits a TX-safety admission.
 Generation rejection, UNKNOWN-on-error, TTL expiry, and cancellation behavior
 are source observations, not hardware proof.
 
-The PR records an independent code-only PASS. At the pinned product head, the
-recorded full matrix passed all three Python versions (14,869 tests, 218 skipped,
-15 expected failures); recorded quick evidence at merge reported 14,878, 220,
-and 15 respectively. A later mutation workflow succeeded, but raw independent
-review and repeat evidence were still pending when this archive was written;
-this report makes no proven-mutation claim.
+The PR records an independent code-only PASS. Full CI at source
+`9b1a008441245057c60e73dd4ac3e846be8dd6d8` recorded, for each Python version,
+14,869 tests, 218 skipped, and 15 expected failures. Quick CI ran on synthetic
+PR merge tree `5520296783aa23185dbe226965f64224c9a9ab0c` (`9b1a008` plus
+`3125`) and recorded 14,878 tests, 220 skipped, and 15 expected failures. This
+archive makes no mutation-proof claim.
 
 ## Weakest link
 
