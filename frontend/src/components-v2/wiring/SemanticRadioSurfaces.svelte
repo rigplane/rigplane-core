@@ -95,9 +95,17 @@
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
    * path in the SINGLE composition, so each gains the zone element its
    * layout's plan names. `false` renders both exactly as before: no wrapper,
-   * no `data-zone-id`. Only `RadioLayout.svelte` passes it; the four other
-   * mount sites (`LcdLayout`, `MobileRadioLayout`, `DualReceiverCockpit`,
-   * `PeerSplitLayout`) take the default.
+   * no `data-zone-id`.
+   *
+   * `RadioLayout.svelte` is the only site that passes it. Five take the
+   * default, and `regions` is read on three of them — `LcdLayout`,
+   * `MobileRadioLayout` and `frontend/fixtures/ReferenceLayout.svelte` —
+   * because it is read only in the `{:else}` single branch.
+   * `DualReceiverCockpit` and `PeerSplitLayout` mount `strips="dual"`, where
+   * it is never evaluated. (Enumerated with `git grep -n
+   * "<SemanticRadioSurfaces" -- .`, unscoped: a path-scoped search cannot see
+   * `frontend/fixtures/`, which is how an earlier revision of this comment
+   * came to name four.)
    *
    * A PROP rather than a plan lookup because the plan cannot answer the
    * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
@@ -867,9 +875,12 @@
     the dual composition, where it is a real, bound zone element the
     cockpit's responsive rules can place — an inert wrapper cannot be a
     grid/flex item, so "leave it inert" was not an option once the zone had
-    to move between arrangements. The single/default path renders the surface
-    bare wherever `regions` is unset (MOR-2231), and that element shape is
-    re-pinned in `__tests__/semantic-rx-tx-wiring.component.test.ts`.
+    to move between arrangements. `__tests__/semantic-rx-tx-wiring.component.test.ts`
+    re-pins that bare shape under NO_PLAN: it supplies no surface plan, so
+    `zoneOwning()` is null and the surface renders bare there whatever
+    `regions` says. The plan-resolved `regions === false` case is a separate
+    claim, pinned in `semantic-desktop-migration.component.test.ts` by
+    `leaves the desktop-v2 surfaces bare, with no zone element around either`.
 
     The snippet is deliberate: it keeps exactly ONE `<RxTxSurface>` tag in
     this file, so single TX authority stays a property of the SOURCE rather
