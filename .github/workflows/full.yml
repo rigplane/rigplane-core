@@ -15,10 +15,11 @@ concurrency:
 jobs:
   test:
     # On push: only when commit message contains [full-ci].
-    # On schedule / manual dispatch: always run.
+    # On schedule / manual dispatch: run except on the formatter preflight ref.
     if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+      github.ref != 'refs/heads/codex/icom-lower-executor-preflight' &&
+      (github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]'))
     # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
@@ -184,11 +185,12 @@ jobs:
     #
     # Same push guard as the `test` job above: on `push`, only runs when
     # the commit message contains `[full-ci]`; on `schedule`/
-    # `workflow_dispatch`, always runs. This keeps the job off every
+    # `workflow_dispatch`, runs except on the formatter preflight ref. Keeps it off
     # ordinary push to `main`.
     if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+      github.ref != 'refs/heads/codex/icom-lower-executor-preflight' &&
+      (github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]'))
     runs-on: [self-hosted, linux, build]
     # Budget: ~45s once the Playwright browser cache is warm (npm ci +
     # cached chromium + the capture matrix itself). 10 minutes is a
@@ -264,3 +266,121 @@ jobs:
       - name: Annotate result
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
+
+  icom-lower-executor-preflight:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/icom-lower-executor-preflight'
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      SOURCE_PIN: 4758337dd6256374d332a788f38cc917f988039e
+      UV_PYTHON: '3.11'
+      PYTHONDONTWRITEBYTECODE: '1'
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 4758337dd6256374d332a788f38cc917f988039e
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
+
+      - name: Prepare isolated formatter evidence
+        id: prepare
+        run: |
+          artifact_dir=$(mktemp -d "$RUNNER_TEMP/icom-executor-preflight-evidence.XXXXXX")
+          uv_cache_dir=$(mktemp -d "$RUNNER_TEMP/icom-executor-preflight-cache.XXXXXX")
+          venv_dir=$(mktemp -d "$RUNNER_TEMP/icom-executor-preflight-venv.XXXXXX")
+          echo "ARTIFACT_DIR=$artifact_dir" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$uv_cache_dir" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$venv_dir" >> "$GITHUB_ENV"
+          echo "artifact_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "source=$SOURCE_PIN" "workflow=$GITHUB_SHA" "ref=$GITHUB_REF" \
+            "run=$GITHUB_RUN_ID" "attempt=$GITHUB_RUN_ATTEMPT" "runner=$RUNNER_NAME" \
+            > "$artifact_dir/metadata.txt"
+          printf '%s\n' \
+            src/rigplane/commands/commander.py src/rigplane/runtime/_civ_rx.py \
+            tests/test_commander.py tests/test_radio.py \
+            > "$artifact_dir/allowed-files.txt"
+          git rev-parse HEAD > "$artifact_dir/source-head.txt"
+          git rev-parse 'HEAD^{tree}' > "$artifact_dir/source-tree.txt"
+          git status --porcelain=v1 --untracked-files=all > "$artifact_dir/status-before.txt"
+          git diff HEAD > "$artifact_dir/source-before.diff"
+          sha256sum \
+            src/rigplane/commands/commander.py src/rigplane/runtime/_civ_rx.py \
+            tests/test_commander.py tests/test_radio.py \
+            > "$artifact_dir/source-sha256-before.txt"
+          test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
+          test ! -s "$artifact_dir/status-before.txt"
+          git diff --exit-code HEAD
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: false
+
+      - name: Install locked formatter dependencies
+        run: |
+          uv --version | tee "$ARTIFACT_DIR/uv-version.txt"
+          uv python install 3.11
+          uv sync --locked --all-extras --no-install-project \
+            > "$ARTIFACT_DIR/install.stdout.log" 2> "$ARTIFACT_DIR/install.stderr.log"
+          uv run --no-sync ruff --version | tee "$ARTIFACT_DIR/ruff-version.txt"
+          test "$(cat "$ARTIFACT_DIR/ruff-version.txt")" = 'ruff 0.15.2'
+
+      - name: Capture formatter diff without modifying source
+        run: |
+          formatter_files=(
+            src/rigplane/commands/commander.py src/rigplane/runtime/_civ_rx.py
+            tests/test_commander.py tests/test_radio.py
+          )
+          printf 'uv run --no-sync ruff format --diff %s\n' "${formatter_files[*]}" \
+            > "$ARTIFACT_DIR/command.txt"
+          set +e
+          uv run --no-sync ruff format --diff "${formatter_files[@]}" \
+            > "$ARTIFACT_DIR/format.patch" 2> "$ARTIFACT_DIR/formatter.stderr.log"
+          formatter_rc=$?
+          set -e
+          printf '%s\n' "$formatter_rc" > "$ARTIFACT_DIR/formatter-exit.txt"
+          cat "$ARTIFACT_DIR/format.patch" "$ARTIFACT_DIR/formatter.stderr.log"
+          case "$formatter_rc" in
+            0) test ! -s "$ARTIFACT_DIR/format.patch" ;;
+            1)
+              test -s "$ARTIFACT_DIR/format.patch"
+              sed -n 's/^--- //p' "$ARTIFACT_DIR/format.patch" > "$ARTIFACT_DIR/old-files.txt"
+              sed -n 's/^+++ //p' "$ARTIFACT_DIR/format.patch" > "$ARTIFACT_DIR/new-files.txt"
+              test -s "$ARTIFACT_DIR/old-files.txt"
+              diff -u "$ARTIFACT_DIR/old-files.txt" "$ARTIFACT_DIR/new-files.txt"
+              while IFS= read -r formatted_file; do
+                grep -Fx -- "$formatted_file" "$ARTIFACT_DIR/allowed-files.txt"
+              done < "$ARTIFACT_DIR/old-files.txt"
+              ;;
+            *) exit "$formatter_rc" ;;
+          esac
+          printf 'PASS: formatter exit %s; patch contract accepted\n' "$formatter_rc" \
+            > "$ARTIFACT_DIR/verdict.txt"
+
+      - name: Require unchanged source
+        if: always() && steps.prepare.outcome == 'success'
+        run: |
+          git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/status-after.txt"
+          git diff HEAD > "$ARTIFACT_DIR/source-after.diff"
+          git rev-parse HEAD > "$ARTIFACT_DIR/source-head-after.txt"
+          git rev-parse 'HEAD^{tree}' > "$ARTIFACT_DIR/source-tree-after.txt"
+          test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
+          git diff --exit-code HEAD
+          sha256sum -c "$ARTIFACT_DIR/source-sha256-before.txt" \
+            > "$ARTIFACT_DIR/source-sha256-check.txt"
+          test ! -s "$ARTIFACT_DIR/status-after.txt"
+
+      - name: Upload formatter evidence
+        if: always() && steps.prepare.outputs.artifact_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: icom-lower-executor-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.prepare.outputs.artifact_dir }}
+          if-no-files-found: error
+          retention-days: 14
