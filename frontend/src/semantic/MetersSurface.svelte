@@ -25,8 +25,9 @@
       legacy dock's border reads (`meter-utils`, imported not copied), gated
       on `relevant` (this field's own TX-authority conclusion, rule 1) AND
       "observed" (rule 3) — an unobserved reading is never a fault. The
-      colour itself is drawn by `BarGauge` (below), which already owns
-      colour; this file only ever hands it a boolean.
+      colour itself is drawn by the component this file hands the boolean
+      to: `BarGauge` for ALC, `LinearSMeter`'s lower-scale row (MOR-2250, PR
+      2 of 2) for SWR — this file only ever computes the boolean.
 
   Two-level availability (MOR-977/1256): `structural: false` renders NOTHING —
   "this radio has no SWR meter" is a different claim from "the SWR meter is
@@ -46,25 +47,29 @@
   import type { MeterField, MetersViewModel } from './radio-view-model';
   import {
     alcLevel, compLevel, formatAlc, formatAmps, formatCompDb, formatPowerWatts,
-    formatSwr, formatVolts, idLevel, isAlcFault, isSwrFault, normalizePower, sLevel,
+    formatVolts, idLevel, isAlcFault, isSwrFault, normalizePower, sLevel,
     swrLevel, vdLevel,
   } from '../components-v2/panels/meter-utils';
   import { renderSlot } from './design-language-renderers';
+  import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
 
   type BarKey = Exclude<keyof MetersViewModel, 'rfState' | 'signal'>;
   type Scale = readonly [BarKey, string, (raw: number) => number, (raw: number) => string, boolean];
 
-  /** `[field, label, level, format, showPeak]` for the six bar meters, in the
-   *  shipped dock's priority order. The level/format pairs are
-   *  `meter-utils`' own calibrated functions — the same ones `MetersDockPanel`
-   *  uses — so the two can never disagree about what a raw sample means.
-   *  `showPeak` (MOR-1282) mirrors the dock's own `PeakKey` set (Po/SWR/ALC/
-   *  Id) — Vd (a continuous supply rail) and COMP were never peak-held there
+  /** `[field, label, level, format, showPeak]` for the FIVE remaining bar
+   *  meters, in the shipped dock's priority order. `swr` is absent as of
+   *  MOR-2250 (PR 2 of 2) — it now renders on the shared lower scale row
+   *  inside `LinearSMeter` (see `swrLowerScale` below) instead of through
+   *  `BarGauge`, so it must appear exactly once, never zero or two times.
+   *  The level/format pairs are `meter-utils`' own calibrated functions —
+   *  the same ones `MetersDockPanel` uses — so the two can never disagree
+   *  about what a raw sample means. `showPeak` (MOR-1282) mirrors the
+   *  dock's own `PeakKey` set restricted to what remains here (Po/ALC/Id) —
+   *  Vd (a continuous supply rail) and COMP were never peak-held there
    *  either. `signal` is absent because it has its own component
    *  (`LinearSMeter`, below). */
   export const METER_BARS = [
     ['power', 'Po', normalizePower, formatPowerWatts, true],
-    ['swr', 'SWR', swrLevel, formatSwr, true],
     ['alc', 'ALC', alcLevel, formatAlc, true],
     ['drainCurrent', 'Id', idLevel, formatAmps, true],
     ['drainVoltage', 'Vd', vdLevel, formatVolts, false],
@@ -72,14 +77,15 @@
   ] as const satisfies readonly Scale[];
 
   /**
-   * MOR-1345: fields with an over-threshold FAULT — the SAME `isSwrFault`/
-   * `isAlcFault` predicates `MetersDockPanel`'s border reads, imported (not
-   * copied) so the two surfaces can never disagree about what counts as a
-   * fault. Only SWR and ALC have a threshold; every other bar has none, and
-   * this surface invents none — an absent entry means "never faults".
+   * MOR-1345: fields with an over-threshold FAULT — the SAME `isAlcFault`
+   * predicate `MetersDockPanel`'s border reads, imported (not copied) so the
+   * two surfaces can never disagree about what counts as a fault. Only ALC
+   * has a threshold among the remaining `METER_BARS` fields, and this
+   * surface invents none — an absent entry means "never faults". SWR's own
+   * fault predicate (`isSwrFault`) is still imported above, but is now
+   * consumed directly by `swrLowerScale`, not through this map.
    */
   const FAULT_CHECKS: Partial<Record<BarKey, (raw: number) => boolean>> = {
-    swr: isSwrFault,
     alc: isAlcFault,
   };
 
@@ -89,6 +95,50 @@
   const observed = (f: MeterField): boolean =>
     f.availability.operational && f.reading.status === 'known';
   const rawOf = (f: MeterField): number => (f.reading.status === 'known' ? f.reading.value : 0);
+
+  /**
+   * MOR-2250 (PR 2 of 2): the bottom scale row of the shared S-meter bar —
+   * the real IC-7300's second, radio-selected TX-meter scale, fixed to SWR
+   * only (owner ruling: no selector in this PR; a future instrument-group
+   * selector swaps this out as a DATA change). Label/ticks are a fixed UI
+   * constant, not radio-specific data — the same treatment `LinearSMeter`'s
+   * own hardcoded S-unit scale marks get — matching the reference photo's
+   * "SWR 1 1.5 2 2.5 3 ∞".
+   */
+  const SWR_LOWER_SCALE_TICKS = [
+    { value: 0, label: '1' },
+    { value: 0.2, label: '1.5' },
+    { value: 0.4, label: '2' },
+    { value: 0.6, label: '2.5' },
+    { value: 0.8, label: '3' },
+    { value: 1, label: '∞' },
+  ] as const;
+
+  /**
+   * `valueFraction`/`fault` use the SAME present/observed/relevant gating
+   * and the SAME `swrLevel`/`isSwrFault` predicates the removed SWR
+   * `BarGauge` row used (`present`/`observed`/`rawOf` above and the
+   * `FAULT_CHECKS` gating pattern this mirrors) — imported, not re-derived,
+   * so the two can never disagree about what counts as a reading or a
+   * fault. `valueFraction` is NOT additionally gated on `relevant`: exactly
+   * like every other `METER_BARS` level, an irrelevant-but-observed reading
+   * still reports its real level — `relevant` only dims the enclosing tile
+   * (CSS opacity), it never zeroes the reading. This is unconditional on
+   * `rfState` — the caller passes it every render (see the `<LinearSMeter>`
+   * mount below); a `0` fraction while receiving is simply what
+   * `observed(meters.swr)` naturally resolves to when the radio has no
+   * known SWR sample outside TX, not a branch on TX state here.
+   */
+  function swrLowerScale(f: MeterField): LowerScaleDescriptor {
+    const isObserved = observed(f);
+    const raw = rawOf(f);
+    return {
+      label: 'SWR',
+      ticks: SWR_LOWER_SCALE_TICKS,
+      valueFraction: isObserved ? swrLevel(raw) : 0,
+      fault: isObserved && f.relevant && isSwrFault(raw),
+    };
+  }
 
   /**
    * MOR-1275: the active design language's `meters` renderer, for the S meter —
@@ -148,7 +198,17 @@
         {...display?.attributes ?? {}}
       >
         {#if observed(meters.signal)}
-          <LinearSMeter value={rawOf(meters.signal)} label="S" compact display={display?.display ?? undefined} />
+          <!-- MOR-2250 (PR 2 of 2): `lowerScale` is built and passed on
+               EVERY render this branch takes, never behind an `rfState`
+               check — the shared bar's bottom row must occupy the same
+               geometry whether receiving or transmitting (see the file's
+               own layout-stability note on `swrLowerScale` above). Absent
+               only when the radio structurally has no SWR meter at all. -->
+          <LinearSMeter
+            value={rawOf(meters.signal)} label="S" compact
+            display={display?.display ?? undefined}
+            lowerScale={present(meters.swr) ? swrLowerScale(meters.swr) : undefined}
+          />
         {:else}
           <span class="meter-unknown">S ?</span>
         {/if}

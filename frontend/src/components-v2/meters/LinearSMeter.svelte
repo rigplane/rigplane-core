@@ -1,3 +1,34 @@
+<script module lang="ts">
+  /**
+   * MOR-2250 (PR 2 of 2): a second scale row this component can render below
+   * its own bar. Deliberately generic — no field or branch anywhere in this
+   * component may name a specific meter (no "SWR", no "S9"): the caller
+   * (`MetersSurface.svelte`) owns what the row actually measures, this
+   * component only knows how to draw "a labeled scale row with ticks and a
+   * fill fraction". A future meter-selector (instrument-group declarations,
+   * a later ticket) swaps what descriptor the caller builds; it needs no
+   * change here.
+   */
+  export interface LowerScaleTick {
+    /** Position along the row, 0 (left edge) .. 1 (right edge) — a plain
+     *  fraction, independent of any calibration domain; the caller places
+     *  its own tick marks. */
+    readonly value: number;
+    readonly label: string;
+  }
+
+  export interface LowerScaleDescriptor {
+    readonly label: string;
+    readonly unit?: string;
+    readonly ticks: readonly LowerScaleTick[];
+    /** 0..1 — how much of the row's segments are lit. 0 is a legitimate
+     *  "not reading right now" state (e.g. not transmitting), not "absent" —
+     *  see the `lowerScale` prop doc below for what "absent" means instead. */
+    readonly valueFraction: number;
+    readonly fault: boolean;
+  }
+</script>
+
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { createSmoother, prefersReducedMotion, onReducedMotionChange } from '$lib/utils/smoothing.svelte';
@@ -19,9 +50,21 @@
     label?: string;
     variant?: string;
     display?: MeterDisplay;
+    /**
+     * MOR-2250: an optional second scale row below the bar. Structural
+     * elements (label text, tick marks, tick label text) render whenever
+     * this prop is present AT ALL, regardless of `valueFraction`/`fault` — a
+     * reading of zero (e.g. not transmitting) must occupy the exact same
+     * height as one reading full-scale, or the tile visibly resizes
+     * crossing RX/TX (owner ruling, MOR-2250). Leaving the prop unset is a
+     * different claim: this instrument has no second scale at all.
+     */
+    lowerScale?: LowerScaleDescriptor;
   }
 
-  let { value, compact = false, label, variant, display = DEFAULT_METER_DISPLAY }: Props = $props();
+  let {
+    value, compact = false, label, variant, display = DEFAULT_METER_DISPLAY, lowerScale,
+  }: Props = $props();
 
   const isVfoVariant = $derived(variant === 'vfo' || variant === 'vfo-wide');
   const isWideVfoVariant = $derived(variant === 'vfo-wide');
@@ -113,6 +156,39 @@
     return i < s9SegmentIndex ? '#0A2415' : '#1A1008';
   }
 
+  // ── Lower scale row (MOR-2250, PR 2 of 2) ───────────────────────────────────
+  // Position/tick geometry mirrors the upper scale-label/tick rendering above
+  // (text elements for labels, line elements for ticks) rather than a new
+  // drawing method. Fill segments reuse the SAME SEG_COUNT/segX geometry as
+  // the main bar so the two rows' columns line up.
+  //
+  // Fault color: `BarGauge.svelte`'s own SWR-fault literal
+  // (`fault ? 'var(--v2-accent-red, #ff4040)' : ...`), duplicated rather than
+  // imported or routed through a new token. Checked first: nothing in
+  // `DesignLanguageTokens` (typography/geometry/meters/frequency/motion/
+  // focusRing/rx/tx) models a generic alarm/fault tone, and `MeterDisplay`'s
+  // `toneBelowS9`/`toneAboveS9` name a different concept — position relative
+  // to the S9 crossover, not "past a fault threshold" — so reusing that pair
+  // would conflate two unrelated ideas. Two independent literals, not a
+  // shared constant, until a third caller needs one (rule of three).
+  const LOWER_FAULT_COLOR = 'var(--v2-accent-red, #ff4040)';
+  const LOWER_ACTIVE_COLOR = 'var(--v2-accent-green-medium)';
+  const LOWER_DIM_COLOR = '#141414';
+
+  function lowerTickX(fraction: number): number {
+    return BAR_X + fraction * BAR_WIDTH;
+  }
+
+  function lowerActiveColor(): string {
+    return lowerScale?.fault ? LOWER_FAULT_COLOR : LOWER_ACTIVE_COLOR;
+  }
+
+  const lowerFillSegs = $derived(
+    lowerScale ? Math.max(0, Math.min(SEG_COUNT, lowerScale.valueFraction * SEG_COUNT)) : 0,
+  );
+  const lowerFullSegs = $derived(Math.floor(lowerFillSegs));
+  const lowerFracSeg = $derived(lowerFillSegs - lowerFullSegs);
+
   // ── Label marks ─────────────────────────────────────────────────────────────
   let labelMarks = $derived(getScaleMarks());
 
@@ -189,8 +265,24 @@
   const S_UNIT_FS     = $derived(compact ? (isVfoVariant ? (isWideVfoVariant ? 15 : 14) : 12) : 15);
   const DBM_Y         = $derived(TRACK_Y + TRACK_H + (compact ? (isVfoVariant ? 0 : 1) : 2));
   const DBM_FS        = $derived(compact ? (isVfoVariant ? 9 : 8) : 9);
-  // Bottom padding symmetric to top
-  const TOTAL_HEIGHT  = $derived(TRACK_Y + TRACK_H + SCALE_LABEL_Y);
+
+  // Lower scale row (MOR-2250): stacked below the main bar, in the bar's own
+  // x-range — it sits below TRACK_Y + TRACK_H the same way the S-unit/dBm
+  // readout does, but at BAR_X..BAR_X+BAR_WIDTH rather than READOUT_CX, so
+  // the two never overlap.
+  const LOWER_GAP      = $derived(compact ? 4 : 6);
+  const LOWER_LABEL_Y  = $derived(TRACK_Y + TRACK_H + LOWER_GAP);
+  const LOWER_LABEL_FS = $derived(compact ? (isVfoVariant ? 9 : 8) : 9);
+  const LOWER_TICK_Y1  = $derived(LOWER_LABEL_Y + (compact ? 8 : 10));
+  const LOWER_TICK_Y2  = $derived(LOWER_TICK_Y1 + (compact ? 5 : 7));
+  const LOWER_TRACK_Y  = $derived(LOWER_TICK_Y2 + 2);
+  const LOWER_TRACK_H  = $derived(compact ? 6 : 8);
+
+  // Bottom padding symmetric to top; the lower row (when present) pushes the
+  // bottom edge down instead of the plain post-bar padding.
+  const TOTAL_HEIGHT  = $derived(
+    lowerScale ? LOWER_TRACK_Y + LOWER_TRACK_H + SCALE_LABEL_Y : TRACK_Y + TRACK_H + SCALE_LABEL_Y,
+  );
 
   // ── Smoother ────────────────────────────────────────────────────────────────
   // MOR-481: keep the fast attack (0.06) but shorten the release τ to ~100 ms
@@ -325,6 +417,7 @@
   height="auto"
   preserveAspectRatio="xMidYMid meet"
   data-variant={variant}
+  data-lower-fault={lowerScale ? (lowerScale.fault ? 'true' : 'false') : undefined}
 >
   <!-- Container background -->
   <rect
@@ -415,6 +508,86 @@
       />
     {/if}
   {/each}
+
+  <!-- Lower scale row (MOR-2250, PR 2 of 2): label + ticks are structural —
+       they render whenever `lowerScale` is present at all, independent of
+       `valueFraction`/`fault`, so the tile never changes height crossing
+       RX/TX. Only the fill segments below (and their color) vary with the
+       reading. -->
+  {#if lowerScale}
+    <text
+      data-lower-row-label
+      x={BAR_X} y={LOWER_LABEL_Y}
+      font-family="'Roboto Mono', monospace"
+      font-size={LOWER_LABEL_FS}
+      font-weight="700"
+      fill="var(--v2-text-dim)"
+      text-anchor="start"
+      dominant-baseline="text-before-edge"
+    >{lowerScale.label}{lowerScale.unit ? ` ${lowerScale.unit}` : ''}</text>
+
+    {#each lowerScale.ticks as t}
+      {@const tx = lowerTickX(t.value)}
+      <text
+        data-lower-tick-label={t.value}
+        x={tx} y={LOWER_LABEL_Y}
+        font-family="'Roboto Mono', monospace"
+        font-size={LOWER_LABEL_FS}
+        font-weight="700"
+        fill="var(--v2-text-dim)"
+        text-anchor="middle"
+        dominant-baseline="text-before-edge"
+      >{t.label}</text>
+      <line
+        data-lower-tick-mark={t.value}
+        x1={tx} y1={LOWER_TICK_Y1}
+        x2={tx} y2={LOWER_TICK_Y2}
+        stroke="var(--v2-text-dim)"
+        stroke-width="0.9"
+        opacity="0.6"
+      />
+    {/each}
+
+    <!-- Lower row track background -->
+    <rect
+      x={BAR_X} y={LOWER_TRACK_Y}
+      width={BAR_WIDTH} height={LOWER_TRACK_H}
+      rx="1"
+      fill="var(--v2-bg-darkest)"
+      stroke="var(--v2-bg-panel)"
+      stroke-width="1"
+    />
+
+    <!-- Lower row segments -->
+    {#each Array(SEG_COUNT) as _, i}
+      {@const x = segX(i)}
+
+      <!-- Dim (inactive) — always present, same as the main bar's own dim rects -->
+      <rect
+        data-lower-segment={i}
+        {x} y={LOWER_TRACK_Y + 1}
+        width={SEG_W} height={LOWER_TRACK_H - 2}
+        fill={LOWER_DIM_COLOR}
+      />
+
+      <!-- Fill — the one part of this row that depends on valueFraction/fault -->
+      {#if i < lowerFullSegs}
+        <rect
+          data-lower-fill={i}
+          {x} y={LOWER_TRACK_Y + 1}
+          width={SEG_W} height={LOWER_TRACK_H - 2}
+          fill={lowerActiveColor()}
+        />
+      {:else if i === lowerFullSegs && lowerFracSeg > 0.01}
+        <rect
+          data-lower-fill={i}
+          {x} y={LOWER_TRACK_Y + 1}
+          width={Math.max(1, SEG_W * lowerFracSeg)} height={LOWER_TRACK_H - 2}
+          fill={lowerActiveColor()}
+        />
+      {/if}
+    {/each}
+  {/if}
 
   <!-- Peak hold indicator -->
   {#if showPeak}
