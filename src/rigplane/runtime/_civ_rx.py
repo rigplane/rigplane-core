@@ -100,6 +100,14 @@ _OBSERVATION_MAX_AGE_SECONDS: dict[tuple[str, str, str], float] = {
     ("receiver", "operator_controls", "rf_gain"): 10.0,
     ("receiver", "operator_controls", "pbt_inner"): 10.0,
     ("receiver", "operator_controls", "pbt_outer"): 10.0,
+    # MOR-2234 follow-up: declaring these observable in ``rigs/ic7300.toml``
+    # left them with no entry here, so ``_observation`` gave them
+    # ``max_age=None`` and ``state_store.py: StateStore.mark_stale_due``
+    # never aged them. The TTL is that profile's declared
+    # ``freshness_ttl_seconds``, pinned by
+    # ``test_tone_and_tsql_freq_observations_can_go_stale``.
+    ("receiver", "operator_controls", "tone_freq"): 25.0,
+    ("receiver", "operator_controls", "tsql_freq"): 25.0,
     ("global", "slow_state", "active"): 5.0,
     ("global", "tx_state", "ptt"): 1.0,
     ("global", "tx_state", "rit_on"): 10.0,
