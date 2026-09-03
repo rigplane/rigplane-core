@@ -125,11 +125,7 @@ const TEXT_CONTRAST_FLOOR: Readonly<Record<string, number>> = {
  * Module scope, computed once: importing the manifest directly is what
  * keeps this immune to that trap — the alternative, a hardcoded zone-id
  * list here, would need a human to remember to touch it on every future
- * S-slice. `receiver-deck`/`rx-tx` are excluded: `SemanticRadioSurfaces
- * .svelte`'s `zoned()` snippet is deliberately never applied to `vfo`/
- * `rxTx` (MOR-1069 — "a zone element exists only where an arrangement must
- * place it, and the single composition places nothing"), a structural fact
- * about the wiring component, not a zone list that goes stale.
+ * S-slice.
  *
  * A SET, not an order: measured live against a real resolved plan (see the
  * MOR-1379 build report), the single composition's `{#each singleOrder}` +
