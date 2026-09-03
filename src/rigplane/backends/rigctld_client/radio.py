@@ -86,8 +86,8 @@ class RigctldClientObservationPoller:
         radio: "RigctldClientRadio",
         callback: Callable[[Sequence["Observation"]], None],
         *,
-        medium_interval: float = 2.0,
-        slow_interval: float = 30.0,
+        medium_interval: float,
+        slow_interval: float,
         command_queue: "CommandQueue | None" = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -676,10 +676,22 @@ class RigctldClientRadio:
         command_queue: "CommandQueue | None" = None,
     ) -> RigctldClientObservationPoller:
         """Construct a backend-neutral observation poller for Web startup."""
+        from .observations import (
+            build_external_rigctld_acquisition_profile,
+            resolve_external_rigctld_poll_intervals,
+        )
+
+        medium_interval, slow_interval = resolve_external_rigctld_poll_intervals(
+            build_external_rigctld_acquisition_profile(
+                vfo_supported=self._vfo_supported
+            )
+        )
         return RigctldClientObservationPoller(
             self,
             callback=callback,
             command_queue=command_queue,
+            medium_interval=medium_interval,
+            slow_interval=slow_interval,
         )
 
     async def get_freq(self, receiver: int = 0) -> int:

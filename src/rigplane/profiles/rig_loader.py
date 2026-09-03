@@ -568,6 +568,7 @@ class RigConfig:
     scope_ref_min_db: float | None = None
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
+    scope_span_presets_hz: tuple[int, ...] = ()
     codec_preference: tuple[str, ...] | None = None
     tx_codec: str | None = None
     default_sample_rate_hz: int | None = None
@@ -782,6 +783,7 @@ class RigConfig:
             scope_ref_min_db=self.scope_ref_min_db,
             scope_ref_max_db=self.scope_ref_max_db,
             scope_ref_step_db=self.scope_ref_step_db,
+            scope_span_presets_hz=self.scope_span_presets_hz,
             codec_preference=self.codec_preference,
             tx_codec=self.tx_codec,
             default_sample_rate_hz=self.default_sample_rate_hz,
@@ -2117,6 +2119,7 @@ def load_rig(path: Path) -> RigConfig:
     scope_ref_min_db: float | None = None
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
+    scope_span_presets_hz: tuple[int, ...] = ()
     if scope_section:
         scope_ref_min_db = (
             float(scope_section["ref_min_db"])
@@ -2133,6 +2136,20 @@ def load_rig(path: Path) -> RigConfig:
             if "ref_step_db" in scope_section
             else None
         )
+        if "span_presets_hz" in scope_section:
+            raw_span_presets = scope_section["span_presets_hz"]
+            if not raw_span_presets:
+                raise RigLoadError(
+                    f"{filename}: [scope].span_presets_hz must be a non-empty array"
+                )
+            scope_span_presets_hz = tuple(int(v) for v in raw_span_presets)
+            if any(
+                scope_span_presets_hz[i] >= scope_span_presets_hz[i + 1]
+                for i in range(len(scope_span_presets_hz) - 1)
+            ):
+                raise RigLoadError(
+                    f"{filename}: [scope].span_presets_hz must be strictly ascending"
+                )
 
     # Parse attenuator/preamp/agc (optional sections)
     att_section = data.get("attenuator", {})
@@ -2452,6 +2469,7 @@ def load_rig(path: Path) -> RigConfig:
         scope_ref_min_db=scope_ref_min_db,
         scope_ref_max_db=scope_ref_max_db,
         scope_ref_step_db=scope_ref_step_db,
+        scope_span_presets_hz=scope_span_presets_hz,
         codec_preference=codec_preference,
         tx_codec=tx_codec,
         default_sample_rate_hz=default_sample_rate_hz,

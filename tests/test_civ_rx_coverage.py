@@ -34,6 +34,7 @@ import asyncio
 import dataclasses
 import time
 from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -42,7 +43,13 @@ from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
+from rigplane.commands import (
+    CONTROLLER_ADDR,
+    build_civ_frame,
+    parse_civ_frame,
+    parse_scope_span_response,
+)
+from rigplane.commands.scope import _SCOPE_SPAN_PRESETS_HZ
 from rigplane.commands.tone import _encode_tone_freq
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
@@ -68,7 +75,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.scope import ScopeFrame
-from rigplane.core.state_store import FreshnessState, StateSnapshot
+from rigplane.core.state_store import FreshnessState, StateSnapshot, StateStore
 from rigplane.types import CivFrame, Mode, ScopeFixedEdge, bcd_encode
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 
@@ -109,6 +116,64 @@ def _make_frame(
         data=data,
         receiver=receiver,
     )
+
+
+def _make_scope_waveform_frame(
+    *,
+    receiver: int = 0,
+    mode: int,
+    start_hz: int = 14_000_000,
+    end_hz: int = 14_350_000,
+    oor: bool = False,
+) -> CivFrame:
+    """Build a single-packet (LAN-style, seq=seqMax=1) ``0x27``/``0x00``
+    waveform frame, per ``rigplane.scope._ReceiverState.feed``'s sequence-1
+    layout: ``[receiver, seq_bcd, seqMax_bcd, mode, start(5), end(5), oor,
+    pixels...]``.
+
+    When ``oor`` is False and ``mode == 0`` (center), the assembler
+    remaps ``start_hz``/``end_hz`` as ``[center_freq, span]`` into real
+    edges (``center - span``, ``center + span``) -- pass ``start_hz`` as
+    the center frequency and ``end_hz`` as the SPAN value itself (per the
+    IC-7610 CI-V reference p.14 / IC-7300 manual: the raw field carries
+    the same value the ``0x27 0x15`` span table encodes, not half of
+    it). For any other mode both are used as literal edge frequencies,
+    unremapped.
+
+    When ``oor`` is True, ``_ReceiverState.feed`` returns BEFORE that
+    center-mode remap regardless of ``mode`` -- ``start_hz``/``end_hz``
+    below are passed straight through as ``ScopeFrame.start_freq_hz``/
+    ``end_freq_hz`` unmodified (raw ``[center, span]``, not edges).
+    """
+    raw_payload = (
+        bytes([0x01, 0x01, mode])
+        + bcd_encode(start_hz)
+        + bcd_encode(end_hz)
+        + bytes([0x01 if oor else 0x00])
+        + b"\x00"  # one pixel byte
+    )
+    return _make_frame(cmd=0x27, sub=0x00, data=bytes([receiver]) + raw_payload)
+
+
+@contextmanager
+def _spy_state_store_apply(radio: IcomRadio) -> Generator[MagicMock, None, None]:
+    """Spy on ``StateStore.apply`` calls made through ``radio``.
+
+    ``StateStore`` uses ``__slots__`` (no ``apply`` slot), so an
+    instance-level ``patch.object(radio._state_store, "apply", ...)`` fails
+    with "attribute is read-only" — this patches the class method instead,
+    with a wrapper that still calls through to the real implementation
+    bound to ``radio``'s own store.
+    """
+    original_apply = StateStore.apply
+    store = radio._state_store
+
+    def _call_through(observation: Observation) -> Any:
+        return original_apply(store, observation)
+
+    spy = MagicMock(side_effect=_call_through)
+    with patch.object(StateStore, "apply", spy):
+        yield spy
 
 
 def _bcd2(value: int) -> bytes:
@@ -3874,9 +3939,291 @@ def test_scope_control_observation_backed(
 
 
 def test_scope_waterfall_data_emits_no_observations(radio: IcomRadio) -> None:
-    """0x27 sub 0x00 (waterfall pixel data) must never reach the StateStore."""
+    """0x27 sub 0x00 never decodes via ``_observations_from_frame`` — the
+    typed-getter response path (`_scope_control_observations`) is only
+    reached for subs 0x12-0x1F; ``_route_civ_frame`` short-circuits sub
+    0x00 before that dispatch (see that function's docstring).
+
+    MOR-2222 adds a separate, later path — the waveform-stream mode
+    republish in ``_route_civ_frame`` / `_publish_scope_mode_observation` —
+    that *does* write ``scope_controls.global.display.mode`` from sub 0x00
+    frames. That path is not exercised through
+    ``_observations_from_frame`` and is covered instead by
+    ``test_scope_waveform_mode_change_emits_single_observation`` below.
+    """
     frame = _make_frame(cmd=0x27, sub=0x00, data=b"\x00\x01\x01" + b"\x00" * 16)
     assert radio._civ_runtime._observations_from_frame(frame) == ()
+
+
+async def test_scope_waveform_mode_change_emits_single_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2222: a waveform frame with a changed mode publishes exactly one
+    ``scope_controls.global.display.mode`` StateStore observation."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(mode=1)
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    mode_calls = [
+        call
+        for call in apply_spy.call_args_list
+        if str(call.args[0].path) == "scope_controls.global.display.mode"
+    ]
+    assert len(mode_calls) == 1
+    assert mode_calls[0].args[0].value == 1
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.mode")
+    assert field.value == 1
+    assert field.freshness is FreshnessState.FRESH
+
+
+async def test_scope_waveform_mode_unchanged_emits_no_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2222: a second waveform frame with the same mode is a no-op —
+    the stream change-detects before writing, since it runs at up to
+    ~15 fps and every write would otherwise thrash the StateStore."""
+    first = _make_scope_waveform_frame(mode=1)
+    await radio._civ_runtime._route_civ_frame(first, generation=radio._civ_epoch)
+
+    with _spy_state_store_apply(radio) as apply_spy:
+        second = _make_scope_waveform_frame(mode=1)
+        await radio._civ_runtime._route_civ_frame(second, generation=radio._civ_epoch)
+
+    assert apply_spy.call_count == 0
+
+
+async def test_scope_waveform_fixed_mode_emits_no_span_edge_or_fixed_edge(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2222/MOR-2256: a fixed-mode (``mode != 0``) waveform frame
+    republishes nothing beyond ``mode`` itself. ``edge`` has no
+    frame-carried source at all. ``fixed_edge`` has no declared table of
+    legal (start_hz, end_hz) pairs to match a frame's edges against
+    (``_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ`` maps a start_hz to a band, not
+    to a specific stored preset) — MOR-2256 rules out guessing which
+    preset is active. ``span`` is center-mode-only by construction
+    (``_publish_scope_span_observation`` returns immediately when
+    ``scope_frame.mode != 0``), so a fixed-mode frame never reaches its
+    exact-match lookup regardless of width."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(
+            mode=1, start_hz=14_000_000, end_hz=14_350_000
+        )
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    applied_paths = {str(call.args[0].path) for call in apply_spy.call_args_list}
+    assert "scope_controls.global.display.edge" not in applied_paths
+    assert "scope_controls.global.display.span" not in applied_paths
+    assert "scope_controls.global.display.fixed_edge" not in applied_paths
+
+
+@pytest.mark.parametrize("preset_index", range(len(_SCOPE_SPAN_PRESETS_HZ)))
+async def test_scope_waveform_center_mode_span_matches_reply_path_parity(
+    radio: IcomRadio, preset_index: int
+) -> None:
+    """MOR-2256/#3063: a center-mode frame built the way the radio
+    actually encodes it publishes the same span index the 0x27/0x15
+    reply path decodes for the identical preset value -- parity over all
+    eight declared presets.
+
+    Per the IC-7610 CI-V reference (p.14, "Scope waveform data") and the
+    IC-7300 manual, the raw payload's center-mode fields are the center
+    frequency and the SPAN value itself (the same value the 0x27/0x15
+    span table encodes), not half of it -- so ``end_hz`` below is a real
+    preset value, not an invented half-span. Both this stream path and
+    the reply path resolve through the same ``_span_index_for_hz``
+    helper against ``_SCOPE_SPAN_PRESETS_HZ``, so parity here also
+    guards against the two drifting apart in the future.
+    """
+    preset_hz = _SCOPE_SPAN_PRESETS_HZ[preset_index]
+
+    reply_frame = _make_frame(cmd=0x27, sub=0x15, data=b"\x00" + bcd_encode(preset_hz))
+    _receiver, expected_index = parse_scope_span_response(reply_frame)
+    assert expected_index == preset_index  # sanity: table order is the index
+
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(
+            mode=0, start_hz=14_000_000, end_hz=preset_hz
+        )
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    span_calls = [
+        call
+        for call in apply_spy.call_args_list
+        if str(call.args[0].path) == "scope_controls.global.display.span"
+    ]
+    assert len(span_calls) == 1
+    assert span_calls[0].args[0].value == expected_index
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.span")
+    assert field.value == expected_index
+    assert field.freshness is FreshnessState.FRESH
+
+
+async def test_scope_waveform_center_mode_unknown_width_emits_no_span(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2256: a center-mode frame whose (correctly-decoded) span has
+    no exact match in ``_SCOPE_SPAN_PRESETS_HZ`` publishes nothing — not
+    a nearest-value guess. 999 Hz is not one of the eight declared
+    presets (2500/5000/10000/25000/50000/100000/250000/500000); ``end_hz``
+    here is the raw span field itself (see the parity test above for the
+    encoding), so no doubling/halving is involved in choosing this value."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=999)
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    applied_paths = {str(call.args[0].path) for call in apply_spy.call_args_list}
+    assert "scope_controls.global.display.span" not in applied_paths
+
+
+async def test_scope_waveform_center_mode_span_unchanged_emits_no_second_observation(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2256: two consecutive center-mode frames with the same matching
+    span publish exactly one ``span`` observation total, not one per
+    frame — mirrors ``test_scope_waveform_mode_unchanged_emits_no_observation``."""
+    first = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=2_500)
+    await radio._civ_runtime._route_civ_frame(first, generation=radio._civ_epoch)
+
+    with _spy_state_store_apply(radio) as apply_spy:
+        second = _make_scope_waveform_frame(mode=0, start_hz=14_100_000, end_hz=2_500)
+        await radio._civ_runtime._route_civ_frame(second, generation=radio._civ_epoch)
+
+    span_calls = [
+        call
+        for call in apply_spy.call_args_list
+        if str(call.args[0].path) == "scope_controls.global.display.span"
+    ]
+    assert span_calls == []
+
+
+async def test_scope_waveform_mode_out_of_range_emits_no_observation(
+    radio: IcomRadio,
+) -> None:
+    """#3063 review: ``ScopeFrame.mode`` is documented 0-3 (the reply
+    path -- ``_decode_scope_value(minimum=0, maximum=3)`` -- can never
+    produce anything else); a corrupted/unexpected 0x27/0x00 frame
+    claiming mode 255 must not be written to the StateStore."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(mode=255)
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    applied_paths = {str(call.args[0].path) for call in apply_spy.call_args_list}
+    assert "scope_controls.global.display.mode" not in applied_paths
+
+
+async def test_scope_waveform_mode_observation_survives_connect_generation(
+    radio: IcomRadio,
+) -> None:
+    """#3063 review: on a connected radio, ``advance_generation("connect")``
+    (via ``_control_phase.py``) bumps the StateStore's provider generation
+    away from 0 through ``begin_provider_generation()``. Before this fix,
+    ``_publish_scope_mode_observation`` applied an ``Observation`` whose
+    ``provider_generation`` defaulted to 0 (unbound), so
+    ``StateStore._is_current_observation`` rejected every stream
+    observation from the moment of connect onward -- the field never
+    updated. Simulates that bump directly (mirrors
+    ``test_relative_vfo_ingress_bootstraps_then_transceive_patches_immediately``'s
+    own ``begin_provider_generation()`` call) and asserts the field is
+    written anyway."""
+    store_generation = radio._state_store.begin_provider_generation()  # noqa: SLF001
+    assert store_generation != 0
+
+    frame = _make_scope_waveform_frame(mode=2)
+    await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.mode")
+    assert field.value == 2
+    assert field.freshness is FreshnessState.FRESH
+
+
+async def test_scope_waveform_out_of_range_center_frame_emits_no_span(
+    radio: IcomRadio,
+) -> None:
+    """#3063 review, second round: ``_ReceiverState.feed`` returns BEFORE
+    the center-mode edge expansion when the frame's out-of-range flag is
+    set, so ``ScopeFrame.start_freq_hz``/``end_freq_hz`` are then the
+    raw, unexpanded ``[center, span]`` pair, not real edges. The
+    verifier's example: center 450 kHz, span 500 kHz (matching
+    ``_SCOPE_SPAN_PRESETS_HZ[7]``), OOR set -- computing
+    ``end_freq_hz - start_freq_hz`` as if these were edges gives
+    ``500_000 - 450_000 == 50_000``, halved to 25_000, which wrongly
+    matches index 3 (``_SCOPE_SPAN_PRESETS_HZ[3] == 25_000``) instead of
+    publishing nothing."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(
+            mode=0, start_hz=450_000, end_hz=500_000, oor=True
+        )
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    applied_paths = {str(call.args[0].path) for call in apply_spy.call_args_list}
+    assert "scope_controls.global.display.span" not in applied_paths
+
+
+async def test_scope_waveform_span_observation_survives_connect_generation(
+    radio: IcomRadio,
+) -> None:
+    """#3063 review, second round: the same connect-generation gap as
+    ``test_scope_waveform_mode_observation_survives_connect_generation``
+    above, but for the span path -- only the mode path had this test
+    before this round."""
+    store_generation = radio._state_store.begin_provider_generation()  # noqa: SLF001
+    assert store_generation != 0
+
+    frame = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=5_000)
+    await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.span")
+    assert field.value == 1  # _SCOPE_SPAN_PRESETS_HZ.index(5000)
+    assert field.freshness is FreshnessState.FRESH
+
+
+async def test_scope_waveform_span_rejected_apply_retries_on_next_frame(
+    radio: IcomRadio,
+) -> None:
+    """#3063 review, second round: the per-receiver change-detect cache
+    (``_scope_stream_last_span``) must only remember a value once
+    ``StateStore.apply`` actually accepted it -- signaled by
+    ``changeset.observed_paths`` being non-empty, the same distinction
+    ``StateStore._apply_one``/``_empty_changeset`` use internally.
+    Forces the first attempt to be rejected (``StateStore.apply`` mocked
+    to return an empty ``ChangeSet`` once), then feeds the identical
+    frame again with ``apply`` unmocked: if the cache had been written on
+    the rejected attempt, this second, otherwise-identical frame would be
+    treated as "unchanged" and skipped -- the field would never land.
+    """
+    original_apply = StateStore.apply
+    store = radio._state_store
+    empty_changeset = store._empty_changeset()  # noqa: SLF001
+    span_path = "scope_controls.global.display.span"
+    rejected = {"done": False}
+
+    def _reject_span_once(observation: Observation) -> Any:
+        # A mode=0 frame also publishes ``mode`` -- only the span
+        # observation's OWN first apply call should be rejected, not
+        # whichever observation happens to reach apply() first.
+        if not rejected["done"] and str(observation.path) == span_path:
+            rejected["done"] = True
+            return empty_changeset
+        return original_apply(store, observation)
+
+    frame = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=10_000)
+
+    with patch.object(StateStore, "apply", side_effect=_reject_span_once):
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+    assert rejected["done"], "test setup did not exercise the span apply call"
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field("scope_controls.global.display.span")
+
+    second = _make_scope_waveform_frame(mode=0, start_hz=14_050_000, end_hz=10_000)
+    await radio._civ_runtime._route_civ_frame(second, generation=radio._civ_epoch)
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.span")
+    assert field.value == 2  # _SCOPE_SPAN_PRESETS_HZ.index(10000)
+    assert field.freshness is FreshnessState.FRESH
 
 
 def test_scope_control_observations_project_public(radio: IcomRadio) -> None:
