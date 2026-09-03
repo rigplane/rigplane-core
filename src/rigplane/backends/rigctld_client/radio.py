@@ -661,7 +661,8 @@ class RigctldClientRadio:
 
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         if receiver is not None and (
-            command not in {
+            command
+            not in {
                 "set_af_level",
                 "set_rf_gain",
                 "set_squelch",

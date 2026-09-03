@@ -346,7 +346,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return supported
         if (
             not supported
-            or command not in {
+            or command
+            not in {
                 "set_af_level",
                 "set_rf_gain",
                 "set_squelch",
