@@ -2465,7 +2465,9 @@ class CivRuntime:
                     normalize_observed_ptt(
                         False
                         if frame.data == b"\x00"
-                        else True if frame.data == b"\x01" else None
+                        else True
+                        if frame.data == b"\x01"
+                        else None
                     ),
                     frame=frame,
                 )
@@ -2740,9 +2742,7 @@ class CivRuntime:
             # success, or unrelated response as radio truth.
             source = "poll_response"
         max_age_path = (
-            FieldPath.global_("tx_state", "ptt")
-            if path == OBSERVED_PTT_PATH
-            else path
+            FieldPath.global_("tx_state", "ptt") if path == OBSERVED_PTT_PATH else path
         )
         max_age = _OBSERVATION_MAX_AGE_SECONDS.get(
             (max_age_path.scope.value, max_age_path.family.value, max_age_path.name)
