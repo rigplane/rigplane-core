@@ -34,12 +34,6 @@ browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 
 [scope]
-# Icom CI-V scope span presets: code 0-7 -> Hz, same table as
-# commands/scope.py: _SCOPE_SPAN_PRESETS_HZ (still the source used by the
-# 0x15 reply path/SET builder in this PR; a follow-up threads this field
-# through them and deletes the constant). Read directly by the
-# waveform-stream span derivation
-# (runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation, MOR-2256).
 span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
 
 # ── Capabilities ─────────────────────────────────────────────────
