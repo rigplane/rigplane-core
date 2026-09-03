@@ -77,6 +77,7 @@ from ..commands.commander import Priority
 from ..core.command_service import (
     CommandService,
 )
+from ..core.acquisition_drain import AcquisitionDrain
 from ..core.command_dispatch import execute_command_intent
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
@@ -85,7 +86,6 @@ from ..core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
     civ_acquisition_executor_for_provider,
-    derive_tx_active,
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -605,6 +605,7 @@ class RadioPoller:
         )
         self._acquisition_executor = acquisition_executor
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
+        self._acquisition_drain: AcquisitionDrain | None = None
         # MOR-874: monotonic time of the FIRST healthy-link deadline expiry per
         # in-flight request id. Seeds the bounded grace window
         # (``_ACQUISITION_HEALTHY_GRACE_SECONDS``) after which a still-uncredited
@@ -3474,167 +3475,216 @@ class RadioPoller:
             ready_timeout = 2.0
         return (now - float(last_civ)) <= float(ready_timeout)
 
-    async def _send_scheduler_requests(self) -> None:
-        scheduler = self._acquisition_scheduler
-        if scheduler is None:
-            return
-        now = time.monotonic()
-        # MOR-2280: this drain no longer calls ``due_requests`` -- the
-        # profile's cadence is emitted by ``StateFreshnessService.tick``, and
-        # this method dispatches what it finds queued.
-        #
-        # It must still refresh the cached transmit fact, which that call used
-        # to keep current. This loop drains every 0.025 s (LAN) against a
-        # 0.05 s tick, so most drains land BETWEEN ticks; gating on the fact
-        # the last tick left would miss a de-key by up to one tick and send
-        # the tx_only group (power/SWR/ALC/comp) during confirmed RX -- the
-        # MOR-1525 SWR-flap loop. Same ``derive_tx_active`` over the same
-        # canonical store as the tick's own cadence call and as
-        # ``RigctldServer._drain_state_acquisition_once``, so the writers
-        # cannot disagree about one store state. See note_tx_active()'s
-        # docstring, and
-        # test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain.
-        scheduler.note_tx_active(derive_tx_active(self._state_store))
-        # MOR-1533: dispatch must use the tx_active-gated view. Crediting an
-        # already-sent answer (runtime._civ_rx) uses the unfiltered
-        # pending_requests() instead, so an answer landing after de-key is
-        # never blinded by this gate -- see dispatchable_requests()'s
-        # docstring.
-        pending = scheduler.dispatchable_requests()
-        pending_ids = {request.id for request in pending}
-        for request_id in tuple(self._acquisition_in_flight):
-            if request_id not in pending_ids:
-                del self._acquisition_in_flight[request_id]
-                # MOR-874: request left flight (credited / dropped) — drop its
-                # grace bookkeeping so the map never leaks.
-                self._acquisition_healthy_grace_started.pop(request_id, None)
+    def _record_acquisition_failure(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        reason: str,
+        failed_paths: tuple[FieldPath, ...] | frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in failed_paths],
+            reason=reason,
+            provider=request.provider,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason=reason,
+            failed_paths=failed_paths,
+            now=now,
+        )
 
-        for request in pending:
-            sent_paths: frozenset[FieldPath] = frozenset()
-            sent_at = 0.0
-            existing = self._acquisition_in_flight.get(request.id)
-            if existing is not None:
-                sent_paths, sent_at = existing
-                if self._acquisition_request_expired(
-                    request,
-                    sent_at=sent_at,
-                    now=now,
-                ):
-                    # MOR-874: when the deadline fires but the CI-V link is
-                    # healthy, this is (usually) a false timeout — the radio
-                    # answered and the deadline raced under load. Suppress the
-                    # false-timeout -> adaptive-decay chain and keep the request
-                    # in flight so the returning observation can credit it.
-                    #
-                    # But the health gate reads the GLOBAL last-CI-V timestamp,
-                    # so under external-CAT load it reads healthy ~permanently;
-                    # a request whose specific answer is genuinely lost would
-                    # then be pinned forever. Bound the suppression with a grace
-                    # window: once it elapses with the request still uncredited,
-                    # fall back to a REAL timeout (drop it so the scheduler
-                    # re-queues/re-sends and normal failure accounting/decay
-                    # applies).
-                    link_healthy = self._civ_link_healthy(now=now)
-                    grace_expired = False
-                    if link_healthy:
-                        grace_started = self._acquisition_healthy_grace_started.get(
-                            request.id
-                        )
-                        if grace_started is None:
-                            self._acquisition_healthy_grace_started[request.id] = now
-                            grace_started = now
-                        if now - grace_started >= _ACQUISITION_HEALTHY_GRACE_SECONDS:
-                            grace_expired = True
-                    # Treat a grace-expired healthy expiry exactly like an
-                    # unhealthy one: count it, drop it, let cadence advance.
-                    timeout_is_real = (not link_healthy) or grace_expired
-                    self._record_state_diagnostic(
-                        "acquisition_request_failed",
-                        "web.radio_poller",
-                        request_id=request.id,
-                        paths=[str(path) for path in request.paths],
-                        reason="acquisition_request_timeout",
-                        link_healthy=link_healthy,
-                        grace_expired=grace_expired,
-                    )
-                    scheduler.record_acquisition_failure(
-                        request,
-                        reason="acquisition_request_timeout",
-                        failed_paths=sent_paths or frozenset(request.paths),
-                        now=now,
-                        link_healthy=not timeout_is_real,
-                    )
-                    if timeout_is_real:
-                        self._acquisition_in_flight.pop(request.id, None)
-                        self._acquisition_healthy_grace_started.pop(request.id, None)
-                        continue
-                    # Healthy link, still within grace: leave in flight, skip
-                    # re-send this cycle (no extra CI-V traffic — important not
-                    # to compete with external CAT).
-                    sent_paths = sent_paths.intersection(request.paths)
-                    if all(path in sent_paths for path in request.paths):
-                        continue
-                else:
-                    sent_paths = sent_paths.intersection(request.paths)
+    def _report_acquisition_expiry(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> bool:
+        """Report one fired deadline; return whether it ends the request.
 
-            if all(path in sent_paths for path in request.paths):
-                continue
+        MOR-874: when the deadline fires but the CI-V link is healthy, this
+        is (usually) a false timeout — the radio answered and the deadline
+        raced under load. Suppress the false-timeout -> adaptive-decay chain
+        and keep the request in flight so the returning observation can
+        credit it.
 
-            executor = self._acquisition_executor
-            if executor is None:
-                self._record_state_diagnostic(
-                    "acquisition_executor_missing",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in request.paths],
-                    provider=request.provider,
-                )
-                scheduler.record_acquisition_failure(
-                    request,
-                    reason="acquisition_executor_missing",
-                    now=now,
-                )
-                continue
+        But the health gate reads the GLOBAL last-CI-V timestamp, so under
+        external-CAT load it reads healthy ~permanently; a request whose
+        specific answer is genuinely lost would then be pinned forever. Bound
+        the suppression with a grace window: once it elapses with the request
+        still uncredited, fall back to a REAL timeout (drop it so the
+        scheduler re-queues/re-sends and normal failure accounting/decay
+        applies).
 
-            result = await executor.execute(
-                request,
-                already_sent_paths=sent_paths,
+        rigctld injects no expiry report and keeps every timeout terminal —
+        see ``RigctldServer._record_acquisition_failure``'s MOR-874 comment
+        and test_a_timed_out_request_is_terminal_even_on_a_healthy_civ_link.
+        """
+
+        link_healthy = self._civ_link_healthy(now=now)
+        grace_expired = False
+        if link_healthy:
+            grace_started = self._acquisition_healthy_grace_started.get(request.id)
+            if grace_started is None:
+                self._acquisition_healthy_grace_started[request.id] = now
+                grace_started = now
+            if now - grace_started >= _ACQUISITION_HEALTHY_GRACE_SECONDS:
+                grace_expired = True
+        # Treat a grace-expired healthy expiry exactly like an unhealthy one:
+        # count it, drop it, let cadence advance.
+        timeout_is_real = (not link_healthy) or grace_expired
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in request.paths],
+            reason="acquisition_request_timeout",
+            link_healthy=link_healthy,
+            grace_expired=grace_expired,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_request_timeout",
+            failed_paths=sent_paths or frozenset(request.paths),
+            now=now,
+            link_healthy=not timeout_is_real,
+        )
+        return timeout_is_real
+
+    def _forget_acquisition_grace(self, request_id: str) -> None:
+        """Drop the grace clock of a request the drain dropped (MOR-874).
+
+        Called wherever ``AcquisitionDrain`` removes a ledger entry, so the
+        map never outlives the flight it tracks.
+        """
+
+        self._acquisition_healthy_grace_started.pop(request_id, None)
+
+    def _report_acquisition_executor_missing(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        now: float,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_executor_missing",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in request.paths],
+            provider=request.provider,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_executor_missing",
+            now=now,
+        )
+
+    def _report_acquisition_executor_error(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        error: BaseException,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        """Record a send that raised, instead of letting it leave the drain.
+
+        Before MOR-2293 this seat had no ``try/except`` here and the
+        exception unwound to ``_run``'s catch-all: no diagnostic, no failure
+        accounting, and the rest of the pass skipped. Pinned by
+        test_executor_exception_is_recorded_and_drops_the_in_flight_entry.
+        """
+
+        failed_paths = (
+            tuple(path for path in request.paths if path not in sent_paths)
+            or request.paths
+        )
+        self._record_state_diagnostic(
+            "acquisition_request_failed",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in failed_paths],
+            reason="acquisition_executor_error",
+            provider=request.provider,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
+        scheduler.record_acquisition_failure(
+            request,
+            reason="acquisition_executor_error",
+            failed_paths=failed_paths,
+            now=now,
+        )
+
+    def _report_acquisition_sent(
+        self,
+        request: AcquisitionRequest,
+        *,
+        paths: tuple[FieldPath, ...],
+        pending_request_count: int,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_request_sent",
+            "web.radio_poller",
+            request_id=request.id,
+            paths=[str(path) for path in paths],
+            pending_request_count=pending_request_count,
+        )
+
+    def _state_acquisition_drain(self) -> AcquisitionDrain:
+        """Return this seat's drain, built on first use.
+
+        Scheduler and executor are read through callables: both are resolved
+        during ``__init__`` but the scheduler may also be attached to the
+        radio afterwards.
+
+        This seat sends everything the scheduler hands it. Its external-CAT
+        stand-down is the whole-iteration ``continue`` in ``_run``, which
+        holds back queued commands as well as reads, so no dispatch filter
+        belongs here.
+        """
+
+        drain = self._acquisition_drain
+        if drain is None:
+            drain = AcquisitionDrain(
+                scheduler=lambda: self._acquisition_scheduler,
+                executor=lambda: self._acquisition_executor,
+                store=lambda: self._state_store,
+                in_flight=self._acquisition_in_flight,
+                expired=self._acquisition_request_expired,
+                dispatchable=lambda pending: pending,
+                report_failure=self._record_acquisition_failure,
+                report_executor_missing=self._report_acquisition_executor_missing,
+                report_executor_error=self._report_acquisition_executor_error,
+                report_sent=self._report_acquisition_sent,
+                report_expiry=self._report_acquisition_expiry,
+                on_forget=self._forget_acquisition_grace,
             )
-            newly_sent = tuple(result.sent_paths)
-            failed_paths = tuple(result.failed_paths)
-            if failed_paths:
-                reason = result.failure_reason or "acquisition_request_failed"
-                self._record_state_diagnostic(
-                    "acquisition_request_failed",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in failed_paths],
-                    reason=reason,
-                    provider=request.provider,
-                )
-                scheduler.record_acquisition_failure(
-                    request,
-                    reason=reason,
-                    failed_paths=failed_paths,
-                    now=now,
-                )
+            self._acquisition_drain = drain
+        return drain
 
-            if newly_sent:
-                self._acquisition_in_flight[request.id] = (
-                    sent_paths.union(newly_sent),
-                    now,
-                )
-                self._record_state_diagnostic(
-                    "acquisition_request_sent",
-                    "web.radio_poller",
-                    request_id=request.id,
-                    paths=[str(path) for path in newly_sent],
-                    # MOR-1533: dispatchable_requests(), matching this
-                    # drain's own dispatch view -- not the unfiltered
-                    # pending_requests(), which would also count entries
-                    # this drain will never send (withheld tx_only hints).
-                    pending_request_count=len(scheduler.dispatchable_requests()),
-                )
+    async def _send_scheduler_requests(self) -> None:
+        # MOR-2280: this seat does not call ``due_requests`` -- the profile's
+        # cadence is emitted by ``StateFreshnessService.tick`` and a pass
+        # dispatches what it finds queued. The drain refreshes the cached
+        # transmit fact itself, which that call used to keep current: ``_run``
+        # waits at most ``_fast_interval`` (0.025 s on LAN) between passes
+        # against the freshness service's 0.05 s tick, so a pass usually lands
+        # BETWEEN ticks, and gating on the fact the last tick left would miss
+        # a de-key by up to one tick and send the tx_only group
+        # (power/SWR/ALC/comp) during confirmed RX -- the MOR-1525 SWR-flap
+        # loop. See
+        # test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain.
+        await self._state_acquisition_drain().run_once()
 
     async def _send_query(self) -> None:
         if self._acquisition_scheduler is not None:

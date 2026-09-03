@@ -35,6 +35,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
@@ -877,6 +878,67 @@ async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() 
         rid in {r.id for r in scheduler.pending_requests()}
         for rid in poller._acquisition_healthy_grace_started  # noqa: SLF001
     )
+
+
+class _RaisingAcquisitionExecutor:
+    """Executor whose send fails the way a closed transport does."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def execute(
+        self,
+        request: object,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> object:
+        self.calls += 1
+        raise self.error
+
+
+@pytest.mark.asyncio
+async def test_executor_exception_is_recorded_and_drops_the_in_flight_entry() -> None:
+    """MOR-2293 3b: a raising executor no longer escapes the web drain.
+
+    Before the shared ``AcquisitionDrain``, this seat had no ``try/except``
+    around ``executor.execute``: the exception unwound to ``_run``'s
+    catch-all, nothing was recorded, the scheduler counted no failure, and
+    the drain never reached the rest of the pass. The shared drain catches
+    it, records a diagnostic, reports the failure and drops the ledger
+    entry. This pins the new behaviour, which the migration chose.
+    """
+
+    radio = _healthy_radio(last_civ=300.0)
+    first = FieldPath.receiver("main", "meters", "s_meter")
+    scheduler = AcquisitionScheduler(profile=_acquisition_profile(first))
+    radio._acquisition_scheduler = scheduler
+    executor = _RaisingAcquisitionExecutor(RuntimeError("port closed"))
+    recorder = StateDiagnosticsRecorder(enabled=True)
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+        diagnostics=recorder,
+    )
+    with patch("rigplane.web.radio_poller.time.monotonic", return_value=300.0):
+        _tick_cadence(poller, now=300.0)
+        await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert executor.calls == 1
+    failures = [
+        event
+        for event in recorder.events()
+        if event.details.get("reason") == "acquisition_executor_error"
+    ]
+    assert len(failures) == 1, "the executor exception was not recorded at all"
+    assert failures[0].details["error_type"] == "RuntimeError"
+    assert failures[0].details["error"] == "port closed"
+    assert scheduler.diagnostics()["failureCountByReason"] == {
+        "acquisition_executor_error": 1
+    }
+    assert poller._acquisition_in_flight == {}  # noqa: SLF001
 
 
 @pytest.mark.asyncio
