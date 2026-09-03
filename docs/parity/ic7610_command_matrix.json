@@ -1188,8 +1188,7 @@
         "rigplane.web.server:WebServer._on_radio_state_change"
       ],
       "test_patterns": [
-        "tests/test_commands.py::test_get_power_meter",
-        "tests/test_web_server.py::test_poller_broadcasts_meter_readings"
+        "tests/test_commands.py::test_get_power_meter"
       ],
       "notes": ""
     },
@@ -1268,8 +1267,7 @@
       ],
       "test_patterns": [
         "tests/test_commands.py::test_get_vd_meter",
-        "tests/test_civ_rx_coverage.py::test_update_radio_state_vd_meter",
-        "tests/test_web_server.py::test_poller_broadcasts_meter_readings"
+        "tests/test_civ_rx_coverage.py::test_update_radio_state_vd_meter"
       ],
       "notes": ""
     },
