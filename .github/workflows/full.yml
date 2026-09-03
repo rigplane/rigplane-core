@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: b0e0da462e1ac8d84657964f6ccc3b71dba1242e
+          ref: bb8044d5edeb39981e6c7683a2eac20e24dabc7d
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -35,7 +35,7 @@ jobs:
         run: |
           checked_head=$(git rev-parse HEAD)
           echo "checked_head=$checked_head"
-          if [ "$checked_head" != "b0e0da462e1ac8d84657964f6ccc3b71dba1242e" ]; then
+          if [ "$checked_head" != "bb8044d5edeb39981e6c7683a2eac20e24dabc7d" ]; then
             echo "unexpected checkout: $checked_head" >&2
             exit 1
           fi
@@ -68,5 +68,5 @@ jobs:
       - name: Upload formatter patch
         uses: actions/upload-artifact@v7
         with:
-          name: canonical-att-admission-format-b0e0da46
+          name: canonical-att-admission-format-bb8044d5
           path: formatter.patch
