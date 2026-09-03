@@ -5,6 +5,12 @@ on:
     # Mon/Wed/Fri 03:00 UTC (06:00 MSK)
     - cron: "0 3 * * 1,3,5"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Normal matrix or isolated Q1 diagnostic proof
+        type: choice
+        default: normal
+        options: [normal, q1-proof]
   push:
     branches: [main]
 
@@ -15,10 +21,12 @@ concurrency:
 jobs:
   test:
     # On push: only when commit message contains [full-ci].
-    # On schedule / manual dispatch: always run.
+    # Preserve normal runs; the exact manual diagnostic mode has its own job.
     if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+      !(github.event_name == 'workflow_dispatch' && inputs.mode == 'q1-proof' &&
+      github.ref == 'refs/heads/codex/command-queue-proof') &&
+      (github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]'))
     # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
@@ -184,11 +192,14 @@ jobs:
     #
     # Same push guard as the `test` job above: on `push`, only runs when
     # the commit message contains `[full-ci]`; on `schedule`/
-    # `workflow_dispatch`, always runs. This keeps the job off every
+    # `workflow_dispatch`, runs except for the exact Q1 diagnostic mode/ref.
+    # This keeps the job off every
     # ordinary push to `main`.
     if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+      !(github.event_name == 'workflow_dispatch' && inputs.mode == 'q1-proof' &&
+      github.ref == 'refs/heads/codex/command-queue-proof') &&
+      (github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]'))
     runs-on: [self-hosted, linux, build]
     # Budget: ~45s once the Playwright browser cache is warm (npm ci +
     # cached chromium + the capture matrix itself). 10 minutes is a
@@ -264,3 +275,767 @@ jobs:
       - name: Annotate result
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
+
+  command-queue-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'q1-proof' && github.ref == 'refs/heads/codex/command-queue-proof'
+    permissions:
+      contents: read
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 25
+    env:
+      UV_PYTHON: '3.11'
+      PYTHONDONTWRITEBYTECODE: '1'
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: diagnostic
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          ref: 75926544cb9ca0ffd25e5f6504306d5f9afdf1b3
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Establish isolated evidence and dependency paths
+        run: |
+          proof_temp=$(mktemp -d "$RUNNER_TEMP/command-queue-proof.XXXXXX")
+          mkdir "$proof_temp/evidence"
+          echo "PROOF_ROOT=$proof_temp" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$proof_temp/uv-cache" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$proof_temp/venv" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$proof_temp/python" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: false
+      - name: Install immutable source dependencies without build hooks
+        run: |
+          printf '%s\n' 'uv python install 3.11' 'HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras' > "$PROOF_ROOT/evidence/dependency-commands.txt"
+          uv python install 3.11 2>&1 | tee "$PROOF_ROOT/evidence/python-setup.log"
+          HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras 2>&1 | tee "$PROOF_ROOT/evidence/dependencies.log"
+      - name: Freeze supplemental probes
+        run: |
+          cat > "$PROOF_ROOT/evidence/test_q1_diagnostic_probes.py" <<'PY'
+          import asyncio
+          import gc
+          import pytest
+          from rigplane.runtime._poller_types import CommandQueue, CommandQueueEntry, PttOff, SetFreq, SetMode, SetSplit, execute_command_queue_entry
+          from test_command_queue_execution import wait_for_event_or_exit
+          from test_radio_poller_coverage import _web_queue_turn_poller, _seed_fresh_rx
+          from test_radio_poller_tx_interlock import _observe_ptt
+
+          async def callback_barrier():
+              loop = asyncio.get_running_loop()
+              settled = loop.create_future()
+              loop.call_soon(lambda: loop.call_soon(settled.set_result, None))
+              await settled
+
+          def recording_factory(loop, previous, children):
+              def factory(event_loop, coroutine, **kwargs):
+                  child = previous(event_loop, coroutine, **kwargs) if previous else asyncio.Task(coroutine, loop=event_loop, **kwargs)
+                  children.append(child)
+                  return child
+              loop.set_task_factory(factory)
+
+          @pytest.mark.asyncio
+          async def test_outer_no_child():
+              loop = asyncio.get_running_loop()
+              reply = loop.create_future()
+              reply.cancel()
+              children, calls = [], []
+              previous = loop.get_task_factory()
+              async def leaf(entry):
+                  calls.append(entry)
+              recording_factory(loop, previous, children)
+              try:
+                  await execute_command_queue_entry(CommandQueueEntry(SetFreq(1), reply), leaf)
+                  assert not children and not calls, "outer check must create no child"
+              finally:
+                  loop.set_task_factory(previous)
+                  await asyncio.gather(*children, return_exceptions=True)
+
+          @pytest.mark.asyncio
+          async def test_caller_cancel_closed_release():
+              loop = asyncio.get_running_loop()
+              reply = loop.create_future()
+              entry = CommandQueueEntry(SetFreq(1), reply)
+              started, release, terminal = asyncio.Event(), asyncio.Event(), asyncio.Event()
+              children, received, cancelled = [], [], []
+              previous = loop.get_task_factory()
+              async def leaf(actual):
+                  received.append(actual)
+                  try:
+                      started.set()
+                      await release.wait()
+                  except asyncio.CancelledError:
+                      cancelled.append(True)
+                      raise
+                  finally:
+                      terminal.set()
+              owner = asyncio.create_task(execute_command_queue_entry(entry, leaf))
+              recording_factory(loop, previous, children)
+              try:
+                  await wait_for_event_or_exit(started, owner)
+                  loop.set_task_factory(previous)
+                  actual = [child for child in children if child.get_coro().__qualname__.endswith('.invoke')]
+                  assert len(actual) == 1 and received == [entry] and received[0] is entry
+                  reply.cancel()
+                  await callback_barrier()
+                  assert actual[0].cancelling() == 0 and not cancelled and not terminal.is_set() and not owner.done(), "caller cancellation must leave the closed-gate operation alive"
+                  release.set()
+                  await owner
+              finally:
+                  loop.set_task_factory(previous)
+                  release.set()
+                  await asyncio.gather(owner, *children, return_exceptions=True)
+
+          @pytest.mark.asyncio
+          @pytest.mark.parametrize('kind', ['ordered', 'ptt-off', 'coalesced'])
+          @pytest.mark.parametrize('operation', ['take', 'remove'])
+          async def test_pending_operations(kind, operation):
+              queue = CommandQueue()
+              reply = asyncio.get_running_loop().create_future()
+              if kind == 'coalesced':
+                  queue.put(SetFreq(1))
+                  queue.put(SetMode('USB'))
+                  queue.put(SetFreq(2))
+                  entry = queue._segments[0].dedup[SetFreq]
+                  assert queue.pending_count == 2
+              else:
+                  entry = queue.put_ordered(PttOff() if kind == 'ptt-off' else SetFreq(2), future=reply)
+                  assert queue._segments[0].ordered[0] is entry and queue.pending_count == 1
+              assert queue._notify.is_set()
+              try:
+                  if operation == 'take':
+                      assert queue.take_entry() is entry, "claim must preserve FIFO key order and identity"
+                  else:
+                      assert queue.remove_pending(entry)
+                      assert not reply.done(), "explicit removal must not complete reply"
+                  assert not queue.remove_pending(entry), "claimed or removed identity must be absent"
+                  if kind == 'coalesced':
+                      assert queue.pending_count == 1
+                      assert queue.take_entry().command == SetMode('USB')
+                  assert queue.pending_count == 0 and not queue.has_commands
+                  assert not queue._notify.is_set(), "empty storage must clear notification"
+              finally:
+                  reply.cancel()
+
+          @pytest.mark.asyncio
+          async def test_prior_owner_cancel():
+              async def owner():
+                  current = asyncio.current_task()
+                  current.cancel('prior cancellation')
+                  try:
+                      await asyncio.sleep(0)
+                  except asyncio.CancelledError:
+                      pass
+                  assert current.cancelling() > 0
+                  reply = asyncio.get_running_loop().create_future()
+                  async def leaf(entry):
+                      raise asyncio.CancelledError('independent child')
+                  escaped = False
+                  try:
+                      await execute_command_queue_entry(CommandQueueEntry(SetFreq(1), reply), leaf)
+                  except asyncio.CancelledError:
+                      escaped = True
+                  assert not escaped, "independent child cancellation did not escape"
+                  assert reply.cancelled()
+                  return 'subsequent owner work'
+              assert await asyncio.create_task(owner()) == 'subsequent owner work'
+
+          @pytest.mark.asyncio
+          async def test_cleanup_error_observed():
+              loop = asyncio.get_running_loop()
+              previous = loop.get_exception_handler()
+              records = []
+              loop.set_exception_handler(lambda _loop, context: records.append((context.get('message'), str(context.get('exception')))))
+              started, cleanup, release, terminal = (asyncio.Event() for _ in range(4))
+              reply = loop.create_future()
+              async def leaf(entry):
+                  try:
+                      started.set()
+                      await asyncio.Event().wait()
+                  finally:
+                      cleanup.set()
+                      await release.wait()
+                      terminal.set()
+                      raise ValueError('cleanup failure')
+              task = None
+              try:
+                  sentinel = loop.create_future()
+                  sentinel.set_exception(RuntimeError('Q1 sink calibration'))
+                  del sentinel
+                  gc.collect()
+                  await callback_barrier()
+                  assert records == [('Future exception was never retrieved', 'Q1 sink calibration')], "INVALID: exception sink calibration failed"
+                  records.clear()
+                  task = asyncio.create_task(execute_command_queue_entry(CommandQueueEntry(SetFreq(1), reply), leaf))
+                  await wait_for_event_or_exit(started, task)
+                  task.cancel('original owner')
+                  await wait_for_event_or_exit(cleanup, task)
+                  assert not task.done(), "cleanup must finish before owner returns"
+                  release.set()
+                  with pytest.raises(asyncio.CancelledError) as caught:
+                      await task
+                  assert caught.value.args == ('original owner',) and terminal.is_set() and reply.cancelled()
+                  del caught
+                  task = None
+                  gc.collect()
+                  await callback_barrier()
+                  assert not records, "cleanup exception must be observed"
+              finally:
+                  release.set()
+                  if task is not None:
+                      task.cancel()
+                      await asyncio.gather(task, return_exceptions=True)
+                  loop.set_exception_handler(previous)
+                  reply.cancel()
+
+          @pytest.mark.asyncio
+          @pytest.mark.parametrize('kind', ['cancelled', 'defer'])
+          async def test_nonexecuted_claim_quota(kind, monkeypatch):
+              queue = CommandQueue()
+              poller, boundary = _web_queue_turn_poller(monkeypatch, queue)
+              reply = asyncio.get_running_loop().create_future()
+              if kind == 'defer':
+                  store = poller._state_store
+                  _observe_ptt(store, True, observed_at=store.snapshot().generated_at_monotonic)
+                  queue.put_ordered(SetSplit(True), future=reply)
+              else:
+                  _seed_fresh_rx(poller)
+                  queue.put_ordered(PttOff(), future=reply)
+                  reply.cancel()
+                  await callback_barrier()
+              started, release = asyncio.Event(), asyncio.Event()
+              seen = []
+              async def leaf(command, **kwargs):
+                  seen.append(command)
+                  if command == SetFreq(1):
+                      started.set()
+                      await release.wait()
+              monkeypatch.setattr(poller, '_execute', leaf)
+              queue.put_ordered(SetFreq(1))
+              assert queue.pending_count == 2
+              task = asyncio.create_task(poller._run())
+              try:
+                  await wait_for_event_or_exit(started, task)
+                  queue.put_ordered(SetFreq(2))
+                  queue.put_ordered(SetFreq(3))
+                  release.set()
+                  await wait_for_event_or_exit(boundary, task)
+                  assert seen == [SetFreq(1)], "nonexecuted claim must spend finite quota"
+                  assert [entry.command for entry in queue.drain_entries()] == [SetFreq(2), SetFreq(3)], "arrivals must remain pending at query boundary"
+              finally:
+                  release.set()
+                  task.cancel()
+                  await asyncio.gather(task, return_exceptions=True)
+                  reply.cancel()
+          PY
+      - name: Run frozen source fault and converse matrix
+        run: |
+          cat > "$PROOF_ROOT/evidence/proof.py" <<'PY'
+          import hashlib
+          import importlib
+          import importlib.metadata
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+          from collections import Counter
+          import xml.etree.ElementTree as ET
+          import pytest
+
+          SOURCE = '75926544cb9ca0ffd25e5f6504306d5f9afdf1b3'
+          BASE = 'e2ef93420cf4359f08781754db65ca08bd2288d3'
+          FINAL = '1e5a5fc0566caf0dc963ef17042ef5976869d25c'
+          QSRC = 'src/rigplane/runtime/_poller_types.py'
+          WSRC = 'src/rigplane/web/radio_poller.py'
+          QFILE = 'tests/test_command_queue_execution.py'
+          WFILE = 'tests/test_radio_poller_coverage.py'
+          HFILE = 'tests/test_web_command_batch_http.py'
+          IFILE = 'tests/test_radio_poller_tx_interlock.py'
+          SFILE = 'tests/test_web_server_coverage.py'
+          PROBE = 'tests/test_q1_diagnostic_probes.py'
+          TESTS = (QFILE, WFILE, HFILE, IFILE, SFILE)
+          Q, W, P = QFILE + '::', WFILE + '::', PROBE + '::'
+          FROZEN = [Q + name for name in '''
+          test_ordered_handle_is_frozen_stored_identity
+          test_single_claim_preserves_segments_ptt_priority_and_replacement
+          test_remove_pending_uses_identity_and_cancel_callback_claim_boundary
+          test_kernel_drainer_cancel_before_child_handoff_terminalizes_reply
+          '''.split()]
+          FROZEN += [Q + f'test_non_cancelled_terminal_reply_does_not_remove_pending_entry[{outcome}]' for outcome in ('result', 'error')]
+          TERMINAL = 'test_kernel_terminal_identity_and_hooks_before_reply'
+          FROZEN += [Q + f'{TERMINAL}[{reply}-{outcome}]' for reply in ('pending', 'none', 'result', 'error') for outcome in ('result', 'error', 'cancel')]
+          FROZEN += [Q + f'test_kernel_checks_cancelled_reply_before_leaf[{when}]' for when in ('outer', 'child')]
+          FROZEN += [Q + f'test_kernel_caller_cancel_does_not_end_active_leaf[{reply}]' for reply in ('reply', 'coalesced')]
+          REPEATED = 'test_kernel_repeated_drainer_cancel_joins_terminal_cleanup'
+          FROZEN += [Q + f'{REPEATED}[{reply}-{outcome}]' for reply in ('reply', 'coalesced') for outcome in ('cancel', 'return', 'error')]
+          UNKEY = 'test_cancelled_ordered_reply_keeps_only_legacy_unkey'
+          FROZEN += [Q + f'{UNKEY}[{kind}]' for kind in ('ordinary', 'ptt-on', 'ptt-off')]
+          LIVE = 'test_web_loop_claims_live_pending_finite_turn'
+          FROZEN += [W + f'{LIVE}[{mode}]' for mode in ('cancel', 'replace', 'error')]
+          FROZEN += [W + name for name in '''
+          test_web_loop_releases_held_entry_after_finite_current_turn
+          test_shutdown_drain_executes_cancelled_unkey_after_callback_turn
+          test_command_queue_wait_and_drain_behavior
+          test_command_queue_ordered_lane_preserves_repeated_commands
+          test_command_queue_entries_preserve_command_correlation_metadata
+          test_command_queue_ordered_lane_preserves_segment_order
+          test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain
+          test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay
+          test_shutdown_drain_never_executes_a_pending_key
+          '''.split()]
+          HTTP = HFILE + '::test_http_command_batch_timeout_cancels_unconsumed_step'
+          SCOPE = SFILE + '::test_scope_health_monitor_disconnected_and_reenable'
+          FROZEN += [HTTP, IFILE + '::test_teardown_drain_unkey_stays_outside_the_execute_seat', SCOPE]
+          SUPPLEMENTAL = [P + 'test_' + name for name in ('outer_no_child', 'caller_cancel_closed_release', 'prior_owner_cancel', 'cleanup_error_observed')]
+          PENDING = [P + f'test_pending_operations[{operation}-{kind}]' for operation in ('take', 'remove') for kind in ('ordered', 'ptt-off', 'coalesced')]
+          QUOTA = [P + f'test_nonexecuted_claim_quota[{kind}]' for kind in ('cancelled', 'defer')]
+          SUPPLEMENTAL += PENDING + QUOTA
+          ALL = FROZEN + SUPPLEMENTAL
+          SENTINELS = [W + 'test_command_queue_entries_preserve_command_correlation_metadata', Q + TERMINAL + '[none-result]']
+
+          def edit(file, old, new, count=1):
+              return {'file': file, 'old': old, 'new': new, 'count': count}
+
+          def checkpoint(file, statement, exception='builtins.AssertionError', message=None, line=None):
+              return {'file': file, 'statement': statement, 'exception': exception, 'message': message, 'line': line}
+
+          def qcheck(line, statement):
+              return {**checkpoint(QFILE, statement), 'line': line}
+
+          def kills(nodes, site):
+              return dict.fromkeys(nodes, site)
+
+          RETURN = '        return entry\n\n    @property\n    def pending_count'
+          OWNER = '''        if owner is not None and owner.cancelling() > cancelling:
+                      child.cancel()
+                      while not child.done():
+                          try:
+                              await asyncio.shield(child)
+                          except (asyncio.CancelledError, Exception):
+                              pass
+                      if not child.cancelled():
+                          child.exception()
+                      if reply is not None and not reply.done():
+                          reply.cancel()
+                      raise
+          '''
+          TURN = '''        def entries_for_turn() -> Iterator[CommandQueueEntry]:
+                      for _ in range(self._queue.pending_count):
+                          entry = self._queue.take_entry()
+                          if entry is None:
+                              break
+                          yield from self._stage_tx_interlocked_entries(
+                              [entry], advance_held=False
+                          )
+                      yield from self._stage_tx_interlocked_entries([])
+          '''
+          TAKE_CLEAR = '            if not self.has_commands:\n                self._notify.clear()\n            return entry\n        self._notify.clear()\n        return None'
+          REMOVE_CLEAR = '                        if not self.has_commands:\n                            self._notify.clear()\n                        return True'
+          DEDUP_CLEAR = '                    if not self.has_commands:\n                        self._notify.clear()\n                    return True'
+          ordinary_error = '    except Exception as exc:\n        if reply is not None and not reply.done():\n            reply.set_exception(exc)\n        raise'
+          success = '    else:\n        if reply is not None and not reply.done():\n            reply.set_result(result)'
+          REPLY_CANCEL = '            if reply is not None and not reply.done():\n                reply.cancel()\n'
+          repeat_nodes = [Q + f'{REPEATED}[{kind}-cancel]' for kind in ('reply', 'coalesced')]
+          live_nodes = [W + f'{LIVE}[{kind}]' for kind in ('cancel', 'replace', 'error')]
+          HANDOFF = Q + 'test_kernel_drainer_cancel_before_child_handoff_terminalizes_reply'
+          PERROR = Q + TERMINAL + '[pending-error]'
+          variants = []
+          def fault(label, edits, failures, passes=()):
+              outcomes = dict.fromkeys(SENTINELS + list(passes))
+              assert not set(outcomes).intersection(failures), label
+              variants.append({'label': label, 'kind': 'fault', 'edits': edits, 'expected': {**outcomes, **failures}})
+
+          fault('01-returned-copy', [
+              edit(QSRC, 'from dataclasses import dataclass, field', 'from dataclasses import dataclass, field, replace'),
+              edit(QSRC, RETURN, RETURN.replace('return entry', 'return replace(entry)')),
+          ], {
+              Q + 'test_ordered_handle_is_frozen_stored_identity': qcheck(44, 'assert queue.take_entry() is entry'),
+          })
+          fault('02-equality-removal', [
+              edit(QSRC, 'if pending is entry:', 'if pending == entry:', 2),
+          ], {
+              Q + 'test_remove_pending_uses_identity_and_cancel_callback_claim_boundary': qcheck(80, 'assert not queue.remove_pending(replace(first))'),
+          })
+          fault('03-ptt-order', [
+              edit(QSRC, 'entry = segment.ptt.pop(0)', 'entry = segment.ptt.pop(-1)'),
+          ], {
+              Q + 'test_single_claim_preserves_segments_ptt_priority_and_replacement': qcheck(58, 'assert queue.take_entry().command == PttOn()'),
+          })
+          fault('04-dedup-order', [
+              edit(QSRC, 'next(iter(segment.dedup))', 'next(reversed(segment.dedup))'),
+          ], {
+              P + 'test_pending_operations[take-coalesced]': checkpoint(PROBE, 'assert queue.take_entry() is entry, "claim must preserve FIFO key order and identity"'),
+          })
+          fault('05-cancelled-residue', [
+              edit(QSRC, '            future.add_done_callback(remove_cancelled)', '            pass  # diagnostic: omit cancellation registration'),
+          ], {
+              SCOPE: checkpoint(SFILE, 'assert not is_pending(entry), "cancelled re-enable entry must leave the queue"'),
+              HTTP: checkpoint(HFILE, 'assert srv.command_queue.drain_entries() == [], ('),
+              Q + 'test_remove_pending_uses_identity_and_cancel_callback_claim_boundary': qcheck(90, 'assert queue.pending_count == 1'),
+          })
+          fault('06-all-terminal-removal', [
+              edit(QSRC, 'if reply.cancelled() and not isinstance(entry.command, PttOff):', 'if reply.done() and not isinstance(entry.command, PttOff):'),
+          ], kills(
+              [Q + f'test_non_cancelled_terminal_reply_does_not_remove_pending_entry[{kind}]' for kind in ('result', 'error')],
+              qcheck(108, 'assert queue.has_commands'),
+          ))
+          fault('07-remove-legacy-unkey', [
+              edit(QSRC, 'if reply.cancelled() and not isinstance(entry.command, PttOff):', 'if reply.cancelled():'),
+          ], {
+              Q + UNKEY + '[ptt-off]': qcheck(418, 'assert [entry.command for entry in entries] == expected, ('),
+              W + 'test_shutdown_drain_executes_cancelled_unkey_after_callback_turn': checkpoint(WFILE, 'assert radio.calls == ["set_ptt(False)", *_TEARDOWN]', line=6523),
+          }, [Q + UNKEY + '[ordinary]', Q + UNKEY + '[ptt-on]'])
+          fault('08-removal-completes-reply', [
+              edit(QSRC, REMOVE_CLEAR, REMOVE_CLEAR.replace(
+                  '                        return True',
+                  '                        if entry.future is not None and not entry.future.done():\n                            entry.future.set_result(None)\n                        return True',
+              )),
+          ], kills(
+              [P + f'test_pending_operations[remove-{kind}]' for kind in ('ordered', 'ptt-off')],
+              checkpoint(PROBE, 'assert not reply.done(), "explicit removal must not complete reply"'),
+          ))
+          fault('09-stale-notification', [
+              edit(QSRC, text, text.replace('self._notify.clear()', 'pass'))
+              for text in (TAKE_CLEAR, REMOVE_CLEAR, DEDUP_CLEAR)
+          ], kills(PENDING, checkpoint(PROBE, 'assert not queue._notify.is_set(), "empty storage must clear notification"')))
+          fault('10-missing-outer', [
+              edit(QSRC, '    if reply is not None and reply.cancelled():\n        return\n\n    async def invoke()', '\n    async def invoke()'),
+          ], {
+              P + 'test_outer_no_child': checkpoint(PROBE, 'assert not children and not calls, "outer check must create no child"'),
+          }, [Q + f'test_kernel_checks_cancelled_reply_before_leaf[{kind}]' for kind in ('outer', 'child')])
+          fault('11-missing-inner', [
+              edit(QSRC, '        if reply is not None and reply.cancelled():\n            return None\n        return await execute(entry)', '        return await execute(entry)'),
+          ], {
+              Q + 'test_kernel_checks_cancelled_reply_before_leaf[child]': qcheck(173, 'assert seen == []'),
+          }, [Q + 'test_kernel_checks_cancelled_reply_before_leaf[outer]'])
+          fault('12-caller-kills-operation', [
+              edit(QSRC, '    child = asyncio.create_task(invoke())',
+                  '    child = asyncio.create_task(invoke())\n    if reply is not None:\n        reply.add_done_callback(lambda settled: child.cancel() if settled.cancelled() else None)'),
+          ], {
+              P + 'test_caller_cancel_closed_release': checkpoint(PROBE, 'assert actual[0].cancelling() == 0 and not cancelled and not terminal.is_set() and not owner.done(), "caller cancellation must leave the closed-gate operation alive"'),
+          })
+          abandon = OWNER.split('            while not child.done():')[0] + REPLY_CANCEL + '            raise\n'
+          fault('13-owner-abandons-cleanup', [edit(QSRC, OWNER, abandon)], kills(
+              repeat_nodes, qcheck(287, 'assert not task.done(), "drainer must join awaited child cleanup"'),
+          ))
+          fault('14-repeated-child-cancel', [
+              edit(QSRC, '                except (asyncio.CancelledError, Exception):\n                    pass',
+                  '                except (asyncio.CancelledError, Exception):\n                    child.cancel()'),
+          ], kills(repeat_nodes, qcheck(285, 'assert not interrupted.is_set(), "child cancellation must be sent only once"')))
+          fault('15-owner-reason-lost', [
+              edit(QSRC, OWNER, OWNER.removesuffix('            raise\n') + '            raise asyncio.CancelledError("replacement")\n'),
+          ], {
+              HANDOFF: qcheck(204, 'assert caught.value.args == (abort_reason,)'),
+              **kills(repeat_nodes, qcheck(293, 'assert caught.value.args == ("owner stop",)')),
+          })
+          fault('16-child-as-owner', [
+              edit(QSRC, 'if owner is not None and owner.cancelling() > cancelling:', 'if owner is not None:'),
+          ], {
+              Q + TERMINAL + '[pending-cancel]': checkpoint(QFILE, 'raise asyncio.CancelledError("leaf only")', 'asyncio.exceptions.CancelledError', 'leaf only'),
+          }, [Q + TERMINAL + '[pending-result]', PERROR])
+          fault('17-ignore-cancel-baseline', [
+              edit(QSRC, 'owner.cancelling() > cancelling', 'owner.cancelling() > 0'),
+          ], {
+              P + 'test_prior_owner_cancel': checkpoint(PROBE, 'assert not escaped, "independent child cancellation did not escape"'),
+          })
+          fault('18-orphan-aborted-reply', [edit(QSRC, OWNER, OWNER.replace(REPLY_CANCEL, ''))], {
+              HANDOFF: qcheck(208, 'assert reply.cancelled(), "pre-child cancellation must not orphan the reply"'),
+              Q + REPEATED + '[reply-cancel]': qcheck(296, 'assert reply.cancelled(), ('),
+          }, [Q + REPEATED + '[coalesced-cancel]'])
+          fault('19-copy-propagated-error', [
+              edit(QSRC, ordinary_error, ordinary_error.removesuffix('        raise') + '        raise type(exc)(*exc.args)'),
+          ], {PERROR: qcheck(141, 'assert caught.value is failure')})
+          fault('20-copy-reply-error', [
+              edit(QSRC, ordinary_error, ordinary_error.replace('reply.set_exception(exc)', 'reply.set_exception(type(exc)(*exc.args))')),
+          ], {PERROR: qcheck(150, 'assert reply.exception() is failure')})
+          fault('21-rewrite-terminal-reply', [
+              edit(QSRC, success, success.replace(' and not reply.done()', '')),
+          ], kills(
+              [Q + TERMINAL + f'[{kind}-result]' for kind in ('result', 'error')],
+              checkpoint(QSRC, 'reply.set_result(result)', 'asyncio.exceptions.InvalidStateError', 'invalid state'),
+          ), [Q + TERMINAL + '[pending-result]'])
+          hook = '            except Exception as exc:\n                self._mark_queued_command_failed(\n                    entry,\n                    exc,\n                    timed_out=isinstance(exc, (TimeoutError, RigplaneTimeoutError)),\n                )'
+          fault('22-late-web-hook', [
+              edit(WSRC, hook, hook.replace(
+                  '                self._mark_queued_command_failed(',
+                  '                if entry.future is not None and not entry.future.done():\n                    entry.future.set_exception(exc)\n                self._mark_queued_command_failed(',
+              )),
+          ], {W + LIVE + '[error]': qcheck(385, 'assert failed == [("first", "websocket", "caller")]')})
+          snapshot_turn = '        def entries_for_turn() -> Iterator[CommandQueueEntry]:\n            yield from self._stage_tx_interlocked_entries(self._queue.drain_entries())\n'
+          fault('23-snapshot-drain', [edit(WSRC, TURN, snapshot_turn)], kills(
+              live_nodes, qcheck(355, 'assert queue.has_commands, "second entry must stay pending during first leaf"'),
+          ))
+          fault('24-quota-refill', [
+              edit(WSRC, '            for _ in range(self._queue.pending_count):', '            while self._queue.has_commands:'),
+          ], kills(live_nodes, qcheck(377, 'assert seen == expected, "turn must use live pending claims, not a snapshot"')))
+          refund = '''        def entries_for_turn() -> Iterator[CommandQueueEntry]:
+                      remaining = self._queue.pending_count
+                      while remaining:
+                          entry = self._queue.take_entry()
+                          if entry is None:
+                              break
+                          ready = self._stage_tx_interlocked_entries([entry], advance_held=False)
+                          if ready and not (entry.future is not None and entry.future.cancelled()):
+                              remaining -= 1
+                          yield from ready
+                      yield from self._stage_tx_interlocked_entries([])
+          '''
+          fault('25-refund-nonexecuted', [edit(WSRC, TURN, refund)], kills(
+              QUOTA, checkpoint(PROBE, 'assert seen == [SetFreq(1)], "nonexecuted claim must spend finite quota"'),
+          ))
+          fault('26-premature-held-release', [
+              edit(WSRC, '[entry], advance_held=False', '[entry]'),
+          ], {
+              W + 'test_web_loop_releases_held_entry_after_finite_current_turn': checkpoint(WFILE, 'assert seen == [SetFreq(1), SetFreq(2), held]'),
+          })
+          legitimate = [
+              ('L1-queue-alternative', [edit(QSRC, '                entry = segment.dedup.pop(next(iter(segment.dedup)))', '                key = next(iter(segment.dedup))\n                entry = segment.dedup.pop(key)'), edit(QSRC, RETURN, RETURN.replace('return entry', 'return self._segments[-1].ordered[0]'))]),
+              ('L2-kernel-result', [edit(QSRC, '        result = await asyncio.shield(child)', '        await asyncio.shield(child)\n        result = child.result()')]),
+              ('L3-web-counter', [edit(WSRC, '            for _ in range(self._queue.pending_count):', '            remaining = self._queue.pending_count\n            while remaining:\n                remaining -= 1')]),
+              ('L4-producer-order', [edit(QSRC, '        self._segments.append(_CommandQueueSegment.ordered_entry(entry))\n        self._notify.set()\n        if future is not None:', '        self._segments.append(_CommandQueueSegment.ordered_entry(entry))\n        if future is not None:'), edit(QSRC, '            future.add_done_callback(remove_cancelled)\n        return entry', '            future.add_done_callback(remove_cancelled)\n        self._notify.set()\n        return entry')]),
+          ]
+          PLAN = [{'label': 'baseline', 'kind': 'green', 'edits': [], 'expected': dict.fromkeys(ALL)}, *variants]
+          PLAN += [{'label': label, 'kind': 'legitimate', 'edits': edits, 'expected': dict.fromkeys(ALL)} for label, edits in legitimate]
+          PLAN += [{'label': 'restored', 'kind': 'green', 'edits': [], 'expected': dict.fromkeys(ALL)}]
+
+          def save(path, value):
+              path.write_text(json.dumps(value, indent=2) + '\n')
+
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+
+          def git(root, *args):
+              return subprocess.check_output(['git', *args], cwd=root, stderr=subprocess.STDOUT, timeout=60)
+
+          def status(root):
+              return git(root, 'status', '--porcelain=v1', '--untracked-files=all', '--ignored')
+
+          def tracked_bytes(path):
+              # Git tracks a symlink's target text, not the linked file bytes.
+              return os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+
+          def snapshot(root, names):
+              return {name: sha(tracked_bytes(root / name)) for name in names}
+
+          def imports(root, expected_hashes):
+              records = {}
+              for name, module in sorted(sys.modules.items()):
+                  if not (name == 'rigplane' or name.startswith('rigplane.') or name.startswith('test_') or name == 'conftest'):
+                      continue
+                  value = getattr(module, '__file__', None)
+                  if value is None:
+                      continue
+                  path = Path(value).resolve()
+                  assert path.is_relative_to(root), ('foreign import', name, str(path))
+                  relative = str(path.relative_to(root))
+                  assert relative in expected_hashes and sha(path.read_bytes()) == expected_hashes[relative], (name, relative)
+                  records[name] = {'path': str(path), 'sha256': expected_hashes[relative]}
+              for name in ('rigplane.runtime._poller_types', 'rigplane.web.radio_poller', 'rigplane.core.command_dispatch'):
+                  assert name in records, ('missing required import', name)
+              return records
+
+          class Oracle:
+              def pytest_collection_finish(self, session):
+                  actual = [item.nodeid for item in session.items]
+                  save(evidence / 'collected.json', actual)
+                  assert len(actual) == len(set(actual)) == len(expected) and set(actual) == set(expected), actual
+                  for item in session.items:
+                      file = item.nodeid.split('::')[0]
+                      assert Path(item.path).resolve() == root / file
+                      assert Path(item.module.__file__).resolve() == root / file
+                  save(evidence / 'imports-before.json', imports(root, spec['hashes']))
+
+              @pytest.hookimpl(hookwrapper=True)
+              def pytest_runtest_makereport(self, item, call):
+                  report = (yield).get_result()
+                  row = {'node': item.nodeid, 'phase': report.when, 'outcome': report.outcome, 'xfail': getattr(report, 'wasxfail', None)}
+                  if call.excinfo is not None:
+                      trace = call.excinfo.traceback
+                      last = trace[-1]
+                      row.update(exception=f'{call.excinfo.type.__module__}.{call.excinfo.type.__name__}', message=str(call.excinfo.value), path=str(Path(last.path).resolve()), line=last.lineno + 1)
+                  with (evidence / 'phases.jsonl').open('a') as output:
+                      output.write(json.dumps(row) + '\n')
+
+          def validate(evidence, expected, rc, root):
+              assert rc == (1 if any(expected.values()) else 0), ('unexpected exit', rc)
+              xml = ET.parse(evidence / 'junit.xml').getroot()
+              cases = xml.findall('.//testcase')
+              wanted = {(node.split('::')[0][:-3].replace('/', '.'), node.split('::')[1]): site for node, site in expected.items()}
+              keys = [(case.get('classname'), case.get('name')) for case in cases]
+              assert len(keys) == len(set(keys)) == len(wanted) and set(keys) == set(wanted), keys
+              assert not xml.findall('.//error') and not xml.findall('.//skipped')
+              for case, key in zip(cases, keys):
+                  assert len(case.findall('failure')) == int(wanted[key] is not None), key
+              phases = [json.loads(line) for line in (evidence / 'phases.jsonl').read_text().splitlines()]
+              assert Counter((row['node'], row['phase']) for row in phases) == Counter((node, phase) for node in expected for phase in ('setup', 'call', 'teardown'))
+              for row in phases:
+                  site = expected[row['node']] if row['phase'] == 'call' else None
+                  assert row['xfail'] is None, row
+                  if site is None:
+                      assert row['outcome'] == 'passed' and 'exception' not in row, row
+                  else:
+                      assert row['outcome'] == 'failed' and row['exception'] == site['exception'], row
+                      assert row['path'] == str(root / site['file']) and row['line'] == site['line'], row
+                      assert site['message'] is None or row['message'] == site['message'], row
+
+          if len(sys.argv) > 1:
+              root, evidence = Path.cwd().resolve(), Path(sys.argv[1]).resolve()
+              spec = json.loads((evidence / 'expected.json').read_text())
+              expected = spec['expected']
+              assert sys.version_info[:2] == (3, 11) and git(root, 'rev-parse', 'HEAD').decode().strip() == SOURCE
+              for name in ('rigplane.runtime._poller_types', 'rigplane.web.radio_poller', 'rigplane.core.command_dispatch'):
+                  importlib.import_module(name)
+              save(evidence / 'imports-initial.json', imports(root, spec['hashes']))
+              args = ['-q', '-o', 'addopts=', '-o', f'cache_dir={evidence / "pytest-cache"}', '--tb=long', '--color=no', '--timeout=30', '--timeout-method=thread', f'--junitxml={evidence / "junit.xml"}', *expected]
+              save(evidence / 'pytest-command.json', args)
+              result = pytest.main(args, plugins=[Oracle()])
+              save(evidence / 'imports-after.json', imports(root, spec['hashes']))
+              sys.exit(result)
+
+          seed = Path.cwd().resolve()
+          proof = Path(os.environ['PROOF_ROOT']).resolve()
+          artifacts = proof / 'evidence'
+          save(artifacts / 'verdict.json', {'status': 'INVALID', 'reason': 'proof has not completed'})
+          assert len(FROZEN) == len(set(FROZEN)) == 46
+          assert len(SUPPLEMENTAL) == len(set(SUPPLEMENTAL)) == 12 and len(ALL) == 58
+          assert len(variants) == 26 and len(legitimate) == 4 and len(PLAN) == 32
+          assert sys.version_info[:2] == (3, 11)
+          assert git(seed, 'rev-parse', 'HEAD').decode().strip() == SOURCE and not status(seed)
+          names = git(seed, 'ls-files', '-z').decode().split('\0')[:-1]
+          originals = {name: tracked_bytes(seed / name) for name in names}
+          hashes = {name: sha(value) for name, value in originals.items()}
+          assert all(git(seed, 'show', f'{SOURCE}:{name}') == originals[name] for name in (QSRC, WSRC, *TESTS, 'pyproject.toml', 'uv.lock', '.github/workflows/full.yml'))
+          assert git(seed, 'diff', '--name-only', SOURCE, FINAL).decode().splitlines() == ['.claude/audits/2026-09-03-mechanism-audit-command-queue-web.md', '.claude/audits/README.md']
+          diagnostic = seed.parent / 'diagnostic'
+          assert git(diagnostic, 'rev-parse', 'HEAD').decode().strip() == os.environ['GITHUB_SHA'] and not status(diagnostic)
+          git(diagnostic, 'merge-base', '--is-ancestor', BASE, 'HEAD')
+          assert git(diagnostic, 'diff', '--name-only', BASE, 'HEAD').decode().splitlines() == ['.github/workflows/full.yml']
+          probe_bytes = (artifacts / 'test_q1_diagnostic_probes.py').read_bytes()
+          assert PROBE not in originals
+          save(artifacts / 'provenance.json', {
+              'source': SOURCE, 'source_tree': git(seed, 'rev-parse', 'HEAD^{tree}').decode().strip(),
+              'diagnostic_base': BASE, 'diagnostic_tree': git(diagnostic, 'rev-parse', 'HEAD^{tree}').decode().strip(),
+              'source_hashes': hashes, 'probe_sha256': sha(probe_bytes), 'python': sys.version,
+              'dependencies': sorted((distribution.metadata['Name'], distribution.version) for distribution in importlib.metadata.distributions()),
+              'uv': subprocess.check_output(['uv', '--version'], text=True).strip(),
+              'workflow_sha256': sha((diagnostic / '.github/workflows/full.yml').read_bytes()),
+              **{key: os.environ.get(key) for key in ('GITHUB_SHA', 'GITHUB_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'RUNNER_NAME')},
+          })
+          save(artifacts / 'frozen-nodeids.json', FROZEN)
+          save(artifacts / 'supplemental-nodeids.json', SUPPLEMENTAL)
+          prepared = []
+          # Resolve all literal anchors and exact failure sites before any pytest
+          # process starts. Results never choose or widen an expected failure.
+          for plan in PLAN:
+              contents = {QSRC: originals[QSRC].decode(), WSRC: originals[WSRC].decode()}
+              for change in plan['edits']:
+                  file, old, new, count = (change[key] for key in ('file', 'old', 'new', 'count'))
+                  assert file in contents and old != new
+                  assert contents[file].count(old) == count, (plan['label'], change)
+                  contents[file] = contents[file].replace(old, new)
+              for file, value in contents.items():
+                  compile(value, file, 'exec')
+              expected = {}
+              for node, raw in plan['expected'].items():
+                  assert node in ALL, node
+                  if raw is None:
+                      expected[node] = None
+                      continue
+                  data = probe_bytes.decode() if raw['file'] == PROBE else contents.get(raw['file'], originals[raw['file']].decode())
+                  lines = data.splitlines()
+                  line = raw.get('line')
+                  if line is None:
+                      matches = [index + 1 for index, value in enumerate(lines) if value.strip() == raw['statement']]
+                      assert len(matches) == 1, (plan['label'], raw, matches)
+                      line = matches[0]
+                  assert lines[line - 1].strip() == raw['statement'], (plan['label'], raw)
+                  expected[node] = {**raw, 'line': line}
+              variant_hashes = {**hashes, **{file: sha(value.encode()) for file, value in contents.items()}, PROBE: sha(probe_bytes)}
+              assert all(variant_hashes[file] == hashes[file] for file in TESTS)
+              prepared.append({**plan, 'expected': expected, 'hashes': variant_hashes, 'contents': contents})
+          save(artifacts / 'registry.json', [{key: value for key, value in item.items() if key != 'contents'} for item in prepared])
+          assert any(item['hashes'][QSRC] != hashes[QSRC] for item in prepared), 'no real inequality contrast'
+          records = []
+          try:
+              for item in prepared:
+                  evidence = artifacts / item['label']
+                  evidence.mkdir()
+                  save(evidence / 'verdict.json', {'status': 'INVALID', 'reason': 'variant has not completed'})
+                  root = Path(tempfile.mkdtemp(prefix=item['label'] + '-', dir=proof)) / 'source'
+                  git(proof, 'clone', '--shared', '--no-checkout', str(seed), str(root))
+                  git(root, '-c', 'core.hooksPath=/dev/null', 'checkout', '--detach', SOURCE)
+                  assert git(root, 'rev-parse', 'HEAD').decode().strip() == SOURCE and snapshot(root, names) == hashes and not status(root)
+                  try:
+                      for file, value in item['contents'].items():
+                          (root / file).write_text(value)
+                      (root / PROBE).write_bytes(probe_bytes)
+                      assert snapshot(root, [*names, PROBE]) == item['hashes']
+                      before = snapshot(root, names)
+                      assert (before == hashes) is (not bool(item['edits'])), 'comparison failed to distinguish mutation'
+                      save(evidence / 'comparison-before.json', {'hashes': before, 'equals_original': before == hashes})
+                      (evidence / 'applied.diff').write_bytes(git(root, 'diff', '--binary', 'HEAD'))
+                      expected_status = status(root)
+                      (evidence / 'applied.status').write_bytes(expected_status)
+                      expected_files = {change['file'] for change in item['edits']}
+                      assert set(expected_status.decode().splitlines()) == {*(f' M {file}' for file in expected_files), f'?? {PROBE}'}, expected_status
+                      save(evidence / 'expected.json', {key: value for key, value in item.items() if key != 'contents'})
+                      env = {**os.environ, 'PYTHONPATH': os.pathsep.join((str(root / 'src'), str(root / 'tests'))), 'PYTEST_ADDOPTS': '', 'PYTEST_PLUGINS': '', 'PYTHONDONTWRITEBYTECODE': '1'}
+                      args = ['uv', 'run', '--no-sync', 'python', str(Path(__file__).resolve()), str(evidence)]
+                      save(evidence / 'invocation.json', {'args': args, 'cwd': str(root), 'pythonpath': env['PYTHONPATH'], 'bytecode_disabled': True})
+                      (evidence / 'exit.txt').write_text('INVALID: process not returned\n')
+                      with (evidence / 'stdout.log').open('w') as out, (evidence / 'stderr.log').open('w') as err:
+                          result = subprocess.run(args, cwd=root, env=env, stdout=out, stderr=err, timeout=180)
+                      (evidence / 'exit.txt').write_text(str(result.returncode) + '\n')
+                      assert snapshot(root, [*names, PROBE]) == item['hashes'] and status(root) == expected_status, 'tests changed source'
+                      validate(evidence, item['expected'], result.returncode, root)
+                  except BaseException as error:
+                      save(evidence / 'verdict.json', {'status': 'INVALID', 'error': repr(error)})
+                      raise
+                  finally:
+                      try:
+                          save(evidence / 'before-restore.json', snapshot(root, names))
+                          (evidence / 'before-restore.status').write_bytes(status(root))
+                          (evidence / 'before-restore.diff').write_bytes(git(root, 'diff', '--binary', 'HEAD'))
+                      finally:
+                          for file in (QSRC, WSRC):
+                              (root / file).write_bytes(originals[file])
+                          (root / PROBE).unlink(missing_ok=True)
+                          save(evidence / 'restored-hashes.json', snapshot(root, names))
+                          (evidence / 'restored.status').write_bytes(status(root))
+                          (evidence / 'restored.diff').write_bytes(git(root, 'diff', '--binary', 'HEAD'))
+                          assert snapshot(root, names) == hashes and not status(root), 'restoration failed'
+                  record = {'label': item['label'], 'cases': len(item['expected']), 'expected_call_failures': sum(site is not None for site in item['expected'].values())}
+                  records.append(record)
+                  save(evidence / 'verdict.json', {'status': 'PASS', **record})
+                  print(json.dumps(record), flush=True)
+              assert len(records) == len(prepared) == 32
+          finally:
+              save(artifacts / 'completed.json', records)
+              save(artifacts / 'seed-final-hashes.json', snapshot(seed, names))
+              (artifacts / 'seed-final.status').write_bytes(status(seed))
+              assert snapshot(seed, names) == hashes and not status(seed), 'pristine source changed'
+          save(artifacts / 'verdict.json', {'status': 'PASS', 'records': records, 'scope': 'bounded Q1 queue/Web diagnostic only'})
+          PY
+          set +e
+          uv run --no-sync python "$PROOF_ROOT/evidence/proof.py" > "$PROOF_ROOT/evidence/driver.stdout" 2> "$PROOF_ROOT/evidence/driver.stderr"
+          proof_rc=$?
+          printf '%s\n' "$proof_rc" > "$PROOF_ROOT/evidence/driver-exit.txt"
+          cat "$PROOF_ROOT/evidence/driver.stdout" "$PROOF_ROOT/evidence/driver.stderr"
+          exit "$proof_rc"
+      - name: Upload raw diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: command-queue-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROOF_ROOT }}/evidence/
+          if-no-files-found: error
+          retention-days: 14
