@@ -143,6 +143,31 @@ def test_backend_ptt_normalization_rejects_coercible_or_malformed_values(
     assert normalize_observed_ptt(value) is ObservedPtt.UNKNOWN
 
 
+@pytest.mark.parametrize(
+    ("value", "attributed", "expected"),
+    [
+        (False, "rx", ObservedPtt.OFF),
+        (True, "tx_cat", ObservedPtt.ON),
+        (True, "tx_other", ObservedPtt.ON),
+        (True, None, ObservedPtt.UNKNOWN),
+        (False, None, ObservedPtt.UNKNOWN),
+        (True, "unrecognized", ObservedPtt.UNKNOWN),
+        (False, "", ObservedPtt.UNKNOWN),
+        (True, "rx", ObservedPtt.UNKNOWN),
+        (False, "tx_cat", ObservedPtt.UNKNOWN),
+        (False, "tx_other", ObservedPtt.UNKNOWN),
+        (1, "tx_cat", ObservedPtt.UNKNOWN),
+        (0, "rx", ObservedPtt.UNKNOWN),
+        (None, "rx", ObservedPtt.UNKNOWN),
+        ("on", "tx_cat", ObservedPtt.UNKNOWN),
+    ],
+)
+def test_attribution_qualified_ptt_requires_consistent_strict_evidence(
+    value: object, attributed: str | None, expected: ObservedPtt
+) -> None:
+    assert normalize_observed_ptt(value, attributed=attributed) is expected
+
+
 def _snapshot(
     value: object = ObservedPtt.OFF,
     *,

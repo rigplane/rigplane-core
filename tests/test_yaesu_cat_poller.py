@@ -19,7 +19,13 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    TxStateReading,
+    project_observed_ptt,
+)
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
@@ -29,7 +35,12 @@ from rigplane.exceptions import CommandError
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import CatTimeoutError
+from rigplane.backends.yaesu_cat.parser import CatParseError
+from rigplane.backends.yaesu_cat.transport import (
+    CatCommandRejected,
+    CatTimeoutError,
+    CatTransportError,
+)
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.web.handlers.control import ControlHandler
@@ -48,6 +59,229 @@ from rigplane.web.radio_poller import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _canonical_ptt_path(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    state_map: dict[str, str] | None = None,
+    later_field: bool = False,
+) -> tuple[YaesuCatRadio, YaesuCatPoller, StateStore, FreshnessClock, list[Observation]]:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    legacy = FieldPath.global_("tx_state", "ptt")
+    width = FieldPath.active("main", "freq_mode", "filter_width")
+    profile = radio.profile
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    acquisition = replace(
+        acquisition,
+        capabilities=tuple(
+            item
+            for item in acquisition.capabilities
+            if item.path == legacy or (later_field and item.path == width)
+        ),
+        field_policies={
+            legacy: replace(acquisition.policy_for(legacy), freshness_ttl_seconds=2.0)
+        },
+    )
+    radio._profile_cache = replace(  # noqa: SLF001
+        profile,
+        state_acquisition=acquisition,
+        tx_policy=(
+            profile.tx_policy
+            if state_map is None
+            else replace(profile.tx_policy, tx_state_map=state_map)
+        ),
+    )
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.query = AsyncMock(return_value="TX1")  # noqa: SLF001
+    clock = FreshnessClock(start=128.0)
+    store = StateStore(freshness_clock=clock)
+    service = CommandService(executor=AsyncMock(), state_store=store, clock=clock.now)
+    emitted: list[Observation] = []
+
+    def accept(observations: Sequence[Observation]) -> None:
+        emitted.extend(observations)
+        for observation in observations:
+            service.apply_observation(observation)
+
+    factory = YaesuObservationAdapter.from_radio
+    monkeypatch.setattr(
+        YaesuObservationAdapter,
+        "from_radio",
+        lambda radio: factory(radio, clock=clock.now),
+    )
+    poller = radio.create_observation_poller(callback=accept)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    return radio, poller, store, clock, emitted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frame", "state_map", "expected", "legacy"),
+    [
+        ("TX0", None, ObservedPtt.OFF, False),
+        ("TX1", None, ObservedPtt.ON, True),
+        ("TX2", None, ObservedPtt.ON, True),
+        ("TX9", None, ObservedPtt.UNKNOWN, True),
+        ("TX0", {}, ObservedPtt.UNKNOWN, False),
+        ("TX7", {"7": "rx"}, ObservedPtt.OFF, False),
+        ("TX0", {"0": "tx_other"}, ObservedPtt.ON, True),
+        ("TX1", {"1": "unrecognized"}, ObservedPtt.UNKNOWN, True),
+    ],
+)
+async def test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+    frame: str,
+    state_map: dict[str, str] | None,
+    expected: ObservedPtt,
+    legacy: bool,
+) -> None:
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, state_map=state_map
+    )
+    radio._transport.query.return_value = frame  # noqa: SLF001
+    await poller._emit_medium_observations()  # noqa: SLF001
+    assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+    by_path = {item.path: item for item in emitted}
+    old = by_path[FieldPath.global_("tx_state", "ptt")]
+    assert old.value is legacy
+    observed = by_path[OBSERVED_PTT_PATH]
+    assert observed.value is expected
+    assert observed.timestamp_monotonic == old.timestamp_monotonic == clock.now()
+    assert observed.max_age == old.max_age == 2.0
+    assert observed.provider_generation == old.provider_generation == 0
+    assert observed.source.source == old.source.source == "yaesu_poll_response"
+    assert observed.source.provider == old.source.provider == "yaesu_cat"
+    assert observed.source.transport == old.source.transport == "serial"
+    assert radio.radio_state.ptt is False
+    assert project_observed_ptt(store.snapshot()) is expected
+    clock.advance(1.0)
+    assert project_observed_ptt(store.snapshot()) is expected
+    clock.advance(1.0)
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reading", [TxStateReading(1, "tx_cat"), TxStateReading(True, "rx")]
+)
+async def test_canonical_ptt_rejects_malformed_or_conflicting_typed_reading(
+    monkeypatch: pytest.MonkeyPatch, reading: TxStateReading
+) -> None:
+    radio, poller, store, _, emitted = _canonical_ptt_path(monkeypatch)
+    radio.read_transmit_state = AsyncMock(return_value=reading)
+    await poller._emit_medium_observations()  # noqa: SLF001
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+    radio.read_transmit_state.assert_awaited_once_with()
+    radio._transport.query.assert_not_awaited()  # noqa: SLF001
+    legacy = [item.value for item in emitted if str(item.path) == "global.tx_state.ptt"]
+    assert legacy == ([True] if type(reading.value) is bool else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", ["NOTTX", CatParseError("bad TX"), CatCommandRejected("reject")]
+)
+@pytest.mark.parametrize("later_failure", [False, True])
+async def test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails(
+    monkeypatch: pytest.MonkeyPatch, error: str | Exception, later_failure: bool
+) -> None:
+    radio, poller, store, _, emitted = _canonical_ptt_path(
+        monkeypatch, later_field=later_failure
+    )
+    for _ in range(2):
+        radio._transport.query.side_effect = None  # noqa: SLF001
+        radio._transport.query.return_value = "TX1"  # noqa: SLF001
+        radio.read_filter_width = AsyncMock(return_value=2400)
+        await poller._emit_medium_observations()  # noqa: SLF001
+        emitted.clear()
+        radio._transport.query.reset_mock()  # noqa: SLF001
+        radio._transport.query.side_effect = error if isinstance(error, Exception) else None  # noqa: SLF001
+        radio._transport.query.return_value = error  # noqa: SLF001
+        if later_failure:
+            radio.read_filter_width = AsyncMock(side_effect=CatTimeoutError("later"))
+            with pytest.raises(CatTimeoutError):
+                await poller._emit_medium_observations()  # noqa: SLF001
+        else:
+            await poller._emit_medium_observations()  # noqa: SLF001
+        assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+        assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
+        assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", [CatTimeoutError("TX timeout"), CatTransportError("TX link")]
+)
+async def test_canonical_ptt_transport_failure_preserves_reconnect_path(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    radio, poller, store, _, emitted = _canonical_ptt_path(monkeypatch)
+    radio._transport.query.side_effect = error  # noqa: SLF001
+    poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
+    with pytest.raises(asyncio.CancelledError):
+        await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
+    poller._try_reconnect.assert_awaited_once_with()  # noqa: SLF001
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+    assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
+
+
+@pytest.mark.asyncio
+async def test_canonical_ptt_cancelled_read_does_not_emit_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radio, poller, _, _, emitted = _canonical_ptt_path(monkeypatch)
+    radio._transport.query.side_effect = asyncio.CancelledError  # noqa: SLF001
+    with pytest.raises(asyncio.CancelledError):
+        await poller._emit_medium_observations()  # noqa: SLF001
+    assert emitted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advance_store", [False, True])
+async def test_canonical_ptt_reconnect_discards_late_old_read(
+    monkeypatch: pytest.MonkeyPatch, advance_store: bool
+) -> None:
+    radio, poller, store, _, emitted = _canonical_ptt_path(monkeypatch)
+    await poller._emit_medium_observations()  # noqa: SLF001
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.ON
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed(*args: object, **kwargs: object) -> str:
+        started.set()
+        await release.wait()
+        return "TX1"
+
+    radio._transport.query.side_effect = delayed  # noqa: SLF001
+    task = asyncio.create_task(poller._emit_medium_observations())  # noqa: SLF001
+    await started.wait()
+    if advance_store:
+        radio._transport._maybe_reconnect_needed = lambda: True  # noqa: SLF001
+
+        async def reconnect() -> None:
+            radio._transport.stats.reconnects += 1  # noqa: SLF001
+
+        radio._transport.reconnect = AsyncMock(side_effect=reconnect)  # noqa: SLF001
+        await poller._try_reconnect()  # noqa: SLF001
+        assert store.provider_generation == 1
+    else:
+        radio._transport.stats.reconnects += 1  # noqa: SLF001
+        poller._sync_tx_target_generation()  # noqa: SLF001
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+    boundary = len(emitted)
+    release.set()
+    await task
+    assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+    assert not any(
+        item.path in (OBSERVED_PTT_PATH, FieldPath.global_("tx_state", "ptt"))
+        and item.value in (True, ObservedPtt.ON)
+        for item in emitted[boundary:]
+    )
 
 
 def make_radio(
