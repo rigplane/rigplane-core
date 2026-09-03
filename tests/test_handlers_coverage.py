@@ -872,9 +872,7 @@ async def test_att_web_aliases_bind_one_canonical_intent(
 ) -> None:
     queue = _QueueRecorder()
     radio = _AttenuatorIngressRadio()
-    handler = _control_handler(
-        radio=radio, server=SimpleNamespace(command_queue=queue)
-    )
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
 
     result = await handler._enqueue_command(name, params)
 
@@ -895,12 +893,8 @@ async def test_att_web_aliases_bind_one_canonical_intent(
 @pytest.mark.asyncio
 async def test_att_web_projection_uses_provider_native_expectation() -> None:
     queue = _QueueRecorder()
-    radio = _AttenuatorIngressRadio(
-        model="FTX-1", projection=lambda db: int(db > 0)
-    )
-    handler = _control_handler(
-        radio=radio, server=SimpleNamespace(command_queue=queue)
-    )
+    radio = _AttenuatorIngressRadio(model="FTX-1", projection=lambda db: int(db > 0))
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
 
     result = await handler._enqueue_command("set_attenuator", {"db": 20})
 
@@ -940,17 +934,18 @@ async def test_att_web_projection_uses_provider_native_expectation() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "projection", [None, lambda db: True, lambda db: 1.0],
+    "projection",
+    [None, lambda db: True, lambda db: 1.0],
     ids=("missing", "bool-result", "float-result"),
 )
-async def test_att_web_refuses_missing_or_non_integer_projection(projection: object) -> None:
+async def test_att_web_refuses_missing_or_non_integer_projection(
+    projection: object,
+) -> None:
     queue = _QueueRecorder()
     radio = _AttenuatorIngressRadio(projection=projection)
     if projection is None:
         radio.project_attenuator_observation_value = None
-    handler = _control_handler(
-        radio=radio, server=SimpleNamespace(command_queue=queue)
-    )
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
 
     with pytest.raises(CommandError):
         await handler._enqueue_command("set_att", {"db": 20})
@@ -976,9 +971,7 @@ async def test_att_web_explicit_none_receiver_fails_before_enqueue() -> None:
 async def test_att_web_sub_refusal_happens_before_queue_effects() -> None:
     queue = _QueueRecorder()
     radio = _AttenuatorIngressRadio(model="FTX-1", admitted_receiver=0)
-    handler = _control_handler(
-        radio=radio, server=SimpleNamespace(command_queue=queue)
-    )
+    handler = _control_handler(radio=radio, server=SimpleNamespace(command_queue=queue))
 
     with pytest.raises(CommandUnsupportedError):
         await handler._enqueue_command("set_att", {"db": 20, "receiver": 1})
