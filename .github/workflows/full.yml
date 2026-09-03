@@ -10,14 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: b28bd8a41d36b05a71e3ef77169345cdc8f5740b
+          ref: 068cede34280bbba1bd2b588a9ca8dd496cbaa21
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v8.1.0
       - name: Dependencies
         run: uv sync --all-extras
       - name: Exact source and targeted RED
         run: |
-          test "$(git rev-parse HEAD)" = b28bd8a41d36b05a71e3ef77169345cdc8f5740b
+          test "$(git rev-parse HEAD)" = 068cede34280bbba1bd2b588a9ca8dd496cbaa21
           git status --short
           git rev-parse HEAD
           export PYTHONPYCACHEPREFIX="$(mktemp -d)"
