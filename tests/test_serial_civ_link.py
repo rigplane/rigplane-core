@@ -43,8 +43,9 @@ class _FakeWriter:
         *,
         drain_gate: asyncio.Event | None = None,
         write_error: OSError | None = None,
-        drain_error: OSError | None = None,
+        drain_error: OSError | RuntimeError | None = None,
         resist_cancel: bool = False,
+        close_gate: asyncio.Event | None = None,
     ) -> None:
         self.writes: list[bytes] = []
         self.closed = False
@@ -52,9 +53,12 @@ class _FakeWriter:
         self._write_error = write_error
         self._drain_error = drain_error
         self._resist_cancel = resist_cancel
+        self._close_gate = close_gate
         self.write_started = asyncio.Event()
         self.drain_started = asyncio.Event()
         self.close_called = asyncio.Event()
+        self.cancel_resisted = asyncio.Event()
+        self.wait_closed_started = asyncio.Event()
 
     def write(self, data: bytes) -> None:
         self.write_started.set()
@@ -72,6 +76,7 @@ class _FakeWriter:
             except asyncio.CancelledError:
                 if not self._resist_cancel:
                     raise
+                self.cancel_resisted.set()
                 await self._drain_gate.wait()
         if self._drain_error is not None:
             raise self._drain_error
@@ -81,7 +86,9 @@ class _FakeWriter:
         self.close_called.set()
 
     async def wait_closed(self) -> None:
-        return None
+        self.wait_closed_started.set()
+        if self._close_gate is not None:
+            await self._close_gate.wait()
 
 
 async def _make_link(
@@ -121,6 +128,8 @@ async def _cleanup_writes(
     for writer in writers:
         if writer._drain_gate is not None:
             writer._drain_gate.set()
+        if writer._close_gate is not None:
+            writer._close_gate.set()
     # Release controlled drains before cancellation, including the fake which
     # deliberately resists cancellation. This helper is cleanup only.
     for _ in range(3):
@@ -359,6 +368,96 @@ async def test_replacement_off_follows_last_possible_old_session_on() -> None:
         assert newer.writes == [_wire(_OFF), _wire(_QUERY)]
         assert not newer.closed
         assert link.ready
+    finally:
+        await _cleanup_writes(link, tasks, writer, newer, old_worker=old_worker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_type", [OSError, RuntimeError])
+async def test_retired_worker_exits_after_cancel_resistant_drain_error(
+    failure_type: type[Exception],
+) -> None:
+    gate = asyncio.Event()
+    writer = _FakeWriter(
+        drain_gate=gate,
+        drain_error=failure_type("late retired drain error"),
+        resist_cancel=True,
+    )
+    link, _, _ = await _make_link(writer=writer)
+    old_worker = link._writer_task
+    assert old_worker is not None
+    newer = _FakeWriter()
+    pending = asyncio.create_task(link.send_written(_ON))
+    try:
+        await writer.drain_started.wait()
+        pending.cancel()
+        await writer.cancel_resisted.wait()
+        _install_replacement(link, newer)
+        gate.set()
+        _, unfinished = await asyncio.wait({pending, old_worker}, timeout=1)
+        assert not unfinished, "retired error path left worker or sender unfinished"
+        assert pending.cancelled()
+        assert writer.closed
+        assert writer.writes == [_wire(_ON)]
+        assert not newer.closed
+        assert link.ready
+        await link.send_written(_OFF)
+        assert newer.writes == [_wire(_OFF)]
+    finally:
+        await _cleanup_writes(link, [pending], writer, newer, old_worker=old_worker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initiator", ["disconnect", "active-cancel"])
+async def test_overlapping_disconnect_joins_drain_and_wait_closed(
+    initiator: str,
+) -> None:
+    gate, close_gate = asyncio.Event(), asyncio.Event()
+    writer = _FakeWriter(
+        drain_gate=gate, resist_cancel=True, close_gate=close_gate
+    )
+    link, _, _ = await _make_link(writer=writer)
+    old_worker = link._writer_task
+    assert old_worker is not None
+    newer = _FakeWriter()
+    pending = asyncio.create_task(link.send_written(_ON))
+    tasks = [pending]
+    try:
+        await writer.drain_started.wait()
+        if initiator == "disconnect":
+            first = asyncio.create_task(link.disconnect())
+            tasks.append(first)
+        else:
+            pending.cancel()
+            first = pending
+        await writer.cancel_resisted.wait()
+        second = asyncio.create_task(link.disconnect())
+        tasks.append(second)
+        done, _ = await asyncio.wait({first, second}, timeout=0.05)
+        assert not done, "overlapping disconnect skipped active drain retirement"
+        assert not old_worker.done()
+        _install_replacement(link, newer)
+        gate.set()
+        await writer.wait_closed_started.wait()
+        done, _ = await asyncio.wait({first, second}, timeout=0.05)
+        assert not done, "overlapping disconnect skipped captured wait_closed"
+        assert old_worker.done()
+        assert not newer.closed
+        assert link.ready
+        close_gate.set()
+        _, unfinished = await asyncio.wait(set(tasks), timeout=1)
+        assert not unfinished, "retirement callers did not settle after writer close"
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        if initiator == "active-cancel":
+            assert isinstance(results[0], asyncio.CancelledError)
+        else:
+            assert isinstance(results[0], ConnectionError)
+            assert results[1] is None
+        assert results[-1] is None
+        assert not newer.closed
+        assert link._writer is newer
+        await link.send_written(_OFF)
+        assert newer.writes == [_wire(_OFF)]
     finally:
         await _cleanup_writes(link, tasks, writer, newer, old_worker=old_worker)
 
