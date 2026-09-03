@@ -304,7 +304,9 @@ async def test_urgent_exchange_preserves_active_frame_and_each_fifo(
         await asyncio.wait_for(tasks[0], 1)
         tasks.append(asyncio.create_task(transport.command("F 4")))
         for expected in (b"T 0\n", b"F 9\n", b"F 2\n", b"F 3\n", b"F 4\n"):
-            assert await asyncio.wait_for(stream.written.get(), 1) == expected
+            assert await asyncio.wait_for(stream.written.get(), 1) == expected, (
+                "urgent release lost the next exchange boundary"
+            )
             stream.responses.put_nowait(b"RPRT 0\n")
         await asyncio.wait_for(asyncio.gather(*tasks), 1)
     finally:
@@ -338,8 +340,10 @@ async def test_cancelled_admission_releases_only_its_reservation(
         if not released:
             await owner.__aexit__(None, None, None)
             released = True
+        assert stream.closes == 0 and transport.connected, (
+            "admission cancellation retired a healthy connection"
+        )
         assert await asyncio.wait_for(stream.written.get(), 1) == b"T 0\n"
-        assert stream.closes == 0 and transport.connected
         stream.responses.put_nowait(b"RPRT 0\n")
         await asyncio.wait_for(tasks[1], 1)
         assert stream.writes == [b"T 0\n"]
@@ -421,7 +425,9 @@ async def test_managed_actuator_forwards_live_currency_to_final_write(
         current[0] = False
         release.set()
         result = await asyncio.wait_for(tasks[0], 1)
-        assert stream.writes == [] and stream.closes == 0 and transport.connected
+        assert stream.writes == [] and stream.closes == 0 and transport.connected, (
+            "managed actuator wrote after currency invalidation"
+        )
         assert result.result is ActuationResult.UNCERTAIN
     finally:
         release.set()
@@ -460,6 +466,52 @@ async def test_tokened_queue_cannot_retarget_or_drain_replacement(
         if not released:
             await owner.__aexit__(None, None, None)
         await _finish_exchanges(transport, (old, replacement), tasks)
+
+
+async def test_tokened_write_cannot_cross_replacement_during_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old, replacement = _ExchangeStream(), _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, old)
+    entered, release = asyncio.Event(), asyncio.Event()
+    drain = transport._drain_stale
+    tasks = []
+
+    async def delayed_drain(*args) -> None:
+        entered.set()
+        await release.wait()
+        await drain(*args)
+
+    monkeypatch.setattr(transport, "_drain_stale", delayed_drain)
+    old.responses.put_nowait(b"RPRT 0\n")
+    try:
+        tasks.append(
+            asyncio.create_task(transport.command("T 1", is_current=lambda: True))
+        )
+        await _exchange_progress(tasks[0], entered)
+        # Controlled identity test: leave the captured old writer writable.
+        # Closing it would mask a missing final identity check; this is not
+        # a physical connection-lifecycle simulation.
+        transport._reader, transport._writer = replacement, replacement
+        release.set()
+        refusal = None
+        try:
+            await asyncio.wait_for(tasks[0], 1)
+        except CommandError as error:
+            refusal = error
+        assert old.writes == replacement.writes == [], (
+            "managed write escaped the replaced connection boundary"
+        )
+        assert refusal is not None
+        assert replacement.stale_reads == replacement.reads == replacement.closes == 0
+        assert transport.connected
+        replacement.responses.put_nowait(b"RPRT 0\n")
+        await transport.command("T 0")
+        assert replacement.writes == [b"T 0\n"]
+    finally:
+        release.set()
+        await _finish_exchanges(transport, (old, replacement), tasks)
+        old.close()
 
 
 @pytest.mark.parametrize("operation", list(ActuationOperation), ids=lambda op: op.value)
