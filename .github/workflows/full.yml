@@ -1,4 +1,4 @@
-name: Canonical ATT admission formatter diagnostic
+name: Canonical ATT projection formatter diagnostic
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: e51aaa9f47902309a6a9cbdc2fa3e0a588454962
+          ref: 18812d54e64a1ba4a2b5c14c9c583475187ec848
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -35,17 +35,14 @@ jobs:
         run: |
           checked_head=$(git rev-parse HEAD)
           echo "checked_head=$checked_head"
-          if [ "$checked_head" != "e51aaa9f47902309a6a9cbdc2fa3e0a588454962" ]; then
+          if [ "$checked_head" != "18812d54e64a1ba4a2b5c14c9c583475187ec848" ]; then
             echo "unexpected checkout: $checked_head" >&2
             exit 1
           fi
           uv run ruff --version
           set +e
           uv run ruff format --diff \
-            src/rigplane/runtime/radio.py \
-            src/rigplane/backends/yaesu_cat/radio.py \
-            src/rigplane/backends/rigctld_client/radio.py \
-            src/rigplane/core/radio_protocol.py > formatter.patch
+            tests/test_attenuator_observation_projection.py > formatter.patch
           rc=$?
           set -e
           echo "ruff_exit=$rc"
@@ -71,5 +68,5 @@ jobs:
       - name: Upload formatter patch
         uses: actions/upload-artifact@v7
         with:
-          name: canonical-att-admission-format-e51aaa9f
+          name: canonical-att-projection-format-18812d54
           path: formatter.patch
