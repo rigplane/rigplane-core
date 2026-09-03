@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.command_map import CommandMap
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.bound import BoundCommands
@@ -21,6 +22,7 @@ from rigplane.runtime.managed_tx_state import (
     EffectToken,
 )
 from rigplane.runtime.radio import IcomRadio
+from test_serial_civ_link import _FakeWriter, _cleanup_writes, _make_link
 
 
 class _TrackedTransport:
@@ -33,11 +35,22 @@ class _TrackedTransport:
         if entered is None:
             self.release.set()
 
-    async def send_tracked(self, packet: bytes) -> None:
+    async def send_tracked(self, packet: bytes, **_kwargs: object) -> None:
         self.sent.append(packet)
         if self._entered is not None:
             self._entered.set()
         await self.release.wait()
+
+
+def _managed_radio(transport, monkeypatch) -> tuple[IcomRadio, IcomCommander]:
+    radio = _profile_bound_radio()
+    radio._civ_transport = transport
+    radio._civ_min_interval = 0.0
+    monkeypatch.setattr(radio._civ_runtime, "start_pump", lambda: None)
+    commander = IcomCommander(radio._civ_runtime.execute_civ_raw, min_interval=0.0)
+    radio._commander = commander
+    commander.start()
+    return radio, commander
 
 
 def _profile_bound_radio() -> IcomRadio:
@@ -224,17 +237,10 @@ async def test_commander_propagates_currency_to_final_executor() -> None:
 async def test_provider_replacement_cannot_retarget_queued_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    radio = _profile_bound_radio()
     entered = asyncio.Event()
     old_transport = _TrackedTransport(entered=entered)
     replacement = _TrackedTransport()
-    radio._civ_transport = old_transport
-    radio._connected = True
-    radio._civ_min_interval = 0.0
-    monkeypatch.setattr(radio._civ_runtime, "start_pump", lambda: None)
-    commander = IcomCommander(radio._civ_runtime.execute_civ_raw, min_interval=0.0)
-    radio._commander = commander
-    commander.start()
+    radio, commander = _managed_radio(old_transport, monkeypatch)
     blocker = asyncio.create_task(
         radio._send_civ_raw(
             build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x55, data=b"\x01"),
@@ -274,22 +280,14 @@ async def test_provider_replacement_cannot_retarget_queued_on(
         await commander.stop()
         radio._commander = None
         radio._civ_transport = None
-        radio._connected = False
 
 
 @pytest.mark.asyncio
 async def test_stale_attempt_is_refused_at_the_last_write_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    radio = _profile_bound_radio()
     transport = _TrackedTransport()
-    radio._civ_transport = transport
-    radio._connected = True
-    radio._civ_min_interval = 0.0
-    monkeypatch.setattr(radio._civ_runtime, "start_pump", lambda: None)
-    commander = IcomCommander(radio._civ_runtime.execute_civ_raw, min_interval=0.0)
-    radio._commander = commander
-    commander.start()
+    radio, commander = _managed_radio(transport, monkeypatch)
     try:
         with pytest.raises(ConnectionError, match="managed TX attempt is stale"):
             await radio.actuate(
@@ -300,4 +298,46 @@ async def test_stale_attempt_is_refused_at_the_last_write_seam(
         await commander.stop()
         radio._commander = None
         radio._civ_transport = None
-        radio._connected = False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remains_current", [False, True])
+async def test_serial_writer_rechecks_managed_currency(
+    monkeypatch: pytest.MonkeyPatch, remains_current: bool
+) -> None:
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(writer=_FakeWriter(drain_gate=gate))
+    radio, commander = _managed_radio(SerialCivTransport(link), monkeypatch)
+    current = {"value": True}
+    on = None
+    try:
+        await link.send(b"\x98\xe0\x03")
+        await asyncio.wait_for(writer.drain_started.wait(), 1)
+        on = asyncio.create_task(
+            radio.actuate(
+                _token(),
+                ActuationOperation.PTT_ON,
+                is_current=lambda: current["value"],
+            )
+        )
+        for _ in range(10):
+            if link._write_queue.qsize() == 1:
+                break
+            await asyncio.sleep(0)
+        assert link._write_queue.qsize() == 1
+        current["value"] = remains_current
+        gate.set()
+        if remains_current:
+            assert await asyncio.wait_for(on, 1) is ActuationResult.ACCEPTED
+            assert len(writer.writes) == 2
+        else:
+            with pytest.raises(ConnectionError, match="managed TX attempt is stale"):
+                await asyncio.wait_for(on, 1)
+            assert len(writer.writes) == 1, "stale ON reached serial writer"
+    finally:
+        gate.set()
+        if on is not None and not on.done():
+            on.cancel()
+        await asyncio.gather(*(task for task in (on,) if task), return_exceptions=True)
+        await commander.stop()
+        await _cleanup_writes(link, [], writer)
