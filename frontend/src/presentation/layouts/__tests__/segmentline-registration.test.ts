@@ -17,7 +17,7 @@ import {
   getLayout, listLayoutIds, resolveLayoutForTopology, resolveLayoutForViewport,
   TOPOLOGY_CLASSES,
 } from '../contract';
-import { getGroup } from '../../groups/contract';
+import { getGroup, listGroupIds } from '../../groups/contract';
 // Deliberately through the shared aggregation entry, not `../segmentline-
 // declarations` directly: it pins that `declarations.ts` really registers
 // `peerSplitLayout` (nothing else does), and keeps this fast-pool file on
@@ -131,6 +131,46 @@ describe('the native canvas value equals the group the zone references (ADR §4)
       expect(manifest.stageSizing.nativeW).toBe(group!.canvas.w);
       expect(manifest.stageSizing.nativeH).toBe(group!.canvas.h);
       expect(manifest.stageSizing.minScale).toBe(group!.scaling.minScale);
+    }
+  });
+});
+
+// ADR §7's registry-derived-inventory shape, applied to the reverse
+// reference itself: `validateZones` (`../contract.ts`) checks `zone.surfaces`
+// against `SEMANTIC_SURFACE_NAMES`, but `zone.group` is checked against
+// nothing there — it is a plain `string` (ADR §4's own precedent: `id`/
+// `zone` are both undecorated `string` in the illustrative schema), so a
+// typo'd or stale id silently resolves to `undefined` at runtime with no
+// validator to catch it. Not validated inside `../contract.ts` itself: that
+// would need a VALUE import of the groups registry, and a type-only import
+// of it already pulled `presentation/groups/contract.ts` into the workspace
+// purity closure (MOR-1077/78/79) once already — this test is the guard
+// instead, kept as a test-only cross-registry read.
+//
+// Both sides are derived, never hand-listed: the declared side walks every
+// registered manifest's zones (not just peer-split's), and the registered
+// side is `listGroupIds()` itself — so a future group-referencing zone or a
+// renamed group id needs no matching edit here.
+describe('every zone-declared group id resolves in the registry (ADR §7 inventory shape)', () => {
+  // Kills: a `zone.group` value that names an id no `InstrumentGroup` ever
+  // registers (a typo, or a stale id left behind by a rename on one side
+  // only) — `validateZones` has no bounded-vocabulary check for this field,
+  // so nothing else in the manifest contract would catch it.
+  it('every zone-declared group id is in listGroupIds()', () => {
+    const declaredGroupIds = listLayoutIds()
+      .map((id) => getLayout(id)!)
+      .flatMap((manifest) => manifest.zones)
+      .map((zone) => zone.group)
+      .filter((group): group is string => group !== undefined);
+
+    // Kills: the whole check vacuously passing because no manifest zone
+    // actually declares a group.
+    expect(declaredGroupIds.length).toBeGreaterThan(0);
+
+    const registeredGroupIds = listGroupIds();
+    for (const groupId of declaredGroupIds) {
+      expect(registeredGroupIds, `zone declares group "${groupId}", which listGroupIds() does not contain`)
+        .toContain(groupId);
     }
   });
 });
