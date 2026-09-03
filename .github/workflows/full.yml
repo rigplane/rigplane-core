@@ -11,14 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 631ba3d3767706645fca35a27b27f1555fb598b7
+          ref: e31bbfbe05f573fe75780764b301e66d96a9c0b2
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v8.1.0
       - name: Prepare exact source and isolated evidence
         run: |
-          test "$(git rev-parse HEAD)" = 631ba3d3767706645fca35a27b27f1555fb598b7
-          test "$(git rev-parse HEAD^{tree})" = 2b4ef5552a28fd7c4b97494c3d52e205df64a2b4
-          test "$(git rev-parse HEAD^)" = 7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5
+          test "$(git rev-parse HEAD)" = e31bbfbe05f573fe75780764b301e66d96a9c0b2
+          test "$(git rev-parse HEAD^{tree})" = a0ad84f5f4b720d66fed8858b1914add72cdf859
+          test "$(git rev-parse HEAD^)" = 631ba3d3767706645fca35a27b27f1555fb598b7
           test -z "$(git status --porcelain)"
           proof_dir=$(mktemp -d "$RUNNER_TEMP/yaesu-observed-ptt.XXXXXX")
           echo "YAESU_PROOF=$proof_dir" >> "$GITHUB_ENV"
@@ -29,14 +29,14 @@ jobs:
       - name: Prepare matrix collector and supervisor
         run: |
           cat > "$YAESU_PROOF/yaesu_mutation_probe.py" <<'PY'
-          import collections, hashlib, json, os, shutil, signal, subprocess, sys, time
+          import collections, hashlib, json, os, shutil, signal, subprocess, sys, tarfile, time
           from pathlib import Path
           import xml.etree.ElementTree as ET
           import pytest
 
-          SOURCE='631ba3d3767706645fca35a27b27f1555fb598b7'; TREE='2b4ef5552a28fd7c4b97494c3d52e205df64a2b4'; PARENT='7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5'; BASE='b28bd8a41d36b05a71e3ef77169345cdc8f5740b'
+          SOURCE='e31bbfbe05f573fe75780764b301e66d96a9c0b2'; TREE='a0ad84f5f4b720d66fed8858b1914add72cdf859'; PARENT='631ba3d3767706645fca35a27b27f1555fb598b7'; BASE='b28bd8a41d36b05a71e3ef77169345cdc8f5740b'
           ROOT=Path.cwd().resolve(); E=Path(os.environ['YAESU_PROOF']); SELECTED=('tests/test_yaesu_cat_observation_adapter.py','tests/test_yaesu_cat_poller.py')
-          HISTORICAL_GREEN_MANIFEST_SHA='a666e969664903ff5afe92f065ae9123c46f87aa37944cfeccce08dac1874b42'; REQUIRED_IMPORTS={'test_yaesu_cat_observation_adapter':SELECTED[0],'test_yaesu_cat_poller':SELECTED[1],'rigplane.backends.yaesu_cat.poller':'src/rigplane/backends/yaesu_cat/poller.py','rigplane.backends.yaesu_cat.observations':'src/rigplane/backends/yaesu_cat/observations.py','rigplane.core.tx_observation':'src/rigplane/core/tx_observation.py','rigplane.core.state_store':'src/rigplane/core/state_store.py','rigplane.core.observation_adapter':'src/rigplane/core/observation_adapter.py','rigplane.core.command_service':'src/rigplane/core/command_service.py'}
+          HISTORICAL_GREEN_MANIFEST_SHA='a666e969664903ff5afe92f065ae9123c46f87aa37944cfeccce08dac1874b42'; HISTORICAL_NODE_CENSUS_SHA='49576ff859a571492edb679f8408b1640f671c84ac3a6f3f3079a6444e09e30c'; REQUIRED_IMPORTS={'test_yaesu_cat_observation_adapter':SELECTED[0],'test_yaesu_cat_poller':SELECTED[1],'rigplane.backends.yaesu_cat.radio':'src/rigplane/backends/yaesu_cat/radio.py','rigplane.backends.yaesu_cat.poller':'src/rigplane/backends/yaesu_cat/poller.py','rigplane.backends.yaesu_cat.observations':'src/rigplane/backends/yaesu_cat/observations.py','rigplane.core.tx_observation':'src/rigplane/core/tx_observation.py','rigplane.core.state_store':'src/rigplane/core/state_store.py','rigplane.core.observation_adapter':'src/rigplane/core/observation_adapter.py','rigplane.core.command_service':'src/rigplane/core/command_service.py'}
           A='tests/test_yaesu_cat_observation_adapter.py::'; P='tests/test_yaesu_cat_poller.py::'
           T4=[P+'test_canonical_ptt_typed_reading_requires_strict_value['+x+']' for x in ('integer-one','valid-on','integer-zero','valid-off')]
           Q6=[P+'test_canonical_ptt_requires_qualified_readback[qualification'+str(x)+']' for x in range(6)]
@@ -55,47 +55,79 @@ jobs:
             'M6':('src/rigplane/backends/yaesu_cat/observations.py','                publish_ptt_error()\n                if reading.failure == "timeout":','                if reading.failure == "timeout":'),
             'M7':('src/rigplane/backends/yaesu_cat/observations.py','            max_age=self.profile.policy_for(_PTT).freshness_ttl_seconds,','            max_age=self.profile.policy_for(_PTT).freshness_ttl_seconds * 2,'),
             'M8':('src/rigplane/backends/yaesu_cat/observations.py','                if ptt_callback is None:\n                    observations.append(observation)\n                else:\n                    ptt_callback(observation)','                observations.append(observation)\n                if ptt_callback is not None:\n                    ptt_callback(observation)'),
-            'M9':('src/rigplane/backends/yaesu_cat/observations.py','                if ptt_callback is None:','                if True:'),
-            'M10':('src/rigplane/backends/yaesu_cat/observations.py','                    except (Exception, asyncio.CancelledError):','                    except Exception:'),
-            'M11':('src/rigplane/backends/yaesu_cat/poller.py','        except (Exception, asyncio.CancelledError):','        except Exception:'),
+            'M9':('src/rigplane/backends/yaesu_cat/observations.py','                observation = self.observed_ptt_observation(\n                    reading.value if qualified else None,\n                    timestamp_monotonic=timestamp,\n                )\n                if ptt_callback is None:\n                    observations.append(observation)\n                else:\n                    ptt_callback(observation)','                observation = self.observed_ptt_observation(\n                    reading.value if qualified else None,\n                    timestamp_monotonic=timestamp,\n                )\n                if True:\n                    observations.append(observation)\n                else:\n                    ptt_callback(observation)'),
+            'M10':('src/rigplane/backends/yaesu_cat/observations.py','                    except (Exception, asyncio.CancelledError):\n                        logger.warning("Yaesu PTT error callback failed", exc_info=True)','                    except Exception:\n                        logger.warning("Yaesu PTT error callback failed", exc_info=True)'),
+            'M11':('src/rigplane/backends/yaesu_cat/poller.py','        try:\n            callback(observations)\n        except (Exception, asyncio.CancelledError):\n            logger.warning("Yaesu PTT boundary callback failed", exc_info=True)','        try:\n            callback(observations)\n        except Exception:\n            logger.warning("Yaesu PTT boundary callback failed", exc_info=True)'),
             'L':('src/rigplane/backends/yaesu_cat/observations.py','                if ptt_callback is None:\n                    observations.append(observation)\n                else:\n                    ptt_callback(observation)','                destination = observations.append if ptt_callback is None else ptt_callback\n                destination(observation)'),}
-          PLANS=[('G1',SELECTED,0,None),('M1',[CAP],1,'M1'),('M2',[STORE,*H2],1,'M2'),('M3',[*R2,*H2],1,'M3'),('M4',T4,2,'M4'),('M5',Q6,5,'M5'),('M6',[Q6[3],*E6,*X2,T4[1],T4[3]],9,'M6'),('M7',[*R8,*H2],8,'M7'),('M8',A2,1,'M8'),('M9',[*P2,*H2],2,'M9'),('M10',[*AERR,*PERR],3,'M10'),('M11',I4,1,'M11'),('L',[*A2,*P2],0,'L'),('G2',SELECTED,0,None)]
-          ORACLES={'M1':(CAP,459,'ObservedPtt.UNKNOWN'),'M2':(STORE,581,''),'M3':(R2[0],536,'ObservedPtt.UNKNOWN'),'M4':(T4[0],243,'PTT_TYPED_VALUE_PUBLICATION'),'M5':(Q6[0],275,'ObservedPtt.UNKNOWN'),'M6':(Q6[3],275,''),'M7':(R8[0],208,'4.0 != 2.0'),'M8':(A2[1],633,''),'M9':(P2[0],294,'ObservedPtt.ON'),'M10':(AERR[3],659,'CancelledError'),'M11':(I4[3],2225,'CancelledError')}
+          FAILURES={'G1':set(),'M1':{CAP},'M2':{STORE},'M3':{R2[0]},'M4':{T4[0],T4[2]},'M5':{Q6[x] for x in (0,1,2,4,5)},'M6':{Q6[3],*E6,*X2},'M7':set(R8),'M8':{A2[1]},'M9':set(P2),'M10':{AERR[3],PERR[2],PERR[3]},'M11':{I4[3]},'L':set(),'G2':set()}
+          PLANS=[('G1',SELECTED,None),('M1',[CAP],'M1'),('M2',[STORE,*H2],'M2'),('M3',[*R2,*H2],'M3'),('M4',T4,'M4'),('M5',Q6,'M5'),('M6',[Q6[3],*E6,*X2,T4[1],T4[3]],'M6'),('M7',[*R8,*H2],'M7'),('M8',A2,'M8'),('M9',[*P2,*H2],'M9'),('M10',[*AERR,*PERR],'M10'),('M11',I4,'M11'),('L',[*A2,*P2],'L'),('G2',SELECTED,None)]
+          CANCEL_MESSAGES={('M10',AERR[3]):'',('M10',PERR[2]):'sink failed',('M10',PERR[3]):'sink failed',('M11',I4[3]):'consumer failed'}
           def save(n,v): (E/n).write_text(json.dumps(v,indent=2,sort_keys=True)+'\n')
           def append(n,v):
             with (E/n).open('a') as f:f.write(json.dumps(v,sort_keys=True)+'\n')
           def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
-          def git(*a): return subprocess.check_output(['git',*a],text=True).strip()
-          def snapshot(root): return {n:sha(root/n) for n in git('ls-files','-z').split('\0') if n.endswith('.py') or n in ('pyproject.toml','uv.lock','rigs/ftx1.toml')}
-          def pytest_sessionstart(session): save('runtime.json',{'source':SOURCE,'tree':TREE,'parent':PARENT,'historical_green_manifest_sha256':HISTORICAL_GREEN_MANIFEST_SHA,'pytest':pytest.__version__})
-          def pytest_collectreport(report): append('collection.jsonl',{'label':os.environ['YAESU_LABEL'],'node':report.nodeid,'outcome':report.outcome})
-          def pytest_collection_finish(session): save('manifest-'+os.environ['YAESU_LABEL']+'.json',[x.nodeid for x in session.items]); imports()
+          def git(*a): return subprocess.check_output(['git',*a],cwd=ROOT,text=True).strip()
+          TRACKED=(tuple(n for n in git('ls-files','-z').split('\0') if n and (n.endswith('.py') or n in ('pyproject.toml','uv.lock','rigs/ftx1.toml'))) if __name__=='__main__' else tuple(json.loads(Path(os.environ['YAESU_TRACKED']).read_text())))
+          def snapshot(root): return {n:sha(root/n) for n in TRACKED}
+          def source_inventory():
+            carrier=os.environ['GITHUB_SHA']; head=git('rev-parse','HEAD');tree=git('rev-parse','HEAD^{tree}');parent=git('rev-parse','HEAD^');status=git('status','--porcelain')
+            assert (head,tree,parent,status)==(SOURCE,TREE,PARENT,''),(head,tree,parent,status)
+            assert git('merge-base',carrier,SOURCE)==BASE
+            assert git('diff','--name-only',BASE,carrier)=='.github/workflows/full.yml'
+            workflow=subprocess.check_output(['git','show',carrier+':.github/workflows/full.yml'],cwd=ROOT)
+            return {'source':head,'source_tree':tree,'source_parent':parent,'source_status':status,'carrier':carrier,'carrier_tree':git('rev-parse',carrier+'^{tree}'),'carrier_parent':git('rev-parse',carrier+'^'),'common_base':BASE,'workflow_sha256':hashlib.sha256(workflow).hexdigest(),'historical_green_manifest_sha256':HISTORICAL_GREEN_MANIFEST_SHA,'historical_node_census_sha256':HISTORICAL_NODE_CENSUS_SHA,'hashes':snapshot(ROOT)}
+          def relative(path,root):
+            path=Path(path).resolve()
+            if path.is_relative_to(root): return str(path.relative_to(root))
+            return '<external>/'+('/'.join(path.parts[-2:]))
+          def imports():
+            root=Path.cwd().resolve(); expected=json.loads(Path(os.environ['YAESU_EXPECTED_SNAPSHOT']).read_text());records={}
+            for name,want in REQUIRED_IMPORTS.items():
+              module=sys.modules.get(name);assert module is not None and getattr(module,'__file__',None),name
+              path=Path(module.__file__).resolve();assert path==root/want,(name,str(path),want);actual=sha(path);assert actual==expected[want],(name,actual,expected[want]);records[name]={'path':want,'sha256':actual}
+            for name,module in sorted(sys.modules.items()):
+              if not (name=='rigplane' or name.startswith('rigplane.')):continue
+              path_name=getattr(module,'__file__',None)
+              if not path_name:continue
+              path=Path(path_name).resolve();assert path.is_relative_to(root),(name,str(path));rel=str(path.relative_to(root));assert rel in expected and sha(path)==expected[rel],(name,rel);records.setdefault(name,{'path':rel,'sha256':expected[rel]})
+            return records
+          def pytest_sessionstart(session):
+            label=os.environ['YAESU_LABEL'];expected=json.loads(Path(os.environ['YAESU_EXPECTED_SNAPSHOT']).read_text());assert snapshot(Path.cwd().resolve())==expected;assert pytest.__version__=='9.0.2' and sys.version_info[:2]==(3,11)
+            save('runtime-'+label+'.json',{'source':SOURCE,'tree':TREE,'parent':PARENT,'carrier':os.environ['GITHUB_SHA'],'historical_green_manifest_sha256':HISTORICAL_GREEN_MANIFEST_SHA,'instrument_sha256':sha(__file__),'python':sys.version,'executable':sys.executable,'pytest':pytest.__version__,'selection':json.loads(os.environ['YAESU_SELECTION'])})
+          def pytest_collectreport(report): append('collection.jsonl',{'label':os.environ['YAESU_LABEL'],'node':report.nodeid,'outcome':report.outcome,'longrepr':str(report.longrepr) if report.failed else None})
+          def pytest_collection_finish(session):
+            label=os.environ['YAESU_LABEL'];save('manifest-'+label+'.json',[x.nodeid for x in session.items]);save('imports-before-'+label+'.json',imports())
           def pytest_deselected(items): append('deselected.jsonl',{'label':os.environ['YAESU_LABEL'],'nodes':[x.nodeid for x in items]})
           @pytest.hookimpl(hookwrapper=True)
           def pytest_runtest_makereport(item,call):
             r=(yield).get_result(); row={'label':os.environ['YAESU_LABEL'],'node':item.nodeid,'phase':r.when,'outcome':r.outcome,'xfail':getattr(r,'wasxfail',None)}
             if call.excinfo is not None:
-              last=call.excinfo.traceback[-1];row.update(exception=f'{call.excinfo.type.__module__}.{call.excinfo.type.__name__}',message=str(call.excinfo.value),path=str(Path(last.path).resolve()),line=last.lineno+1)
+              root=Path.cwd().resolve();trace=[{'path':relative(frame.path,root),'line':frame.lineno+1} for frame in call.excinfo.traceback];row.update(exception=f'{call.excinfo.type.__module__}.{call.excinfo.type.__name__}',message=str(call.excinfo.value),traceback=trace)
             append('phases.jsonl',row)
           def pytest_warning_recorded(warning_message,when,nodeid,location):append('warnings.jsonl',{'label':os.environ['YAESU_LABEL'],'message':str(warning_message.message),'when':when,'node':nodeid})
-          def imports():
-            for name,want in REQUIRED_IMPORTS.items():
-              module=sys.modules.get(name);assert module and Path(module.__file__).resolve()==Path.cwd()/want,(name,getattr(module,'__file__',None))
-            for name,module in sys.modules.items():
-              if name=='rigplane' or name.startswith('rigplane.'):
-                assert Path(module.__file__).resolve().is_relative_to(Path.cwd()),name
+          def pytest_sessionfinish(session,exitstatus):
+            label=os.environ['YAESU_LABEL'];save('imports-after-'+label+'.json',imports());save('session-'+label+'.json',{'exitstatus':int(exitstatus)})
           def mutate(label,specimen):
             if label not in MUT:return None
-            path,old,new=MUT[label]; p=specimen/path; content=p.read_text();assert content.count(old)==1,(label,path);p.write_text(content.replace(old,new));return sha(p)
+            path,old,new=MUT[label];p=specimen/path;content=p.read_text();count=content.count(old);assert count==1,(label,path,count);before=sha(p);p.write_text(content.replace(old,new));after=sha(p);save('mutation-'+label+'.json',{'label':label,'path':path,'anchor_count':count,'before_sha256':before,'after_sha256':after});return after
+          def make_specimen(label,archive):
+            specimen=E/'specimen';shutil.rmtree(specimen,ignore_errors=True);specimen.mkdir()
+            with tarfile.open(archive) as bundle:bundle.extractall(specimen)
+            assert snapshot(specimen)==SOURCE_SNAPSHOT,(label,'archive provenance')
+            return specimen
           def supervise(label,specimen,nodes):
             command=['uv','run','--frozen','pytest','-p','yaesu_mutation_probe','-q','-o','addopts=','-o',f'cache_dir={E/"cache"/label}','--basetemp',str(E/'tmp'/label),'--tb=short','--color=no','--timeout=30','--timeout-method=thread',*nodes,f'--junitxml={E/(label+".xml")}']; p=None;out='';record={'label':label,'command':command,'signals':[],'deadline_hit':False}
             try:
-              p=subprocess.Popen(command,cwd=specimen,env=dict(os.environ,YAESU_LABEL=label,PYTEST_ADDOPTS='',PYTHONPATH=str(E)),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
+              env=dict(os.environ,YAESU_LABEL=label,YAESU_SELECTION=json.dumps(nodes),YAESU_EXPECTED_SNAPSHOT=str(E/('expected-snapshot-'+label+'.json')),YAESU_TRACKED=str(E/'tracked.json'),PYTEST_ADDOPTS='',PYTHONPATH=str(E)+os.pathsep+str(specimen/'src'),PYTHONPYCACHEPREFIX=str(E/'pycache'/label))
+              p=subprocess.Popen(command,cwd=specimen,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
               try:out,_=p.communicate(timeout=600)
               except subprocess.TimeoutExpired:record['deadline_hit']=True
             finally:
               def gone():
                 if p is None:return False
+                try:
+                  while os.waitpid(-p.pid,os.WNOHANG)[0]:pass
+                except ChildProcessError:pass
                 try:os.killpg(p.pid,0)
                 except ProcessLookupError:return p.poll() is not None
                 return False
@@ -109,22 +141,34 @@ jobs:
                   while not gone() and time.monotonic()<until:time.sleep(.02)
                 try:tail,_=p.communicate(timeout=3);out+=tail
                 except subprocess.TimeoutExpired:record['communicate_timeout']=True
-              record.update(returncode=p.poll() if p else None,reaped=bool(p and p.poll() is not None),group_absent=gone(),deadline_signal_boundary='exercised' if record['deadline_hit'] else 'unexercised');(E/(label+'.txt')).write_text(out);save(label+'-supervisor.json',record)
+              record.update(returncode=p.poll() if p else None,reaped=bool(p and p.poll() is not None),group_absent=gone(),deadline_signal_boundary='exercised' if record['deadline_hit'] else 'unexercised',source=SOURCE,carrier=os.environ['GITHUB_SHA']);(E/(label+'.txt')).write_text(out);save(label+'-supervisor.json',record)
             assert record['reaped'] and record['group_absent'],record;return record['returncode']
           def junit_key(n):
             p=n.split('::');return ('.'.join([p[0][:-3].replace('/','.'),*p[1:-1]]),p[-1])
-          def validate(label,nodes,failures,specimen):
-            actual=json.loads((E/('manifest-'+label+'.json')).read_text());assert actual==nodes,(label,actual,nodes)
-            assert all(sha(specimen/n)==SOURCE_SNAPSHOT[n] for n in SOURCE_SNAPSHOT if n.startswith('tests/'))
-            phases=[json.loads(x) for x in (E/'phases.jsonl').read_text().splitlines() if json.loads(x)['label']==label];calls=[x for x in phases if x['phase']=='call'];assert len(phases)==3*len(nodes) and all(x['outcome']=='passed' for x in phases if x['phase']!='call');assert sum(x['outcome']=='failed' for x in calls)==failures,(label,calls)
-            assert all(x['xfail'] is None for x in phases); xml=ET.parse(E/(label+'.xml')).getroot();cases=xml.findall('.//testcase');assert collections.Counter((x.get('classname'),x.get('name')) for x in cases)==collections.Counter(junit_key(x) for x in nodes);assert not xml.findall('.//error') and not xml.findall('.//skipped');assert snapshot(ROOT)==SOURCE_SNAPSHOT
-            if label in ORACLES:
-              node,line,marker=ORACLES[label]; row=next(x for x in calls if x['node']==node and x['outcome']=='failed');assert row['exception'] in ('builtins.AssertionError','asyncio.exceptions.CancelledError') and row['line']==line and marker in row['message'],(label,row)
+          def validate(label,nodes,specimen):
+            actual=json.loads((E/('manifest-'+label+'.json')).read_text());failures=FAILURES[label]
+            if label in ('G1','G2'):
+              assert len(actual)==225==len(set(actual));assert all(x.startswith(tuple(path+'::' for path in SELECTED)) for x in actual);census=hashlib.sha256(('\n'.join(actual)+'\n').encode()).hexdigest();assert census==HISTORICAL_NODE_CENSUS_SHA,(label,census)
+            else:assert actual==list(nodes),(label,actual,nodes)
+            expected=json.loads((E/('expected-snapshot-'+label+'.json')).read_text());assert snapshot(specimen)==expected,(label,'specimen changed')
+            collection=[json.loads(x) for x in (E/'collection.jsonl').read_text().splitlines() if json.loads(x)['label']==label];assert collection and all(x['outcome']=='passed' and x['longrepr'] is None for x in collection),collection
+            phases=[json.loads(x) for x in (E/'phases.jsonl').read_text().splitlines() if json.loads(x)['label']==label];expected_map={(node,phase):('failed' if phase=='call' and node in failures else 'passed') for node in actual for phase in ('setup','call','teardown')};actual_map={(x['node'],x['phase']):x['outcome'] for x in phases};assert len(phases)==len(expected_map) and actual_map==expected_map,(label,actual_map,expected_map);assert all(x['xfail'] is None for x in phases)
+            calls=[x for x in phases if x['phase']=='call'];failed={x['node'] for x in calls if x['outcome']=='failed'};survived={x['node'] for x in calls if x['outcome']=='passed'};assert failed==failures and survived==set(actual)-failures,(label,failed,survived)
+            for row in (x for x in calls if x['outcome']=='failed'):
+              cancel=(label,row['node']) in CANCEL_MESSAGES;assert row['exception']==('asyncio.exceptions.CancelledError' if cancel else 'builtins.AssertionError'),(label,row)
+              paths={x['path'] for x in row['traceback']};assert row['node'].split('::')[0] in paths,(label,row)
+              if cancel:
+                assert row['message']==CANCEL_MESSAGES[(label,row['node'])],(label,row);assert MUT[label][0] in paths,(label,row)
+            save('outcomes-'+label+'.json',{'selection':list(nodes),'collected':actual,'failures':sorted(failures),'survivors':sorted(survived),'phase_outcomes':[{'node':node,'phase':phase,'outcome':expected_map[(node,phase)]} for node in actual for phase in ('setup','call','teardown')]})
+            xml=ET.parse(E/(label+'.xml')).getroot();suite=xml.find('testsuite') or xml;assert int(suite.get('tests','-1'))==len(actual);cases=xml.findall('.//testcase');assert collections.Counter((x.get('classname'),x.get('name')) for x in cases)==collections.Counter(junit_key(x) for x in actual);assert len(xml.findall('.//failure'))==len(failures) and not xml.findall('.//error') and not xml.findall('.//skipped')
+            assert json.loads((E/('session-'+label+'.json')).read_text())=={'exitstatus':int(bool(failures))};assert json.loads((E/('imports-before-'+label+'.json')).read_text());assert json.loads((E/('imports-after-'+label+'.json')).read_text());supervisor=json.loads((E/(label+'-supervisor.json')).read_text());assert supervisor['returncode']==int(bool(failures)) and supervisor['reaped'] and supervisor['group_absent'] and not supervisor['deadline_hit'] and not supervisor['signals'],supervisor;assert snapshot(ROOT)==SOURCE_SNAPSHOT
           if __name__=='__main__':
-            assert (git('rev-parse','HEAD'),git('rev-parse','HEAD^{tree}'),git('rev-parse','HEAD^'),git('status','--porcelain'))==(SOURCE,TREE,PARENT,'');assert git('merge-base',os.environ['GITHUB_SHA'],SOURCE)==BASE;assert git('diff','--name-only',BASE,os.environ['GITHUB_SHA'])=='.github/workflows/full.yml';SOURCE_SNAPSHOT=snapshot(ROOT);save('before.json',SOURCE_SNAPSHOT);variants={}
-            for label,nodes,failures,mutation in PLANS:
-              specimen=E/'specimens'/label;shutil.copytree(ROOT,specimen,symlinks=True,ignore=shutil.ignore_patterns('.git','.pytest_cache','__pycache__'));variants[label]=mutate(mutation,specimen);rc=supervise(label,specimen,nodes);assert rc==int(bool(failures)),(label,rc);validate(label,nodes,failures,specimen)
-            assert len({x for x in variants.values() if x})==12;assert len(json.loads((E/'manifest-G1.json').read_text()))==225==len(json.loads((E/'manifest-G2.json').read_text()));assert json.loads((E/'manifest-G1.json').read_text())==json.loads((E/'manifest-G2.json').read_text());assert not (E/'deselected.jsonl').exists() and not (E/'warnings.jsonl').exists();save('after.json',snapshot(ROOT));assert json.loads((E/'after.json').read_text())==SOURCE_SNAPSHOT;save('verdict.json',{'status':'MUTATION_MATRIX_PASS','executions':511,'phases':1533,'call_failures':34,'passed_phases':1499,'source':SOURCE,'tree':TREE})
+            before=source_inventory();SOURCE_SNAPSHOT=before['hashes'];save('before.json',before);save('tracked.json',TRACKED);archive=E/'source.tar'
+            with archive.open('wb') as stream:subprocess.run(['git','archive','--format=tar',SOURCE],cwd=ROOT,stdout=stream,check=True)
+            variants={};executions=0
+            for label,nodes,mutation in PLANS:
+              assert len(nodes)==len(set(nodes));specimen=make_specimen(label,archive);variants[label]=mutate(mutation,specimen);save('expected-snapshot-'+label+'.json',snapshot(specimen));rc=supervise(label,specimen,nodes);assert rc==int(bool(FAILURES[label])),(label,rc);validate(label,nodes,specimen);executions+=len(json.loads((E/('manifest-'+label+'.json')).read_text()));shutil.rmtree(specimen)
+            assert len({x for x in variants.values() if x})==12;assert executions==511;assert sum(len(x) for x in FAILURES.values())==34;assert json.loads((E/'manifest-G1.json').read_text())==json.loads((E/'manifest-G2.json').read_text());assert not (E/'deselected.jsonl').exists() and not (E/'warnings.jsonl').exists();archive.unlink();after=source_inventory();save('after.json',after);assert after==before;save('verdict.json',{'status':'MUTATION_MATRIX_PASS','executions':executions,'phases':executions*3,'call_failures':34,'passed_phases':executions*3-34,'source':SOURCE,'tree':TREE,'carrier':os.environ['GITHUB_SHA']})
           PY
       - name: Run exact GREEN mutation matrix
         run: uv run --frozen python "$YAESU_PROOF/yaesu_mutation_probe.py"
@@ -138,5 +182,11 @@ jobs:
         if: always() && env.YAESU_PROOF != ''
         with:
           name: yaesu-observed-ptt-mutations
-          path: ${{ env.YAESU_PROOF }}
+          path: |
+            ${{ env.YAESU_PROOF }}/*.json
+            ${{ env.YAESU_PROOF }}/*.jsonl
+            ${{ env.YAESU_PROOF }}/*.txt
+            ${{ env.YAESU_PROOF }}/*.xml
+            ${{ env.YAESU_PROOF }}/*.diff
+            ${{ env.YAESU_PROOF }}/yaesu_mutation_probe.py
           retention-days: 14
