@@ -221,6 +221,8 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
 
         scenarios = (
             ({"files": [{"filename": "CODEOWNERS"}]}, "unknown"),
+            ({"files": [{"filename": "docs"}]}, "docs-root-file"),
+            ({"files": [{"filename": ".claude"}]}, "claude-root-file"),
             ({"files": [{"filename": "frontend/README.rſt"}]}, "unicode-fold"),
             ({"files": [{"filename": "frontend/README.md\n"}]}, "newline-suffix"),
             ({"files": [{"filename": "frontend/README.rst\r\n"}]}, "crlf-suffix"),

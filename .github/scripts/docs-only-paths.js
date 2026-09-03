@@ -15,7 +15,8 @@ function isDocumentation(path) {
   const asciiLowerSuffix = suffix.replace(/[A-Z]/g, (char) =>
     String.fromCharCode(char.charCodeAt(0) + 32),
   );
-  return parts[0] === "docs" || parts[0] === ".claude" || asciiLowerSuffix === ".md" || asciiLowerSuffix === ".rst" || DOC_EXACT.has(path);
+  const inDocsDirectory = parts.length > 1 && (parts[0] === "docs" || parts[0] === ".claude");
+  return inDocsDirectory || asciiLowerSuffix === ".md" || asciiLowerSuffix === ".rst" || DOC_EXACT.has(path);
 }
 
 function isDocumentationFile({filename, previous_filename: previousFilename}) {
