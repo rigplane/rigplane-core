@@ -184,6 +184,7 @@ def _make_radio() -> MagicMock:
         "notch",
         "split",
         "rit",
+        "xit",
         "tuner",
         "dial_lock",
         "cw",
