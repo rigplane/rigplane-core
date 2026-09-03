@@ -170,6 +170,10 @@
    * meter passes `null` and stays unknown rather than reading as zero (rule 3).
    * Annotations only — availability, relevance and the gauge itself remain this
    * surface's decisions.
+   *
+   * MOR-2255: this single call also supplies the `BarGauge` tiles' `zones` —
+   * the slot is called ONCE per render (see `display` below) and read twice,
+   * never once per gauge.
    */
   const signalDisplay = (f: MeterField): ReturnType<typeof renderSlot> =>
     renderSlot('meters', { value: observed(f) ? sLevel(rawOf(f)) : null, max: 1, s9: sLevel(0) });
@@ -188,6 +192,18 @@
    *  risk R3): a radio that reports no meters gets no empty dock, and no zone
    *  schema had to learn about it. */
   let meters = $derived(view.meters);
+
+  /**
+   * The active design language's `meters` descriptor for this render, or
+   * `null` when no language is active, the language declares no `meters`
+   * renderer, or its descriptor is missing the `MeterDisplay` quintet.
+   *
+   * MOR-2255: hoisted out of the S-meter branch so the S-meter tile
+   * (`attributes` + `display`) and every `BarGauge` tile (`display.zones`)
+   * read the SAME descriptor from ONE `renderSlot` call. Each consumer falls
+   * back to its own component default when this is `null`.
+   */
+  let display = $derived(meters ? signalDisplay(meters.signal) : null);
 
   /** The COMP gate is the MOR-1244 `txAux.compressor` FACT, deliberately NOT
    *  `meters.compression.availability`: a radio can keep reporting a
@@ -211,7 +227,6 @@
     </p>
 
     {#if present(meters.signal)}
-      {@const display = signalDisplay(meters.signal)}
       <div
         class="meter-tile" data-meter-tile data-meter="signal" data-testid="meter-signal"
         data-relevant={meters.signal.relevant} data-observed={observed(meters.signal)}
@@ -249,7 +264,15 @@
           role="group" aria-label={`${label} meter`}
         >
           {#if isObserved}
-            <BarGauge value={level(raw)} {label} displayValue={format(raw)} compact {showPeak} {fault} />
+            <!-- MOR-2255: `zones` comes from the SAME `display` descriptor
+                 the S-meter above reads, so every gauge on this surface is
+                 painted by one language. `undefined` (no language, or a
+                 descriptor without the quintet) falls back to `BarGauge`'s
+                 own `DEFAULT_ZONES`. -->
+            <BarGauge
+              value={level(raw)} {label} displayValue={format(raw)} compact {showPeak} {fault}
+              zones={display?.display?.zones}
+            />
           {:else}
             <span class="meter-unknown">{label} ?</span>
           {/if}
