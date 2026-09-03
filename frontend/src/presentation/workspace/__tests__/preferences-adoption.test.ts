@@ -139,11 +139,14 @@ describe('MOR-1082 — the surface plan starts from what the manifest declares',
     ]);
     // MOR-1346: `meters` joined as sdr-test's own zone. MOR-2231 batch 1: `vfo`
     // and `rxTx` each hold one too, under the ids `desktop-v2` already uses;
-    // batch 2 adds the five control families, same one-surface-per-zone shape.
+    // batch 2 adds the five control families and batch 3 the right column's
+    // four, all the same one-surface-per-zone shape.
     expect([...plan(sdrTestLayout)]).toEqual([
       ['receiver-deck', ['vfo']], ['rx-tx', ['rxTx']], ['meters', ['meters']],
       ['filter', ['filter']], ['rf-front-end', ['rfFrontEnd']], ['band', ['band']],
       ['antenna', ['antenna']], ['rit-xit-scan', ['ritXitScan']],
+      ['rx-audio', ['rxAudio']], ['dsp', ['dsp']], ['cw-keyer', ['cwKeyer']],
+      ['tx-aux', ['txAux']],
     ]);
   });
 
@@ -275,9 +278,10 @@ describe('MOR-1082 — the single-composition order comes from the same plan', (
   });
 
   it('flattens the plan in zone-declaration order, deduped', () => {
-    // MOR-1346/2231: sdr-test's eight zones flatten in declaration order.
+    // MOR-1346/2231: sdr-test's twelve zones flatten in declaration order.
     expect(compositionSurfaces(plan(sdrTestLayout), FALLBACK)).toEqual([
       'vfo', 'rxTx', 'meters', 'filter', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan',
+      'rxAudio', 'dsp', 'cwKeyer', 'txAux',
     ]);
     // desktop-v2 spreads the same two surfaces over two zones, plus its own
     // MOR-1336 (S4) tx-aux zone, MOR-1341 (S5) meters zone, MOR-1365 (S6a)

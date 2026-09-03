@@ -47,6 +47,27 @@ export const sdrTestLayout: LayoutManifest = {
   // side effect — the same move MOR-1366/1367 made for `desktop-v2`, closing a
   // double presentation that was live on this face.
   //
+  // MOR-2231 (step 1, batch 3): `rxAudio`, `dsp`, `cwKeyer` and `txAux` join,
+  // under the ids `desktop-declarations.ts` already uses. Each already mounted
+  // here BARE, through the single composition's `zoned()` calls in
+  // `SemanticRadioSurfaces.svelte` (all four take the default `allowBare`), so
+  // declaring the zone gives it a `data-zone-id` host.
+  //
+  // THREE of the four also activate the MOR-1364 suppression channel on this
+  // face, and that retirement is the point rather than a side effect:
+  // `LeftSidebar`'s RX AUDIO, AGC, DSP and CW panels, `RightSidebar`'s RX
+  // AUDIO, DSP and CW panels, and the settings modal's `desktop-dsp`,
+  // `desktop-agc` and `desktop-cw` sections stop rendering. `AgcPanel` retires
+  // with `dsp` rather than on a zone of its own, because `DspSurface` owns the
+  // AGC leaf (5A/MOR-1290) — the same move MOR-1368 (S9) made for `desktop-v2`.
+  //
+  // `txAux` is the EXCEPTION, and a sharper one than batch 2's `band`: `band`
+  // at least flips a prop, while no `declared.has('txAux')` predicate exists
+  // anywhere, so this declaration retires nothing at all and only places the
+  // surface. The sidebars' `<TxPanel>` is a different channel (`hideTxPanel`,
+  // which follows the semantic DECK for R9) and batch 1's `vfo` zone already
+  // suppressed it here.
+  //
   // None is `required`, matching `desktop-v2`: each surface self-gates on its
   // own `view.*` group, so a radio whose evidence gate declined the group must
   // still resolve this layout.
@@ -59,6 +80,10 @@ export const sdrTestLayout: LayoutManifest = {
     { id: 'band', surfaces: ['band'] },
     { id: 'antenna', surfaces: ['antenna'] },
     { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
+    { id: 'rx-audio', surfaces: ['rxAudio'] },
+    { id: 'dsp', surfaces: ['dsp'] },
+    { id: 'cw-keyer', surfaces: ['cwKeyer'] },
+    { id: 'tx-aux', surfaces: ['txAux'] },
   ],
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
