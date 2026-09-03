@@ -37,7 +37,12 @@ class QuickPathFilterContractTest(unittest.TestCase):
         return "\n".join(lines)
 
     def run_docs_quick_script(
-        self, *, heads: list[str], files: list[dict[str, str]], changed_files: int | None = None
+        self,
+        *,
+        heads: list[str],
+        files: list[dict[str, str]],
+        changed_files: int | None = None,
+        bases: list[str] | None = None,
     ) -> dict[str, object]:
         runner = r"""
 const script = process.argv[1];
@@ -49,7 +54,7 @@ const github = {
   paginate: async () => scenario.files,
   rest: {
     pulls: {
-      get: async () => ({data: {head: {sha: scenario.heads.shift()}, base: {sha: scenario.baseSha}, changed_files: scenario.changedFiles}}),
+      get: async () => ({data: {head: {sha: scenario.heads.shift()}, base: {sha: scenario.bases.shift()}, changed_files: scenario.changedFiles}}),
       listFiles: async () => undefined,
     },
     repos: {
@@ -76,7 +81,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 "-e",
                 runner,
                 self.docs_quick_script(),
-                json.dumps({"heads": heads, "files": files, "changedFiles": len(files) if changed_files is None else changed_files, "baseSha": "c" * 40}),
+                json.dumps({"heads": heads, "files": files, "changedFiles": len(files) if changed_files is None else changed_files, "bases": bases or ["c" * 40] * len(heads)}),
             ],
             check=True,
             capture_output=True,
@@ -205,6 +210,8 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertNotIn("\n  pull_request:\n", docs_quick)
         self.assertIn("const baseSha = initialPull.base.sha", docs_quick)
         self.assertIn("ref: baseSha", docs_quick)
+        self.assertIn("currentPull.base.sha !== baseSha", docs_quick)
+        self.assertIn("contents: read", docs_quick)
         self.assertNotIn("github.workflow_sha", docs_quick)
         self.assertNotIn("actions/checkout", docs_quick)
         self.assertNotIn("github.event.pull_request.head", docs_quick)
@@ -244,7 +251,15 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             files=[{"filename": "docs/guide.md"}],
         )
         self.assertEqual(raced["statuses"], [])
-        self.assertIn("head changed", raced["info"][0])
+        self.assertIn("changed", raced["info"][0])
+
+        base_raced = self.run_docs_quick_script(
+            heads=[initial_head, initial_head],
+            bases=["c" * 40, "d" * 40],
+            files=[{"filename": "docs/guide.md"}],
+        )
+        self.assertEqual(base_raced["statuses"], [])
+        self.assertIn("base changed", base_raced["info"][0])
 
         incomplete = self.run_docs_quick_script(
             heads=[initial_head], files=[{"filename": "docs/guide.md"}], changed_files=2

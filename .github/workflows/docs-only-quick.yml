@@ -6,6 +6,7 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
+  contents: read
   pull-requests: read
   statuses: write
 
@@ -62,8 +63,8 @@ jobs:
               repo,
               pull_number: pullNumber,
             });
-            if (currentPull.head.sha !== headSha) {
-              core.info('Pull request head changed during docs-only classification; no status was published.');
+            if (currentPull.head.sha !== headSha || currentPull.base.sha !== baseSha) {
+              core.info('Pull request head or base changed during docs-only classification; no status was published.');
               return;
             }
             await github.rest.repos.createCommitStatus({
