@@ -458,6 +458,64 @@ describe('TUNE carries its own disabled reason (MOR-1481)', () => {
   });
 });
 
+// ── 4b. MOR-2231 — the shared control-button vocabulary ────────────────────
+//
+// Pins on CLASSES and `data-*` attributes only. Every gate, handler and aria
+// attribute the sections above cover is unchanged.
+
+describe('MOR-2231 — the TX-aux buttons carry the shared control-button vocabulary', () => {
+  it.each(TX_AUX_TOGGLES.map(([f]) => f))('the "%s" toggle is a compact hardware button with a cyan dot', (field) => {
+    // Kill-mutation: drop any one of the class/attribute applications on
+    // `.tx-aux-toggle`. Without `v2-control-button` the element inherits no
+    // button face; without `data-surface`/`data-indicator-*` the hardware
+    // gradient and the on-state dot never paint.
+    withSurface(base(), snap(), (s) => {
+      const el = s.control(field)!;
+      expect(el.classList.contains('tx-aux-toggle')).toBe(true);
+      expect(el.classList.contains('v2-control-button')).toBe(true);
+      expect(el.classList.contains('v2-control-button--compact')).toBe(true);
+      expect(el.dataset.surface).toBe('hardware');
+      expect(el.dataset.indicatorStyle).toBe('dot');
+      expect(el.dataset.indicatorColor).toBe('cyan');
+    });
+  });
+
+  it.each(TX_AUX_TOGGLES.map(([f]) => f))('the "%s" toggle\'s data-active restates aria-pressed exactly', (field) => {
+    // Kill-mutation: `data-active={usable(...)}`, or a plain boolean cast of
+    // the reading. The dot lighting up IS the on-state signal, so it must
+    // carry `pressedOf`'s answer — including its ABSENCE on an unobserved
+    // reading, where claiming "off" would be a fabricated fact (the same
+    // doctrine `pressed-of.ts` exists for).
+    withSurface(base(), snap(), (s) => {
+      const el = s.control(field)!;
+      expect(el.dataset.active).toBe(el.getAttribute('aria-pressed'));
+      expect(el.dataset.active).toBeDefined();
+    });
+    withSurface(withField(base(), field, { unknown: true }), snap(), (s) => {
+      const el = s.control(field)!;
+      expect(el.hasAttribute('aria-pressed')).toBe(false);
+      expect(el.hasAttribute('data-active')).toBe(false);
+    });
+  });
+
+  it('TUNE is a compact hardware button and stays double-gated', () => {
+    // Kill-mutation: drop the classes from `.tx-aux-tune`, leaving the
+    // transmit-causing control unstyled beside the styled toggles.
+    withSurface(base(), snap(), (s) => {
+      const tune = s.tune()!;
+      expect(tune.classList.contains('tx-aux-tune')).toBe(true);
+      expect(tune.classList.contains('v2-control-button')).toBe(true);
+      expect(tune.classList.contains('v2-control-button--compact')).toBe(true);
+      expect(tune.dataset.surface).toBe('hardware');
+      expect(tune.disabled).toBe(false);
+    });
+    // The styling must not have loosened the gate (section 3's own doctrine).
+    withSurface(base(), snap({ radioTx: 'on' }), (s) => {
+      expect(s.tune()!.disabled).toBe(true);
+    });
+  });
+});
+
 // ── 5. Exactly one key path — safety note (iii) ────────────────────────────
 
 describe('this surface is never a second key path (safety note iii)', () => {

@@ -835,9 +835,7 @@ const REFERENCE_SELECT_GATING_OVERRIDE: Readonly<Record<string, Pick<Expectation
  * `audioRuntimeFixture`'s inline literal) already always sets `expect`; the
  * parameter type now says so, closing the gap rather than asserting past
  * it. Verified with a scratch tsconfig adding `fixtures/**\/*.ts` to
- * `include` (fixtures/ is otherwise typechecked by nothing —
- * `tsconfig.app.json` includes only `src/**`): HEAD reports 1 error here,
- * this fix reports 0.
+ * `include`: HEAD reports 1 error here, this fix reports 0.
  */
 function toReferenceFixture(f: Fixture & { expect: Expectation }): Fixture {
   return {

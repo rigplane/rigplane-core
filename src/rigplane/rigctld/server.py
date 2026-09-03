@@ -19,19 +19,19 @@ import datetime
 import inspect
 import logging
 import time
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from ..core.acquisition_drain import AcquisitionDrain
 from ..core.acquisition_scheduler import (
-    AcquisitionExecutionResult,
     AcquisitionExecutor,
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionQuery,
+    MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
     civ_acquisition_executor_for_provider,
-    derive_tx_active,
     provider_uses_civ_acquisition,
 )
 from ..profiles import RadioProfile
@@ -160,6 +160,7 @@ class RigctldServer:
         self._acquisition_executor: AcquisitionExecutor | None = None
         self._state_acquisition_drain_task: asyncio.Task[None] | None = None
         self._acquisition_in_flight: dict[str, tuple[frozenset[FieldPath], float]] = {}
+        self._acquisition_drain: AcquisitionDrain | None = None
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
         # Per-client sliding window for rate limiting: client_id → timestamps
         self._rate_windows: dict[int, list[float]] = {}
@@ -362,6 +363,12 @@ class RigctldServer:
             ("_acquisition_scheduler", scheduler),
             ("state_model_service", model_service),
             ("_state_freshness_service", freshness_service),
+            # MOR-2280 F14: standalone rigctld coalesces meter bursts as the
+            # web seat does. ``_bootstrap_state_acquisition`` returns before
+            # calling this when the radio already carries a
+            # ``state_model_service``, so a coalescer another seat attached
+            # over the same radio is never replaced here.
+            ("_meter_observation_coalescer", MeterObservationCoalescer()),
         ):
             try:
                 setattr(self._radio, name, value)
@@ -405,6 +412,7 @@ class RigctldServer:
         freshness_service = StateFreshnessService(
             store=self._state_store,
             scheduler=scheduler,
+            radio=self._radio,
         )
         self._acquisition_scheduler = scheduler
         self._state_model_service = model_service
@@ -549,147 +557,123 @@ class RigctldServer:
             link_healthy=False,
         )
 
-    async def _drain_state_acquisition_once(self) -> None:
-        scheduler = self._acquisition_scheduler
-        if scheduler is None:
-            return
-        now = time.monotonic()
-        # A Hamlib bridge owns the byte stream; the cadence reads this seat
-        # gained must not pollute it (MOR-166 slice 2). The deleted PTT
-        # re-read stood down on this exact flag. ``is True``, matching every
-        # sibling poller, so a duck-typed radio never quiesces by accident.
+    def _dispatchable_this_pass(
+        self,
+        pending: Sequence[AcquisitionRequest],
+    ) -> Sequence[AcquisitionRequest]:
+        """Return the requests this seat may put on the wire this pass.
+
+        A Hamlib bridge owns the byte stream; the cadence reads this seat
+        gained must not pollute it (MOR-166 slice 2). The deleted PTT
+        re-read stood down on this exact flag. ``is True``, matching every
+        sibling poller, so a duck-typed radio never quiesces by accident.
+
+        Only a request whose ``reasons`` is exactly the profile cadence
+        stands down; a client read that coalesced into it carries a second
+        reason and still reaches the wire.
+        """
+
         external_cat_owns_wire = (
             getattr(self._radio, "external_cat_session_active", False) is True
         )
-        store = self._state_store
-        # MOR-1532: keep the scheduler's tx_active cache current on this
-        # drain path too. Same ``derive_tx_active`` over the same canonical
-        # store as the freshness tick's own cadence call, so the two writers
-        # cannot disagree about one store state.
-        scheduler.note_tx_active(False if store is None else derive_tx_active(store))
-        # MOR-1533: dispatch must use the tx_active-gated view; crediting an
-        # already-sent answer (runtime._civ_rx, driven by this radio's own
-        # CI-V pump) uses the unfiltered pending_requests() instead, so an
-        # answer landing after de-key is never blinded by this gate.
-        pending = scheduler.dispatchable_requests()
-        pending_ids = {request.id for request in pending}
-        for request_id in tuple(self._acquisition_in_flight):
-            if request_id not in pending_ids:
-                del self._acquisition_in_flight[request_id]
+        if not external_cat_owns_wire:
+            return pending
+        return tuple(
+            request
+            for request in pending
+            if request.reasons != (_POLICY_CADENCE_REASON,)
+        )
 
-        for request in pending:
-            if external_cat_owns_wire and request.reasons == (_POLICY_CADENCE_REASON,):
-                continue
-            sent_paths: frozenset[FieldPath] = frozenset()
-            sent_at = 0.0
-            existing = self._acquisition_in_flight.get(request.id)
-            if existing is not None:
-                sent_paths, sent_at = existing
-                if self._acquisition_request_expired(
-                    request,
-                    sent_at=sent_at,
-                    now=now,
-                ):
-                    self._record_acquisition_failure(
-                        scheduler,
-                        request,
-                        reason="acquisition_request_timeout",
-                        failed_paths=sent_paths or frozenset(request.paths),
-                        now=now,
-                    )
-                    self._acquisition_in_flight.pop(request.id, None)
-                    continue
-                sent_paths = sent_paths.intersection(request.paths)
+    def _report_acquisition_executor_missing(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        now: float,
+    ) -> None:
+        if self._provider_uses_civ_executor(request.provider) and not isinstance(
+            self._radio, CivCommandCapable
+        ):
+            reason = "acquisition_executor_unavailable"
+        else:
+            reason = "acquisition_executor_missing"
+        self._record_acquisition_failure(
+            scheduler,
+            request,
+            reason=reason,
+            failed_paths=request.paths,
+            now=now,
+            kind=reason,
+        )
 
-            if all(path in sent_paths for path in request.paths):
-                continue
+    def _report_acquisition_executor_error(
+        self,
+        scheduler: AcquisitionScheduler,
+        request: AcquisitionRequest,
+        *,
+        error: BaseException,
+        sent_paths: frozenset[FieldPath],
+        now: float,
+    ) -> None:
+        failed_paths = tuple(path for path in request.paths if path not in sent_paths)
+        unavailable = isinstance(error, _AcquisitionExecutorUnavailable)
+        reason = (
+            "acquisition_executor_unavailable"
+            if unavailable
+            else "acquisition_executor_error"
+        )
+        self._record_acquisition_failure(
+            scheduler,
+            request,
+            reason=reason,
+            failed_paths=failed_paths or request.paths,
+            now=now,
+            kind=reason if unavailable else "acquisition_request_failed",
+            error=str(error),
+            error_type=type(error).__name__,
+        )
 
-            executor = self._acquisition_executor
-            if executor is None:
-                if self._provider_uses_civ_executor(
-                    request.provider
-                ) and not isinstance(self._radio, CivCommandCapable):
-                    reason = "acquisition_executor_unavailable"
-                    kind = reason
-                else:
-                    reason = "acquisition_executor_missing"
-                    kind = reason
-                self._record_acquisition_failure(
-                    scheduler,
-                    request,
-                    reason=reason,
-                    failed_paths=request.paths,
-                    now=now,
-                    kind=kind,
-                )
-                continue
+    def _report_acquisition_sent(
+        self,
+        request: AcquisitionRequest,
+        *,
+        paths: tuple[FieldPath, ...],
+        pending_request_count: int,
+    ) -> None:
+        self._record_state_diagnostic(
+            "acquisition_request_sent",
+            "rigctld.server",
+            request_id=request.id,
+            paths=[str(path) for path in paths],
+            pending_request_count=pending_request_count,
+        )
 
-            try:
-                result: AcquisitionExecutionResult = await executor.execute(
-                    request,
-                    already_sent_paths=sent_paths,
-                )
-            except asyncio.CancelledError:
-                raise
-            except _AcquisitionExecutorUnavailable as exc:
-                failed_paths = tuple(
-                    path for path in request.paths if path not in sent_paths
-                )
-                self._record_acquisition_failure(
-                    scheduler,
-                    request,
-                    reason="acquisition_executor_unavailable",
-                    failed_paths=failed_paths or request.paths,
-                    now=now,
-                    kind="acquisition_executor_unavailable",
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                )
-                self._acquisition_in_flight.pop(request.id, None)
-                continue
-            except Exception as exc:
-                failed_paths = tuple(
-                    path for path in request.paths if path not in sent_paths
-                )
-                self._record_acquisition_failure(
-                    scheduler,
-                    request,
-                    reason="acquisition_executor_error",
-                    failed_paths=failed_paths or request.paths,
-                    now=now,
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                )
-                self._acquisition_in_flight.pop(request.id, None)
-                continue
-            failed_paths = tuple(result.failed_paths)
-            if failed_paths:
-                reason = result.failure_reason or "acquisition_request_failed"
-                self._record_acquisition_failure(
-                    scheduler,
-                    request,
-                    reason=reason,
-                    failed_paths=failed_paths,
-                    now=now,
-                )
+    def _state_acquisition_drain(self) -> AcquisitionDrain:
+        """Return this seat's drain, built on first use.
 
-            newly_sent = tuple(result.sent_paths)
-            if newly_sent:
-                self._acquisition_in_flight[request.id] = (
-                    sent_paths.union(newly_sent),
-                    now,
-                )
-                self._record_state_diagnostic(
-                    "acquisition_request_sent",
-                    "rigctld.server",
-                    request_id=request.id,
-                    paths=[str(path) for path in newly_sent],
-                    # MOR-1533: dispatchable_requests(), matching this
-                    # drain's own dispatch view -- not the unfiltered
-                    # pending_requests(), which would also count entries
-                    # this drain will never send (withheld tx_only hints).
-                    pending_request_count=len(scheduler.dispatchable_requests()),
-                )
+        Scheduler, executor and store are read through callables:
+        ``_bootstrap_state_acquisition`` attaches them after construction.
+        """
+
+        drain = self._acquisition_drain
+        if drain is None:
+            drain = AcquisitionDrain(
+                scheduler=lambda: self._acquisition_scheduler,
+                executor=lambda: self._acquisition_executor,
+                store=lambda: self._state_store,
+                in_flight=self._acquisition_in_flight,
+                expired=self._acquisition_request_expired,
+                dispatchable=self._dispatchable_this_pass,
+                report_failure=self._record_acquisition_failure,
+                report_executor_missing=self._report_acquisition_executor_missing,
+                report_executor_error=self._report_acquisition_executor_error,
+                report_sent=self._report_acquisition_sent,
+            )
+            self._acquisition_drain = drain
+        return drain
+
+    async def _drain_state_acquisition_once(self) -> None:
+        await self._state_acquisition_drain().run_once()
 
     async def start(self) -> None:
         """Start the TCP listener and initialise the command handler."""
