@@ -106,6 +106,7 @@ def build_external_rigctld_acquisition_profile(
             command_response_observable=True,
             supported_controls=("set_ptt",),
         ),
+        FieldCapability(path=OBSERVED_PTT_PATH, polling=True),
         FieldCapability(
             path=_RF_GAIN,
             polling=True,
