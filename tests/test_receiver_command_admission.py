@@ -27,6 +27,14 @@ class CatSink:
         self.writes.append(command)
 
 
+class RigctldCommandSink:
+    def __init__(self):
+        self.calls = []
+
+    async def command(self, command):
+        self.calls.append(command)
+
+
 def yaesu(config=None):
     radio = YaesuCatRadio("/dev/null", profile=config or load_rig(RIGS / "ftx1.toml"))
     radio._transport = CatSink()
@@ -282,7 +290,7 @@ async def test_attenuator_receiver_admission_matches_provider_route(
             )
         )
     else:
-        sink = CatSink()
+        sink = RigctldCommandSink()
         radio = RigctldClientRadio(host="127.0.0.1", transport=sink)
 
     try:
@@ -291,7 +299,7 @@ async def test_attenuator_receiver_admission_matches_provider_route(
         if provider == "ftx1":
             assert radio._transport.writes == []
         elif provider == "rigctld":
-            assert sink.writes == []
+            assert sink.calls == []
         if expected:
             if provider == "ic7300":
                 await radio.set_attenuator_level(20, receiver=receiver)
@@ -306,7 +314,7 @@ async def test_attenuator_receiver_admission_matches_provider_route(
                 assert radio._transport.writes == ["RA01;"]
             else:
                 await radio.set_attenuator_level(6, receiver=receiver)
-                assert sink.writes == ["L ATT 6"]
+                assert sink.calls == ["L ATT 6"]
     finally:
         if provider.startswith("ic"):
             radio._connected = False
