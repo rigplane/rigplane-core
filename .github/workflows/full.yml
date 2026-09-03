@@ -195,6 +195,7 @@ jobs:
           printf '%s\n' "$check_rc" > "$ARTIFACT_DIR/ruff-check-exit.txt"
           printf '%s\n' "$format_rc" > "$ARTIFACT_DIR/ruff-format-exit.txt"
           cat "$ARTIFACT_DIR/ruff-check.log" "$ARTIFACT_DIR/ruff-format.log"
+          set -e
           test "$check_rc" -eq 0
           test "$format_rc" -eq 0
 
