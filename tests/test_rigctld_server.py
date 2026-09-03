@@ -586,14 +586,18 @@ class TestLifecycle:
     ) -> None:
         """Both seats over one radio produce one ticking freshness loop.
 
-        Reproduces combined mode's shape (``rigplane web --rigctld``): the web
-        seat attaches store, model service, scheduler and freshness service to
-        the radio (``web/server.py: WebServer._bootstrap_state_acquisition``)
-        and starts ``web-state-freshness``
-        (``web/web_startup.py: start_web_server``); ``RigctldServer.start``
-        then reuses the attached service and starts ``rigctld-state-freshness``
-        over that same instance. The web HTTP listener is not started -- the
-        web seat's whole contribution to the shared service is that one task.
+        Reproduces combined mode's shape (``rigplane web --rigctld``). The
+        radio carries the store it owns, plus the services the web seat
+        attaches to it in
+        ``web/server.py: WebServer._bootstrap_state_acquisition`` -- among
+        them the freshness service and its scheduler, which are the two this
+        test needs. The web seat's ``web-state-freshness`` task
+        (``web/web_startup.py: start_web_server``) runs over that service;
+        ``RigctldServer.start`` then takes its reuse branch and starts
+        ``rigctld-state-freshness`` over the same instance.
+
+        The web HTTP listener is not started: the web seat's whole
+        contribution to *this defect* is that one task.
 
         The discriminator is the gap between consecutive ticks: one loop
         leaves at least ``interval_seconds`` between them, two loops started

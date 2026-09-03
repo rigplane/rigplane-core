@@ -3464,11 +3464,9 @@ async def test_second_run_does_not_add_a_second_ticking_loop() -> None:
 async def test_freshness_driving_survives_the_first_seat_stopping() -> None:
     """The waiting seat drives once the driving seat's task is cancelled.
 
-    Combined mode tears the two seats down in a fixed order
-    (``cli/__init__.py``: the web server's ``stop`` runs first, the embedded
-    rigctld's ``stop`` in the ``finally``), but nothing makes that order the
-    same as the start order. Ticking must therefore outlive whichever task
-    is cancelled first, and must end once both are cancelled.
+    Each seat cancels only its own task, so ticking must outlive whichever
+    task is cancelled first -- either seat can be the one holding the loop --
+    and must end once both are cancelled.
     """
 
     interval = 0.02
