@@ -16,6 +16,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -58,6 +59,7 @@ from rigplane.rigctld.contract import (
     RigctldResponse,
 )
 from rigplane.rigctld.server import RigctldServer, run_rigctld_server
+from rigplane.web.radio_poller import RadioPoller
 from rigplane.profiles import resolve_radio_profile
 from rigplane.types import Mode
 
@@ -2348,3 +2350,164 @@ async def test_standalone_rigctld_coalesces_meter_bursts_and_the_tick_releases_t
 
     assert radio._state_store.snapshot().field(swr).value == 1.9
     assert coalescer.diagnostics()["pendingSampleCount"] == 0
+
+
+# ---------------------------------------------------------------------------
+# State-acquisition drain policies (MOR-2293)
+# ---------------------------------------------------------------------------
+
+
+class _SilentAcquisitionExecutor:
+    """Reports every path as sent and never answers — a lost read."""
+
+    def __init__(self) -> None:
+        self.calls: list[AcquisitionRequest] = []
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        self.calls.append(request)
+        return AcquisitionExecutionResult(
+            sent_paths=tuple(
+                path for path in request.paths if path not in already_sent_paths
+            )
+        )
+
+
+class TestStateAcquisitionDrainPolicies:
+    """The two collaborators the shared ``AcquisitionDrain`` takes."""
+
+    async def test_a_timed_out_request_is_terminal_even_on_a_healthy_civ_link(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """rigctld does NOT get MOR-874's healthy-link grace.
+
+        The web poller holds a healthy-link expiry in flight and withholds
+        it from the scheduler's failure accounting; rigctld reports every
+        timeout with ``link_healthy=False`` — the MOR-874 comment at
+        ``_record_acquisition_failure`` says so on purpose.
+
+        The radio is given the attributes the web probe reads, and the probe
+        itself is asked (unbound, on this radio) to confirm it calls the
+        link healthy: without that control this test would also pass on a
+        radio that looks broken to both seats.
+        """
+
+        freq = FieldPath.active("main", "freq_mode", "freq_hz")
+        radio = _ProfiledStandaloneRadio(
+            profile=type(
+                "Profile", (), {"state_acquisition": _acquisition_profile(freq)}
+            )()
+        )
+        executor = _SilentAcquisitionExecutor()
+        radio._acquisition_executor = executor
+        recorder = StateDiagnosticsRecorder(enabled=True)
+        radio._state_diagnostics = recorder
+
+        fake_now = [1000.0]
+        with patch("time.monotonic", side_effect=lambda: fake_now[0]):
+            srv = RigctldServer(radio, cfg)
+            srv._bootstrap_state_acquisition()
+            scheduler = srv._acquisition_scheduler
+            service = srv._state_freshness_service
+            assert scheduler is not None
+            assert service is not None
+
+            service.tick(now=fake_now[0])
+            await srv._drain_state_acquisition_once()
+            assert executor.calls, "nothing was dispatched, so nothing can time out"
+            assert srv._acquisition_in_flight != {}
+
+            # Well past every deadline the queued request carries, with the
+            # link demonstrably alive: a CI-V frame landed this instant.
+            fake_now[0] += 3600.0
+            radio._civ_recovering = False
+            radio._last_civ_data_received = fake_now[0]
+            radio._civ_ready_idle_timeout = 2.0
+            probe = RadioPoller._civ_link_healthy  # noqa: SLF001
+            assert probe(cast(Any, SimpleNamespace(_radio=radio)), now=fake_now[0]), (
+                "premise failed: the web poller's own probe does not call this "
+                "link healthy, so this test would not detect the grace"
+            )
+
+            await srv._drain_state_acquisition_once()
+
+        assert srv._acquisition_in_flight == {}, (
+            "the timed-out request stayed in flight — rigctld picked up the "
+            "MOR-874 healthy-link grace"
+        )
+        assert scheduler.diagnostics()["failureCountByReason"] == {
+            "acquisition_request_timeout": 1
+        }, (
+            "the scheduler did not count the timeout — it was reported with "
+            "link_healthy=True, which is the web seat's grace, not rigctld's rule"
+        )
+        timeouts = [
+            event
+            for event in recorder.events()
+            if event.details.get("reason") == "acquisition_request_timeout"
+        ]
+        assert len(timeouts) == 1
+        assert "grace_expired" not in timeouts[0].details
+
+    async def test_external_cat_stand_down_selects_on_reasons_not_on_the_request(
+        self, cfg: RigctldConfig
+    ) -> None:
+        """The dispatch-eligibility filter stays as narrow as it is today.
+
+        It drops a request whose ``reasons`` is exactly
+        ``("policy-cadence",)`` and nothing else: a cadence request a client
+        read coalesced into carries a second reason and must survive, and so
+        must background work queued under another reason
+        (``prime_unobserved``).
+        """
+
+        ptt = FieldPath.global_("tx_state", "ptt")
+        profile = resolve_radio_profile(model="IC-7300")
+        clock = FreshnessClock(start=time.monotonic() + 60.0)
+        store = StateStore(freshness_clock=clock)
+        radio = _CadenceRecordingRadio(profile=profile, store=store, clock=clock)
+        srv = RigctldServer(radio, cfg)
+        srv._bootstrap_state_acquisition()
+        scheduler = srv._acquisition_scheduler
+        service = srv._state_freshness_service
+        assert scheduler is not None
+        assert service is not None
+
+        service.tick(now=clock.now())
+        queued = scheduler.ensure_fresh(
+            (ptt,),
+            max_age=1.0,
+            priority=AcquisitionPriority.USER,
+            reason="user_read",
+        )
+        assert queued.status is AcquisitionStatus.QUEUED
+        pending = scheduler.dispatchable_requests()
+        cadence_only = tuple(
+            request for request in pending if request.reasons == ("policy-cadence",)
+        )
+        coalesced = tuple(
+            request
+            for request in pending
+            if "policy-cadence" in request.reasons and "user_read" in request.reasons
+        )
+        assert cadence_only, "fixture queued no cadence-only request"
+        assert coalesced, "fixture queued no coalesced client read"
+
+        radio.external_cat_session_active = False
+        assert srv._dispatchable_this_pass(pending) == pending
+
+        radio.external_cat_session_active = True
+        filtered_ids = {request.id for request in srv._dispatchable_this_pass(pending)}
+        assert filtered_ids.isdisjoint({request.id for request in cadence_only}), (
+            "the cadence did not stand down while an external CAT session owns the wire"
+        )
+        for request in coalesced:
+            assert request.id in filtered_ids, (
+                "a client read that coalesced into the standing cadence "
+                "request was swallowed by the external-CAT stand-down"
+            )
+        assert len(filtered_ids) == len(pending) - len(cadence_only)
