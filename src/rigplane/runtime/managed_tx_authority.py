@@ -193,13 +193,11 @@ class ManagedTxAuthority:
         authority's canonical fence membership exists before it returns.
         """
         started = asyncio.get_running_loop().create_future()
-        worker: _SubmissionCompletion | None = None
+        worker, admitted = self._begin_ptt_operation(
+            on, owner, ready=ready, _started=started
+        )
 
         async def submit() -> ManagedTxSubmission:
-            nonlocal worker
-            worker, admitted = self._begin_ptt_operation(
-                on, owner, ready=ready, _started=started
-            )
             if not started.done():
                 started.set_result(None)
             try:
@@ -213,7 +211,7 @@ class ManagedTxAuthority:
         submission = asyncio.create_task(submit())
 
         def own_submission(task: asyncio.Task[ManagedTxSubmission]) -> None:
-            if task.cancelled() and worker is not None:
+            if task.cancelled():
                 worker.cancel()
             else:
                 task.exception()
