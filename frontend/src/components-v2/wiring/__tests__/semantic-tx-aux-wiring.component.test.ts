@@ -166,7 +166,7 @@ import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 // MOR-1082: the REAL manifests, through the app-wide registration barrel, and
 // the REAL resolution seam — the plans below are what App would hand down.
 import {
-  desktopV2Layout, dualReceiverCockpitLayout, sdrTestLayout,
+  desktopV2Layout, dualReceiverCockpitLayout, mobileLayout, sdrTestLayout,
 } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
@@ -598,11 +598,13 @@ describe('MOR-1082 — the semantic vertical consults the resolved surface plan'
   });
 
   it('reorders the single composition from the zone that mounts both surfaces', () => {
-    // sdr-test's `main` zone declares ['vfo', 'rxTx']; the operator flipped it.
+    // `mobile`'s `portrait-deck` zone declares ['vfo', 'rxTx']; the operator
+    // flipped it. Read from `mobile` since MOR-2231 split sdr-test's pair into
+    // `receiver-deck` + `rx-tx`, leaving it no zone that mounts both.
     // MUTATION KILLED: ignoring `zoneOrder` in the single composition, or
     // hard-coding the VFO-before-RX/TX sequence.
-    render({ strips: 'single' }, planFor(sdrTestLayout, {
-      zoneOrder: { main: ['rxTx', 'vfo'] },
+    render({ strips: 'single' }, planFor(mobileLayout, {
+      zoneOrder: { 'portrait-deck': ['rxTx', 'vfo'] },
     }));
 
     expect(surfaceOrder()).toEqual(['rx-tx-surface', 'vfo-surface']);

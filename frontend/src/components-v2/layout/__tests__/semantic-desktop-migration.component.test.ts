@@ -14,8 +14,8 @@
  * What decides (1) is no longer a skin id but the ACTIVE layout manifest's zone
  * declarations, so the last two describes below render the matrix itself: a
  * declared surface is semantic and its legacy twin is gone; a surface no zone
- * declares keeps its legacy presentation. `sdr-test` — one zone declaring both
- * — is the degenerate all-semantic case.
+ * declares keeps its legacy presentation. `sdr-test` declares both, so it is
+ * the all-semantic case.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -146,7 +146,7 @@ import {
 // DualReceiverCockpit.component.test.ts` uses it: a real registered manifest to
 // derive the probes below from. RadioLayout.svelte already pulls this module in
 // (its side-effect registry import), so this adds no registration of its own.
-import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/declarations';
 // MOR-1367 (S8): the zone-ELEMENT assertions need the resolved plan in context
 // — see `renderWithPlan` in the S8 describe for why `render()` cannot show one.
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../../../presentation/workspace/resolution';
@@ -361,8 +361,7 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
  * MOR-1313 — desktop-v2 resolves through the v3 path.
  *
  * Its manifest splits the pair across TWO zones (`receiver-deck: [vfo]`,
- * `rx-tx: [rxTx]`) where sdr-test uses one, so the same rendered outcome
- * arriving from a different zone shape is the proof that suppression is
+ * `rx-tx: [rxTx]`), so suppression covering both twins is what proves it is
  * derived per zone rather than per skin.
  */
 describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
@@ -452,6 +451,67 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
     expect(render('desktop-v2').querySelector('.radio-layout.semantic-deck')).not.toBeNull();
     expect(render('desktop-v2').querySelector('.radio-layout.sdr-test')).toBeNull();
     expect(render('sdr-test').querySelector('.radio-layout.semantic-deck.sdr-test')).not.toBeNull();
+  });
+});
+
+/**
+ * MOR-2231 (step 1, batch 1) — the SDR face's two zone HOSTS.
+ *
+ * `sdrTestLayout` splits the pair into `receiver-deck: [vfo]` + `rx-tx:
+ * [rxTx]`, reusing desktop-v2's ids, and `RadioLayout` asks
+ * `SemanticRadioSurfaces` for the wrapper elements on that face alone
+ * (`regions={skinId === 'sdr-test'}`).
+ *
+ * Why the second `it` is the one that earns this block: BOTH manifests now
+ * declare zones owning `vfo` and `rxTx`, so `zoneOwning()` answers non-null on
+ * either face and the PLAN cannot be what separates them. Only the `regions`
+ * prop can, and until this test existed nothing in `frontend/src` inspected
+ * the SHAPE of desktop-v2's rendered subtree at all.
+ *
+ * Both mounts hand the plan in through context for the reason `renderWithPlan`
+ * in the S8 describe records: a standalone `RadioLayout` mount leaves
+ * `useSurfacePlan()` at `NO_PLAN`, and every zone wrapper then disappears
+ * whatever the manifest declares.
+ */
+describe('vfo and rxTx gain zone hosts on the SDR face only (MOR-2231)', () => {
+  function renderZoned(skinId: SkinId, manifest: LayoutManifest): HTMLElement {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const plan = resolveSurfacePlan(manifest, DEFAULT_WORKSPACE);
+    mounted.push(mount(RadioLayout, {
+      target,
+      props: { skinId },
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    }));
+    flushSync();
+    return target;
+  }
+
+  // MUTATION KILLED: leaving `vfo`/`rxTx` outside `zoned()`, or declaring the
+  // split zones without routing the surfaces through them — the manifest would
+  // name two hosts the DOM never builds.
+  it('hosts each sdr-test surface in the zone element its manifest declares', () => {
+    const t = renderZoned('sdr-test', sdrTestLayout);
+    expect(t.querySelector('[data-zone-id="receiver-deck"] [data-testid="vfo-surface"]'))
+      .not.toBeNull();
+    expect(t.querySelector('[data-zone-id="rx-tx"] [data-testid="rx-tx-surface"]'))
+      .not.toBeNull();
+  });
+
+  // MUTATION KILLED: passing `regions` unconditionally (or letting `zoned()`
+  // take `vfo`/`rxTx` on every face), which would wrap desktop-v2's two
+  // surfaces too. That is the byte-identity claim this batch rests on, and
+  // this is the only assertion in the suite that can refuse it.
+  it('leaves the desktop-v2 surfaces bare, with no zone element around either', () => {
+    const t = renderZoned('desktop-v2', desktopV2Layout);
+    const vfo = t.querySelector('[data-testid="vfo-surface"]');
+    const rxTx = t.querySelector('[data-testid="rx-tx-surface"]');
+    expect(vfo).not.toBeNull();
+    expect(rxTx).not.toBeNull();
+    expect(vfo!.closest('.surface-zone')).toBeNull();
+    expect(rxTx!.closest('.surface-zone')).toBeNull();
+    expect(t.querySelector('[data-zone-id="receiver-deck"]')).toBeNull();
+    expect(t.querySelector('[data-zone-id="rx-tx"]')).toBeNull();
   });
 });
 
