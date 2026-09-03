@@ -12,11 +12,11 @@ jobs:
     timeout-minutes: 15
     env:
       UV_PYTHON: "3.11"
-      SOURCE_SHA: d92e96a0e2231ea8c75fa112102d1ff0b510ee94
+      SOURCE_SHA: 445f07c7699466f4200d06e85500d186cf589131
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: d92e96a0e2231ea8c75fa112102d1ff0b510ee94
+          ref: 445f07c7699466f4200d06e85500d186cf589131
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          artifact_dir="$RUNNER_TEMP/canonical-level-mutation-d92e96a0"
+          artifact_dir="$RUNNER_TEMP/canonical-level-mutation-445f07c7"
           mkdir -p "$artifact_dir"
           : > "$artifact_dir/exitcodes.txt"
           checked_head=$(git rev-parse HEAD)
@@ -202,6 +202,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: canonical-levels-mutation-d92e96a0
-          path: ${{ runner.temp }}/canonical-level-mutation-d92e96a0
+          name: canonical-levels-mutation-445f07c7
+          path: ${{ runner.temp }}/canonical-level-mutation-445f07c7
           if-no-files-found: error
