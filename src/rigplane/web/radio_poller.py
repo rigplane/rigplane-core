@@ -3596,23 +3596,29 @@ class RadioPoller:
         sent_paths: frozenset[FieldPath],
         now: float,
     ) -> None:
-        """Record a send that raised, and re-raise what ``_run`` acts on.
+        """Record a send that raised, then re-raise it unchanged.
 
         Before MOR-2293 this seat had no ``try/except`` here, so every
         executor exception reached the per-``_send_query`` handlers in
-        ``_run``. Those are not merely a log: a connection or timeout error
-        is how ``_run`` learns the link is down (its backoff branch, MOR-1440's
-        dead-serial-link branch, and the reconnection probe that clears the
-        backoff on a ``_send_query()`` that returns). Once a scheduler is
-        attached ``_send_query`` has no other body, so swallowing these would
-        make that probe always succeed. They are recorded here and re-raised;
-        raising also skips the drain's forget step, leaving the ledger entry
-        exactly as the pre-change code left it. Pinned by
-        test_send_query_still_raises_a_dead_link_error_out_of_the_drain.
+        ``_run``. Those are not merely a log: they are how ``_run`` learns the
+        link is down — its ``(ConnectionError, RadioConnectionError)`` backoff
+        branch, MOR-1440's branch for any exception raised while the radio is
+        disconnected, and the reconnection probe that clears the backoff on a
+        ``_send_query()`` that returns. Once a scheduler is attached
+        ``_send_query`` has no other body, so swallowing anything here would
+        make that probe always succeed and announce a restored connection to a
+        radio that is still down.
 
-        Anything else is recorded and swallowed — the shared drain's rule —
-        which is this migration's one behaviour change on this path. Pinned
-        by test_executor_exception_is_recorded_and_drops_the_in_flight_entry.
+        So every exception is recorded and re-raised, with no type list: which
+        exceptions can reach here is decided by call sites downstream of
+        ``_civ``, and a list kept in this file would neither derive from them
+        nor redden when they change. Raising also skips the drain's forget
+        step, leaving the ledger entry exactly as the pre-change code left it.
+        Pinned by
+        test_send_query_still_raises_any_executor_failure_out_of_the_drain.
+
+        What the migration adds over the pre-change path is this diagnostic
+        and the scheduler failure report; what it takes away is nothing.
         """
 
         failed_paths = (
@@ -3635,14 +3641,7 @@ class RadioPoller:
             failed_paths=failed_paths,
             now=now,
         )
-        # The same two pairs ``_run`` itself matches on, one line apart, for
-        # the queued-command path (``(TimeoutError, RigplaneTimeoutError)``)
-        # and for ``_send_query`` (``(ConnectionError, RadioConnectionError)``).
-        if isinstance(
-            error,
-            (ConnectionError, RadioConnectionError, TimeoutError, RigplaneTimeoutError),
-        ):
-            raise error
+        raise error
 
     def _report_acquisition_sent(
         self,

@@ -881,67 +881,6 @@ async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() 
     )
 
 
-class _RaisingAcquisitionExecutor:
-    """Executor whose send fails the way a closed transport does."""
-
-    def __init__(self, error: BaseException) -> None:
-        self.error = error
-        self.calls = 0
-
-    async def execute(
-        self,
-        request: object,
-        *,
-        already_sent_paths: frozenset[FieldPath],
-    ) -> object:
-        self.calls += 1
-        raise self.error
-
-
-@pytest.mark.asyncio
-async def test_executor_exception_is_recorded_and_drops_the_in_flight_entry() -> None:
-    """MOR-2293 3b: a raising executor no longer escapes the web drain.
-
-    Before the shared ``AcquisitionDrain``, this seat had no ``try/except``
-    around ``executor.execute``: the exception unwound to ``_run``'s
-    catch-all, nothing was recorded, the scheduler counted no failure, and
-    the drain never reached the rest of the pass. The shared drain catches
-    it, records a diagnostic, reports the failure and drops the ledger
-    entry. This pins the new behaviour, which the migration chose.
-    """
-
-    radio = _healthy_radio(last_civ=300.0)
-    first = FieldPath.receiver("main", "meters", "s_meter")
-    scheduler = AcquisitionScheduler(profile=_acquisition_profile(first))
-    radio._acquisition_scheduler = scheduler
-    executor = _RaisingAcquisitionExecutor(RuntimeError("port closed"))
-    recorder = StateDiagnosticsRecorder(enabled=True)
-    poller = RadioPoller(
-        radio,
-        CommandQueue(),
-        radio_state=RadioState(),
-        acquisition_executor=executor,
-        diagnostics=recorder,
-    )
-    with patch("rigplane.web.radio_poller.time.monotonic", return_value=300.0):
-        _tick_cadence(poller, now=300.0)
-        await poller._send_scheduler_requests()  # noqa: SLF001
-
-    assert executor.calls == 1
-    failures = [
-        event
-        for event in recorder.events()
-        if event.details.get("reason") == "acquisition_executor_error"
-    ]
-    assert len(failures) == 1, "the executor exception was not recorded at all"
-    assert failures[0].details["error_type"] == "RuntimeError"
-    assert failures[0].details["error"] == "port closed"
-    assert scheduler.diagnostics()["failureCountByReason"] == {
-        "acquisition_executor_error": 1
-    }
-    assert poller._acquisition_in_flight == {}  # noqa: SLF001
-
-
 class _SwitchableAcquisitionExecutor:
     """Sends one path per pass, or raises once armed with an error."""
 
@@ -976,27 +915,35 @@ class _SwitchableAcquisitionExecutor:
             RigplaneTimeoutError("CI-V transport recovery timed out"),
             RigplaneTimeoutError,
         ),
+        (RuntimeError("something nobody listed"), RuntimeError),
     ],
     ids=[
         "builtin-connection",
         "rigplane-connection",
         "builtin-timeout",
         "rigplane-timeout",
+        "outside-any-list",
     ],
 )
 @pytest.mark.asyncio
-async def test_send_query_still_raises_a_dead_link_error_out_of_the_drain(
+async def test_send_query_still_raises_any_executor_failure_out_of_the_drain(
     error: BaseException, expected: type[BaseException]
 ) -> None:
-    """``_send_query`` must keep raising the errors ``_run``'s backoff reads.
+    """An executor failure must still reach ``_run``, whatever its type.
 
     ``_run`` has no other way to learn the link is down: the
     ``(ConnectionError, RadioConnectionError)`` branch that raises ``_backoff``,
-    MOR-1440's dead-serial-link branch, and the reconnection probe that clears
-    ``_backoff`` and logs ``connection restored`` all key off whether
-    ``_send_query()`` raised. Once a scheduler is attached ``_send_query`` has
-    no other body, so a drain that swallowed these would make the probe always
-    succeed and announce a restored connection to a dead radio.
+    MOR-1440's dead-serial-link branch (any exception plus a disconnected
+    radio), and the reconnection probe that clears ``_backoff`` and logs
+    ``connection restored`` all key off whether ``_send_query()`` raised. Once a
+    scheduler is attached ``_send_query`` has no other body, so a drain that
+    swallowed these would make the probe always succeed and announce a restored
+    connection to a dead radio.
+
+    The ``outside-any-list`` case is the criterion, not a bonus: what must
+    propagate is *an executor failure*, not four enumerated types. A type list
+    here would be a hand-maintained list at a boundary that nothing derives and
+    nothing reddens when a new raise site appears downstream.
 
     Deliberately does NOT mock ``_send_query``: the two existing backoff tests
     replace it with an ``AsyncMock``, so they pin ``_run``'s handlers and cannot
@@ -1034,11 +981,16 @@ async def test_send_query_still_raises_a_dead_link_error_out_of_the_drain(
     # Recorded on the way out -- the migration's addition -- and the ledger
     # entry survives, because raising skips the drain's forget step exactly as
     # the pre-change code left it untouched.
-    assert [
-        event.details["error_type"]
+    reported = [
+        event.details
         for event in recorder.events()
         if event.details.get("reason") == "acquisition_executor_error"
-    ] == [type(error).__name__]
+    ]
+    assert [d["error_type"] for d in reported] == [type(error).__name__]
+    assert [d["error"] for d in reported] == [str(error)]
+    assert scheduler.diagnostics()["failureCountByReason"] == {
+        "acquisition_executor_error": 1
+    }
     assert poller._acquisition_in_flight == ledger  # noqa: SLF001
 
 
