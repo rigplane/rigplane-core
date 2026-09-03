@@ -14,12 +14,15 @@ jobs:
   context-diagnostics:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/rigctld-context-diagnostics'
     runs-on: [self-hosted, linux, build]
-    timeout-minutes: 10
+    timeout-minutes: 25
     env:
-      SOURCE_PIN: b196d2624a3c0e747959a7bf0576c357a55a45a7
-      UV_PYTHON: '3.11'
+      SOURCE_PIN: d29b46f470572df278b99438857d4523c286390f
+      SOURCE_TREE: 115b891d11ee6a73862e635e9b05aa46c70a44d0
+      CARRIER_BASE: 72a311c38917b88fc680e42a47101c582414c45c
+      UV_PYTHON: '3.11.16'
       PYTHONDONTWRITEBYTECODE: '1'
-      PYTHONPATH: ${{ github.workspace }}/source/src:${{ github.workspace }}/source/tests
+      HATCH_BUILD_NO_HOOKS: '1'
+      RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING: '1'
     defaults:
       run:
         shell: bash
@@ -27,10 +30,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: b196d2624a3c0e747959a7bf0576c357a55a45a7
+          path: diagnostic
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: d29b46f470572df278b99438857d4523c286390f
           path: source
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Prepare isolated diagnostic evidence
         id: prepare
@@ -38,223 +46,368 @@ jobs:
           artifact_dir=$(mktemp -d "$RUNNER_TEMP/rigctld-context-diagnostics.XXXXXX")
           echo "ARTIFACT_DIR=$artifact_dir" >> "$GITHUB_ENV"
           echo "artifacts_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
-          echo "UV_CACHE_DIR=$(mktemp -d "$RUNNER_TEMP/context-uv-cache.XXXXXX")" >> "$GITHUB_ENV"
-          echo "UV_PROJECT_ENVIRONMENT=$(mktemp -d "$RUNNER_TEMP/context-venv.XXXXXX")" >> "$GITHUB_ENV"
-          echo "PYTHONPYCACHEPREFIX=$(mktemp -d "$RUNNER_TEMP/context-pycache.XXXXXX")" >> "$GITHUB_ENV"
-          echo "RUFF_CACHE_DIR=$artifact_dir/ruff-cache" >> "$GITHUB_ENV"
-          printf '%s\n' "SOURCE_PIN=$SOURCE_PIN" "DIAG_SHA=$GITHUB_SHA" "REF=$GITHUB_REF" "RUN_ID=$GITHUB_RUN_ID" "RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" 'SCOPE=Diagnostic capture with a known format failure; not product GREEN or ingress proof.' > "$artifact_dir/metadata.txt"
-          git rev-parse HEAD > "$artifact_dir/source-head-before.txt"
-          git status --porcelain=v1 --untracked-files=all > "$artifact_dir/status-before.txt"
+          echo "UV_CACHE_DIR=$artifact_dir/control-cache" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$artifact_dir/control-venv" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$artifact_dir/python" >> "$GITHUB_ENV"
+          printf '%s\n' "SOURCE_PIN=$SOURCE_PIN" "SOURCE_TREE=$SOURCE_TREE" "CARRIER_SHA=$GITHUB_SHA" "CARRIER_BASE=$CARRIER_BASE" "REF=$GITHUB_REF" "RUN_ID=$GITHUB_RUN_ID" "RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT" 'SCOPE=17 existing cases, 11 phases, 187 executions; not full-suite or hardware acceptance.' > "$artifact_dir/metadata.txt"
+          git rev-parse HEAD HEAD^{tree} HEAD^1 HEAD^2 > "$artifact_dir/source-before.txt"
+          git status --porcelain=v1 --untracked-files=all --ignored > "$artifact_dir/source-status-before.txt"
+          git ls-tree -rz HEAD > "$artifact_dir/source-git-manifest.bin"
           test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
-          test ! -s "$artifact_dir/status-before.txt"
-          git archive --format=tar "$SOURCE_PIN" -- src/rigplane/rigctld/server.py src/rigplane/rigctld/handler.py tests/test_rigctld_managed_context.py tests/test_rigctld_server.py > "$artifact_dir/source-files.tar"
+          test "$(git rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test ! -s "$artifact_dir/source-status-before.txt"
+          git -C ../diagnostic rev-parse HEAD HEAD^{tree} HEAD^ > "$artifact_dir/carrier.txt"
+          git -C ../diagnostic status --porcelain=v1 --untracked-files=all --ignored > "$artifact_dir/carrier-status.txt"
+          git -C ../diagnostic diff --binary "$CARRIER_BASE" HEAD > "$artifact_dir/carrier.patch"
+          test "$(git -C ../diagnostic rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C ../diagnostic rev-parse HEAD^)" = "$CARRIER_BASE"
+          test ! -s "$artifact_dir/carrier-status.txt"
+          test "$(git -C ../diagnostic diff --name-only "$CARRIER_BASE" HEAD)" = '.github/workflows/full.yml'
+          git merge-base "$SOURCE_PIN" "$CARRIER_BASE" > "$artifact_dir/source-carrier-merge-base.txt"
+          test "$(cat "$artifact_dir/source-carrier-merge-base.txt")" = b196d2624a3c0e747959a7bf0576c357a55a45a7
 
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: false
+          version: '0.12.9'
 
-      - name: Install dependencies
-        id: install
+      - name: Install isolated controller dependencies
         run: |
-          printf '%s\n' 'uv python install 3.11' 'uv sync --frozen --extra dev' > "$ARTIFACT_DIR/dependency-commands.txt"
-          uv python install 3.11
-          uv sync --frozen --extra dev
+          printf '%s\n' 'uv python install 3.11.16' 'HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras' > "$ARTIFACT_DIR/dependency-commands.txt"
+          uv --version > "$ARTIFACT_DIR/uv-version.txt"
+          uv python install 3.11.16 2>&1 | tee "$ARTIFACT_DIR/python-install.log"
+          uv sync --frozen --all-extras 2>&1 | tee "$ARTIFACT_DIR/dependency-install.log"
 
-      - name: Require the ten focused tests
+      - name: Run frozen constructor fault and converse matrix
         run: |
-          set +e
-          uv run --no-sync python - > "$ARTIFACT_DIR/test-oracle.log" 2>&1 <<'PY'
+          cat > "$ARTIFACT_DIR/context_proof.py" <<'PY'
+          import ctypes
+          import difflib
+          import hashlib
+          import importlib
           import json
           import os
           from pathlib import Path
+          import shutil
+          import signal
           import subprocess
           import sys
+          import time
+          import traceback
+          from collections import Counter
           import xml.etree.ElementTree as ET
+          import pytest
 
-          artifacts = Path(os.environ["ARTIFACT_DIR"])
-          assert sys.version_info[:2] == (3, 11), sys.version
-          (artifacts / "python.txt").write_text(sys.version + "\n")
-          module = "tests.test_rigctld_managed_context"
-          expected = [(module, name) for name in (
-              "test_partial_managed_context_is_rejected_before_bootstrap[present0]",
-              "test_partial_managed_context_is_rejected_before_bootstrap[present1]",
-              "test_partial_managed_context_is_rejected_before_bootstrap[present2]",
-              "test_partial_managed_context_is_rejected_before_bootstrap[present3]",
-              "test_partial_managed_context_is_rejected_before_bootstrap[present4]",
-              "test_partial_managed_context_is_rejected_before_bootstrap[present5]",
-              "test_managed_context_rejects_custom_handler",
-              "test_server_start_forwards_exact_managed_references",
-              "test_handler_leaf_preserves_shared_service_default",
-          )] + [("tests.test_rigctld_server.TestLifecycle",
-                 "test_start_does_not_bind_backend_state_cache_by_default")]
-          nodeids = [
-              f"tests/test_rigctld_managed_context.py::{name}"
-              for _, name in expected[:-1]
-          ] + ["tests/test_rigctld_server.py::TestLifecycle::test_start_does_not_bind_backend_state_cache_by_default"]
-          assert len(expected) == len(set(expected)) == len(nodeids) == 10
-          (artifacts / "expected-cases.json").write_text(json.dumps(expected, indent=2))
-          (artifacts / "expected-nodeids.txt").write_text("\n".join(nodeids) + "\n")
-          command = [
-              sys.executable, "-m", "pytest", "-q", "-o", "addopts=",
-              "-o", f"cache_dir={artifacts / 'pytest-cache'}",
-              "--tb=long", "--color=no", "--timeout=30", "--timeout-method=thread",
-              f"--junitxml={artifacts / 'junit.xml'}", *nodeids,
+          SERVER = 'src/rigplane/rigctld/server.py'
+          HANDLER = 'src/rigplane/rigctld/handler.py'
+          MFILE = 'tests/test_rigctld_managed_context.py'
+          SFILE = 'tests/test_rigctld_server.py'
+          TFILE = 'tests/test_rigctld_tx_interlock.py'
+          M, S, T = MFILE + '::', SFILE + '::TestLifecycle::', TFILE + '::'
+          PARTIAL = [M + f'test_partial_managed_context_is_rejected_before_bootstrap[present{i}]' for i in range(6)]
+          H = M + 'test_managed_context_rejects_custom_handler'
+          R = M + 'test_server_start_forwards_exact_managed_references'
+          L = M + 'test_handler_leaf_preserves_shared_service_default'
+          LIFECYCLE = [S + name for name in (
+              'test_start_passes_state_model_capability_to_default_handler',
+              'test_start_bootstraps_profiled_standalone_state_acquisition',
+              'test_start_reuses_runtime_services_without_owning_freshness_task',
+              'test_standalone_fallback_store_begin_and_detach_each_advance_once',
+          )]
+          TERMINAL = [T + f'test_unapplied_terminal_state_is_never_answered_with_rprt_0[{state}]' for state in ('failed--9', 'timed_out--5', 'superseded--9')]
+          F = T + 'test_another_commands_terminal_state_does_not_fail_this_write'
+          NODES = [*PARTIAL, H, R, L, *LIFECYCLE, *TERMINAL, F]
+          REJECTION = '            raise ValueError(\n                "managed authority, queue and service must be supplied together"\n            )'
+          TRIAD = '                managed_tx_authority=self._managed_tx_authority,\n                command_queue=self._command_queue,\n                command_service=self._command_service,\n'
+          SELECT = '            if command_service is None\n            else command_service\n        )'
+
+          def edit(path, old, new):
+              return {'path': path, 'old': old, 'new': new, 'matches': 1}
+
+          def site(node, line, statement, kind='assert'):
+              return {'path': node.split('::')[0], 'line': line, 'statement': statement, 'kind': kind,
+                      'message_predicate': "DID NOT RAISE <class 'ValueError'>" if kind == 'raises' else None}
+
+          partial_site = site(PARTIAL[0], 91, 'with pytest.raises(ValueError, match="together"):', 'raises')
+          PLAN = [
+              ('B0', [], {}),
+              ('M1', [edit(SERVER, REJECTION, '            return')], dict.fromkeys(PARTIAL, partial_site)),
+              ('M2', [edit(HANDLER, REJECTION, '            return')], dict.fromkeys(PARTIAL, partial_site)),
+              ('M3', [edit(SERVER, '            raise ValueError("managed references cannot be combined with _handler")', '            return')], {H: site(H, 96, 'with pytest.raises(ValueError, match="_handler"):', 'raises')}),
+              ('M4', [edit(SERVER, TRIAD, '')], {R: site(R, 116, 'assert getattr(handler, "_" + name) is value'), **{node: site(node, line, 'handler_cls.assert_called_once_with(', 'mock') for node, line in zip(LIFECYCLE, (536, 578, 624, 897), strict=True)}}),
+              ('M5', [edit(HANDLER, '                intent, executor=self._command_executor\n', '                intent\n')], {L: site(L, 131, 'assert context.radio.frequency_calls == [(14_075_000, 0)]')}),
+              ('M6', [edit(HANDLER, SELECT, SELECT + '\n        self._command_service._executor = self._command_executor')], {L: site(L, 146, 'assert context.default.calls == [intent]')}),
+              ('M7', [edit(HANDLER, '        state = _terminal_lifecycle_state(result, intent)', '        return result\n        state = _terminal_lifecycle_state(result, intent)')], {node: site(node, 592, 'assert response.error is expected') for node in TERMINAL}),
+              ('M8', [edit(HANDLER, '        if event.command_id == intent.id:\n            return str(event.state)', '        return str(event.state)')], {F: site(F, 614, 'assert response.ok')}),
+              ('C1', [edit(path, '        if any(supplied) and not all(supplied):', '        if sum(supplied) in (1, 2):') for path in (SERVER, HANDLER)], {}),
+              ('B1', [], {}),
           ]
-          (artifacts / "pytest-command.json").write_text(json.dumps(command, indent=2))
-          try:
-              with (artifacts / "pytest.log").open("w") as log:
-                  result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=180)
-          except subprocess.TimeoutExpired:
-              (artifacts / "pytest-exit.txt").write_text("subprocess timeout\n")
-              raise
-          finally:
-              print((artifacts / "pytest.log").read_text(), end="")
-          (artifacts / "pytest-exit.txt").write_text(str(result.returncode) + "\n")
-          assert result.returncode == 0, result.returncode
-          report = ET.parse(artifacts / "junit.xml").getroot()
-          actual = [(case.get("classname"), case.get("name")) for case in report.findall(".//testcase")]
-          assert len(actual) == len(set(actual)) == 10 and set(actual) == set(expected), actual
-          assert not any(report.findall(f".//{tag}") for tag in ("failure", "error", "skipped"))
-          (artifacts / "test-oracle.txt").write_text("Exact 10 PASS; no failures/errors/skips/duplicates.\n")
-          PY
-          rc=$?
-          printf '%s\n' "$rc" > "$ARTIFACT_DIR/test-oracle-exit.txt"
-          cat "$ARTIFACT_DIR/test-oracle.log"
-          exit "$rc"
+          HELPER_HASHES = {
+              '_pytest.raises': 'f3a57e8686398586daebd9e9cab1fbaf891035bf108e8b986fc4b27462e68d57',
+              '_pytest.outcomes': 'a9b8074421110d12bc5bc6407da9d07f80e9e3f5bbbcda1cdafbf7a66dc7b4aa',
+              'unittest.mock': '2576119e5653ca21ab32dd5a1a5f5604deb2b1c7a240e315710ea927bc193749',
+          }
 
-      - name: Capture and require the known formatting failure
-        if: always() && steps.install.outcome == 'success'
-        run: |
-          target=tests/test_rigctld_managed_context.py
-          printf '%s\n' "uv run --no-sync ruff check $target" "uv run --no-sync ruff format --check $target" "uv run --no-sync ruff format --diff $target" > "$ARTIFACT_DIR/ruff-commands.txt"
-          set +e
-          uv run --no-sync ruff check "$target" > "$ARTIFACT_DIR/ruff-check.log" 2>&1
-          printf '%s\n' "$?" > "$ARTIFACT_DIR/ruff-check-exit.txt"
-          uv run --no-sync ruff format --check "$target" > "$ARTIFACT_DIR/ruff-format.log" 2>&1
-          printf '%s\n' "$?" > "$ARTIFACT_DIR/ruff-format-exit.txt"
-          uv run --no-sync ruff format --diff "$target" > "$ARTIFACT_DIR/ruff-format-diff.log" 2>&1
-          printf '%s\n' "$?" > "$ARTIFACT_DIR/ruff-format-diff-exit.txt"
-          set -e
-          cat "$ARTIFACT_DIR/ruff-check.log" "$ARTIFACT_DIR/ruff-format.log" "$ARTIFACT_DIR/ruff-format-diff.log"
-          set +e
-          uv run --no-sync python - > "$ARTIFACT_DIR/format-oracle.log" 2>&1 <<'PY'
-          import os
-          from pathlib import Path
-          artifacts = Path(os.environ["ARTIFACT_DIR"])
-          for name, expected in (("ruff-check", "0"), ("ruff-format", "1"), ("ruff-format-diff", "1")):
-              assert (artifacts / f"{name}-exit.txt").read_text().strip() == expected, name
-          diff = (artifacts / "ruff-format-diff.log").read_text()
-          headers = [line for line in diff.splitlines() if line.startswith(("--- ", "+++ "))]
-          target = "tests/test_rigctld_managed_context.py"
-          assert headers == [f"--- {target}", f"+++ {target}"], headers
-          assert any(line.startswith("@@ ") for line in diff.splitlines()), "Missing format hunks"
-          (artifacts / "format-oracle.txt").write_text("Known format failure captured only for the context test; not product GREEN.\n")
-          PY
-          rc=$?
-          printf '%s\n' "$rc" > "$ARTIFACT_DIR/format-oracle-exit.txt"
-          cat "$ARTIFACT_DIR/format-oracle.log"
-          exit "$rc"
+          def save(path, value):
+              path.write_text(json.dumps(value, indent=2) + '\n')
 
-      - name: Capture isolated citation repair and canonical checks
-        if: always() && steps.install.outcome == 'success'
-        run: |
-          set +e
-          uv run --no-sync python - > "$ARTIFACT_DIR/citation-oracle.log" 2>&1 <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          import subprocess
-          import tempfile
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
 
-          artifacts = Path(os.environ["ARTIFACT_DIR"])
-          pin = os.environ["SOURCE_PIN"]
-          candidate = Path(tempfile.mkdtemp(prefix="context-citation-", dir=os.environ["RUNNER_TEMP"]))
-          (artifacts / "candidate-path.txt").write_text(str(candidate) + "\n")
-          command = ["git", "worktree", "add", "--detach", str(candidate), pin]
-          (artifacts / "candidate-command.json").write_text(json.dumps(command))
-          with (artifacts / "candidate-setup.log").open("w") as log:
-              result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=60)
-          (artifacts / "candidate-setup-exit.txt").write_text(str(result.returncode) + "\n")
-          assert result.returncode == 0, result.returncode
-          doc = "docs/plans/2026-08-20-transmit-authority.md"
-          baselines = (
-              ".github/scripts/doc-citation-baseline.txt",
-              ".github/scripts/doc-citation-dangling-baseline.txt",
-          )
-          allowed = {doc, *baselines}
-          assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=candidate, text=True).strip() == pin
-          assert not subprocess.check_output(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=candidate)
-          original = (candidate / doc).read_bytes()
-          needle = b" (`radio_poller.py:4024`)"
-          assert original.count(needle) == 1
-          assert original.splitlines()[949] == b"`connection_epoch_bootstrap` exemption (`radio_poller.py:4024`) exists"
-          for path in sorted(allowed):
-              (artifacts / ("before-" + Path(path).name)).write_bytes((candidate / path).read_bytes())
-          steps = [
-              ("citation-regenerate", ["--regenerate"]),
-              ("dangling-regenerate", ["--check-dangling", "--regenerate"]),
-              ("citation-check", []),
-              ("link-check", ["--check-links"]),
-              ("dangling-check", ["--check-dangling"]),
-              ("citation-growth", ["--check-growth", pin]),
-              ("link-growth", ["--check-links", "--check-growth", pin]),
-              ("dangling-growth", ["--check-dangling", "--check-growth", pin]),
-          ]
-          try:
-              (candidate / doc).write_bytes(original.replace(needle, b""))
-              for name, args in steps:
-                  command = [".github/scripts/check-doc-citations.sh", *args]
-                  (artifacts / f"{name}-command.json").write_text(json.dumps(command))
+          def git(root, *args):
+              return subprocess.check_output(['git', *args], cwd=root, timeout=30)
+
+          def content(path):
+              return os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+
+          def fingerprint(root, names):
+              actual = {str(path.relative_to(root)) for path in root.rglob('*') if '.git' not in path.relative_to(root).parts and (path.is_file() or path.is_symlink())}
+              assert actual == set(names), ('INVALID: file inventory', actual ^ set(names))
+              return {name: {'sha256': sha(content(root / name)), 'mode': (root / name).lstat().st_mode} for name in names}
+
+          def supervised(command, cwd, env, evidence, seconds):
+              evidence.mkdir()
+              record = {'command': command, 'cwd': str(cwd), 'signals': [], 'safe_to_mutate': False}
+              process = None
+              def gone():
+                  if process.poll() is not None:
+                      while True:
+                          try:
+                              pid, _ = os.waitpid(-process.pid, os.WNOHANG)
+                          except ChildProcessError:
+                              break
+                          if not pid:
+                              break
                   try:
-                      with (artifacts / f"{name}.log").open("w") as log:
-                          result = subprocess.run(
-                              command, cwd=candidate, stdout=log,
-                              stderr=subprocess.STDOUT, timeout=120,
-                          )
-                  except subprocess.TimeoutExpired:
-                      (artifacts / f"{name}-exit.txt").write_text("subprocess timeout\n")
-                      raise
-                  (artifacts / f"{name}-exit.txt").write_text(str(result.returncode) + "\n")
-                  print((artifacts / f"{name}.log").read_text(), end="")
-                  assert result.returncode == 0, (name, result.returncode)
-          finally:
-              for name, args in (
-                  ("candidate-diff.patch", ["diff", "--binary", "HEAD"]),
-                  ("candidate-changed-paths.txt", ["diff", "--name-only", "HEAD"]),
-                  ("candidate-status.txt", ["status", "--porcelain=v1", "--untracked-files=all"]),
-                  ("candidate-head.txt", ["rev-parse", "HEAD"]),
-              ):
-                  (artifacts / name).write_bytes(subprocess.check_output(["git", *args], cwd=candidate))
-              for path in sorted(allowed):
-                  (artifacts / ("after-" + Path(path).name)).write_bytes((candidate / path).read_bytes())
-          changed = set((artifacts / "candidate-changed-paths.txt").read_text().splitlines())
-          assert doc in changed and changed <= allowed, changed
-          assert not subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], cwd=candidate)
-          assert (candidate / doc).read_bytes() == original.replace(needle, b"")
-          assert (artifacts / "candidate-head.txt").read_text().strip() == pin
-          (artifacts / "citation-oracle.txt").write_text(
-              "Candidate removes only the literal citation parenthesis; canonical regenerations and six checks passed. "
-              "Changes are restricted to the document and two citation baselines; no baseline growth. Original source is checked separately.\n"
-          )
+                      os.killpg(process.pid, 0)
+                  except ProcessLookupError:
+                      return process.poll() is not None
+                  return False
+              try:
+                  with (evidence / 'stdout.log').open('w') as out, (evidence / 'stderr.log').open('w') as err:
+                      process = subprocess.Popen(command, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
+                      record.update(pid=process.pid, pgid=process.pid)
+                      save(evidence / 'process.json', record)
+                      result = process.wait(timeout=seconds)
+                      if not gone():
+                          raise RuntimeError('INVALID: descendant outlived leader')
+                      return result
+              except BaseException as error:
+                  record['error'] = repr(error)
+                  raise
+              finally:
+                  if process is not None:
+                      for action in (signal.SIGTERM, signal.SIGKILL):
+                          if gone():
+                              break
+                          record['signals'].append(action.name)
+                          try:
+                              os.killpg(process.pid, action)
+                          except ProcessLookupError:
+                              pass
+                          deadline = time.monotonic() + 3
+                          while not gone() and time.monotonic() < deadline:
+                              time.sleep(0.02)
+                      record.update(returncode=process.poll(), safe_to_mutate=gone())
+                  save(evidence / 'process.json', record)
+                  assert record['safe_to_mutate'], 'INVALID: process death unconfirmed; no mutation/restoration'
+
+          def imported(root, hashes):
+              records = {}
+              test_modules = {Path(name).stem for name in hashes if name.startswith('tests/') and name.endswith('.py')}
+              for name, module in sorted(sys.modules.items()):
+                  value = getattr(module, '__file__', None)
+                  if value is None or not (name == 'rigplane' or name.startswith('rigplane.') or name.split('.')[-1] in test_modules):
+                      continue
+                  path = Path(value).resolve()
+                  assert path.is_relative_to(root), ('INVALID: foreign import', name, str(path))
+                  relative = str(path.relative_to(root))
+                  assert relative in hashes and sha(path.read_bytes()) == hashes[relative]['sha256'], (name, relative)
+                  records[name] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+              for name in ('rigplane.rigctld.server', 'rigplane.rigctld.handler', 'rigplane.core.command_service'):
+                  assert name in records, ('INVALID: missing import', name)
+              return records
+
+          class Reports:
+              def pytest_collection_finish(self, session):
+                  nodes = [item.nodeid for item in session.items]
+                  save(evidence / 'collected.json', nodes)
+                  assert nodes == NODES and len(set(nodes)) == 17, ('INVALID: collection', nodes)
+                  for item in session.items:
+                      assert Path(item.path).resolve() == root / item.nodeid.split('::')[0]
+                      assert Path(item.module.__file__).resolve() == Path(item.path).resolve()
+                  save(evidence / 'imports-collected.json', imported(root, spec['fingerprint']))
+
+              @pytest.hookimpl(hookwrapper=True)
+              def pytest_runtest_makereport(self, item, call):
+                  report = (yield).get_result()
+                  row = {'nodeid': item.nodeid, 'when': report.when, 'outcome': report.outcome, 'xfail': getattr(report, 'wasxfail', None)}
+                  if call.excinfo is not None:
+                      exc = call.excinfo
+                      crash = getattr(report.longrepr, 'reprcrash', None)
+                      row.update(exception=f'{exc.type.__module__}.{exc.type.__qualname__}', message=str(exc.value), is_pytest_failed=exc.type is pytest.fail.Exception,
+                          frames=[{'path': str(Path(frame.filename).resolve()), 'line': frame.lineno, 'function': frame.name, 'statement': frame.line} for frame in traceback.extract_tb(exc.value.__traceback__)],
+                          traceback=''.join(traceback.format_exception(exc.type, exc.value, exc.value.__traceback__)),
+                          longrepr=report.longreprtext, crash=None if crash is None else {'path': str(crash.path), 'line': crash.lineno, 'message': crash.message})
+                  with (evidence / 'reports.jsonl').open('a') as out:
+                      out.write(json.dumps(row) + '\n')
+
+          def validate(evidence, expected, rc, root):
+              assert rc == (1 if expected else 0), ('INVALID: exit', rc)
+              xml = ET.parse(evidence / 'junit.xml').getroot()
+              cases = xml.findall('.//testcase')
+              keys = {('.'.join([node.split('::')[0][:-3].replace('/', '.'), *node.split('::')[1:-1]]), node.split('::')[-1]): node for node in NODES}
+              actual = [(case.get('classname'), case.get('name')) for case in cases]
+              assert len(actual) == len(set(actual)) == 17 and set(actual) == set(keys), ('INVALID: JUnit inventory', actual)
+              assert not xml.findall('.//error') and not xml.findall('.//skipped')
+              for case, key in zip(cases, actual, strict=True):
+                  assert len(case.findall('failure')) == int(keys[key] in expected), ('INVALID: JUnit outcome', key)
+              helpers = json.loads((evidence / 'runtime.json').read_text())['helpers']
+              rows = [json.loads(line) for line in (evidence / 'reports.jsonl').read_text().splitlines()]
+              assert Counter((row['nodeid'], row['when']) for row in rows) == Counter((node, when) for node in NODES for when in ('setup', 'call', 'teardown'))
+              for row in rows:
+                  fault = expected.get(row['nodeid']) if row['when'] == 'call' else None
+                  assert row['xfail'] is None, row
+                  if fault is None:
+                      assert row['outcome'] == 'passed' and 'exception' not in row, row
+                      continue
+                  assert row['outcome'] == 'failed' and row['traceback'] and row['longrepr'] and row['crash'], row
+                  frames = row['frames']
+                  selected = [frame for frame in frames if frame['path'] == str(root / fault['path'])]
+                  assert len(selected) == 1 and selected[0]['line'] == fault['line'] and selected[0]['statement'] == fault['statement'], row
+                  tail = [(frame['path'], frame['line'], frame['function']) for frame in frames[frames.index(selected[0]) + 1:]]
+                  if fault['kind'] == 'raises':
+                      assert row['exception'] == 'builtins.Failed' and row['is_pytest_failed'], row
+                      assert row['message'] == fault['message_predicate'], row
+                      assert tail == [(helpers['_pytest.raises']['path'], 710, '__exit__'), (helpers['_pytest.outcomes']['path'], 163, '__call__')], row
+                  else:
+                      assert row['exception'] == 'builtins.AssertionError' and not row['is_pytest_failed'], row
+                      if fault['kind'] == 'mock':
+                          assert tail == [(helpers['unittest.mock']['path'], 951, 'assert_called_once_with'), (helpers['unittest.mock']['path'], 939, 'assert_called_with')], row
+                      else:
+                          assert not tail, row
+              save(evidence / 'oracle.json', {'status': 'EXPECTED', 'pass': 17 - len(expected), 'fail': len(expected), 'phase_reports': len(rows)})
+
+          if len(sys.argv) == 2:
+              root, evidence = Path.cwd().resolve(), Path(sys.argv[1]).resolve()
+              spec = json.loads((evidence / 'expected.json').read_text())
+              assert sys.version_info[:3] == (3, 11, 16) and pytest.__version__ == '9.0.2'
+              helpers = {}
+              for name, digest in HELPER_HASHES.items():
+                  path = Path(importlib.import_module(name).__file__).resolve()
+                  helpers[name] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+                  assert helpers[name]['sha256'] == digest, ('INVALID: helper source', name)
+                  (evidence / (name + '.py')).write_bytes(path.read_bytes())
+              save(evidence / 'runtime.json', {'python': sys.version, 'executable': sys.executable, 'pytest': pytest.__version__, 'helpers': helpers})
+              for name in ('rigplane.rigctld.server', 'rigplane.rigctld.handler', 'rigplane.core.command_service'):
+                  importlib.import_module(name)
+              save(evidence / 'imports-initial.json', imported(root, spec['fingerprint']))
+              args = ['-q', '-o', 'addopts=', '-o', f'cache_dir={evidence / "pytest-cache"}', '--tb=long', '--full-trace', '--color=no', '--timeout=30', '--timeout-method=thread', f'--junitxml={evidence / "junit.xml"}', *NODES]
+              save(evidence / 'pytest-command.json', args)
+              rc = pytest.main(args, plugins=[Reports()])
+              save(evidence / 'imports-after.json', imported(root, spec['fingerprint']))
+              sys.exit(rc)
+
+          seed = Path.cwd().resolve()
+          artifacts = Path(os.environ['ARTIFACT_DIR']).resolve()
+          save(artifacts / 'verdict.json', {'status': 'INVALID', 'reason': 'matrix incomplete'})
+          assert len(NODES) == len(set(NODES)) == 17 and len(PLAN) == 11
+          save(artifacts / 'plan.json', PLAN)
+          save(artifacts / 'expected-nodeids.json', NODES)
+          assert sys.platform == 'linux' and ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0
+          def interrupted(signum, frame):
+              raise RuntimeError(f'INVALID: signal {signum}')
+          signal.signal(signal.SIGTERM, interrupted)
+          names = git(seed, 'ls-files', '-z').decode().split('\0')[:-1]
+          original = fingerprint(seed, names)
+          save(artifacts / 'source-fingerprint-before.json', original)
+          for name in (SERVER, HANDLER, MFILE, SFILE, TFILE, 'uv.lock', 'pyproject.toml'):
+              (artifacts / ('source-' + Path(name).name)).write_bytes((seed / name).read_bytes())
+          completed = []
+          for label, edits, expected in PLAN:
+              evidence = artifacts / label
+              evidence.mkdir()
+              root = artifacts / f'specimen-{label}'
+              shutil.copytree(seed, root, symlinks=True, ignore=shutil.ignore_patterns('.git'))
+              assert fingerprint(root, names) == original
+              env = os.environ.copy()
+              env.update(UV_PROJECT_ENVIRONMENT=str(artifacts / f'venv-{label}'), UV_CACHE_DIR=str(artifacts / f'uv-cache-{label}'), PYTHONPYCACHEPREFIX=str(artifacts / f'pycache-{label}'), PYTHONPATH=f'{root / "src"}:{root / "tests"}', PYTEST_ADDOPTS='')
+              save(evidence / 'isolation.json', {key: env[key] for key in ('UV_PROJECT_ENVIRONMENT', 'UV_CACHE_DIR', 'UV_PYTHON_INSTALL_DIR', 'PYTHONPYCACHEPREFIX', 'PYTHONPATH', 'HATCH_BUILD_NO_HOOKS')})
+              command = ['uv', 'sync', '--frozen', '--all-extras']
+              rc = supervised(command, root, env, evidence / 'install', 90)
+              assert rc == 0, ('INVALID: dependencies', label, rc)
+              assert fingerprint(root, names) == original
+              patch = []
+              for change in edits:
+                  path = root / change['path']
+                  before = path.read_text()
+                  assert before.count(change['old']) == change['matches'], ('INVALID: patch matches', change)
+                  after = before.replace(change['old'], change['new'])
+                  path.write_text(after)
+                  patch.extend(difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile='a/' + change['path'], tofile='b/' + change['path']))
+              (evidence / 'fault.patch').write_text(''.join(patch))
+              current = fingerprint(root, names)
+              changed = {name for name in names if current[name] != original[name]}
+              assert changed == {change['path'] for change in edits}, ('INVALID: patch footprint', changed)
+              assert bool(changed) == bool(edits) and (current != original) == bool(edits)
+              save(evidence / 'hash-guard-before.json', {'changed': sorted(changed), 'detected': current != original})
+              for fault in expected.values():
+                  assert (root / fault['path']).read_text().splitlines()[fault['line'] - 1].strip() == fault['statement']
+              save(evidence / 'expected.json', {'label': label, 'faults': expected, 'fingerprint': current})
+              command = ['uv', 'run', '--no-sync', 'python', str(artifacts / 'context_proof.py'), str(evidence)]
+              try:
+                  rc = supervised(command, root, env, evidence / 'pytest', 90)
+                  save(evidence / 'exit.json', rc)
+                  assert fingerprint(root, names) == current, 'INVALID: specimen changed during test'
+                  validate(evidence, expected, rc, root)
+              finally:
+                  record_path = evidence / 'pytest/process.json'
+                  assert record_path.exists() and json.loads(record_path.read_text())['safe_to_mutate'], 'INVALID: restoration forbidden'
+                  save(evidence / 'fingerprint-before-restoration.json', fingerprint(root, names))
+                  for name in changed:
+                      (root / name).write_bytes((seed / name).read_bytes())
+                  restored = fingerprint(root, names)
+                  save(evidence / 'fingerprint-restored.json', restored)
+                  assert restored == original, 'INVALID: restoration mismatch'
+              assert fingerprint(seed, names) == original, 'INVALID: pristine source changed'
+              completed.append(label)
+              save(artifacts / 'completed-phases.json', completed)
+          assert len(completed) * len(NODES) == 187
+          save(artifacts / 'source-fingerprint-after.json', fingerprint(seed, names))
+          save(artifacts / 'verdict.json', {'status': 'EXPECTED', 'phases': completed, 'case_executions': 187, 'scope': 'constructor mutation controls only; no full-suite or hardware claim'})
           PY
+          set +e
+          timeout --signal=TERM --kill-after=10s 1200 uv run --no-sync python "$ARTIFACT_DIR/context_proof.py" > "$ARTIFACT_DIR/driver.log" 2>&1
           rc=$?
-          printf '%s\n' "$rc" > "$ARTIFACT_DIR/citation-oracle-exit.txt"
-          cat "$ARTIFACT_DIR/citation-oracle.log"
+          printf '%s\n' "$rc" > "$ARTIFACT_DIR/driver-exit.txt"
+          cat "$ARTIFACT_DIR/driver.log"
           exit "$rc"
 
       - name: Require unchanged pinned source
         if: always() && steps.prepare.outputs.artifacts_dir != ''
         run: |
-          git rev-parse HEAD > "$ARTIFACT_DIR/source-head-after.txt"
-          git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/status-after.txt"
+          git rev-parse HEAD HEAD^{tree} HEAD^1 HEAD^2 > "$ARTIFACT_DIR/source-after.txt"
+          git status --porcelain=v1 --untracked-files=all --ignored > "$ARTIFACT_DIR/source-status-after.txt"
           git diff --binary HEAD > "$ARTIFACT_DIR/source-diff.patch"
-          test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
-          test ! -s "$ARTIFACT_DIR/status-after.txt"
+          cmp "$ARTIFACT_DIR/source-before.txt" "$ARTIFACT_DIR/source-after.txt"
+          test ! -s "$ARTIFACT_DIR/source-status-after.txt"
+          test ! -s "$ARTIFACT_DIR/source-diff.patch"
 
       - name: Upload diagnostic capture
         if: always() && steps.prepare.outputs.artifacts_dir != ''
         uses: actions/upload-artifact@v4
         with:
-          name: rigctld-context-diagnostics-b196d262-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.prepare.outputs.artifacts_dir }}
+          name: rigctld-context-diagnostics-d29b46f4-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.prepare.outputs.artifacts_dir }}/metadata.txt
+            ${{ steps.prepare.outputs.artifacts_dir }}/source-*
+            ${{ steps.prepare.outputs.artifacts_dir }}/carrier*
+            ${{ steps.prepare.outputs.artifacts_dir }}/*.json
+            ${{ steps.prepare.outputs.artifacts_dir }}/*.txt
+            ${{ steps.prepare.outputs.artifacts_dir }}/*.log
+            ${{ steps.prepare.outputs.artifacts_dir }}/*.py
+            ${{ steps.prepare.outputs.artifacts_dir }}/B0
+            ${{ steps.prepare.outputs.artifacts_dir }}/M*
+            ${{ steps.prepare.outputs.artifacts_dir }}/C1
+            ${{ steps.prepare.outputs.artifacts_dir }}/B1
           if-no-files-found: error
