@@ -1244,10 +1244,17 @@ async def test_set_clarifier_freq(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_reset_clarifier(connected_radio):
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_reset_clarifier_is_undeclared_before_transport(
+    connected_radio, receiver
+):
     connected_radio._transport.write = AsyncMock()
-    await connected_radio.reset_clarifier()
-    connected_radio._transport.write.assert_called_once_with("RC;")
+    connected_radio._transport.query = AsyncMock()
+    with pytest.raises(CommandError, match="reset_clarifier.*not found in profile"):
+        await connected_radio.reset_clarifier(receiver=receiver)
+    assert not connected_radio.supports_command("reset_clarifier")
+    connected_radio._transport.write.assert_not_awaited()
+    connected_radio._transport.query.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
