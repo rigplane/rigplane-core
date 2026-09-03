@@ -25,11 +25,22 @@ jobs:
           source_file=src/rigplane/runtime/_civ_rx.py
           original_sha="$(git rev-parse HEAD)"
           restore_source() {
+            label="$1"
             git restore --source="$SOURCE_SHA" --worktree -- "$source_file"
             test "$(git rev-parse HEAD)" = "$original_sha"
             test -z "$(git diff --name-only -- "$source_file")"
+            {
+              printf 'source_sha=%s\n' "$SOURCE_SHA"
+              printf 'head_sha=%s\n' "$(git rev-parse HEAD)"
+              printf 'source_diff=clean\n'
+            } > "$label-restoration.txt"
           }
-          trap restore_source EXIT
+          trap 'restore_source final' EXIT
+
+          mutation_cache="$(mktemp -d)"
+          export UV_CACHE_DIR="$mutation_cache/uv"
+          export PYTHONPYCACHEPREFIX="$mutation_cache/pycache"
+          uv sync --all-extras --frozen
 
           run_selected() {
             label="$1"
@@ -52,19 +63,19 @@ jobs:
             export junit_file="$label.xml"
           }
 
-          python - <<'PY' > negative.patch
+          uv run python - <<'PY'
           from pathlib import Path
 
           path = Path("src/rigplane/runtime/_civ_rx.py")
-          old = '''                normalize_observed_ptt(
-                    False
-                    if frame.data == b"\\x00"
-                    else True
-                    if frame.data == b"\\x01"
-                    else None
-                ),
+          old = '''                    normalize_observed_ptt(
+                        False
+                        if frame.data == b"\\x00"
+                        else True
+                        if frame.data == b"\\x01"
+                        else None
+                    ),
           '''
-          new = '''                normalize_observed_ptt(bool(frame.data and frame.data[0])),
+          new = '''                    normalize_observed_ptt(bool(frame.data and frame.data[0])),
           '''
           text = path.read_text()
           if text.count(old) != 1:
@@ -89,41 +100,116 @@ jobs:
               "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]",
               "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]",
           }
+          expected_failure_values = {
+              "test_civ_ptt_readback_emits_canonical_observed_state[empty]": "ObservedPtt.OFF",
+              "test_civ_ptt_readback_emits_canonical_observed_state[two]": "ObservedPtt.ON",
+              "test_civ_ptt_readback_emits_canonical_observed_state[ff]": "ObservedPtt.ON",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-off]": "ObservedPtt.OFF",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-on]": "ObservedPtt.ON",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]": "ObservedPtt.OFF",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[two]": "ObservedPtt.ON",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]": "ObservedPtt.ON",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]": "ObservedPtt.OFF",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]": "ObservedPtt.ON",
+          }
+          expected_names = {
+              "test_civ_ptt_readback_emits_canonical_observed_state[off]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[on]",
+              *expected_failed,
+              "test_unsolicited_civ_ptt_readback_has_unsolicited_provenance",
+              "test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames",
+              "test_old_civ_epoch_ptt_readback_cannot_restore_observed_state",
+              "test_old_store_generation_ptt_readback_cannot_restore_observed_state",
+              "test_observed_ptt_expires_to_unknown_after_its_store_max_age",
+          }
           root = ET.parse(os.environ["junit_file"]).getroot()
           cases = list(root.iter("testcase"))
           failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
           errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
           skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
+          identities = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
           if os.environ.get("pytest_rc") != "1":
               raise SystemExit(f"expected pytest exit 1, got {os.environ.get('pytest_rc')}")
           if failed != expected_failed:
               raise SystemExit(f"unexpected failed nodes: {sorted(failed)!r}")
+          if identities != {("tests.test_civ_rx_coverage", name) for name in expected_names}:
+              raise SystemExit(f"unexpected selected identities: {sorted(identities)!r}")
           if errors or skipped:
               raise SystemExit(f"unexpected errors/skips: {sorted(errors)!r} {sorted(skipped)!r}")
           if len(cases) != 17:
               raise SystemExit(f"expected 17 selected cases, got {len(cases)}")
+          for case in cases:
+              if case.attrib["name"] not in expected_failure_values:
+                  continue
+              message = case.find("failure").attrib.get("message", "")
+              expected_value = expected_failure_values[case.attrib["name"]]
+              if expected_value not in message or "ObservedPtt.UNKNOWN" not in message:
+                  raise SystemExit(
+                      f"unexpected failure message for {case.attrib['name']}: {message!r}"
+                  )
           PY
-          restore_source
+          restore_source negative
 
-          python - <<'PY' > positive.patch
+          run_selected restored
+          uv run python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          expected_cases = {
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[off]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[on]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[empty]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[two]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[ff]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[double-off]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[double-on]"),
+              ("tests.test_civ_rx_coverage", "test_unsolicited_civ_ptt_readback_has_unsolicited_provenance"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames"),
+              ("tests.test_civ_rx_coverage", "test_old_civ_epoch_ptt_readback_cannot_restore_observed_state"),
+              ("tests.test_civ_rx_coverage", "test_old_store_generation_ptt_readback_cannot_restore_observed_state"),
+              ("tests.test_civ_rx_coverage", "test_observed_ptt_expires_to_unknown_after_its_store_max_age"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[two]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]"),
+          }
+          root = ET.parse(os.environ["junit_file"]).getroot()
+          cases = list(root.iter("testcase"))
+          identities = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
+          failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
+          errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
+          skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
+          if os.environ.get("pytest_rc") != "0":
+              raise SystemExit(f"expected pytest exit 0, got {os.environ.get('pytest_rc')}")
+          if identities != expected_cases:
+              raise SystemExit(f"unexpected selected identities: {sorted(identities)!r}")
+          if failed or errors or skipped:
+              raise SystemExit(
+                  f"unexpected result: failures={sorted(failed)!r} "
+                  f"errors={sorted(errors)!r} skips={sorted(skipped)!r}"
+              )
+          PY
+
+          uv run python - <<'PY'
           from pathlib import Path
 
           path = Path("src/rigplane/runtime/_civ_rx.py")
-          old = '''                normalize_observed_ptt(
-                    False
-                    if frame.data == b"\\x00"
-                    else True
-                    if frame.data == b"\\x01"
-                    else None
-                ),
+          old = '''                    normalize_observed_ptt(
+                        False
+                        if frame.data == b"\\x00"
+                        else True
+                        if frame.data == b"\\x01"
+                        else None
+                    ),
           '''
-          new = '''                normalize_observed_ptt(
-                    True
-                    if frame.data == b"\\x01"
-                    else False
-                    if frame.data == b"\\x00"
-                    else None
-                ),
+          new = '''                    normalize_observed_ptt(
+                        True
+                        if frame.data == b"\\x01"
+                        else False
+                        if frame.data == b"\\x00"
+                        else None
+                    ),
           '''
           text = path.read_text()
           if text.count(old) != 1:
@@ -138,6 +224,26 @@ jobs:
 
           root = ET.parse(os.environ["junit_file"]).getroot()
           cases = list(root.iter("testcase"))
+          expected_names = {
+              "test_civ_ptt_readback_emits_canonical_observed_state[off]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[on]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[empty]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[two]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[ff]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-off]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-on]",
+              "test_unsolicited_civ_ptt_readback_has_unsolicited_provenance",
+              "test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames",
+              "test_old_civ_epoch_ptt_readback_cannot_restore_observed_state",
+              "test_old_store_generation_ptt_readback_cannot_restore_observed_state",
+              "test_observed_ptt_expires_to_unknown_after_its_store_max_age",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[two]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]",
+          }
+          identities = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
           failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
           errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
           skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
@@ -148,10 +254,12 @@ jobs:
                   f"unexpected result: failures={sorted(failed)!r} "
                   f"errors={sorted(errors)!r} skips={sorted(skipped)!r}"
               )
+          if identities != {("tests.test_civ_rx_coverage", name) for name in expected_names}:
+              raise SystemExit(f"unexpected selected identities: {sorted(identities)!r}")
           if len(cases) != 17:
               raise SystemExit(f"expected 17 selected cases, got {len(cases)}")
           PY
-          restore_source
+          restore_source positive
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -162,3 +270,7 @@ jobs:
             positive.xml
             negative.patch
             positive.patch
+            restored.xml
+            negative-restoration.txt
+            positive-restoration.txt
+            final-restoration.txt
