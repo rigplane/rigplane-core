@@ -3682,8 +3682,7 @@ def test_freshness_tick_passes_its_own_timestamp_to_the_meter_flush() -> None:
     """The flush is driven by the tick's clock, not by ``time.monotonic()``.
 
     A flush that took its own reading would release on wall-clock time while
-    every other effect of the tick used the caller's ``now`` — the two
-    timescales the tick's docstring requires to be one.
+    the caller drove the rest of the tick from a seeded clock.
     """
 
     store = StateStore()
@@ -3705,7 +3704,7 @@ def test_freshness_tick_survives_a_failing_meter_flush() -> None:
     """A raising flush must not stop freshness decay.
 
     ``run()`` catches only ``CancelledError``, so an exception escaping the
-    flush would end the loop and leave every field frozen at its last state.
+    flush would end the loop that ages the store.
     """
 
     store = StateStore()
@@ -3724,8 +3723,14 @@ def _raise_on_flush(*, now: float) -> None:
     raise RuntimeError(f"flush failed at {now}")
 
 
-def test_freshness_service_without_a_radio_does_not_flush() -> None:
-    """The ``radio`` argument is optional; every other test builds one without it."""
+def test_freshness_service_without_a_radio_still_ticks() -> None:
+    """``radio`` is optional because a production path leaves it unset.
+
+    ``web/server.py: WebServer.__init__`` builds this service before
+    ``WebServer._bootstrap_state_acquisition`` runs, without a radio; that
+    bootstrap returns without replacing it when no radio is attached, and
+    ``web/web_startup.py: start_web_server`` starts the driver task either way.
+    """
 
     store = StateStore()
     service = StateFreshnessService(store=store)

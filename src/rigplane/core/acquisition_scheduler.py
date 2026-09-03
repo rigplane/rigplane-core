@@ -1680,6 +1680,11 @@ class StateFreshnessService:
         (or over a radio with no coalescer) does nothing here.
         """
 
+        # ``web/server.py: WebServer.__init__`` builds a service with no radio
+        # and ``web/web_startup.py: start_web_server`` ticks it whether or not
+        # the bootstrap replaced it, so None reaches here in a radio-less web
+        # process. ``getattr`` below would tolerate None too; this returns on
+        # the documented case rather than falling through it.
         radio = self._radio
         if radio is None:
             return
