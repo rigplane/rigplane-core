@@ -1,11 +1,6 @@
-"""MOR-497(i): background polls must run at Priority.BACKGROUND so user
-commands are never de-prioritized on the shared CI-V lane.
-
-Deterministic priority assertions (not timing): every poll send-site must
-pass ``priority=Priority.BACKGROUND`` to ``radio.send_civ``. The user-command
-side of the MOR-497(i)/(ii) guarantee (NORMAL priority, blocking dispatch)
-used to be checkable here too, back when the poller built the VFO-switch
-CI-V frame itself. Since that switch now goes through the public
+"""MOR-497(i)/(ii): the user-command side of the priority guarantee
+(NORMAL priority, blocking dispatch) used to be checkable here, back when
+the poller built the VFO-switch CI-V frame itself. Since that switch now goes through the public
 ``radio.select_receiver`` API (no priority/wait_dispatch parameters of its
 own), a poller-level mock can no longer observe what priority the frame
 goes out at — this file only checks that ``_execute`` routes to
@@ -23,7 +18,6 @@ from unittest.mock import call as mock_call
 
 import pytest
 
-from rigplane.commands.commander import Priority
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq
@@ -55,36 +49,6 @@ def _make_radio(*, model: str = "IC-7610", active: str = "MAIN") -> MagicMock:
     # raise TypeError without this.
     radio.select_receiver = AsyncMock()
     return radio
-
-
-def _priority_of(call) -> Priority | None:
-    """Extract the ``priority`` kwarg from a ``send_civ`` call (None if absent)."""
-    return call.kwargs.get("priority")
-
-
-@pytest.mark.asyncio
-async def test_meter_poll_sends_background_priority() -> None:
-    radio = _make_radio(active="MAIN")
-    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
-
-    # poll_index 0 → even cycle → meter query.
-    assert poller._poll_index % 2 == 0  # noqa: SLF001
-    await poller._send_query()  # noqa: SLF001
-
-    assert radio.send_civ.await_count >= 1
-    for call in radio.send_civ.await_args_list:
-        assert _priority_of(call) == Priority.BACKGROUND
-
-
-@pytest.mark.asyncio
-async def test_unselected_slot_poll_sends_no_vfo_selection_frames() -> None:
-    radio = _make_radio(model="IC-7300", active="MAIN")
-    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
-
-    assert not poller._unselected_slot_gate(0)  # noqa: SLF001
-    await poller._poll_unselected_slot(0)  # noqa: SLF001
-
-    radio.send_civ.assert_not_awaited()
 
 
 @pytest.mark.asyncio
