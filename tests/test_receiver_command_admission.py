@@ -27,6 +27,14 @@ class CatSink:
         self.writes.append(command)
 
 
+class RigctldCommandSink:
+    def __init__(self):
+        self.calls = []
+
+    async def command(self, command):
+        self.calls.append(command)
+
+
 def yaesu(config=None):
     radio = YaesuCatRadio("/dev/null", profile=config or load_rig(RIGS / "ftx1.toml"))
     radio._transport = CatSink()
@@ -81,7 +89,7 @@ async def test_ftx1_single_receiver_topology_rejects_existing_sub_template(comma
     assert radio._transport.writes == []
 
 
-@pytest.mark.parametrize("command", LEVELS)
+@pytest.mark.parametrize("command", (*LEVELS, "set_attenuator_level"))
 @pytest.mark.parametrize("receiver", [-1, 2, True, False, 0.0, "0"])
 def test_invalid_receiver_query_is_false(command, receiver):
     for radio in (icom(), yaesu(), RigctldClientRadio(host="127.0.0.1")):
@@ -195,23 +203,200 @@ def test_icom_admission_honors_setter_profile_requirements(command, missing):
 )
 def test_name_only_is_unchanged_and_receiver_admission_is_opt_in(factory):
     radio = factory()
-    for command in (*LEVELS, "get_freq", "set_preamp", "unknown", "set_af_level_sub"):
+    for command in (
+        *LEVELS,
+        "set_attenuator",
+        "set_attenuator_level",
+        "set_att",
+        "get_freq",
+        "set_preamp",
+        "unknown",
+        "set_af_level_sub",
+    ):
         assert radio.supports_command(command) == radio.supports_command(
             command, receiver=None
         )
     assert radio.supports_command("get_freq")
-    for command in ("get_freq", "set_preamp", "unknown", "set_af_level_sub"):
+    assert not radio.supports_command("set_att")
+    assert radio.supports_command("set_attenuator")
+    assert radio.supports_command("set_attenuator_level")
+    for command in (
+        "get_freq",
+        "set_preamp",
+        "unknown",
+        "set_af_level_sub",
+        "set_attenuator",
+        "set_att",
+    ):
         assert not radio.supports_command(command, receiver=0)
         assert not radio.supports_command(command, receiver=1)
     if isinstance(radio, YaesuCatRadio):
         assert not any(radio.supports_command(f"{command}_sub") for command in LEVELS)
 
 
-@pytest.mark.parametrize("command", LEVELS)
+@pytest.mark.parametrize("command", (*LEVELS, "set_attenuator_level"))
 def test_non_callable_level_cannot_be_receiver_admitted(command):
     for radio in (icom(), yaesu(), RigctldClientRadio(host="127.0.0.1")):
         setattr(radio, command, None)
         assert not radio.supports_command(command, receiver=0)
+
+
+@pytest.mark.parametrize(
+    ("provider", "receiver", "expected"),
+    [
+        ("ic7300", 0, True),
+        ("ic7300", 1, False),
+        ("ic7610", 0, True),
+        ("ic7610", 1, True),
+        ("ftx1", 0, True),
+        ("ftx1", 1, False),
+        ("rigctld", 0, True),
+        ("rigctld", 1, False),
+    ],
+    ids=(
+        "ic7300-main",
+        "ic7300-sub",
+        "ic7610-main",
+        "ic7610-sub",
+        "ftx1-main",
+        "ftx1-sub",
+        "rigctld-main",
+        "rigctld-sub",
+    ),
+)
+async def test_attenuator_receiver_admission_matches_provider_route(
+    provider, receiver, expected
+):
+    writes = []
+    if provider.startswith("ic"):
+        config = load_rig(RIGS / f"{provider}.toml")
+        radio = icom(config)
+
+        async def write(frame, wait_response=True):
+            writes.append(frame)
+
+        radio._connected = True
+        radio._civ_transport = object()
+        radio._send_civ_raw = write
+    elif provider == "ftx1":
+        config = load_rig(RIGS / "ftx1.toml")
+        radio = yaesu(
+            replace(
+                config,
+                commands={
+                    **config.commands,
+                    "set_attenuator_sub": CatCommandSpec(write="RA1{state};"),
+                },
+            )
+        )
+    else:
+        sink = RigctldCommandSink()
+        radio = RigctldClientRadio(host="127.0.0.1", transport=sink)
+
+    try:
+        assert (
+            radio.supports_command("set_attenuator_level", receiver=receiver)
+            == expected
+        )
+        assert writes == []
+        if provider == "ftx1":
+            assert radio._transport.writes == []
+        elif provider == "rigctld":
+            assert sink.calls == []
+        if expected:
+            if provider == "ic7300":
+                await radio.set_attenuator_level(20, receiver=receiver)
+                assert writes == [bytes([0xFE, 0xFE, 0x94, 0xE0, 0x11, 0x20, 0xFD])]
+            elif provider == "ic7610":
+                await radio.set_attenuator_level(3, receiver=receiver)
+                assert writes == [
+                    bytes([0xFE, 0xFE, 0x98, 0xE0, 0x29, receiver, 0x11, 0x03, 0xFD])
+                ]
+            elif provider == "ftx1":
+                await radio.set_attenuator_level(1, receiver=receiver)
+                assert radio._transport.writes == ["RA01;"]
+            else:
+                await radio.set_attenuator_level(6, receiver=receiver)
+                assert sink.calls == ["L ATT 6"]
+    finally:
+        if provider.startswith("ic"):
+            radio._connected = False
+
+
+@pytest.mark.parametrize(
+    "defect", ["entry", "read_only", "capability", "primitive", "delegate"]
+)
+def test_ftx1_attenuator_admission_requires_an_executable_main_route(defect):
+    config = load_rig(RIGS / "ftx1.toml")
+    assert yaesu(config).supports_command("set_attenuator_level", receiver=0)
+    commands = dict(config.commands)
+    capabilities = config.capabilities
+    if defect == "entry":
+        del commands["set_attenuator"]
+    elif defect == "read_only":
+        commands["set_attenuator"] = CatCommandSpec(read="RA0;")
+    elif defect == "capability":
+        capabilities = tuple(cap for cap in capabilities if cap != "attenuator")
+    radio = yaesu(replace(config, commands=commands, capabilities=capabilities))
+    if defect == "primitive":
+        radio.set_attenuator_level = None
+    elif defect == "delegate":
+        radio.set_attenuator = None
+    assert not radio.supports_command("set_attenuator_level", receiver=0)
+    assert not radio.supports_command("set_attenuator_level", receiver=1)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["command", "capability", "no_domain", "empty_domain", "route", "primitive"],
+)
+def test_ic7610_attenuator_admission_honors_setter_profile_requirements(defect):
+    config = load_rig(RIGS / "ic7610.toml")
+    intact = icom(config)
+    assert intact.supports_command("set_attenuator_level", receiver=0)
+    assert intact.supports_command("set_attenuator_level", receiver=1)
+    if defect == "command":
+        config = replace(
+            config,
+            commands={
+                key: value
+                for key, value in config.commands.items()
+                if key != "set_attenuator"
+            },
+        )
+    elif defect == "capability":
+        config = replace(
+            config,
+            capabilities=tuple(
+                cap for cap in config.capabilities if cap != "attenuator"
+            ),
+        )
+    elif defect == "no_domain":
+        config = replace(config, att_values=None)
+    elif defect == "empty_domain":
+        config = replace(config, att_values=())
+    elif defect == "route":
+        config = replace(config, cmd29_routes=())
+    radio = icom(config)
+    if defect == "primitive":
+        radio.set_attenuator_level = None
+    assert radio.supports_command("set_attenuator_level", receiver=0) == (
+        defect == "route"
+    )
+    assert not radio.supports_command("set_attenuator_level", receiver=1)
+
+
+def test_ftx1_attenuator_admission_is_stateless_and_never_writes():
+    radio = yaesu()
+
+    class PoisonState:
+        def __getattribute__(self, name):
+            raise AssertionError(f"receiver admission read legacy state: {name}")
+
+    radio._state = PoisonState()
+    assert radio.supports_command("set_attenuator_level", receiver=0)
+    assert not radio.supports_command("set_attenuator_level", receiver=1)
+    assert radio._transport.writes == []
 
 
 @pytest.mark.parametrize("command", LEVELS)

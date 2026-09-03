@@ -738,12 +738,21 @@ class YaesuCatRadio:
             "set_af_level",
             "set_rf_gain",
             "set_squelch",
+            "set_attenuator_level",
         }:
             return False
         try:
             key = self._receiver_level_write_key(command, receiver)
         except (TypeError, ValueError):
             return False
+        if command == "set_attenuator_level":
+            if (
+                receiver != 0
+                or not self.profile.supports_capability("attenuator")
+                or not callable(getattr(self, "set_attenuator", None))
+            ):
+                return False
+            key = "set_attenuator"
         return self._has_write_command(key)
 
     def _receiver_level_write_key(self, command: str, receiver: int) -> str:
@@ -1401,6 +1410,9 @@ class YaesuCatRadio:
         silently ignores it. Coerce to ``int`` first so ``RA0{0,1};`` is sent.
         """
         await self._write("set_attenuator", state=str(int(state)))
+
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return int(db > 0)
 
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         """Set attenuator by dB level.

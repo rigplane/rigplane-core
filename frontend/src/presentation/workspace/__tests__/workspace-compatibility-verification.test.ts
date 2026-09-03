@@ -500,12 +500,12 @@ describe('MOR-1083 class 3 — corrupt and partial stored state', () => {
     const storage = new LedgerStorage();
     storage.map.set(WORKSPACE_STORAGE_KEY, JSON.stringify({
       version: 1,
-      zoneOrder: { main: ['vfo', 'rxTx'], 'rx-tx': ['vfo'] },
+      zoneOrder: { 'receiver-deck': ['vfo', 'rxTx'], 'rx-tx': ['vfo'] },
     }));
 
     initWorkspaceStore(storage);
 
-    expect(getWorkspace().zoneOrder).toEqual({ main: ['vfo', 'rxTx'], 'rx-tx': [] });
+    expect(getWorkspace().zoneOrder).toEqual({ 'receiver-deck': ['vfo', 'rxTx'], 'rx-tx': [] });
     expect(getWorkspaceNotice()?.rejections).toContainEqual({ field: 'zoneOrder.rx-tx', reason: 'cross-zone' });
   });
 
@@ -640,8 +640,8 @@ describe('MOR-1083 class 5 — export / import round trip', () => {
     setLayout('lcd-scope');
     setDesignLanguage('fieldline');
     setDensity('compact');
-    setZoneVisibleSurfaces('main', ['vfo', 'rxTx']);
-    setZoneOrder('main', ['rxTx', 'vfo']);
+    setZoneVisibleSurfaces('receiver-deck', ['vfo', 'rxTx']);
+    setZoneOrder('receiver-deck', ['rxTx', 'vfo']);
     setPinnedCommands(['set_compressor', 'set_monitor']);
 
     const first = JSON.stringify(exportWorkspace());
@@ -794,8 +794,8 @@ function exerciseStore(): void {
   setTheme('crt-green', true);
   setDesignLanguage('fieldline');
   setDensity('compact');
-  setZoneVisibleSurfaces('main', ['vfo', 'rxTx']);
-  setZoneOrder('main', ['rxTx', 'vfo']);
+  setZoneVisibleSurfaces('receiver-deck', ['vfo', 'rxTx']);
+  setZoneOrder('receiver-deck', ['rxTx', 'vfo']);
   setPinnedCommands(['set_compressor']);
 }
 

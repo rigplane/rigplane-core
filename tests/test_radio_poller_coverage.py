@@ -21,7 +21,8 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
     AcquisitionScheduler,
     AcquisitionStatus,
-    MeterObservationCoalescer,
+    StateFreshnessService,
+    derive_tx_active,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -223,6 +224,25 @@ class _InjectedAcquisitionExecutor:
         )
 
 
+def _tick_cadence(poller: RadioPoller, *, now: float | None = None) -> None:
+    """Queue the profile cadence the way ``StateFreshnessService.tick`` does.
+
+    MOR-2280 moved the ``due_requests`` call out of ``RadioPoller``: the web
+    drain now dispatches whatever the freshness tick queued. Tests whose
+    subject is the drain call this instead of building a service, over the
+    poller's own canonical store — the store the production service is built
+    on — so the ``tx_active`` the scheduler sees is derived by the same
+    ``derive_tx_active`` the tick uses.
+    """
+
+    scheduler = poller._acquisition_scheduler  # noqa: SLF001
+    assert scheduler is not None
+    scheduler.due_requests(
+        now=time.monotonic() if now is None else now,
+        tx_active=derive_tx_active(poller._state_store),  # noqa: SLF001
+    )
+
+
 def _make_radio(active: str = "MAIN", *, model: str = "IC-7610") -> MagicMock:
     profile = resolve_radio_profile(model=model)
     radio = MagicMock()
@@ -418,7 +438,9 @@ async def test_scheduler_due_request_sends_supported_civ_query_once() -> None:
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_awaited_once_with(
@@ -444,6 +466,7 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     assert radio.send_civ.await_count == 4
@@ -492,6 +515,7 @@ async def test_xiegu_civ_scheduler_due_request_uses_civ_executor() -> None:
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_awaited_once_with(
@@ -516,6 +540,7 @@ async def test_ic7300_profile_scheduler_emits_only_passive_exact_wire_reads() ->
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
     assert poller._acquisition_scheduler is scheduler  # noqa: SLF001
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_any_await(
@@ -572,19 +597,18 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
+    # How many ``time.monotonic()`` readings one cycle takes is an
+    # implementation detail of the drain -- it changed twice while MOR-2280 was
+    # in flight. Drive a settable clock rather than a fixed sequence, so this
+    # test fails on the cadence behaviour it is about and not on a read count.
+    clock = {"t": 100.0}
     with patch(
-        "rigplane.web.radio_poller.time.monotonic",
-        # MOR-1525: each ``_send_scheduler_requests`` cycle now also reads
-        # the canonical PTT observation via ``StateStore.snapshot()``, which
-        # takes its own ``time.monotonic()`` reading. The extra reads are
-        # harmless duplicates of the cycle's own timestamp (no
-        # ``tx_state.ptt`` observation exists in this test, so tx_active
-        # stays False regardless of their exact value).
-        side_effect=(100.0, 100.0, 101.1, 101.1, 101.2, 101.2),
+        "rigplane.web.radio_poller.time.monotonic", side_effect=lambda: clock["t"]
     ):
-        await poller._send_query()  # noqa: SLF001
-        await poller._send_query()  # noqa: SLF001
-        await poller._send_query()  # noqa: SLF001
+        for cycle_now in (100.0, 101.1, 101.2):
+            clock["t"] = cycle_now
+            _tick_cadence(poller, now=cycle_now)
+            await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_awaited_once()
     assert scheduler.pending_requests() == ()
@@ -664,6 +688,7 @@ async def test_credited_in_flight_request_is_cleared_and_does_not_expire() -> No
     )
 
     with patch("rigplane.web.radio_poller.time.monotonic", return_value=500.0):
+        _tick_cadence(poller)
         await poller._send_scheduler_requests()  # noqa: SLF001
     assert len(poller._acquisition_in_flight) == 1  # noqa: SLF001
     request = scheduler.pending_requests()[0]
@@ -685,6 +710,7 @@ async def test_credited_in_flight_request_is_cleared_and_does_not_expire() -> No
 
     # Next cycle clears the in-flight entry; no timeout failure is recorded.
     with patch("rigplane.web.radio_poller.time.monotonic", return_value=500.1):
+        _tick_cadence(poller)
         await poller._send_scheduler_requests()  # noqa: SLF001
     assert poller._acquisition_in_flight == {}  # noqa: SLF001
     assert scheduler.diagnostics()["failedRequestCount"] == 0
@@ -738,6 +764,7 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
     with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
         # Cycle 1: send.
         radio._last_civ_data_received = clock["t"] - 0.1
+        _tick_cadence(poller)
         await poller._send_scheduler_requests()  # noqa: SLF001
         request = scheduler.pending_requests()[0]
         clock["t"] += 3.0
@@ -745,6 +772,7 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
         # Cycle 2: deadline fires while healthy → suppressed within grace, no
         # re-send (executor still called exactly once).
         radio._last_civ_data_received = clock["t"] - 0.1
+        _tick_cadence(poller)
         await poller._send_scheduler_requests()  # noqa: SLF001
         assert len(executor.calls) == 1
 
@@ -769,6 +797,7 @@ async def test_healthy_link_false_timeout_does_not_decay_freq_mode_cadence() -> 
 
         # Next cycle clears the in-flight + grace bookkeeping.
         radio._last_civ_data_received = clock["t"] - 0.1
+        _tick_cadence(poller)
         await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert poller._acquisition_in_flight == {}  # noqa: SLF001
@@ -831,6 +860,7 @@ async def test_healthy_link_uncredited_request_is_resent_and_eventually_fails() 
     with patch("rigplane.web.radio_poller.time.monotonic", side_effect=_now):
         for _ in range(6):
             radio._last_civ_data_received = clock["t"] - 0.1
+            _tick_cadence(poller)
             await poller._send_scheduler_requests()  # noqa: SLF001
             clock["t"] += step
 
@@ -865,6 +895,7 @@ async def test_scheduler_request_execution_uses_injected_executor_not_web_mappin
         acquisition_executor=executor,
     )
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_not_awaited()
@@ -902,6 +933,7 @@ async def test_non_icom_scheduler_without_executor_fails_instead_of_web_civ_send
         ),  # type: ignore[arg-type]
     )
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_not_awaited()
@@ -937,7 +969,9 @@ async def test_scheduler_active_freq_mode_requests_use_receiver_payload(
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_awaited_once_with(
@@ -967,7 +1001,9 @@ async def test_scheduler_unknown_query_mapping_is_recorded_and_failed() -> None:
         ),  # type: ignore[arg-type]
     )
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_not_awaited()
@@ -989,6 +1025,7 @@ async def test_scheduler_ptt_request_uses_ic705_declared_getter() -> None:
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_awaited_once_with(
@@ -1020,6 +1057,7 @@ async def test_scheduler_ptt_without_profile_getter_fails_closed() -> None:
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
+    _tick_cadence(poller)
     await poller._send_query()  # noqa: SLF001
 
     radio.send_civ.assert_not_awaited()
@@ -1592,18 +1630,6 @@ async def test_execute_set_freq_without_scheduler_does_not_raise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_poller_flushes_due_meter_coalescer_on_query_tick() -> None:
-    radio = _make_radio(active="MAIN")
-    radio._meter_observation_coalescer = MeterObservationCoalescer()
-    radio._civ_runtime = SimpleNamespace(flush_due_meter_observations=MagicMock())
-    poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
-
-    await poller._send_query()  # noqa: SLF001
-
-    radio._civ_runtime.flush_due_meter_observations.assert_called_once()
-
-
-@pytest.mark.asyncio
 async def test_scheduler_polling_does_not_starve_user_command_queue() -> None:
     order: list[str] = []
     radio = _make_radio(active="MAIN")
@@ -1621,6 +1647,7 @@ async def test_scheduler_polling_does_not_starve_user_command_queue() -> None:
     queue.put_ordered(SetFreq(14_074_000))
     poller = RadioPoller(radio, queue, radio_state=RadioState())
     _seed_fresh_rx(poller)
+    _tick_cadence(poller)
 
     async def _stop_after_first_wait(*args: object, **kwargs: object) -> None:
         raise asyncio.CancelledError
@@ -4373,6 +4400,7 @@ async def test_poll_demand_does_not_pile_duplicates() -> None:
     # Run many cycles WITHOUT delivering any response (scheduler clears
     # in-flight only on response, so an undelivered group must not re-queue).
     for _ in range(6):
+        _tick_cadence(poller)
         await poller._send_scheduler_requests()  # noqa: SLF001
 
     # Exactly one request stays pending (the single cadence group), and the
@@ -4394,6 +4422,11 @@ async def test_poll_demand_does_not_pile_duplicates() -> None:
 # tx_only meter group (power/SWR/ALC/comp) kept polling at ~1s cadence
 # during confirmed RX -- operator-visible as the SWR readout flapping 0<->1
 # between a fresh poll (1.0) and the TTL-stale race (2.0s).
+#
+# MOR-2280 moved the derivation itself out of the poller into
+# ``derive_tx_active``, which the freshness tick calls; ``_tick_cadence``
+# below is that call. What these tests assert -- canonical fact, not mirror
+# -- is unchanged.
 # ---------------------------------------------------------------------------
 
 
@@ -4403,8 +4436,8 @@ class _TxActiveSpyScheduler(AcquisitionScheduler):
     ``AcquisitionScheduler`` is a ``__slots__`` class, so its bound method
     cannot be monkeypatched on an instance -- subclassing (which regains a
     ``__dict__``) is the direct way to observe exactly what
-    ``_send_scheduler_requests`` derived and passed through, independent of
-    the scheduler's own (separately tested) tx_only gating behavior.
+    ``derive_tx_active`` produced for the cadence call, independent of the
+    scheduler's own (separately tested) tx_only gating behavior.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -4457,6 +4490,7 @@ async def test_tx_active_ignores_stuck_mirror_when_canonical_reads_false() -> No
 
     poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
 
+    _tick_cadence(poller)
     await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert scheduler.tx_active_calls == [False]
@@ -4485,6 +4519,7 @@ async def test_tx_active_true_when_canonical_observation_is_true() -> None:
 
     poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
 
+    _tick_cadence(poller)
     await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert scheduler.tx_active_calls == [True]
@@ -4511,6 +4546,7 @@ async def test_tx_active_false_when_canonical_ptt_unobserved() -> None:
 
     poller = RadioPoller(radio, CommandQueue(), radio_state=state, state_store=store)
 
+    _tick_cadence(poller)
     await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert scheduler.tx_active_calls == [False]
@@ -4548,6 +4584,7 @@ async def test_tx_active_stops_tx_only_group_when_canonical_ptt_de_keys() -> Non
     )
 
     # TX cycle: the tx_only group is due and sent.
+    _tick_cadence(poller)
     await poller._send_scheduler_requests()  # noqa: SLF001
     assert scheduler.tx_active_calls == [True]
     assert len(scheduler.pending_requests()) == 1
@@ -4564,6 +4601,7 @@ async def test_tx_active_stops_tx_only_group_when_canonical_ptt_de_keys() -> Non
     )
 
     # Next drain: tx_active must read False and no NEW tx_only work is sent.
+    _tick_cadence(poller)
     await poller._send_scheduler_requests()  # noqa: SLF001
     assert scheduler.tx_active_calls == [True, False]
     assert len(executor.calls) == 1  # unchanged -- no re-send while de-keyed
@@ -4615,6 +4653,7 @@ async def test_drain_withholds_tx_only_reconciliation_when_canonical_ptt_is_rx()
         reason="stale",
     )
 
+    _tick_cadence(poller)
     await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert executor.calls == [], (
@@ -4632,6 +4671,7 @@ async def test_drain_withholds_tx_only_reconciliation_when_canonical_ptt_is_rx()
             timestamp_monotonic=time.monotonic(),
         )
     )
+    _tick_cadence(poller)
     await poller._send_scheduler_requests()  # noqa: SLF001
 
     assert any(
@@ -6208,3 +6248,188 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
     for name in ("scanning", "scan_resume_mode"):
         field = store.snapshot().field(FieldPath.global_("slow_state", name))
         assert field.source.source != "poll_response"
+
+
+# ---------------------------------------------------------------------------
+# MOR-2280 web parity. The cadence call and the wall-clock meter flush left
+# ``RadioPoller`` for ``StateFreshnessService.tick``. The frames below were
+# recorded from one drain cycle at ``e5fd5c8a`` (the merge base of this
+# change) by printing ``_drain_cycle_wire_frames`` before the poller was
+# touched, and are asserted unchanged after it.
+#
+# Scope, and it is narrower than "web parity" sounds: this drives ONE tick
+# immediately followed by ONE drain. Production interleaves a 0.05 s tick
+# (``StateFreshnessService.__init__``'s ``interval_seconds``) with a 0.025 s
+# LAN / 0.100 s serial drain (``_FAST_INTERVAL`` / ``_FAST_INTERVAL_SERIAL``),
+# so most drains land BETWEEN ticks. An earlier revision of this change leaked
+# a ``tx_only`` read during RX in exactly that ordering, and this pin could not
+# see it: the ordering it fixes is the one where the cached transmit fact is
+# never stale. Between-ticks is
+# ``test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain``.
+# A pin that fixes an interleaving says nothing about the ones it excludes.
+# ---------------------------------------------------------------------------
+
+#: ``(command, sub, data)`` of every frame one IC-7300 drain cycle emits.
+_IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
+    (0x1C, 0x00, b""),
+    (0x25, None, b"\x00"),
+    (0x26, None, b"\x00"),
+    (0x15, 0x02, b""),
+    (0x14, 0x02, b""),
+    (0x14, 0x03, b""),
+    (0x0F, None, b""),
+    (0x14, 0x01, b""),
+    (0x16, 0x12, b""),
+    (0x16, 0x22, b""),
+    (0x16, 0x40, b""),
+    (0x25, None, b"\x01"),
+    (0x26, None, b"\x01"),
+    (0x11, None, b""),
+    (0x16, 0x02, b""),
+    (0x14, 0x0E, b""),
+    (0x14, 0x0A, b""),
+    (0x1C, 0x01, b""),
+    (0x16, 0x44, b""),
+    (0x14, 0x17, b""),
+    (0x14, 0x0B, b""),
+    (0x14, 0x15, b""),
+    (0x14, 0x16, b""),
+    (0x16, 0x45, b""),
+    (0x16, 0x46, b""),
+    (0x1A, 0x05, b"\x01\x91"),
+    (0x1A, 0x03, b""),
+    (0x16, 0x56, b""),
+    (0x27, 0x1C, b""),
+    (0x27, 0x13, b""),
+    (0x27, 0x1B, b""),
+    (0x27, 0x16, b"\x00"),
+    (0x27, 0x1E, b"\x01\x01"),
+    (0x27, 0x17, b"\x00"),
+    (0x27, 0x14, b"\x00"),
+    (0x27, 0x12, b""),
+    (0x27, 0x19, b"\x00"),
+    (0x27, 0x15, b"\x00"),
+    (0x27, 0x1A, b"\x00"),
+    (0x27, 0x1D, b"\x00"),
+    (0x15, 0x16, b""),
+    (0x15, 0x15, b""),
+)
+
+
+def _drain_cycle_wire_frames(
+    radio: MagicMock,
+) -> tuple[tuple[int, int | None, bytes], ...]:
+    """``(command, sub, data)`` of every ``send_civ`` await, in order."""
+
+    return tuple(
+        (call_.args[0], call_.kwargs.get("sub"), call_.kwargs.get("data"))
+        for call_ in radio.send_civ.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_web_cadence_wire_frames_unchanged_when_due_requests_moves_to_the_tick() -> (
+    None
+):
+    radio = _make_radio(active="MAIN", model="IC-7300")
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.state_acquisition is not None
+    store = StateStore()
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(
+        radio, CommandQueue(), radio_state=RadioState(), state_store=store
+    )
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+
+    with patch("rigplane.web.radio_poller.time.monotonic", return_value=100.0):
+        service.tick(now=100.0)
+        await poller._send_query()  # noqa: SLF001
+
+    assert _drain_cycle_wire_frames(radio) == _IC7300_DRAIN_CYCLE_FRAMES
+    # The dispatch envelope is uniform across the cycle, so it is asserted
+    # once per frame rather than repeated in the table above.
+    for call_ in radio.send_civ.await_args_list:
+        assert call_.kwargs["priority"] is Priority.BACKGROUND
+        assert call_.kwargs["wait_response"] is False
+        assert call_.kwargs["wait_dispatch"] is False
+
+
+def _reconciliation_only_tx_only_profile(path: FieldPath) -> RadioAcquisitionProfile:
+    """One ``tx_only`` meter with no poll cadence of its own."""
+
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=(FieldCapability(path=path, command_response_observable=True),),
+        default_policy=AcquisitionPolicy(),
+        field_policies={path: AcquisitionPolicy(tx_only=True)},
+    )
+
+
+@pytest.mark.asyncio
+async def test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain() -> None:
+    """MOR-1525 leak: a drain landing between two ticks must re-read the fact.
+
+    The poller drains every 0.025 s (LAN) against a 0.05 s tick, so most drains
+    land between ticks. If the drain gates on the cached fact the last tick
+    left, a de-key that happened after that tick is invisible and the
+    ``tx_only`` group is dispatched during confirmed RX -- the SWR-flap loop.
+    Base ``e5fd5c8a`` sent 0 such reads because its drain called
+    ``due_requests`` with a drain-time derivation; this asserts the same 0.
+    """
+
+    radio = _make_radio(active="MAIN")
+    power = FieldPath.global_("meters", "power")
+    scheduler = AcquisitionScheduler(
+        profile=_reconciliation_only_tx_only_profile(power)
+    )
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+
+    store = StateStore()
+    ptt = FieldPath.global_("tx_state", "ptt")
+    now = time.monotonic()
+    store.apply(
+        Observation(
+            path=ptt,
+            value=True,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=now,
+            max_age=1000.0,
+        )
+    )
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        state_store=store,
+        acquisition_executor=executor,
+    )
+
+    # Tick while transmitting, and queue the tx_only reconciliation it gates.
+    _tick_cadence(poller)
+    scheduler.ensure_fresh(
+        power,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+
+    # De-key AFTER that tick. The next tick is up to 50 ms away; the drain is
+    # not.
+    store.apply(
+        Observation(
+            path=ptt,
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=now + 0.001,
+            max_age=1000.0,
+        )
+    )
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert executor.calls == [], (
+        "tx_only request reached the wire during confirmed RX -- the drain "
+        "gated on the previous tick's transmit fact, not the drain's"
+    )

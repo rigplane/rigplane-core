@@ -34,6 +34,7 @@ from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.runtime._poller_types import canonicalize_level_command
 from rigplane.runtime.tx_interlock import (
     DeferredTxCommandLane,
     RfState,
@@ -896,6 +897,7 @@ class YaesuCatPoller:
         Commands come from the web UI CommandQueue.  The dispatcher handles
         all command types; unsupported commands fail truthfully.
         """
+        cmd = canonicalize_level_command(cmd, self._radio)
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
             return
@@ -914,7 +916,6 @@ class YaesuCatPoller:
             PttOff,
             PttOn,
             SelectVfo,
-            SetAfLevel,
             SetAgc,
             SetApf,
             SetAttenuator,
@@ -951,12 +952,10 @@ class YaesuCatPoller:
             SetPower,
             SetPowerstat,
             SetPreamp,
-            SetRfGain,
             SetRitFrequency,
             SetRitStatus,
             SetRitTxStatus,
             SetSplit,
-            SetSquelch,
             SetTwinPeak,
             SetVox,
             SetTunerStatus,
@@ -1025,12 +1024,6 @@ class YaesuCatPoller:
                 await radio.set_powerstat(on)
 
             # ── Audio / RF Levels ──
-            case SetAfLevel(level=level):
-                await radio.set_af_level(level)
-            case SetRfGain(level=level):
-                await radio.set_rf_gain(level)
-            case SetSquelch(level=level):
-                await radio.set_squelch(level)
             case SetMicGain(level=level):
                 await radio.set_mic_gain(level)
             case SetPower(level=level, unit=unit):

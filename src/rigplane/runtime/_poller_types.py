@@ -11,12 +11,18 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
-from rigplane.core.state_pipeline_contracts import CommandIntent, CommandSource
+from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
+from rigplane.core.state_pipeline_contracts import (
+    CommandIntent,
+    CommandSource,
+    FieldPath,
+)
 
 __all__ = [
     "Command",
     "CommandQueue",
     "CommandQueueEntry",
+    "canonicalize_level_command",
     # -- command dataclasses (alphabetical) --
     "DisableScope",
     "EnableScope",
@@ -964,6 +970,33 @@ Command: TypeAlias = (
 )
 
 
+def canonicalize_level_command(
+    command: Command,
+    radio: DispatchRadio,
+    *,
+    command_id: str | None = None,
+    source: CommandSource = "websocket",
+    session_id: str | None = None,
+) -> Command:
+    match command:
+        case SetAfLevel(level=level, receiver=receiver):
+            name = "set_af_level"
+        case SetRfGain(level=level, receiver=receiver):
+            name = "set_rf_gain"
+        case SetSquelch(level=level, receiver=receiver):
+            name = "set_squelch"
+        case _:
+            return command
+    return prepare_command_intent(
+        radio,
+        name,
+        {"level": level, "receiver": receiver},
+        source=source,
+        command_id=command_id,
+        session_id=session_id,
+    )
+
+
 # ------------------------------------------------------------------
 # CommandQueue
 # ------------------------------------------------------------------
@@ -983,7 +1016,9 @@ class CommandQueueEntry:
 class _CommandQueueSegment:
     kind: Literal["coalesced", "ordered"]
     ptt: list[CommandQueueEntry] = field(default_factory=list)
-    dedup: dict[type, CommandQueueEntry] = field(default_factory=dict)
+    dedup: dict[type | tuple[str, FieldPath | None], CommandQueueEntry] = field(
+        default_factory=dict,
+    )
     ordered: list[CommandQueueEntry] = field(default_factory=list)
 
     @classmethod
@@ -1072,7 +1107,10 @@ class CommandQueue:
         if isinstance(cmd, (PttOn, PttOff)):
             segment.ptt.append(entry)
         else:
-            segment.dedup[type(cmd)] = entry
+            key = (
+                (cmd.name, cmd.target) if isinstance(cmd, CommandIntent) else type(cmd)
+            )
+            segment.dedup[key] = entry
         self._notify.set()
 
     def put_ordered(
