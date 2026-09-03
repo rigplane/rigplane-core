@@ -759,6 +759,14 @@ class ManagedTxAuthority:
                 for event in events:
                     transition = self._reduce_locked(event)
                     if (
+                        transition.outcome is ManagedTxOutcome.STALE
+                        and isinstance(event, ActuationSettled)
+                        and event.operation is ActuationOperation.FORCE_RECEIVE
+                        and event.result is ActuationResult.ACCEPTED
+                    ):
+                        self._state = replace(self._state, release_plan=None)
+                        self._release_drained.set()
+                    if (
                         transition.outcome is ManagedTxOutcome.APPLIED
                         and isinstance(event, ActuationSettled)
                         and event.operation
