@@ -8,7 +8,7 @@ import pytest
 from fake_rigctld import FakeRigctldServer
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.commands.command_spec import CatCommandSpec
+from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec
 from rigplane.core.exceptions import CommandError
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.runtime.radio import CoreRadio
@@ -122,6 +122,52 @@ async def test_ic7300_main_write_and_sub_rejection(command):
 
 
 @pytest.mark.parametrize("command", LEVELS)
+@pytest.mark.parametrize("receiver", [0, 1], ids=["main", "sub"])
+@pytest.mark.parametrize("route_declared", [True, False], ids=["route", "no_route"])
+async def test_icom_remapped_level_route_controls_admission_and_write(
+    command, receiver, route_declared
+):
+    config = load_rig(RIGS / "ic7610.toml")
+    original = config.commands[command]
+    assert isinstance(original, CivCommandSpec)
+    selected = (0x14, 0x09)
+    config = replace(
+        config,
+        commands={**config.commands, command: CivCommandSpec(bytes=selected)},
+        cmd29_routes=(selected,) if route_declared else (original.bytes,),
+    )
+    radio = icom(config)
+    writes = []
+
+    async def write(frame, wait_response=True):
+        writes.append(frame)
+
+    radio._connected = True
+    radio._civ_transport = object()
+    radio._send_civ_raw = write
+    try:
+        assert radio.supports_command(command, receiver=receiver) == (
+            receiver == 0 or route_declared
+        )
+        if receiver == 1 and not route_declared:
+            with pytest.raises(CommandError, match="no cmd29 route"):
+                await getattr(radio, command)(128, receiver=receiver)
+            assert writes == []
+        else:
+            await getattr(radio, command)(128, receiver=receiver)
+            wrapper = [0x29, receiver] if route_declared else []
+            assert writes == [
+                bytes(
+                    [0xFE, 0xFE, radio._radio_addr, 0xE0]
+                    + wrapper
+                    + [0x14, 0x09, 0x01, 0x28, 0xFD]
+                )
+            ]
+    finally:
+        radio._connected = False
+
+
+@pytest.mark.parametrize("command", LEVELS)
 @pytest.mark.parametrize("missing", ["command", "capability", "route"])
 def test_icom_admission_honors_setter_profile_requirements(command, missing):
     config = load_rig(RIGS / "ic7610.toml")
@@ -180,7 +226,7 @@ async def test_rigctld_main_only_and_sql_unsupported(command):
             assert not radio.supports_command(command, receiver=1)
             before = list(server.commands_seen)
             if supported:
-                with pytest.raises(CommandError):
+                with pytest.raises(ValueError):
                     await getattr(radio, command)(128, receiver=1)
                 assert server.commands_seen == before
                 await getattr(radio, command)(128, receiver=0)
