@@ -283,7 +283,7 @@ jobs:
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 25
     env:
-      UV_PYTHON: '3.11'
+      UV_PYTHON: '3.11.16'
       PYTHONDONTWRITEBYTECODE: '1'
     defaults:
       run:
@@ -312,10 +312,12 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: false
+          # Exact Mini environment observed in source full run 33750206379.
+          version: '0.12.9'
       - name: Install immutable source dependencies without build hooks
         run: |
-          printf '%s\n' 'uv python install 3.11' 'HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras' > "$PROOF_ROOT/evidence/dependency-commands.txt"
-          uv python install 3.11 2>&1 | tee "$PROOF_ROOT/evidence/python-setup.log"
+          printf '%s\n' 'uv python install 3.11.16' 'HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras' > "$PROOF_ROOT/evidence/dependency-commands.txt"
+          uv python install 3.11.16 2>&1 | tee "$PROOF_ROOT/evidence/python-setup.log"
           HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras 2>&1 | tee "$PROOF_ROOT/evidence/dependencies.log"
       - name: Freeze supplemental probes
         run: |
@@ -539,14 +541,17 @@ jobs:
         run: |
           cat > "$PROOF_ROOT/evidence/proof.py" <<'PY'
           import hashlib
+          import ctypes
           import importlib
           import importlib.metadata
           import json
           import os
+          import signal
           from pathlib import Path
           import subprocess
           import sys
           import tempfile
+          import time
           from collections import Counter
           import xml.etree.ElementTree as ET
           import pytest
@@ -740,7 +745,7 @@ jobs:
           fault('16-child-as-owner', [
               edit(QSRC, 'if owner is not None and owner.cancelling() > cancelling:', 'if owner is not None:'),
           ], {
-              Q + TERMINAL + '[pending-cancel]': checkpoint(QFILE, 'raise asyncio.CancelledError("leaf only")', 'asyncio.exceptions.CancelledError', 'leaf only'),
+              Q + TERMINAL + '[pending-cancel]': checkpoint(QSRC, 'result = await asyncio.shield(child)', 'asyncio.exceptions.CancelledError', '', line=1035),
           }, [Q + TERMINAL + '[pending-result]', PERROR])
           fault('17-ignore-cancel-baseline', [
               edit(QSRC, 'owner.cancelling() > cancelling', 'owner.cancelling() > 0'),
@@ -826,6 +831,105 @@ jobs:
           def snapshot(root, names):
               return {name: sha(tracked_bytes(root / name)) for name in names}
 
+          def supervised(args, cwd, env, evidence, process_state, timeout=180):
+              # Linux-only diagnostic supervision, not a product lifecycle layer.
+              # Group signals alone leave orphaned zombies: the driver is a
+              # subreaper so it can reap grandchildren and prove group absence.
+              process_state['safe_to_restore'] = False
+              with (evidence / 'stdout.log').open('w') as out, (evidence / 'stderr.log').open('w') as err:
+                  process = None
+                  record = {'args': args, 'cwd': str(cwd), 'signals': []}
+
+                  def gone():
+                      if process.poll() is not None:
+                          while True:
+                              try:
+                                  pid, _ = os.waitpid(-pgid, os.WNOHANG)
+                              except ChildProcessError:
+                                  break
+                              if pid == 0:
+                                  break
+                      try:
+                          os.killpg(pgid, 0)
+                      except ProcessLookupError:
+                          return process.poll() is not None
+                      return False
+
+                  try:
+                      process = subprocess.Popen(args, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True)
+                      pgid = process.pid
+                      record.update(pid=process.pid, pgid=pgid)
+                      save(evidence / 'supervision.json', record)
+                      result = process.wait(timeout=timeout)
+                      if not gone():
+                          raise RuntimeError('INVALID: descendant outlived group leader')
+                      return result
+                  except BaseException as error:
+                      record['interruption'] = repr(error)
+                      raise
+                  finally:
+                      if process is None:
+                          save(evidence / 'supervision.json', {**record, 'safe_to_restore': False})
+                          raise RuntimeError('INVALID: process launch unconfirmed; restoration forbidden')
+                      pgid = process.pid
+                      for action in (signal.SIGTERM, signal.SIGKILL):
+                          if gone():
+                              break
+                          record['signals'].append(action.name)
+                          try:
+                              os.killpg(pgid, action)
+                          except ProcessLookupError:
+                              pass
+                          deadline = time.monotonic() + 3
+                          while not gone() and time.monotonic() < deadline:
+                              time.sleep(0.02)
+                      process_state['safe_to_restore'] = gone()
+                      record.update(process_state, returncode=process.poll())
+                      save(evidence / 'supervision.json', record)
+                      if not process_state['safe_to_restore']:
+                          raise RuntimeError('INVALID: group death unconfirmed; restoration forbidden')
+
+          def calibrate_supervision(artifacts):
+              evidence = artifacts / 'timeout-calibration'
+              evidence.mkdir()
+              marker = evidence / 'restoration-marker.txt'
+              marker.write_text('pristine')
+              original = sha(marker.read_bytes())
+              marker.write_text('changed')
+              assert sha(marker.read_bytes()) != original
+              child_code = '''import os, signal, sys
+          from pathlib import Path
+          signal.signal(signal.SIGTERM, signal.SIG_IGN)
+          Path(sys.argv[1]).write_text(str(os.getpid()))
+          signal.pause()
+          '''
+              parent_code = '''import json, os, signal, subprocess, sys, time
+          from pathlib import Path
+          signal.signal(signal.SIGTERM, signal.SIG_IGN)
+          ready = Path(sys.argv[1]) / 'child-ready.txt'
+          child = subprocess.Popen([sys.executable, '-c', sys.argv[2], str(ready)])
+          while not ready.exists():
+              time.sleep(0.01)
+          (ready.parent / 'pids.json').write_text(json.dumps([os.getpid(), child.pid]))
+          signal.pause()
+          '''
+              state = {'safe_to_restore': False}
+              try:
+                  supervised([sys.executable, '-c', parent_code, str(evidence), child_code], evidence, os.environ.copy(), evidence, state, timeout=5)
+              except subprocess.TimeoutExpired:
+                  pass
+              else:
+                  raise RuntimeError('INVALID: timeout calibration did not time out')
+              assert state['safe_to_restore'], 'INVALID: calibration group survived'
+              pids = json.loads((evidence / 'pids.json').read_text())
+              assert len(set(pids)) == 2 and all(not Path(f'/proc/{pid}').exists() for pid in pids)
+              record = json.loads((evidence / 'supervision.json').read_text())
+              assert record['signals'] == ['SIGTERM', 'SIGKILL']
+              save(evidence / 'before-restoration.json', {'pids_absent': pids, 'group_absent': True})
+              marker.write_text('pristine')
+              assert sha(marker.read_bytes()) == original
+              save(evidence / 'verdict.json', {'status': 'PASS', 'scope': 'instrument calibration only'})
+
           def imports(root, expected_hashes):
               records = {}
               for name, module in sorted(sys.modules.items()):
@@ -891,7 +995,7 @@ jobs:
               root, evidence = Path.cwd().resolve(), Path(sys.argv[1]).resolve()
               spec = json.loads((evidence / 'expected.json').read_text())
               expected = spec['expected']
-              assert sys.version_info[:2] == (3, 11) and git(root, 'rev-parse', 'HEAD').decode().strip() == SOURCE
+              assert sys.version_info[:3] == (3, 11, 16) and git(root, 'rev-parse', 'HEAD').decode().strip() == SOURCE
               for name in ('rigplane.runtime._poller_types', 'rigplane.web.radio_poller', 'rigplane.core.command_dispatch'):
                   importlib.import_module(name)
               save(evidence / 'imports-initial.json', imports(root, spec['hashes']))
@@ -908,7 +1012,14 @@ jobs:
           assert len(FROZEN) == len(set(FROZEN)) == 46
           assert len(SUPPLEMENTAL) == len(set(SUPPLEMENTAL)) == 12 and len(ALL) == 58
           assert len(variants) == 26 and len(legitimate) == 4 and len(PLAN) == 32
-          assert sys.version_info[:2] == (3, 11)
+          assert sys.version_info[:3] == (3, 11, 16)
+          uv_version = subprocess.check_output(['uv', '--version'], text=True).strip()
+          assert uv_version.split()[1] == '0.12.9', uv_version
+          assert sys.platform == 'linux' and ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+          def interrupted(signum, _frame):
+              raise KeyboardInterrupt(f'diagnostic interrupted by signal {signum}')
+          for signum in (signal.SIGTERM, signal.SIGINT):
+              signal.signal(signum, interrupted)
           assert git(seed, 'rev-parse', 'HEAD').decode().strip() == SOURCE and not status(seed)
           names = git(seed, 'ls-files', '-z').decode().split('\0')[:-1]
           originals = {name: tracked_bytes(seed / name) for name in names}
@@ -926,7 +1037,7 @@ jobs:
               'diagnostic_base': BASE, 'diagnostic_tree': git(diagnostic, 'rev-parse', 'HEAD^{tree}').decode().strip(),
               'source_hashes': hashes, 'probe_sha256': sha(probe_bytes), 'python': sys.version,
               'dependencies': sorted((distribution.metadata['Name'], distribution.version) for distribution in importlib.metadata.distributions()),
-              'uv': subprocess.check_output(['uv', '--version'], text=True).strip(),
+              'uv': uv_version,
               'workflow_sha256': sha((diagnostic / '.github/workflows/full.yml').read_bytes()),
               **{key: os.environ.get(key) for key in ('GITHUB_SHA', 'GITHUB_REF', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'RUNNER_NAME')},
           })
@@ -964,6 +1075,7 @@ jobs:
               prepared.append({**plan, 'expected': expected, 'hashes': variant_hashes, 'contents': contents})
           save(artifacts / 'registry.json', [{key: value for key, value in item.items() if key != 'contents'} for item in prepared])
           assert any(item['hashes'][QSRC] != hashes[QSRC] for item in prepared), 'no real inequality contrast'
+          calibrate_supervision(artifacts)
           records = []
           try:
               for item in prepared:
@@ -974,6 +1086,7 @@ jobs:
                   git(proof, 'clone', '--shared', '--no-checkout', str(seed), str(root))
                   git(root, '-c', 'core.hooksPath=/dev/null', 'checkout', '--detach', SOURCE)
                   assert git(root, 'rev-parse', 'HEAD').decode().strip() == SOURCE and snapshot(root, names) == hashes and not status(root)
+                  process_state = {'safe_to_restore': True}
                   try:
                       for file, value in item['contents'].items():
                           (root / file).write_text(value)
@@ -992,15 +1105,17 @@ jobs:
                       args = ['uv', 'run', '--no-sync', 'python', str(Path(__file__).resolve()), str(evidence)]
                       save(evidence / 'invocation.json', {'args': args, 'cwd': str(root), 'pythonpath': env['PYTHONPATH'], 'bytecode_disabled': True})
                       (evidence / 'exit.txt').write_text('INVALID: process not returned\n')
-                      with (evidence / 'stdout.log').open('w') as out, (evidence / 'stderr.log').open('w') as err:
-                          result = subprocess.run(args, cwd=root, env=env, stdout=out, stderr=err, timeout=180)
-                      (evidence / 'exit.txt').write_text(str(result.returncode) + '\n')
+                      result = supervised(args, root, env, evidence, process_state)
+                      (evidence / 'exit.txt').write_text(str(result) + '\n')
                       assert snapshot(root, [*names, PROBE]) == item['hashes'] and status(root) == expected_status, 'tests changed source'
-                      validate(evidence, item['expected'], result.returncode, root)
+                      validate(evidence, item['expected'], result, root)
                   except BaseException as error:
                       save(evidence / 'verdict.json', {'status': 'INVALID', 'error': repr(error)})
                       raise
                   finally:
+                      if not process_state['safe_to_restore']:
+                          save(evidence / 'restoration-skipped.json', {'status': 'INVALID', 'reason': 'process group death unconfirmed'})
+                          raise RuntimeError('INVALID: source preserved beneath possibly live processes')
                       try:
                           save(evidence / 'before-restore.json', snapshot(root, names))
                           (evidence / 'before-restore.status').write_bytes(status(root))
