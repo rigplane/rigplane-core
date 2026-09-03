@@ -173,7 +173,9 @@ async def test_held_cleanup_does_not_starve_other_cancellations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_scope_revokes_equal_scope_before_cleanup_and_keeps_others() -> None:
+async def test_cancel_scope_revokes_equal_scope_before_cleanup_and_keeps_others() -> (
+    None
+):
     fence = TxAbortFence()
     owner = "operator-" + "same"
     equal_owner = "".join(("operator-", "same"))
@@ -199,7 +201,9 @@ async def test_cancel_scope_revokes_equal_scope_before_cleanup_and_keeps_others(
 
 
 @pytest.mark.asyncio
-async def test_cancel_scope_cleanup_does_not_rescan_new_same_scope_registration() -> None:
+async def test_cancel_scope_cleanup_does_not_rescan_new_same_scope_registration() -> (
+    None
+):
     fence = TxAbortFence()
     old = fence.issue()
     calls: list[str] = []

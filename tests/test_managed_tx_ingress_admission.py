@@ -31,8 +31,12 @@ async def rig():
     )
     await managed._stop_scheduler(managed._scheduler_task)
     fixture = SimpleNamespace(
-        managed=managed, actuator=actuator, fence=fence, clock=clock,
-        tasks=[], releases=[],
+        managed=managed,
+        actuator=actuator,
+        fence=fence,
+        clock=clock,
+        tasks=[],
+        releases=[],
     )
     try:
         yield fixture
@@ -157,7 +161,9 @@ async def test_off_cancel_before_execute_entry_drains_despite_repeated_cancel(
 
     monkeypatch.setattr(rig.managed, "_execute", gated_execute)
     rig.actuator.actions[ActuationOperation.FORCE_RECEIVE] = blocking_action(
-        provider_started, provider_release, cancelled=provider_cancelled,
+        provider_started,
+        provider_release,
+        cancelled=provider_cancelled,
         resist_cancellation=True,
     )
     worker = await submit(rig, False, "A")
@@ -256,10 +262,13 @@ async def test_provider_replacement_while_rx_clean_prevents_old_pending_on(rig):
 
 
 @pytest.mark.parametrize(
-    "result", [ActuationResult.UNCERTAIN, OSError("provider")],
+    "result",
+    [ActuationResult.UNCERTAIN, OSError("provider")],
     ids=["uncertain", "provider_error"],
 )
-async def test_original_on_uncertainty_not_replaced_by_accepted_compensation(rig, result):
+async def test_original_on_uncertainty_not_replaced_by_accepted_compensation(
+    rig, result
+):
     rig.actuator.actions[ActuationOperation.PTT_ON] = result
     worker = await submit(rig, True, "A")
     transition, settled = await asyncio.wait_for(asyncio.shield(worker), 1)
@@ -353,7 +362,8 @@ async def test_public_owner_up_settles_release(rig):
     assert state.intent.kind is ManagedTxIntentKind.RX
     assert state.pending_effect is None and not state.release_required
     assert [op for _, op in rig.actuator.calls] == [
-        ActuationOperation.PTT_ON, ActuationOperation.FORCE_RECEIVE,
+        ActuationOperation.PTT_ON,
+        ActuationOperation.FORCE_RECEIVE,
     ]
 
 
