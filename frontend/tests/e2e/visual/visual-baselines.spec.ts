@@ -15,6 +15,17 @@ import { test, expect } from '@playwright/test';
 
 const DESKTOP = { width: 1280, height: 800 };
 const PHONE = { width: 375, height: 812 };
+/**
+ * MOR-2243 — narrower than the peer-split glass's own 1280px native canvas,
+ * so `computeStageScale` resolves below 1 (1100/1280 ≈ 0.859; the group's
+ * 0.5 floor stays inert). At DESKTOP the same fixture resolves
+ * `min(1280/1280, 800/540, MAX_STAGE_SCALE)` = exactly 1 — the identity
+ * transform — so a baseline taken only there pins the one configuration in
+ * which `ScaledStage`'s scaling path does not run.
+ */
+const NARROW = { width: 1100, height: 800 };
+/** Fixed instant for `freezeClock`; only its constancy matters, not its value. */
+const FROZEN_CLOCK = new Date('2026-01-01T14:32:00Z');
 
 interface Spec {
   name: string;
@@ -22,6 +33,16 @@ interface Spec {
   language?: 'studioline' | 'fieldline';
   mode?: 'light';
   viewport?: typeof DESKTOP;
+  /**
+   * Pin `Date` before the page loads. `PeerSplitLayout.svelte` renders a live
+   * wall clock inside the glass (`setInterval(…, 30_000)`, a UTC and a local
+   * `HH:MM` span), so without this its digits differ between the run that
+   * captured the baseline and every later run — legitimate variation that
+   * would spend part of the `maxDiffPixelRatio` budget every run and shrink
+   * what remains for catching a real regression. Opt-in per spec: every
+   * capture approved before MOR-2243 was taken without it.
+   */
+  freezeClock?: boolean;
 }
 
 /**
@@ -50,11 +71,20 @@ const COCKPIT: Spec[] = [
     mode: 'light',
   },
   { name: 'tx-phase-fault--desktop--fieldline', fixture: 'tx-phase-fault', language: 'fieldline' },
-  { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis' },
+  { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis', freezeClock: true },
+  {
+    name: 'peer-split-chassis--1100x800',
+    fixture: 'peer-split-chassis',
+    viewport: NARROW,
+    freezeClock: true,
+  },
 ];
 
 for (const spec of COCKPIT) {
   test(spec.name, async ({ page }) => {
+    // Before `goto`: the clock is installed into the page's init scripts, so
+    // it has to be in place before any of the page's own script reads `Date`.
+    if (spec.freezeClock) await page.clock.setFixedTime(FROZEN_CLOCK);
     await page.setViewportSize(spec.viewport ?? DESKTOP);
     const url = `/fixtures/index.html?fixture=${spec.fixture}&theme=v2`
       + (spec.language ? `&language=${spec.language}` : '')
