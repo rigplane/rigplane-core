@@ -96,15 +96,21 @@ class QuickPathFilterContractTest(unittest.TestCase):
             citation.count('      - ".github/workflows/doc-citation-gate.yml"'), 2
         )
         for ignored in (
-            '      - "docs/**"',
-            '      - "**/*.md"',
-            '      - "**/*.rst"',
-            '      - ".claude/**"',
-            '      - ".github/**"',
-            '      - "tests/test_ci_path_filters.py"',
+            '      - "!docs/**"',
+            '      - "!**/*.md"',
+            '      - "!**/*.rst"',
+            '      - "!.claude/**"',
+            '      - "!.github/**"',
+            '      - "!tests/test_ci_path_filters.py"',
         ):
             with self.subTest(ignored=ignored):
                 self.assertEqual(rebrand.count(ignored), 2)
+        for control in (
+            '      - ".github/scripts/check-rebrand-allowlist.sh"',
+            '      - ".github/workflows/rebrand-gate.yml"',
+        ):
+            with self.subTest(control=control):
+                self.assertEqual(rebrand.count(control), 2)
 
 
 if __name__ == "__main__":

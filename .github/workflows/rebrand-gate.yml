@@ -5,33 +5,39 @@ name: Rebrand grep gate
 # allow-list. See .github/scripts/check-rebrand-allowlist.sh for the
 # rationale and the allow-list.
 #
-# Documentation and CI-control-only diffs are reviewed independently and skip
-# this repository-wide grep. Mixed product changes still run it because
-# paths-ignore suppresses a workflow only when every changed path is ignored.
+# Documentation and unrelated CI-control-only diffs are reviewed independently
+# and skip this repository-wide grep. Ordered negative patterns keep mixed
+# product changes selected, then re-include this gate's own checker/workflow.
 
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - "*.rst"
-      - "**/*.md"
-      - "**/*.rst"
-      - ".claude/**"
-      - ".github/**"
-      - "tests/test_ci_path_filters.py"
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!*.md"
+      - "!*.rst"
+      - "!**/*.md"
+      - "!**/*.rst"
+      - "!.claude/**"
+      - "!.github/**"
+      - "!tests/test_ci_path_filters.py"
+      - ".github/scripts/check-rebrand-allowlist.sh"
+      - ".github/workflows/rebrand-gate.yml"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - "*.rst"
-      - "**/*.md"
-      - "**/*.rst"
-      - ".claude/**"
-      - ".github/**"
-      - "tests/test_ci_path_filters.py"
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!*.md"
+      - "!*.rst"
+      - "!**/*.md"
+      - "!**/*.rst"
+      - "!.claude/**"
+      - "!.github/**"
+      - "!tests/test_ci_path_filters.py"
+      - ".github/scripts/check-rebrand-allowlist.sh"
+      - ".github/workflows/rebrand-gate.yml"
 
 concurrency:
   group: rebrand-gate-${{ github.workflow }}-${{ github.ref }}
