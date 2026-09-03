@@ -7,6 +7,7 @@ import struct
 from collections.abc import Callable
 from typing import Protocol
 
+from ....core.exceptions import CommandError
 from ....types import PacketType
 from .contracts import CivLink, SessionDriver
 
@@ -190,6 +191,8 @@ class SerialCivTransport:
             await self._civ_link.send_written(frame, is_current=is_current)
             self.send_seq = (self.send_seq + 1) & 0xFFFF
             self._udp_error_count = 0
+        except CommandError:
+            raise
         except Exception:
             self._udp_error_count += 1
             raise

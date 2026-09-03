@@ -153,6 +153,7 @@ async def test_send_tracked_forwards_currency_to_serial_writer() -> None:
         )
         assert writer.writes == [query], "transport dropped final-write currency"
         assert isinstance(result[0], CommandError)
+        assert transport._udp_error_count == 0
         assert not writer.closed
         assert link.ready
         await asyncio.wait_for(
