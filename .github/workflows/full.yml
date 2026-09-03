@@ -66,54 +66,312 @@ jobs:
           original=authority.read_bytes(); digest=hashlib.sha256(original).hexdigest(); (art/'authority-original.sha256').write_text(digest+'\n')
           tf='tests/test_managed_tx_ingress_admission.py'; mod='tests.test_managed_tx_ingress_admission'; tt=(src/tf).read_text()
           env=dict(os.environ,PYTHONPATH=f'{scratch}/src:{scratch}/tests')
-          def line(fn,statement):
-              a=tt.index(f'async def {fn}('); b=tt.find('\nasync def ',a+1); b=len(tt) if b<0 else b
-              found=[i+1 for i,x in enumerate(tt[:b].splitlines()) if i+1>tt[:a].count('\n') and statement in x]
-              assert len(found)==1,(fn,statement,found); return found[0]
-          def f(fn,s,t='AssertionError'): return (s,line(fn,s),t)
-          def run(label,nodes,expect,rc,baseline=False):
-              d=art/label; d.mkdir(parents=True); cmd=[sys.executable,'-m','pytest','-q','-o','addopts=','-o',f'cache_dir={d/"pytest-cache"}','--tb=long','--color=no','--timeout=20','--timeout-method=thread',f'--junitxml={d/"junit.xml"}',*nodes]
-              (d/'command.json').write_text(json.dumps(cmd,indent=2)); (d/'expected.json').write_text(json.dumps(sorted(map(list,expect)),indent=2))
+          required = {(mod, name) for name in (
+              'test_prestart_on_cancel_removes_registration_without_dispatch',
+              'test_scoped_up_revokes_old_down_before_contended_lock_not_new_down',
+              'test_off_cancel_before_execute_entry_drains_despite_repeated_cancel',
+              'test_on_cancel_does_not_cancel_readiness_predecessor',
+              'test_pending_only_disconnect_revokes_owner_while_rx_clean',
+              'test_provider_replacement_while_rx_clean_prevents_old_pending_on',
+              'test_scoped_up_membership_blocks_on_when_cancel_handle_does_nothing',
+              'test_cancel_after_on_admission_settles_without_implicit_up',
+              'test_idempotent_admission_returns_no_fabricated_settlement',
+              'test_public_owner_idempotency_and_tot_are_unchanged',
+              'test_public_owner_up_settles_release',
+              'test_non_builtin_owner_is_rejected_without_equality_or_registration',
+          )}
+          required.update({
+              (mod, f'test_failed_predecessor_completion_allows_independent_on[{suffix}]')
+              for suffix in ('cancel', 'error')
+          })
+          required.update({
+              (mod, f'test_original_on_uncertainty_not_replaced_by_accepted_compensation[{suffix}]')
+              for suffix in ('uncertain', 'provider_error')
+          })
+          required.update({('tests.test_managed_tx_fence', name) for name in (
+              'test_token_is_current_only_for_its_fence_epoch',
+              'test_force_off_advances_before_every_registered_cancellation',
+              'test_force_off_collects_sync_and_async_failures_and_continues',
+              'test_registration_and_removal_are_token_specific_and_deterministic',
+              'test_fenced_work_is_cancelled_once_and_repeated_force_off_is_local_noop',
+              'test_late_old_token_completion_cannot_become_current',
+              'test_another_fence_cannot_accept_this_fences_token',
+              'test_force_off_invalidates_at_call_and_keeps_each_batch_epoch',
+              'test_held_cleanup_does_not_starve_other_cancellations',
+              'test_cancel_scope_revokes_equal_scope_before_cleanup_and_keeps_others',
+              'test_cancel_scope_cleanup_does_not_rescan_new_same_scope_registration',
+              'test_cancel_scope_rejects_non_builtin_str_without_equality_probe',
+              'test_cancel_scope_reports_cancellation_and_callback_failures',
+              'test_force_off_invalidates_scoped_and_unscoped_callbacks_before_cleanup',
+          )})
+          assert len(required) == 30
+          regression_modules = {'tests.test_managed_tx_authority', 'tests.test_managed_tx_effect_lane'}
+          allowed_modules = {mod, 'tests.test_managed_tx_fence'} | regression_modules
+          green_required = {identity: None for identity in required}
+
+          def line(fn, statement):
+              anchor = f'async def {fn}('
+              assert tt.count(anchor) == 1, fn
+              start = tt.index(anchor)
+              end = tt.find('\nasync def ', start + 1)
+              end = len(tt) if end < 0 else end
+              found = [i + 1 for i, text in enumerate(tt[:end].splitlines())
+                       if i >= tt[:start].count('\n') and text.strip() == statement]
+              assert len(found) == 1, (fn, statement, found)
+              return found[0]
+
+          def f(fn, statement, terminal=True):
+              return (statement, line(fn, statement), terminal)
+
+          def run(label, nodes, expect, rc, full_suite=False):
+              d = art / label
+              d.mkdir(parents=True)
+              cmd = [sys.executable, '-m', 'pytest', '-q', '-o', 'addopts=', '-o',
+                     f'cache_dir={d / "pytest-cache"}', '--tb=long', '--color=no',
+                     '--timeout=20', '--timeout-method=thread',
+                     f'--junitxml={d / "junit.xml"}', *nodes]
+              (d / 'command.json').write_text(json.dumps(cmd, indent=2))
+              (d / 'expected.json').write_text(json.dumps({
+                  'exit': rc, 'count': 117 if full_suite else len(expect),
+                  'extras_only_modules': sorted(regression_modules) if full_suite else [],
+                  'cases': [{'classname': k[0], 'name': k[1], 'failure': v}
+                            for k, v in sorted(expect.items())],
+              }, indent=2))
+              (d / 'oracle.txt').write_text('NOT VERIFIED\n')
               try:
-                  with (d/'pytest.log').open('w') as log: p=subprocess.run(cmd,cwd=scratch,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=300)
-              except subprocess.TimeoutExpired: raise AssertionError(f'process timeout is not proof: {label}') from None
-              (d/'pytest-exit.txt').write_text(str(p.returncode)+'\n'); assert p.returncode==rc,(label,p.returncode)
-              cases=ET.parse(d/'junit.xml').getroot().findall('.//testcase'); actual={(x.get('classname'),x.get('name')) for x in cases}
-              assert len(actual)==len(cases) and not ET.parse(d/'junit.xml').getroot().findall('.//error') and not ET.parse(d/'junit.xml').getroot().findall('.//skipped')
-              if baseline:
-                  assert len(actual)==117 and not ET.parse(d/'junit.xml').getroot().findall('.//failure'); return {x:None for x in actual}
-              assert actual==set(expect),(label,actual,set(expect))
-              for c in cases:
-                  e=expect[(c.get('classname'),c.get('name'))]; fs=c.findall('failure')
-                  if e is None: assert not fs; continue
-                  assert len(fs)==1 and fs[0].get('type')==e[0]; msg=fs[0].get('message',''); trace=fs[0].text or ''
-                  if len(e)>2: assert msg==e[2]
-                  for s,n,t in e[1]:
-                      assert re.search(r'(?m)^>\\s+'+re.escape(s)+r'[ \\t]*$',trace); assert re.search(r'(?m)^'+re.escape(f'{tf}:{n}: {t}')+r'[ \\t]*$',trace)
-              (d/'oracle.txt').write_text(f'PASS {label}: exact identities; zero errors/skips.\n')
-          full=['tests/test_managed_tx_ingress_admission.py','tests/test_managed_tx_fence.py','tests/test_managed_tx_authority.py','tests/test_managed_tx_effect_lane.py']
-          base=run('00-baseline-117',full,{},0,True); control=(mod,'test_public_owner_up_settles_release')
-          specs=[
-           ('M1',[('and self._abort_fence.remove(token)','and (self._abort_fence.remove(token) or True)')],{'test_scoped_up_membership_blocks_on_when_cancel_handle_does_nothing':('AssertionError',[f('test_scoped_up_membership_blocks_on_when_cancel_handle_does_nothing','await prevented(worker)'),f('prevented','assert transition.outcome is ManagedTxOutcome.REJECTED')])}),
-           ('M2',[('        if not on:\n            self._cancel_pending_ptt(owner)\n\n',''),('                async with self._lock:\n                    self._require_ingress_open_locked()','                async with self._lock:\n                    if not on:\n                        self._cancel_pending_ptt(owner)\n                    self._require_ingress_open_locked()')],{'test_scoped_up_revokes_old_down_before_contended_lock_not_new_down':('AssertionError',[f('test_scoped_up_revokes_old_down_before_contended_lock_not_new_down','assert old_token not in rig.fence._cancellations')])}),
-           ('M3',[('await asyncio.wait((ready,))','await ready')],{'test_on_cancel_does_not_cancel_readiness_predecessor':('AssertionError',[f('test_on_cancel_does_not_cancel_readiness_predecessor','assert not ready.done() and not rig.fence._cancellations')])}),
-           ('M4',[('return transition, await asyncio.shield(execution)','return transition, await execution')],{'test_off_cancel_before_execute_entry_drains_despite_repeated_cancel':('TimeoutError',[f('test_off_cancel_before_execute_entry_drains_despite_repeated_cancel','await asyncio.wait_for(provider_started.wait(), 1)','TimeoutError')])}),
-           ('M5',[('            except asyncio.CancelledError:\n                continue\n            except Exception:','            except asyncio.CancelledError:\n                return\n            except Exception:')],{'test_off_cancel_before_execute_entry_drains_despite_repeated_cancel':('AssertionError',[f('test_off_cancel_before_execute_entry_drains_despite_repeated_cancel','assert not worker.done() and not provider_cancelled.is_set()')])}),
-           ('M6',[('                    if any(\n                        settled.token == requested.token\n                        and settled.operation is requested.operation\n                        for requested in original_effects\n                    ):\n                        original_settlement = settled','                    original_settlement = settled')],{'test_original_on_uncertainty_not_replaced_by_accepted_compensation[uncertain]':('AssertionError',[f('test_original_on_uncertainty_not_replaced_by_accepted_compensation','assert settled.token == transition.effects[0].token')]),'test_original_on_uncertainty_not_replaced_by_accepted_compensation[provider_error]':('AssertionError',[f('test_original_on_uncertainty_not_replaced_by_accepted_compensation','assert settled.token == transition.effects[0].token')])}),
-           ('M7',[('                        self._provider_generation == generation\n                        and self._abort_fence.is_current(token)','                        self._abort_fence.is_current(token)')],{'test_provider_replacement_while_rx_clean_prevents_old_pending_on':('AssertionError',[f('test_provider_replacement_while_rx_clean_prevents_old_pending_on','await prevented(worker)'),f('prevented','assert transition.outcome is ManagedTxOutcome.REJECTED')])}),
-           ('M8',[('            if token is not None:\n                self._abort_fence.remove(token)\n            error = None if task.cancelled() else task.exception()','            error = None if task.cancelled() else task.exception()')],{'test_prestart_on_cancel_removes_registration_without_dispatch':('AssertionError',[f('test_prestart_on_cancel_removes_registration_without_dispatch','assert not rig.fence._cancellations')])}),
-           ('M9',[('if type(on) is not bool or type(owner) is not str:','if type(on) is not bool or not isinstance(owner, str):')],{'test_non_builtin_owner_is_rejected_without_equality_or_registration':('AssertionError',[f('test_non_builtin_owner_is_rejected_without_equality_or_registration','assert rig.fence._next_number == 0 and not rig.fence._cancellations')])}),
-           ('M10',[('await asyncio.wait((ready,))','await asyncio.shield(ready)')],{'test_failed_predecessor_completion_allows_independent_on[cancel]':('AssertionError',[f('test_failed_predecessor_completion_allows_independent_on','assert not worker.cancelled()')], 'AssertionError: assert not True'),'test_failed_predecessor_completion_allows_independent_on[error]':('AssertionError',[f('test_failed_predecessor_completion_allows_independent_on','assert worker.exception() is None)], "AssertionError: assert RuntimeError('predecessor failed') is None")}),]
-          for ident,changes,red in specs:
-              authority.write_bytes(original); text=authority.read_text()
-              for old,new in changes: assert text.count(old)==1,(ident,old); text=text.replace(old,new,1)
-              authority.write_text(text); d=art/ident; d.mkdir(); (d/'authority-before.sha256').write_text(digest+'\n'); (d/'authority-after.sha256').write_text(hashlib.sha256(authority.read_bytes()).hexdigest()+'\n'); (d/'authority.diff').write_text(''.join(difflib.unified_diff(original.decode().splitlines(True),text.splitlines(True),fromfile='original/'+rel,tofile='mutant/'+rel)))
-              expected={control:None}|{(mod,k):v for k,v in red.items()}; nodes=[f'{tf}::{n}' for _,n in expected]
-              try: run(f'{ident}/red',nodes,expected,1)
-              finally: authority.write_bytes(original)
-              assert hashlib.sha256(authority.read_bytes()).hexdigest()==digest; run(f'{ident}/restored-green',nodes,{k:None for k in expected},0)
-          positive=['tests/test_managed_tx_ingress_admission.py','tests/test_managed_tx_fence.py']; run('90-positive-30',positive,{k:None for k in [x for x in base if x[0] in {mod,'tests.test_managed_tx_fence'}]},0)
-          run('99-restored-117',full,base,0); assert hashlib.sha256(authority.read_bytes()).hexdigest()==digest
+                  with (d / 'pytest.log').open('w') as log:
+                      result = subprocess.run(cmd, cwd=scratch, env=env, stdout=log,
+                                              stderr=subprocess.STDOUT, timeout=300)
+              except subprocess.TimeoutExpired:
+                  (d / 'pytest-exit.txt').write_text('subprocess timeout\n')
+                  raise AssertionError(f'process timeout is not proof: {label}') from None
+              (d / 'pytest-exit.txt').write_text(str(result.returncode) + '\n')
+              assert result.returncode == rc, (label, result.returncode)
+              report = ET.parse(d / 'junit.xml').getroot()
+              cases = report.findall('.//testcase')
+              actual = {(case.get('classname'), case.get('name')) for case in cases}
+              assert len(actual) == len(cases), (label, 'duplicate cases')
+              assert not report.findall('.//error'), (label, 'setup/teardown/collection error')
+              assert not report.findall('.//skipped'), (label, 'skipped cases')
+              if full_suite:
+                  assert len(actual) == 117 and required <= actual, (label, actual)
+                  assert {classname for classname, _ in actual} == allowed_modules
+                  assert all(classname in regression_modules for classname, _ in actual - required)
+                  assert not report.findall('.//failure'), label
+              else:
+                  assert actual == set(expect), (label, actual, set(expect))
+                  for case in cases:
+                      expected = expect[(case.get('classname'), case.get('name'))]
+                      failures = case.findall('failure')
+                      if expected is None:
+                          assert not failures, (label, case.get('name'))
+                          continue
+                      assert len(failures) == 1, (label, case.get('name'))
+                      trace = failures[0].text or ''
+                      exception = expected[0]
+                      terminal_line = trace.rstrip().splitlines()[-1]
+                      assert re.fullmatch(r'.+:\d+: ' + re.escape(exception), terminal_line), terminal_line
+                      if len(expected) > 2:
+                          message = failures[0].get('message', '').splitlines()
+                          assert message and message[0] == expected[2], message
+                      for statement, number, terminal in expected[1]:
+                          assert re.search(r'(?m)^>[ \t]+' + re.escape(statement) + r'[ \t]*$', trace), statement
+                          suffix = ' ' + exception if terminal else ''
+                          frame = re.escape(f'{tf}:{number}:' + suffix)
+                          assert re.search(r'(?m)^' + frame + r'[ \t]*$', trace), (statement, number)
+              (d / 'oracle.txt').write_text(
+                  f'PASS {label}: observed {len(actual)} expected cases; zero errors/skips.\n'
+              )
+
+          full = [tf, 'tests/test_managed_tx_fence.py',
+                  'tests/test_managed_tx_authority.py', 'tests/test_managed_tx_effect_lane.py']
+          run('00-baseline-117', full, green_required, 0, full_suite=True)
+          control = (mod, 'test_public_owner_up_settles_release')
+          specs = [
+              ('M1', [(
+                  'and self._abort_fence.remove(token)',
+                  'and (self._abort_fence.remove(token) or True)',
+              )], {
+                  'test_scoped_up_membership_blocks_on_when_cancel_handle_does_nothing': (
+                      'AssertionError', [
+                          f('test_scoped_up_membership_blocks_on_when_cancel_handle_does_nothing',
+                            'await prevented(worker)', terminal=False),
+                          f('prevented', 'assert transition.outcome is ManagedTxOutcome.REJECTED'),
+                      ],
+                  ),
+              }),
+              ('M2', [(
+                  '        if not on:\n            self._cancel_pending_ptt(owner)\n\n',
+                  '',
+              ), (
+                  '                async with self._lock:\n                    self._require_ingress_open_locked()',
+                  '                async with self._lock:\n                    if not on:\n                        self._cancel_pending_ptt(owner)\n                    self._require_ingress_open_locked()',
+              )], {
+                  'test_scoped_up_revokes_old_down_before_contended_lock_not_new_down': (
+                      'AssertionError', [
+                          f('test_scoped_up_revokes_old_down_before_contended_lock_not_new_down',
+                            'assert old_token not in rig.fence._cancellations'),
+                      ],
+                  ),
+              }),
+              ('M3', [('await asyncio.wait((ready,))', 'await ready')], {
+                  'test_on_cancel_does_not_cancel_readiness_predecessor': (
+                      'AssertionError', [
+                          f('test_on_cancel_does_not_cancel_readiness_predecessor',
+                            'assert not ready.done() and not rig.fence._cancellations'),
+                      ],
+                  ),
+              }),
+              ('M4', [(
+                  'return transition, await asyncio.shield(execution)',
+                  'return transition, await execution',
+              )], {
+                  'test_off_cancel_before_execute_entry_drains_despite_repeated_cancel': (
+                      'TimeoutError', [
+                          f('test_off_cancel_before_execute_entry_drains_despite_repeated_cancel',
+                            'await asyncio.wait_for(provider_started.wait(), 1)', terminal=False),
+                      ],
+                  ),
+              }),
+              ('M5', [(
+                  '            except asyncio.CancelledError:\n                continue\n            except Exception:',
+                  '            except asyncio.CancelledError:\n                return\n            except Exception:',
+                  '_drain_cancelled',
+              )], {
+                  'test_off_cancel_before_execute_entry_drains_despite_repeated_cancel': (
+                      'AssertionError', [
+                          f('test_off_cancel_before_execute_entry_drains_despite_repeated_cancel',
+                            'assert not worker.done() and not provider_cancelled.is_set()'),
+                      ],
+                  ),
+              }),
+              ('M6', [(
+                  '                    if any(\n                        settled.token == requested.token\n                        and settled.operation is requested.operation\n                        for requested in original_effects\n                    ):\n                        original_settlement = settled',
+                  '                    original_settlement = settled',
+              )], {
+                  'test_original_on_uncertainty_not_replaced_by_accepted_compensation[uncertain]': (
+                      'AssertionError', [
+                          f('test_original_on_uncertainty_not_replaced_by_accepted_compensation',
+                            'assert settled.token == transition.effects[0].token'),
+                      ],
+                  ),
+                  'test_original_on_uncertainty_not_replaced_by_accepted_compensation[provider_error]': (
+                      'AssertionError', [
+                          f('test_original_on_uncertainty_not_replaced_by_accepted_compensation',
+                            'assert settled.token == transition.effects[0].token'),
+                      ],
+                  ),
+              }),
+              ('M7', [(
+                  '                        self._provider_generation == generation\n                        and self._abort_fence.is_current(token)',
+                  '                        self._abort_fence.is_current(token)',
+              )], {
+                  'test_provider_replacement_while_rx_clean_prevents_old_pending_on': (
+                      'AssertionError', [
+                          f('test_provider_replacement_while_rx_clean_prevents_old_pending_on',
+                            'await prevented(worker)', terminal=False),
+                          f('prevented', 'assert transition.outcome is ManagedTxOutcome.REJECTED'),
+                      ],
+                  ),
+              }),
+              ('M8', [(
+                  '            if token is not None:\n                self._abort_fence.remove(token)\n            error = None if task.cancelled() else task.exception()',
+                  '            error = None if task.cancelled() else task.exception()',
+              )], {
+                  'test_prestart_on_cancel_removes_registration_without_dispatch': (
+                      'AssertionError', [
+                          f('test_prestart_on_cancel_removes_registration_without_dispatch',
+                            'assert not rig.fence._cancellations'),
+                      ],
+                  ),
+              }),
+              ('M9', [(
+                  'if type(on) is not bool or type(owner) is not str:',
+                  'if type(on) is not bool or not isinstance(owner, str):',
+              )], {
+                  'test_non_builtin_owner_is_rejected_without_equality_or_registration': (
+                      'AssertionError', [
+                          f('test_non_builtin_owner_is_rejected_without_equality_or_registration',
+                            'assert rig.fence._next_number == 0 and not rig.fence._cancellations'),
+                      ],
+                  ),
+              }),
+              ('M10', [('await asyncio.wait((ready,))', 'await asyncio.shield(ready)')], {
+                  'test_failed_predecessor_completion_allows_independent_on[cancel]': (
+                      'AssertionError', [
+                          f('test_failed_predecessor_completion_allows_independent_on',
+                            'assert not worker.cancelled()'),
+                      ], 'AssertionError: assert not True',
+                  ),
+                  'test_failed_predecessor_completion_allows_independent_on[error]': (
+                      'AssertionError', [
+                          f('test_failed_predecessor_completion_allows_independent_on',
+                            'assert worker.exception() is None'),
+                      ], "AssertionError: assert RuntimeError('predecessor failed') is None",
+                  ),
+              }),
+          ]
+
+          def changed_source(ident, changes):
+              text = original.decode()
+              for change in changes:
+                  old, new = change[:2]
+                  assert text.count(old) == 1, (ident, old)
+                  if len(change) == 3:
+                      anchor = f'    async def {change[2]}('
+                      assert text.count(anchor) == 1, (ident, anchor)
+                      start = text.index(anchor)
+                      end = text.find('\n    async def ', start + 1)
+                      end = len(text) if end < 0 else end
+                      assert text[start:end].count(old) == 1, (ident, 'method scope')
+                  text = text.replace(old, new, 1)
+              return text
+
+          def record_change(d, text):
+              d.mkdir(parents=True)
+              changed_digest = hashlib.sha256(authority.read_bytes()).hexdigest()
+              assert changed_digest != digest
+              (d / 'authority-before.sha256').write_text(digest + '\n')
+              (d / 'authority-after.sha256').write_text(changed_digest + '\n')
+              (d / 'authority.diff').write_text(''.join(difflib.unified_diff(
+                  original.decode().splitlines(True), text.splitlines(True),
+                  fromfile='original/' + rel, tofile='mutant/' + rel,
+              )))
+
+          def restore(d):
+              authority.write_bytes(original)
+              restored = hashlib.sha256(authority.read_bytes()).hexdigest()
+              d.mkdir(parents=True, exist_ok=True)
+              (d / 'authority-restored.sha256').write_text(restored + '\n')
+              assert restored == digest
+
+          for ident, changes, red in specs:
+              assert authority.read_bytes() == original
+              text = changed_source(ident, changes)
+              expected = {control: None} | {(mod, name): failure for name, failure in red.items()}
+              nodes = [f'{tf}::{name}' for _, name in expected]
+              d = art / ident
+              try:
+                  authority.write_text(text)
+                  record_change(d, text)
+                  run(f'{ident}/red', nodes, expected, 1)
+              finally:
+                  restore(d)
+              run(f'{ident}/restored-green', nodes, {k: None for k in expected}, 0)
+
+          positive_changes = [('worker = asyncio.create_task(run())',
+                               'worker = asyncio.create_task(run(), name="managed-ptt-admission")')]
+          assert authority.read_bytes() == original
+          positive_text = changed_source('positive', positive_changes)
+          positive_dir = art / '90-positive-30'
+          try:
+              authority.write_text(positive_text)
+              record_change(positive_dir, positive_text)
+              run('90-positive-30/green', [tf, 'tests/test_managed_tx_fence.py'], green_required, 0)
+          finally:
+              restore(positive_dir)
+          run('99-restored-117', full, green_required, 0, full_suite=True)
+          assert authority.read_bytes() == original
           PY
       - name: Record and require unchanged source checkout
         if: always() && steps.prepare.outcome == 'success'
