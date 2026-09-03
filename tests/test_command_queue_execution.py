@@ -69,8 +69,9 @@ def test_single_claim_preserves_segments_ptt_priority_and_replacement() -> None:
 
 
 @pytest.mark.asyncio
-async def test_remove_pending_uses_identity_and_cancel_callback_claim_boundary(
-) -> None:
+async def test_remove_pending_uses_identity_and_cancel_callback_claim_boundary() -> (
+    None
+):
     queue = CommandQueue()
     reply = asyncio.get_running_loop().create_future()
     first = queue.put_ordered(SetFreq(1), future=reply)
