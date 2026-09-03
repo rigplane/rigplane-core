@@ -63,16 +63,34 @@ function workflowScript(stepName) {
 
 async function runWorkflowScript(
   script,
-  {github, context, core, workspace, requireFn = require},
+  {github, context, core, parserSource},
 ) {
+  github.rest ??= {};
+  github.rest.repos ??= {};
+  if (typeof github.rest.repos.getContent !== 'function') {
+    github.rest.repos.getContent = async () => {
+      if (parserSource === null) {
+        throw new Error('parser content API unavailable');
+      }
+      const source = parserSource ?? fs.readFileSync(
+        path.join(__dirname, 'agent-review-gate.js'),
+        'utf8',
+      );
+      return {
+        data: {
+          type: 'file',
+          encoding: 'base64',
+          content: Buffer.from(source, 'utf8').toString('base64'),
+        },
+      };
+    };
+  }
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  const processMock = {env: {GITHUB_WORKSPACE: workspace}};
-  return new AsyncFunction('github', 'context', 'core', 'require', 'process', script)(
+  return new AsyncFunction('github', 'context', 'core', 'require', script)(
     github,
     context,
     core,
-    requireFn,
-    processMock,
+    require,
   );
 }
 
@@ -414,14 +432,16 @@ test('status targets only the resolved head and malformed blockers fail closed',
   }
 });
 
-test('workflow preserves triggers, workflow revision checkout, pagination, and exact target', () => {
+test('workflow preserves triggers, immutable parser retrieval, pagination, and exact target', () => {
   const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
   assert.match(workflow, /types: \[opened, reopened, synchronize, ready_for_review\]/);
   assert.match(workflow, /types: \[created, edited, deleted\]/);
   assert.match(workflow, /const \{data: pull\} = await github\.rest\.pulls\.get/);
   assert.match(workflow, /core\.setOutput\('head_sha', pull\.head\.sha\)/);
-  assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
-  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /github\.rest\.repos\.getContent/);
+  assert.match(workflow, /path: '\.github\/scripts\/agent-review-gate\.js'/);
+  assert.match(workflow, /ref: '\$\{\{ github\.workflow_sha \}\}'/);
+  assert.doesNotMatch(workflow, /actions\/checkout@/);
   assert.match(workflow, /github\.paginate\(github\.rest\.issues\.listComments/);
   assert.doesNotMatch(workflow, /head_sha\s*=\s*['"]\$\{\{\s*github\.sha/);
 });
@@ -453,7 +473,6 @@ test('known head survives getCommit failure and receives exact-head FAILURE', as
       github: resolverGithub,
       context: {payload: {pull_request: {number: 2321}}, repo: {owner: 'rigplane', repo: 'rigplane-core'}},
       core: resolverCore,
-      workspace: path.join(__dirname, '..', '..'),
     }),
     /commit API unavailable/,
   );
@@ -473,7 +492,6 @@ test('known head survives getCommit failure and receives exact-head FAILURE', as
       github,
       context: workflowContext(2),
       core: coreMock(),
-      workspace: path.join(__dirname, '..', '..'),
     },
   );
   assert.equal(statuses.length, 1);
@@ -494,7 +512,6 @@ test('unresolved pull emits no guessed status target', async () => {
       github,
       context: {payload: {pull_request: {number: 2321}}, repo: {owner: 'rigplane', repo: 'rigplane-core'}},
       core,
-      workspace: path.join(__dirname, '..', '..'),
     }),
     /PR unavailable/,
   );
@@ -518,7 +535,7 @@ test('pagination and parser-load failures publish exact-head FAILURE and fail lo
       github,
       context: workflowContext(3),
       core,
-      workspace: scenario === 'parser' ? '/definitely/missing' : path.join(__dirname, '..', '..'),
+      parserSource: scenario === 'parser' ? null : undefined,
     });
     assert.equal(statuses.length, 1, scenario);
     assert.equal(statuses[0].sha, HEAD, scenario);
@@ -568,8 +585,7 @@ test('evaluator, builder, malformed output, and status API failures remain fail 
       github,
       context: workflowContext(4),
       core,
-      workspace: '/virtual/workspace',
-      requireFn: () => scenario.module,
+      parserSource: `module.exports = {\n  evaluateReviewGate: ${scenario.module.evaluateReviewGate.toString()},\n  buildCommitStatus: ${scenario.module.buildCommitStatus.toString()},\n};`,
     });
     assert.equal(statuses.length, 1, scenario.name);
     assert.equal(statuses[0].sha, HEAD, scenario.name);
@@ -589,7 +605,6 @@ test('evaluator, builder, malformed output, and status API failures remain fail 
       github,
       context: workflowContext(5),
       core,
-      workspace: path.join(__dirname, '..', '..'),
     }),
     /status API unavailable/,
   );
@@ -613,7 +628,6 @@ test('simulated head race remains bound to the originally resolved SHA', async (
     github,
     context: workflowContext(6),
     core: coreMock(),
-    workspace: path.join(__dirname, '..', '..'),
   });
   assert.equal(liveHead, newerHead);
   assert.equal(statuses.length, 1);

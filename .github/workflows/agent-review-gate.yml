@@ -52,13 +52,6 @@ jobs:
               pull.updated_at;
             core.setOutput('committed_at', committedAt);
 
-      - name: Check out the workflow revision
-        if: always() && steps.pr.outputs.head_sha != ''
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-
       - name: Update required Agent Review Gate status
         if: always() && steps.pr.outputs.head_sha != ''
         uses: actions/github-script@v7
@@ -70,16 +63,45 @@ jobs:
             const {owner, repo} = context.repo;
             let result = {state: 'failure', passCount: 0, blockedCount: 0, malformedBlockedCount: 0};
             let evaluationError = null;
+            let parser;
             try {
+              const {data: parserFile} = await github.rest.repos.getContent({
+                owner,
+                repo,
+                path: '.github/scripts/agent-review-gate.js',
+                // Evaluate the parser paired with this workflow run, rather
+                // than untrusted PR-head contents.
+                ref: '${{ github.workflow_sha }}',
+              });
+              if (
+                Array.isArray(parserFile) ||
+                parserFile.type !== 'file' ||
+                parserFile.encoding !== 'base64' ||
+                typeof parserFile.content !== 'string'
+              ) {
+                throw new Error('Trusted Agent Review Gate parser content is invalid.');
+              }
+              const parserModule = {exports: {}};
+              new Function('module', 'exports', 'require', Buffer.from(parserFile.content, 'base64').toString('utf8'))(
+                parserModule,
+                parserModule.exports,
+                require,
+              );
+              const {evaluateReviewGate, buildCommitStatus} = parserModule.exports;
+              if (
+                typeof evaluateReviewGate !== 'function' ||
+                typeof buildCommitStatus !== 'function'
+              ) {
+                throw new Error('Trusted Agent Review Gate parser exports are invalid.');
+              }
+              parser = {evaluateReviewGate, buildCommitStatus};
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
                 repo,
                 issue_number: pull_number,
                 per_page: 100,
               });
-              const parserPath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/agent-review-gate.js`;
-              const {evaluateReviewGate} = require(parserPath);
-              result = evaluateReviewGate({
+              result = parser.evaluateReviewGate({
                 comments,
                 headSha: head_sha,
                 committedAt: committed_at,
@@ -91,9 +113,10 @@ jobs:
             }
             let status;
             try {
-              const parserPath = `${process.env.GITHUB_WORKSPACE}/.github/scripts/agent-review-gate.js`;
-              const {buildCommitStatus} = require(parserPath);
-              status = buildCommitStatus({
+              if (parser === undefined) {
+                throw new Error('Trusted Agent Review Gate parser was not loaded.');
+              }
+              status = parser.buildCommitStatus({
                 owner,
                 repo,
                 headSha: head_sha,
