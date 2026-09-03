@@ -321,9 +321,7 @@ async def test_unsupported_sub_refused_before_admission(
     if path.backend == "yaesu":
         config = path.radio._config
         commands = {
-            key: value
-            for key, value in config.commands.items()
-            if key != f"{name}_sub"
+            key: value for key, value in config.commands.items() if key != f"{name}_sub"
         }
         path = _path(monkeypatch, config=replace(config, commands=commands))
     await _admit(path, name, 73)
@@ -424,8 +422,7 @@ async def test_control_run_admits_next_off_while_level_write_is_unsettled(path):
     drain = None
     try:
         level = (
-            b'{"type":"cmd","id":"level","name":"set_af_level",'
-            b'"params":{"level":73}}'
+            b'{"type":"cmd","id":"level","name":"set_af_level","params":{"level":73}}'
         )
         await incoming.put((WS_OP_TEXT, level))
         await path.server.command_queue.wait(timeout=1.0)
