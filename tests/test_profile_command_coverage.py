@@ -1,10 +1,8 @@
-"""State-3 guard for D1 (plan §4 Step 4,
-``docs/plans/2026-08-29-profile-driven-command-bytes.md`` §8.1): a CI-V
-profile that neither declares a command-map key nor records it as absent
-leaves that name in the state D1 says "must not exist at release" --
-reached at runtime it falls back to logging and refusing (pinned by
-``tests/test_undeclared_command_policy.py``); this is the guard that keeps
-that fallback from firing in production.
+"""Census of shared CI-V builder keys omitted by shipped profiles.
+
+Missing declarations refuse at runtime. This baseline records omissions,
+including intentional manual-only omissions in IC-7300 (MOR-2257); it is
+neither manufacturer completeness nor an implementation-success verdict.
 
 Method, shared with ``tests/test_command_map_parity.py`` (the parity
 harness) per the plan's own instruction to derive keys "the way the parity
@@ -33,17 +31,7 @@ command-map key -- deduplicated by key, per the plan's own phrasing
 ("enumerate every public builder KEY") -- with the profiles missing that
 key comma-separated on the row, the same compact shape
 ``tests/command_map_parity_uncovered.txt``'s own ``gap`` rows use. The
-baseline started large by construction (D2, plan §8.1: at that point no rig
-TOML used the ``{ absent = "<source>" }`` spelling at all). Which profiles
-have since been filled with it used to be tracked by
-``tests/test_rig_loader.py::TestNoShippedProfileUsesAbsentSpellingYet``,
-narrowed as each profile's own D2 pass landed; MOR-2008 batch 4's
-``ftx1.toml``/``tx500.toml`` pass was the last shipped profile to be
-filled, narrowing that pin's parametrize set to empty, so it was deleted
-per its own docstring's contingency rather than kept as a vacuous test.
-Each profile's per-model ``TestXDeclaresAbsentCommands`` class in that same
-file is the durable record now, not restated here; this file's baseline is
-meant to shrink only, never grow silently.
+baseline must change explicitly when profile membership changes.
 
 That baseline measures declaration completeness only: absent markers are not
 manual proof, and an omitted optional capability is the authority for excluding
@@ -1040,10 +1028,10 @@ def _render(report: _Report) -> str:
         "#   gap     <command-map key>   <profiles missing it, comma sep.>",
         "# One 'gap' row per key: neither declared nor declared absent for",
         "# every profile named, unless its contracted optional capability is",
-        "# omitted -- D1's state 3. Fails on a pair missing here",
-        "# or a row no longer a gap -- delete it, never keep it. Fill a gap",
-        '# via { absent = "<source>" } (plan §8.1 D2) or a real command-byte',
-        "# entry in the profile's own TOML. Regenerate, do not hand-edit.",
+        "# omitted. Includes intentional manual-only omissions (MOR-2257).",
+        "# Fails on an unlisted pair or a stale row; membership changes",
+        "# require review. Not manual completeness or execution evidence.",
+        "# Regenerate, do not hand-edit.",
     ]
     rows = [f"census\t{name}\t{n}" for name, n in sorted(report.census.items())]
     rows += [
@@ -1236,10 +1224,22 @@ def test_ic7300_scope_wave_inbound_uses_profile_reverse_index(
     assert finding.reachability is _ExecutionReachability.UNKNOWN
 
 
-def test_declared_absent_marker_does_not_hide_existing_code_route(
-    implementation_report: _ImplementationReport,
-) -> None:
-    finding = implementation_report.find("icom_ic7300", "command", "get_powerstat")
+def _synthetic_absent_powerstat_config() -> typing.Any:
+    config = _civ_rigs()["IC-7300"]
+    return replace(
+        config,
+        commands={
+            **config.commands,
+            "get_powerstat": AbsentCommandSpec("synthetic test absence"),
+        },
+    )
+
+
+def test_declared_absent_marker_does_not_hide_existing_code_route() -> None:
+    report = implementation_completeness_report(
+        {"synthetic": _synthetic_absent_powerstat_config()}, repo_root=REPO_ROOT
+    )
+    finding = report.find("icom_ic7300", "command", "get_powerstat")
 
     assert finding.declared_absent
     assert finding.relation is _DeclarationRelation.IMPLEMENTED
@@ -1311,7 +1311,7 @@ def test_reverse_census_rejects_unused_mismatch_evidence() -> None:
 
 
 def test_reverse_census_preserves_absent_and_rejects_false_evidence() -> None:
-    profile = discover_rigs(RIGS_DIR)["IC-7300"].to_profile()
+    profile = _synthetic_absent_powerstat_config().to_profile()
     (absent,) = reverse_implementation_census(profile, ("get_powerstat",))
 
     assert absent.relation is _DeclarationRelation.ABSENT

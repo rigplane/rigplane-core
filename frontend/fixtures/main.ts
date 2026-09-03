@@ -28,6 +28,18 @@ import { readWorkspace } from '../src/presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../src/presentation/workspace/resolution';
 import DualReceiverCockpit from '../src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte';
 import PeerSplitLayout from '../src/skins/segmentline/PeerSplitLayout.svelte';
+// MOR-2253 slice 1 F1 (verifier BLOCKED): this is the harness's own mount of
+// the peer-split glass, the one other production/harness call site besides
+// `components-v2/layout/LcdLayout.svelte` — that file passes canvasW/canvasH
+// as required props now; this one did not, and mounted with an implicit
+// `undefined` for both, which `ScaledStage` cannot guard against (`NaN`
+// compares false against `<= 0`) and Svelte's `style:` directive drops
+// silently rather than writing `"undefinedpx"`. Sourced from the group
+// declaration, not literals: this file sits outside `src/`, where the
+// "declared once" contour scan (`presentation/groups/__tests__/
+// contract.test.ts`) does not reach, so a literal here would be invisible
+// to the very guard this slice exists to add.
+import { peerSplitGlassGroup } from '../src/presentation/groups/declarations';
 import ReferenceLayout from './ReferenceLayout.svelte';
 import {
   runAssertions, styleProbe, tokenSnapshot, type AssertionOptions,
@@ -175,12 +187,24 @@ const context = plan === null
   : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
 
 document.title = `MOR-1070 · ${fixture.id}`;
-mount(
-  fixture.layout === 'reference' ? ReferenceLayout
-    : fixture.layout === 'peer-split' ? PeerSplitLayout
-      : DualReceiverCockpit,
-  { target: document.getElementById('app')!, context },
-);
+const target = document.getElementById('app')!;
+// `peer-split` needs its own mount call: it is the only one of the three
+// with required props (canvasW/canvasH, see the import comment above), and
+// `mount()`'s Props parameter cannot be inferred correctly across a single
+// call shared with two components that take none.
+if (fixture.layout === 'peer-split') {
+  mount(PeerSplitLayout, {
+    target,
+    context,
+    props: {
+      canvasW: peerSplitGlassGroup.canvas.w,
+      canvasH: peerSplitGlassGroup.canvas.h,
+      minScale: peerSplitGlassGroup.scaling.minScale,
+    },
+  });
+} else {
+  mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, { target, context });
+}
 flushSync();
 
 declare global {

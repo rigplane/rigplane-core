@@ -27,15 +27,16 @@
 # execute. Every number here is re-measured and asserted by that
 # test. Regenerate, do not edit.
 census	builders_compared	0
-census	cat_only_profiles	0
+census	cat_only_profiles	1
 census	dual_implementation_sites	0
 census	frames_diverged	0
 census	frames_identical	0
 census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
 census	profiles	8
-census	public_builders	243
+census	public_builders	241
 census	sites_compared	0
+cat-only	FTX-1	109
 requires-map	antenna.py:get_antenna_1
 requires-map	antenna.py:get_antenna_2
 requires-map	antenna.py:get_rx_antenna_ant1
@@ -237,7 +238,6 @@ requires-map	system.py:get_system_date
 requires-map	system.py:get_system_time
 requires-map	system.py:get_transceiver_id
 requires-map	system.py:get_tuner_status
-requires-map	system.py:get_tx_freq_monitor
 requires-map	system.py:get_utc_offset
 requires-map	system.py:get_xfc_status
 requires-map	system.py:set_rit_frequency
@@ -246,7 +246,6 @@ requires-map	system.py:set_rit_tx_status
 requires-map	system.py:set_system_date
 requires-map	system.py:set_system_time
 requires-map	system.py:set_tuner_status
-requires-map	system.py:set_tx_freq_monitor
 requires-map	system.py:set_utc_offset
 requires-map	system.py:set_xfc_status
 requires-map	tone.py:get_repeater_tone

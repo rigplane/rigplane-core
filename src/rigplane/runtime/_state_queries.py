@@ -1,9 +1,7 @@
 """Shared state query list for populating RadioState.
 
-Used by RadioPoller (periodic polling) and by the one-shot sweep run at
-connect (``runtime/radio_initial_state.py: fetch_initial_state``). Each query
-keeps its CI-V command, semantic sub-command, payload data, and optional
-cmd29 receiver route distinct.
+Each query keeps its CI-V command, semantic sub-command, payload data, and
+optional cmd29 receiver route distinct.
 """
 
 from __future__ import annotations
@@ -116,6 +114,30 @@ def acquisition_query_from_wire_tuple(
 
     command, sub, data = decode_wire_tuple(wire)
     return AcquisitionQuery(command, sub=sub, data=data, receiver=receiver)
+
+
+def wire_parts_for_query(
+    query: AcquisitionQuery,
+    scope_receiver: int,
+) -> tuple[int, int | None, bytes]:
+    """Compute the wire ``(command, sub, data)`` for one acquisition query.
+
+    cmd29-wraps a receiver-routed query, and substitutes *scope_receiver*
+    into byte 0 of a 0x27 selector-form read (``query.sub`` in
+    ``SCOPE_RECEIVER_SELECTOR_SUBS`` and ``query.data`` non-empty).
+    """
+    if query.receiver is not None:
+        inner = bytes([query.receiver, query.command])
+        if query.sub is not None:
+            inner += bytes([query.sub])
+        return 0x29, None, inner + query.data
+    if (
+        query.command == 0x27
+        and query.sub in SCOPE_RECEIVER_SELECTOR_SUBS
+        and query.data
+    ):
+        return query.command, query.sub, bytes([scope_receiver]) + query.data[1:]
+    return query.command, query.sub, query.data
 
 
 def acquisition_query_resolver_for_profile(

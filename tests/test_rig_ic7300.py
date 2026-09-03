@@ -21,8 +21,6 @@ RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 IC7300_PATH = RIGS_DIR / "ic7300.toml"
 
 _WRONG_MANUAL_BINDINGS = {
-    "get_tx_freq_monitor": ((0x1C, 0x03), "1C 03 is Read transmit frequency"),
-    "set_tx_freq_monitor": ((0x1C, 0x03), "1C 03 is Read transmit frequency"),
     "get_scope_marker_position": (
         (0x1A, 0x05, 0x00, 0x40),
         "1A 05 0040 is Speech Speed",
@@ -41,8 +39,6 @@ _WRONG_MANUAL_BINDINGS = {
     ),
 }
 _PUBLIC_FAIL_BEFORE_WIRE_CALLS = {
-    "get_tx_freq_monitor": (),
-    "set_tx_freq_monitor": (True,),
     "get_ref_adjust": (),
     "set_ref_adjust": (128,),
 }
@@ -320,17 +316,15 @@ class TestCapabilities:
 class TestWrongManualBindingsFailClosed:
     """MOR-2190: direct official-manual corrections, not inherited markers."""
 
-    def test_all_six_names_are_explicitly_absent_and_unbound(self, profile, cmdmap):
-        assert len(_WRONG_MANUAL_BINDINGS) == 6
-        for name, (wrong_wire, semantic) in _WRONG_MANUAL_BINDINGS.items():
+    def test_all_four_wrong_names_are_undeclared_and_unbound(self, profile, cmdmap):
+        assert len(_WRONG_MANUAL_BINDINGS) == 4
+        for name, (wrong_wire, _) in _WRONG_MANUAL_BINDINGS.items():
             assert name not in profile.command_names
-            assert name in profile.absent_command_names
-            source = profile.absent_command_sources[name]
-            assert source.startswith("IC-7300 Advanced Manual (11a)")
-            assert semantic in source
+            assert name not in profile.absent_command_names
+            assert name not in profile.absent_command_sources
             assert not cmdmap.has(name), f"{name} still serializes {wrong_wire!r}"
 
-    def test_all_six_names_are_unsupported_by_the_shipped_radio(self, profile):
+    def test_all_four_names_are_unsupported_by_the_shipped_radio(self, profile):
         radio = CoreRadio("127.0.0.1", profile=profile)
         assert {
             name for name in _WRONG_MANUAL_BINDINGS if not radio.supports_command(name)
@@ -354,7 +348,7 @@ class TestWrongManualBindingsFailClosed:
         visited: set[str] = set()
         for name, args in _PUBLIC_FAIL_BEFORE_WIRE_CALLS.items():
             visited.add(name)
-            with pytest.raises(CommandError, match="declared absent by this profile"):
+            with pytest.raises(CommandError, match="not declared by this profile"):
                 await getattr(radio, name)(*args)
 
         assert visited == set(_PUBLIC_FAIL_BEFORE_WIRE_CALLS)
@@ -480,8 +474,8 @@ class TestCommandOverrides:
     def test_get_s_meter_sql_status(self, cmdmap):
         assert cmdmap.get("get_s_meter_sql_status") == (0x15, 0x01)
 
-    def test_get_s_meter_sql_status_04(self, cmdmap):
-        assert cmdmap.get("get_s_meter_sql_status_04") == (0x15, 0x04)
+    def test_undocumented_s_meter_sql_status_04_is_not_bound(self, cmdmap):
+        assert not cmdmap.has("get_s_meter_sql_status_04")
 
     def test_get_split_opcode(self, cmdmap):
         assert cmdmap.get("get_split") == (0x0F,)

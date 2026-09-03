@@ -28,6 +28,12 @@ describe('the meter is a discrete segment ladder', () => {
     expect(Number.parseFloat(m.segmentGap)).toBeGreaterThan(0);
   });
 
+  it('MOR-2214: reports the same 12-segment count and gap as MeterDisplay', () => {
+    const m = render({ value: 5 });
+    expect(m.segmentCount).toBe(FIELDLINE_SEGMENT_COUNT);
+    expect(m.segmentGapPx).toBe(Number.parseFloat(FIELDLINE_TOKENS.meters.segmentGap));
+  });
+
   it('quantises the reading to a countable number of lit blocks', () => {
     expect(render({ value: 15, max: 15 }).litCount).toBe(12);
     expect(render({ value: 7.5, max: 15 }).litCount).toBe(6);
@@ -44,9 +50,14 @@ describe('the meter is a discrete segment ladder', () => {
 
   it('zones at S9: blocks below the crossover are RX-toned, above it are not', () => {
     const m = render({ value: 12, max: 15, s9: 9 });
-    expect(m.crossoverIndex).toBe(7);
     expect(m.segments.slice(0, 7).every((s) => s.zone === 'normal' && s.tone === FIELDLINE_TOKENS.rx.active)).toBe(true);
     expect(m.segments.slice(7).every((s) => s.zone === 'over' && s.tone === FIELDLINE_TOKENS.tx.tuning)).toBe(true);
+  });
+
+  it('MOR-2250: reports the tone split as toneBelowS9/toneAboveS9, the same rx.active/tx.tuning reads each segment already zones by', () => {
+    const m = render({ value: 12, max: 15, s9: 9 });
+    expect(m.toneBelowS9).toBe(FIELDLINE_TOKENS.rx.active);
+    expect(m.toneAboveS9).toBe(FIELDLINE_TOKENS.tx.tuning);
   });
 
   it('holds the peak as ONE segment, never as a second fill', () => {

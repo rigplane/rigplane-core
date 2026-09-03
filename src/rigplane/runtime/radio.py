@@ -339,9 +339,36 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._profile.model,
         )
 
-    def supports_command(self, command: str) -> bool:
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Return support derived from this radio's profile and call graph."""
-        return supports_callable(self._profile, command)
+        supported = supports_callable(self._profile, command)
+        if receiver is None:
+            return supported
+        if (
+            not supported
+            or command not in {"set_af_level", "set_rf_gain", "set_squelch"}
+            or isinstance(receiver, bool)
+            or not isinstance(receiver, int)
+            or not self._profile.supports_receiver(receiver)
+            or not callable(getattr(self, command, None))
+            or not self._profile.supports_capability(command.removeprefix("set_"))
+        ):
+            return False
+        try:
+            return self._level_command29(command, receiver=receiver) is not None
+        except CommandError:
+            return False
+
+    def _level_command29(self, command: str, *, receiver: int) -> bool | None:
+        """Resolve the wrapper flag; leave missing-command refusal to the builder."""
+        command_map = self._profile.command_map
+        if command_map is None or not command_map.has(command):
+            return None
+        from rigplane.commands._frame import decode_wire_tuple
+
+        opcode, sub, _ = decode_wire_tuple(command_map.get(command))
+        self._require_cmd29_route(opcode, sub, receiver=receiver, operation=command)
+        return self._profile.supports_cmd29(opcode, sub)
 
     def _stop_token_renewal(self) -> None:
         """Delegate to control-phase runtime."""
@@ -450,6 +477,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_session: Any = None
         self._scope_assembler: ScopeAssembler = ScopeAssembler()
         self._scope_callback: Callable[[ScopeFrame], Any] | None = None
+        # MOR-2222: last scope-display mode published from the waveform
+        # stream, per receiver (0=MAIN, 1=SUB) — lets the stream
+        # change-detect before writing to the StateStore.
+        self._scope_stream_last_mode: dict[int, int] = {}
+        # MOR-2256: last scope-display span index published from the
+        # waveform stream (center mode only), per receiver -- same
+        # change-detect purpose as _scope_stream_last_mode above.
+        self._scope_stream_last_span: dict[int, int] = {}
         # Raw CI-V pipe listeners (MOR-164): receive inbound on-wire frame bytes.
         self._raw_civ_listeners: list[Callable[[bytes], Any]] = []
         # External CAT-session ownership (MOR-166 slice 2): when True, cooperating
@@ -2264,13 +2299,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("rf_gain", operation="set_rf_gain")
         self._require_receiver(receiver, operation="set_rf_gain")
-        self._require_cmd29_route(
-            0x14,
-            0x02,
-            receiver=receiver,
-            operation="set_rf_gain",
-        )
-        cmd29 = self._profile.supports_cmd29(0x14, 0x02)
+        cmd29 = bool(self._level_command29("set_rf_gain", receiver=receiver))
         civ = self._commands.set_rf_gain(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
@@ -2308,13 +2337,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("af_level", operation="set_af_level")
         self._require_receiver(receiver, operation="set_af_level")
-        self._require_cmd29_route(
-            0x14,
-            0x01,
-            receiver=receiver,
-            operation="set_af_level",
-        )
-        cmd29 = self._profile.supports_cmd29(0x14, 0x01)
+        cmd29 = bool(self._level_command29("set_af_level", receiver=receiver))
         civ = self._commands.set_af_level(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
@@ -2327,13 +2350,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("squelch", operation="set_squelch")
         self._require_receiver(receiver, operation="set_squelch")
-        self._require_cmd29_route(
-            0x14,
-            0x03,
-            receiver=receiver,
-            operation="set_squelch",
-        )
-        cmd29 = self._profile.supports_cmd29(0x14, 0x03)
+        cmd29 = bool(self._level_command29("set_squelch", receiver=receiver))
         civ = self._commands.set_squelch(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
@@ -3630,19 +3647,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         civ = self._commands.set_xfc_status(on, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
 
-    async def get_tx_freq_monitor(self) -> bool:
-        """Read TX frequency monitor status."""
-        self._check_connected()
-        civ = self._commands.get_tx_freq_monitor(to_addr=self._radio_addr)
-        resp = await self._send_civ_expect(civ, label="get_tx_freq_monitor")
-        return bool(resp.data[0]) if resp.data else False
-
-    async def set_tx_freq_monitor(self, on: bool) -> None:
-        """Set TX frequency monitor on/off. Fire-and-forget."""
-        self._check_connected()
-        civ = self._commands.set_tx_freq_monitor(on, to_addr=self._radio_addr)
-        await self._send_civ_raw(civ, wait_response=False)
-
     async def get_rit_frequency(self) -> int:
         """Read the RIT frequency offset in Hz (±9999)."""
         self._check_connected()
@@ -4929,8 +4933,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Stop CW sending."""
         self._check_connected()
         civ = self._commands.stop_cw(to_addr=self._radio_addr)
-        await self._send_civ_raw(civ, priority=Priority.IMMEDIATE)
-        # Stop CW may not return ACK, just ignore
+        resp = await self._send_civ_raw(civ, priority=Priority.IMMEDIATE)
+        if resp is not None and parse_ack_nak(resp) is False:
+            raise CommandError("Radio rejected CW stop")
 
     async def power_control(self, on: bool) -> None:
         """Power the radio on or off.

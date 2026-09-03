@@ -36,7 +36,7 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
 
     This is non-fatal: failures are logged but do not raise.
     """
-    from ._state_queries import build_state_queries
+    from ._state_queries import build_state_queries, wire_parts_for_query
 
     try:
         is_serial = not radio._profile.has_lan
@@ -58,22 +58,15 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
         sent = 0
         for query in queries:
             try:
-                if query.receiver is not None:
-                    inner = bytes([query.receiver, query.command])
-                    if query.sub is not None:
-                        inner += bytes([query.sub])
-                    await radio.send_civ(
-                        0x29,
-                        data=inner + query.data,
-                        wait_response=False,
-                    )
-                else:
-                    await radio.send_civ(
-                        query.command,
-                        sub=query.sub,
-                        data=query.data,
-                        wait_response=False,
-                    )
+                command, sub, data = wire_parts_for_query(
+                    query, radio.radio_state.scope_controls.receiver
+                )
+                await radio.send_civ(
+                    command,
+                    sub=sub,
+                    data=data,
+                    wait_response=False,
+                )
                 sent += 1
             except Exception as exc:
                 # non-fatal; regular polling will retry

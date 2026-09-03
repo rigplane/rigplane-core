@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import textwrap
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -1901,6 +1902,79 @@ class TestCodecPreference:
             load_rig(p)
 
 
+# ── [scope].span_presets_hz (MOR-2258) ──────────────────────────
+
+
+_SHIPPED_SCOPE_RIGS = ("ic7300.toml", "ic705.toml", "ic9700.toml", "ic7610.toml")
+_EXPECTED_SPAN_PRESETS_HZ = (
+    2500,
+    5000,
+    10000,
+    25000,
+    50000,
+    100000,
+    250000,
+    500000,
+)
+
+
+class TestScopeSpanPresets:
+    """[scope].span_presets_hz parsing, validation, and shipped-profile parity.
+
+    MOR-2258: ``RadioProfile.scope_span_presets_hz`` is the sole source of
+    the Hz<->span-index mapping. It is read by the waveform-stream span
+    derivation (``runtime/_civ_rx.py:
+    CivRuntime._publish_scope_span_observation``) and passed into the 0x15
+    reply-path decoder/encoder (``commands/scope.py:
+    parse_scope_span_response``/``scope_set_span``), which take it as a
+    parameter because ``commands/`` may not import ``profiles/``.
+    """
+
+    def test_defaults_to_empty_tuple_when_undeclared(self, tmp_path):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        rig = load_rig(p)
+        assert rig.scope_span_presets_hz == ()
+        assert rig.to_profile().scope_span_presets_hz == ()
+
+    def test_parses_declared_presets(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = [2500, 5000, 10000]\n"
+        p = _write_toml(tmp_path, toml)
+        rig = load_rig(p)
+        assert rig.scope_span_presets_hz == (2500, 5000, 10000)
+        assert rig.to_profile().scope_span_presets_hz == (2500, 5000, 10000)
+
+    def test_rejects_empty_array(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = []\n"
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            RigLoadError, match=r"\[scope\]\.span_presets_hz must be a non-empty"
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            "[500000, 250000, 100000]",  # descending
+            "[2500, 2500, 5000]",  # duplicate (not strictly ascending)
+        ],
+    )
+    def test_rejects_non_ascending(self, tmp_path, declaration):
+        toml = _MINIMAL_TOML + f"\n[scope]\nspan_presets_hz = {declaration}\n"
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            RigLoadError, match=r"\[scope\]\.span_presets_hz must be strictly ascending"
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize("name", _SHIPPED_SCOPE_RIGS)
+    def test_shipped_scope_rig_declares_the_eight_icom_presets(self, name):
+        """Every shipped scope-capable profile declares the same eight
+        Icom CI-V span presets (span code 0-7 -> Hz)."""
+        rig = load_rig(RIGS_DIR / name)
+        assert rig.scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
+        assert rig.to_profile().scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
+
+
 class TestAudioPolicy:
     """Per-profile [audio] codec and sample-rate policy (#1470)."""
 
@@ -2753,62 +2827,16 @@ class TestFilterShapeDomainDeclaredOrCapabilityAbsent:
             assert rig.filter_shape_labels == {"0": "SHARP", "1": "SOFT"}, name
 
 
-# MOR-2005 step 4a landed only the ``{ absent = "<source>" }`` spelling
-# itself (plan `docs/plans/2026-08-29-profile-driven-command-bytes.md`
-# §8.1 D1/D2) — it did not fill any profile with it. D2's filling work was
-# separate, ticket-tracked, later work: MOR-2014 filled ``ic7300.toml``
-# (27 commands, D2 documentary + live-bench verdicts), MOR-2015 filled
-# ``ic9700.toml`` (26 commands, D2 documentary verdicts against the
-# IC-9700 CI-V Reference Guide), MOR-2016 filled ``ic705.toml`` (24
-# commands, D2 documentary verdicts against the IC-705 CI-V Reference
-# Guide), MOR-2008 batch 2 filled ``ic7610.toml`` (8 commands, the
-# repeater-tone/TSQL/tone-freq/TSQL-freq family, promoting a comment-only
-# D1 state 3 to a formal state 2 row grounded in a live-bench readback
-# rather than a documentary source), MOR-2008 batch 3 filled
-# ``x6100.toml``/``x6200.toml`` (6 commands each, the vox/break-in/
-# manual-notch family, promoting a comment-only D1 state 3 to a formal
-# state 2 row grounded in the V1.0.6 documentary table rather than a live
-# capture), and MOR-2008 batch 4 added 11 more each to ``x6100.toml``/
-# ``x6200.toml`` (the memory.py/tx_band.py Group B family, same V1.0.6
-# documentary grounding) plus filled ``ftx1.toml``/``tx500.toml`` (16
-# commands each, all 16 Group B canonical keys, grounded in protocol
-# mismatch rather than a documentary or live source). This was the last
-# shipped profile to be filled: a
-# ``TestNoShippedProfileUsesAbsentSpellingYet`` pin used to sit here,
-# narrowed as each profile's own D2 pass landed and deleted, per its own
-# docstring's contingency, once MOR-2008 batch 4's pass narrowed its
-# parametrize set to empty rather than leave a vacuous test collecting
-# zero cases. Each profile's own ``TestXDeclaresAbsentCommands`` class
-# below is the durable per-model record now.
+# Manual-only membership and other-model absent-schema pins are separate.
 
 
-class TestIc7300DeclaresAbsentCommands:
-    """MOR-2014 (D2): IC-7300 is the first shipped profile to use the
-    ``{ absent = "<source>" }`` spelling, for the commands the IC-7300
-    Advanced Manual (11a) command table (pp.19-2..19-8) confirms have no
-    row on this radio -- 27 at D2 time; MOR-2007 ruling 1 later split
-    ``set_dual_watch`` into ``set_dual_watch_off``/``set_dual_watch_on``
-    (+1, to 28), then MOR-2008 batch 1 deleted the dead bare
-    ``quick_dual_watch`` entry alongside the bare ``quick_split`` row it
-    was declared next to (-1, back to 27 -- a different 27 than D2's, not
-    the same set reverted), then MOR-2105 part 1 (2026-09-01) added
-    ``get_scope_rbw``/``set_scope_rbw`` (+2, to 29), then the same day
-    MOR-2118 added ``get_antenna``/``set_antenna`` (no 0x12 row on this
-    radio) and MOR-2117 added the bare ``set_dual_watch`` (dispatches to
-    the two split names above, already absent, but was itself in neither
-    list) (+3, to 32), then MOR-2190 replaced six proven-wrong positive
-    bindings with direct official-manual absent entries (+6, to 38 -- the
-    current count, per ``len(_EXPECTED_ABSENT)``).
-    Pinned by name, not just count, so a future D2 pass on another command
-    can't silently swap one of these for a different one and still pass a
-    bare-count check.
-    """
+class TestIc7300ManualOnlyCommands:
+    """MOR-2257: retain the 11a profile names, without negative markers."""
 
-    _EXPECTED_ABSENT = frozenset(
+    _REMOVED_NAMES = frozenset(
         {
             "get_af_mute",
             "set_af_mute",
-            # MOR-2118: no 0x12 antenna-select command on this radio.
             "get_antenna",
             "set_antenna",
             "get_apf_type_level",
@@ -2826,10 +2854,6 @@ class TestIc7300DeclaresAbsentCommands:
             "get_dual_watch",
             "set_dual_watch_off",
             "set_dual_watch_on",
-            # MOR-2117: bare "set_dual_watch" dispatches to the two split
-            # names above (MOR-2007 ruling 1 split the setter key), which
-            # were already absent -- the bare name itself was in neither
-            # list, so supports_command answered True for it.
             "set_dual_watch",
             "get_lan_mod_level",
             "set_lan_mod_level",
@@ -2839,32 +2863,59 @@ class TestIc7300DeclaresAbsentCommands:
             "get_powerstat",
             "get_quick_dual_watch",
             "set_quick_dual_watch",
-            # MOR-2190: direct IC-7300 Advanced Manual (11a) findings.
             "get_ref_adjust",
             "set_ref_adjust",
-            # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
-            # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
-            # MOR-2105: IC-7300 Advanced Manual (11a) 0x27 sub-command table
-            # (pp.19-7..19-8) runs 1E then 20 -- no 1F row.
             "get_scope_rbw",
             "set_scope_rbw",
             "get_scope_marker_position",
             "set_scope_marker_position",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
+            "get_vfo",
+            "get_s_meter_sql_status_04",
+            "set_scope_wave",
         }
     )
 
-    def test_absent_command_names_match(self):
-        profile = load_rig(RIGS_DIR / "ic7300.toml").to_profile()
-        assert profile.absent_command_names == self._EXPECTED_ABSENT
+    def test_exact_retained_membership(self):
+        _assert_manual_only_membership(
+            "ic7300.toml",
+            320,
+            "61f58222a9bbb632db9146d17c60a2b339fe0f188bb14288139168656f7c0fea",
+            self._REMOVED_NAMES,
+        )
 
-    def test_absent_commands_excluded_from_command_map(self):
-        cmd_map = load_rig(RIGS_DIR / "ic7300.toml").to_command_map()
-        for name in self._EXPECTED_ABSENT:
-            assert not cmd_map.has(name), f"{name} declared absent but still in map"
+    def test_removed_names_have_no_callable_fallback(self):
+        from rigplane.runtime.radio import CoreRadio
+
+        profile = load_rig(RIGS_DIR / "ic7300.toml").to_profile()
+        radio = CoreRadio("127.0.0.1", profile=profile)
+        for name in self._REMOVED_NAMES:
+            assert not profile.supports_command(name), name
+            assert not radio.supports_command(name), name
+
+    @pytest.mark.parametrize("name", ["get_vfo", "get_digisel", "get_lan_mod_level"])
+    def test_missing_bound_builder_refuses(self, name):
+        from rigplane.core.exceptions import CommandError
+        from rigplane.runtime.radio import CoreRadio
+
+        radio = CoreRadio(
+            "127.0.0.1", profile=load_rig(RIGS_DIR / "ic7300.toml").to_profile()
+        )
+        with pytest.raises(CommandError, match="not declared by this profile"):
+            getattr(radio._commands, name)(to_addr=0x94)  # noqa: SLF001
+
+
+def _assert_manual_only_membership(filename, count, names_digest, removed_names):
+    config = load_rig(RIGS_DIR / filename)
+    profile = config.to_profile()
+    assert not profile.absent_command_names
+    assert not profile.absent_command_sources
+    assert not (config.commands.keys() & removed_names)
+    assert len(config.commands) == len(profile.command_names) == count
+    # Exact retained name set, not a count-only pin or a runtime command registry.
+    names = "\n".join(sorted(profile.command_names)).encode()
+    assert sha256(names).hexdigest() == names_digest
 
 
 class TestIc9700DeclaresAbsentCommands:
@@ -2878,9 +2929,9 @@ class TestIc9700DeclaresAbsentCommands:
     quick_dual_watch, rx_antenna_ant2), plus civ_output_ant (a
     copied-but-wrong 1A05 address with no real replacement) and the
     nb_depth/nb_width pair (no single global control, per-band only).
-    MOR-1983 adds the two legacy TX-frequency-monitor boolean names because
-    1C/03 is a read-only frequency payload, plus RBW because the scope table
-    ends at 1E.
+    MOR-1983 adds RBW because the scope table ends at 1E; the legacy
+    TX-frequency-monitor boolean names MOR-1983 also added here were
+    deleted entirely by MOR-2246, not merely left declared absent.
     Pinned by name, not just count, so a future D2 pass on another
     command can't silently swap one of these for a different one and
     still pass a bare-count check.
@@ -2913,8 +2964,6 @@ class TestIc9700DeclaresAbsentCommands:
             "set_quick_dual_watch",
             "get_scope_rbw",
             "set_scope_rbw",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
             # Bare "quick_dual_watch" removed here (MOR-2008 batch 1): no
             # builder resolved it, only get_/set_quick_dual_watch above do.
             "get_rx_antenna_ant2",
@@ -2938,12 +2987,13 @@ class TestIc705DeclaresAbsentCommands:
     Jul.2020) confirms have no row on this radio (24 at D2 time; MOR-2007
     ruling 1 later split ``set_dual_watch`` into
     ``set_dual_watch_off``/``set_dual_watch_on``, +1 net; MOR-2143 added the
-    bare ``set_dual_watch`` name, +1). MOR-1983 adds the two legacy boolean
-    TX-frequency-monitor names because 1C/03 is read-only and the two RBW
-    names because the scope table ends at 1E. Pinned by name,
-    not just count, so a future D2 pass on another command can't silently
-    swap one of these for a different one and still pass a bare-count
-    check.
+    bare ``set_dual_watch`` name, +1). MOR-1983 adds the two RBW names
+    because the scope table ends at 1E; the legacy boolean
+    TX-frequency-monitor names MOR-1983 also added here were deleted
+    entirely by MOR-2246, not merely left declared absent. Pinned by
+    name, not just count, so a future D2 pass on another command can't
+    silently swap one of these for a different one and still pass a
+    bare-count check.
     """
 
     _EXPECTED_ABSENT = frozenset(
@@ -2974,8 +3024,6 @@ class TestIc705DeclaresAbsentCommands:
             "quick_dual_watch",
             "get_scope_rbw",
             "set_scope_rbw",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
             "get_rx_antenna_ant2",
             "set_rx_antenna_ant2",
         }
@@ -3002,8 +3050,10 @@ class TestIc7610DeclaresAbsentCommands:
     IC-9700/IC-705 above, this is not a documentary D2 pass over the
     whole command table -- it is one feature family's absence, already
     established by MOR-660/661/682 well before this ticket, just not
-    previously spelled with the formal marker. MOR-1983 also marks the legacy
-    TX-frequency-monitor boolean names absent because 1C/03 is read-only.
+    previously spelled with the formal marker. MOR-1983 had also marked the
+    legacy TX-frequency-monitor boolean names absent here because 1C/03 is
+    read-only; MOR-2246 deleted that pair entirely rather than leave it
+    declared absent.
     Pinned by name, not just
     count, so a future D2 pass on another command can't silently swap
     one of these for a different one and still pass a bare-count check.
@@ -3019,8 +3069,6 @@ class TestIc7610DeclaresAbsentCommands:
             "set_tone_freq",
             "get_tsql_freq",
             "set_tsql_freq",
-            "get_tx_freq_monitor",
-            "set_tx_freq_monitor",
         }
     )
 
@@ -3138,27 +3186,7 @@ class TestX6100DeclaresAbsentCommands(_X6DeclaresAbsentCommands):
 
 
 class _CatOnlyDeclaresAllGroupBAbsent:
-    """Shared body for the FTX-1/TX-500 absent-command pin (MOR-2008
-    batch 4): both cat-only profiles formally declare all 16 Group B
-    canonical keys (memory.py's 9, tx_band.py's 2, freq.py's 5) absent,
-    grounded in protocol mismatch rather than a documentary or live
-    source -- ``[protocol] type`` is not ``"civ"`` on either profile,
-    every ``[commands]`` entry is a ``{ cat = ... }`` spec, and
-    ``profiles/rig_loader.py: RigConfig.to_command_map`` keeps only the
-    CI-V half of ``CommandSpec``, so none of these 16 CI-V-array key names
-    could ever be declared present here regardless of what either radio's
-    own CAT dialect documents.
-
-    Adding these formal rows removes both profiles from
-    ``tests/test_command_map_parity.py``'s own ``cat_only_profiles``
-    census/``cat-only`` rows -- that classification means literally "every
-    ``[commands]`` entry is ``CatCommandSpec``", which a declared-absent
-    row (a third spec type) no longer satisfies, even though both profiles
-    remain cat-only in every functional sense (``[protocol] type``
-    unchanged, ``CommandMap`` still empty). See
-    ``tests/command_map_parity_uncovered.txt``'s regenerated diff in this
-    batch's PR body.
-    """
+    """TX-500 retains its existing CI-V protocol-mismatch markers."""
 
     _EXPECTED_ABSENT = frozenset(
         {
@@ -3192,8 +3220,48 @@ class _CatOnlyDeclaresAllGroupBAbsent:
             assert not cmd_map.has(name), f"{name} declared absent but still in map"
 
 
-class TestFtx1DeclaresAbsentCommands(_CatOnlyDeclaresAllGroupBAbsent):
-    _TOML_NAME = "ftx1.toml"
+class TestFtx1ManualOnlyCommands:
+    """MOR-2257: retain CAT 2508-C names; RC has no row in that edition."""
+
+    _REMOVED_NAMES = frozenset(
+        {
+            "get_memory_mode",
+            "set_memory_mode",
+            "memory_write",
+            "memory_to_vfo",
+            "memory_clear",
+            "get_memory_contents",
+            "set_memory_contents",
+            "get_bsr",
+            "set_bsr",
+            "get_tx_band_count",
+            "get_tx_band_edge",
+            "get_selected_freq",
+            "get_unselected_freq",
+            "get_selected_mode",
+            "get_unselected_mode",
+            "set_selected_mode",
+            "reset_clarifier",
+        }
+    )
+
+    def test_exact_retained_membership(self):
+        _assert_manual_only_membership(
+            "ftx1.toml",
+            109,
+            "c96e82758aa2b96fba77c63824bf958584be0ce607bc4f9ec858f80789a3b9da",
+            self._REMOVED_NAMES,
+        )
+
+    def test_removed_names_have_no_callable_fallback(self):
+        from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+        config = load_rig(RIGS_DIR / "ftx1.toml")
+        profile = config.to_profile()
+        radio = YaesuCatRadio("/dev/null", profile=config)
+        for name in self._REMOVED_NAMES:
+            assert not profile.supports_command(name), name
+            assert not radio.supports_command(name), name
 
 
 class TestTx500DeclaresAbsentCommands(_CatOnlyDeclaresAllGroupBAbsent):

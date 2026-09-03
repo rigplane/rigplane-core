@@ -33,6 +33,7 @@ from rigplane.core.acquisition_scheduler import (
     RadioStateModelService,
     StateFreshnessService,
 )
+from rigplane.core.radio_state import RadioState
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     FieldAvailability,
@@ -162,6 +163,12 @@ class _ProfiledStandaloneRadio:
         self.radio_ready = True
         self.control_connected = True
         self.get_freq = AsyncMock(return_value=14_090_000)
+        self._radio_state = RadioState()
+
+    @property
+    def radio_state(self) -> RadioState:
+        """Match the ``Radio`` protocol's required ``radio_state`` member."""
+        return self._radio_state
 
 
 class _CivProfiledStandaloneRadio(_ProfiledStandaloneRadio):
@@ -461,7 +468,6 @@ class TestLifecycle:
         await srv.start()
         try:
             assert srv._rig_handler is not None
-            assert srv._poller is None
             assert srv._rig_handler._cache is not radio.state_cache
         finally:
             await srv.stop()

@@ -80,8 +80,8 @@ class RigctldClientObservationPoller:
         radio: "RigctldClientRadio",
         callback: Callable[[Sequence["Observation"]], None],
         *,
-        medium_interval: float = 2.0,
-        slow_interval: float = 30.0,
+        medium_interval: float,
+        slow_interval: float,
         command_queue: "CommandQueue | None" = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -653,7 +653,14 @@ class RigctldClientRadio:
             caps.add("vfo")
         return caps
 
-    def supports_command(self, command: str) -> bool:
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
+        if receiver is not None and (
+            command not in {"set_af_level", "set_rf_gain", "set_squelch"}
+            or isinstance(receiver, bool)
+            or not isinstance(receiver, int)
+            or receiver != 0
+        ):
+            return False
         supported = set(_SUPPORTED_COMMANDS)
         if self._vfo_supported:
             supported.update({"get_vfo_slot", "set_vfo_slot"})
@@ -670,10 +677,22 @@ class RigctldClientRadio:
         command_queue: "CommandQueue | None" = None,
     ) -> RigctldClientObservationPoller:
         """Construct a backend-neutral observation poller for Web startup."""
+        from .observations import (
+            build_external_rigctld_acquisition_profile,
+            resolve_external_rigctld_poll_intervals,
+        )
+
+        medium_interval, slow_interval = resolve_external_rigctld_poll_intervals(
+            build_external_rigctld_acquisition_profile(
+                vfo_supported=self._vfo_supported
+            )
+        )
         return RigctldClientObservationPoller(
             self,
             callback=callback,
             command_queue=command_queue,
+            medium_interval=medium_interval,
+            slow_interval=slow_interval,
         )
 
     async def get_freq(self, receiver: int = 0) -> int:

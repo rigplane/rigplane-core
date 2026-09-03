@@ -7,21 +7,35 @@
  */
 import { describe, it, expect } from 'vitest';
 import { STUDIOLINE_TOKENS } from '../tokens';
-import { PEAK_TICK_WIDTH_PX, STUDIOLINE_SCALE_TICKS, renderMeter } from '../meters-renderer';
+import { PEAK_TICK_WIDTH_PX, renderMeter } from '../meters-renderer';
 
 const render = (fields: Record<string, number | null>) =>
   renderMeter({ kind: 'meter', fields }, STUDIOLINE_TOKENS);
 
 describe('the meter is a continuous rail', () => {
-  it('takes its track geometry from the token set, with no segment gap', () => {
+  it('takes its track geometry from the token set', () => {
     const m = render({ value: 5 });
     expect(m.trackWidth).toBe(STUDIOLINE_TOKENS.meters.trackWidth);
-    expect(m.segmentGap).toBe('0px');
+    expect(m.segmentGap).toBe('1px');
   });
 
-  it('fills as a fraction of the track and splits tone at S9', () => {
-    expect(render({ value: 9, max: 15, s9: 9 })).toMatchObject({ fill: 0.6, crossover: 0.6 });
+  it('MOR-2214: reports the default 20-segment geometry as MeterDisplay', () => {
+    const m = render({ value: 5 });
+    expect(m.segmentCount).toBe(20);
+    expect(m.segmentGapPx).toBe(1);
+  });
+
+  it('fills as a fraction of the track', () => {
+    expect(render({ value: 9, max: 15, s9: 9 })).toMatchObject({ fill: 0.6 });
     expect(render({ value: 15, max: 15 }).fill).toBe(1);
+  });
+
+  it('MOR-2250: reports the tone split as toneBelowS9/toneAboveS9, reusing the same rx.active/tx.tuning reads as tone/overTone', () => {
+    const m = render({ value: 9, max: 15, s9: 9 });
+    expect(m.toneBelowS9).toBe(m.tone);
+    expect(m.toneAboveS9).toBe(m.overTone);
+    expect(m.toneBelowS9).toBe(STUDIOLINE_TOKENS.rx.active);
+    expect(m.toneAboveS9).toBe(STUDIOLINE_TOKENS.tx.tuning);
   });
 
   it('clamps an over-range reading to the track rather than overflowing it', () => {
@@ -29,13 +43,14 @@ describe('the meter is a continuous rail', () => {
     expect(render({ value: -3, max: 15 }).fill).toBe(0);
   });
 
-  it('holds the peak as a 1px tick, not a second fill', () => {
-    expect(render({ value: 4, peak: 12, max: 15 })).toMatchObject({ peak: 0.8, peakWidthPx: PEAK_TICK_WIDTH_PX });
-    expect(render({ value: 4 }).peak).toBeNull();
-  });
-
-  it('renders the scale as sparse text ticks below the rail', () => {
-    expect(render({ value: 4 }).scaleTicks).toEqual(STUDIOLINE_SCALE_TICKS);
+  // MOR-2250 (PR 2 of 2): `peak`/`scaleTicks` were deleted as dead fields
+  // (no consumer anywhere — `renderSlot`'s `display` extraction never pulled
+  // them, and nothing else read them either); `peakWidthPx` survived that
+  // sweep because `fieldline/__tests__/meters-renderer.test.ts` DOES read it
+  // (`theirs.peakWidthPx`, a cross-language comparison) — pinned directly
+  // here too, not just via that indirect check.
+  it('reports the 1px peak-tick width', () => {
+    expect(render({ value: 4 }).peakWidthPx).toBe(PEAK_TICK_WIDTH_PX);
   });
 
   it('renders an unobserved reading as unknown, never as a rail at zero', () => {

@@ -237,13 +237,12 @@ the memory protocol reject these commands.
 
 ---
 
-## Miscellaneous — XFC, TX freq monitor, quick split/dual watch
+## Miscellaneous — XFC, quick split/dual watch
 
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
 | `send_civ` | `command: int`, `sub?: int`, `data?: str=""`, `wait_response?: bool=false` | CivCommandCapable | Yes | Fire-and-forget raw CI-V write through the ordered queue. `command` and `sub` are byte values; `data` is compact even-length hex. `wait_response: true` is rejected; use `POST /api/v1/civ/transaction` for ACK/data responses. Rejected in read-only mode. |
 | `set_xfc_status` | `on: bool` | — | Yes | XFC on/off. `on` is required. |
-| `set_tx_freq_monitor` | `on: bool` | — | Yes | TX frequency monitor. `on` is required. |
 | `get_quick_split` | — | — | Yes | Enqueues `QuickSplit`, which reads the IC-7300 `1A 05 0030`-style persistent Quick Split menu toggle (`CoreRadio.get_quick_split`, MOR-2007). |
 | `set_quick_split` | `on: bool` | — | Yes | Enqueues `SetQuickSplit`, which writes the persistent Quick Split menu toggle via `CoreRadio.set_quick_split` (MOR-2007 ruling 2; wired MOR-2045). `on` is required. |
 | `get_quick_dual_watch` | — | — | Yes | Enqueues `QuickDualWatch`, which reads the equivalent persistent Quick Dual Watch menu toggle (`CoreRadio.get_quick_dual_watch`, MOR-2007). |
@@ -285,7 +284,6 @@ directly and/or use `asyncio`). They are **not** batch-eligible. Use
 | `get_utc_offset` | — | `system_settings` | No | Returns `{hours, minutes, is_negative}`. |
 | `get_band_edge_freq` | — | `band_edge` | No | Returns `{freq: int}` (Hz). |
 | `get_xfc_status` | — | `xfc` | No | Returns `{on: bool}`. |
-| `get_tx_freq_monitor` | — | `tx` | No | Returns `{on: bool}`. |
 | `cw_auto_tune` | — | — | No | Detects CW tone via audio FFT and shifts VFO to zero-beat. Requires active audio relay; times out after 3 s. On successful detection: `{detected: int, cw_pitch: int, delta: int, applied: bool}`. On timeout or no tone found: `{detected: null, applied: false}`. Experimental. |
 
 <!-- catalog:end -->

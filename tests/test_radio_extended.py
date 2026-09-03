@@ -426,6 +426,14 @@ class TestCW:
         await radio.stop_cw_text()
 
     @pytest.mark.asyncio
+    async def test_stop_cw_nak(
+        self, radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        mock_transport.queue_response(_nak_response())
+        with pytest.raises(CommandError, match="Radio rejected CW stop"):
+            await radio.stop_cw_text()
+
+    @pytest.mark.asyncio
     async def test_cw_disconnected(self) -> None:
         r = IcomRadio("192.168.1.100", model="IC-7610")
         with pytest.raises(ConnectionError):

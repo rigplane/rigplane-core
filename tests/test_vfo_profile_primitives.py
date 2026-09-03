@@ -171,7 +171,6 @@ async def test_absent_vfo_primitive_direct_poller_command_fails_closed(
     with pytest.raises(NotImplementedError, match="profile declares no matching"):
         await poller._execute(queued_command)  # noqa: SLF001
 
-    assert poller._last_user_write_ts == 0.0  # noqa: SLF001
     radio.swap_vfo_ab.assert_not_awaited()
     radio.equalize_vfo_ab.assert_not_awaited()
     radio.swap_main_sub.assert_not_awaited()

@@ -30,6 +30,9 @@ tx_codec = "PCM_1CH_16BIT"
 browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 
+[scope]
+span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+
 # ── Capabilities ─────────────────────────────────────────────────
 # Feature tags determine which UI panels and controls are rendered.
 # Grouped by functional area.
@@ -681,8 +684,6 @@ get_ssb_tx_bandwidth = [0x16, 0x58]
 set_ssb_tx_bandwidth = [0x16, 0x58]
 
 # ── Split ──
-get_tx_freq_monitor = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) pp.10,13: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
-set_tx_freq_monitor = { absent = "IC-9700 CI-V Reference Guide (Icom, 2019) pp.10,13: 1C 03 is Read transmit frequency, not the XFC boolean at 1C 02; no SET form is documented" }
 get_xfc_status = [0x1C, 0x02]             # XFC = transmit frequency monitor
 set_xfc_status = [0x1C, 0x02]
 

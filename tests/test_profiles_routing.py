@@ -16,7 +16,6 @@ from rigplane.rigctld.state_cache import StateCache
 from rigplane.web import radio_poller as radio_poller_module
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq, SetMode
-from test_poller_poll_priority import logical_civ_call
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -95,18 +94,6 @@ async def test_single_profile_poller_rejects_sub_receiver() -> None:
     with pytest.raises(CommandError, match="receiver=1"):
         await poller._execute(SetMode("USB", receiver=1))  # noqa: SLF001
 
-    for state_idx in range(len(poller._STATE_QUERIES)):  # noqa: SLF001
-        poller._poll_index = 2 * state_idx + 1  # noqa: SLF001
-        await poller._send_query()  # noqa: SLF001
-
-    calls = [
-        logical_civ_call(call, selected_unselected=True)
-        for call in radio.send_civ.await_args_list
-    ]
-    assert {receiver for receiver, _, _, _ in calls} == {None, 0}
-    assert calls.count((None, 0x25, 0x01, b"")) == 1
-    assert calls.count((None, 0x26, 0x01, b"")) == 1
-
 
 async def test_control_handler_checks_capabilities_not_model_name() -> None:
     """IC-7300 has nb capability (from TOML) — verify it DOES NOT raise.
@@ -182,7 +169,7 @@ def _count_self_civ_call_sites() -> int:
 
 
 def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
-    """Ratchet: exactly 10 raw ``self._civ(...)`` sites remain.
+    """Ratchet: exactly 5 raw ``self._civ(...)`` sites remain.
 
     The 8 hand-rolled ``self._civ(0x07, ...)`` VFO-switch frames that used
     to live in ``SetFreq``/``SetMode`` (the ``receiver!=0`` fallback dance
@@ -193,20 +180,30 @@ def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
     ``SwitchScopeReceiver`` was the 11th (MOR-2106): it now resolves
     ``set_scope_main_sub`` through ``_send_cmd`` instead of building
     ``0x27 0x12`` as a literal in ``_execute`` -- reusing ``_send_cmd``'s
-    existing two call sites below rather than adding a new one. The 10
-    that remain:
+    existing two call sites below rather than adding a new one.
+    ``_send_one_state_query`` used to hold 5 of its own branches (cmd29
+    wrap x2, the scope-receiver rewrite, and a sub-is-None/sub-is-set
+    split that only differed in whether ``sub=None`` was spelled out) --
+    those collapsed into the one call below when the wire-frame assembly
+    moved into the shared ``runtime._state_queries.wire_parts_for_query``,
+    also used by ``RigctldServer._send_one_state_query`` and
+    ``runtime.radio_initial_state.fetch_initial_state``. The 5 that
+    remain:
 
     - ``_send_cmd``: 2 — cmd29-wrapped vs. plain generic command dispatch.
-    - ``_send_one_state_query``: 5 — selected/unselected freq/mode state
-      reads plus the scope-receiver default read.
+    - ``_send_one_state_query``: 1 — dispatches whatever
+      ``wire_parts_for_query`` resolved.
     - ``_execute``: 2 — the BSR band-switch stored-freq read and
       ``SelectVfo``'s scope-follow (0x27 0x12).
-    - ``_send_query``: 1 — the meter poll read.
+
+    ``_send_query`` held the 6th — the meter poll read — until the legacy
+    meter rotation it lived in was deleted as unreachable behind the
+    acquisition scheduler.
 
     Changing this literal deliberately means recounting the real call
     sites above, not just editing the number.
     """
-    assert _count_self_civ_call_sites() == 10
+    assert _count_self_civ_call_sites() == 5
 
 
 # ---------------------------------------------------------------------------

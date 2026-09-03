@@ -76,7 +76,6 @@ from .._queue_pressure import PRESSURE_THRESHOLD
 from ..commands._frame import decode_wire_tuple
 from ..commands.command_map import CommandMap
 from ..commands.commander import Priority
-from ..commands.scope import SCOPE_RECEIVER_SELECTOR_SUBS
 from ..core.command_service import (
     CommandService,
 )
@@ -111,12 +110,12 @@ from ..core.tx_target import (
     TxTarget,
     UnknownTxTarget,
 )
-from .._state_queries import (
-    acquisition_query_resolver_for_profile,
-    build_state_queries,
-)
 from ..profiles import RadioProfile, resolve_radio_profile
-from ..runtime._state_queries import tx_target_max_age
+from ..runtime._state_queries import (
+    acquisition_query_resolver_for_profile,
+    tx_target_max_age,
+    wire_parts_for_query,
+)
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,
@@ -205,7 +204,6 @@ __all__ = [
     "SetTunerStatus",
     "SetTuningStep",
     "SetXfcStatus",
-    "SetTxFreqMonitor",
     "SetUtcOffset",
     "SetQuickSplit",
     "SetQuickDualWatch",
@@ -220,10 +218,8 @@ logger = logging.getLogger(__name__)
 _GAP: float = 0.012
 _GAP_SERIAL: float = 0.050  # serial CI-V needs more breathing room
 _SEND_TIMEOUT: float = 1.0
-_DEFAULT_POLL_FIELD_TTL: float = 0.2
 _FAST_INTERVAL: float = 0.025  # meters — wfview queue interval for LAN (25ms)
 _FAST_INTERVAL_SERIAL: float = 0.100  # serial: 10 polls/sec for responsive meters
-_SLOW_INTERVAL: float = 0.25  # levels/settings — rarely change
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
 _WEB_IMMEDIATE_BLOCK_FAMILIES = (
     TxInterlockCommandFamily.RAW_CIV,
@@ -458,7 +454,6 @@ from .._poller_types import (  # noqa: E402
     SetTunerStatus,
     SetTuningStep,
     SetTwinPeak,
-    SetTxFreqMonitor,
     SetUsbModLevel,
     SetUtcOffset,
     SetVox,
@@ -651,9 +646,7 @@ class RadioPoller:
         self._acquisition_healthy_grace_started: dict[str, float] = {}
         self._queue = queue
         self._on_state_event = on_state_event
-        self._poll_index: int = 0
         self._task: asyncio.Task[None] | None = None
-        self._last_polled: dict[str, float] = {}
         self._caps: set[str] = self._radio_capabilities()
         self._profile: RadioProfile = self._runtime_profile()
         # Bound once at profile-resolution time (MOR-2003 step 3), not
@@ -667,10 +660,6 @@ class RadioPoller:
         self._fast_interval: float = (
             _FAST_INTERVAL_SERIAL if self._is_serial else _FAST_INTERVAL
         )
-        self._FAST_CMDS = (
-            self._FAST_CMDS_SERIAL if self._is_serial else self._FAST_CMDS_LAN
-        )
-        self._STATE_QUERIES = self._build_state_queries()
         self._relative_vfo_retention_max_age: float | None = None
         if self._profile.vfo_readback == "selected_unselected":
             retention_age, coherence_window = self._relative_vfo_retention_policy()
@@ -703,12 +692,6 @@ class RadioPoller:
         self._scope_demand_generation = queue.latest_scope_demand_generation
         self._scope_session_state: tuple[bool, bool] | None = None
         self._scope_session_active = False
-        # Issue #715: track user-initiated freq/mode writes so the unselected-
-        # slot poll subroutine can debounce around them, and per-receiver
-        # timestamps so each receiver's unselected slot is refreshed no more
-        # than once per _UNSELECTED_SLOT_INTERVAL.
-        self._last_user_write_ts: float = 0.0
-        self._last_unselected_poll: dict[int, float] = {}
         self._vfo_binding_generation = 0
         # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
         # a change triggers a refetch of the per-DATA-group MOD-input sources.
@@ -910,11 +893,14 @@ class RadioPoller:
         cadence = (
             None if acquisition is None else acquisition.default_policy.cadence_seconds
         )
-        expected_rotation = (
-            float(cadence)
-            if cadence is not None
-            else 2.0 * len(self._STATE_QUERIES) * self._fast_interval
-        )
+        # MOR-2221: the ``_STATE_QUERIES``-based fallback this replaced was
+        # dead on every shipped rig -- ``cadence`` is only ``None`` when
+        # ``acquisition`` is ``None`` (every declared ``state_acquisition``
+        # profile pins a numeric ``default_cadence_seconds``, confirmed by
+        # `grep -n cadence_seconds rigs/*.toml`), and ``build_state_queries``
+        # returns ``[]`` for exactly that same ``acquisition is None`` case,
+        # so the old fallback always evaluated to ``0.0`` in practice.
+        expected_rotation = float(cadence) if cadence is not None else 0.0
         return (2.0 * expected_rotation + health_grace, health_grace)
 
     def _apply_bsr_readback_observations(
@@ -1192,15 +1178,6 @@ class RadioPoller:
         t: float = (pressure - 0.5) / (PRESSURE_THRESHOLD - 0.5)
         return self._gap * (1.0 + t)
 
-    def mark_polled(self, field: str) -> None:
-        """Record the last successful poll time for a logical field."""
-        self._last_polled[field] = time.monotonic()
-
-    def state_is_fresh(self, field: str, ttl: float = _DEFAULT_POLL_FIELD_TTL) -> bool:
-        """Return True if *field* was polled recently enough to skip re-query."""
-        last = self._last_polled.get(field)
-        return last is not None and (time.monotonic() - last) < ttl
-
     def _radio_capabilities(self) -> set[str]:
         raw_caps = getattr(self._radio, "capabilities", None)
         return set(raw_caps) if isinstance(raw_caps, set) else set()
@@ -1264,9 +1241,6 @@ class RadioPoller:
             await self._civ(command, sub=sub, data=payload)
         return True
 
-    def _supports_capability(self, capability: str) -> bool:
-        return capability in self._caps
-
     def _ensure_receiver_supported(self, receiver: int, *, operation: str) -> None:
         if self._profile.supports_receiver(receiver):
             return
@@ -1275,80 +1249,41 @@ class RadioPoller:
             f"{self._profile.model} (receivers={self._profile.receiver_count})"
         )
 
-    def _build_state_queries(self) -> list[AcquisitionQuery]:
-        result: list[AcquisitionQuery] = build_state_queries(self._profile)
-        return result
-
     async def _send_one_state_query(
         self,
         query: AcquisitionQuery,
         *,
         priority: Priority = Priority.BACKGROUND,
     ) -> None:
-        """Send a single state query (shared by initial fetch and slow rotation).
+        """Send a single state query
 
-        Defaults to ``Priority.BACKGROUND`` so both the odd-cycle state poll
-        and the acquisition-scheduler executor (which is bound to this method)
+        Defaults to ``Priority.BACKGROUND`` so
+        the acquisition-scheduler executor (which is bound to this method)
         yield to user commands on the shared CI-V lane (MOR-497i).  All sends
-        here are fire-and-forget (``wait_dispatch=False``) so the poll burst
-        does not park the poll loop on the commander future (MOR-497ii); the
+        here are fire-and-forget (``wait_dispatch=False``) so the
         response still arrives via the CI-V RX path.
 
         The lossless query envelope keeps the CI-V sub-command, payload data,
-        and optional cmd29 receiver route separate.
+        and optional cmd29 receiver route separate. Wire-frame assembly
+        (cmd29 wrap, 0x27 scope-receiver substitution) is shared with the
+        other two acquisition senders via ``wire_parts_for_query``.
+
+        Scope control queries need receiver prefix (00=MAIN, 01=SUB).
+        ``build_state_queries`` emits MAIN because it runs at connect, before
+        the radio has said which scope is selected; where the poller has
+        state to read the live selection from, that replaces the default.
         """
-        if query.receiver is not None:
-            inner = bytes([query.receiver, query.command])
-            if query.sub is None:
-                await self._civ(
-                    0x29,
-                    data=inner + query.data,
-                    priority=priority,
-                    wait_dispatch=False,
-                )
-            else:
-                await self._civ(
-                    0x29,
-                    data=inner + bytes([query.sub]) + query.data,
-                    priority=priority,
-                    wait_dispatch=False,
-                )
-        elif (
-            query.command == 0x27
-            and query.sub in SCOPE_RECEIVER_SELECTOR_SUBS
-            and query.data
-        ):
-            # Scope control queries need receiver prefix (00=MAIN, 01=SUB).
-            # ``build_state_queries`` emits MAIN because it runs at connect,
-            # before the radio has said which scope is selected; where the
-            # poller has state to read the live selection from, that
-            # replaces the default.
-            scope_rx = 0
-            if self._radio_state:
-                scope_rx = self._radio_state.scope_controls.receiver
-            await self._civ(
-                query.command,
-                sub=query.sub,
-                data=bytes([scope_rx]) + query.data[1:],
-                priority=priority,
-                wait_dispatch=False,
-            )
-        elif query.sub is None:
-            await self._civ(
-                query.command,
-                sub=None,
-                data=query.data,
-                priority=priority,
-                wait_dispatch=False,
-            )
-        else:
-            await self._civ(
-                query.command,
-                sub=query.sub,
-                data=query.data,
-                priority=priority,
-                wait_dispatch=False,
-            )
+        scope_rx = 0
+        if self._radio_state:
+            scope_rx = self._radio_state.scope_controls.receiver
+        command, sub, data = wire_parts_for_query(query, scope_rx)
+        await self._civ(
+            command,
+            sub=sub,
+            data=data,
+            priority=priority,
+            wait_dispatch=False,
+        )
 
     # Per-getter timeout for scope-control fetches.  The IC-7610 scope stream
     # (~225 pkt/s) sometimes drops individual control responses; a long wait
@@ -1937,23 +1872,6 @@ class RadioPoller:
                 except Exception:
                     logger.debug("radio-poller: MOD-input refresh error", exc_info=True)
 
-                # 3. Issue #715: opportunistically refresh the unselected
-                # VFO slot on each receiver.  Fully gated (PTT, queue
-                # pressure, debounce, per-rx interval) so it cannot
-                # regress fast-poll cadence.
-                if self._acquisition_scheduler is None:
-                    for _rx in range(self._profile.receiver_count):
-                        try:
-                            await self._poll_unselected_slot(_rx)
-                        except (ConnectionError, RadioConnectionError):
-                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                            break
-                        except Exception:
-                            logger.debug(
-                                "radio-poller: unselected-slot poll error",
-                                exc_info=True,
-                            )
-
                 # 3b. Re-derive tx_target from currently observed active-VFO
                 # identity/split/frequency facts (MOR-1496). State-store reads
                 # only, no wire I/O. NOT reached on every iteration — the
@@ -2234,7 +2152,6 @@ class RadioPoller:
                     wait_response=False,
                 )
             case SetFreq(freq=freq, receiver=rx):
-                self._last_user_write_ts = time.monotonic()
                 self._ensure_receiver_supported(rx, operation="set_freq")
                 current = self._current_active()
                 if rx != 0:
@@ -2279,11 +2196,9 @@ class RadioPoller:
                     )
                     if target:
                         target.freq = freq
-                    self.mark_polled("freq")
                 if self._on_state_event:
                     self._on_state_event("freq_changed", {"freq": freq, "receiver": rx})
             case SetMode(mode=mode, filter_width=fw, receiver=rx):
-                self._last_user_write_ts = time.monotonic()
                 self._ensure_receiver_supported(rx, operation="set_mode")
                 if CAP_FILTER_WIDTH in self._caps:
                     self._state_store.discard(
@@ -2325,7 +2240,6 @@ class RadioPoller:
                     )
                     if target:
                         target.mode = mode
-                    self.mark_polled("mode")
                 if self._on_state_event:
                     self._on_state_event("mode_changed", {"mode": mode, "receiver": rx})
             case SetFilter(filter_num=fn, receiver=rx):
@@ -2809,7 +2723,6 @@ class RadioPoller:
                 if self._on_state_event:
                     self._on_state_event("split_changed", {"on": on})
             case SetBand(band=band):
-                self._last_user_write_ts = time.monotonic()
                 # Band Stack Register recall: 0x1A 0x01 <bsr_code> <register>
                 # Read stored freq/mode from register 01 (latest)
                 from ..commands import bcd_decode
@@ -2863,8 +2776,6 @@ class RadioPoller:
                             if target:
                                 target.freq = freq
                                 target.mode = mode_name
-                            self.mark_polled("freq")
-                            self.mark_polled("mode")
                         if self._on_state_event:
                             self._on_state_event(
                                 "freq_changed", {"freq": freq, "receiver": 0}
@@ -2894,7 +2805,6 @@ class RadioPoller:
                     else:
                         logger.warning("set_band: unknown bsr_code=%d", band)
             case SelectVfo(vfo=vfo):
-                self._last_user_write_ts = time.monotonic()
                 vfo_upper = vfo.upper()
                 slot: str | None = None
                 if vfo_upper in ("A", "B"):
@@ -3038,7 +2948,6 @@ class RadioPoller:
                         f"VfoSwap unsupported on {profile.model}: "
                         "profile declares no matching primitive"
                     )
-                self._last_user_write_ts = time.monotonic()
                 if swap_ab:
                     await radio.swap_vfo_ab(0)
                 else:
@@ -3060,7 +2969,6 @@ class RadioPoller:
                         f"VfoEqualize unsupported on {profile.model}: "
                         "profile declares no matching primitive"
                     )
-                self._last_user_write_ts = time.monotonic()
                 if equal_ab:
                     await radio.equalize_vfo_ab(0)
                 else:
@@ -3528,10 +3436,6 @@ class RadioPoller:
                     self._radio_state.tuning_step = step
             case SetXfcStatus(on=on):
                 await _r.set_xfc_status(on)
-            case SetTxFreqMonitor(on=on):
-                await _r.set_tx_freq_monitor(on)
-                if self._radio_state:
-                    self._radio_state.tx_freq_monitor = on
             case SetUtcOffset(hours=hours, minutes=minutes, is_negative=is_negative):
                 await _r.set_utc_offset(hours, minutes, is_negative)
             case QuickSplit():
@@ -3548,7 +3452,6 @@ class RadioPoller:
             case SetQuickDualWatch(on=on):
                 await _r.set_quick_dual_watch(on)
             case QuickDwTrigger():
-                self._last_user_write_ts = time.monotonic()
                 if CAP_DUAL_RX in self._caps:
                     await _r.equalize_main_sub()
                     await _r.set_dual_watch(True)
@@ -3556,7 +3459,6 @@ class RadioPoller:
                     if self._on_state_event:
                         self._on_state_event("dual_watch_changed", {"on": True})
             case QuickSplitTrigger():
-                self._last_user_write_ts = time.monotonic()
                 if CAP_DUAL_RX in self._caps:
                     await _r.equalize_main_sub()
                     await _r.set_split(True)
@@ -3576,59 +3478,6 @@ class RadioPoller:
         # (``SetFreq``/``SetMode``/``SetRfGain``/``SetSquelch``) return early
         # out of the match above.
         self._request_post_write_readback(cmd)
-
-    # Fast: meters (polled on even cycles)
-    # wfview: Priority=Highest, queue interval 25ms for LAN (HasFDComms)
-    # For serial: only high-priority meters to keep S-meter responsive.
-    _FAST_CMDS_LAN: list[tuple[int, int | None]] = [
-        (0x15, 0x02),  # S-meter
-        (0x15, 0x11),  # RF power
-        (0x15, 0x12),  # SWR
-        (0x15, 0x13),  # ALC
-        (0x15, 0x14),  # Compressor meter
-        (0x15, 0x15),  # VD (voltage)
-        (0x15, 0x16),  # Id (PA drain current)
-    ]
-    _FAST_CMDS_SERIAL: list[tuple[int, int | None]] = [
-        (0x15, 0x02),  # S-meter — polled every cycle for responsiveness
-        (0x15, 0x11),  # RF power
-        (0x15, 0x02),  # S-meter again (2:1 ratio vs other meters)
-        (0x15, 0x12),  # SWR
-    ]
-    _FAST_CMDS: list[tuple[int, int | None]] = _FAST_CMDS_LAN  # class default
-
-    # Issue #937 — two-tier meter scheme (LAN only).
-    # HIGH tier — emitted on most meter cycles, gated by PTT.
-    _HIGH_TIER_RX: list[tuple[int, int | None]] = [
-        (0x15, 0x02),  # S-meter
-    ]
-    _HIGH_TIER_TX: list[tuple[int, int | None]] = [
-        (0x15, 0x11),  # RF power
-        (0x15, 0x12),  # SWR
-        (0x15, 0x13),  # ALC
-    ]
-    # LOW tier — emitted every _LOW_STRIDE-th HIGH meter cycle, rotating.
-    _LOW_TIER: list[tuple[int, int | None]] = [
-        (0x15, 0x14),  # Compressor meter
-        (0x15, 0x15),  # Vd
-        (0x15, 0x16),  # Id
-    ]
-    _LOW_STRIDE: int = 5
-
-    # State queries interleaved on odd cycles.
-    # Populated per instance from runtime profile/capabilities.
-    _STATE_QUERIES: list[AcquisitionQuery] = []
-
-    def _pick_high_meter(self, high_idx: int) -> tuple[int, int | None]:
-        """Choose HIGH-tier meter based on PTT state."""
-        on_tx = (
-            getattr(self._radio_state, "ptt", False)
-            if self._radio_state is not None
-            else False
-        )
-        if not on_tx:
-            return self._HIGH_TIER_RX[0]
-        return self._HIGH_TIER_TX[high_idx % len(self._HIGH_TIER_TX)]
 
     def _flush_due_meter_observations(self) -> None:
         coalescer = getattr(self._radio, "_meter_observation_coalescer", None)
@@ -3862,83 +3711,18 @@ class RadioPoller:
         if self._acquisition_scheduler is not None:
             await self._send_scheduler_requests()
             return
-        # Even cycles → meter query; odd cycles → state query.
-        if self._poll_index % 2 == 0:
-            if self._is_serial:
-                # Serial path UNCHANGED — keep flat round-robin over _FAST_CMDS.
-                fast_idx = (self._poll_index // 2) % len(self._FAST_CMDS)
-                cmd_byte, sub_byte = self._FAST_CMDS[fast_idx]
-            else:
-                # LAN: two-tier scheme (issue #937).
-                high_idx = self._poll_index // 2
-                on_tx = (
-                    getattr(self._radio_state, "ptt", False)
-                    if self._radio_state is not None
-                    else False
-                )
-                if not on_tx and high_idx % self._LOW_STRIDE == 0:
-                    low_idx = (high_idx // self._LOW_STRIDE) % len(self._LOW_TIER)
-                    cmd_byte, sub_byte = self._LOW_TIER[low_idx]
-                else:
-                    cmd_byte, sub_byte = self._pick_high_meter(high_idx)
-            self._record_state_diagnostic(
-                "meter_cadence",
-                "web.radio_poller",
-                command=f"0x{cmd_byte:02x}",
-                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
-                poll_index=self._poll_index,
-                serial=self._is_serial,
-            )
-            self._record_state_diagnostic(
-                "backend_read",
-                "web.radio_poller",
-                family="meters",
-                command=f"0x{cmd_byte:02x}",
-                sub=None if sub_byte is None else f"0x{sub_byte:02x}",
-            )
-            await self._civ(
-                cmd_byte,
-                sub=sub_byte,
-                data=b"",
-                priority=Priority.BACKGROUND,
-                wait_dispatch=False,
-            )
-        else:
-            if not self._STATE_QUERIES:
-                self._poll_index += 1
-                return
-            state_idx = (self._poll_index // 2) % len(self._STATE_QUERIES)
-            query = self._STATE_QUERIES[state_idx]
-            self._record_state_diagnostic(
-                "backend_read",
-                "web.radio_poller",
-                family="state",
-                command=f"0x{query.command:02x}",
-                sub=None if query.sub is None else f"0x{query.sub:02x}",
-                receiver=query.receiver,
-            )
-            await self._send_one_state_query(query)
-        self._poll_index += 1
-
-    # Issue #2303: passive observation must never select or exchange a VFO.
-    # Inactive A/B state may therefore remain unknown/stale until a genuinely
-    # non-mutating provider read exists for the active profile.
-    _UNSELECTED_SLOT_INTERVAL: float = 5.0  # sec between refreshes per rx
-    _UNSELECTED_SLOT_DEBOUNCE: float = 0.5  # sec after last user freq/mode write
-
-    def _unselected_slot_gate(self, receiver: int) -> bool:
-        """Return False: exchange-based inactive-slot reads mutate hardware."""
-        _ = receiver
-        return False
-
-    async def _poll_unselected_slot(self, receiver: int) -> None:
-        """Intentionally do nothing; swap/query/swap is not passive polling."""
-        _ = receiver
+        # Without a scheduler there is nothing left to send: the legacy meter
+        # rotation that used to run here was unreachable in production
+        # (MOR-2268) and is deleted. Pinned by
+        # test_send_query_without_scheduler_sends_nothing.
 
     @staticmethod
     def _relative_vfo_fields() -> tuple[str, ...]:
         return ("freq_hz", "mode", "filter_num", "data_mode")
 
+    # Issue #2303: passive observation must never select or exchange a VFO.
+    # Inactive A/B state may therefore remain unknown/stale until a genuinely
+    # non-mutating provider read exists for the active profile.
     def _vfo_identity_paths(self, receiver: int) -> tuple[FieldPath, ...]:
         receiver_id = str(receiver)
         paths: list[FieldPath] = [FieldPath.active_slot(receiver_id)]
@@ -4109,15 +3893,6 @@ class RadioPoller:
         mark, or it having aged fully past its own TTL, all still write —
         the last of those is what lets a healthy-again re-derivation heal
         the field back to FRESH after it actually went stale.
-
-        Never declare ``global.tx_state.tx_target`` in any profile's
-        polling_only/unsolicited_push capability metadata (rigs/*.toml or
-        ``RadioAcquisitionProfile.field_policies``): its absence from
-        capability metadata is exactly what lets the TTL-driven
-        reconciliation request this ``max_age`` generates drop cleanly
-        instead of looping — ``AcquisitionScheduler.query_for_path`` has no
-        CI-V wire mapping for this derived field, so a declared/pollable
-        capability here would retry forever as ``no_civ_query_mapping``.
 
         Uses ``apply_current`` (not ``apply``): this runs synchronously off
         the just-read snapshot with no ``await`` in between, so it always

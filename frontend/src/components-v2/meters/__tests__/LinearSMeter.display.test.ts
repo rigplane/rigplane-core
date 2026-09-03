@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
+import { DEFAULT_ZONES } from '../bar-gauge-utils';
 
 // Minimal calibration table with an S9 knot — enough for `getS9Raw()` to
 // resolve to a real anchor (raw 130) and for `rawToSegments` to place it at
@@ -63,6 +64,19 @@ function segmentRects(target: HTMLElement): SVGRectElement[] {
   return Array.from(target.querySelectorAll('[data-segment]')) as SVGRectElement[];
 }
 
+// MOR-2250 added `toneBelowS9`/`toneAboveS9` to `MeterDisplay`; these
+// geometry-only tests care about segment count/gap, not tone, so every
+// literal below reuses this helper with empty tone strings — the same
+// "no language tone supplied" value `DEFAULT_METER_DISPLAY` uses — so
+// `activeColor`/`dimColor` still take the untouched gradient/hex path these
+// tests already pin.
+// MOR-2255 added the required `zones` field; `LinearSMeter` reads none of it,
+// so every literal below carries `DEFAULT_ZONES` — the same value
+// `DEFAULT_METER_DISPLAY` uses — purely to satisfy the type.
+const geometry = (segmentCount: number, segmentGapPx: number) => (
+  { segmentCount, segmentGapPx, toneBelowS9: '', toneAboveS9: '', zones: DEFAULT_ZONES }
+);
+
 describe('LinearSMeter display prop', () => {
   it('default mount (no display prop) renders exactly 20 segment rects', () => {
     const target = mountMeter({ value: 0 });
@@ -70,7 +84,7 @@ describe('LinearSMeter display prop', () => {
   });
 
   it('display={{ segmentCount: 12, segmentGapPx: 3 }} renders exactly 12 segment rects', () => {
-    const target = mountMeter({ value: 0, display: { segmentCount: 12, segmentGapPx: 3 } });
+    const target = mountMeter({ value: 0, display: geometry(12, 3) });
     expect(segmentRects(target)).toHaveLength(12);
   });
 
@@ -87,14 +101,14 @@ describe('LinearSMeter display prop', () => {
       return x1 - (x0 + w0);
     }
 
-    const gap1 = measuredGap(mountMeter({ value: 0, display: { segmentCount: 12, segmentGapPx: 1 } }));
-    const gap3 = measuredGap(mountMeter({ value: 0, display: { segmentCount: 12, segmentGapPx: 3 } }));
+    const gap1 = measuredGap(mountMeter({ value: 0, display: geometry(12, 1) }));
+    const gap3 = measuredGap(mountMeter({ value: 0, display: geometry(12, 3) }));
 
     expect(gap3 - gap1).toBe(2);
   });
 
   it('rescales the S9 crossover from the raw 20-segment domain instead of the literal 11', () => {
-    const target = mountMeter({ value: 0, display: { segmentCount: 12, segmentGapPx: 1 } });
+    const target = mountMeter({ value: 0, display: geometry(12, 1) });
     const rects = segmentRects(target);
     // dimColor renders '#1A1008' from the first segment at/above the S9
     // crossover onward, '#0A2415' before it — read that switch off the DOM.
@@ -102,5 +116,177 @@ describe('LinearSMeter display prop', () => {
 
     expect(firstAboveS9).toBe(Math.round((11 / 20) * 12));
     expect(firstAboveS9).not.toBe(11);
+  });
+
+  // MOR-2214 fix cycle 2: at segmentCount: 1 the single segment's own fill
+  // color (the "Active" overlay rect, rendered as the dim rect's sibling —
+  // it carries no `data-segment` of its own, which is why `segmentRects()`
+  // above can't select it directly) used to come from
+  // `ACTIVE_COLORS[Math.round((i / (SEG_COUNT - 1)) * ...)]`, a division by
+  // zero at SEG_COUNT === 1 that dropped the `fill` attribute entirely. The
+  // fix samples the ramp by the reading's own fill fraction instead of by
+  // segment index, so a low reading and a strong/over-range one land on
+  // different points of the ramp. `ACTIVE_COLORS[ACTIVE_COLORS.length - 1]`
+  // ('#F83C28', LinearSMeter.svelte's own last ramp entry, read directly off
+  // that file — not a guessed hex string) is the value that would have
+  // caught the original `ACTIVE_COLORS[0]`-fixed-color mistake: under that
+  // mistake, both the low and high readings resolve to the same fixed color
+  // (`#0D633B`), so even a bare "low !== high" inequality check would have
+  // caught it too. Pinning the actual hot-end color is still the stronger
+  // assertion — it also catches a mistake that returns two *different*
+  // wrong colors (neither of them the ramp's actual top), which a bare
+  // inequality check would silently pass.
+  describe('segmentCount: 1 samples the color ramp by fill fraction, not by index', () => {
+    // Extends the module-level 2-knot CAL with a real over-S9 anchor so a
+    // "high" reading can land at the ramp's actual top, not just partway up
+    // it — same S9+60 anchor style as `LinearSMeter.test.ts`'s own 3-knot
+    // table (raw 241, actual 60).
+    const CAL_WITH_OVER_S9 = [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 130, actual: 0, label: 'S9' },
+      { raw: 241, actual: 60, label: 'S9+60' },
+    ];
+
+    let originalMatchMedia: typeof window.matchMedia | undefined;
+
+    // The fill color comes from `smoother.value` (createSmoother's
+    // exponential ballistics), which only snaps straight to its target
+    // under `prefers-reduced-motion: reduce` (smoothing.svelte.ts's
+    // `update`/`start`) — otherwise it approaches the target over real rAF
+    // frames, which this synchronous `flushSync()`-based mount can't wait
+    // out. Forcing `matches: true` here makes the read deterministic.
+    beforeAll(() => {
+      originalMatchMedia = window.matchMedia;
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: (query: string) => ({
+          matches: true,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+        }),
+      });
+    });
+
+    afterAll(() => {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    });
+
+    function activeFill(target: HTMLElement): string | null {
+      const [dim] = segmentRects(target);
+      const active = dim.nextElementSibling as SVGRectElement | null;
+      return active?.getAttribute('fill') ?? null;
+    }
+
+    it('a low reading and the S9+60 top-anchor reading render different, defined fill colors, and the high one is the ramp\'s actual hot end', () => {
+      setCapabilities(makeCaps({ meterCalibrations: { s_meter: CAL_WITH_OVER_S9 } }));
+
+      const low = mountMeter({ value: -50, display: geometry(1, 0) });
+      const lowFill = activeFill(low);
+
+      const high = mountMeter({ value: 60, display: geometry(1, 0) });
+      const highFill = activeFill(high);
+
+      expect(lowFill).not.toBeNull();
+      expect(highFill).toBe('#F83C28');
+      expect(highFill).not.toBe(lowFill);
+    });
+  });
+
+  // MOR-2250 — the owner's ruling is that calibration decides the crossover
+  // POSITION and the design language decides fill TONE only. This suite
+  // proves the tone half directly, and proves the position half is
+  // unaffected by which tones a language supplies (position independence
+  // FROM tone). It does NOT attempt to show a different calibration TABLE
+  // moving the crossover segment index — that was checked directly against
+  // `smeter-scale.ts` (`getS9Raw`/`rawToSegments`) during development and
+  // found false for this codebase: S9 is always normalized to segment
+  // `round(11/20 * segmentCount)` by the S-unit interpolation in
+  // `rawToSFloat`/`rawToSegments` (the last S-unit knot always resolves to
+  // exactly 9 there, whatever raw byte a profile assigns it), so it moves
+  // only with `display.segmentCount` — a language/geometry axis, not a
+  // per-radio calibration one. See the PR body for the reproduction.
+  describe('MOR-2250: the language decides fill tone; the crossover index it switches at is unaffected by which tones are supplied', () => {
+    // Same anchor table this codebase already uses elsewhere for exactly
+    // this purpose (frontend/fixtures/catalog.ts:246-250; matches
+    // LinearSMeter.test.ts's IC7300_S_METER_CAL) — reused, not invented.
+    const IC7300_CAL = [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 120, actual: 0, label: 'S9' },
+      { raw: 241, actual: 60, label: 'S9+60' },
+    ];
+
+    let originalMatchMedia: typeof window.matchMedia | undefined;
+
+    // Same reason as the sibling 'segmentCount: 1' suite above: the active
+    // fill color reads `smoother.value`, deterministic only once forced
+    // under prefers-reduced-motion for this synchronous flushSync() mount.
+    beforeAll(() => {
+      originalMatchMedia = window.matchMedia;
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: (query: string) => ({
+          matches: true,
+          media: query,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          addListener: () => {},
+          removeListener: () => {},
+        }),
+      });
+    });
+
+    afterAll(() => {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    });
+
+    beforeEach(() => {
+      setCapabilities(makeCaps({ meterCalibrations: { s_meter: IC7300_CAL } }));
+    });
+
+    // `value: 60` is the table's top calibrated anchor, so `smoother.value`
+    // settles at the very top and every segment's "Active" rect is present.
+    function activeFillAt(toneBelowS9: string, toneAboveS9: string, index: number): string | null {
+      const target = mountMeter({
+        value: 60,
+        display: { segmentCount: 20, segmentGapPx: 1, toneBelowS9, toneAboveS9, zones: DEFAULT_ZONES },
+      });
+      const dim = segmentRects(target)[index];
+      const active = dim.nextElementSibling as SVGRectElement | null;
+      return active?.getAttribute('fill') ?? null;
+    }
+
+    it('segment 0 (below the crossover) takes toneBelowS9; segment 19 (at/above it) takes toneAboveS9 — not the built-in gradient', () => {
+      expect(activeFillAt('#101010', '#efefef', 0)).toBe('#101010');
+      expect(activeFillAt('#101010', '#efefef', 19)).toBe('#efefef');
+    });
+
+    it('the index the tone switches at is the same regardless of which tone pair is supplied', () => {
+      function firstToneAboveIndex(toneBelowS9: string, toneAboveS9: string): number {
+        const target = mountMeter({
+          value: 60,
+          display: { segmentCount: 20, segmentGapPx: 1, toneBelowS9, toneAboveS9, zones: DEFAULT_ZONES },
+        });
+        const rects = segmentRects(target);
+        return rects.findIndex((dim) => (dim.nextElementSibling as SVGRectElement | null)?.getAttribute('fill') === toneAboveS9);
+      }
+
+      // Matches the existing "rescales the S9 crossover" test's own pin at
+      // segmentCount: 20 (raw 20-segment domain, so no rescale): index 11.
+      expect(firstToneAboveIndex('#101010', '#efefef')).toBe(11);
+      expect(firstToneAboveIndex('#00ff00', '#ff0000')).toBe(11);
+    });
   });
 });

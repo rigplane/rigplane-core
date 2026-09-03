@@ -72,20 +72,25 @@ from __future__ import annotations
 import ast
 import enum
 import functools
+import hashlib
 import importlib
 import inspect
 import itertools
 import os
 import pathlib
 import typing
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import pytest
 
 from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
-from support.command_builders import public_command_builders
+from support.command_builders import (
+    parse_python_paths,
+    public_command_builders,
+    repository_python_paths,
+)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 COMMANDS_DIR = REPO_ROOT / "src" / "rigplane" / "commands"
@@ -95,6 +100,7 @@ DIVERGENCES_FILE = pathlib.Path(__file__).with_name(
 )
 UNCOVERED_FILE = pathlib.Path(__file__).with_name("command_map_parity_uncovered.txt")
 REGEN_ENV = "RIGPLANE_REGEN_COMMAND_MAP_PARITY"
+RUNTIME_FRAMES_FILE = pathlib.Path(__file__).with_name("runtime_civ_frame_debt.txt")
 
 # Never probed: the comparison itself varies ``cmd_map`` and supplies the
 # profile's ``to_addr``, and it leaves ``from_addr`` at its default in both
@@ -272,14 +278,13 @@ def _hardcode_only_builders() -> frozenset[Key]:
     return frozenset(found)
 
 
-def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, ...]:
-    """Probe values for *param*, derived from its annotation alone."""
-    try:
-        annotation = eval(param.annotation, fn.__globals__)  # noqa: S307
-    except Exception:
-        return ()
-    args = typing.get_args(annotation)
-    types = list(args) if args else [annotation]
+def _scalar_values_for(types: list[typing.Any]) -> tuple[typing.Any, ...]:
+    """Probe values for a parameter whose annotation resolved to *types*.
+
+    Split out of :func:`_values_for` so the tuple branch there can reuse
+    the same ladders for a tuple's ELEMENT type instead of a second,
+    independent copy that could disagree with this one.
+    """
     members = [
         member
         for candidate in types
@@ -297,6 +302,33 @@ def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, .
     if int in types:
         return _INTS + _FREQS
     return ()
+
+
+def _values_for(fn: typing.Any, param: inspect.Parameter) -> tuple[typing.Any, ...]:
+    """Probe values for *param*, derived from its annotation alone."""
+    try:
+        annotation = eval(param.annotation, fn.__globals__)  # noqa: S307
+    except Exception:
+        return ()
+    if typing.get_origin(annotation) is tuple:
+        # A tuple parameter wants a SEQUENCE of its element type, not one
+        # element. Without this branch ``get_args`` flattens
+        # ``tuple[int, ...]`` into ``[int, Ellipsis]`` and the scalar
+        # ladder below hands the builder a bare ``0``, which every use of
+        # the parameter as a sequence rejects -- the builder then reports
+        # as unsynthesisable for a reason that is about this file, not
+        # about the builder. Longest candidate first, so a builder that
+        # indexes into the sequence with one of its OTHER synthesised
+        # arguments has room for the index values in ``_INTS``.
+        elements = _scalar_values_for(
+            [arg for arg in typing.get_args(annotation) if arg is not Ellipsis]
+        )
+        if not elements:
+            return ()
+        return (elements, elements[:2], elements[:1])
+    args = typing.get_args(annotation)
+    types = list(args) if args else [annotation]
+    return _scalar_values_for(types)
 
 
 def _requires_cmd_map(fn: typing.Any) -> bool:
@@ -652,3 +684,333 @@ def test_every_site_is_reached_by_some_builder() -> None:
     for key in _builders():
         reached |= _reachable_sites(key)
     assert sorted(_graph().sites - reached) == []
+
+
+# ── direct literal frame sites outside commands/ ──
+
+RuntimeFrameSite = tuple[str, str, str, str, str]
+_FRAME_EXPORTS = frozenset(
+    f"{module}.build_civ_frame"
+    for module in ("rigplane", "rigplane.commands", "rigplane.commands._frame")
+)
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _scope_imports(node: ast.AST, package: str) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    pending = list(ast.iter_child_nodes(node))
+    while pending:
+        child = pending.pop()
+        if isinstance(child, _SCOPES):
+            continue
+        if isinstance(child, ast.Import):
+            for alias in child.names:
+                name = alias.asname or alias.name.split(".")[0]
+                aliases[name] = alias.name if alias.asname else name
+        elif isinstance(child, ast.ImportFrom):
+            module = child.module or ""
+            if child.level:
+                module = importlib.util.resolve_name(
+                    "." * child.level + module, package
+                )
+            for alias in child.names:
+                aliases[alias.asname or alias.name] = f"{module}.{alias.name}"
+        else:
+            pending.extend(ast.iter_child_nodes(child))
+    return aliases
+
+
+def _resolved_frame_name(node: ast.AST, aliases: dict[str, str]) -> str:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, "")
+    if isinstance(node, ast.Attribute):
+        prefix = _resolved_frame_name(node.value, aliases)
+        return f"{prefix}.{node.attr}" if prefix else ""
+    return ""
+
+
+def _frame_argument(call: ast.Call, name: str, position: int) -> ast.AST:
+    for keyword in call.keywords:
+        if keyword.arg == name:
+            return keyword.value
+    return call.args[position] if len(call.args) > position else ast.Constant(None)
+
+
+def _runtime_frame_sites(repo_root: pathlib.Path) -> Counter[RuntimeFrameSite]:
+    """Syntactic import-resolved calls with a literal integer command operand.
+
+    Scan src/rigplane except commands/. No constant propagation, assignment
+    alias/rebinding analysis, star imports/arguments, getattr or call-graph
+    expansion. Nonliteral operands are not certified profile-derived here.
+    """
+    source_root = repo_root / "src" / "rigplane"
+    paths = tuple(
+        path
+        for path in repository_python_paths(source_root)
+        if path.relative_to(source_root).parts[0] != "commands"
+    )
+    health = parse_python_paths(paths)
+    health.require_clean()
+    sites: Counter[RuntimeFrameSite] = Counter()
+
+    for parsed in health.parsed:
+        relative = parsed.path.relative_to(repo_root).as_posix()
+        package = ".".join(parsed.path.relative_to(repo_root / "src").parts[:-1])
+
+        def visit(
+            node: ast.AST, scope: tuple[str, ...], aliases: dict[str, str]
+        ) -> None:
+            if isinstance(node, (ast.Module, *_SCOPES)):
+                aliases = aliases | _scope_imports(node, package)
+                if isinstance(node, _SCOPES):
+                    scope = (*scope, node.name)
+            if (
+                isinstance(node, ast.Call)
+                and _resolved_frame_name(node.func, aliases) in _FRAME_EXPORTS
+            ):
+                command = _frame_argument(node, "command", 2)
+                if isinstance(command, ast.Constant) and type(command.value) is int:
+                    sub = _frame_argument(node, "sub", 3)
+                    sub_value = (
+                        f"{sub.value:02x}"
+                        if isinstance(sub, ast.Constant) and type(sub.value) is int
+                        else "none"
+                        if isinstance(sub, ast.Constant) and sub.value is None
+                        else f"expr:{ast.dump(sub)}"
+                    )
+                    canonical = ast.Call(
+                        func=ast.Name(id="build_civ_frame", ctx=ast.Load()),
+                        args=node.args,
+                        keywords=node.keywords,
+                    )
+                    identity = hashlib.sha256(ast.dump(canonical).encode()).hexdigest()[
+                        :16
+                    ]
+                    sites[
+                        (
+                            relative,
+                            ".".join(scope) or "<module>",
+                            f"{command.value:02x}",
+                            sub_value,
+                            identity,
+                        )
+                    ] += 1
+            for child in ast.iter_child_nodes(node):
+                visit(child, scope, aliases)
+
+        visit(parsed.tree, (), {})
+    return sites
+
+
+def _render_runtime_frames(sites: Counter[RuntimeFrameSite]) -> str:
+    return "\n".join(
+        "\t".join((*site, str(count))) for site, count in sorted(sites.items())
+    )
+
+
+def _assert_no_new_runtime_frames(
+    current: Counter[RuntimeFrameSite], baseline: Counter[RuntimeFrameSite]
+) -> None:
+    new = current - baseline
+    assert not new, (
+        "Unlisted direct literal CI-V frame sites:\n" + _render_runtime_frames(new)
+    )
+
+
+def test_runtime_literal_frames_do_not_grow(record_property):
+    current = _runtime_frame_sites(REPO_ROOT)
+    rows = _read_rows(RUNTIME_FRAMES_FILE)
+    assert all(len(row) == 6 and int(row[5]) > 0 for row in rows)
+    assert len({row[:5] for row in rows}) == len(rows), "duplicate debt identities"
+    baseline = Counter({row[:5]: int(row[5]) for row in rows})
+    record_property(
+        "unresolved_runtime_civ_frame_debt", _render_runtime_frames(current)
+    )
+    print(
+        "Unresolved direct literal CI-V frame debt:\n" + _render_runtime_frames(current)
+    )
+    _assert_no_new_runtime_frames(current, baseline)
+    removed = baseline - current
+    assert not removed, (
+        "Removed runtime frame debt: delete/shrink these baseline rows; "
+        "do not retain an allowance for reintroduction:\n"
+        + _render_runtime_frames(removed)
+    )
+
+
+def _runtime_source(
+    tmp_path: pathlib.Path, source: str, module: str = "runtime/probe.py"
+) -> pathlib.Path:
+    path = tmp_path / "src" / "rigplane" / module
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    ("declaration", "callee"),
+    [
+        ("from rigplane.commands import build_civ_frame", "build_civ_frame"),
+        ("from rigplane.commands import build_civ_frame as frame", "frame"),
+        ("from ..commands import build_civ_frame as frame", "frame"),
+        ("from rigplane.commands._frame import build_civ_frame as f", "f"),
+        ("import rigplane.commands as commands", "commands.build_civ_frame"),
+        ("import rigplane.commands._frame as frame", "frame.build_civ_frame"),
+        ("from .. import commands as cat", "cat.build_civ_frame"),
+        ("import rigplane.commands", "rigplane.commands.build_civ_frame"),
+        ("from rigplane import build_civ_frame as frame", "frame"),
+    ],
+)
+def test_runtime_frame_import_aliases(tmp_path, declaration, callee):
+    root = _runtime_source(
+        tmp_path,
+        f"{declaration}\nclass Radio:\n"
+        "    async def read(self):\n"
+        f"        return {callee}(self.addr, 0xE0, 0x1C, sub=0x00)\n",
+    )
+    sites = _runtime_frame_sites(root)
+    assert sum(sites.values()) == 1
+    site = next(iter(sites))
+    assert site[:4] == ("src/rigplane/runtime/probe.py", "Radio.read", "1c", "00")
+
+
+@pytest.mark.parametrize("layer", ["runtime", "backends/icom", "web", "rigctld"])
+def test_runtime_frame_census_covers_production_layers(tmp_path, layer):
+    root = _runtime_source(
+        tmp_path,
+        "from rigplane.commands import build_civ_frame\n"
+        "frame = build_civ_frame(0x94, 0xE0, command=0x03)\n",
+        f"{layer}/probe.py",
+    )
+    site = next(iter(_runtime_frame_sites(root)))
+    assert site[:4] == (f"src/rigplane/{layer}/probe.py", "<module>", "03", "none")
+
+
+def test_runtime_frame_census_is_not_a_generic_or_profile_operand_verdict(tmp_path):
+    root = _runtime_source(
+        tmp_path,
+        "from rigplane.commands import build_civ_frame\n"
+        "def generic(command, sub):\n"
+        "    return build_civ_frame(addr, controller, command, sub=sub)\n"
+        "def profile(spec):\n"
+        "    return build_civ_frame(addr, controller, spec.command, sub=spec.sub)\n"
+        "def named_constant():\n"
+        "    return build_civ_frame(addr, controller, CMD_VFO, data=payload)\n",
+    )
+    assert _runtime_frame_sites(root) == Counter()
+
+
+def test_runtime_frame_census_excludes_commands_not_unrelated_function(tmp_path):
+    root = _runtime_source(
+        tmp_path,
+        "from rigplane.commands import build_civ_frame\n"
+        "build_civ_frame(0x94, 0xE0, 0x03)\n",
+        "commands/probe.py",
+    )
+    _runtime_source(
+        root,
+        "from unrelated import build_civ_frame\nbuild_civ_frame(0x94, 0xE0, 0x03)\n",
+    )
+    assert _runtime_frame_sites(root) == Counter()
+
+
+def test_runtime_frame_identity_survives_line_churn_and_import_alias(tmp_path):
+    body = "def probe():\n    return build_civ_frame(addr, controller, 0x1C, sub=0)\n"
+    root = _runtime_source(
+        tmp_path, "from rigplane.commands import build_civ_frame\n" + body
+    )
+    before = _runtime_frame_sites(root)
+    _runtime_source(
+        root,
+        "# inserted unrelated comment\n\nfrom rigplane.commands import "
+        "build_civ_frame as frame\n" + body.replace("build_civ_frame", "frame"),
+    )
+    assert _runtime_frame_sites(root) == before
+
+
+def test_runtime_frame_local_import_and_nested_symbol(tmp_path):
+    root = _runtime_source(
+        tmp_path,
+        "class Radio:\n"
+        "    async def read(self):\n"
+        "        from ..commands import build_civ_frame as frame\n"
+        "        def action():\n"
+        "            return frame(self.addr, 0xE0, 0x1A, sub=3)\n"
+        "        return action()\n",
+    )
+    site = next(iter(_runtime_frame_sites(root)))
+    assert site[1:4] == ("Radio.read.action", "1a", "03")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "def another():\n    return build_civ_frame(addr, controller, 0x1C, sub=0)\n",
+        "    build_civ_frame(addr, controller, 0x1C, sub=0)\n",
+        "changed-command",
+        "changed-sub",
+        "changed-payload",
+    ],
+)
+def test_runtime_frame_regrowth_is_rejected(tmp_path, mutation):
+    source = (
+        "from rigplane.commands import build_civ_frame\n"
+        "def probe():\n    build_civ_frame(addr, controller, 0x1C, sub=0)\n"
+    )
+    root = _runtime_source(tmp_path, source)
+    baseline = _runtime_frame_sites(root)
+    changed = {
+        "changed-command": source.replace("0x1C", "0x1A"),
+        "changed-sub": source.replace("sub=0", "sub=3"),
+        "changed-payload": source.replace("sub=0", "sub=0, data=b'\\x01'"),
+    }.get(mutation, source + mutation)
+    _runtime_source(root, changed)
+    with pytest.raises(
+        AssertionError, match=r"src/rigplane/runtime/probe.py.*probe|another"
+    ):
+        _assert_no_new_runtime_frames(_runtime_frame_sites(root), baseline)
+
+
+def test_runtime_frame_removal_cannot_spend_another_sites_allowance(tmp_path):
+    source = (
+        "from rigplane.commands import build_civ_frame\n"
+        "def old():\n    return build_civ_frame(addr, controller, 0x1C, sub=0)\n"
+    )
+    root = _runtime_source(tmp_path, source)
+    baseline = _runtime_frame_sites(root)
+    _assert_no_new_runtime_frames(Counter(), baseline)
+    with pytest.raises(AssertionError, match="old"):
+        _assert_no_new_runtime_frames(baseline, Counter())
+    _runtime_source(root, source.replace("def old", "def new"))
+    with pytest.raises(AssertionError, match="new"):
+        _assert_no_new_runtime_frames(_runtime_frame_sites(root), baseline)
+
+
+def test_runtime_frame_census_fails_on_unparsed_source(tmp_path):
+    root = _runtime_source(tmp_path, "def broken(\n")
+    with pytest.raises(AssertionError, match="syntax_errors=1"):
+        _runtime_frame_sites(root)
+
+
+def test_runtime_frame_removed_debt_must_be_shrunk_before_reintroduction(
+    tmp_path, monkeypatch
+):
+    source = (
+        "from rigplane.commands import build_civ_frame\n"
+        "def old():\n    return build_civ_frame(addr, controller, 0x1C, sub=0)\n"
+    )
+    root = _runtime_source(tmp_path, source)
+    baseline = tmp_path / "debt.txt"
+    baseline.write_text(
+        _render_runtime_frames(_runtime_frame_sites(root)), encoding="utf-8"
+    )
+    monkeypatch.setattr(__name__ + ".REPO_ROOT", root)
+    monkeypatch.setattr(__name__ + ".RUNTIME_FRAMES_FILE", baseline)
+    _runtime_source(root, "# producer removed\n")
+    with pytest.raises(AssertionError, match="Removed runtime frame debt"):
+        test_runtime_literal_frames_do_not_grow(lambda *args: None)
+    baseline.write_text("", encoding="utf-8")
+    test_runtime_literal_frames_do_not_grow(lambda *args: None)
+    _runtime_source(root, source)
+    with pytest.raises(AssertionError, match="Unlisted direct literal"):
+        test_runtime_literal_frames_do_not_grow(lambda *args: None)

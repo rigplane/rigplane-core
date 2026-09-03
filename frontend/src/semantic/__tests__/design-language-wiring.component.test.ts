@@ -37,13 +37,20 @@ import { flushSync, mount, unmount } from 'svelte';
 import MetersSurface from '../MetersSurface.svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
 import VfoSurface from '../VfoSurface.svelte';
-import { topologyFixtures, withMeters } from '../fixtures/topologies';
+import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';
 import type { RadioViewModel } from '../radio-view-model';
 import type { TxAuthoritySnapshot } from '../rx-tx-surface';
 import {
   listDesignLanguageIds, registerDesignLanguage, RendererInputError,
 } from '../../presentation/languages/contract';
 import { validManifest } from '../../presentation/languages/__tests__/fixtures';
+import { STUDIOLINE_TOKENS } from '../../presentation/languages/studioline/tokens';
+import { FIELDLINE_TOKENS } from '../../presentation/languages/fieldline/tokens';
+import { SEGMENTLINE_TOKENS } from '../../presentation/languages/segmentline/tokens';
+import { STUDIOLINE_METER_ZONES } from '../../presentation/languages/studioline/meters-renderer';
+import { FIELDLINE_METER_ZONES } from '../../presentation/languages/fieldline/meters-renderer';
+import { SEGMENTLINE_METER_ZONES } from '../../presentation/languages/segmentline/meters-renderer';
+import { DEFAULT_ZONES, dimColor } from '../../components-v2/meters/bar-gauge-utils';
 import { renderSlot } from '../design-language-renderers';
 
 const VIEW: RadioViewModel = topologyFixtures['2/main_sub'];
@@ -335,6 +342,230 @@ describe('MOR-1275 — the meters slot is wired through the same helper', () => 
     withMounted(MetersSurface, { view }, (root) => {
       expect(annotations(root)).toEqual([]);
     });
+  });
+});
+
+describe('MOR-2214 — the meters slot supplies LinearSMeter\'s segment geometry', () => {
+  const view = withMeters(VIEW, 'receiving');
+
+  /** Segment count actually reaching the DOM, via LinearSMeter's own
+   *  `data-segment` markers — one per visual segment (LinearSMeter.svelte's
+   *  `{#each Array(SEG_COUNT) as _, i}` loop tags only the dim rect of each
+   *  pair with `data-segment`, so this counts visual segments, not rects). */
+  function renderedSegmentCount(language: string | null): number {
+    activate(language);
+    let count = 0;
+    withMounted(MetersSurface, { view }, (root) => {
+      count = root.querySelectorAll('[data-segment]').length;
+    });
+    return count;
+  }
+
+  it('fieldline draws a different segment count than the shared 20-segment default, for the SAME reading', () => {
+    // Kill-mutation: MetersSurface always passing `display={undefined}` to
+    // LinearSMeter (i.e. the wiring never having happened) would make
+    // fieldline converge on LinearSMeter's own 20-segment default too,
+    // collapsing this distinction — see the mutation-and-revert proof in the
+    // PR body. studioline and segmentline both currently match that
+    // no-language default (20); only fieldline (12) differs.
+    expect(renderedSegmentCount('studioline')).toBe(20);
+    expect(renderedSegmentCount('fieldline')).toBe(12);
+    expect(renderedSegmentCount('segmentline')).toBe(20);
+  });
+
+  it('falls back to LinearSMeter\'s own 20-segment default with no language active', () => {
+    expect(renderedSegmentCount(null)).toBe(20);
+  });
+
+  it('renderSlot(\'meters\', ...) itself reports the differing MeterDisplay per language', () => {
+    const reading = { value: 0.5, max: 1, s9: 0.6 };
+    activate('studioline');
+    expect(renderSlot('meters', reading)?.display).toEqual({
+      segmentCount: 20, segmentGapPx: 1,
+      toneBelowS9: STUDIOLINE_TOKENS.rx.active, toneAboveS9: STUDIOLINE_TOKENS.tx.tuning,
+      zones: STUDIOLINE_METER_ZONES,
+    });
+    activate('fieldline');
+    expect(renderSlot('meters', reading)?.display).toEqual({
+      segmentCount: 12, segmentGapPx: 3,
+      toneBelowS9: FIELDLINE_TOKENS.rx.active, toneAboveS9: FIELDLINE_TOKENS.tx.tuning,
+      zones: FIELDLINE_METER_ZONES,
+    });
+    activate('segmentline');
+    expect(renderSlot('meters', reading)?.display).toEqual({
+      segmentCount: 20, segmentGapPx: 3,
+      toneBelowS9: SEGMENTLINE_TOKENS.rx.active, toneAboveS9: SEGMENTLINE_TOKENS.tx.tuning,
+      zones: SEGMENTLINE_METER_ZONES,
+    });
+    activate(null);
+    expect(renderSlot('meters', reading)).toBeNull();
+  });
+
+  // MOR-2214 BLOCKED review: the visual baseline PNGs are blob-identical
+  // whether `segmentGapPx` is 0 or 1 (Playwright's comparator floor can't
+  // see a 1px difference in this frame), so a passing visual check does NOT
+  // prove the gap reached the DOM — only reading the rendered SVG geometry
+  // does. Same measurement `LinearSMeter.display.test.ts`'s
+  // 'honors segmentGapPx' test uses, applied here through the real wiring
+  // (MetersSurface under studioline activation) instead of a hand-built
+  // `display` prop.
+  it('studioline renders an actual 1px gap between segments 0 and 1 in the DOM, not just a descriptor value', () => {
+    activate('studioline');
+    withMounted(MetersSurface, { view }, (root) => {
+      const seg0 = root.querySelector<SVGRectElement>('[data-segment="0"]')!;
+      const seg1 = root.querySelector<SVGRectElement>('[data-segment="1"]')!;
+      const gap = Number(seg1.getAttribute('x'))
+        - (Number(seg0.getAttribute('x')) + Number(seg0.getAttribute('width')));
+      expect(gap).toBe(1);
+    });
+  });
+});
+
+// ── MOR-2255 (slice A) — the meters slot supplies BarGauge's zone palette ──
+//
+// THE TRAP THIS BLOCK EXISTS FOR. Slice A deliberately makes all three
+// product languages declare the SAME three zones `BarGauge` already draws
+// (`DEFAULT_ZONES`). So `expect(zones).toEqual(DEFAULT_ZONES)` passes
+// identically whether the wiring works or whether every gauge is still
+// silently falling back to its own prop default — it cannot tell the two
+// apart. The discrimination below is a fourth, DIFFERENT palette declared by
+// a test-only language: only a real path from the language's descriptor to
+// `BarGauge`'s `zones` prop can make those colors appear in the DOM.
+
+describe('MOR-2255 — the language\'s zones reach every BarGauge tile', () => {
+  /** Fully-observed meters plus a compressor that is ON, so all FIVE
+   *  `METER_BARS` tiles mount — `compression` included, which has no visual
+   *  baseline of its own (its fixture leaves `compressorOn` unset) and is
+   *  therefore covered by this test and nothing else. */
+  const barsView: RadioViewModel = (() => {
+    const withAux = withTxAux(withMeters(VIEW, 'receiving'));
+    return {
+      ...withAux,
+      txAux: {
+        ...withAux.txAux!,
+        compressor: {
+          reading: { status: 'known', value: true },
+          availability: { structural: true, operational: true },
+        },
+      },
+    };
+  })();
+
+  /** Every `METER_BARS` field that renders through `BarGauge`. */
+  const BAR_FIELDS = ['power', 'alc', 'drainCurrent', 'drainVoltage', 'compression'] as const;
+
+  /** A palette no product language declares — a different LENGTH and different
+   *  colors, so neither the sequence nor any single fill can coincide with
+   *  `DEFAULT_ZONES`. */
+  const PROBE_ZONES = [
+    { end: 0.5, color: '#0A0B0C' },
+    { end: 1.0, color: '#FAFBFC' },
+  ] as const;
+
+  registerDesignLanguage({
+    ...validManifest(),
+    id: 'zonedline',
+    renderers: {
+      meters: () => ({
+        kind: 'zonedline-meter',
+        segmentCount: 20, segmentGapPx: 1,
+        toneBelowS9: '#0A0B0C', toneAboveS9: '#FAFBFC',
+        zones: PROBE_ZONES,
+      }),
+    },
+  });
+
+  /**
+   * The hex `fill` of every segment rect in one `BarGauge` tile, in DOM
+   * order. Filtering on a leading `#` keeps exactly the zone-painted rects:
+   * the container, the track and the peak marker all fill from
+   * `var(--v2-…)`, and only `dimColor(zone.color)` / `zone.color` are literal
+   * hex. Read this way rather than off the ACTIVE rects because the smoother
+   * has not advanced at `flushSync` time, so a tile can legitimately have
+   * none.
+   */
+  function tileSegmentFills(language: string | null, field: string): string[] {
+    activate(language);
+    let fills: string[] = [];
+    withMounted(MetersSurface, { view: barsView }, (root) => {
+      const tile = root.querySelector<HTMLElement>(`[data-testid="meter-${field}"]`);
+      expect(tile, `no tile rendered for meter-${field}`).not.toBeNull();
+      fills = [...tile!.querySelectorAll('rect')]
+        .map((rect) => rect.getAttribute('fill') ?? '')
+        .filter((fill) => fill.startsWith('#'));
+    });
+    return fills;
+  }
+
+  it.each(BAR_FIELDS)(
+    '%s: a language declaring a DIFFERENT palette repaints the tile', (field) => {
+      // MUTATION KILLED: dropping `zones={display?.display?.zones}` from the
+      // `<BarGauge>` mount in `MetersSurface.svelte` (or passing
+      // `DEFAULT_ZONES` there instead). Either leaves the tile on the
+      // component's own fallback, making this equal to the no-language
+      // rendering — which is precisely what the equal-valued product
+      // languages cannot detect.
+      const bare = tileSegmentFills(null, field);
+      const probed = tileSegmentFills('zonedline', field);
+
+      expect(bare.length).toBeGreaterThan(0);
+      expect(probed).not.toEqual(bare);
+      // Positive: the probe language's own colors, dimmed by `BarGauge`'s own
+      // `dimColor`, are what the tile is painted with.
+      expect(probed).toContain(dimColor(PROBE_ZONES[0].color));
+      expect(probed).toContain(dimColor(PROBE_ZONES[1].color));
+      // Negative: not one segment is still on the fallback palette.
+      for (const zone of DEFAULT_ZONES) expect(probed).not.toContain(dimColor(zone.color));
+    });
+
+  it.each(['studioline', 'fieldline', 'segmentline'])(
+    '%s: renders the bar tiles byte-identically to the no-language fallback (slice A)', (id) => {
+      // Slice A ships the WIRING only. Every product language declares the
+      // same three zones `BarGauge` already drew, so activating one must
+      // change no fill anywhere — this is the pin that the visual baselines
+      // under `fixtures/approved-baselines/` need no regeneration.
+      for (const field of BAR_FIELDS) {
+        expect(tileSegmentFills(id, field)).toEqual(tileSegmentFills(null, field));
+      }
+    });
+
+  it('all three product languages declare exactly the DEFAULT_ZONES values', () => {
+    // The value half of the pin above, read off the declarations themselves
+    // rather than off the DOM.
+    for (const zones of [STUDIOLINE_METER_ZONES, FIELDLINE_METER_ZONES, SEGMENTLINE_METER_ZONES]) {
+      expect(zones).toEqual(DEFAULT_ZONES);
+    }
+  });
+
+  it('a descriptor with no zones, or empty zones, yields no display at all', () => {
+    // MUTATION KILLED: widening `renderSlot`'s check to four fields again, or
+    // accepting `zones: []` — which `getSegmentZone` cannot serve, since its
+    // fallback is the array's LAST entry.
+    const quartet = {
+      kind: 'partial-meter', segmentCount: 20, segmentGapPx: 1,
+      toneBelowS9: '#111111', toneAboveS9: '#222222',
+    };
+    registerDesignLanguage({
+      ...validManifest(), id: 'zonelessline', renderers: { meters: () => quartet },
+    });
+    registerDesignLanguage({
+      ...validManifest(), id: 'emptyzoneline', renderers: { meters: () => ({ ...quartet, zones: [] }) },
+    });
+    const reading = { value: 0.5, max: 1, s9: 0.6 };
+
+    activate('zonelessline');
+    expect(renderSlot('meters', reading)?.display).toBeNull();
+    activate('emptyzoneline');
+    expect(renderSlot('meters', reading)?.display).toBeNull();
+  });
+
+  it('the zones array never leaks into the DOM as a data-dl-* annotation', () => {
+    // F3's array rule, pinned for THIS field: a palette is private geometry,
+    // and serialising it would put per-language data in the attribute
+    // contract — and change the rendered markup this slice must not touch.
+    activate('studioline');
+    const attributes = renderSlot('meters', { value: 0.5, max: 1, s9: 0.6 })!.attributes;
+    expect(Object.keys(attributes).filter((key) => key.includes('zone'))).toEqual([]);
   });
 });
 

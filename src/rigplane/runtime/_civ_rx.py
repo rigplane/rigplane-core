@@ -47,6 +47,7 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
+from rigplane.commands.scope import _span_index_for_hz
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import KnownTxTarget
@@ -1599,6 +1600,12 @@ class CivRuntime:
             )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
+                self._publish_scope_mode_observation(
+                    scope_frame, receiver=receiver, frame=frame
+                )
+                self._publish_scope_span_observation(
+                    scope_frame, receiver=receiver, frame=frame
+                )
                 self._publish_scope_frame(scope_frame)
             return
 
@@ -2575,7 +2582,9 @@ class CivRuntime:
             receiver, mode = parse_scope_mode_response(frame)
             pairs.append(("mode", mode))
         elif frame.sub == 0x15:
-            receiver, span = parse_scope_span_response(frame)
+            receiver, span = parse_scope_span_response(
+                frame, self._host._profile.scope_span_presets_hz
+            )
             pairs.append(("span", span))
         elif frame.sub == 0x16:
             receiver, edge = parse_scope_edge_response(frame)
@@ -3163,7 +3172,9 @@ class CivRuntime:
                 scope.receiver = receiver
             scope.mode = mode
         elif frame.sub == 0x15:
-            receiver, span = parse_scope_span_response(frame)
+            receiver, span = parse_scope_span_response(
+                frame, self._host._profile.scope_span_presets_hz
+            )
             if receiver is not None:
                 scope.receiver = receiver
             scope.span = span
@@ -3258,6 +3269,158 @@ class CivRuntime:
         recorder = getattr(self._host, "_state_diagnostics", None)
         if isinstance(recorder, StateDiagnosticsRecorder):
             recorder.record(kind, source, **details)
+
+    def _publish_scope_mode_observation(
+        self, scope_frame: ScopeFrame, *, receiver: int, frame: CivFrame
+    ) -> None:
+        """Emit a change-detected ``scope_controls.global.display.mode`` write.
+
+        MOR-2222 moved the ``scope_controls.global.display.*`` paths out of
+        the acquisition cadence (no more periodic ``0x27`` polls): the
+        scope's own reads own them now. The waveform stream (``0x27``/
+        ``0x00``) is the one unsolicited source that keeps ``mode`` current
+        while it runs, so this republishes it — once per change, not once
+        per frame, since the stream runs at up to ~15 fps. ``mode`` is
+        validated against its documented 0-3 range (``ScopeFrame.mode``'s
+        own docstring; the reply path can never produce anything else) —
+        an out-of-range value publishes nothing. ``span`` is republished
+        the same way by ``_publish_scope_span_observation`` below
+        (MOR-2256, derived through the span-preset table, not a raw
+        frequency). ``edge``/``fixed_edge`` are NOT republished: ``edge``
+        is a preset index 1-4 with no frame-carried source, and
+        ``fixed_edge`` a preset-table record (range_index/edge/start/end)
+        with no declared table of legal values to derive it from — those
+        stay display-only, carried to the web through the spectrum stream
+        itself (``ScopeFrame``), not the StateStore.
+
+        Unlike ``_publish_scope_span_observation`` below, this does NOT
+        need an ``out_of_range`` guard: ``mode`` (``ScopeFrame.mode``)
+        comes from ``raw_payload[2]``, decoded in
+        ``rigplane.scope._ReceiverState.feed`` before the OOR check, and
+        is unaffected by it -- only ``start_freq_hz``/``end_freq_hz``
+        (which this method never reads) are left as raw, unexpanded
+        values when ``out_of_range`` is set (#3063 review, second round;
+        checked, confirmed not applicable here).
+
+        The observation is bound to the store's CURRENT provider
+        generation before ``apply`` — mirroring
+        ``_apply_state_store_observations``'s own pattern below — because
+        ``Observation.provider_generation`` defaults to 0 and
+        ``StateStore.apply``/``_is_current_observation`` silently rejects
+        anything that does not match ``advance_generation``'s bump on
+        connect (#3063 review: a connected radio's stream observations
+        were dropped from the moment of connect onward). The
+        change-detect cache is updated only when ``apply`` reports the
+        observation ACCEPTED -- ``changeset.observed_paths`` non-empty,
+        the same signal ``StateStore._apply_one``/``_empty_changeset``
+        use to distinguish a written observation from a rejected one --
+        not merely after the call returns (#3063 review, second round):
+        caching on every call, accepted or not, would mean a rejected
+        value is never retried once the stream reports that same value
+        again.
+        """
+        if not 0 <= scope_frame.mode <= 3:
+            return
+        last_modes = self._host._scope_stream_last_mode
+        if last_modes.get(receiver) == scope_frame.mode:
+            return
+        store_provider_generation = self._host._state_store.provider_generation
+        observation = _replace_dataclass(
+            self._observation(
+                FieldPath.scope_control("display", "mode"),
+                scope_frame.mode,
+                frame=frame,
+            ),
+            provider_generation=store_provider_generation,
+        )
+        changeset = self._host._state_store.apply(observation)
+        if changeset.observed_paths:
+            last_modes[receiver] = scope_frame.mode
+        self._record_scheduler_result_for_observation(observation, changeset)
+        self._notify_state_store_changed(changeset)
+
+    def _publish_scope_span_observation(
+        self, scope_frame: ScopeFrame, *, receiver: int, frame: CivFrame
+    ) -> None:
+        """Emit a change-detected ``scope_controls.global.display.span`` write.
+
+        Center mode only (``scope_frame.mode == 0``) AND in-range
+        (``scope_frame.out_of_range`` is False): when a waveform frame's
+        OOR flag is set, ``rigplane.scope._ReceiverState.feed`` returns
+        BEFORE the center-mode edge expansion (``center - span``/
+        ``center + span``) — ``start_freq_hz``/``end_freq_hz`` are then
+        the raw, unexpanded [center, span] pair, not edges, so
+        ``end_freq_hz - start_freq_hz`` is ``span - center``, not
+        ``2 * span`` (#3063 review, second round: a center-450kHz/
+        span-500kHz OOR frame computed index 3 instead of 7 before this
+        guard). Publishing from an OOR frame at all would also be
+        publishing a span the operator cannot currently see confirmed on
+        screen, which the mode/span republish exists to avoid guessing.
+
+        Per the IC-7610 CI-V reference (p.14, "Scope waveform data") and
+        the IC-7300 manual, an in-range center-mode payload carries the
+        center frequency and the SPAN value itself — the same value the
+        ``0x27 0x15`` span table encodes — not half of it.
+        ``_ReceiverState.feed`` turns that pair into edges via
+        ``center - span``, ``center + span``, so ``end_freq_hz -
+        start_freq_hz == 2 * span``. The span to look up is therefore
+        ``(end_freq_hz - start_freq_hz) / 2``, computed with an
+        exact-division check (a remainder means this width did not come
+        from that doubling and is untrustworthy) — not the raw
+        difference, which is off by 2x (#3063 review, first round,
+        verified against both manuals). Matched EXACTLY against this
+        profile's declared ``scope_span_presets_hz`` (``rigs/*.toml``:
+        ``[scope].span_presets_hz``, MOR-2258) via the shared
+        ``_span_index_for_hz`` helper — the same lookup
+        ``parse_scope_span_response`` (the 0x15 reply path) uses against
+        the same profile-declared list, so the stream and a typed-getter
+        reply agree on what index a given Hz value maps to. No match ->
+        publish nothing, and do not clear whatever the field last held:
+        a non-matching span is either drift outside the declared presets
+        or an unexpected source, not something to overwrite a confirmed
+        value with a guess. A profile with no declared presets (empty
+        tuple) never matches, so this is a silent no-op for any rig that
+        hasn't declared ``[scope].span_presets_hz``.
+
+        Fixed mode (``scope_frame.mode != 0``) publishes nothing: unlike
+        span, there is no declared table of legal (start_hz, end_hz) pairs
+        to match a fixed-mode frame's edges against —
+        ``_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ`` only maps a start_hz to a
+        *band*, not to a specific stored (range, edge) preset, and a
+        preset's actual edges are radio-side user-configured memory, not
+        enumerable data. Publishing here would mean guessing which preset
+        is active, which MOR-2256 rules out.
+
+        Same generation-binding and cache-after-ACCEPTED-apply ordering
+        as ``_publish_scope_mode_observation`` above — see its docstring.
+        """
+        if scope_frame.mode != 0 or scope_frame.out_of_range:
+            return
+        width_hz = scope_frame.end_freq_hz - scope_frame.start_freq_hz
+        if width_hz % 2 != 0:
+            return
+        span_hz = width_hz // 2
+        presets = self._host._profile.scope_span_presets_hz
+        span = _span_index_for_hz(span_hz, presets)
+        if span is None:
+            return
+        last_spans = self._host._scope_stream_last_span
+        if last_spans.get(receiver) == span:
+            return
+        store_provider_generation = self._host._state_store.provider_generation
+        observation = _replace_dataclass(
+            self._observation(
+                FieldPath.scope_control("display", "span"),
+                span,
+                frame=frame,
+            ),
+            provider_generation=store_provider_generation,
+        )
+        changeset = self._host._state_store.apply(observation)
+        if changeset.observed_paths:
+            last_spans[receiver] = span
+        self._record_scheduler_result_for_observation(observation, changeset)
+        self._notify_state_store_changed(changeset)
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""

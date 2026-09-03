@@ -51,9 +51,30 @@ export function isValidLanguageId(id: string): boolean {
 /** Required groups: typography, geometry, meters, frequency, motion, focus ring, RX/TX. Density and renderer slots are manifest-level, not tokens. */
 export interface StateFeedbackTokens { readonly idle: string; readonly active: string; readonly tuning: string }
 
+/**
+ * One band of a bar gauge's zone palette: `end` is the normalized 0..1
+ * position the band runs to, `color` the CSS color its segments take.
+ *
+ * Structurally the same shape as `components-v2/meters/bar-gauge-utils.ts`'s
+ * own `Zone`, declared here rather than imported from there because the
+ * dependency runs the other way: `components-v2/meters/meter-display.ts`
+ * imports this module, and no file under `presentation/` imports
+ * `components-v2/`.
+ */
+export interface Zone {
+  readonly end: number;
+  readonly color: string;
+}
+
 export interface MeterDisplay {
-  readonly segmentCount: number; // integer >= 2
+  readonly segmentCount: number; // integer >= 1
   readonly segmentGapPx: number; // >= 0
+  readonly toneBelowS9: string; // CSS color, segments below the S9 crossover
+  readonly toneAboveS9: string; // CSS color, segments at/above the S9 crossover
+  /** MOR-2255: bar-gauge zone palette, ordered low→high `end`; never empty —
+   *  `getSegmentZone` falls back to the LAST entry, which an empty array
+   *  cannot supply. */
+  readonly zones: readonly Zone[];
 }
 
 export const REQUIRED_TOKEN_GROUPS = [

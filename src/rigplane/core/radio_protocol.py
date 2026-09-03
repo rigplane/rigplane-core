@@ -120,7 +120,6 @@ __all__ = [
     "StatePoller",
     "StateStoreCapable",
     "RitXitCapable",
-    "TransceiverStatusCapable",
     "TransmitStateReadable",
     "UsbAudioCapable",
     "MemoryCapable",
@@ -266,12 +265,18 @@ class Radio(Protocol):
         """
         ...
 
-    def supports_command(self, command: str) -> bool:
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Check if this radio supports a specific command.
 
         Profile-driven backends derive this from direct profile declarations
         and explicit runtime relations. Other providers may resolve support
         through their own backend command inventory.
+
+        ``receiver=None`` retains name-only support. An explicit receiver
+        opts into target admission for ``set_af_level``, ``set_rf_gain`` and
+        ``set_squelch``: it must be an integer (not bool) in the provider's
+        topology with an executable write route. Other commands return False
+        for this opt-in query; their name-only support is unchanged.
         """
         ...
 
@@ -1949,23 +1954,6 @@ class RitXitCapable(Protocol):
 
     async def set_rit_tx_status(self, on: bool) -> None:
         """Set RIT TX (XIT) on/off status."""
-        ...
-
-
-@runtime_checkable
-class TransceiverStatusCapable(Protocol):
-    """Radio supports TX frequency monitor (M4 transceiver_status family).
-
-    RIT/XIT lives in :class:`RitXitCapable` — the two were previously bundled
-    here but have unrelated semantics.
-    """
-
-    async def get_tx_freq_monitor(self) -> bool:
-        """Get TX frequency monitor on/off status."""
-        ...
-
-    async def set_tx_freq_monitor(self, on: bool) -> None:
-        """Set TX frequency monitor on/off status."""
         ...
 
 
