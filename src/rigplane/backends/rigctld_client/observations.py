@@ -26,6 +26,7 @@ Clock = Callable[[], float]
 __all__ = [
     "RigctldClientObservationAdapter",
     "build_external_rigctld_acquisition_profile",
+    "resolve_external_rigctld_poll_intervals",
 ]
 
 _FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
@@ -178,6 +179,28 @@ def build_external_rigctld_acquisition_profile(
             _NR: _SLOW_CONTROL_POLICY,
         },
     )
+
+
+def resolve_external_rigctld_poll_intervals(
+    profile: RadioAcquisitionProfile,
+) -> tuple[float, float]:
+    """Return the (medium, slow) poll periods ``profile`` declares, in seconds."""
+    medium = _require_cadence(profile.default_policy, label="default policy")
+    # Witness path for the slow loop: ``_RF_GAIN`` and ``_AF_LEVEL`` hold the
+    # same policy but ``RigctldClientObservationAdapter.read_freq_mode_controls``
+    # also reads them on the medium loop, so their cadence does not describe the
+    # slow period. ``_PREAMP`` is read on a cadence only by ``read_slow_controls``.
+    slow = _require_cadence(profile.policy_for(_PREAMP), label=str(_PREAMP))
+    return medium, slow
+
+
+def _require_cadence(policy: AcquisitionPolicy, *, label: str) -> float:
+    cadence = policy.cadence_seconds
+    if cadence is None:
+        raise ValueError(
+            f"{label}: cadence_seconds is required to derive a poll period"
+        )
+    return cadence
 
 
 @dataclass(slots=True)
