@@ -57,7 +57,10 @@ from .contract import ClientSession, HamlibError, RigctldConfig  # noqa: TID251
 from .utils import get_mode_reader  # noqa: TID251
 
 if TYPE_CHECKING:
+    from ..core.command_service import CommandService
     from ..radio_protocol import Radio
+    from ..runtime._poller_types import CommandQueue
+    from ..runtime.managed_tx_authority import ManagedTxAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -148,10 +151,27 @@ class RigctldServer:
         radio: "Radio",
         config: RigctldConfig | None = None,
         *,
+        managed_tx_authority: ManagedTxAuthority | None = None,
+        command_queue: CommandQueue | None = None,
+        command_service: CommandService | None = None,
         _protocol: Any = None,
         _handler: Any = None,
         _circuit_breaker: Any = None,
     ) -> None:
+        supplied = (
+            managed_tx_authority is not None,
+            command_queue is not None,
+            command_service is not None,
+        )
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "managed authority, queue and service must be supplied together"
+            )
+        if all(supplied) and _handler is not None:
+            raise ValueError("managed references cannot be combined with _handler")
+        self._managed_tx_authority = managed_tx_authority
+        self._command_queue = command_queue
+        self._command_service = command_service
         self._radio = radio
         self._config = config or RigctldConfig()
         self._server: asyncio.Server | None = None
@@ -827,6 +847,9 @@ class RigctldServer:
                 self._config,
                 state_store=self._state_store,
                 state_model_service=self._state_model_service,
+                managed_tx_authority=self._managed_tx_authority,
+                command_queue=self._command_queue,
+                command_service=self._command_service,
             )
 
         store = self._state_store
