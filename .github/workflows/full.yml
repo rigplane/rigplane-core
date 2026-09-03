@@ -16,7 +16,7 @@ jobs:
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 20
     env:
-      SOURCE_PIN: 5c96eba7e410c72bf00388629ca3cd1f40638663
+      SOURCE_PIN: 01c521ed85a193f54f09ccc4271710a32d27d864
       UV_PYTHON: '3.11'
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONPATH: ${{ github.workspace }}/source/src:${{ github.workspace }}/source/tests
@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 5c96eba7e410c72bf00388629ca3cd1f40638663
+          ref: 01c521ed85a193f54f09ccc4271710a32d27d864
           fetch-depth: 0
           persist-credentials: false
           path: source
