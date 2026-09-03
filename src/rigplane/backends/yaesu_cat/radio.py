@@ -1927,7 +1927,8 @@ class YaesuCatRadio:
     async def get_active_receiver(self) -> int:
         """Return the index of the currently active receiver.
 
-        Reads ``VS;`` on dual-RX rigs; returns ``0`` on single-RX profiles.
+        Uses the profile's ``get_vfo_select`` command on dual-RX rigs; returns
+        ``0`` on single-RX profiles.
         """
         if self.receiver_count <= 1:
             return 0
@@ -2622,11 +2623,11 @@ class YaesuCatRadio:
         await self.set_key_pitch(idx)
 
     async def get_dial_lock(self) -> bool:
-        """Alias for AdvancedControlCapable compatibility."""
+        """Alias for SystemControlCapable compatibility."""
         return await self.get_lock()
 
     async def set_dial_lock(self, on: bool) -> None:
-        """Alias for AdvancedControlCapable compatibility."""
+        """Alias for SystemControlCapable compatibility."""
         await self.set_lock(on)
 
     async def get_compressor(self) -> bool:
@@ -2634,15 +2635,15 @@ class YaesuCatRadio:
         return await self.get_processor()
 
     async def set_compressor(self, on: bool) -> None:
-        """Alias for AdvancedControlCapable compatibility."""
+        """Alias for VoiceControlCapable compatibility."""
         await self.set_processor(on)
 
     async def get_tuner_status(self) -> int:
-        """AdvancedControlCapable alias. Returns tuner state (0=OFF, 1=ON, 2=tuning)."""
+        """Alias for SystemControlCapable compatibility."""
         return await self.get_tuner()
 
     async def set_tuner_status(self, value: int) -> None:
-        """AdvancedControlCapable alias."""
+        """Alias for SystemControlCapable compatibility."""
         await self.set_tuner(value)
 
     async def send_cw_text(self, text: str) -> None:
@@ -2859,7 +2860,7 @@ class YaesuCatRadio:
     async def get_dash_ratio(self) -> int:
         raise NotImplementedError("CW dash ratio not supported on this radio")
 
-    # -- Main/Sub tracking (single-receiver Yaesu) ----------------------------
+    # -- Main/Sub tracking (not supported) ------------------------------------
 
     async def set_main_sub_tracking(self, on: bool) -> None:
         raise NotImplementedError("Main/Sub tracking not supported on this radio")

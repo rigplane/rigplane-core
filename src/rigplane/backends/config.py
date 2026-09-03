@@ -58,7 +58,7 @@ class LanBackendConfig:
 
 @dataclass(frozen=True, slots=True)
 class SerialBackendConfig:
-    """Configuration for serial backend assembly (stub-ready)."""
+    """Configuration for serial backend assembly."""
 
     backend: Literal["serial"] = "serial"
     device: str = ""

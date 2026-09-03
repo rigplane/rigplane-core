@@ -194,7 +194,6 @@ def parse_hamlib_dump_caps(text: str) -> HamlibCaps:
         recognized = 0
 
         for line in text.splitlines():
-            # Only dispatch column-0 lines; skip indented sub-blocks entirely.
             if not line or line[0] in (" ", "\t"):
                 continue
 

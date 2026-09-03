@@ -473,7 +473,7 @@ class IcomTransport:
         struct.pack_into("<H", pkt, 6, self.ping_seq)
         struct.pack_into("<I", pkt, 8, self.my_id)
         struct.pack_into("<I", pkt, 0x0C, self.remote_id)
-        pkt[0x10] = 0x00  # reply = request
+        pkt[0x10] = 0x00  # request flag
         ms = int(time.monotonic() * 1000) & 0xFFFFFFFF
         struct.pack_into("<I", pkt, 0x11, ms)
         return bytes(pkt)

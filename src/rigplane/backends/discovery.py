@@ -57,7 +57,7 @@ _BLUETOOTH_KEYWORDS = ("bluetooth",)
 
 @dataclass
 class SerialPortCandidate:
-    """A USB serial port that may be connected to an Icom radio.
+    """A USB serial port that may be connected to a radio.
 
     Attributes:
         device: OS device path, e.g. ``/dev/ttyUSB0``.
@@ -560,7 +560,7 @@ async def probe_serial_kenwood_cat(
 
 
 def enumerate_serial_ports() -> list[SerialPortCandidate]:
-    """Enumerate candidate USB serial ports for Icom radios.
+    """Enumerate candidate USB serial ports for radios.
 
     Returns:
         List of :class:`SerialPortCandidate` objects for ports that pass the
