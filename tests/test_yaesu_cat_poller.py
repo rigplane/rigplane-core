@@ -874,9 +874,7 @@ class _SideEffectingYaesuRadio:
         return False
 
     async def read_transmit_state(self) -> TxStateReading:
-        return TxStateReading(
-            await self.read_ptt(), "rx", "yaesu_poll_response", True
-        )
+        return TxStateReading(await self.read_ptt(), "rx", "yaesu_poll_response", True)
 
     async def get_ptt(self) -> bool:
         self.legacy_getter_calls += 1
