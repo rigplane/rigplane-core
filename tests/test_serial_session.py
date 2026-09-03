@@ -124,24 +124,43 @@ async def test_send_tracked_propagates_actual_serial_io_failure(
 
 @pytest.mark.asyncio
 async def test_send_tracked_forwards_currency_to_serial_writer() -> None:
-    link, _, writer = await _make_link()
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(writer=_FakeWriter(drain_gate=gate))
     transport = SerialCivTransport(link)
     frame = b"\xfe\xfe\x98\xe0\x1c\x00\x01\xfd"
+    query = b"\xfe\xfe\x98\xe0\x03\xfd"
+    off = b"\xfe\xfe\x98\xe0\x1c\x00\x00\xfd"
+    current = True
     tasks: list[asyncio.Task[None]] = []
+
+    def is_current() -> bool:
+        return current
+
     try:
+        await link.send(query)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
         pending = asyncio.create_task(
             transport.send_tracked(
-                _wrap_civ_frame(frame, seq=0), is_current=lambda: False
+                _wrap_civ_frame(frame, seq=0), is_current=is_current
             )
         )
         tasks.append(pending)
+        await asyncio.sleep(0)
+        assert link._write_queue.qsize() == 1
+        assert not pending.done()
+        current = False
+        gate.set()
         result = await asyncio.wait_for(
             asyncio.gather(pending, return_exceptions=True), timeout=1
         )
-        assert writer.writes == [], "transport dropped final-write currency"
+        assert writer.writes == [query], "transport dropped final-write currency"
         assert isinstance(result[0], CommandError)
         assert not writer.closed
         assert link.ready
+        await asyncio.wait_for(
+            transport.send_tracked(_wrap_civ_frame(off, seq=0)), timeout=1
+        )
+        assert writer.writes == [query, off]
     finally:
         await _cleanup_writes(link, tasks, writer)
 

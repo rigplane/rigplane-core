@@ -241,6 +241,37 @@ async def test_send_written_captures_session_before_backpressure(
 
 
 @pytest.mark.asyncio
+async def test_admitted_write_rechecks_writer_identity_before_write() -> None:
+    gate = asyncio.Event()
+    link, _, writer = await _make_link(
+        queue_size=1, writer=_FakeWriter(drain_gate=gate)
+    )
+    newer = _FakeWriter()
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        await link.send(_QUERY)
+        await asyncio.wait_for(writer.drain_started.wait(), timeout=1)
+        pending = asyncio.create_task(link.send_written(_ON, is_current=lambda: True))
+        tasks.append(pending)
+        await asyncio.sleep(0)
+        assert link._write_queue.qsize() == 1
+        assert not pending.done()
+        link._writer = newer
+        gate.set()
+        result = await asyncio.wait_for(
+            asyncio.gather(pending, return_exceptions=True), timeout=1
+        )
+        assert writer.writes == [_wire(_QUERY)], "admitted ON used retired writer"
+        assert newer.writes == [], "admitted ON crossed writer identity"
+        assert isinstance(result[0], ConnectionError)
+        assert not newer.closed
+        assert link._writer is newer
+    finally:
+        await _cleanup_writes(link, tasks, writer, newer)
+        writer.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("waiting_for_space", [False, True])
 async def test_cancelled_queued_write_keeps_active_neighbor_and_successor(
     waiting_for_space: bool,
