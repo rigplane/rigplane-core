@@ -55,6 +55,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     AcquisitionStatus,
     MeterObservationCoalescer,
+    StateFreshnessService,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -2386,6 +2387,12 @@ async def test_scheduler_active_freq_mode_request_completes_from_civ_rx_loop(
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
+    # MOR-2280: the cadence call left the poller for
+    # ``StateFreshnessService.tick``; the drain sends what it finds queued.
+    StateFreshnessService(
+        store=poller._state_store,  # noqa: SLF001
+        scheduler=scheduler,
+    ).tick()
     await poller._send_query()  # noqa: SLF001
 
     assert scheduler.pending_requests()[0].paths == (path,)

@@ -30,6 +30,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     AcquisitionStatus,
     IcomCivAcquisitionExecutor,
+    MeterObservationCoalescer,
     RadioStateModelService,
     StateFreshnessService,
     derive_tx_active,
@@ -39,6 +40,7 @@ from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
     FieldAvailability,
     FieldCapability,
+    MeterCoalescingPolicy,
     RadioAcquisitionProfile,
 )
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
@@ -2266,3 +2268,83 @@ class TestWsjtxCompatPrewarm:
         await srv._wsjtx_compat_prewarm()
 
         mock_radio.set_data_mode.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# MOR-2280 F14: standalone rigctld attaches the meter coalescer only the web
+# seat used to build, and the freshness tick releases what it holds.
+# ---------------------------------------------------------------------------
+
+
+def _coalescing_swr_profile(swr: FieldPath) -> RadioAcquisitionProfile:
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(FieldCapability(path=swr, command_response_observable=True),),
+        field_policies={
+            swr: AcquisitionPolicy(
+                cadence_seconds=None,
+                freshness_ttl_seconds=2.0,
+                meter_coalescing=MeterCoalescingPolicy(window_seconds=0.2),
+            ),
+        },
+    )
+
+
+def _meter_observation(path: FieldPath, value: object, *, at: float) -> Observation:
+    return Observation(
+        path=path,
+        value=value,
+        source=SourceMetadata(source="poll_response", provider="test_provider"),
+        timestamp_monotonic=at,
+        max_age=2.0,
+    )
+
+
+async def test_standalone_rigctld_coalesces_meter_bursts_and_the_tick_releases_them(
+    cfg: RigctldConfig,
+) -> None:
+    """MOR-2280 F14. This is a behaviour change for the standalone seat.
+
+    ``CivRuntime._record_coalesced_meter_observation`` coalesces only if the
+    radio carries a ``MeterObservationCoalescer``; standalone rigctld attached
+    none, so it returned False for every meter sample and nothing was ever
+    held. Bootstrapping the standalone server now attaches one, and the
+    freshness tick is what releases the held sample into the store.
+    """
+
+    from rigplane.runtime._civ_rx import CivRuntime
+
+    swr = FieldPath.global_("meters", "swr")
+    radio = _ProfiledStandaloneRadio(
+        profile=type(
+            "Profile", (), {"state_acquisition": _coalescing_swr_profile(swr)}
+        )()
+    )
+    srv = RigctldServer(radio, cfg)
+    srv._bootstrap_state_acquisition()
+
+    coalescer = getattr(radio, "_meter_observation_coalescer", None)
+    assert isinstance(coalescer, MeterObservationCoalescer)
+
+    runtime = CivRuntime(radio)
+    radio._civ_runtime = runtime
+
+    # First sample: nothing stored yet, so it is not a burst and applies.
+    assert runtime._record_coalesced_meter_observation(
+        _meter_observation(swr, 1.1, at=500.0)
+    )
+    assert radio._state_store.snapshot().field(swr).value == 1.1
+
+    # Second sample, inside the window: held by the coalescer, not applied.
+    assert runtime._record_coalesced_meter_observation(
+        _meter_observation(swr, 1.9, at=500.05)
+    )
+    assert radio._state_store.snapshot().field(swr).value == 1.1
+    assert coalescer.diagnostics()["pendingSampleCount"] == 1
+
+    # The tick releases it once the window has elapsed.
+    assert srv._state_freshness_service is not None
+    srv._state_freshness_service.tick(now=500.3)
+
+    assert radio._state_store.snapshot().field(swr).value == 1.9
+    assert coalescer.diagnostics()["pendingSampleCount"] == 0
