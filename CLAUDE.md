@@ -276,7 +276,7 @@ number crosses that guardrail.
 
 | Guardrail | Value | Effect |
 |---|---|---|
-| **Hard ceiling** | 10 files · 1000 changed lines | Do not cross; decompose first (`/decompose-issue`). Not author-waivable — only the owner grants an exception, in the PR, before merge. |
+| **Hard ceiling** | 10 files · 1000 changed lines | Do not cross; decompose first (`/decompose-issue`). Not author-waivable — the owner grants an exception, or the coordinating session does under the owner's delegation of 2026-09-03 (file count only; the line ceiling stays the owner's); either way the exception is recorded as the first line of the PR body before merge, with the count stated as `N code + M regenerated baselines = K files` (the PR's file list at the head, PNGs included). |
 | **Soft threshold** | 6 files · 600 changed lines | Forbids nothing; the PR body must say why this is one unit of work. |
 | New abstractions/layers | forbidden unless issue requires | |
 | Speculative improvements | forbidden | |
