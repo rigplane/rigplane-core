@@ -1,266 +1,276 @@
-name: Tests (full matrix)
+name: Icom observed PTT mutation proof (staged)
 
 on:
-  schedule:
-    # Mon/Wed/Fri 03:00 UTC (06:00 MSK)
-    - cron: "0 3 * * 1,3,5"
   workflow_dispatch:
-  push:
-    branches: [main]
-
-concurrency:
-  group: tests-full-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  test:
-    # On push: only when commit message contains [full-ci].
-    # On schedule / manual dispatch: always run.
-    if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
-    # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
-    # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
-    # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
-    # Operator doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
+  mutation-proof:
     runs-on: [self-hosted, linux, build]
-    timeout-minutes: 25
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
     env:
-      # Pin uv to the matrix interpreter. Without this, `uv run` satisfies
-      # requires-python=">=3.11" with the newest interpreter on the runner
-      # (3.13), so every matrix job silently tested 3.13 (MOR-590).
-      UV_PYTHON: ${{ matrix.python-version }}
-
+      SOURCE_SHA: 04bb81d6255b8f7b0d89e7338852d07b3abed437
     steps:
       - uses: actions/checkout@v6
         with:
-          # Architecture debt guards compare HEAD with the reachable PR base.
-          fetch-depth: 2
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
+      - name: Verify pinned source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
-        # already installed its packages (pytest, ruff, mypy, pydantic,
-        # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
-        # alias) — but neither flag named `scope` (Pillow), `dsp` (scipy), or
-        # `webrtc` (aiortc), the extras that gate 62 tests in tests/. Those
-        # tests ran skipped in CI while still showing green. `uv sync
-        # --all-extras` installs every extra declared in pyproject.toml's
-        # [project.optional-dependencies], so those tests run instead of
-        # skipping.
-        run: uv sync --all-extras
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
+      - name: Prove mutation and restoration structurally
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          cd frontend
-          npm ci
+          set -eu
+          source_file=src/rigplane/runtime/_civ_rx.py
+          original_sha="$(git rev-parse HEAD)"
+          restore_source() {
+            label="$1"
+            git restore --source="$SOURCE_SHA" --worktree -- "$source_file"
+            test "$(git rev-parse HEAD)" = "$original_sha"
+            test -z "$(git diff --name-only -- "$source_file")"
+            {
+              printf 'source_sha=%s\n' "$SOURCE_SHA"
+              printf 'head_sha=%s\n' "$(git rev-parse HEAD)"
+              printf 'source_diff=clean\n'
+            } > "$label-restoration.txt"
+          }
+          trap 'restore_source final' EXIT
 
-      - name: i18n catalog lint
-        run: |
-          cd frontend
-          npm run i18n:check
+          mutation_cache="$(mktemp -d)"
+          export UV_CACHE_DIR="$mutation_cache/uv"
+          export PYTHONPYCACHEPREFIX="$mutation_cache/pycache"
+          uv sync --all-extras --frozen
 
-      - name: Frontend type-check
-        run: |
-          cd frontend
-          npm run check
+          run_selected() {
+            label="$1"
+            proof_cache="$(mktemp -d)"
+            export UV_CACHE_DIR="$proof_cache/uv"
+            export PYTHONPYCACHEPREFIX="$proof_cache/pycache"
+            uv sync --all-extras --frozen
+            set +e
+            uv run pytest -q --junitxml="$label.xml" \
+              tests/test_civ_rx_coverage.py::test_civ_ptt_readback_emits_canonical_observed_state \
+              tests/test_civ_rx_coverage.py::test_unsolicited_civ_ptt_readback_has_unsolicited_provenance \
+              tests/test_civ_rx_coverage.py::test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames \
+              tests/test_civ_rx_coverage.py::test_old_civ_epoch_ptt_readback_cannot_restore_observed_state \
+              tests/test_civ_rx_coverage.py::test_old_store_generation_ptt_readback_cannot_restore_observed_state \
+              tests/test_civ_rx_coverage.py::test_observed_ptt_expires_to_unknown_after_its_store_max_age \
+              tests/test_civ_rx_coverage.py::test_malformed_ptt_payloads_preserve_legacy_behavior
+            pytest_rc=$?
+            set -e
+            export pytest_rc
+            export junit_file="$label.xml"
+          }
 
-      - name: Frontend tests
-        run: |
-          cd frontend
-          npx vitest run
+          uv run python - <<'PY'
+          from pathlib import Path
 
-      - name: Build frontend
-        run: |
-          cd frontend
-          npm run build
-          rm -f ../src/rigplane/web/static
-          mkdir -p ../src/rigplane/web/static
-          cp -r dist/* ../src/rigplane/web/static/
+          path = Path("src/rigplane/runtime/_civ_rx.py")
+          old = '''                    normalize_observed_ptt(
+                        False
+                        if frame.data == b"\\x00"
+                        else True
+                        if frame.data == b"\\x01"
+                        else None
+                    ),
+          '''
+          new = '''                    normalize_observed_ptt(bool(frame.data and frame.data[0])),
+          '''
+          text = path.read_text()
+          if text.count(old) != 1:
+              raise SystemExit("negative mutation target was not unique")
+          path.write_text(text.replace(old, new))
+          PY
+          git diff -- "$source_file" > negative.patch
+          run_selected negative
+          uv run python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
 
-      - name: Lint web boundary
-        run: uv run ruff check src/rigplane/web
+          expected_failed = {
+              "test_civ_ptt_readback_emits_canonical_observed_state[empty]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[two]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[ff]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-off]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-on]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[two]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]",
+          }
+          expected_failure_values = {
+              "test_civ_ptt_readback_emits_canonical_observed_state[empty]": "ObservedPtt.OFF",
+              "test_civ_ptt_readback_emits_canonical_observed_state[two]": "ObservedPtt.ON",
+              "test_civ_ptt_readback_emits_canonical_observed_state[ff]": "ObservedPtt.ON",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-off]": "ObservedPtt.OFF",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-on]": "ObservedPtt.ON",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]": "ObservedPtt.OFF",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[two]": "ObservedPtt.ON",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]": "ObservedPtt.ON",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]": "ObservedPtt.OFF",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]": "ObservedPtt.ON",
+          }
+          expected_names = {
+              "test_civ_ptt_readback_emits_canonical_observed_state[off]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[on]",
+              *expected_failed,
+              "test_unsolicited_civ_ptt_readback_has_unsolicited_provenance",
+              "test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames",
+              "test_old_civ_epoch_ptt_readback_cannot_restore_observed_state",
+              "test_old_store_generation_ptt_readback_cannot_restore_observed_state",
+              "test_observed_ptt_expires_to_unknown_after_its_store_max_age",
+          }
+          root = ET.parse(os.environ["junit_file"]).getroot()
+          cases = list(root.iter("testcase"))
+          failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
+          errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
+          skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
+          identities = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
+          if os.environ.get("pytest_rc") != "1":
+              raise SystemExit(f"expected pytest exit 1, got {os.environ.get('pytest_rc')}")
+          if failed != expected_failed:
+              raise SystemExit(f"unexpected failed nodes: {sorted(failed)!r}")
+          if identities != {("tests.test_civ_rx_coverage", name) for name in expected_names}:
+              raise SystemExit(f"unexpected selected identities: {sorted(identities)!r}")
+          if errors or skipped:
+              raise SystemExit(f"unexpected errors/skips: {sorted(errors)!r} {sorted(skipped)!r}")
+          if len(cases) != 17:
+              raise SystemExit(f"expected 17 selected cases, got {len(cases)}")
+          for case in cases:
+              if case.attrib["name"] not in expected_failure_values:
+                  continue
+              message = case.find("failure").attrib.get("message", "")
+              expected_value = expected_failure_values[case.attrib["name"]]
+              if expected_value not in message or "ObservedPtt.UNKNOWN" not in message:
+                  raise SystemExit(
+                      f"unexpected failure message for {case.attrib['name']}: {message!r}"
+                  )
+          PY
+          restore_source negative
 
-      - name: Type-check web boundary
-        run: uv run mypy --strict src/rigplane/web
+          run_selected restored
+          uv run python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
 
-      - name: Lint architecture (import-linter)
-        run: uv run lint-imports
+          expected_cases = {
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[off]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[on]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[empty]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[two]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[ff]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[double-off]"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_readback_emits_canonical_observed_state[double-on]"),
+              ("tests.test_civ_rx_coverage", "test_unsolicited_civ_ptt_readback_has_unsolicited_provenance"),
+              ("tests.test_civ_rx_coverage", "test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames"),
+              ("tests.test_civ_rx_coverage", "test_old_civ_epoch_ptt_readback_cannot_restore_observed_state"),
+              ("tests.test_civ_rx_coverage", "test_old_store_generation_ptt_readback_cannot_restore_observed_state"),
+              ("tests.test_civ_rx_coverage", "test_observed_ptt_expires_to_unknown_after_its_store_max_age"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[two]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]"),
+              ("tests.test_civ_rx_coverage", "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]"),
+          }
+          root = ET.parse(os.environ["junit_file"]).getroot()
+          cases = list(root.iter("testcase"))
+          identities = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
+          failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
+          errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
+          skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
+          if os.environ.get("pytest_rc") != "0":
+              raise SystemExit(f"expected pytest exit 0, got {os.environ.get('pytest_rc')}")
+          if identities != expected_cases:
+              raise SystemExit(f"unexpected selected identities: {sorted(identities)!r}")
+          if failed or errors or skipped:
+              raise SystemExit(
+                  f"unexpected result: failures={sorted(failed)!r} "
+                  f"errors={sorted(errors)!r} skips={sorted(skipped)!r}"
+              )
+          PY
 
-      - name: Run tests
-        id: tests
-        run: |
-          # Without pipefail the pipe's exit status is tee's (always 0), so
-          # pytest failures were swallowed and the step reported success.
-          # Capture pytest's exit code via PIPESTATUS, extract the summary
-          # (still needed for the badge, including on failure), then exit
-          # with pytest's code so failing tests fail the step.
-          uv run pytest tests/ -n auto --tb=short --timeout=300 --timeout-method=thread \
-            | tee pytest-output.txt
-          rc=${PIPESTATUS[0]}
-          SUMMARY=$(tail -1 pytest-output.txt)
-          PASSED=$(echo "$SUMMARY" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
-          exit "$rc"
+          uv run python - <<'PY'
+          from pathlib import Path
 
-      - name: Extract version
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main'
-        id: version
-        run: |
-          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('rigplane'))")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          path = Path("src/rigplane/runtime/_civ_rx.py")
+          old = '''                    normalize_observed_ptt(
+                        False
+                        if frame.data == b"\\x00"
+                        else True
+                        if frame.data == b"\\x01"
+                        else None
+                    ),
+          '''
+          new = '''                    normalize_observed_ptt(
+                        True
+                        if frame.data == b"\\x01"
+                        else False
+                        if frame.data == b"\\x00"
+                        else None
+                    ),
+          '''
+          text = path.read_text()
+          if text.count(old) != 1:
+              raise SystemExit("positive mutation target was not unique")
+          path.write_text(text.replace(old, new))
+          PY
+          git diff -- "$source_file" > positive.patch
+          run_selected positive
+          uv run python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
 
-      - name: Update tests badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-tests.json
-          label: tests
-          message: "${{ steps.tests.outputs.passed }} passed"
-          color: ${{ steps.tests.outcome == 'success' && 'brightgreen' || 'red' }}
+          root = ET.parse(os.environ["junit_file"]).getroot()
+          cases = list(root.iter("testcase"))
+          expected_names = {
+              "test_civ_ptt_readback_emits_canonical_observed_state[off]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[on]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[empty]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[two]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[ff]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-off]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-on]",
+              "test_unsolicited_civ_ptt_readback_has_unsolicited_provenance",
+              "test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames",
+              "test_old_civ_epoch_ptt_readback_cannot_restore_observed_state",
+              "test_old_store_generation_ptt_readback_cannot_restore_observed_state",
+              "test_observed_ptt_expires_to_unknown_after_its_store_max_age",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[two]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]",
+          }
+          identities = {(case.attrib["classname"], case.attrib["name"]) for case in cases}
+          failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
+          errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
+          skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
+          if os.environ.get("pytest_rc") != "0":
+              raise SystemExit(f"expected pytest exit 0, got {os.environ.get('pytest_rc')}")
+          if failed or errors or skipped:
+              raise SystemExit(
+                  f"unexpected result: failures={sorted(failed)!r} "
+                  f"errors={sorted(errors)!r} skips={sorted(skipped)!r}"
+              )
+          if identities != {("tests.test_civ_rx_coverage", name) for name in expected_names}:
+              raise SystemExit(f"unexpected selected identities: {sorted(identities)!r}")
+          if len(cases) != 17:
+              raise SystemExit(f"expected 17 selected cases, got {len(cases)}")
+          PY
+          restore_source positive
 
-      - name: Update version badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-version.json
-          label: version
-          message: "v${{ steps.version.outputs.version }}"
-          color: blue
-
-      - name: Update mypy badge
-        if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-mypy.json
-          label: mypy
-          message: "0 errors"
-          color: blue
-
-  capture-harness:
-    # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
-    # capture (`frontend/fixtures/capture.mjs`) into CI. It ran in NO
-    # workflow before this. Deliberately a single dedicated job, NOT a
-    # matrix leg — the capture matrix is Python-version-independent (it
-    # only exercises the built frontend in a real browser), so multiplying
-    # it by matrix.python-version (3.11/3.12/3.13) would triple runner
-    # minutes for zero additional coverage.
-    #
-    # BLOCKING since MOR-1386 (v3 gate promotion, session-9): this job used
-    # to run `continue-on-error: true` for one cycle (MOR-1382); that cycle
-    # is closed — quick-leg green on PR #2286 run 31127603844, full-leg
-    # green on dispatched run 31137987620 (capture-harness green alongside
-    # the 3.11/3.12/3.13 matrix) — so the owner flipped it to blocking here.
-    # The browser/deps install step below fails loud on its own (no
-    # `|| true` masking) so a chromium provisioning failure reads as
-    # "Install deps + Playwright chromium" red, never as a fixtures
-    # regression in the `Run fixture-harness capture` step.
-    #
-    # Same push guard as the `test` job above: on `push`, only runs when
-    # the commit message contains `[full-ci]`; on `schedule`/
-    # `workflow_dispatch`, always runs. This keeps the job off every
-    # ordinary push to `main`.
-    if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
-    runs-on: [self-hosted, linux, build]
-    # Budget: ~45s once the Playwright browser cache is warm (npm ci +
-    # cached chromium + the capture matrix itself). 10 minutes is a
-    # generous ceiling for a cold cache / first run on a new runner image,
-    # not the expected steady-state duration.
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      # Read the LOCKFILE-RESOLVED exact version, not package.json's range.
-      # `devDependencies['@playwright/test']` is the string "^1.55.0", which
-      # resolves to 1.58.2 today: keying the cache on the range would let a
-      # lockfile-only Playwright bump hit the SAME key, restore the old
-      # browser, re-download the new one, and then skip the save (an exact
-      # key hit never re-saves) — permanently poisoning the cache it exists
-      # to populate.
-      - name: Resolve Playwright version
-        id: pw
-        run: |
-          cd frontend
-          echo "version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
-
-      # Playwright's own browser cache, keyed on the lockfile-resolved
-      # @playwright/test version (frontend/package-lock.json) — this is what
-      # "playwright install dominates" is about: a cache hit skips the
-      # ~100-200MB chromium download entirely and turns this job's dominant
-      # cost into the capture matrix run itself.
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        id: pw-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
-
-      # Fails loud on its own: no `|| true` masking. A chromium download or
-      # `npm ci` failure red-flags THIS step — reads as provisioning — and
-      # never reaches the capture step below.
-      - name: Install deps + Playwright chromium
-        run: |
-          cd frontend
-          npm ci
-          npx playwright install chromium
-
-      - name: Install Playwright Chromium system dependencies
-        working-directory: frontend
-        run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
-
-      # Blocking since MOR-1386 gate promotion — see the job header comment.
-      # The browser and system-dependency steps above fail loud on their own,
-      # so a red here means a fixture regression only.
-      - name: Run fixture-harness capture
-        id: capture
-        run: node frontend/fixtures/capture.mjs
-
-      # Always uploaded (not just on failure) — this is the MOR-1091
-      # "links to CI artifacts" deliverable: the manifest + PNGs need to be
-      # linkable from a passing run too, not only a failing one.
-      - name: Upload capture output
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: fixture-harness-capture
-          path: frontend/fixtures-baselines/
-          retention-days: 14
-
-      - name: Annotate result
-        if: always()
-        run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
+          name: icom-observed-ptt-mutation-proof
+          path: |
+            negative.xml
+            positive.xml
+            negative.patch
+            positive.patch
+            restored.xml
+            negative-restoration.txt
+            positive-restoration.txt
+            final-restoration.txt
