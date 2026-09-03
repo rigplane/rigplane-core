@@ -3696,6 +3696,7 @@ class RadioPoller:
                 report_sent=self._report_acquisition_sent,
                 report_expiry=self._report_acquisition_expiry,
                 on_forget=self._forget_acquisition_grace,
+                claimant=self,
             )
             self._acquisition_drain = drain
         return drain
