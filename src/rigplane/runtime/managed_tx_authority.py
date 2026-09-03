@@ -625,9 +625,7 @@ class ManagedTxAuthority:
             self._require_ingress_open_locked()
             transition, full_force = self._transition_locked(action, owner)
             if transition is None:
-                transition = ManagedTxTransition(
-                    self._state, ManagedTxOutcome.REJECTED
-                )
+                transition = ManagedTxTransition(self._state, ManagedTxOutcome.REJECTED)
             self._wakeup.wake()
 
         async def settle() -> tuple[ManagedTxTransition, ActuationSettled | None]:
