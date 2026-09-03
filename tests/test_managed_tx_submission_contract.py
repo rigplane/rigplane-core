@@ -100,6 +100,7 @@ async def test_shutdown_drains_owned_settlement_before_provider_retirement() -> 
     try:
         effect = await asyncio.wait_for(lane.started.get(), 0.2)
         assert effect.operation is ActuationOperation.FORCE_RECEIVE
+        assert not receipt.settlement_done
         await asyncio.sleep(0)
         assert not shutdown.done() and retired == []
 
@@ -134,6 +135,7 @@ async def test_force_off_receipt_changes_state_and_fence_before_settlement() -> 
     managed, _, _, _, fence, lane = authority()
     try:
         assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        await asyncio.wait_for(lane.started.get(), 0.2)
         old_epoch = fence.epoch
         provider_release = lane.block_next()
 
@@ -170,9 +172,7 @@ async def test_ptt_up_receipt_remains_owner_local() -> None:
         assert held.intent.owner_token == "owner-a"
 
         provider_release = lane.block_next()
-        accepted = await asyncio.wait_for(
-            managed.submit_ptt(False, "owner-a"), 0.2
-        )
+        accepted = await asyncio.wait_for(managed.submit_ptt(False, "owner-a"), 0.2)
         assert accepted.transition.outcome is ManagedTxOutcome.ACCEPTED
         assert (await managed.snapshot()).state.intent.kind is ManagedTxIntentKind.RX
         assert not accepted.settlement_done
