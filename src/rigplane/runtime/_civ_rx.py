@@ -50,6 +50,7 @@ from rigplane.commands.levels import _cw_pitch_from_level, _key_speed_from_level
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import KnownTxTarget
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
     FieldChange,
@@ -2449,11 +2450,23 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x1C and frame.sub == 0x00 and frame.data:
+        elif frame.command == 0x1C and frame.sub == 0x00:
+            if frame.data:
+                observations.append(
+                    self._observation(
+                        FieldPath.global_("tx_state", "ptt"),
+                        bool(frame.data[0]),
+                        frame=frame,
+                    )
+                )
             observations.append(
                 self._observation(
-                    FieldPath.global_("tx_state", "ptt"),
-                    bool(frame.data[0]),
+                    OBSERVED_PTT_PATH,
+                    normalize_observed_ptt(
+                        False
+                        if frame.data == b"\x00"
+                        else True if frame.data == b"\x01" else None
+                    ),
                     frame=frame,
                 )
             )
