@@ -20,7 +20,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
-import { validateRadioViewModel, type RadioViewModel, type VfoSlot } from '../radio-view-model';
+import {
+  validateRadioViewModel, type RadioViewModel, type ReceiverId,
+  type ReceiverIndicatorViewModel, type VfoSlot,
+} from '../radio-view-model';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
 import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
@@ -66,6 +69,77 @@ function expectedFreq(hz: number | null): string {
   const { mhz, khz, hz: hzGroup } = groupDigitsForDisplay(splitFrequencyToDigits(hz));
   return [mhz, khz, hzGroup].map((group) => group.map((d) => d.char).join('')).join('.');
 }
+
+const indicatorField = <T>(value: T) => ({
+  reading: { status: 'known' as const, value },
+  availability: { structural: true, operational: true },
+});
+
+function receiverIndicator(receiver: ReceiverId): ReceiverIndicatorViewModel {
+  return {
+    receiver,
+    availability: { structural: true, operational: true },
+    rfState: receiver === 'MAIN' ? 'receiving' : 'unknown',
+    sMeter: indicatorField(receiver === 'MAIN' ? 0 : -31),
+    bandwidthHz: indicatorField(receiver === 'MAIN' ? 2400 : 500),
+    agcMode: indicatorField(receiver === 'MAIN' ? 0 : 2),
+    nbActive: indicatorField(receiver === 'SUB'),
+    nrActive: indicatorField(receiver === 'MAIN'),
+    notchMode: indicatorField<'off' | 'auto' | 'manual'>(receiver === 'MAIN' ? 'off' : 'auto'),
+    attenuator: indicatorField(receiver === 'MAIN' ? 0 : 12),
+    preamp: indicatorField(receiver === 'MAIN' ? 0 : 2),
+    rfGain: indicatorField(receiver === 'MAIN' ? 0 : 0.75),
+    digiSel: indicatorField(receiver === 'SUB'),
+    ipPlus: indicatorField(receiver === 'MAIN'),
+  };
+}
+
+function withReceiverIndicators(id: TopologyFixtureId): RadioViewModel {
+  const base = topologyFixtures[id];
+  const receivers: ReceiverId[] = id.startsWith('2/') ? ['MAIN', 'SUB'] : ['MAIN'];
+  return validateRadioViewModel({
+    ...base, receiverIndicators: receivers.map(receiverIndicator),
+  });
+}
+
+describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
+  it.each([
+    ['1/single', 1], ['1/ab', 1], ['2/ab_shared', 2], ['2/main_sub', 2],
+  ] as const)('%s renders one row and S-meter per structural receiver', (id, expected) => {
+    const target = mountSurface({ viewModel: withReceiverIndicators(id) });
+    expect(target.querySelectorAll('[data-testid="vfo-indicator-row"]')).toHaveLength(expected);
+    expect(target.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(expected);
+  });
+
+  it('partitions the root collection by receiver for cockpit strip mounts', () => {
+    const viewModel = withReceiverIndicators('2/main_sub');
+    const main = mountSurface({ viewModel, indicatorReceiver: 'MAIN' });
+    const sub = mountSurface({ viewModel, indicatorReceiver: 'SUB' });
+    expect(main.querySelectorAll('[data-testid="vfo-indicator-row"]')).toHaveLength(1);
+    expect(main.querySelector('[data-indicator-receiver="MAIN"]')).not.toBeNull();
+    expect(sub.querySelectorAll('[data-testid="vfo-indicator-row"]')).toHaveLength(1);
+    expect(sub.querySelector('[data-indicator-receiver="SUB"]')).not.toBeNull();
+  });
+
+  it('renders no indicators in the radio-wide facts-only mount', () => {
+    const target = mountSurface({
+      viewModel: withReceiverIndicators('2/main_sub'), showVfoList: false,
+    });
+    expect(target.querySelector('[data-testid="vfo-receiver-indicators"]')).toBeNull();
+  });
+
+  it('does not duplicate singleton actions or start slice-2 ANT/TUNE/RIT/XIT facts', () => {
+    const target = mountSurface({
+      viewModel: withReceiverIndicators('2/main_sub'),
+      onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
+      onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(),
+    });
+    expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-vfo-split]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-vfo-dual-watch]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-indicator-fact="antenna"], [data-indicator-fact="tune"], [data-indicator-fact="rit"], [data-indicator-fact="xit"]')).toHaveLength(0);
+  });
+});
 
 /** Normalized rendered-DOM summary — only VFO-surface-owned facts. */
 function renderSignature(target: HTMLElement): string {

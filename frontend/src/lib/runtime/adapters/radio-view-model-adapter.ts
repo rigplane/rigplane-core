@@ -33,6 +33,7 @@ import type {
   BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
   BreakInMode, CwKeyerViewModel, ScopeControlsViewModel,
   ScopeDisplayViewModel, ScopeSourceKind, ScopeHealthState,
+  ReceiverIndicatorViewModel, TxTargetViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
@@ -702,6 +703,88 @@ function deriveRfFrontEnd(
     digiSel: txAuxField(hasDigiSelCap, topFieldAvailable(state, `${base}digisel`), boolOrUndef(rx?.digisel)),
     ipPlus: txAuxField(hasIpPlusCap, topFieldAvailable(state, `${base}ipplus`), boolOrUndef(rx?.ipplus)),
   };
+}
+
+/**
+ * MOR-2299 slice 1: one strict, receiver-addressed reading collection per
+ * structural receiver. This deliberately does not reuse the active-receiver
+ * groups above: those groups answer a different question and would mirror
+ * MAIN onto SUB when the active receiver changes.
+ *
+ * Admission is the owner-recorded leaf rule exactly: the leaf itself must be
+ * `seen()` and the existing ancestor-aware `topFieldAvailable()` gate must
+ * also pass. The latter preserves the current global absent-key semantics;
+ * composing the two here makes a missing leaf unknown and lets a stale parent
+ * veto an otherwise-fresh leaf without changing `field-status.ts`.
+ */
+function deriveReceiverIndicators(
+  state: ServerState | null,
+  caps: Capabilities,
+  structuralReceivers: readonly ReceiverId[],
+  operationalReceivers: readonly ReceiverId[],
+  tx: MetersTxAuthority | null | undefined,
+  txTarget: TxTargetViewModel,
+): readonly ReceiverIndicatorViewModel[] {
+  const hasFilters = (caps.filters?.length ?? 0) > 0;
+  const hasAgc = hasCap(caps, 'agc');
+  const hasNb = hasCap(caps, 'nb');
+  const hasNr = hasCap(caps, 'nr');
+  const hasNotch = hasCap(caps, 'notch');
+  const hasAttenuator = hasCap(caps, 'attenuator');
+  const hasPreamp = hasCap(caps, 'preamp');
+  const hasRfGain = hasCap(caps, 'rf_gain');
+  const hasDigiSel = hasCap(caps, 'digisel');
+  const hasIpPlus = hasCap(caps, 'ip_plus');
+
+  return structuralReceivers.map((receiver) => {
+    const receiverOperational = operationalReceivers.includes(receiver);
+    const key = RECEIVER_KEY[receiver];
+    const rx = state?.[key];
+    const path = (leaf: string): string => `${key}.${leaf}`;
+    const strictField = <T>(
+      structural: boolean, leaf: string, value: T | undefined,
+    ): TxAuxField<T> => txAuxField(
+      structural,
+      receiverOperational && seen(state, path(leaf)) && topFieldAvailable(state, path(leaf)),
+      value,
+    );
+
+    const autoNotchKnown = receiverOperational
+      && seen(state, path('autoNotch')) && topFieldAvailable(state, path('autoNotch'));
+    const manualNotchKnown = receiverOperational
+      && seen(state, path('manualNotch')) && topFieldAvailable(state, path('manualNotch'));
+    const autoNotch = boolOrUndef(rx?.autoNotch);
+    const manualNotch = boolOrUndef(rx?.manualNotch);
+    const notchMode = autoNotch !== undefined && manualNotch !== undefined
+      ? (autoNotch ? 'auto' as const : manualNotch ? 'manual' as const : 'off' as const)
+      : undefined;
+    const notchOperational = hasNotch && autoNotchKnown && manualNotchKnown;
+
+    const rfState = receiverOperational && tx !== null && tx !== undefined
+      && txTarget.status === 'known' && txTarget.receiver === receiver
+      ? meterRfState(tx)
+      : 'unknown';
+
+    return {
+      receiver,
+      availability: { structural: true, operational: receiverOperational },
+      rfState,
+      // Every structural receiver owns one S-meter shell. The reading stays
+      // unknown until its own leaf passes the strict gate; numeric zero is a
+      // valid calibrated S9 reading and is preserved by numOrUndef.
+      sMeter: strictField(true, 'sMeter', numOrUndef(rx?.sMeter)),
+      bandwidthHz: strictField(hasFilters, 'filterWidth', numOrUndef(rx?.filterWidth)),
+      agcMode: strictField(hasAgc, 'agc', numOrUndef(rx?.agc)),
+      nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),
+      nrActive: strictField(hasNr, 'nr', boolOrUndef(rx?.nr)),
+      notchMode: txAuxField(hasNotch, notchOperational, notchMode),
+      attenuator: strictField(hasAttenuator, 'att', numOrUndef(rx?.att)),
+      preamp: strictField(hasPreamp, 'preamp', numOrUndef(rx?.preamp)),
+      rfGain: strictField(hasRfGain, 'rfGain', numOrUndef(rx?.rfGain)),
+      digiSel: strictField(hasDigiSel, 'digisel', boolOrUndef(rx?.digisel)),
+      ipPlus: strictField(hasIpPlus, 'ipplus', boolOrUndef(rx?.ipplus)),
+    };
+  });
 }
 
 /**
@@ -1478,6 +1561,9 @@ export function toRadioViewModel(
   const scopeControls = deriveScopeControls(state, caps);
   const scopeDisplay = deriveScopeDisplay(caps, scopeDisplaySnapshot);
   const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
+  const receiverIndicators = deriveReceiverIndicators(
+    state, caps, topology.structuralReceivers, topology.operationalReceivers, tx, txTarget,
+  );
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
   disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
 
@@ -1492,6 +1578,7 @@ export function toRadioViewModel(
     txPermit,
     scope: { hardwareScope, audioFftScope },
     disabledReasons,
+    receiverIndicators,
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),

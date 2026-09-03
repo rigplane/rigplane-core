@@ -810,6 +810,7 @@
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
               disabled={!isOperationalStrip(view, receiverId)}
+              indicatorReceiver={receiverId}
               {pendingFrequencyHz}
             />
           </div>
