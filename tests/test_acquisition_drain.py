@@ -68,12 +68,46 @@ class _StubScheduler:
     def __init__(self, pending: tuple[AcquisitionRequest, ...]) -> None:
         self.pending = pending
         self.tx_active_calls: list[bool] = []
+        self.claimant_by_request: dict[str, object] = {}
+        self.claim_generation_by_request: dict[str, int] = {}
 
     def note_tx_active(self, tx_active: bool) -> None:
         self.tx_active_calls.append(tx_active)
 
     def dispatchable_requests(self) -> tuple[AcquisitionRequest, ...]:
         return self.pending
+
+    def try_claim(
+        self,
+        request: AcquisitionRequest,
+        *,
+        claimant: object,
+        provider_generation: int,
+    ) -> bool:
+        existing = self.claimant_by_request.get(request.id)
+        if existing is not None and existing is not claimant:
+            return False
+        self.claimant_by_request[request.id] = claimant
+        self.claim_generation_by_request[request.id] = provider_generation
+        return True
+
+    def claim_is_current(
+        self,
+        request: AcquisitionRequest,
+        *,
+        claimant: object,
+        provider_generation: int,
+    ) -> bool:
+        return (
+            self.claimant_by_request.get(request.id) is claimant
+            and self.claim_generation_by_request.get(request.id) == provider_generation
+        )
+
+    def release_claim(self, request_id: str, *, claimant: object) -> None:
+        if self.claimant_by_request.get(request_id) is not claimant:
+            return
+        self.claimant_by_request.pop(request_id, None)
+        self.claim_generation_by_request.pop(request_id, None)
 
 
 class _StubExecutor:
