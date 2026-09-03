@@ -124,22 +124,32 @@ def _make_scope_waveform_frame(
     mode: int,
     start_hz: int = 14_000_000,
     end_hz: int = 14_350_000,
+    oor: bool = False,
 ) -> CivFrame:
     """Build a single-packet (LAN-style, seq=seqMax=1) ``0x27``/``0x00``
     waveform frame, per ``rigplane.scope._ReceiverState.feed``'s sequence-1
     layout: ``[receiver, seq_bcd, seqMax_bcd, mode, start(5), end(5), oor,
-    pixels...]``. For ``mode == 0`` (center) the assembler remaps
-    ``start_hz``/``end_hz`` as ``[center_freq, half_span]`` into real edges
-    (``center - half_span``, ``center + half_span``) -- pass ``start_hz``
-    as the center frequency and ``end_hz`` as the half-span in that case.
-    For any other mode both are used as literal edge frequencies,
+    pixels...]``.
+
+    When ``oor`` is False and ``mode == 0`` (center), the assembler
+    remaps ``start_hz``/``end_hz`` as ``[center_freq, span]`` into real
+    edges (``center - span``, ``center + span``) -- pass ``start_hz`` as
+    the center frequency and ``end_hz`` as the SPAN value itself (per the
+    IC-7610 CI-V reference p.14 / IC-7300 manual: the raw field carries
+    the same value the ``0x27 0x15`` span table encodes, not half of
+    it). For any other mode both are used as literal edge frequencies,
     unremapped.
+
+    When ``oor`` is True, ``_ReceiverState.feed`` returns BEFORE that
+    center-mode remap regardless of ``mode`` -- ``start_hz``/``end_hz``
+    below are passed straight through as ``ScopeFrame.start_freq_hz``/
+    ``end_freq_hz`` unmodified (raw ``[center, span]``, not edges).
     """
     raw_payload = (
         bytes([0x01, 0x01, mode])
         + bcd_encode(start_hz)
         + bcd_encode(end_hz)
-        + bytes([0x00])  # out_of_range = False
+        + bytes([0x01 if oor else 0x00])
         + b"\x00"  # one pixel byte
     )
     return _make_frame(cmd=0x27, sub=0x00, data=bytes([receiver]) + raw_payload)
@@ -4126,6 +4136,93 @@ async def test_scope_waveform_mode_observation_survives_connect_generation(
 
     field = radio._state_store.snapshot().field("scope_controls.global.display.mode")
     assert field.value == 2
+    assert field.freshness is FreshnessState.FRESH
+
+
+async def test_scope_waveform_out_of_range_center_frame_emits_no_span(
+    radio: IcomRadio,
+) -> None:
+    """#3063 review, second round: ``_ReceiverState.feed`` returns BEFORE
+    the center-mode edge expansion when the frame's out-of-range flag is
+    set, so ``ScopeFrame.start_freq_hz``/``end_freq_hz`` are then the
+    raw, unexpanded ``[center, span]`` pair, not real edges. The
+    verifier's example: center 450 kHz, span 500 kHz (matching
+    ``_SCOPE_SPAN_PRESETS_HZ[7]``), OOR set -- computing
+    ``end_freq_hz - start_freq_hz`` as if these were edges gives
+    ``500_000 - 450_000 == 50_000``, halved to 25_000, which wrongly
+    matches index 3 (``_SCOPE_SPAN_PRESETS_HZ[3] == 25_000``) instead of
+    publishing nothing."""
+    with _spy_state_store_apply(radio) as apply_spy:
+        frame = _make_scope_waveform_frame(
+            mode=0, start_hz=450_000, end_hz=500_000, oor=True
+        )
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    applied_paths = {str(call.args[0].path) for call in apply_spy.call_args_list}
+    assert "scope_controls.global.display.span" not in applied_paths
+
+
+async def test_scope_waveform_span_observation_survives_connect_generation(
+    radio: IcomRadio,
+) -> None:
+    """#3063 review, second round: the same connect-generation gap as
+    ``test_scope_waveform_mode_observation_survives_connect_generation``
+    above, but for the span path -- only the mode path had this test
+    before this round."""
+    store_generation = radio._state_store.begin_provider_generation()  # noqa: SLF001
+    assert store_generation != 0
+
+    frame = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=5_000)
+    await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.span")
+    assert field.value == 1  # _SCOPE_SPAN_PRESETS_HZ.index(5000)
+    assert field.freshness is FreshnessState.FRESH
+
+
+async def test_scope_waveform_span_rejected_apply_retries_on_next_frame(
+    radio: IcomRadio,
+) -> None:
+    """#3063 review, second round: the per-receiver change-detect cache
+    (``_scope_stream_last_span``) must only remember a value once
+    ``StateStore.apply`` actually accepted it -- signaled by
+    ``changeset.observed_paths`` being non-empty, the same distinction
+    ``StateStore._apply_one``/``_empty_changeset`` use internally.
+    Forces the first attempt to be rejected (``StateStore.apply`` mocked
+    to return an empty ``ChangeSet`` once), then feeds the identical
+    frame again with ``apply`` unmocked: if the cache had been written on
+    the rejected attempt, this second, otherwise-identical frame would be
+    treated as "unchanged" and skipped -- the field would never land.
+    """
+    original_apply = StateStore.apply
+    store = radio._state_store
+    empty_changeset = store._empty_changeset()  # noqa: SLF001
+    span_path = "scope_controls.global.display.span"
+    rejected = {"done": False}
+
+    def _reject_span_once(observation: Observation) -> Any:
+        # A mode=0 frame also publishes ``mode`` -- only the span
+        # observation's OWN first apply call should be rejected, not
+        # whichever observation happens to reach apply() first.
+        if not rejected["done"] and str(observation.path) == span_path:
+            rejected["done"] = True
+            return empty_changeset
+        return original_apply(store, observation)
+
+    frame = _make_scope_waveform_frame(mode=0, start_hz=14_000_000, end_hz=10_000)
+
+    with patch.object(StateStore, "apply", side_effect=_reject_span_once):
+        await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+    assert rejected["done"], "test setup did not exercise the span apply call"
+
+    with pytest.raises(KeyError):
+        radio._state_store.snapshot().field("scope_controls.global.display.span")
+
+    second = _make_scope_waveform_frame(mode=0, start_hz=14_050_000, end_hz=10_000)
+    await radio._civ_runtime._route_civ_frame(second, generation=radio._civ_epoch)
+
+    field = radio._state_store.snapshot().field("scope_controls.global.display.span")
+    assert field.value == 2  # _SCOPE_SPAN_PRESETS_HZ.index(10000)
     assert field.freshness is FreshnessState.FRESH
 
 

@@ -3289,6 +3289,15 @@ class CivRuntime:
         stay display-only, carried to the web through the spectrum stream
         itself (``ScopeFrame``), not the StateStore.
 
+        Unlike ``_publish_scope_span_observation`` below, this does NOT
+        need an ``out_of_range`` guard: ``mode`` (``ScopeFrame.mode``)
+        comes from ``raw_payload[2]``, decoded in
+        ``rigplane.scope._ReceiverState.feed`` before the OOR check, and
+        is unaffected by it -- only ``start_freq_hz``/``end_freq_hz``
+        (which this method never reads) are left as raw, unexpanded
+        values when ``out_of_range`` is set (#3063 review, second round;
+        checked, confirmed not applicable here).
+
         The observation is bound to the store's CURRENT provider
         generation before ``apply`` — mirroring
         ``_apply_state_store_observations``'s own pattern below — because
@@ -3297,9 +3306,14 @@ class CivRuntime:
         anything that does not match ``advance_generation``'s bump on
         connect (#3063 review: a connected radio's stream observations
         were dropped from the moment of connect onward). The
-        change-detect cache is updated only AFTER ``apply`` runs, not
-        before: caching first would mean a rejected value is never
-        retried once the stream sees that same value again.
+        change-detect cache is updated only when ``apply`` reports the
+        observation ACCEPTED -- ``changeset.observed_paths`` non-empty,
+        the same signal ``StateStore._apply_one``/``_empty_changeset``
+        use to distinguish a written observation from a rejected one --
+        not merely after the call returns (#3063 review, second round):
+        caching on every call, accepted or not, would mean a rejected
+        value is never retried once the stream reports that same value
+        again.
         """
         if not 0 <= scope_frame.mode <= 3:
             return
@@ -3316,7 +3330,8 @@ class CivRuntime:
             provider_generation=store_provider_generation,
         )
         changeset = self._host._state_store.apply(observation)
-        last_modes[receiver] = scope_frame.mode
+        if changeset.observed_paths:
+            last_modes[receiver] = scope_frame.mode
         self._record_scheduler_result_for_observation(observation, changeset)
         self._notify_state_store_changed(changeset)
 
@@ -3325,19 +3340,31 @@ class CivRuntime:
     ) -> None:
         """Emit a change-detected ``scope_controls.global.display.span`` write.
 
-        Center mode only (``scope_frame.mode == 0``). Per the IC-7610
-        CI-V reference (p.14, "Scope waveform data") and the IC-7300
-        manual, the frame's center-mode payload carries the center
-        frequency and the SPAN value itself — the same value the ``0x27
-        0x15`` span table encodes — not half of it.
-        ``rigplane.scope._ReceiverState.feed`` turns that pair into edges
-        via ``center - span``, ``center + span``, so ``end_freq_hz -
+        Center mode only (``scope_frame.mode == 0``) AND in-range
+        (``scope_frame.out_of_range`` is False): when a waveform frame's
+        OOR flag is set, ``rigplane.scope._ReceiverState.feed`` returns
+        BEFORE the center-mode edge expansion (``center - span``/
+        ``center + span``) — ``start_freq_hz``/``end_freq_hz`` are then
+        the raw, unexpanded [center, span] pair, not edges, so
+        ``end_freq_hz - start_freq_hz`` is ``span - center``, not
+        ``2 * span`` (#3063 review, second round: a center-450kHz/
+        span-500kHz OOR frame computed index 3 instead of 7 before this
+        guard). Publishing from an OOR frame at all would also be
+        publishing a span the operator cannot currently see confirmed on
+        screen, which the mode/span republish exists to avoid guessing.
+
+        Per the IC-7610 CI-V reference (p.14, "Scope waveform data") and
+        the IC-7300 manual, an in-range center-mode payload carries the
+        center frequency and the SPAN value itself — the same value the
+        ``0x27 0x15`` span table encodes — not half of it.
+        ``_ReceiverState.feed`` turns that pair into edges via
+        ``center - span``, ``center + span``, so ``end_freq_hz -
         start_freq_hz == 2 * span``. The span to look up is therefore
         ``(end_freq_hz - start_freq_hz) / 2``, computed with an
         exact-division check (a remainder means this width did not come
         from that doubling and is untrustworthy) — not the raw
-        difference, which is off by 2x (#3063 review, verified against
-        both manuals). Matched EXACTLY against
+        difference, which is off by 2x (#3063 review, first round,
+        verified against both manuals). Matched EXACTLY against
         ``commands/scope.py: _SCOPE_SPAN_PRESETS_HZ`` via the shared
         ``_span_index_for_hz`` helper — the same lookup
         ``parse_scope_span_response`` (the 0x15 reply path) uses, so the
@@ -3360,10 +3387,10 @@ class CivRuntime:
         ``commands/scope.py`` constant) is tracked separately as
         MOR-2258.
 
-        Same generation-binding and cache-after-apply ordering as
-        ``_publish_scope_mode_observation`` above — see its docstring.
+        Same generation-binding and cache-after-ACCEPTED-apply ordering
+        as ``_publish_scope_mode_observation`` above — see its docstring.
         """
-        if scope_frame.mode != 0:
+        if scope_frame.mode != 0 or scope_frame.out_of_range:
             return
         width_hz = scope_frame.end_freq_hz - scope_frame.start_freq_hz
         if width_hz % 2 != 0:
@@ -3385,7 +3412,8 @@ class CivRuntime:
             provider_generation=store_provider_generation,
         )
         changeset = self._host._state_store.apply(observation)
-        last_spans[receiver] = span
+        if changeset.observed_paths:
+            last_spans[receiver] = span
         self._record_scheduler_result_for_observation(observation, changeset)
         self._notify_state_store_changed(changeset)
 
