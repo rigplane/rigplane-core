@@ -114,7 +114,7 @@ When making changes:
 
 User-facing → **Russian**. Code/commits/docs/PR → **English**.
 Commits: `feat(#N):` / `fix(#N):` / `refactor:` / `test:` / `docs:` / `chore:`
-One change per commit. Full test suite before push.
+One change per commit.
 
 Documentation under `docs/` cites code as file plus **symbol name**
 (`radio.py: IcomRadio.set_frequency`), never a line number — line numbers
