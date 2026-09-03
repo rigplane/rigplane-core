@@ -222,9 +222,9 @@ const MATRIX = [
     .map((id) => ({
       name: `${id}--reference--desktop`, fixture: `${id}--reference`, viewport: 'desktop',
     })),
-  // T. MOR-2243 — the segmentline peer-split glass chassis. Behavior
-  // assertions do not apply here (see `intentionalDifferences`); the
-  // discriminating check is the pixel baseline of the same name.
+  // T. MOR-2243 — the segmentline peer-split glass chassis. This fixture
+  // declares no `expect`; what its assertion cell does and does not cover is
+  // spelled out in `intentionalDifferences` below.
   { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis', viewport: 'desktop' },
 ];
 
@@ -600,13 +600,15 @@ const manifest = {
     + '`dualReceiverCockpitLayout` is ever resolved here; the `--reference` family (desktop-v2/sdr-test '
     + 'wiring) has no plan-ful twin in this slice — its manifest declares a different zone set and is '
     + 'separately scoped follow-up work.',
-    'MOR-2243: `peer-split-chassis--desktop` runs no real behavior assertions — `fixtures/main.ts` '
-    + 'answers `peer-split-chassis`\'s absent `expect` with one hardcoded passing entry '
-    + '(`peer-split-no-assertion-pipeline`), so this capture\'s assertion cell '
-    + 'confirms only that the harness mounted and cannot go red on a composition defect; the '
-    + 'discriminating check for this fixture is the pixel baseline of the same name in '
+    'MOR-2243: `peer-split-chassis--desktop` carries no fixture-declared behaviour assertions — '
+    + '`fixtures/main.ts` answers `peer-split-chassis`\'s absent `expect` with one hardcoded '
+    + 'passing entry (`peer-split-no-assertion-pipeline`) that cannot go red on a composition '
+    + 'defect. Its recorded assertion list holds exactly two entries: that stub, and the '
+    + 'harness-appended `meter-ballistics-honor-reduced-motion`, which does discriminate but '
+    + 'reports on the rAF ballistics loop, not on the composition. The composition itself is '
+    + 'pinned only by the pixel baselines of the same names in '
     + '`tests/e2e/visual/visual-baselines.spec.ts`, which per `fixtures/approved-baselines/'
-    + 'README.md` catches only changes above ~1024 differing pixels (~32x32 px at 1280x800) and '
+    + 'README.md` catch only changes above ~1024 differing pixels (~32x32 px at 1280x800) and '
     + 'cannot see whole-frame brightness/contrast drift at all.',
   ],
   viewports: VIEWPORTS,

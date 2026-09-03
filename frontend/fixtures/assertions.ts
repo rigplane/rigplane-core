@@ -694,7 +694,9 @@ export function runAssertions(
  * missing element into a TypeError that killed the whole capture run rather
  * than a value this loop could skip. Passing the id in makes the probe
  * independent of whether the optional assertion step ran first; the default
- * keeps every existing caller on the value it already resolved.
+ * keeps every existing caller on the value it already resolved. A missing
+ * root is reported as `__rootMissing` rather than as an empty probe, so it
+ * stays distinguishable from a root that simply carries none of the targets.
  */
 export function styleProbe(
   rootTestId: string = currentRootTestId,
@@ -711,10 +713,15 @@ export function styleProbe(
     inactiveStrip: '[data-testid^="channel-strip-"][data-strip-active="false"]',
     txBadge: '[data-vfo-tx-badge]',
   };
-  const out: Record<string, Record<string, string>> = {};
   const scope = document.querySelector<HTMLElement>(`[data-testid="${rootTestId}"]`);
+  // An empty probe otherwise has two causes the manifest cannot tell apart:
+  // this root is absent, so nothing was searched at all, or it is present and
+  // carries none of the targets, which is a legitimate reading. Returning a
+  // named entry for the first keeps `{}` meaning only the second.
+  if (!scope) return { __rootMissing: { rootTestId } };
+  const out: Record<string, Record<string, string>> = {};
   for (const [name, sel] of Object.entries(targets)) {
-    const el = scope?.querySelector<HTMLElement>(sel);
+    const el = scope.querySelector<HTMLElement>(sel);
     if (!el) continue;
     const cs = getComputedStyle(el);
     out[name] = {
