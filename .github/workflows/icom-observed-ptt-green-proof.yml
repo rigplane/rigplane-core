@@ -8,7 +8,7 @@ jobs:
   green-proof:
     runs-on: [self-hosted, linux, build]
     env:
-      SOURCE_SHA: 4e8a0f9d5c4d746149d67db870a569e1b92f655c
+      SOURCE_SHA: 04bb81d6255b8f7b0d89e7338852d07b3abed437
     steps:
       - uses: actions/checkout@v6
         with:
@@ -33,7 +33,8 @@ jobs:
             tests/test_civ_rx_coverage.py::test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames \
             tests/test_civ_rx_coverage.py::test_old_civ_epoch_ptt_readback_cannot_restore_observed_state \
             tests/test_civ_rx_coverage.py::test_old_store_generation_ptt_readback_cannot_restore_observed_state \
-            tests/test_civ_rx_coverage.py::test_observed_ptt_expires_to_unknown_after_its_store_max_age
+            tests/test_civ_rx_coverage.py::test_observed_ptt_expires_to_unknown_after_its_store_max_age \\
+            tests/test_civ_rx_coverage.py::test_malformed_ptt_payloads_preserve_legacy_behavior
           pytest_rc=$?
           set -e
           export pytest_rc
@@ -44,12 +45,16 @@ jobs:
           root = ET.parse("green-proof.xml").getroot()
           cases = list(root.iter("testcase"))
           failed = [case.attrib["name"] for case in cases if case.find("failure") is not None]
+          errors = [case.attrib["name"] for case in cases if case.find("error") is not None]
+          skipped = [case.attrib["name"] for case in cases if case.find("skipped") is not None]
           if os.environ.get("pytest_rc") != "0":
               raise SystemExit(f"expected pytest exit 0, got {os.environ.get('pytest_rc')}")
           if failed:
               raise SystemExit(f"unexpected failed nodes: {failed!r}")
-          if len(cases) != 12:
-              raise SystemExit(f"expected 12 selected cases, got {len(cases)}")
+          if errors or skipped:
+              raise SystemExit(f"unexpected errors/skips: {errors!r} {skipped!r}")
+          if len(cases) != 17:
+              raise SystemExit(f"expected 17 selected cases, got {len(cases)}")
           PY
 
       - uses: actions/upload-artifact@v4
