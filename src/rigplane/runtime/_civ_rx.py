@@ -3756,3 +3756,7 @@ class CivRuntime:
         finally:
             if pending is not None:
                 tracker.unregister(pending)
+                if not pending.done():
+                    pending.cancel()
+                elif not pending.cancelled():
+                    pending.exception()
