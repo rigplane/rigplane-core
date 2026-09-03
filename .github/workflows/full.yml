@@ -18,7 +18,7 @@ jobs:
     env:
       SOURCE_PIN: d29b46f470572df278b99438857d4523c286390f
       SOURCE_TREE: 115b891d11ee6a73862e635e9b05aa46c70a44d0
-      CARRIER_BASE: 72a311c38917b88fc680e42a47101c582414c45c
+      CARRIER_BASE: fa689f8fc1234a2b7de596401c158f37f2a92c14
       UV_PYTHON: '3.11.16'
       PYTHONDONTWRITEBYTECODE: '1'
       HATCH_BUILD_NO_HOOKS: '1'
@@ -95,6 +95,7 @@ jobs:
           import time
           import traceback
           from collections import Counter
+          from types import SimpleNamespace
           import xml.etree.ElementTree as ET
           import pytest
 
@@ -212,21 +213,83 @@ jobs:
                   save(evidence / 'process.json', record)
                   assert record['safe_to_mutate'], 'INVALID: process death unconfirmed; no mutation/restoration'
 
-          def imported(root, hashes):
+          def imported(root, hashes, modules=None):
               records = {}
-              test_modules = {Path(name).stem for name in hashes if name.startswith('tests/') and name.endswith('.py')}
-              for name, module in sorted(sys.modules.items()):
+              test_modules = {Path(name).stem: name for name in hashes if Path(name).parent == Path('tests') and name.endswith('.py')}
+              for name, module in sorted((sys.modules if modules is None else modules).items()):
                   value = getattr(module, '__file__', None)
-                  if value is None or not (name == 'rigplane' or name.startswith('rigplane.') or name.split('.')[-1] in test_modules):
+                  if value is None:
                       continue
                   path = Path(value).resolve()
+                  known = name == 'rigplane' or name.startswith('rigplane.') or name in test_modules
+                  physical = path.is_relative_to(root / 'tests') or path.is_relative_to(root / 'src')
+                  # Unknown identities outside specimen src/tests are not classified.
+                  if not known and not physical:
+                      continue
                   assert path.is_relative_to(root), ('INVALID: foreign import', name, str(path))
                   relative = str(path.relative_to(root))
-                  assert relative in hashes and sha(path.read_bytes()) == hashes[relative]['sha256'], (name, relative)
-                  records[name] = {'path': str(path), 'sha256': sha(path.read_bytes())}
+                  assert name not in test_modules or relative == test_modules[name], ('INVALID: mapped test path', name, relative, test_modules.get(name))
+                  assert relative in hashes, ('INVALID: untracked import', name, relative)
+                  digest = sha(path.read_bytes())
+                  assert digest == hashes[relative]['sha256'], ('INVALID: import hash', name, relative, digest, hashes[relative]['sha256'])
+                  records[name] = {'path': str(path), 'sha256': digest}
               for name in ('rigplane.rigctld.server', 'rigplane.rigctld.handler', 'rigplane.core.command_service'):
                   assert name in records, ('INVALID: missing import', name)
               return records
+
+          def calibrate_imports(root, hashes, evidence):
+              rows = []
+              save(evidence / 'calibration.json', {'status': 'INCOMPLETE', 'controls': rows})
+              external_name = 'propcache._helpers'
+              external = importlib.import_module(external_name)
+              external_path = str(Path(external.__file__).resolve())
+              assert not Path(external_path).is_relative_to(root), 'INVALID: external calibration path'
+              required = ('rigplane.rigctld.server', 'rigplane.rigctld.handler', 'rigplane.core.command_service')
+              base = {name: sys.modules[name] for name in required}
+              helper_path, project = 'tests/_helpers.py', required[0]
+              def at(path):
+                  return SimpleNamespace(__file__=str(root / path))
+              def wrong_hash(path):
+                  return {**hashes, path: {**hashes[path], 'sha256': '0' * 64}}
+              def hash_reason(name, path):
+                  return ('INVALID: import hash', name, path, hashes[path]['sha256'], '0' * 64)
+              test_alias, src_alias = 'calibration.unknown_test', 'calibration.unknown_source'
+              controls = [
+                  ('actual-project', dict(sys.modules), hashes, project, 'ADMITTED', None),
+                  ('actual-external', {**base, external_name: external}, hashes, external_name, 'IGNORED', None),
+                  ('mapped-helper', {**base, '_helpers': at(helper_path)}, hashes, '_helpers', 'ADMITTED', None),
+                  ('project-foreign', {**base, project: SimpleNamespace(__file__=external_path)}, hashes, project, 'REJECTED', ('INVALID: foreign import', project, external_path)),
+                  ('mapped-wrong-tracked-path', {**base, '_helpers': at(MFILE)}, hashes, '_helpers', 'REJECTED', ('INVALID: mapped test path', '_helpers', MFILE, helper_path)),
+                  ('project-wrong-hash', base.copy(), wrong_hash(SERVER), project, 'REJECTED', hash_reason(project, SERVER)),
+                  ('unknown-test', {**base, test_alias: at(MFILE)}, hashes, test_alias, 'ADMITTED', None),
+                  ('unknown-test-wrong-hash', {**base, test_alias: at(MFILE)}, wrong_hash(MFILE), test_alias, 'REJECTED', hash_reason(test_alias, MFILE)),
+                  ('unknown-source', {**base, src_alias: at(HANDLER)}, hashes, src_alias, 'ADMITTED', None),
+                  ('unknown-source-wrong-hash', {**base, src_alias: at(HANDLER)}, wrong_hash(HANDLER), src_alias, 'REJECTED', hash_reason(src_alias, HANDLER)),
+              ]
+              assert len(controls) == 10
+              for label, modules, expected_hashes, probe, outcome, reason in controls:
+                  row = {'label': label, 'probe': probe, 'expected_outcome': outcome, 'expected_reason': reason, 'matched': False}
+                  try:
+                      try:
+                          records = imported(root, expected_hashes, modules)
+                      except AssertionError as error:
+                          row.update(outcome='REJECTED', reason=error.args)
+                          assert outcome == 'REJECTED' and error.args == (reason,), ('INVALID: calibration rejection', label, error.args)
+                      else:
+                          row.update(outcome='ADMITTED' if probe in records else 'IGNORED', record=records.get(probe))
+                          assert row['outcome'] == outcome and reason is None, ('INVALID: calibration outcome', label, row)
+                          for name in (*required, *([probe] if outcome == 'ADMITTED' else [])):
+                              path = Path(modules[name].__file__).resolve()
+                              assert records[name] == {'path': str(path), 'sha256': hashes[str(path.relative_to(root))]['sha256']}, ('INVALID: calibration admission', label, name)
+                          if outcome == 'IGNORED':
+                              assert probe == external_name and probe not in records and modules[probe] is external, 'INVALID: calibration ignore'
+                      row['matched'] = True
+                  except BaseException as error:
+                      row['error'] = repr(error)
+                      raise
+                  finally:
+                      rows.append(row)
+                      save(evidence / 'calibration.json', {'status': 'EXPECTED' if len(rows) == 10 and all(item['matched'] for item in rows) else 'INCOMPLETE', 'classifier_calls': len(rows), 'controls': rows})
 
           class Reports:
               def pytest_collection_finish(self, session):
@@ -236,6 +299,7 @@ jobs:
                   for item in session.items:
                       assert Path(item.path).resolve() == root / item.nodeid.split('::')[0]
                       assert Path(item.module.__file__).resolve() == Path(item.path).resolve()
+                      assert sys.modules[item.module.__name__] is item.module
                   save(evidence / 'imports-collected.json', imported(root, spec['fingerprint']))
 
               @pytest.hookimpl(hookwrapper=True)
@@ -302,6 +366,8 @@ jobs:
               for name in ('rigplane.rigctld.server', 'rigplane.rigctld.handler', 'rigplane.core.command_service'):
                   importlib.import_module(name)
               save(evidence / 'imports-initial.json', imported(root, spec['fingerprint']))
+              if spec['label'] == 'B0':
+                  calibrate_imports(root, spec['fingerprint'], evidence)
               args = ['-q', '-o', 'addopts=', '-o', f'cache_dir={evidence / "pytest-cache"}', '--tb=long', '--full-trace', '--color=no', '--timeout=30', '--timeout-method=thread', f'--junitxml={evidence / "junit.xml"}', *NODES]
               save(evidence / 'pytest-command.json', args)
               rc = pytest.main(args, plugins=[Reports()])
