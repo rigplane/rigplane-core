@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
     env:
-      SOURCE_PIN: 8480816eb41579615e7164cca6d327fa8e518e2d
+      SOURCE_PIN: a7939b6da154729b2bc622bcecdbf6ccc9142758
       BASE_PIN: 9618ef4f9db202b5885e10e7503b9c86367ff19c
       UV_PYTHON: '3.11'
       PYTHONDONTWRITEBYTECODE: '1'
@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 8480816eb41579615e7164cca6d327fa8e518e2d
+          ref: a7939b6da154729b2bc622bcecdbf6ccc9142758
           fetch-depth: 0
           persist-credentials: false
           path: source
@@ -94,38 +94,38 @@ jobs:
           expected = [
               (queue, "test_ordered_handle_is_frozen_stored_identity", 40),
               (queue, "test_single_claim_preserves_segments_ptt_priority_and_replacement", 57),
-              (queue, "test_remove_pending_uses_identity_and_cancel_callback_claim_boundary", 78),
+              (queue, "test_remove_pending_uses_identity_and_cancel_callback_claim_boundary", 79),
               (queue, "test_non_cancelled_terminal_reply_does_not_remove_pending_entry[result]", None),
               (queue, "test_non_cancelled_terminal_reply_does_not_remove_pending_entry[error]", None),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[pending-result]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[pending-error]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[pending-cancel]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[none-result]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[none-error]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[none-cancel]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[result-result]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[result-error]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[result-cancel]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[error-result]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[error-error]", 115),
-              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[error-cancel]", 115),
-              (queue, "test_kernel_checks_cancelled_reply_before_leaf[outer]", 157),
-              (queue, "test_kernel_checks_cancelled_reply_before_leaf[child]", 157),
-              (queue, "test_kernel_drainer_cancel_before_child_handoff_terminalizes_reply", 180),
-              (queue, "test_kernel_caller_cancel_does_not_end_active_leaf[reply]", 217),
-              (queue, "test_kernel_caller_cancel_does_not_end_active_leaf[coalesced]", 217),
-              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[reply-cancel]", 252),
-              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[reply-return]", 252),
-              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[reply-error]", 252),
-              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[coalesced-cancel]", 252),
-              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[coalesced-return]", 252),
-              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[coalesced-error]", 252),
-              (queue, "test_cancelled_ordered_reply_keeps_only_legacy_unkey[ordinary]", 417),
-              (queue, "test_cancelled_ordered_reply_keeps_only_legacy_unkey[ptt-on]", 417),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[pending-result]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[pending-error]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[pending-cancel]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[none-result]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[none-error]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[none-cancel]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[result-result]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[result-error]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[result-cancel]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[error-result]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[error-error]", 116),
+              (queue, "test_kernel_terminal_identity_and_hooks_before_reply[error-cancel]", 116),
+              (queue, "test_kernel_checks_cancelled_reply_before_leaf[outer]", 158),
+              (queue, "test_kernel_checks_cancelled_reply_before_leaf[child]", 158),
+              (queue, "test_kernel_drainer_cancel_before_child_handoff_terminalizes_reply", 181),
+              (queue, "test_kernel_caller_cancel_does_not_end_active_leaf[reply]", 218),
+              (queue, "test_kernel_caller_cancel_does_not_end_active_leaf[coalesced]", 218),
+              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[reply-cancel]", 253),
+              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[reply-return]", 253),
+              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[reply-error]", 253),
+              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[coalesced-cancel]", 253),
+              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[coalesced-return]", 253),
+              (queue, "test_kernel_repeated_drainer_cancel_joins_terminal_cleanup[coalesced-error]", 253),
+              (queue, "test_cancelled_ordered_reply_keeps_only_legacy_unkey[ordinary]", 418),
+              (queue, "test_cancelled_ordered_reply_keeps_only_legacy_unkey[ptt-on]", 418),
               (queue, "test_cancelled_ordered_reply_keeps_only_legacy_unkey[ptt-off]", None),
-              (web, "test_web_loop_claims_live_pending_finite_turn[cancel]", 354),
-              (web, "test_web_loop_claims_live_pending_finite_turn[replace]", 354),
-              (web, "test_web_loop_claims_live_pending_finite_turn[error]", 354),
+              (web, "test_web_loop_claims_live_pending_finite_turn[cancel]", 355),
+              (web, "test_web_loop_claims_live_pending_finite_turn[replace]", 355),
+              (web, "test_web_loop_claims_live_pending_finite_turn[error]", 355),
               (web, "test_web_loop_releases_held_entry_after_finite_current_turn", None),
               (web, "test_shutdown_drain_executes_cancelled_unkey_after_callback_turn", None),
               (web, "test_command_queue_wait_and_drain_behavior", None),
@@ -141,12 +141,12 @@ jobs:
           checkpoints = {
               40: (queue, ("assert isinstance(entry, CommandQueueEntry)",), "AssertionError", "assert False"),
               57: (queue, ("assert queue.pending_count == 5",), "AttributeError", "AttributeError: 'CommandQueue' object has no attribute 'pending_count'"),
-              78: (queue, ("assert first is not equal and first == equal",), "AssertionError", "assert (None is not None)"),
-              354: (queue, ('assert queue.has_commands, "second entry must stay pending during first leaf"',), "AssertionError", "AssertionError: second entry must stay pending during first leaf"),
-              417: (queue, ("assert [entry.command for entry in entries] == expected, (", '"cancel callback must remove ordinary and ON entries but retain legacy PttOff"', ")"), "AssertionError", "AssertionError: cancel callback must remove ordinary and ON entries but retain legacy PttOff"),
+              79: (queue, ("assert first is not equal and first == equal",), "AssertionError", "assert (None is not None)"),
+              355: (queue, ('assert queue.has_commands, "second entry must stay pending during first leaf"',), "AssertionError", "AssertionError: second entry must stay pending during first leaf"),
+              418: (queue, ("assert [entry.command for entry in entries] == expected, (", '"cancel callback must remove ordinary and ON entries but retain legacy PttOff"', ")"), "AssertionError", "AssertionError: cancel callback must remove ordinary and ON entries but retain legacy PttOff"),
               1458: (http, ("assert srv.command_queue.drain_entries() == [], (", '"timed-out ordinary step must no longer be pending"', ")"), "AssertionError", "AssertionError: timed-out ordinary step must no longer be pending"),
           }
-          for line in (115, 157, 180, 217, 252):
+          for line in (116, 158, 181, 218, 253):
               checkpoints[line] = (queue, ("execute = queue_types.execute_command_queue_entry",), "AttributeError", "AttributeError: module 'rigplane.runtime._poller_types' has no attribute 'execute_command_queue_entry'")
           for line, (file, statements, kind, message) in checkpoints.items():
               actual = Path(file).read_text().splitlines()[line - 1:line - 1 + len(statements)]
@@ -205,7 +205,6 @@ jobs:
           printf '%s\n' "$oracle_rc" > "$ARTIFACT_DIR/oracle-exit.txt"
           cat "$ARTIFACT_DIR/oracle.log" "$ARTIFACT_DIR/oracle.txt"
           exit "$oracle_rc"
-
       - name: Capture and require Ruff without mutation
         if: always() && steps.install.outcome == 'success'
         run: |
@@ -236,6 +235,6 @@ jobs:
         if: always() && steps.prepare.outputs.artifacts_dir != ''
         uses: actions/upload-artifact@v4
         with:
-          name: command-queue-web-red-8480816e-${{ github.run_id }}-${{ github.run_attempt }}
+          name: command-queue-web-red-a7939b6d-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.prepare.outputs.artifacts_dir }}
           if-no-files-found: error
