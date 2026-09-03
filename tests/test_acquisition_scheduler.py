@@ -3461,20 +3461,27 @@ async def test_second_run_does_not_add_a_second_ticking_loop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_freshness_driving_survives_the_first_seat_stopping() -> None:
-    """The waiting seat drives once the driving seat's task is cancelled.
+@pytest.mark.parametrize(
+    "cancel_web_first", [True, False], ids=["web-first", "rigctld-first"]
+)
+async def test_freshness_driving_survives_the_first_seat_stopping(
+    cancel_web_first: bool,
+) -> None:
+    """Ticking outlives the first cancellation, in either order.
 
-    Each seat cancels only its own task, so ticking must outlive whichever
-    task is cancelled first -- either seat can be the one holding the loop --
-    and must end once both are cancelled.
+    One of the two tasks holds the loop and the other waits for it.
+    Cancelling in both orders covers both roles without the test having to
+    depend on which task took which. Whichever goes first, the survivor
+    keeps ticking; once both are cancelled, nothing ticks.
     """
 
     interval = 0.02
     service = StateFreshnessService(store=StateStore(), interval_seconds=interval)
 
     with _recorded_freshness_ticks() as stamps:
-        first = asyncio.create_task(service.run(), name="web-state-freshness")
-        second = asyncio.create_task(service.run(), name="rigctld-state-freshness")
+        web = asyncio.create_task(service.run(), name="web-state-freshness")
+        rigctld = asyncio.create_task(service.run(), name="rigctld-state-freshness")
+        first, second = (web, rigctld) if cancel_web_first else (rigctld, web)
         try:
             await asyncio.sleep(interval * 4)
             first.cancel()
@@ -3482,14 +3489,14 @@ async def test_freshness_driving_survives_the_first_seat_stopping() -> None:
 
             after_first_stop = len(stamps)
             await asyncio.sleep(interval * 4)
-            assert len(stamps) > after_first_stop, "ticking stopped with a seat live"
+            assert len(stamps) > after_first_stop, "ticking stopped with a task live"
 
             second.cancel()
             await asyncio.gather(second, return_exceptions=True)
             after_both_stopped = len(stamps)
             await asyncio.sleep(interval * 4)
-            assert len(stamps) == after_both_stopped, "ticking outlived both seats"
+            assert len(stamps) == after_both_stopped, "ticking outlived both tasks"
         finally:
-            first.cancel()
-            second.cancel()
-            await asyncio.gather(first, second, return_exceptions=True)
+            web.cancel()
+            rigctld.cancel()
+            await asyncio.gather(web, rigctld, return_exceptions=True)

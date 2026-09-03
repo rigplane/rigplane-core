@@ -590,8 +590,8 @@ class TestLifecycle:
         radio carries the store it owns, plus the services the web seat
         attaches to it in
         ``web/server.py: WebServer._bootstrap_state_acquisition`` -- among
-        them the freshness service and its scheduler, which are the two this
-        test needs. The web seat's ``web-state-freshness`` task
+        them the freshness service and its scheduler. The web seat's
+        ``web-state-freshness`` task
         (``web/web_startup.py: start_web_server``) runs over that service;
         ``RigctldServer.start`` then takes its reuse branch and starts
         ``rigctld-state-freshness`` over the same instance.
