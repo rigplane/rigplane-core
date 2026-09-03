@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **The shared state-cache poll helpers are deleted.** Removed:
+  `rigplane.runtime._shared_state_runtime` (the whole module — its
+  `DEFAULT_STATE_CACHE_TTL`, `is_cache_fresh`, `poll_frequency`,
+  `poll_mode` and `poll_standard_fields`) and the legacy alias shim
+  `rigplane._shared_state_runtime`. Importing either module path now
+  raises `ModuleNotFoundError`. `rigctld` keeps its own TTL in
+  `RigctldConfig.cache_ttl`.
 - **The `rigctld` server's `_poller` constructor hook is deleted.** Removed
   from `rigplane.rigctld.server`: the `_poller` keyword argument of
   `RigctldServer.__init__`, the `self._poller` attribute, and the poller

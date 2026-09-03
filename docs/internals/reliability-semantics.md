@@ -44,9 +44,6 @@ The sync wrapper (`sync.py`) uses a single operation timeout when running async 
 
 ### State cache (shared layer)
 
-The shared state cache used by both the Web UI and rigctld is defined in `rigctld/state_cache.py` and consumed via `_shared_state_runtime.is_cache_fresh()`.
-
-- **Default TTL:** `DEFAULT_STATE_CACHE_TTL` in `_shared_state_runtime.py` is **0.2** seconds. This is the same as `RigctldConfig.cache_ttl` and is used so that web and rigctld share the same freshness semantics for frequency, mode, and related fields.
 - **“Stale” meaning:** A cache field is considered **stale** when either:
   - its timestamp is missing (never written), or
   - `(time.monotonic() - field_ts) >= max_age_s`.
