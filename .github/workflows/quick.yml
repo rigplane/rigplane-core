@@ -74,6 +74,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # Classification policy is always loaded from a trusted commit. A PR
+          # may change the policy, but cannot use that change to suppress its
+          # own substantive quick checks.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
           # Pull-request merge checkouts include both parents at this depth.
           # The classifier fetches an exact missing endpoint when necessary.
           fetch-depth: 2

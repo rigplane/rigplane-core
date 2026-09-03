@@ -44,15 +44,16 @@ const script = process.argv[1];
 const scenario = JSON.parse(process.argv[2]);
 const statuses = [];
 const info = [];
+const contents = [];
 const github = {
   paginate: async () => scenario.files,
   rest: {
     pulls: {
-      get: async () => ({data: {head: {sha: scenario.heads.shift()}, changed_files: scenario.changedFiles}}),
+      get: async () => ({data: {head: {sha: scenario.heads.shift()}, base: {sha: scenario.baseSha}, changed_files: scenario.changedFiles}}),
       listFiles: async () => undefined,
     },
     repos: {
-      getContent: async () => ({data: {type: 'file', encoding: 'base64', content: Buffer.from(require('fs').readFileSync('.github/scripts/docs-only-paths.js')).toString('base64')}}),
+      getContent: async (request) => { contents.push(request); return {data: {type: 'file', encoding: 'base64', content: Buffer.from(require('fs').readFileSync('.github/scripts/docs-only-paths.js')).toString('base64')}}; },
       createCommitStatus: async (status) => statuses.push(status),
     },
   },
@@ -66,7 +67,7 @@ const context = {
 const core = {info: (message) => info.push(message)};
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 new AsyncFunction('github', 'context', 'core', script)(github, context, core)
-  .then(() => process.stdout.write(JSON.stringify({statuses, info})))
+  .then(() => process.stdout.write(JSON.stringify({statuses, info, contents})))
   .catch((error) => { console.error(error); process.exitCode = 1; });
 """
         completed = subprocess.run(
@@ -75,7 +76,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 "-e",
                 runner,
                 self.docs_quick_script(),
-                json.dumps({"heads": heads, "files": files, "changedFiles": len(files) if changed_files is None else changed_files}),
+                json.dumps({"heads": heads, "files": files, "changedFiles": len(files) if changed_files is None else changed_files, "baseSha": "c" * 40}),
             ],
             check=True,
             capture_output=True,
@@ -200,6 +201,15 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn("files.length !== changedFiles", docs_quick)
         self.assertIn("changedFiles >= 3000", docs_quick)
         self.assertIn("docs-only-paths.js", docs_quick)
+        self.assertIn("pull_request_target:", docs_quick)
+        self.assertNotIn("\n  pull_request:\n", docs_quick)
+        self.assertIn("const baseSha = initialPull.base.sha", docs_quick)
+        self.assertIn("ref: baseSha", docs_quick)
+        self.assertNotIn("github.workflow_sha", docs_quick)
+        self.assertNotIn("actions/checkout", docs_quick)
+        self.assertNotIn("github.event.pull_request.head", docs_quick)
+        self.assertIn("github.event.pull_request.base.sha", quick)
+        self.assertIn("persist-credentials: false", quick)
         self.assertIn("currentPull.head.sha !== headSha", docs_quick)
         self.assertIn("sha: headSha", docs_quick)
         self.assertNotIn("sha: github.sha", docs_quick)
@@ -216,6 +226,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertEqual(
             [status["sha"] for status in stable["statuses"]], [initial_head]
         )
+        self.assertEqual(stable["contents"][0]["ref"], "c" * 40)
 
         renamed_code = self.run_docs_quick_script(
             heads=[initial_head],
@@ -243,6 +254,19 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             heads=[initial_head], files=[{"filename": "docs/guide.md"}], changed_files=3000
         )
         self.assertEqual(capped["statuses"], [])
+
+        for filename in (
+            "src/rigplane/radio.py",
+            "docs/guide.md",
+            "CODEOWNERS",
+            ".github/workflows/quick.yml",
+        ):
+            files = [{"filename": filename}]
+            if filename == "docs/guide.md":
+                files.append({"filename": "src/rigplane/radio.py"})
+            with self.subTest(filename=filename):
+                result = self.run_docs_quick_script(heads=[initial_head], files=files)
+                self.assertEqual(result["statuses"], [])
 
     def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
         citation = DOC_CITATION_YML.read_text(encoding="utf-8")
