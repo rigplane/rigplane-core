@@ -150,7 +150,7 @@ def test_ic7300_removed_apf_getters_resolve_none() -> None:
 
     assert profile.command_map is not None
     assert not profile.command_map.has("get_audio_peak_filter")
-    assert "get_apf_type_level" in profile.absent_command_names
+    assert not profile.command_map.has("get_apf_type_level")
     assert executor.query_for_path(audio_peak) is None
     assert executor.query_for_path(apf_level) is None
     assert profile.state_acquisition is not None
