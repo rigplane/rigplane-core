@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Normal matrix or isolated serial close RED
+        description: Normal matrix or isolated serial completion proof
         type: choice
         default: normal
-        options: [normal, serial-close-red]
+        options: [normal, serial-completion-proof]
   push:
     branches: [main]
 
@@ -21,9 +21,9 @@ concurrency:
 jobs:
   test:
     # On push: only when commit message contains [full-ci].
-    # Keep normal runs; only the exact manual RED mode/ref uses its own job.
+    # Keep normal runs; only the exact manual proof mode/ref uses its own job.
     if: >-
-      !(github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-close-red' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-completion-proof' &&
       github.ref == 'refs/heads/codex/serial-completion-preflight') &&
       (github.event_name != 'push' ||
       contains(github.event.head_commit.message, '[full-ci]'))
@@ -192,10 +192,10 @@ jobs:
     #
     # Same push guard as the `test` job above: on `push`, only runs when
     # the commit message contains `[full-ci]`; on `schedule`/
-    # `workflow_dispatch`, runs except for the exact manual RED mode/ref. Keeps it off
+    # `workflow_dispatch`, runs except for the exact manual proof mode/ref. Keeps it off
     # ordinary push to `main`.
     if: >-
-      !(github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-close-red' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-completion-proof' &&
       github.ref == 'refs/heads/codex/serial-completion-preflight') &&
       (github.event_name != 'push' ||
       contains(github.event.head_commit.message, '[full-ci]'))
@@ -275,8 +275,8 @@ jobs:
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
 
-  serial-close-red:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-close-red' && github.ref == 'refs/heads/codex/serial-completion-preflight'
+  serial-completion-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'serial-completion-proof' && github.ref == 'refs/heads/codex/serial-completion-preflight'
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
     permissions:
@@ -292,7 +292,7 @@ jobs:
       - name: Establish isolated evidence paths
         working-directory: ${{ github.workspace }}
         run: |
-          proof_root=$(mktemp -d "$RUNNER_TEMP/serial-close-red.XXXXXX")
+          proof_root=$(mktemp -d "$RUNNER_TEMP/serial-completion-proof.XXXXXX")
           mkdir "$proof_root/evidence"
           echo "PROOF_ROOT=$proof_root" >> "$GITHUB_ENV"
           echo "UV_CACHE_DIR=$proof_root/uv-cache" >> "$GITHUB_ENV"
@@ -306,7 +306,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
-          ref: 798e4db44dba831a38897606f13e75061a48837e
+          ref: f203d64937b0eb2b92c297d9ac155c60feb52851
           fetch-depth: 0
           persist-credentials: false
           path: source
@@ -316,11 +316,12 @@ jobs:
           enable-cache: false
           version: '0.12.9'
 
-      - name: Freeze RED instrument and manifest
+      - name: Freeze finite proof instrument and manifest
         run: |
-          cat > "$PROOF_ROOT/evidence/serial_red.py" <<'PY'
+          cat > "$PROOF_ROOT/evidence/serial_completion.py" <<'PY'
           import asyncio
           import ctypes
+          import difflib
           import hashlib
           import importlib.metadata
           import json
@@ -334,19 +335,23 @@ jobs:
           import xml.etree.ElementTree as ET
           from collections import Counter
 
-          SOURCE = '798e4db44dba831a38897606f13e75061a48837e'
-          TREE = '512b50358afdd7f3d5a21fd80b08c2e27c5d9cb9'
-          PARENT = '82585fb4b7957096d9644db5d8b95c3ca1c79077'
-          CARRIER_PARENT = '83add13d86ac20847ae9ae709b6fb3e4bdd9addb'
+          SOURCE = 'f203d64937b0eb2b92c297d9ac155c60feb52851'
+          TREE = '84c96d44ed50aa720032b8e2f7c4afa6677402f4'
+          PARENT = 'dd415785c562722deb16ea0c782880fdd9bd703c'
+          BASE = '82585fb4b7957096d9644db5d8b95c3ca1c79077'
+          RED_SOURCE = '798e4db44dba831a38897606f13e75061a48837e'
+          CARRIER_PARENT = '78e4adb12f945a161974fa7c7b52f20384edca1f'
           ROOT = Path.cwd().resolve()
           DIAG = ROOT.parent / 'diagnostic'
-          EVIDENCE = Path(os.environ['PROOF_ROOT']) / 'evidence'
+          ARTIFACTS = Path(os.environ['PROOF_ROOT']) / 'evidence'
+          EVIDENCE = Path(os.environ.get('SERIAL_EVIDENCE', str(ARTIFACTS)))
           LINK = 'tests/test_serial_civ_link.py'
           SESSION = 'tests/test_serial_session.py'
           DRIVER = 'src/rigplane/backends/icom7610/drivers/'
-          REQUIRED_IMPORTS = ('rigplane.backends.icom7610.drivers.serial_civ_link',
-                              'rigplane.backends.icom7610.drivers.serial_session',
-                              'test_serial_civ_link', 'test_serial_session')
+          TARGET = DRIVER + 'serial_civ_link.py'
+          CANDIDATE_SHA = '641354ce61084bdfb91c11e5a10a2793d474c8e6b82d4f701d44a9f8ac1cdbe6'
+          RED_SHA = '1e9a0c3881914860f8ac40945b70f15ab5b1c1262e18df268f40ef896cf5053d'
+          TEST_SHA = '0261e1d432e3c84bd533880c617b5823528852d1ca82f5ce776c632ff3c929aa'
           CONTROLS = [
               LINK + '::test_send_written_waits_for_drain_and_preserves_raw_enqueue',
               LINK + '::test_send_written_rechecks_guard_at_writer[false]',
@@ -390,6 +395,75 @@ jobs:
                       {'caller': True, 'operation': False, 'worker': False}, 'caller'),
           ])
           EXPECTED = {**dict.fromkeys(CONTROLS), **FAILURES}
+          STACKED = LINK + '::test_stacked_retirement_joins_prior_before_current_close_error'
+
+          def specimens():
+              candidate = (ROOT / TARGET).read_bytes()
+              assert sha(candidate) == CANDIDATE_SHA and sha((ROOT / LINK).read_bytes()) == TEST_SHA
+              guard = ('        if worker is not None and not worker.done() and not worker.cancelling():\n'
+                       '            worker.cancel()\n')
+              nested = ('        if worker is not None:\n'
+                        '            if not worker.done():\n'
+                        '                if not worker.cancelling():\n'
+                        '                    worker.cancel()\n')
+              priority = ('        finally:\n            try:\n                if previous is not None:\n'
+                          '                    await asyncio.shield(previous)\n            finally:\n'
+                          '                if close_error is not None:\n                    raise close_error\n')
+              bypass = ('        finally:\n            if previous is not None:\n'
+                        '                await asyncio.shield(previous)\n            if close_error is not None:\n'
+                        '                raise close_error\n')
+              assert candidate.count(guard.encode()) == candidate.count(priority.encode()) == 1
+              variants = {'candidate': candidate, 'Rfull': git(ROOT, 'show', f'{RED_SOURCE}:{TARGET}'),
+                          'L': candidate.replace(guard.encode(), nested.encode()),
+                          'M': candidate.replace(priority.encode(), bypass.encode())}
+              assert len({sha(value) for value in variants.values()}) == 4
+              assert sha(variants['Rfull']) == RED_SHA
+              red = [dict(site, node=node, retirement_retained=False, none_cancelled=True,
+                          close_exception_is_original=True) for node, site in FAILURES.items()]
+              green = [dict(site, tasks_done={name: name == 'old_worker' and site['line'] == 428
+                       for name in site['tasks_done']}, retirement_retained=True,
+                       none_cancelled=False, close_exception_is_original=False) for site in red]
+              held = dict(node=STACKED, file=LINK, line=903,
+                  statement='assert not cleanup_b.done(), "current retirement skipped its predecessor"',
+                  tasks_done={'worker_a': True, 'worker_b': True, 'cleanup_a': False,
+                              'cleanup_b': False, 'first': False, 'second': False, 'joiner': False},
+                  retirement_retained=True)
+              identity = dict(node=STACKED, file=LINK, line=914,
+                  statement='assert results[1] is error_b, "prior close error replaced current close error"',
+                  tasks_done={'cleanup_a': True, 'cleanup_b': True}, retirement_retained=False,
+                  result_identities=['A', 'B', 'B'])
+              mutant_failure = dict(file=LINK, line=914, exception='builtins.AssertionError',
+                                    message_first_line='prior close error replaced current close error')
+              plans = []
+              for label, variant, expected, witnesses in (
+                  ('G1', 'candidate', dict.fromkeys([*EXPECTED, STACKED]), [*green, held, identity]),
+                  ('Rfull', 'Rfull', EXPECTED, red),
+                  ('L', 'L', dict.fromkeys([*EXPECTED, STACKED]), [*green, held, identity]),
+                  ('M', 'M', {STACKED: mutant_failure}, [held, dict(identity, result_identities=['A', 'A', 'A'])]),
+                  ('G2', 'candidate', dict.fromkeys([*EXPECTED, STACKED]), [*green, held, identity]),
+              ):
+                  selected_files = {node.split('::')[0] for node in expected}
+                  required = ['rigplane.backends.icom7610.drivers.serial_civ_link', 'test_serial_civ_link']
+                  if SESSION in selected_files:
+                      required += ['rigplane.backends.icom7610.drivers.serial_session', 'test_serial_session']
+                  plans.append(dict(label=label, variant=variant, expected=expected, nodes=list(expected), witnesses=witnesses,
+                      required_imports=required, expected_exit=int(any(expected.values())),
+                      driver_sha256=sha(variants[variant])))
+              for plan in plans:
+                  for site in plan['witnesses']:
+                      assert (ROOT / site['file']).read_text().splitlines()[site['line'] - 1].strip() == site['statement']
+              return variants, plans
+
+          def manifest(variants, plans):
+              changes = {}
+              for name, content in variants.items():
+                  changes[name] = dict(sha256=sha(content), origin=RED_SOURCE if name == 'Rfull' else SOURCE,
+                      diff=''.join(difflib.unified_diff(variants['candidate'].decode().splitlines(True),
+                          content.decode().splitlines(True), fromfile='candidate/' + TARGET, tofile=name + '/' + TARGET)))
+              return dict(source=SOURCE, tree=TREE, parent=PARENT, carrier_base=BASE, specimens=plans,
+                  driver_variants=changes, executions=96, passed=91, call_assertion_failures=5,
+                  limits={'pytest_seconds': 15, 'process_seconds': 120},
+                  scope='finite G1/Rfull/L/M/G2 only; cancellation message and forced-kill calibration unproved')
 
           def save(name, data):
               (EVIDENCE / name).write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
@@ -424,7 +498,7 @@ jobs:
               assert all(not value['status'] for value in result.values()), result
               return result
 
-          def imports(hashes):
+          def imports(hashes, required):
               records = {}
               for name, module in sorted(sys.modules.items()):
                   filename = getattr(module, '__file__', None)
@@ -438,13 +512,13 @@ jobs:
                   relative = str(path.relative_to(ROOT))
                   assert relative in hashes and sha(path.read_bytes()) == hashes[relative], (name, relative)
                   records[name] = {'path': str(path), 'sha256': hashes[relative]}
-              assert all(name in records for name in REQUIRED_IMPORTS), records.keys()
+              assert all(name in records for name in required), records.keys()
               return records
 
           def child():
               import pytest
-              before = json.loads((EVIDENCE / 'before.json').read_text())
-              hashes = before['source']['hashes']
+              spec = json.loads((EVIDENCE / 'specimen.json').read_text())
+              expected, hashes = spec['expected'], spec['inventory']['hashes']
               (EVIDENCE / 'warnings.jsonl').write_text('')
               class Oracle:
                   def pytest_warning_recorded(self, warning_message, when, nodeid, location):
@@ -458,20 +532,22 @@ jobs:
                   def pytest_collection_finish(self, session):
                       actual = [item.nodeid for item in session.items]
                       save('collected.json', actual)
-                      assert len(actual) == len(set(actual)) == len(EXPECTED) and set(actual) == set(EXPECTED)
+                      assert len(actual) == len(set(actual)) == len(expected) and set(actual) == set(expected)
                       for item in session.items:
                           path = ROOT / item.nodeid.split('::')[0]
                           assert Path(item.path).resolve() == path == Path(item.module.__file__).resolve()
-                      save('imports-before.json', imports(hashes))
+                      save('imports-before.json', imports(hashes, spec['required_imports']))
 
                   @pytest.hookimpl(hookwrapper=True)
                   def pytest_runtest_call(self, item):
-                      site = FAILURES.get(item.nodeid)
+                      sites = [site for site in spec['witnesses'] if site['node'] == item.nodeid]
                       previous = sys.gettrace()
                       assert previous is None, 'unexpected pre-existing tracer'
                       def trace(frame, event, _arg):
-                          if (site is not None and event == 'line' and frame.f_lineno == site['line']
-                                  and Path(frame.f_code.co_filename).resolve() == ROOT / site['file']):
+                          for site in sites:
+                              if not (event == 'line' and frame.f_lineno == site['line']
+                                      and Path(frame.f_code.co_filename).resolve() == ROOT / site['file']):
+                                  continue
                               values = frame.f_locals
                               states = {}
                               for name in site['tasks_done']:
@@ -479,14 +555,20 @@ jobs:
                                   assert isinstance(task, asyncio.Task), name
                                   states[name] = {'done': task.done(), 'cancelled': task.cancelled(),
                                                   'cancelling': task.cancelling()}
-                              caller = values[site['close_caller']]
                               retained = values['link']._retirement
-                              append('liveness.jsonl', dict(node=item.nodeid, line=frame.f_lineno,
-                                  tasks=states, retirement_retained=retained is not None,
-                                  close_exception_is_original=(caller.done() and not caller.cancelled()
-                                      and caller.exception() is values['failure'])))
+                              witness = dict(node=item.nodeid, line=frame.f_lineno,
+                                             tasks=states, retirement_retained=retained is not None)
+                              if 'close_caller' in site:
+                                  caller = values[site['close_caller']]
+                                  witness['close_exception_is_original'] = (
+                                      caller.done() and not caller.cancelled() and caller.exception() is values['failure'])
+                              if 'result_identities' in site:
+                                  witness['results'] = [dict(is_a=value is values['error_a'],
+                                      is_b=value is values['error_b'], exception=f'{type(value).__module__}.{type(value).__name__}',
+                                      message=str(value)) for value in values['results']]
+                              append('liveness.jsonl', witness)
                           return trace
-                      if site is not None:
+                      if sites:
                           sys.settrace(trace)
                       try:
                           yield
@@ -507,14 +589,14 @@ jobs:
 
               args = ['-q', '-o', 'addopts=', '-o', f'cache_dir={EVIDENCE / "pytest-cache"}',
                       '--tb=long', '--color=no', '--timeout=15', '--timeout-method=thread',
-                      f'--junitxml={EVIDENCE / "junit.xml"}', *EXPECTED]
+                      f'--junitxml={EVIDENCE / "junit.xml"}', *spec['nodes']]
               save('pytest-command.json', args)
               rc = pytest.main(args, plugins=[Oracle()])
-              save('imports-after.json', imports(hashes))
+              save('imports-after.json', imports(hashes, spec['required_imports']))
               save('child-complete.json', {'pytest_exit': int(rc)})
               return int(rc)
 
-          def supervised():
+          def supervised(specimen, state):
               assert sys.platform == 'linux' and ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0
               record = {'signals': [], 'timed_out': False, 'group_absent': False}
               process = None
@@ -540,7 +622,13 @@ jobs:
                   with (EVIDENCE / 'stdout.log').open('w') as out, (EVIDENCE / 'stderr.log').open('w') as err:
                       args = [sys.executable, str(Path(__file__).resolve()), 'child']
                       record['args'] = args
-                      process = subprocess.Popen(args, cwd=ROOT, stdout=out, stderr=err, start_new_session=True)
+                      env = dict(os.environ, SERIAL_EVIDENCE=str(EVIDENCE),
+                                 PYTHONPATH=os.pathsep.join((str(specimen / 'src'), str(specimen / 'tests'))))
+                      record.update(cwd=str(specimen), pythonpath=env['PYTHONPATH'])
+                      assert state['group_absent'], 'INVALID: preceding process group not absent'
+                      state['group_absent'] = False
+                      process = subprocess.Popen(args, cwd=specimen, env=env,
+                                                 stdout=out, stderr=err, start_new_session=True)
                       record.update(pid=process.pid, pgid=process.pid)
                       save('supervision.json', record)
                       try:
@@ -565,46 +653,122 @@ jobs:
                               time.sleep(0.02)
                       record.update(group_absent=gone(), returncode=process.poll())
                   save('supervision.json', record)
+                  state['group_absent'] = record['group_absent']
                   assert record['group_absent'], 'INVALID: process group cleanup unconfirmed'
 
-          def validate(rc):
-              assert rc == 1 and json.loads((EVIDENCE / 'child-complete.json').read_text()) == {'pytest_exit': 1}
+          def validate(rc, spec, specimen):
+              expected = spec['expected']
+              assert rc == spec['expected_exit']
+              assert json.loads((EVIDENCE / 'child-complete.json').read_text()) == {'pytest_exit': rc}
               collected = json.loads((EVIDENCE / 'collected.json').read_text())
-              assert Counter(collected) == Counter(EXPECTED.keys())
+              assert Counter(collected) == Counter(expected.keys())
               assert (EVIDENCE / 'warnings.jsonl').read_text() == '', 'INVALID: unexpected warning'
               collection = [json.loads(line) for line in (EVIDENCE / 'collection.jsonl').read_text().splitlines()]
               assert collection and all(row['outcome'] == 'passed' for row in collection)
               phases = [json.loads(line) for line in (EVIDENCE / 'phases.jsonl').read_text().splitlines()]
               assert Counter((row['node'], row['phase']) for row in phases) == Counter(
-                  (node, phase) for node in EXPECTED for phase in ('setup', 'call', 'teardown'))
+                  (node, phase) for node in expected for phase in ('setup', 'call', 'teardown'))
               for row in phases:
-                  site = EXPECTED[row['node']] if row['phase'] == 'call' else None
+                  site = expected[row['node']] if row['phase'] == 'call' else None
                   assert row['xfail'] is None, row
                   if site is None:
                       assert row['outcome'] == 'passed' and 'exception' not in row, row
                   else:
                       assert row['outcome'] == 'failed' and row['exception'] == site['exception'], row
-                      assert row['path'] == str(ROOT / site['file']) and row['line'] == site['line'], row
+                      assert row['path'] == str(specimen / site['file']) and row['line'] == site['line'], row
                       assert row['message'].splitlines()[0] == site['message_first_line'], row
               xml = ET.parse(EVIDENCE / 'junit.xml').getroot()
               assert not xml.findall('.//error') and not xml.findall('.//skipped')
               wanted = {(node.split('::')[0][:-3].replace('/', '.'), node.split('::')[1]): site
-                        for node, site in EXPECTED.items()}
+                        for node, site in expected.items()}
               cases = xml.findall('.//testcase')
               assert Counter((case.get('classname'), case.get('name')) for case in cases) == Counter(wanted.keys())
               for case in cases:
                   assert len(case.findall('failure')) == int(wanted[(case.get('classname'), case.get('name'))] is not None)
               witnesses = [json.loads(line) for line in (EVIDENCE / 'liveness.jsonl').read_text().splitlines()]
-              assert Counter(row['node'] for row in witnesses) == Counter(FAILURES.keys())
+              wanted_sites = {(site['node'], site['line']): site for site in spec['witnesses']}
+              assert Counter((row['node'], row['line']) for row in witnesses) == Counter(wanted_sites.keys())
               for row in witnesses:
-                  site = FAILURES[row['node']]
-                  assert row['line'] == site['line'] and row['close_exception_is_original'], row
-                  assert not row['retirement_retained'], row
+                  site = wanted_sites[row['node'], row['line']]
+                  assert row['retirement_retained'] == site['retirement_retained'], row
                   assert {key: value['done'] for key, value in row['tasks'].items()} == site['tasks_done'], row
-                  assert all(not value['cancelled'] for value in row['tasks'].values()), row
+                  if site.get('none_cancelled'):
+                      assert all(not value['cancelled'] for value in row['tasks'].values()), row
+                  if 'close_exception_is_original' in site:
+                      assert row['close_exception_is_original'] == site['close_exception_is_original'], row
+                  if 'result_identities' in site:
+                      assert [(value['is_a'], value['is_b']) for value in row['results']] == [
+                          (identity == 'A', identity == 'B') for identity in site['result_identities']], row
+                      assert all(value['exception'] == 'builtins.OSError' for value in row['results']), row
               assert (EVIDENCE / 'imports-before.json').is_file() and (EVIDENCE / 'imports-after.json').is_file()
               supervision = json.loads((EVIDENCE / 'supervision.json').read_text())
               assert supervision['group_absent'] and not supervision['timed_out'] and not supervision['signals']
+              assert (EVIDENCE / 'stderr.log').read_text() == '', 'INVALID: unexpected child stderr'
+
+          def run_matrix(before, variants, plans):
+              global EVIDENCE
+              specimen = Path(os.environ['PROOF_ROOT']) / 'specimen'
+              assert (ROOT / '.git').is_dir() and not specimen.exists()
+              shutil.copytree(ROOT, specimen, symlinks=True)
+              pristine = snapshot(specimen)
+              assert pristine == before['source'], 'INVALID: specimen clone drift'
+              state = {'group_absent': True}
+              summary = []
+              try:
+                  for plan in plans:
+                      EVIDENCE = ARTIFACTS / plan['label']
+                      EVIDENCE.mkdir()
+                      save('verdict.json', {'status': 'INVALID', 'reason': 'specimen not completed'})
+                      assert inventories('seed-before') == before
+                      assert state['group_absent'] and snapshot(specimen) == pristine
+                      inventory = dict(pristine, hashes={**pristine['hashes'], TARGET: plan['driver_sha256']},
+                          status='' if plan['variant'] == 'candidate' else f' M {TARGET}\n')
+                      spec = dict(plan, inventory=inventory)
+                      save('specimen.json', spec)
+                      provenance = json.loads((ARTIFACTS / 'provenance.json').read_text())
+                      save('provenance.json', dict(provenance, specimen_root=str(specimen),
+                          specimen=plan['label'], driver_variant=plan['variant'], driver_sha256=plan['driver_sha256'],
+                          specimen_manifest_sha256=sha((EVIDENCE / 'specimen.json').read_bytes())))
+                      try:
+                          assert state['group_absent'], 'INVALID: mutation under live process forbidden'
+                          (specimen / TARGET).write_bytes(variants[plan['variant']])
+                          actual = snapshot(specimen)
+                          save('specimen-before.json', actual)
+                          assert actual == inventory, 'INVALID: undeclared specimen mutation'
+                          rc = supervised(specimen, state)
+                          actual = snapshot(specimen)
+                          save('specimen-after.json', actual)
+                          assert actual == inventory, 'INVALID: specimen changed during execution'
+                          validate(rc, spec, specimen)
+                      finally:
+                          save('restoration.json', dict(group_absent=state['group_absent'], restored=False))
+                          if state['group_absent']:
+                              # Never restore while an unconfirmed child/group can still touch the specimen.
+                              pre_restore = snapshot(specimen)
+                              save('pre-restoration.json', pre_restore)
+                              assert pre_restore == inventory, 'INVALID: drift; leave specimen for diagnosis'
+                              (specimen / TARGET).write_bytes(variants['candidate'])
+                              restored = snapshot(specimen)
+                              save('restored-inventory.json', restored)
+                              assert restored == pristine, 'INVALID: restoration mismatch'
+                              save('restoration.json', dict(group_absent=True, restored=True,
+                                  from_sha256=plan['driver_sha256'], to_sha256=sha(variants['candidate'])))
+                          assert state['group_absent'], 'INVALID: no restoration; live process unconfirmed'
+                          assert inventories('seed-after') == before
+                      counts = dict(specimen=plan['label'], executions=len(plan['expected']),
+                          passed=sum(site is None for site in plan['expected'].values()),
+                          call_assertion_failures=sum(site is not None for site in plan['expected'].values()))
+                      save('verdict.json', dict(status='VALID_EXPECTED', **counts))
+                      summary.append(counts)
+                  assert [row['executions'] for row in summary] == [24, 23, 24, 1, 24]
+                  assert [row['passed'] for row in summary] == [24, 19, 24, 0, 24]
+                  assert [row['call_assertion_failures'] for row in summary] == [0, 4, 0, 1, 0]
+              finally:
+                  EVIDENCE = ARTIFACTS
+                  save('matrix-summary.json', summary)
+                  save('process-boundary.json', state)
+                  assert inventories('after') == before, 'INVALID: source or carrier changed'
+              return summary
 
           def main():
               assert sys.version_info[:3] == (3, 11, 16) and sys.dont_write_bytecode
@@ -613,16 +777,15 @@ jobs:
                   inventories('before')
                   assert git(ROOT, 'rev-parse', 'HEAD^').decode().strip() == PARENT
                   git(DIAG, 'merge-base', '--is-ancestor', CARRIER_PARENT, 'HEAD')
-                  assert git(DIAG, 'diff', '--name-only', PARENT, 'HEAD').decode().splitlines() == ['.github/workflows/full.yml']
+                  assert git(DIAG, 'diff', '--name-only', BASE, 'HEAD').decode().splitlines() == ['.github/workflows/full.yml']
                   for name in (DRIVER + 'serial_civ_link.py', DRIVER + 'serial_session.py', LINK, SESSION, 'pyproject.toml', 'uv.lock'):
                       assert git(ROOT, 'show', f'{SOURCE}:{name}') == (ROOT / name).read_bytes(), name
                   assert len(CONTROLS) == 19 and len(FAILURES) == 4 and len(EXPECTED) == 23
-                  for site in FAILURES.values():
-                      assert (ROOT / site['file']).read_text().splitlines()[site['line'] - 1].strip() == site['statement']
-                  save('manifest.json', {'source': SOURCE, 'tree': TREE, 'expected': EXPECTED,
-                       'expected_exit': 1, 'pass_count': 19, 'call_failure_count': 4,
-                       'limits': {'pytest_seconds': 15, 'process_seconds': 120},
-                       'scope': 'initial RED only; cancellation-message preservation is not asserted'})
+                  variants, plans = specimens()
+                  save('manifest.json', manifest(variants, plans))
+                  (EVIDENCE / 'variants').mkdir()
+                  for name, content in variants.items():
+                      (EVIDENCE / 'variants' / (name + '.py')).write_bytes(content)
                   return 0
               if mode == 'child':
                   return child()
@@ -635,6 +798,10 @@ jobs:
               assert mode == 'run'
               before = json.loads((EVIDENCE / 'before.json').read_text())
               assert inventories('after-dependencies') == before
+              variants, plans = specimens()
+              assert manifest(variants, plans) == json.loads((EVIDENCE / 'manifest.json').read_text())
+              for name, content in variants.items():
+                  assert (EVIDENCE / 'variants' / (name + '.py')).read_bytes() == content
               uv = subprocess.check_output(['uv', '--version'], text=True, timeout=15).strip()
               assert uv.split()[1] == '0.12.9'
               dependencies = sorted((d.metadata['Name'], d.version) for d in importlib.metadata.distributions())
@@ -651,13 +818,9 @@ jobs:
                   'lock_sha256': before['source']['hashes']['uv.lock'],
                   **{key: os.environ.get(key) for key in ('GITHUB_SHA', 'GITHUB_REF', 'GITHUB_RUN_ID',
                      'GITHUB_RUN_ATTEMPT', 'RUNNER_NAME', 'UV_PROJECT_ENVIRONMENT', 'UV_CACHE_DIR')}})
-              try:
-                  rc = supervised()
-                  validate(rc)
-              finally:
-                  assert inventories('after') == before, 'INVALID: source or carrier changed'
-              save('verdict.json', {'status': 'EXPECTED_RED', 'passed': 19, 'call_assertion_failures': 4,
-                                    'source': SOURCE, 'tree': TREE})
+              summary = run_matrix(before, variants, plans)
+              save('verdict.json', {'status': 'VALID_FINITE_PROOF', 'executions': 96, 'passed': 91,
+                  'call_assertion_failures': 5, 'source': SOURCE, 'tree': TREE, 'specimens': summary})
               return 0
 
           if __name__ == '__main__':
@@ -685,23 +848,24 @@ jobs:
           record python-find uv python find 3.11.16
           bootstrap_python=$(cat "$PROOF_ROOT/evidence/python-find.stdout.log")
           echo "BOOTSTRAP_PYTHON=$bootstrap_python" >> "$GITHUB_ENV"
-          record snapshot "$bootstrap_python" "$PROOF_ROOT/evidence/serial_red.py" snapshot
+          record snapshot "$bootstrap_python" "$PROOF_ROOT/evidence/serial_completion.py" snapshot
           record dependencies env HATCH_BUILD_NO_HOOKS=1 uv sync --frozen --all-extras
 
-      - name: Observe and classify the frozen initial RED
+      - name: Observe and classify G1 Rfull L M G2 without retries
         run: |
-          "$UV_PROJECT_ENVIRONMENT/bin/python" "$PROOF_ROOT/evidence/serial_red.py" run \
+          "$UV_PROJECT_ENVIRONMENT/bin/python" "$PROOF_ROOT/evidence/serial_completion.py" run \
             > "$PROOF_ROOT/evidence/driver.stdout.log" 2> "$PROOF_ROOT/evidence/driver.stderr.log"
 
       - name: Seal available evidence
         if: always() && env.BOOTSTRAP_PYTHON != ''
-        run: '"$BOOTSTRAP_PYTHON" "$PROOF_ROOT/evidence/serial_red.py" seal'
+        run: '"$BOOTSTRAP_PYTHON" "$PROOF_ROOT/evidence/serial_completion.py" seal'
 
-      - name: Upload RED evidence
+      - name: Upload finite proof evidence
         if: always() && env.PROOF_ROOT != ''
         uses: actions/upload-artifact@v4
         with:
-          name: serial-close-red-${{ github.run_id }}-${{ github.run_attempt }}
+          name: serial-completion-proof-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.PROOF_ROOT }}/evidence
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 14
