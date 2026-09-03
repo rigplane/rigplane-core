@@ -860,9 +860,7 @@ class YaesuCatRadio:
             if is_current is None and not urgent:
                 await self._transport.write(cmd)
             else:
-                await self._transport.write(
-                    cmd, is_current=is_current, urgent=urgent
-                )
+                await self._transport.write(cmd, is_current=is_current, urgent=urgent)
         except CatCommandRejected as exc:
             raise CommandRejectedError(str(exc)) from exc
 
@@ -1094,9 +1092,7 @@ class YaesuCatRadio:
             return ActuationResult.REJECTED
 
         try:
-            await self._write(
-                command, is_current=is_current, urgent=urgent, **params
-            )
+            await self._write(command, is_current=is_current, urgent=urgent, **params)
         except CommandError:
             return ActuationResult.REJECTED
         return ActuationResult.ACCEPTED
