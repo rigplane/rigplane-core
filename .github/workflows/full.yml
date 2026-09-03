@@ -2,7 +2,7 @@ name: Tests (full matrix)
 on:
   workflow_dispatch:
 jobs:
-  observed-ptt-green:
+  observed-ptt-mutations:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/yaesu-observed-ptt-red-proof'
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
@@ -11,13 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5
+          ref: 631ba3d3767706645fca35a27b27f1555fb598b7
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v8.1.0
-      - name: Prepare isolated evidence and exact source
+      - name: Prepare exact source and isolated evidence
         run: |
-          test "$(git rev-parse HEAD)" = 7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5
-          test "$(git rev-parse HEAD^{tree})" = b0decf16e8583b278524ddc1fdf8f176530163ca
+          test "$(git rev-parse HEAD)" = 631ba3d3767706645fca35a27b27f1555fb598b7
+          test "$(git rev-parse HEAD^{tree})" = 2b4ef5552a28fd7c4b97494c3d52e205df64a2b4
+          test "$(git rev-parse HEAD^)" = 7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5
           test -z "$(git status --porcelain)"
           proof_dir=$(mktemp -d "$RUNNER_TEMP/yaesu-observed-ptt.XXXXXX")
           echo "YAESU_PROOF=$proof_dir" >> "$GITHUB_ENV"
@@ -25,246 +26,108 @@ jobs:
           echo "PYTHONPYCACHEPREFIX=$proof_dir/pycache" >> "$GITHUB_ENV"
       - name: Dependencies
         run: uv sync --frozen --all-extras
-      - name: Prepare exact GREEN collector and bounded supervisor
+      - name: Prepare matrix collector and supervisor
         run: |
-          cat > "$YAESU_PROOF/yaesu_green_probe.py" <<'PY'
-          import collections
-          import hashlib
-          import json
-          import os
+          cat > "$YAESU_PROOF/yaesu_mutation_probe.py" <<'PY'
+          import collections, hashlib, json, os, shutil, signal, subprocess, sys, time
           from pathlib import Path
-          import signal
-          import subprocess
-          import sys
-          import time
           import xml.etree.ElementTree as ET
-
           import pytest
 
-          SOURCE = "7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5"
-          TREE = "b0decf16e8583b278524ddc1fdf8f176530163ca"
-          BASE = "b28bd8a41d36b05a71e3ef77169345cdc8f5740b"
-          ROOT = Path.cwd().resolve()
-          EVIDENCE = Path(os.environ["YAESU_PROOF"])
-          SELECTED = ("tests/test_yaesu_cat_observation_adapter.py", "tests/test_yaesu_cat_poller.py")
-          REQUIRED_NODES = {
-              "tests/test_yaesu_cat_observation_adapter.py::test_medium_canonical_ptt_has_exactly_one_publication[False]",
-              "tests/test_yaesu_cat_observation_adapter.py::test_medium_canonical_ptt_has_exactly_one_publication[True]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_capture_only_reconnect_uses_current_generation",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_store_only_generation_discards_held_read",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_current_generation_held_read_publishes_after_release[TX0-off]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_current_generation_held_read_publishes_after_release[TX1-on]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX0-None-off-False]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX1-None-on-True]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX2-None-on-True]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX9-None-unknown-True]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX0-state_map4-unknown-False]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX7-state_map5-off-False]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX0-state_map6-on-True]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl[TX1-state_map7-unknown-True]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value[integer-one]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value[valid-on]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value[integer-zero]",
-              "tests/test_yaesu_cat_poller.py::test_canonical_ptt_typed_reading_requires_strict_value[valid-off]",
-              *{f"tests/test_yaesu_cat_poller.py::test_canonical_ptt_requires_qualified_readback[qualification{index}]" for index in range(6)},
-          }
-          PROJECT_MODULES = {
-              "test_yaesu_cat_observation_adapter": SELECTED[0],
-              "test_yaesu_cat_poller": SELECTED[1],
-              "rigplane.backends.yaesu_cat.radio": "src/rigplane/backends/yaesu_cat/radio.py",
-              "rigplane.backends.yaesu_cat.poller": "src/rigplane/backends/yaesu_cat/poller.py",
-              "rigplane.backends.yaesu_cat.observations": "src/rigplane/backends/yaesu_cat/observations.py",
-              "rigplane.core.tx_observation": "src/rigplane/core/tx_observation.py",
-              "rigplane.core.state_store": "src/rigplane/core/state_store.py",
-              "rigplane.core.observation_adapter": "src/rigplane/core/observation_adapter.py",
-              "rigplane.core.command_service": "src/rigplane/core/command_service.py",
-          }
-
-          def save(name, value):
-              (EVIDENCE / name).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-
-          def append(name, value):
-              with (EVIDENCE / name).open("a") as stream:
-                  stream.write(json.dumps(value, sort_keys=True) + "\n")
-
-          def git(*args):
-              return subprocess.check_output(["git", *args], text=True).strip()
-
-          def inventory():
-              head, tree, status = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}"), git("status", "--porcelain")
-              assert (head, tree, status) == (SOURCE, TREE, ""), (head, tree, status)
-              carrier = os.environ["GITHUB_SHA"]
-              assert git("merge-base", carrier, SOURCE) == BASE
-              assert git("diff", "--name-only", BASE, carrier) == ".github/workflows/full.yml"
-              tracked = git("ls-files", "-z").split("\0")
-              hashes = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
-                        for name in tracked if name.endswith(".py") or name in ("pyproject.toml", "uv.lock", "rigs/ftx1.toml")}
-              return dict(source=head, source_tree=tree, status=status, carrier=carrier,
-                          carrier_tree=git("rev-parse", carrier + "^{tree}"), common_base=BASE,
-                          workflow_sha256=hashlib.sha256(subprocess.check_output(
-                              ["git", "show", carrier + ":.github/workflows/full.yml"])).hexdigest(), hashes=hashes)
-
-          def imports():
-              before = json.loads((EVIDENCE / "before.json").read_text())["hashes"]
-              records = {}
-              for name, expected_path in PROJECT_MODULES.items():
-                  module = sys.modules.get(name)
-                  assert module is not None and getattr(module, "__file__", None), name
-                  path = Path(module.__file__).resolve()
-                  assert path == ROOT / expected_path, (name, str(path), expected_path)
-                  assert hashlib.sha256(path.read_bytes()).hexdigest() == before[expected_path], name
-                  records[name] = expected_path
-              for name, module in sorted(sys.modules.items()):
-                  if not (name == "rigplane" or name.startswith("rigplane.")):
-                      continue
-                  path_name = getattr(module, "__file__", None)
-                  if not path_name:
-                      continue
-                  path = Path(path_name).resolve()
-                  assert path.is_relative_to(ROOT), (name, str(path))
-                  relative = str(path.relative_to(ROOT))
-                  assert relative in before and hashlib.sha256(path.read_bytes()).hexdigest() == before[relative], (name, relative)
-                  records.setdefault(name, relative)
-              return records
-
-          def pytest_sessionstart(session):
-              assert pytest.__version__ == "9.0.2" and sys.version_info[:2] == (3, 11)
-              assert sys.implementation.name == "cpython"
-              save("before.json", inventory())
-              save("runtime.json", dict(python=sys.version, executable=sys.executable, pytest=pytest.__version__, root=str(ROOT), argv=sys.argv, run_id=os.environ.get("GITHUB_RUN_ID"), run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT"), instrument_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), selection=SELECTED, contract="complete selected modules; all collected nodes PASS"))
-
-          def pytest_collectreport(report):
-              append("collection.jsonl", dict(node=report.nodeid, outcome=report.outcome, longrepr=str(report.longrepr) if report.failed else None))
-
-          def pytest_collection_finish(session):
-              collected = [item.nodeid for item in session.items]
-              prefixes = tuple(path + "::" for path in SELECTED)
-              assert collected and all(node.startswith(prefixes) for node in collected), collected
-              assert all(any(node.startswith(path + "::") for node in collected) for path in SELECTED), collected
-              assert len(collected) == len(set(collected)), collected
-              assert REQUIRED_NODES <= set(collected), sorted(REQUIRED_NODES - set(collected))
-              save("manifest.json", dict(source=SOURCE, tree=TREE, selection=SELECTED, required_nodes=sorted(REQUIRED_NODES), nodes=collected))
-              save("imports-before.json", imports())
-
-          def pytest_deselected(items):
-              append("deselected.jsonl", dict(nodes=[item.nodeid for item in items]))
-
+          SOURCE='631ba3d3767706645fca35a27b27f1555fb598b7'; TREE='2b4ef5552a28fd7c4b97494c3d52e205df64a2b4'; PARENT='7df00f5a1fd6a31bc88d043ba6bc659a34a8d2a5'; BASE='b28bd8a41d36b05a71e3ef77169345cdc8f5740b'
+          ROOT=Path.cwd().resolve(); E=Path(os.environ['YAESU_PROOF']); SELECTED=('tests/test_yaesu_cat_observation_adapter.py','tests/test_yaesu_cat_poller.py')
+          HISTORICAL_GREEN_MANIFEST_SHA='a666e969664903ff5afe92f065ae9123c46f87aa37944cfeccce08dac1874b42'; REQUIRED_IMPORTS={'test_yaesu_cat_observation_adapter':SELECTED[0],'test_yaesu_cat_poller':SELECTED[1],'rigplane.backends.yaesu_cat.poller':'src/rigplane/backends/yaesu_cat/poller.py','rigplane.backends.yaesu_cat.observations':'src/rigplane/backends/yaesu_cat/observations.py','rigplane.core.tx_observation':'src/rigplane/core/tx_observation.py','rigplane.core.state_store':'src/rigplane/core/state_store.py','rigplane.core.observation_adapter':'src/rigplane/core/observation_adapter.py','rigplane.core.command_service':'src/rigplane/core/command_service.py'}
+          A='tests/test_yaesu_cat_observation_adapter.py::'; P='tests/test_yaesu_cat_poller.py::'
+          T4=[P+'test_canonical_ptt_typed_reading_requires_strict_value['+x+']' for x in ('integer-one','valid-on','integer-zero','valid-off')]
+          Q6=[P+'test_canonical_ptt_requires_qualified_readback[qualification'+str(x)+']' for x in range(6)]
+          R8=[P+'test_canonical_ptt_real_read_reaches_store_with_legacy_and_shared_ttl['+x+']' for x in ('TX0-None-off-False','TX1-None-on-True','TX2-None-on-True','TX9-None-unknown-True','TX0-state_map4-unknown-False','TX7-state_map5-off-False','TX0-state_map6-on-True','TX1-state_map7-unknown-True')]
+          H2=[P+'test_canonical_ptt_current_generation_held_read_publishes_after_release['+x+']' for x in ('TX0-off','TX1-on')]; R2=[P+'test_canonical_ptt_reconnect_discards_late_old_read['+x+']' for x in ('False','True')]
+          CAP=P+'test_canonical_ptt_capture_only_reconnect_uses_current_generation'; STORE=P+'test_canonical_ptt_store_only_generation_discards_held_read'; P2=[P+'test_canonical_ptt_publishes_before_later_read['+x+']' for x in ('False','True')]
+          A2=[A+'test_medium_canonical_ptt_has_exactly_one_publication['+x+']' for x in ('False','True')]; AERR=[A+'test_medium_ptt_error_publication_is_local_and_preserves_exception['+x+']' for x in ('frequency','ptt','ptt-sink-error','ptt-sink-cancel')]
+          E6=[P+'test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails['+x+']' for x in ('False-NOTTX','False-error1','False-error2','True-NOTTX','True-error1','True-error2')]; X2=[P+'test_canonical_ptt_transport_failure_preserves_reconnect_path['+x+']' for x in ('error0','error1')]
+          PERR=[P+'test_canonical_ptt_error_sink_failure_preserves_reconnect['+x+']' for x in ('RuntimeError-timeout','RuntimeError-transport','CancelledError-timeout','CancelledError-transport')]; I4=[P+'test_invalidation_callback_failure_preserves_transport_flow['+x+']' for x in ('RuntimeError-poll','RuntimeError-reconnect','CancelledError-poll','CancelledError-reconnect')]
+          MUT={
+            'M1':('src/rigplane/backends/yaesu_cat/poller.py','        if provider_generation is None:\n            provider_generation = self._captured_provider_generation()\n',''),
+            'M2':('src/rigplane/backends/yaesu_cat/poller.py','                self._provider_generation_is_current(provider_generation)\n                and ','                '),
+            'M3':('src/rigplane/backends/yaesu_cat/poller.py','            if (\n                self._provider_generation_is_current(provider_generation)\n                and self._current_tx_target_generation() == generation\n            ):','            if self._provider_generation_is_current(provider_generation):'),
+            'M4':('src/rigplane/backends/yaesu_cat/observations.py','            normalize_observed_ptt(value),','            normalize_observed_ptt(bool(value)), '),
+            'M5':('src/rigplane/backends/yaesu_cat/observations.py','                qualified = (\n                    reading.verified_readback is True\n                    and reading.source == "yaesu_poll_response"\n                    and reading.attributed in ("rx", "tx_cat", "tx_other")\n                )','                qualified = True'),
+            'M6':('src/rigplane/backends/yaesu_cat/observations.py','                publish_ptt_error()\n                if reading.failure == "timeout":','                if reading.failure == "timeout":'),
+            'M7':('src/rigplane/backends/yaesu_cat/observations.py','            max_age=self.profile.policy_for(_PTT).freshness_ttl_seconds,','            max_age=self.profile.policy_for(_PTT).freshness_ttl_seconds * 2,'),
+            'M8':('src/rigplane/backends/yaesu_cat/observations.py','                if ptt_callback is None:\n                    observations.append(observation)\n                else:\n                    ptt_callback(observation)','                observations.append(observation)\n                if ptt_callback is not None:\n                    ptt_callback(observation)'),
+            'M9':('src/rigplane/backends/yaesu_cat/observations.py','                if ptt_callback is None:','                if True:'),
+            'M10':('src/rigplane/backends/yaesu_cat/observations.py','                    except (Exception, asyncio.CancelledError):','                    except Exception:'),
+            'M11':('src/rigplane/backends/yaesu_cat/poller.py','        except (Exception, asyncio.CancelledError):','        except Exception:'),
+            'L':('src/rigplane/backends/yaesu_cat/observations.py','                if ptt_callback is None:\n                    observations.append(observation)\n                else:\n                    ptt_callback(observation)','                destination = observations.append if ptt_callback is None else ptt_callback\n                destination(observation)'),}
+          PLANS=[('G1',SELECTED,0,None),('M1',[CAP],1,'M1'),('M2',[STORE,*H2],1,'M2'),('M3',[*R2,*H2],1,'M3'),('M4',T4,2,'M4'),('M5',Q6,5,'M5'),('M6',[Q6[3],*E6,*X2,T4[1],T4[3]],9,'M6'),('M7',[*R8,*H2],8,'M7'),('M8',A2,1,'M8'),('M9',[*P2,*H2],2,'M9'),('M10',[*AERR,*PERR],3,'M10'),('M11',I4,1,'M11'),('L',[*A2,*P2],0,'L'),('G2',SELECTED,0,None)]
+          ORACLES={'M1':(CAP,459,'ObservedPtt.UNKNOWN'),'M2':(STORE,581,''),'M3':(R2[0],536,'ObservedPtt.UNKNOWN'),'M4':(T4[0],243,'PTT_TYPED_VALUE_PUBLICATION'),'M5':(Q6[0],275,'ObservedPtt.UNKNOWN'),'M6':(Q6[3],275,''),'M7':(R8[0],208,'4.0 != 2.0'),'M8':(A2[1],633,''),'M9':(P2[0],294,'ObservedPtt.ON'),'M10':(AERR[3],659,'CancelledError'),'M11':(I4[3],2225,'CancelledError')}
+          def save(n,v): (E/n).write_text(json.dumps(v,indent=2,sort_keys=True)+'\n')
+          def append(n,v):
+            with (E/n).open('a') as f:f.write(json.dumps(v,sort_keys=True)+'\n')
+          def sha(p): return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+          def git(*a): return subprocess.check_output(['git',*a],text=True).strip()
+          def snapshot(root): return {n:sha(root/n) for n in git('ls-files','-z').split('\0') if n.endswith('.py') or n in ('pyproject.toml','uv.lock','rigs/ftx1.toml')}
+          def pytest_sessionstart(session): save('runtime.json',{'source':SOURCE,'tree':TREE,'parent':PARENT,'historical_green_manifest_sha256':HISTORICAL_GREEN_MANIFEST_SHA,'pytest':pytest.__version__})
+          def pytest_collectreport(report): append('collection.jsonl',{'label':os.environ['YAESU_LABEL'],'node':report.nodeid,'outcome':report.outcome})
+          def pytest_collection_finish(session): save('manifest-'+os.environ['YAESU_LABEL']+'.json',[x.nodeid for x in session.items]); imports()
+          def pytest_deselected(items): append('deselected.jsonl',{'label':os.environ['YAESU_LABEL'],'nodes':[x.nodeid for x in items]})
           @pytest.hookimpl(hookwrapper=True)
-          def pytest_runtest_makereport(item, call):
-              report = (yield).get_result()
-              append("phases.jsonl", dict(node=item.nodeid, phase=report.when, outcome=report.outcome, xfail=getattr(report, "wasxfail", None), longrepr=str(report.longrepr) if report.failed else None))
-
-          def pytest_warning_recorded(warning_message, when, nodeid, location):
-              append("warnings.jsonl", dict(category=warning_message.category.__name__, message=str(warning_message.message), when=when, node=nodeid, location=location))
-
-          def pytest_sessionfinish(session, exitstatus):
-              save("imports-after.json", imports())
-              save("session.json", dict(exitstatus=int(exitstatus)))
-
-          def execute():
-              command = ["uv", "run", "--frozen", "pytest", "-p", "yaesu_green_probe", "-q", "-o", "addopts=", "-o", f"cache_dir={EVIDENCE / 'pytest-cache'}", "--basetemp", str(EVIDENCE / "basetemp"), "--tb=short", "--color=no", "--timeout=30", "--timeout-method=thread", *SELECTED, f"--junitxml={EVIDENCE / 'green.xml'}"]
-              environment = dict(os.environ, PYTEST_ADDOPTS="", PYTHONPATH=str(EVIDENCE) + os.pathsep + os.environ.get("PYTHONPATH", ""))
-              started = time.monotonic()
-              process = None
-              output = ""
-              deadline_hit, signal_sent = False, None
-              try:
-                  process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
-                  try:
-                      output, _ = process.communicate(timeout=600)
-                  except subprocess.TimeoutExpired:
-                      deadline_hit = True
-              finally:
-                  record = dict(command=command, pid=process.pid if process else None, elapsed_seconds=time.monotonic() - started, deadline_seconds=600, deadline_hit=deadline_hit, signal_sent=signal_sent, signals=[])
-                  if process is not None:
-                      def gone():
-                          try:
-                              while os.waitpid(-process.pid, os.WNOHANG)[0]:
-                                  pass
-                          except ChildProcessError:
-                              pass
-                          try:
-                              os.killpg(process.pid, 0)
-                          except ProcessLookupError:
-                              return process.poll() is not None
-                          return False
-                      for action in (signal.SIGTERM, signal.SIGKILL):
-                          if gone():
-                              break
-                          record["signals"].append(action.name)
-                          try:
-                              os.killpg(process.pid, action)
-                          except ProcessLookupError:
-                              pass
-                          deadline = time.monotonic() + 3
-                          while not gone() and time.monotonic() < deadline:
-                              time.sleep(0.02)
-                      try:
-                          tail, _ = process.communicate(timeout=3)
-                          output += tail
-                      except subprocess.TimeoutExpired:
-                          record["communicate_timeout"] = True
-                      record.update(returncode=process.poll(), reaped=process.poll() is not None, process_group_absent=gone())
-                  else:
-                      record.update(returncode=None, reaped=False, process_group_absent=False)
-                  record["deadline_signal_boundary"] = "unexercised" if not deadline_hit else "exercised"
-                  (EVIDENCE / "green.txt").write_text(output)
-                  save("supervisor.json", record)
-              if not record["reaped"] or not record["process_group_absent"]:
-                  raise RuntimeError("supervisor did not reap the pytest process group")
-              return record["returncode"]
-
-          def validate():
-              before, after = json.loads((EVIDENCE / "before.json").read_text()), inventory()
-              save("after.json", after)
-              assert after == before, "source/carrier changed"
-              assert (EVIDENCE / "exit-code.txt").read_text().strip() == "0"
-              assert json.loads((EVIDENCE / "session.json").read_text()) == {"exitstatus": 0}
-              assert json.loads((EVIDENCE / "imports-before.json").read_text())
-              assert json.loads((EVIDENCE / "imports-after.json").read_text())
-              manifest = json.loads((EVIDENCE / "manifest.json").read_text())
-              nodes = manifest["nodes"]
-              assert manifest["selection"] == list(SELECTED) and nodes
-              assert manifest["required_nodes"] == sorted(REQUIRED_NODES)
-              collection = [json.loads(line) for line in (EVIDENCE / "collection.jsonl").read_text().splitlines()]
-              assert collection and all(row["outcome"] == "passed" for row in collection), collection
-              deselected = [json.loads(line) for line in (EVIDENCE / "deselected.jsonl").read_text().splitlines()] if (EVIDENCE / "deselected.jsonl").exists() else []
-              assert not deselected, deselected
-              phases = [json.loads(line) for line in (EVIDENCE / "phases.jsonl").read_text().splitlines()]
-              expected = collections.Counter((node, phase) for node in nodes for phase in ("setup", "call", "teardown"))
-              actual = collections.Counter((row["node"], row["phase"]) for row in phases)
-              assert actual == expected, (actual, expected)
-              assert all(row["outcome"] == "passed" and row["xfail"] is None and row["longrepr"] is None for row in phases), phases
-              warnings = [json.loads(line) for line in (EVIDENCE / "warnings.jsonl").read_text().splitlines()] if (EVIDENCE / "warnings.jsonl").exists() else []
-              assert not warnings, warnings
-              xml = ET.parse(EVIDENCE / "green.xml").getroot()
-              suite = xml.find("testsuite") or xml
-              assert int(suite.get("tests", "-1")) == len(nodes)
-              assert all(not xml.findall(".//" + tag) for tag in ("failure", "error", "skipped"))
-              def junit_key(node):
-                  parts = node.split("::")
-                  return (".".join([parts[0][:-3].replace("/", "."), *parts[1:-1]]), parts[-1])
-              cases = xml.findall(".//testcase")
-              assert collections.Counter((case.get("classname"), case.get("name")) for case in cases) == collections.Counter(junit_key(node) for node in nodes)
-              supervisor = json.loads((EVIDENCE / "supervisor.json").read_text())
-              assert supervisor["returncode"] == 0 and supervisor["reaped"] and supervisor["process_group_absent"]
-              assert not supervisor["deadline_hit"] and supervisor["signal_sent"] is None
-
-          if __name__ == "__main__":
-              try:
-                  code = execute()
-                  (EVIDENCE / "exit-code.txt").write_text(str(code) + "\n")
-                  validate()
-              except BaseException as error:
-                  save("verdict.json", dict(status="INVALID", reason=repr(error)))
-                  raise
-              save("verdict.json", dict(status="GREEN", source=SOURCE, tree=TREE, selection=SELECTED, contract="all collected nodes passed without warnings, skips, xfails, or phase errors"))
-              print("GREEN: complete selected-module collection passed; inspect manifest.json for actual node census")
+          def pytest_runtest_makereport(item,call):
+            r=(yield).get_result(); row={'label':os.environ['YAESU_LABEL'],'node':item.nodeid,'phase':r.when,'outcome':r.outcome,'xfail':getattr(r,'wasxfail',None)}
+            if call.excinfo is not None:
+              last=call.excinfo.traceback[-1];row.update(exception=f'{call.excinfo.type.__module__}.{call.excinfo.type.__name__}',message=str(call.excinfo.value),path=str(Path(last.path).resolve()),line=last.lineno+1)
+            append('phases.jsonl',row)
+          def pytest_warning_recorded(warning_message,when,nodeid,location):append('warnings.jsonl',{'label':os.environ['YAESU_LABEL'],'message':str(warning_message.message),'when':when,'node':nodeid})
+          def imports():
+            for name,want in REQUIRED_IMPORTS.items():
+              module=sys.modules.get(name);assert module and Path(module.__file__).resolve()==Path.cwd()/want,(name,getattr(module,'__file__',None))
+            for name,module in sys.modules.items():
+              if name=='rigplane' or name.startswith('rigplane.'):
+                assert Path(module.__file__).resolve().is_relative_to(Path.cwd()),name
+          def mutate(label,specimen):
+            if label not in MUT:return None
+            path,old,new=MUT[label]; p=specimen/path; content=p.read_text();assert content.count(old)==1,(label,path);p.write_text(content.replace(old,new));return sha(p)
+          def supervise(label,specimen,nodes):
+            command=['uv','run','--frozen','pytest','-p','yaesu_mutation_probe','-q','-o','addopts=','-o',f'cache_dir={E/"cache"/label}','--basetemp',str(E/'tmp'/label),'--tb=short','--color=no','--timeout=30','--timeout-method=thread',*nodes,f'--junitxml={E/(label+".xml")}']; p=None;out='';record={'label':label,'command':command,'signals':[],'deadline_hit':False}
+            try:
+              p=subprocess.Popen(command,cwd=specimen,env=dict(os.environ,YAESU_LABEL=label,PYTEST_ADDOPTS='',PYTHONPATH=str(E)),stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
+              try:out,_=p.communicate(timeout=600)
+              except subprocess.TimeoutExpired:record['deadline_hit']=True
+            finally:
+              def gone():
+                if p is None:return False
+                try:os.killpg(p.pid,0)
+                except ProcessLookupError:return p.poll() is not None
+                return False
+              if p:
+                for action in (signal.SIGTERM,signal.SIGKILL):
+                  if gone():break
+                  record['signals'].append(action.name)
+                  try:os.killpg(p.pid,action)
+                  except ProcessLookupError:pass
+                  until=time.monotonic()+3
+                  while not gone() and time.monotonic()<until:time.sleep(.02)
+                try:tail,_=p.communicate(timeout=3);out+=tail
+                except subprocess.TimeoutExpired:record['communicate_timeout']=True
+              record.update(returncode=p.poll() if p else None,reaped=bool(p and p.poll() is not None),group_absent=gone(),deadline_signal_boundary='exercised' if record['deadline_hit'] else 'unexercised');(E/(label+'.txt')).write_text(out);save(label+'-supervisor.json',record)
+            assert record['reaped'] and record['group_absent'],record;return record['returncode']
+          def junit_key(n):
+            p=n.split('::');return ('.'.join([p[0][:-3].replace('/','.'),*p[1:-1]]),p[-1])
+          def validate(label,nodes,failures,specimen):
+            actual=json.loads((E/('manifest-'+label+'.json')).read_text());assert actual==nodes,(label,actual,nodes)
+            assert all(sha(specimen/n)==SOURCE_SNAPSHOT[n] for n in SOURCE_SNAPSHOT if n.startswith('tests/'))
+            phases=[json.loads(x) for x in (E/'phases.jsonl').read_text().splitlines() if json.loads(x)['label']==label];calls=[x for x in phases if x['phase']=='call'];assert len(phases)==3*len(nodes) and all(x['outcome']=='passed' for x in phases if x['phase']!='call');assert sum(x['outcome']=='failed' for x in calls)==failures,(label,calls)
+            assert all(x['xfail'] is None for x in phases); xml=ET.parse(E/(label+'.xml')).getroot();cases=xml.findall('.//testcase');assert collections.Counter((x.get('classname'),x.get('name')) for x in cases)==collections.Counter(junit_key(x) for x in nodes);assert not xml.findall('.//error') and not xml.findall('.//skipped');assert snapshot(ROOT)==SOURCE_SNAPSHOT
+            if label in ORACLES:
+              node,line,marker=ORACLES[label]; row=next(x for x in calls if x['node']==node and x['outcome']=='failed');assert row['exception'] in ('builtins.AssertionError','asyncio.exceptions.CancelledError') and row['line']==line and marker in row['message'],(label,row)
+          if __name__=='__main__':
+            assert (git('rev-parse','HEAD'),git('rev-parse','HEAD^{tree}'),git('rev-parse','HEAD^'),git('status','--porcelain'))==(SOURCE,TREE,PARENT,'');assert git('merge-base',os.environ['GITHUB_SHA'],SOURCE)==BASE;assert git('diff','--name-only',BASE,os.environ['GITHUB_SHA'])=='.github/workflows/full.yml';SOURCE_SNAPSHOT=snapshot(ROOT);save('before.json',SOURCE_SNAPSHOT);variants={}
+            for label,nodes,failures,mutation in PLANS:
+              specimen=E/'specimens'/label;shutil.copytree(ROOT,specimen,symlinks=True,ignore=shutil.ignore_patterns('.git','.pytest_cache','__pycache__'));variants[label]=mutate(mutation,specimen);rc=supervise(label,specimen,nodes);assert rc==int(bool(failures)),(label,rc);validate(label,nodes,failures,specimen)
+            assert len({x for x in variants.values() if x})==12;assert len(json.loads((E/'manifest-G1.json').read_text()))==225==len(json.loads((E/'manifest-G2.json').read_text()));assert json.loads((E/'manifest-G1.json').read_text())==json.loads((E/'manifest-G2.json').read_text());assert not (E/'deselected.jsonl').exists() and not (E/'warnings.jsonl').exists();save('after.json',snapshot(ROOT));assert json.loads((E/'after.json').read_text())==SOURCE_SNAPSHOT;save('verdict.json',{'status':'MUTATION_MATRIX_PASS','executions':511,'phases':1533,'call_failures':34,'passed_phases':1499,'source':SOURCE,'tree':TREE})
           PY
-      - name: Exact source and complete GREEN selection
-        run: |
-          uv run --frozen python "$YAESU_PROOF/yaesu_green_probe.py"
-          cat "$YAESU_PROOF/green.txt"
+      - name: Run exact GREEN mutation matrix
+        run: uv run --frozen python "$YAESU_PROOF/yaesu_mutation_probe.py"
       - name: Formatting diagnostic
         if: always() && env.YAESU_PROOF != ''
         run: |
@@ -274,12 +137,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && env.YAESU_PROOF != ''
         with:
-          name: yaesu-observed-ptt-green
-          path: |
-            ${{ env.YAESU_PROOF }}/*.json
-            ${{ env.YAESU_PROOF }}/*.jsonl
-            ${{ env.YAESU_PROOF }}/*.txt
-            ${{ env.YAESU_PROOF }}/*.xml
-            ${{ env.YAESU_PROOF }}/*.diff
-            ${{ env.YAESU_PROOF }}/yaesu_green_probe.py
+          name: yaesu-observed-ptt-mutations
+          path: ${{ env.YAESU_PROOF }}
           retention-days: 14
