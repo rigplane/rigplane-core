@@ -187,12 +187,8 @@ class ManagedTxAuthority:
         try:
             worker, admitted = self._begin_ptt_operation(on, owner, ready=ready)
         except asyncio.CancelledError:
-            if _registered is not None:
-                _registered.cancel()
             raise
-        except BaseException as error:
-            if _registered is not None:
-                _registered.set_exception(error)
+        except BaseException:
             raise
         if _registered is not None:
             _registered.set_result(None)
