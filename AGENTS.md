@@ -85,6 +85,19 @@ ticket and reconcile each child explicitly. Do not use batching to combine
 unrelated contracts, cross an unleased path, hide a compatibility break, or
 weaken TX/PTT and hardware safety boundaries.
 
+A delivery batch may still use several workers. After freezing a small shared
+interface, decompose when at least two file-disjoint work packages each contain
+material work (normally 20–30 minutes or more) and their integration cost is
+lower than the wall time saved. Workers own disjoint files and return logical
+commits or artifacts to one named integrator. They do not open separate PRs,
+start natural `quick`/`full`/`visual` runs, or request separate final reviews.
+The integrator owns the batch branch, combines the work, freezes one candidate,
+opens one Ready PR, and obtains one CI/review cycle. Do not decompose a small
+tightly coupled invariant, shared-file edits, or sequential generated output.
+Good candidates include provider consumers, radios within one profile family,
+UI state versus rendering, and Icom versus Yaesu actuators; regenerate visual
+baselines only after the integrated rendering has frozen.
+
 Development RED and correction loops use focused changed-scope checks on the
 Mac mini plus changed-scope lint/type checks. Do not run the full `quick` suite
 for an intentional RED or every draft push. In the normal path, push the final
@@ -99,6 +112,24 @@ candidate.
 Movement on `main` alone does not invalidate an unchanged PR head. Refresh the
 branch and its checks/review only for an actual merge conflict, a proven
 base-sensitive dependency, or a concrete code interaction.
+
+Use `.github/workflows/focused.yml` for development RED/GREEN evidence. It is a
+manual, non-required workflow that checks an exact 40-character commit SHA and
+accepts only validated JSON arrays of pytest nodeids/files, Ruff paths, and
+Vitest files. Dispatch it from the trusted `main` workflow definition, for
+example:
+
+```bash
+candidate_sha=$(git rev-parse HEAD)
+gh workflow run focused.yml --ref main \
+  -f revision="$candidate_sha" \
+  -f pytest_targets='["tests/test_radio.py::test_frequency"]' \
+  -f ruff_targets='["src/rigplane/radio.py","tests/test_radio.py"]' \
+  -f vitest_targets='[]'
+```
+
+The focused workflow does not replace required PR CI. The final Ready head
+still receives its one natural `quick` and, when selected by paths, `visual`.
 
 ## Multi-agent Git hygiene
 

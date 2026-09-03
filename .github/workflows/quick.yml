@@ -91,6 +91,10 @@ jobs:
         if: steps.filter.outputs.core == 'true'
         run: node --test .github/scripts/agent-review-gate.test.js
 
+      - name: Focused workflow contract tests
+        if: steps.filter.outputs.core == 'true'
+        run: python3 .github/scripts/run-focused-checks.test.py
+
       - name: Ruff (lint + format check)
         if: steps.filter.outputs.core == 'true'
         run: |

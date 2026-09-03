@@ -76,6 +76,18 @@ contract, file lease, and verification matrix. Link every covered Linear child
 and reconcile each one after merge. Keep unrelated contracts, unleased paths,
 compatibility breaks, and TX/PTT or hardware safety work separate.
 
+One delivery batch is not limited to one worker. After a small shared interface
+is frozen, the coordinator must decompose two or more file-disjoint packages
+when each has material work (normally at least 20–30 minutes) and integration
+cost is lower than the saved wall time. Workers produce logical commits or
+artifacts inside disjoint leases; they do not open PRs, start natural
+`quick`/`full`/`visual`, or request separate final reviews. One named integrator
+owns the batch branch, combines the worker outputs, freezes one candidate, and
+opens one Ready PR for one CI/review cycle. Provider consumers, profile-family
+radios, UI state versus rendering, and Icom versus Yaesu actuators are typical
+parallel packages. Small tightly coupled invariants, shared files, and baseline
+generation after rendering freeze remain sequential.
+
 Before opening the final PR:
 
 1. Fetch and inspect the repository state; use a fresh issue branch/worktree,
@@ -97,6 +109,22 @@ not rerun suites. A substantive correction creates a new final head, which gets
 its own natural required run and exact-head review. Movement on `main` alone is
 not a reason to refresh a branch or repeat its checks/review; do that only for
 an actual conflict, proven base-sensitive dependency, or concrete interaction.
+
+For development RED/GREEN evidence, dispatch the manual, non-required focused
+workflow against an exact candidate SHA. Its inputs are validated JSON arrays,
+so targets remain structured argv rather than shell text:
+
+```bash
+candidate_sha=$(git rev-parse HEAD)
+gh workflow run focused.yml --ref main \
+  -f revision="$candidate_sha" \
+  -f pytest_targets='["tests/test_radio.py::test_frequency"]' \
+  -f ruff_targets='["src/rigplane/radio.py","tests/test_radio.py"]' \
+  -f vitest_targets='[]'
+```
+
+This focused run is development evidence only. It never substitutes for the
+final Ready PR's natural required checks.
 
 Before merging a non-trivial PR:
 
