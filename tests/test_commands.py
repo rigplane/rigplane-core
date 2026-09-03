@@ -44,6 +44,15 @@ from _command_test_helpers import bind_default_addr_globals, bind_default_addr_m
 
 RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
 
+# The eight Icom CI-V scope span presets (span code 0-7 -> Hz), copied
+# verbatim from the module constant `commands/scope.py` held at c23d8cbd
+# -- the commit before this change deleted it. Written out here rather
+# than imported so these tests pin the decoded/encoded values against a
+# table this file owns, independent of whatever any profile happens to
+# declare -- ``TestScopeSpanPresets`` in ``test_rig_loader.py`` is what
+# asserts the shipped profiles still declare exactly these.
+_SPAN_PRESETS_HZ = (2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000)
+
 _ORIGINAL_COMMANDS = {
     name: getattr(raw_commands, name) for name in raw_commands.__all__
 }
@@ -1520,7 +1529,7 @@ class TestAdvancedScopeParsers:
         from rigplane.types import bcd_encode
 
         frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(250_000))
-        receiver, span = parse_scope_span_response(frame)
+        receiver, span = parse_scope_span_response(frame, _SPAN_PRESETS_HZ)
         assert receiver == 0
         assert span == 6
 
@@ -1587,7 +1596,7 @@ class TestAdvancedScopeParsers:
         from rigplane.commands import parse_scope_span_response
 
         frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x05")
-        receiver, span = parse_scope_span_response(frame)
+        receiver, span = parse_scope_span_response(frame, _SPAN_PRESETS_HZ)
         assert receiver is None
         assert span == 5
 
@@ -1707,7 +1716,7 @@ class TestAdvancedScopeValidation:
         from rigplane.commands import scope_set_span
 
         with pytest.raises(ValueError, match="scope span must be 0-7"):
-            scope_set_span(-1, cmd_map=cmd_map)
+            scope_set_span(-1, cmd_map=cmd_map, presets=_SPAN_PRESETS_HZ)
 
     def test_scope_set_edge_rejects_zero(self, cmd_map) -> None:
         from rigplane.commands import scope_set_edge
@@ -3062,3 +3071,136 @@ class TestFallbackAuditRemoved:
         text = layer_md.read_text()
         assert "_fallback_audit" not in text
         assert "Charter exception: Step 1 measurement hook" not in text
+
+
+class TestScopeSpanPresetsAreCallerSupplied:
+    """The span table reaches `commands/scope.py` as an argument, not as a
+    module constant.
+
+    ``commands/`` may not import ``profiles/`` (``.importlinter``), so
+    ``parse_scope_span_response`` and ``scope_set_span`` take the presets
+    as a parameter and every caller reads
+    ``RadioProfile.scope_span_presets_hz`` off the resolved profile.
+    """
+
+    @pytest.fixture()
+    def cmd_map(self):
+        return load_rig(RIG_DIR / "ic7610.toml").to_command_map()
+
+    @pytest.mark.parametrize("index", range(len(_SPAN_PRESETS_HZ)))
+    def test_decode_and_encode_match_the_pre_change_outputs(
+        self, cmd_map, index: int
+    ) -> None:
+        """Every preset decodes to its index and encodes back to its BCD
+        payload, matching the outputs recorded at c23d8cbd (the commit
+        before the constant was deleted) by calling the then-current
+        ``parse_scope_span_response``/``scope_set_span`` over all eight
+        presets. The eight ``encode=`` frames recorded there are the eight
+        ``expected_frame`` values below."""
+        from rigplane.commands import parse_scope_span_response, scope_set_span
+        from rigplane.types import bcd_encode
+
+        hz = _SPAN_PRESETS_HZ[index]
+
+        reply = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(hz))
+        assert parse_scope_span_response(reply, _SPAN_PRESETS_HZ) == (0, index)
+
+        # to_addr is bound to IC_7610_ADDR module-wide by
+        # bind_default_addr_module above, matching the recorded frames.
+        expected_frame = bytes.fromhex("fefe98e02715") + bcd_encode(hz) + b"\xfd"
+        assert (
+            scope_set_span(index, cmd_map=cmd_map, presets=_SPAN_PRESETS_HZ)
+            == expected_frame
+        )
+
+    @pytest.mark.parametrize("preset_hz", _SPAN_PRESETS_HZ)
+    @pytest.mark.parametrize("offset", ["minus1", "plus1", "half", "double"])
+    def test_near_miss_widths_decode_exactly_as_before(
+        self, preset_hz: int, offset: str
+    ) -> None:
+        """Each preset +/-1 Hz, halved and doubled: an exact table member
+        decodes to its own index (the table is roughly 2x-spaced, so some
+        halves and doubles ARE other presets), and anything else raises.
+        Both branches were recorded at c23d8cbd over these same 32 inputs
+        and are reproduced here."""
+        from rigplane.commands import parse_scope_span_response
+        from rigplane.types import bcd_encode
+
+        value = {
+            "minus1": preset_hz - 1,
+            "plus1": preset_hz + 1,
+            "half": preset_hz // 2,
+            "double": preset_hz * 2,
+        }[offset]
+        frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(value))
+
+        if value in _SPAN_PRESETS_HZ:
+            assert parse_scope_span_response(frame, _SPAN_PRESETS_HZ) == (
+                0,
+                _SPAN_PRESETS_HZ.index(value),
+            )
+        else:
+            with pytest.raises(
+                ValueError, match=f"Unknown scope span frequency {value}"
+            ):
+                parse_scope_span_response(frame, _SPAN_PRESETS_HZ)
+
+    def test_a_different_preset_table_moves_the_decoded_index(self) -> None:
+        """The presets argument -- not any table inside `commands/scope.py`
+        -- decides the index. 25000 Hz is index 3 in the shipped table and
+        index 1 in this one; the SET encoder follows the same table."""
+        from rigplane.commands import parse_scope_span_response
+        from rigplane.types import bcd_encode
+
+        other = (10_000, 25_000, 100_000)
+        frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(25_000))
+
+        assert parse_scope_span_response(frame, _SPAN_PRESETS_HZ) == (0, 3)
+        assert parse_scope_span_response(frame, other) == (0, 1)
+
+    def test_a_different_preset_table_moves_the_encoded_payload(self, cmd_map) -> None:
+        from rigplane.commands import scope_set_span
+        from rigplane.types import bcd_encode
+
+        other = (10_000, 25_000, 100_000)
+        frame = scope_set_span(1, cmd_map=cmd_map, presets=other)
+        assert frame[6:11] == bcd_encode(25_000)
+
+    def test_a_shorter_table_bounds_both_directions(self, cmd_map) -> None:
+        """The legal index range comes from the table's length, in the
+        one-byte reply branch as well as in the SET encoder."""
+        from rigplane.commands import parse_scope_span_response, scope_set_span
+
+        other = (10_000, 25_000, 100_000)
+        with pytest.raises(ValueError, match="scope span must be 0-2"):
+            scope_set_span(3, cmd_map=cmd_map, presets=other)
+        with pytest.raises(ValueError, match="scope span must be 0-2"):
+            parse_scope_span_response(CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x03"), other)
+
+    def test_a_profile_declaring_no_presets_decodes_and_encodes_nothing(
+        self, cmd_map
+    ) -> None:
+        """``RadioProfile.scope_span_presets_hz`` defaults to ``()``. Both
+        directions then refuse through the errors they already raised --
+        the BCD branch's "Unknown scope span frequency" and
+        ``_validate_scope_range``'s message -- rather than a new sentinel.
+        No shipped profile is in this state: at this commit the four rigs
+        declaring ``get_scope_span`` (ic7300, ic705, ic7610, ic9700) are
+        exactly the four declaring ``[scope].span_presets_hz``.
+        ``test_rig_loader.py: TestScopeSpanPresets`` pins the values those
+        four declare, not that correspondence."""
+        from rigplane.commands import parse_scope_span_response, scope_set_span
+        from rigplane.types import bcd_encode
+
+        frame = CivFrame(0xE0, 0x98, 0x27, 0x15, b"\x00" + bcd_encode(25_000))
+        with pytest.raises(ValueError, match="Unknown scope span frequency 25000"):
+            parse_scope_span_response(frame, ())
+        with pytest.raises(ValueError, match="scope span must be 0--1"):
+            scope_set_span(0, cmd_map=cmd_map, presets=())
+
+    def test_shipped_ic7610_profile_supplies_the_same_table(self) -> None:
+        """The presets the production caller passes are the ones these
+        tests pin: `runtime/_scope_runtime.py: ScopeRuntimeMixin` reads
+        ``self._profile.scope_span_presets_hz``."""
+        rig = load_rig(RIG_DIR / "ic7610.toml")
+        assert rig.to_profile().scope_span_presets_hz == _SPAN_PRESETS_HZ

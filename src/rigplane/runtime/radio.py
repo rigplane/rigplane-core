@@ -339,9 +339,36 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._profile.model,
         )
 
-    def supports_command(self, command: str) -> bool:
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Return support derived from this radio's profile and call graph."""
-        return supports_callable(self._profile, command)
+        supported = supports_callable(self._profile, command)
+        if receiver is None:
+            return supported
+        if (
+            not supported
+            or command not in {"set_af_level", "set_rf_gain", "set_squelch"}
+            or isinstance(receiver, bool)
+            or not isinstance(receiver, int)
+            or not self._profile.supports_receiver(receiver)
+            or not callable(getattr(self, command, None))
+            or not self._profile.supports_capability(command.removeprefix("set_"))
+        ):
+            return False
+        try:
+            return self._level_command29(command, receiver=receiver) is not None
+        except CommandError:
+            return False
+
+    def _level_command29(self, command: str, *, receiver: int) -> bool | None:
+        """Resolve the wrapper flag; leave missing-command refusal to the builder."""
+        command_map = self._profile.command_map
+        if command_map is None or not command_map.has(command):
+            return None
+        from rigplane.commands._frame import decode_wire_tuple
+
+        opcode, sub, _ = decode_wire_tuple(command_map.get(command))
+        self._require_cmd29_route(opcode, sub, receiver=receiver, operation=command)
+        return self._profile.supports_cmd29(opcode, sub)
 
     def _stop_token_renewal(self) -> None:
         """Delegate to control-phase runtime."""
@@ -2272,13 +2299,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("rf_gain", operation="set_rf_gain")
         self._require_receiver(receiver, operation="set_rf_gain")
-        self._require_cmd29_route(
-            0x14,
-            0x02,
-            receiver=receiver,
-            operation="set_rf_gain",
-        )
-        cmd29 = self._profile.supports_cmd29(0x14, 0x02)
+        cmd29 = bool(self._level_command29("set_rf_gain", receiver=receiver))
         civ = self._commands.set_rf_gain(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
@@ -2316,13 +2337,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("af_level", operation="set_af_level")
         self._require_receiver(receiver, operation="set_af_level")
-        self._require_cmd29_route(
-            0x14,
-            0x01,
-            receiver=receiver,
-            operation="set_af_level",
-        )
-        cmd29 = self._profile.supports_cmd29(0x14, 0x01)
+        cmd29 = bool(self._level_command29("set_af_level", receiver=receiver))
         civ = self._commands.set_af_level(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
@@ -2335,13 +2350,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_capability("squelch", operation="set_squelch")
         self._require_receiver(receiver, operation="set_squelch")
-        self._require_cmd29_route(
-            0x14,
-            0x03,
-            receiver=receiver,
-            operation="set_squelch",
-        )
-        cmd29 = self._profile.supports_cmd29(0x14, 0x03)
+        cmd29 = bool(self._level_command29("set_squelch", receiver=receiver))
         civ = self._commands.set_squelch(
             level, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )

@@ -1,7 +1,6 @@
 /**
  * `studioline` meter renderer (MOR-1073, VFO slice) — a two-tone fill split
- * at S9, a 1px peak tick, and the scale rendered as sparse text ticks BELOW
- * the rail rather than as marks on it.
+ * at S9.
  *
  * Pure geometry, expressed as fractions of the track so the consumer owns
  * the pixel width. Ballistics are NOT here: smoothing is a per-grammar
@@ -9,8 +8,15 @@
  */
 import type { DesignLanguageTokens, RendererViewModel } from '../contract';
 
-/** Sparse text ticks — the rail itself carries no marks. */
-export const STUDIOLINE_SCALE_TICKS = [1, 3, 5, 7, 9] as const;
+/**
+ * Peak-hold: a 1px tick, in contrast with `fieldline`'s whole-segment hold —
+ * read directly (not through `design-language-renderers.ts`'s `renderSlot`
+ * extraction, which never pulls this field) by
+ * `fieldline/__tests__/meters-renderer.test.ts`'s own cross-language
+ * comparison (`theirs.peakWidthPx`), which is why this constant and the
+ * `peakWidthPx` field below survived the MOR-2250 dead-field sweep that
+ * removed `peak`/`scaleTicks` (no consumer, anywhere, for either).
+ */
 export const PEAK_TICK_WIDTH_PX = 1;
 
 export interface StudiolineMeter {
@@ -43,9 +49,7 @@ export interface StudiolineMeter {
    */
   readonly toneBelowS9: string;
   readonly toneAboveS9: string;
-  readonly peak: number | null;
   readonly peakWidthPx: number;
-  readonly scaleTicks: readonly number[];
   readonly unknown: boolean;
 }
 
@@ -61,7 +65,6 @@ export function renderMeter(
 ): StudiolineMeter {
   const max = finiteNumber(viewModel.fields, 'max') ?? 15;
   const value = finiteNumber(viewModel.fields, 'value');
-  const peak = finiteNumber(viewModel.fields, 'peak');
   return {
     kind: 'studioline-meter',
     trackWidth: tokens.meters.trackWidth,
@@ -73,9 +76,7 @@ export function renderMeter(
     overTone: tokens.tx.tuning,
     toneBelowS9: tokens.rx.active,
     toneAboveS9: tokens.tx.tuning,
-    peak: peak === null ? null : clampFraction(peak, max),
     peakWidthPx: PEAK_TICK_WIDTH_PX,
-    scaleTicks: STUDIOLINE_SCALE_TICKS,
     unknown: value === null,
   };
 }

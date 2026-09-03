@@ -8,7 +8,7 @@ Live bench: **IC-7300, FTX-1**. *(IC-7610 retired 2026-08-04; X6200 destroyed by
 ## Commands (always `uv run`)
 
 ```bash
-uv run pytest tests/ -n auto -q --tb=short --timeout=300 --timeout-method=thread  # standard suite (CI parity, ~1 min)
+uv run pytest tests/ -n auto -q --tb=short --timeout=300 --timeout-method=thread  # the suite quick.yml runs (it omits -q); locally, for single files
 uv run pytest tests/ -q --tb=short                    # serial, incl. integration hooks (profiling/hardware only)
 uv run mypy --strict src/rigplane/web                  # type check (CI gate; see note below)
 uv run ruff check src/ tests/ && uv run ruff format src/ tests/  # lint+format
@@ -101,7 +101,7 @@ When making changes:
 
 - TDD — test first, implement second
 - Batch all fixes, run tests once (not per fix)
-- One full-suite run per tree state: if the code is unchanged since the last recorded full run (e.g. REGCHECK), reuse that result — do not re-run an identical suite
+- One full-suite run per tree state, and it is CI's: the record for a head is that head's `quick` run (§Agent working rules), so every phase that needs suite numbers reads that run rather than starting a local one
 - Audio tests: `FakeAudioBackend` only — no one-off mocks
 - Prose is a claim, and claims get checked. For every comment, docstring and document sentence a change adds or touches, ask: could this be false without any test failing? If so, delete it — or, only where the sentence must exist, narrow it until it is true and tie it to something that fails when it stops being true (a named constant, a named test, a parsed structure) — a guarantee stated wider than the code is worse than none, because the next reader stops checking. A claim about what a future change will do belongs in the ticket (MOR-1958). `builder.md` points here.
   - **Delete before you narrow; never weaken.** Deletion is the default for a claim that is false, stale or ambiguous, because correcting prose is expensive: a missing sentence sends the next reader to the code, where a wrong one stops them looking. Narrow instead only where the sentence must exist — a document written for a reader who does not have the code in front of them, as `docs/architecture/building-a-skin.md` is — and then only with the narrower version established, with a command actually run or a file actually read. Never weaken a claim you cannot establish: a deleted sentence cannot be wrong, and a softened one still can be. Owner ruling, 2026-08-31, reversing the priority this bullet set when it was added.
@@ -114,7 +114,7 @@ When making changes:
 
 User-facing → **Russian**. Code/commits/docs/PR → **English**.
 Commits: `feat(#N):` / `fix(#N):` / `refactor:` / `test:` / `docs:` / `chore:`
-One change per commit. Full test suite before push.
+One change per commit.
 
 Documentation under `docs/` cites code as file plus **symbol name**
 (`radio.py: IcomRadio.set_frequency`), never a line number — line numbers
@@ -186,7 +186,7 @@ cancelled checks — and release branches (named `release/<major.minor>`) are in
 ## Completion criteria
 
 Work is complete ONLY when ALL pass:
-1. `uv run pytest tests/ -n auto -q --tb=short --timeout=300 --timeout-method=thread` — zero failures
+1. The `quick` run on the PR at the head under review — zero failures (§Agent working rules)
 2. `uv run ruff check src/ tests/` — zero violations
 3. `git diff` — no unintended changes
 
@@ -260,10 +260,27 @@ nothing prompts for them; each drop has a cost paid later:
   PLAN, before EXECUTE, in the run's own working notes — not a tracked file:
   `.gitignore` excludes everything under `.claude/` except `agents/`,
   `audits/`, `commands/`, and `skills/` — and `audits/` is a published
-  archive (see its README), never a place for working notes.
+  archive (see its README), never a place for working notes. The baseline
+  is the most recent `quick.yml` run on `main` whose commit changed the tree
+  being compared, and that tree is whatever the block's own path filter in
+  `.github/workflows/quick.yml` lists — the `core` filter for the pytest
+  step, the `frontend` filter for the block that runs vitest. A run whose
+  path filter skipped that block is green without numbers. The baseline
+  holds only while `git diff --name-only <that sha>..<your base> -- <those
+  paths>` is empty; a PR's `quick` run tests the merge with the `main` of
+  that moment, so compare against the `main` run of that moment, not the
+  branch point. One tree state, one instrument: the full suite is not run
+  on the laptop or the remote testbed for a head that CI has run.
 - **TEST is the four gates `solve-issue.md` Phase 6 enumerates**: the
-  standard pytest suite, `ruff check`, `ruff format`, and `mypy`, run by the
-  coordinator.
+  standard pytest suite, `ruff check`, `ruff format`, and `mypy`. The
+  coordinator takes all four from the head's `quick.yml` run, which runs
+  pytest and ruff under its `core` path filter and `mypy --strict
+  src/rigplane/web` under its `frontend` one. `quick.yml` triggers only on
+  push/PR to `main`, so a pushed branch gets no run until a PR exists:
+  push, open the PR as a draft, let `quick` run, `gh pr ready`, then
+  dispatch the review — the verifier reviews a ready PR, never a draft
+  (AGENTS.md, "Draft PRs must not merge"). Single test files may run
+  locally; the full suite may not.
 
 Dropping a phase is the owner's call, not the coordinator's. Announce the drop
 and why, before the work, rather than reporting it afterwards.

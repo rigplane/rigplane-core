@@ -126,12 +126,16 @@ const noopChildren = ((_anchor: unknown) => ({
 
 /** Mounts `ScaledStage` at the given native size inside the current
  *  `containerSize`, and captures the holder element for later resizes. */
-function mountStage(nativeW: number, nativeH: number, opts?: { anchor?: 'top-left' | 'center' }): HTMLElement {
+function mountStage(
+  nativeW: number,
+  nativeH: number,
+  opts?: { anchor?: 'top-left' | 'center'; minScale?: number },
+): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
   const component = mount(ScaledStage, {
     target,
-    props: { nativeW, nativeH, anchor: opts?.anchor, children: noopChildren },
+    props: { nativeW, nativeH, anchor: opts?.anchor, minScale: opts?.minScale, children: noopChildren },
   });
   flushSync();
   components.push(component);
@@ -304,5 +308,110 @@ describe('ScaledStage — .scaled-stage declares flex-shrink: 0 (MOR-2251)', () 
   it('declares flex-shrink: 0', () => {
     const stage = declarationsFor('.scaled-stage');
     expect(stage['flex-shrink']).toBe('0');
+  });
+});
+
+describe('ScaledStage — the minScale floor (MOR-2259)', () => {
+  it('holds the floor when the host is too small for the fit', () => {
+    containerSize = { width: 320, height: 135 };
+    const target = mountStage(1280, 540, { minScale: 0.5 });
+    expect(readTransform(target)).toBe('scale(0.5)');
+  });
+
+  it('omitting minScale leaves the same host at the unfloored fit, exactly', () => {
+    // The default-preservation control, one mount apart from the floored
+    // case above: same host, same native size, no floor prop.
+    containerSize = { width: 320, height: 135 };
+    const target = mountStage(1280, 540);
+    expect(readTransform(target)).toBe('scale(0.25)');
+  });
+
+  it('releases the floor once the host grows enough to fit above it', () => {
+    containerSize = { width: 320, height: 135 };
+    const target = mountStage(1280, 540, { minScale: 0.5 });
+    expect(readTransform(target)).toBe('scale(0.5)');
+
+    resizeContainer(960, 405);
+
+    expect(readTransform(target)).toBe('scale(0.75)');
+  });
+
+  it('anchor="center" translates to the host origin while the floor is active', () => {
+    // native 1280x540 held at 0.5 is a 640x270 box in a 524x221 host — it
+    // overflows on both axes, so centring has nothing to split and the box
+    // must start at the origin for the overflow to be scrollable.
+    containerSize = { width: 524, height: 221 };
+    const target = mountStage(1280, 540, { anchor: 'center', minScale: 0.5 });
+    expect(readTransform(target)).toBe('translate(0px, 0px) scale(0.5)');
+  });
+});
+
+describe('ScaledStage — the holder scrolls only while the floor clamps (MOR-2259)', () => {
+  // NOT the TEXT-pin idiom above: `overflow` is an inline value the
+  // component computes per measured host box, so jsdom exposes the real
+  // decision on `holder.style.overflow` even though it lays nothing out.
+  //
+  // What jsdom cannot show is the consequence — whether Chrome then
+  // reserves a scroll area. The two host boxes below are the ones Chrome
+  // actually gave `.scaled-stage-holder` under `LcdLayout
+  // variant="peer-split"`: 802x337 at a 1280x800 viewport, 522x219 at
+  // 1000x800. Each test asserts the geometry that makes `overflow`
+  // load-bearing at that host — the stage's inline layout box exceeds the
+  // host either way, so `hidden` versus `auto` is the whole difference —
+  // alongside the value itself. A pin on the value alone would have passed
+  // against the unconditional `overflow: auto` this replaces.
+  const NATIVE_W = 1280;
+  const NATIVE_H = 540;
+  const FLOOR = 0.5;
+
+  const holderOf = (target: HTMLElement) => target.querySelector<HTMLElement>('.scaled-stage-holder')!;
+  const stageOf = (target: HTMLElement) => target.querySelector<HTMLElement>('.scaled-stage')!;
+
+  it('a host the painted stage already fits inside gets `hidden`', () => {
+    containerSize = { width: 802, height: 337 };
+    const target = mountStage(NATIVE_W, NATIVE_H, { minScale: FLOOR });
+
+    // The floor is idle here: height is the binding axis and its ratio is
+    // above the floor, so the scale is that ratio exactly.
+    expect(readScale(target)).toBe(337 / NATIVE_H);
+    expect(readScale(target)).toBeGreaterThan(FLOOR);
+    // The untransformed layout box still overflows the host on both axes...
+    expect(parseFloat(stageOf(target).style.width)).toBeGreaterThan(802);
+    expect(parseFloat(stageOf(target).style.height)).toBeGreaterThan(337);
+    // ...while the painted box does not: its height equals the host's by the
+    // equality above, and its width is short of it.
+    expect(readScale(target) * NATIVE_W).toBeLessThan(802);
+
+    expect(holderOf(target).style.overflow).toBe('hidden');
+  });
+
+  it('a host the floored stage overflows gets `auto`', () => {
+    containerSize = { width: 522, height: 219 };
+    const target = mountStage(NATIVE_W, NATIVE_H, { minScale: FLOOR });
+
+    expect(readScale(target)).toBe(FLOOR);
+    // The painted box is larger than the host on both axes, so the part
+    // outside it is only reachable if the holder scrolls.
+    expect(readScale(target) * NATIVE_W).toBeGreaterThan(522);
+    expect(readScale(target) * NATIVE_H).toBeGreaterThan(219);
+
+    expect(holderOf(target).style.overflow).toBe('auto');
+  });
+
+  it('follows the host box rather than being fixed at mount', () => {
+    containerSize = { width: 522, height: 219 };
+    const target = mountStage(NATIVE_W, NATIVE_H, { minScale: FLOOR });
+    expect(holderOf(target).style.overflow).toBe('auto');
+
+    resizeContainer(802, 337);
+
+    expect(holderOf(target).style.overflow).toBe('hidden');
+  });
+
+  it('with no floor declared, even a host far too small for the fit gets `hidden`', () => {
+    containerSize = { width: 100, height: 100 };
+    const target = mountStage(NATIVE_W, NATIVE_H);
+
+    expect(holderOf(target).style.overflow).toBe('hidden');
   });
 });

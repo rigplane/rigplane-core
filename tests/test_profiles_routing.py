@@ -169,7 +169,7 @@ def _count_self_civ_call_sites() -> int:
 
 
 def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
-    """Ratchet: exactly 6 raw ``self._civ(...)`` sites remain.
+    """Ratchet: exactly 5 raw ``self._civ(...)`` sites remain.
 
     The 8 hand-rolled ``self._civ(0x07, ...)`` VFO-switch frames that used
     to live in ``SetFreq``/``SetMode`` (the ``receiver!=0`` fallback dance
@@ -187,7 +187,7 @@ def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
     those collapsed into the one call below when the wire-frame assembly
     moved into the shared ``runtime._state_queries.wire_parts_for_query``,
     also used by ``RigctldServer._send_one_state_query`` and
-    ``runtime.radio_initial_state.fetch_initial_state``. The 6 that
+    ``runtime.radio_initial_state.fetch_initial_state``. The 5 that
     remain:
 
     - ``_send_cmd``: 2 — cmd29-wrapped vs. plain generic command dispatch.
@@ -195,12 +195,15 @@ def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
       ``wire_parts_for_query`` resolved.
     - ``_execute``: 2 — the BSR band-switch stored-freq read and
       ``SelectVfo``'s scope-follow (0x27 0x12).
-    - ``_send_query``: 1 — the meter poll read.
+
+    ``_send_query`` held the 6th — the meter poll read — until the legacy
+    meter rotation it lived in was deleted as unreachable behind the
+    acquisition scheduler.
 
     Changing this literal deliberately means recounting the real call
     sites above, not just editing the number.
     """
-    assert _count_self_civ_call_sites() == 6
+    assert _count_self_civ_call_sites() == 5
 
 
 # ---------------------------------------------------------------------------

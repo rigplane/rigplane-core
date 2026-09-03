@@ -659,7 +659,14 @@ class RigctldClientRadio:
             caps.add("vfo")
         return caps
 
-    def supports_command(self, command: str) -> bool:
+    def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
+        if receiver is not None and (
+            command not in {"set_af_level", "set_rf_gain", "set_squelch"}
+            or isinstance(receiver, bool)
+            or not isinstance(receiver, int)
+            or receiver != 0
+        ):
+            return False
         supported = set(_SUPPORTED_COMMANDS)
         if self._vfo_supported:
             supported.update({"get_vfo_slot", "set_vfo_slot"})

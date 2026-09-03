@@ -248,6 +248,14 @@ implementation agent may not be the review agent.
   identity — a PR's own check runs against `refs/pull/N/merge` (the PR
   head merged onto the base at test time), not against the PR head commit
   by itself.
+- Read the gate's verdict from the commit status — `gh pr checks <n>`, the
+  `Agent Review Gate` row, or `gh api repos/<owner>/<repo>/commits/<sha>/status`
+  — never from a run list. A run list shows the publisher job
+  (`Update Agent Review Gate status`) under the workflow's name, and it is
+  green when it has successfully published a refusal; and a run triggered
+  by `issue_comment` carries `headBranch=main`, so `gh run list --branch
+  <feature>` cannot show it and its silence proves nothing about whether the
+  gate re-ran.
 - Draft PRs must not merge. Determine why the PR is draft, finish the missing
   work, run `gh pr ready`, then complete checks and review.
 
