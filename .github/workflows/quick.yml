@@ -3,6 +3,30 @@ name: Tests (quick)
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - ".claude/**"
+      - "**/*.md"
+      - "**/*.mD"
+      - "**/*.Md"
+      - "**/*.MD"
+      - "**/*.rst"
+      - "**/*.rsT"
+      - "**/*.rSt"
+      - "**/*.rST"
+      - "**/*.RsT"
+      - "**/*.Rst"
+      - "**/*.RSt"
+      - "**/*.RST"
+      - "mkdocs.yml"
+      - ".github/scripts/doc-citation-baseline.txt"
+      - ".github/scripts/doc-citation-dangling-baseline.txt"
+      - ".github/scripts/doc-link-baseline.txt"
+      - "AUTHORS"
+      - "COPYING"
+      - "LICENSE"
+      - "LICENSE.txt"
+      - "NOTICE"
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review]
@@ -17,24 +41,70 @@ concurrency:
 
 jobs:
   classify:
+    # A pure-doc PR only needs this GitHub-hosted API classification. It does
+    # not check out the repository, install dependencies, or run tests.
     runs-on: ubuntu-latest
     outputs:
-      core: ${{ steps.paths.outputs.core }}
-      frontend: ${{ steps.paths.outputs.frontend }}
-      ci: ${{ steps.paths.outputs.ci }}
-      docs: ${{ steps.paths.outputs.docs }}
+      core: ${{ steps.pr_paths.outputs.core || steps.push_paths.outputs.core }}
+      frontend: ${{ steps.pr_paths.outputs.frontend || steps.push_paths.outputs.frontend }}
+      ci: ${{ steps.pr_paths.outputs.ci || steps.push_paths.outputs.ci }}
+      docs: ${{ steps.pr_paths.outputs.docs || steps.push_paths.outputs.docs }}
     steps:
-      - uses: actions/checkout@v6
+      - name: Classify exact changed paths
+        id: pr_paths
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
         with:
-          # Pull-request merge checkouts include both parents at this depth.
-          # The classifier fetches an exact missing endpoint when necessary.
+          script: |
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const documentationExact = new Set([
+              '.github/scripts/doc-citation-baseline.txt',
+              '.github/scripts/doc-citation-dangling-baseline.txt',
+              '.github/scripts/doc-link-baseline.txt',
+              'AUTHORS', 'COPYING', 'LICENSE', 'LICENSE.txt', 'NOTICE', 'mkdocs.yml',
+            ]);
+            const documentation = (path) => {
+              const parts = path.split('/');
+              return parts[0] === 'docs' || parts[0] === '.claude' ||
+                /\.(md|rst)$/i.test(path) || documentationExact.has(path);
+            };
+            const ci = (path) => path === 'tests/test_ci_path_filters.py' ||
+              (path.startsWith('.github/') && !documentation(path));
+            const frontend = (path) => !documentation(path) &&
+              (path.startsWith('frontend/') || path.startsWith('src/rigplane/web/'));
+            const productCore = (path) => !documentation(path) && !ci(path) &&
+              (path.startsWith('src/') || path.startsWith('tests/') ||
+                path.startsWith('rigs/') || path.startsWith('contracts/') ||
+                ['pyproject.toml', 'uv.lock', '.importlinter'].includes(path));
+            const paths = files.map(({filename}) => filename);
+            if (paths.length === 0) {
+              core.setFailed('Pull request has no changed paths to classify.');
+              return;
+            }
+            core.setOutput('core', String(paths.some(productCore)));
+            core.setOutput('frontend', String(paths.some(frontend)));
+            core.setOutput('ci', String(paths.some(ci)));
+            core.setOutput('docs', String(paths.every(documentation)));
+
+      # Pushes that reach this workflow are not docs-only because the trigger
+      # above excludes that class. Preserve the existing exact-diff classifier
+      # for all product and CI pushes.
+      - uses: actions/checkout@v6
+        if: github.event_name == 'push'
+        with:
           fetch-depth: 2
 
-      - name: Classify exact changed paths
-        id: paths
+      - name: Classify exact changed paths on push
+        id: push_paths
+        if: github.event_name == 'push'
         env:
-          QUICK_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          QUICK_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          QUICK_BASE_SHA: ${{ github.event.before }}
+          QUICK_HEAD_SHA: ${{ github.sha }}
         run: >-
           python3 .github/scripts/classify-quick-paths.py
           --repo .
@@ -45,8 +115,8 @@ jobs:
     needs: classify
     # Draft pushes are development checkpoints, not immutable review heads.
     # The ready_for_review event starts the one natural expensive run once the
-    # candidate is ready. Docs-only diffs produce a server-side skipped quick
-    # context and never allocate the self-hosted runner.
+    # candidate is ready. Docs-only diffs produce the required server-side
+    # skipped `quick` context, with no runner allocation.
     if: >-
       always() &&
       needs.classify.outputs.docs != 'true' &&

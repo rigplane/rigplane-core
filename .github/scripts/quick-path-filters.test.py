@@ -36,6 +36,7 @@ class QuickPathFilterContractTest(unittest.TestCase):
             "pr3116": ["frontend/fixtures/approved-baselines/README.md"],
             "pr3117": [".claude/agents/verifier.md"],
             "pr3118": ["frontend/fixtures/approved-baselines/README.md"],
+            "mkdocs-config": ["mkdocs.yml"],
         }
         for name, paths in cases.items():
             with self.subTest(name=name):
@@ -83,6 +84,15 @@ class QuickPathFilterContractTest(unittest.TestCase):
         self.assertIn('      - "!frontend/**/*.rst"', visual)
         self.assertNotIn('      - ".github/workflows/visual.yml"', visual)
 
+    def test_docs_classification_is_api_only_and_quick_push_ignores_docs(self) -> None:
+        quick = QUICK_YML.read_text(encoding="utf-8")
+
+        self.assertIn("github.rest.pulls.listFiles", quick)
+        self.assertIn("github.paginate", quick)
+        self.assertNotIn("actions/checkout@v6\n        with:\n          # Pull-request merge checkouts", quick)
+        self.assertIn('      - "mkdocs.yml"', quick)
+        self.assertIn("skipped `quick` context, with no runner allocation", quick)
+
     def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
         citation = DOC_CITATION_YML.read_text(encoding="utf-8")
         rebrand = REBRAND_YML.read_text(encoding="utf-8")
@@ -98,7 +108,17 @@ class QuickPathFilterContractTest(unittest.TestCase):
         for ignored in (
             '      - "!docs/**"',
             '      - "!**/*.md"',
+            '      - "!**/*.mD"',
+            '      - "!**/*.Md"',
+            '      - "!**/*.MD"',
             '      - "!**/*.rst"',
+            '      - "!**/*.rsT"',
+            '      - "!**/*.rSt"',
+            '      - "!**/*.rST"',
+            '      - "!**/*.RsT"',
+            '      - "!**/*.Rst"',
+            '      - "!**/*.RSt"',
+            '      - "!**/*.RST"',
             '      - "!.claude/**"',
             '      - "!.github/**"',
             '      - "!tests/test_ci_path_filters.py"',

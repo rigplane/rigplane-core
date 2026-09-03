@@ -23,6 +23,7 @@ DOC_EXACT = {
     "COPYING",
     "LICENSE",
     "LICENSE.txt",
+    "mkdocs.yml",
     "NOTICE",
 }
 CI_EXACT = {"tests/test_ci_path_filters.py"}

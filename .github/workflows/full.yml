@@ -7,6 +7,30 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - ".claude/**"
+      - "**/*.md"
+      - "**/*.mD"
+      - "**/*.Md"
+      - "**/*.MD"
+      - "**/*.rst"
+      - "**/*.rsT"
+      - "**/*.rSt"
+      - "**/*.rST"
+      - "**/*.RsT"
+      - "**/*.Rst"
+      - "**/*.RSt"
+      - "**/*.RST"
+      - "mkdocs.yml"
+      - ".github/scripts/doc-citation-baseline.txt"
+      - ".github/scripts/doc-citation-dangling-baseline.txt"
+      - ".github/scripts/doc-link-baseline.txt"
+      - "AUTHORS"
+      - "COPYING"
+      - "LICENSE"
+      - "LICENSE.txt"
+      - "NOTICE"
 
 concurrency:
   group: tests-full-${{ github.workflow }}-${{ github.ref }}
