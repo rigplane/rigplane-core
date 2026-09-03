@@ -84,28 +84,37 @@ cd ..
 The suite record for a head is that head's `quick.yml` run, and the full suite
 is not run on the laptop or the remote testbed for a head CI has run (CLAUDE.md
 §Testing, §Agent working rules). 2a requires a clean tree and 2b expects
-`main`, so the head being released is `main`'s current head and its run is the
+`main`, so the head under test here is `main`'s current HEAD, and its run is the
 one `quick.yml`'s `push: branches: [main]` trigger produced. A bump prepared on
 a branch reads that branch's PR run instead — `quick.yml` triggers on
 `pull_request: branches: [main]` too.
 
 ```bash
-gh run list --workflow "Tests (quick)" --branch main --limit 5
-gh run view <id>
+gh run list --workflow "Tests (quick)" --branch main --limit 5 \
+  --json databaseId,headSha,conclusion,createdAt
+gh run view <id> --json jobs \
+  --jq '.jobs[].steps[] | select(.name=="Run tests") | .conclusion'
 ```
 
-The `Run tests` step must be green, not skipped: `quick.yml` gates it on
-`steps.filter.outputs.core`, so a run whose `core` filter did not match is
-green with no suite result. Then confirm that run's commit still covers HEAD —
-the `core` filter's own paths:
+The second command must print `success`. `quick.yml` gates `Run tests` on
+`steps.filter.outputs.core`, so on a run whose `core` filter did not match it
+prints `skipped` while the run's own conclusion is still `success` — the run's
+conclusion is not the suite's. Then confirm that run's commit still covers HEAD
+— the `core` filter's own paths:
 
 ```bash
 git diff --name-only <run-sha>..HEAD -- src tests frontend rigs contracts \
   pyproject.toml uv.lock .importlinter .github/scripts .github/workflows
 ```
 
-Non-empty output → that run is not the record for this head. Stop and get a run
-at the head being released.
+Non-empty output → that run is not the record for HEAD. Stop and get a run at
+HEAD.
+
+The check is against HEAD, not against the commit that gets tagged: Step 6
+commits the Step 5 edits on top of HEAD, so the released commit is HEAD plus a
+`pyproject.toml` version line and a `docs/CHANGELOG.md` entry. `pyproject.toml`
+is in the pathspec above, so that commit is a different head, with its own
+`quick` run when it lands.
 
 **Interpreter matrix before the tag.** `quick.yml` pins `UV_PYTHON: "3.11"`.
 `publish.yml`'s `validate` matrix is `["3.12", "3.13"]` — 3.11 is dropped there
@@ -128,7 +137,9 @@ uv build && rm -rf dist/
 ```
 
 ```bash
-# 2j. Optional regression check (.claude/commands/regression-check.md)
+# 2j. Optional regression check (.claude/commands/regression-check.md).
+# Its step 1 reads "the run on its draft PR", which a release cut from
+# `main` does not have; 2h above is the record in that case.
 ```
 
 ```bash
