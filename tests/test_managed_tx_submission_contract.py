@@ -88,8 +88,10 @@ async def test_shutdown_drains_owned_settlement_before_provider_retirement() -> 
     managed, _, _, _, _, lane = authority()
     provider_release = lane.block_next()
     retired: list[int] = []
+    retire_started = asyncio.Event()
 
     async def retire(generation: int) -> None:
+        retire_started.set()
         retired.append(generation)
 
     receipt = await asyncio.wait_for(managed.submit_transmit_on(), 0.2)
@@ -101,7 +103,8 @@ async def test_shutdown_drains_owned_settlement_before_provider_retirement() -> 
         effect = await asyncio.wait_for(lane.started.get(), 0.2)
         assert effect.operation is ActuationOperation.FORCE_RECEIVE
         assert not receipt.settlement_done
-        await asyncio.sleep(0)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(retire_started.wait(), 0.02)
         assert not shutdown.done() and retired == []
 
         provider_release.set()
