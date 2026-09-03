@@ -457,6 +457,59 @@ async def test_provider_replacement_rejects_old_executor_settlement() -> None:
     assert new_reports.sent == [(request.id, (_FREQ,))]
 
 
+async def test_old_executor_error_cannot_delete_replacement_generation_claim() -> None:
+    scheduler = AcquisitionScheduler(profile=_profile(_FREQ))
+    request = _queued(scheduler)
+    store = StateStore()
+    old_release = asyncio.Event()
+    replacement_release = asyncio.Event()
+    entries: list[str] = []
+    old_error = RuntimeError("old Web executor failed")
+    old_reports = _Reports("web", propagate_executor_error=True)
+    replacement_reports = _Reports("rigctld")
+    old = _drain(
+        scheduler,
+        store,
+        _Executor("web", entries, release=old_release, error=old_error),
+        old_reports,
+    )
+    replacement = _drain(
+        scheduler,
+        store,
+        _Executor("rigctld", entries, release=replacement_release),
+        replacement_reports,
+    )
+
+    old_task = asyncio.create_task(old.run_once())
+    while entries != ["web"]:
+        await asyncio.sleep(0)
+    assert store.begin_provider_generation() == 1
+    replacement_task = asyncio.create_task(replacement.run_once())
+    while entries != ["web", "rigctld"]:
+        await asyncio.sleep(0)
+
+    old_release.set()
+    with pytest.raises(RuntimeError, match="old Web executor failed") as caught:
+        await old_task
+    assert caught.value is old_error
+    assert scheduler.pending_requests() == (request,)
+    assert scheduler.diagnostics()["claimedRequestCount"] == 1
+
+    intruder = _Executor("extra", entries)
+    await _drain(
+        scheduler,
+        store,
+        intruder,
+        _Reports("extra"),
+    ).run_once()
+    assert intruder.calls == []
+
+    replacement_release.set()
+    await replacement_task
+    assert replacement_reports.sent == [(request.id, (_FREQ,))]
+    scheduler.record_acquisition_result(request, _settlement())
+
+
 async def test_pending_but_not_dispatchable_request_is_not_claimed() -> None:
     policy = AcquisitionPolicy(tx_only=True)
     scheduler = AcquisitionScheduler(
