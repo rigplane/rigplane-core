@@ -6,6 +6,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from functools import partial
 from typing import Any, Protocol
 
 from rigplane.runtime.managed_tx_config import (
@@ -19,6 +20,7 @@ from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
     ActuationSettled,
+    EffectToken,
     ForceOff,
     ManagedTxEffect,
     ManagedTxEvent,
@@ -135,6 +137,25 @@ class ManagedTxAuthority:
 
     async def force_off(self) -> ManagedTxOutcome:
         return await self._ingress("force_off")
+
+    def is_effect_current(
+        self, token: EffectToken, operation: ActuationOperation | AbortOperation
+    ) -> bool:
+        """Check write currency synchronously against the live pending attempt."""
+        pending = self._state.pending_effect
+        if isinstance(operation, AbortOperation):
+            operation = ActuationOperation.FORCE_RECEIVE
+        return bool(
+            not (self._closing or self._closed or self._terminated)
+            and not (
+                self._shutdown_termination is not None
+                and self._shutdown_termination.is_set()
+            )
+            and self._provider_generation == token.provider_generation
+            and pending is not None
+            and pending.token == token
+            and pending.operation is operation
+        )
 
     async def owner_disconnect(self, owner: str) -> ManagedTxOutcome:
         async with self._lock:
@@ -459,13 +480,22 @@ class ManagedTxAuthority:
                     aborts = [
                         asyncio.create_task(
                             self._lane.settle_abort(
-                                effect.token, operation, deadline_monotonic=deadline
+                                effect.token,
+                                operation,
+                                deadline_monotonic=deadline,
+                                is_current=partial(
+                                    self.is_effect_current, effect.token, operation
+                                ),
                             )
                         )
                         for operation in AbortOperation
                     ]
                 if settled := await self._lane.settle(
-                    effect, deadline_monotonic=deadline
+                    effect,
+                    deadline_monotonic=deadline,
+                    is_current=partial(
+                        self.is_effect_current, effect.token, effect.operation
+                    ),
                 ):
                     events.append(settled)
                 if full_force:
