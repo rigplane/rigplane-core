@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -80,6 +81,52 @@ async def test_receipt_keeps_settlement_owned_when_a_waiter_is_cancelled() -> No
     finally:
         provider_release.set()
         await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_owned_settlement_before_provider_retirement() -> None:
+    managed, _, _, _, _, lane = authority()
+    provider_release = lane.block_next()
+    retired: list[int] = []
+
+    async def retire(generation: int) -> None:
+        retired.append(generation)
+
+    receipt = await asyncio.wait_for(managed.submit_transmit_on(), 0.2)
+    await asyncio.wait_for(lane.started.get(), 0.2)
+    shutdown = asyncio.create_task(
+        managed.shutdown(retire_provider=retire, termination=asyncio.Event())
+    )
+    try:
+        effect = await asyncio.wait_for(lane.started.get(), 0.2)
+        assert effect.operation is ActuationOperation.FORCE_RECEIVE
+        await asyncio.sleep(0)
+        assert not shutdown.done() and retired == []
+
+        provider_release.set()
+        await asyncio.wait_for(receipt.wait_settlement(), 0.2)
+        await asyncio.wait_for(shutdown, 0.2)
+        assert retired == [7]
+        assert not managed._settlement_tasks
+    finally:
+        provider_release.set()
+        if not shutdown.done():
+            shutdown.cancel()
+        await asyncio.gather(shutdown, return_exceptions=True)
+        if not managed._closed:
+            await finish(managed)
+
+
+def test_private_ptt_operation_has_no_production_consumer() -> None:
+    source = Path(__file__).parents[1] / "src"
+    authority_path = source / "rigplane/runtime/managed_tx_authority.py"
+    consumers = [
+        path.relative_to(source).as_posix()
+        for path in source.rglob("*.py")
+        if path != authority_path
+        and "_start_ptt_operation" in path.read_text(encoding="utf-8")
+    ]
+    assert consumers == []
 
 
 @pytest.mark.asyncio

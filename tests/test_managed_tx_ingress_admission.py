@@ -73,7 +73,9 @@ def track(rig, task):
 
 async def submit(rig, on, owner, *, ready=None):
     async with asyncio.timeout(1):
-        return track(rig, await rig.managed.submit_ptt(on, owner, ready=ready))
+        return track(
+            rig, await rig.managed._start_ptt_operation(on, owner, ready=ready)
+        )
 
 
 async def checkpoint():
