@@ -268,21 +268,51 @@ jobs:
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
 
   tracked-write-currency-proof:
-    if: github.ref == 'refs/heads/codex/icom-tracked-write-currency-proof'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/icom-tracked-write-currency-proof'
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
+    permissions:
+      contents: read
     env:
       UV_PYTHON: '3.13'
+      SOURCE_PIN: bb5f4719055d34ee039ed2954b08ac92c32b08d5
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: bb5f4719055d34ee039ed2954b08ac92c32b08d5
+          persist-credentials: false
+      - name: Prepare isolated proof paths
+        id: prepare
+        run: |
+          proof_dir=$(mktemp -d "$RUNNER_TEMP/icom-tracked-proof-XXXXXX")
+          mkdir -p "$proof_dir/artifacts" "$proof_dir/uv-cache"
+          echo "ARTIFACT_DIR=$proof_dir/artifacts" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$proof_dir/uv-cache" >> "$GITHUB_ENV"
+          echo "PROOF_SCRIPT=$proof_dir/run-tracked-write-proof.sh" >> "$GITHUB_ENV"
+          echo "artifact_dir=$proof_dir/artifacts" >> "$GITHUB_OUTPUT"
+          git show "$GITHUB_SHA:.github/diagnostics/run-tracked-write-proof.sh" > "$proof_dir/run-tracked-write-proof.sh"
       - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: false
       - name: Run tracked-write proof
-        run: bash .github/diagnostics/run-tracked-write-proof.sh
+        run: bash "$PROOF_SCRIPT"
+      - name: Record and restore source
+        if: always() && steps.prepare.outcome == 'success'
+        run: |
+          git diff > "$ARTIFACT_DIR/source-diff-before-final-restoration.txt"
+          git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/status-before-final-restoration.txt"
+          test "$(git rev-parse HEAD)" = "$SOURCE_PIN"
+          git restore --source="$SOURCE_PIN" --worktree -- src/rigplane/core/transport.py tests/test_transport.py
+          sha256sum src/rigplane/core/transport.py tests/test_transport.py > "$ARTIFACT_DIR/final-sha256.txt"
+          git diff --exit-code > "$ARTIFACT_DIR/source-diff-final.txt"
+          git status --porcelain=v1 --untracked-files=all > "$ARTIFACT_DIR/source-status-final.txt"
+          test ! -s "$ARTIFACT_DIR/source-status-final.txt"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.prepare.outputs.artifact_dir != ''
         with:
           name: tracked-write-proof
-          path: tracked-write-proof/
+          path: ${{ steps.prepare.outputs.artifact_dir }}
+          if-no-files-found: error
           retention-days: 14
