@@ -74,6 +74,11 @@ describe('VfoIndicatorRow', () => {
     }
   });
 
+  it('renders a capability-provided AGC label verbatim', () => {
+    const root = render(indicator({ agcMode: known('SLOW') }));
+    expect(root.querySelector('[data-indicator-fact="agc"]')?.textContent).toContain('AGC SLOW');
+  });
+
   it('keeps an unavailable structural receiver present, disabled, and explicitly unknown', () => {
     const root = render(indicator({
       receiver: 'SUB',

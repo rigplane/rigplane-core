@@ -283,7 +283,11 @@ describe('the dsp surface mounts only when the view model carries the group', ()
    * this list pins the CURRENT baseline, not a dsp-slice invention.
    */
   const DEFAULT_PATH_TESTIDS = [
-    'vfo-surface', 'vfo-active-receiver', 'vfo-list', 'vfo-ops', 'vfo-split-digest',
+    'vfo-surface', 'vfo-active-receiver', 'vfo-list',
+    'vfo-receiver-indicators',
+    'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-ops', 'vfo-split-digest',
     'rx-tx-surface', 'rx-tx-state', 'rx-tx-rf-mark', 'rx-tx-rf-label',
     'rx-tx-target', 'rx-tx-key', 'rx-tx-unkey', 'rx-tx-blocked',
     'rx-audio-surface', 'rx-audio-monitor', 'rx-audio-monitor-local',

@@ -103,6 +103,7 @@ function model(
 
 const INDICATOR_CAPS = caps({
   filters: ['FIL1'],
+  agcLabels: { '2': 'SLOW' },
   capabilities: [
     ...DUAL, 'agc', 'nb', 'nr', 'notch', 'attenuator', 'preamp',
     'rf_gain', 'digisel', 'ip_plus',
@@ -187,7 +188,7 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
       },
       {
         receiver: 'SUB', s: { status: 'known', value: -37 },
-        bw: { status: 'known', value: 500 }, agc: { status: 'known', value: 2 },
+        bw: { status: 'known', value: 500 }, agc: { status: 'known', value: 'SLOW' },
         nb: { status: 'known', value: true }, att: { status: 'known', value: 12 },
         pre: { status: 'known', value: 2 }, rfg: { status: 'known', value: 0.75 },
         digi: { status: 'known', value: true }, ip: { status: 'known', value: false },

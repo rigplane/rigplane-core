@@ -1006,7 +1006,8 @@ export interface ReceiverIndicatorViewModel {
   rfState: MeterRfState;
   sMeter: ReceiverIndicatorField<number>;
   bandwidthHz: ReceiverIndicatorField<number>;
-  agcMode: ReceiverIndicatorField<number>;
+  /** Capability label when declared for the ordinal; raw ordinal otherwise. */
+  agcMode: ReceiverIndicatorField<number | string>;
   nbActive: ReceiverIndicatorField<boolean>;
   nrActive: ReceiverIndicatorField<boolean>;
   notchMode: ReceiverIndicatorField<'off' | 'auto' | 'manual'>;
@@ -1123,6 +1124,9 @@ function nullableString(value: unknown, path: string): string | null {
 function num(value: unknown, path: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) invalid(path, 'a finite number');
   return value;
+}
+function strOrNum(value: unknown, path: string): string | number {
+  return typeof value === 'string' ? value : num(value, path);
 }
 
 /**
@@ -1381,7 +1385,7 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
     sMeter: validateTxAuxField(v.sMeter, `${path}.sMeter`, num),
     bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
-    agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, num),
+    agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
     nbActive: validateTxAuxField(v.nbActive, `${path}.nbActive`, bool),
     nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),
     notchMode: validateTxAuxField(

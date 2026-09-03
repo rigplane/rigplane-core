@@ -759,6 +759,10 @@ function deriveReceiverIndicators(
       ? (autoNotch ? 'auto' as const : manualNotch ? 'manual' as const : 'off' as const)
       : undefined;
     const notchOperational = hasNotch && autoNotchKnown && manualNotchKnown;
+    const agcOrdinal = numOrUndef(rx?.agc);
+    const agcMode = agcOrdinal === undefined
+      ? undefined
+      : (caps.agcLabels?.[String(agcOrdinal)] ?? agcOrdinal);
 
     const rfState = receiverOperational && tx !== null && tx !== undefined
       && txTarget.status === 'known' && txTarget.receiver === receiver
@@ -774,7 +778,7 @@ function deriveReceiverIndicators(
       // valid calibrated S9 reading and is preserved by numOrUndef.
       sMeter: strictField(true, 'sMeter', numOrUndef(rx?.sMeter)),
       bandwidthHz: strictField(hasFilters, 'filterWidth', numOrUndef(rx?.filterWidth)),
-      agcMode: strictField(hasAgc, 'agc', numOrUndef(rx?.agc)),
+      agcMode: strictField(hasAgc, 'agc', agcMode),
       nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),
       nrActive: strictField(hasNr, 'nr', boolOrUndef(rx?.nr)),
       notchMode: txAuxField(hasNotch, notchOperational, notchMode),

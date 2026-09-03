@@ -25,6 +25,10 @@
     return field.reading.status === 'known' ? String(field.reading.value) : '—';
   }
 
+  function agc(field: ReceiverIndicatorViewModel['agcMode']): string {
+    return field.reading.status === 'known' ? String(field.reading.value) : '—';
+  }
+
   function booleanState(field: ReceiverIndicatorField<boolean>): 'on' | 'off' | 'unknown' {
     return field.reading.status === 'known' ? (field.reading.value ? 'on' : 'off') : 'unknown';
   }
@@ -75,7 +79,7 @@
   <div class="facts" aria-label={`${indicator.receiver} receiver facts`}>
     {#if indicator.agcMode.availability.structural}
       <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}>
-        AGC {numeric(indicator.agcMode)}
+        AGC {agc(indicator.agcMode)}
       </span>
     {/if}
     {#if indicator.nbActive.availability.structural}
