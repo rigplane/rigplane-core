@@ -194,14 +194,14 @@ class ManagedTxAuthority:
             if _registered is not None:
                 _registered.set_exception(error)
             raise
-        if _registered is not None:
-            _registered.set_result(None)
         try:
             transition = await asyncio.shield(admitted)
         except asyncio.CancelledError:
             worker.cancel()
             await self._drain_cancelled(worker)
             raise
+        if _registered is not None:
+            _registered.set_result(None)
         return ManagedTxSubmission(transition, worker)
 
     async def _start_ptt_operation(
