@@ -42,7 +42,9 @@ class CommandUnsupportedError(CommandError):
 
 
 class DispatchRadio(Protocol):
-    def supports_command(self, command: str) -> bool: ...
+    def supports_command(
+        self, command: str, *, receiver: int | None = None
+    ) -> bool: ...
 
 
 class DispatchQueue(Protocol):
