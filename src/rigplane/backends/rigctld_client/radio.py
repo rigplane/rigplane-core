@@ -895,6 +895,9 @@ class RigctldClientRadio:
         line = (await self._transport.query("l ATT", response_lines=1))[0]
         return _parse_int_level(line, "attenuator")
 
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return db
+
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_attenuator_level")
         await self._transport.command(f"L ATT {int(db)}")

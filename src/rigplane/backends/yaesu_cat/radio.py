@@ -1411,6 +1411,9 @@ class YaesuCatRadio:
         """
         await self._write("set_attenuator", state=str(int(state)))
 
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return int(db > 0)
+
     async def set_attenuator_level(self, db: int, receiver: int = 0) -> None:
         """Set attenuator by dB level.
 

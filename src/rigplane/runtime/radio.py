@@ -3991,6 +3991,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Read attenuator state (compat wrapper)."""
         return (await self.get_attenuator_level(receiver)) > 0
 
+    def project_attenuator_observation_value(self, db: int) -> int:
+        return db
+
     async def set_attenuator_level(
         self, db: int, receiver: int = RECEIVER_MAIN
     ) -> None:
