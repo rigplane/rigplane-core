@@ -55,6 +55,7 @@ from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
+from ..runtime.managed_tx_state import ActuationResult, ManagedTxOutcome
 from ..types import Mode
 from .contract import (  # noqa: TID251
     CIV_TO_HAMLIB_MODE,
@@ -87,6 +88,10 @@ _RIGCTLD_SESSION_ID: ContextVar[str | None] = ContextVar(
 )
 _RIGCTLD_PROVIDER_GENERATION: ContextVar[int | None] = ContextVar(
     "rigctld_provider_generation",
+    default=None,
+)
+_RIGCTLD_PREDECESSOR: ContextVar[asyncio.Future[None] | None] = ContextVar(
+    "rigctld_predecessor",
     default=None,
 )
 
@@ -459,6 +464,78 @@ class _RigctldCommandFailure(Exception):
 @dataclass(slots=True)
 class _RigctldCommandExecutor:
     handler: "RigctldHandler"
+    predecessor: asyncio.Future[None] | None = None
+
+    async def _wait_predecessor(self) -> None:
+        if self.predecessor is not None:
+            await asyncio.shield(self.predecessor)
+
+    async def _execute_managed_ptt(
+        self,
+        intent: CommandIntent,
+    ) -> CommandExecutionResult:
+        authority = self.handler._managed_tx_authority
+        assert authority is not None
+        on = bool(intent.params["ptt"])
+        owner = intent.params.get("session_id")
+        if not isinstance(owner, str) or not owner:
+            raise _RigctldCommandFailure(HamlibError.EACCESS)
+
+        cancelling = asyncio.current_task().cancelling()
+        worker = await authority.submit_ptt(
+            on,
+            owner,
+            ready=self.predecessor if on else None,
+        )
+        try:
+            transition, settled = await worker
+        except asyncio.CancelledError as exc:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > cancelling:
+                raise
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+
+        if on and transition.outcome is ManagedTxOutcome.REJECTED:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if settled is not None and settled.result is not ActuationResult.ACCEPTED:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        return CommandExecutionResult()
+
+    async def _execute_managed_queue(
+        self,
+        intent: CommandIntent,
+    ) -> CommandExecutionResult:
+        await self._wait_predecessor()
+        queue = self.handler._command_queue
+        assert queue is not None
+        reply: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        session_id = intent.params.get("session_id")
+        entry = queue.put_ordered(
+            intent,
+            future=reply,
+            command_id=intent.id,
+            source=intent.source,
+            session_id=session_id if isinstance(session_id, str) else None,
+            command_service=self.handler._command_service,
+        )
+        try:
+            await asyncio.shield(reply)
+        except asyncio.CancelledError:
+            if queue.remove_pending(entry):
+                if not reply.done():
+                    reply.cancel()
+            else:
+                while not reply.done():
+                    try:
+                        await asyncio.shield(reply)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not reply.cancelled():
+                    reply.exception()
+            raise
+        return CommandExecutionResult()
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         classification = _classify_rigctld_tx_intent(intent)
@@ -468,6 +545,12 @@ class _RigctldCommandExecutor:
             and self.handler._resolve_rigctld_rf_state() is not tx_interlock.RfState.RX
         ):
             raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if self.handler._managed_tx_authority is not None:
+            if intent.name == "set_ptt":
+                return await self._execute_managed_ptt(intent)
+            return await self._execute_managed_queue(intent)
+
+        await self._wait_predecessor()
         params = intent.params
         if intent.name == "set_freq":
             await self.handler._radio.set_freq(
@@ -891,7 +974,11 @@ class RigctldHandler:
         """
         try:
             result = await self._command_service.execute(
-                intent, executor=self._command_executor
+                intent,
+                executor=_RigctldCommandExecutor(
+                    self,
+                    predecessor=_RIGCTLD_PREDECESSOR.get(),
+                ),
             )
         except CommandExecutionInvalidatedError as exc:
             logger.warning(
@@ -1307,6 +1394,7 @@ class RigctldHandler:
         cmd: RigctldCommand,
         *,
         session_id: str | None = None,
+        predecessor: asyncio.Future[None] | None = None,
     ) -> RigctldResponse:
         """Execute a parsed rigctld command and return the response.
 
@@ -1320,6 +1408,7 @@ class RigctldHandler:
             self._provider_generation_capture()
         )
         token = _RIGCTLD_SESSION_ID.set(session_id)
+        predecessor_token = _RIGCTLD_PREDECESSOR.set(predecessor)
         # Read-only gate
         try:
             if self._config.read_only and cmd.is_set:
@@ -1332,6 +1421,8 @@ class RigctldHandler:
                 return _err(HamlibError.ENIMPL)
 
             try:
+                if not cmd.is_set and predecessor is not None:
+                    await asyncio.shield(predecessor)
                 response = cast(RigctldResponse, await handler_fn(self, cmd))
                 if isinstance(self._state_diagnostics, StateDiagnosticsRecorder):
                     self._state_diagnostics.record(
@@ -1362,6 +1453,7 @@ class RigctldHandler:
                 logger.exception("Internal error executing %s", cmd.long_cmd)
                 return _err(HamlibError.EINTERNAL)
         finally:
+            _RIGCTLD_PREDECESSOR.reset(predecessor_token)
             _RIGCTLD_SESSION_ID.reset(token)
             _RIGCTLD_PROVIDER_GENERATION.reset(provider_token)
 
@@ -1390,6 +1482,9 @@ class RigctldHandler:
         (Yaesu CAT, rigctld-client).
         """
         try:
+            if self._managed_tx_authority is not None:
+                await self._managed_tx_authority.owner_disconnect(session_id)
+                return
             managed = bind_managed_tx(self._radio, "rigctld", session_id)
             if managed is None:
                 return

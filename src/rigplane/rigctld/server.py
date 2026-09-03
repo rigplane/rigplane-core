@@ -195,7 +195,11 @@ class RigctldServer:
         return task
 
     def _handler_execute_call(
-        self, cmd: Any, *, session_id: str
+        self,
+        cmd: Any,
+        *,
+        session_id: str,
+        predecessor: asyncio.Future[None],
     ) -> Coroutine[Any, Any, Any]:
         execute = getattr(self._rig_handler, "execute")
         try:
@@ -204,15 +208,17 @@ class RigctldServer:
             signature = None
 
         if signature is not None:
-            for parameter in signature.parameters.values():
-                if parameter.kind is inspect.Parameter.VAR_KEYWORD:
-                    return cast(
-                        Coroutine[Any, Any, Any], execute(cmd, session_id=session_id)
-                    )
-                if parameter.name == "session_id":
-                    return cast(
-                        Coroutine[Any, Any, Any], execute(cmd, session_id=session_id)
-                    )
+            parameters = signature.parameters.values()
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+            kwargs: dict[str, Any] = {}
+            if accepts_kwargs or "session_id" in signature.parameters:
+                kwargs["session_id"] = session_id
+            if accepts_kwargs or "predecessor" in signature.parameters:
+                kwargs["predecessor"] = predecessor
+            return cast(Coroutine[Any, Any, Any], execute(cmd, **kwargs))
         return cast(Coroutine[Any, Any, Any], execute(cmd))
 
     async def _release_session_tx(self, session_id: str) -> None:
@@ -939,7 +945,7 @@ class RigctldServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """Manage a single TCP client for its full lifetime."""
+        """Manage one client while receipt and ordered retirement stay separate."""
         proto = self._protocol
 
         peer = writer.get_extra_info("peername", ("?", 0))
@@ -953,7 +959,43 @@ class RigctldServer:
         # ``finally``: that pairing is what makes it a lease-bearing managed TX
         # owner identity rather than a throwaway request id (MOR-1014).
         session_id = f"rigctld-client-{client_id}"
+        command_queue = self._command_queue
+        if command_queue is not None:
+            command_queue.register_session(session_id)
         logger.info("client #%d connected from %s", client_id, session.peername)
+
+        loop = asyncio.get_running_loop()
+        previous_execution: asyncio.Future[None] = loop.create_future()
+        previous_execution.set_result(None)
+        previous_retirement: asyncio.Future[None] = loop.create_future()
+        previous_retirement.set_result(None)
+        response_tasks: list[asyncio.Task[None]] = []
+
+        def schedule_response(
+            cmd: Any | None,
+            *,
+            immediate_error: HamlibError | None = None,
+        ) -> None:
+            nonlocal previous_execution, previous_retirement
+            execution = loop.create_future()
+            retirement = loop.create_future()
+            task = loop.create_task(
+                self._execute_and_retire_client_command(
+                    writer=writer,
+                    session=session,
+                    session_id=session_id,
+                    client_id=client_id,
+                    cmd=cmd,
+                    immediate_error=immediate_error,
+                    predecessor_execution=previous_execution,
+                    predecessor_retirement=previous_retirement,
+                    execution=execution,
+                    retirement=retirement,
+                )
+            )
+            response_tasks.append(task)
+            previous_execution = execution
+            previous_retirement = retirement
 
         try:
             while True:
@@ -991,13 +1033,11 @@ class RigctldServer:
                     # Unknown command or bad args → ENIMPL, not EPROTO
                     # (WSJT-X sends commands we don't support yet)
                     logger.debug("client #%d unknown/bad command: %s", client_id, exc)
-                    writer.write(proto.format_error(HamlibError.ENIMPL))
-                    await writer.drain()
+                    schedule_response(None, immediate_error=HamlibError.ENIMPL)
                     continue
                 except Exception as exc:
                     logger.warning("client #%d parse error: %s", client_id, exc)
-                    writer.write(proto.format_error(HamlibError.EPROTO))
-                    await writer.drain()
+                    schedule_response(None, immediate_error=HamlibError.EPROTO)
                     continue
 
                 # ── quit ─────────────────────────────────────────────
@@ -1012,15 +1052,75 @@ class RigctldServer:
                         client_id,
                         self._config.command_rate_limit,
                     )
-                    writer.write(proto.format_error(HamlibError.EIO))
-                    await writer.drain()
+                    schedule_response(None, immediate_error=HamlibError.EIO)
                     continue
 
-                # ── execute with command timeout ─────────────────────
-                t_start = time.monotonic()
+                # Receipt continues immediately. The per-line task owns actual
+                # completion, while its retirement future serializes replies.
+                schedule_response(cmd)
+
+        except asyncio.CancelledError:
+            logger.info("client #%d cancelled (server shutdown)", client_id)
+        except ConnectionResetError:
+            logger.info("client #%d connection reset by peer", client_id)
+        except Exception as exc:
+            logger.error(
+                "client #%d unexpected error: %s", client_id, exc, exc_info=True
+            )
+        finally:
+            self._rate_windows.pop(client_id, None)
+            for task in reversed(response_tasks):
+                if not task.done():
+                    task.cancel()
+            if response_tasks:
+                await asyncio.gather(*response_tasks, return_exceptions=True)
+            if command_queue is not None:
+                command_queue.unregister_session(session_id)
+            try:
+                await self._release_session_tx(session_id)
+            finally:
+                # Unconditional, and nested so no failure above can skip it:
+                # since 3.12 the listener's ``wait_closed()`` returns only once
+                # every accepted connection has gone, so a socket abandoned
+                # here would leave ``stop()`` waiting on it forever (MOR-1014).
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except (OSError, asyncio.CancelledError):
+                    pass
+                logger.info("client #%d disconnected", client_id)
+
+    async def _execute_and_retire_client_command(
+        self,
+        *,
+        writer: asyncio.StreamWriter,
+        session: ClientSession,
+        session_id: str,
+        client_id: int,
+        cmd: Any | None,
+        immediate_error: HamlibError | None,
+        predecessor_execution: asyncio.Future[None],
+        predecessor_retirement: asyncio.Future[None],
+        execution: asyncio.Future[None],
+        retirement: asyncio.Future[None],
+    ) -> None:
+        """Execute one received line, then retire its reply in wire order."""
+        proto = self._protocol
+        started = time.monotonic()
+        resp = None
+        out = None
+        try:
+            if immediate_error is not None:
+                out = proto.format_error(immediate_error)
+            else:
+                assert cmd is not None
                 try:
                     resp = await asyncio.wait_for(
-                        self._handler_execute_call(cmd, session_id=session_id),
+                        self._handler_execute_call(
+                            cmd,
+                            session_id=session_id,
+                            predecessor=predecessor_execution,
+                        ),
                         timeout=self._config.command_timeout,
                     )
                 except asyncio.TimeoutError:
@@ -1029,36 +1129,29 @@ class RigctldServer:
                         client_id,
                         cmd.short_cmd,
                     )
-                    writer.write(proto.format_error(HamlibError.ETIMEOUT))
-                    await writer.drain()
-                    continue
+                    out = proto.format_error(HamlibError.ETIMEOUT)
                 except Exception as exc:
                     logger.error("client #%d handler error: %s", client_id, exc)
-                    writer.write(proto.format_error(HamlibError.EIO))
-                    await writer.drain()
-                    continue
+                    out = proto.format_error(HamlibError.EIO)
+        finally:
+            if not execution.done():
+                execution.set_result(None)
 
-                # ── session-state wiring (vfo_opt handshake) ─────────
-                # When the handler advertised vfo_opt via ``\chk_vfo`` →
-                # ``"1"``, Hamlib will start prefixing every command
-                # with ``VFOA``/``VFOB``/``currVFO``. Flip the session
-                # bit so the parser knows it's expected and so the
-                # diagnostic in protocol.parse_line stays quiet. Wired
-                # here (rather than in handler.py) to keep the leaf
-                # handlers free of session arguments. Dormant on `main`
-                # because Variant B (#1340) keeps chk_vfo at ``"0"``;
-                # #1346 (A5) flips it back to ``"1"`` for dual-RX.
+        try:
+            await asyncio.shield(predecessor_retirement)
+            if resp is not None:
+                # Session parsing remains tolerant before this point, but the
+                # mode bit changes only when this successful slot retires.
                 if cmd.long_cmd == "chk_vfo" and resp.values == ["1"]:
                     session.vfo_mode = True
-
-                # ── send response ────────────────────────────────────
                 out = proto.format_response(cmd, resp, session)
-                duration_ms = round((time.monotonic() - t_start) * 1000, 3)
-                logger.debug("client #%d ← %r", client_id, out)
-                writer.write(out)
-                await writer.drain()
+            assert out is not None
+            duration_ms = round((time.monotonic() - started) * 1000, 3)
+            logger.debug("client #%d ← %r", client_id, out)
+            writer.write(out)
+            await writer.drain()
 
-                # ── audit ────────────────────────────────────────────
+            if resp is not None:
                 _audit.log_command(
                     _audit.AuditRecord(
                         timestamp=datetime.datetime.now(
@@ -1075,30 +1168,9 @@ class RigctldServer:
                         is_set=cmd.is_set,
                     )
                 )
-
-        except asyncio.CancelledError:
-            logger.info("client #%d cancelled (server shutdown)", client_id)
-        except ConnectionResetError:
-            logger.info("client #%d connection reset by peer", client_id)
-        except Exception as exc:
-            logger.error(
-                "client #%d unexpected error: %s", client_id, exc, exc_info=True
-            )
         finally:
-            self._rate_windows.pop(client_id, None)
-            try:
-                await self._release_session_tx(session_id)
-            finally:
-                # Unconditional, and nested so no failure above can skip it:
-                # since 3.12 the listener's ``wait_closed()`` returns only once
-                # every accepted connection has gone, so a socket abandoned
-                # here would leave ``stop()`` waiting on it forever (MOR-1014).
-                try:
-                    writer.close()
-                    await writer.wait_closed()
-                except (OSError, asyncio.CancelledError):
-                    pass
-                logger.info("client #%d disconnected", client_id)
+            if not retirement.done():
+                retirement.set_result(None)
 
     # ------------------------------------------------------------------
     # Line reader
