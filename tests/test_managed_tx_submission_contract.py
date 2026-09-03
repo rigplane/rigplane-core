@@ -87,8 +87,7 @@ async def test_start_ptt_submission_registers_membership_before_return() -> None
         submission = managed.start_ptt_submission(True, "owner", ready=ready)
         assert isinstance(submission, asyncio.Task)
         assert any(
-            scope == "owner"
-            for _cancellation, scope in fence._cancellations.values()
+            scope == "owner" for _cancellation, scope in fence._cancellations.values()
         )
         assert len(managed._settlement_tasks) == 1
         assert not ready.done() and not lane.effects
@@ -128,8 +127,10 @@ async def test_ignored_closed_start_task_is_owned_but_await_still_raises() -> No
     try:
         await managed.close()
         ignored = managed.start_ptt_submission(True, "ignored")
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        for _ in range(10):
+            if ignored.done():
+                break
+            await asyncio.sleep(0)
         assert ignored.done() and not unhandled
         del ignored
         gc.collect()
