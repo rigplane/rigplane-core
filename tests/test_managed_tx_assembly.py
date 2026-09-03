@@ -42,7 +42,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -405,6 +405,13 @@ class _FakeCivLink:
 
     async def send(self, frame: bytes) -> None:  # pragma: no cover
         return None
+
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("Serial CI-V write is no longer current.")
+        await self.send(frame)
 
     async def receive(self, timeout: float | None = None) -> bytes | None:
         return None  # pragma: no cover

@@ -127,6 +127,13 @@ class DeterministicSerialCivLink:
     async def send(self, frame: bytes) -> None:
         self.sent_frames.append(self._codec.encode(frame))
 
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        if is_current is not None and not is_current():
+            raise CommandError("Serial CI-V write is no longer current.")
+        await self.send(frame)
+
     def push_incoming_chunk(self, chunk: bytes) -> None:
         self._incoming_chunks.put_nowait(chunk)
 
