@@ -22,7 +22,10 @@ from rigplane.runtime._poller_types import (
 async def wait_for_event_or_exit(event, task):
     waiter = asyncio.create_task(event.wait())
     try:
-        await asyncio.wait((waiter, task), return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait(
+            (waiter, task), timeout=5, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert done, "no event or consumer exit within the failure guard"
         assert event.is_set(), "consumer exited before the expected event"
     finally:
         waiter.cancel()
@@ -66,9 +69,8 @@ def test_single_claim_preserves_segments_ptt_priority_and_replacement() -> None:
 
 
 @pytest.mark.asyncio
-async def test_remove_pending_uses_identity_and_cancel_callback_claim_boundary() -> (
-    None
-):
+async def test_remove_pending_uses_identity_and_cancel_callback_claim_boundary(
+) -> None:
     queue = CommandQueue()
     reply = asyncio.get_running_loop().create_future()
     first = queue.put_ordered(SetFreq(1), future=reply)
@@ -176,21 +178,36 @@ async def test_kernel_checks_cancelled_reply_before_leaf(when):
 @pytest.mark.asyncio
 async def test_kernel_drainer_cancel_before_child_handoff_terminalizes_reply():
     execute = queue_types.execute_command_queue_entry
-    reply = asyncio.get_running_loop().create_future()
+    loop = asyncio.get_running_loop()
+    reply = loop.create_future()
+    previous_factory, children, invoked = loop.get_task_factory(), [], []
+    abort_reason = RuntimeError("owner before child handoff")
 
     async def leaf(_entry):
-        await asyncio.sleep(0)
-        return "not an acknowledgement"
+        invoked.append("leaf")
 
     task = asyncio.create_task(execute(CommandQueueEntry(SetFreq(1), reply), leaf))
-    asyncio.get_running_loop().call_soon(task.cancel, "before child handoff")
+
+    def cancel_before_first_step(event_loop, coroutine, **kwargs):
+        event_loop.set_task_factory(previous_factory)
+        child = asyncio.Task(coroutine, loop=event_loop, **kwargs)
+        children.append(child)
+        child.cancel("child before first step")
+        task.cancel(abort_reason)
+        return child
+
+    loop.set_task_factory(cancel_before_first_step)
     try:
         with pytest.raises(asyncio.CancelledError) as caught:
             await task
-        assert caught.value.args == ("before child handoff",)
+        assert caught.value.args == (abort_reason,)
+        assert caught.value.args[0] is abort_reason
+        assert children and all(child.cancelled() for child in children)
+        assert invoked == [], "child must never enter the leaf"
         assert reply.cancelled(), "pre-child cancellation must not orphan the reply"
     finally:
-        await asyncio.gather(task, return_exceptions=True)
+        loop.set_task_factory(previous_factory)
+        await asyncio.gather(task, *children, return_exceptions=True)
         reply.cancel()
 
 
@@ -235,12 +252,13 @@ async def test_kernel_repeated_drainer_cancel_joins_terminal_cleanup(
     execute = queue_types.execute_command_queue_entry
     reply = asyncio.get_running_loop().create_future() if has_reply else None
     started, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    active_release = asyncio.Event()
     terminal, interrupted = asyncio.Event(), asyncio.Event()
 
     async def leaf(_entry):
         try:
             started.set()
-            await asyncio.Event().wait()
+            await active_release.wait()
         finally:
             try:
                 cleanup.set()
@@ -278,6 +296,7 @@ async def test_kernel_repeated_drainer_cancel_joins_terminal_cleanup(
                 "drainer abort must not acknowledge suppressed work"
             )
     finally:
+        active_release.set()
         release.set()
         await asyncio.gather(task, return_exceptions=True)
 
