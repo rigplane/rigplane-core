@@ -143,7 +143,9 @@ class _Reports:
         scheduler.record_acquisition_failure(
             request,
             reason="acquisition_executor_error",
-            failed_paths=tuple(path for path in request.paths if path not in sent_paths),
+            failed_paths=tuple(
+                path for path in request.paths if path not in sent_paths
+            ),
             now=now,
             link_healthy=False,
         )
@@ -213,7 +215,9 @@ class _Executor:
         if self.error is not None:
             raise self.error
         return AcquisitionExecutionResult(
-            sent_paths=tuple(path for path in request.paths if path not in already_sent_paths)
+            sent_paths=tuple(
+                path for path in request.paths if path not in already_sent_paths
+            )
         )
 
 
