@@ -47,13 +47,11 @@ async def test_ptt_registration_ack_precedes_ready_and_closes_owner_cancel_race(
     managed, _, _, _, fence, lane = authority()
     ready = asyncio.get_running_loop().create_future()
     registered = MembershipAck(fence, "owner")
-    admission = asyncio.create_task(
-        managed.submit_ptt(
-            True,
-            "owner",
-            ready=ready,
-            _registered=registered,
-        )
+    admission = managed.submit_ptt(
+        True,
+        "owner",
+        ready=ready,
+        _registered=registered,
     )
     try:
         await asyncio.wait_for(asyncio.shield(registered), 0.2)
@@ -131,9 +129,7 @@ async def test_ptt_receipt_waits_for_predecessor_and_not_provider_settlement() -
     managed, _, _, _, _, lane = authority()
     predecessor = asyncio.get_running_loop().create_future()
     provider_release = lane.block_next()
-    admission = asyncio.create_task(
-        managed.submit_ptt(True, "owner", ready=predecessor)
-    )
+    admission = managed.submit_ptt(True, "owner", ready=predecessor)
     try:
         await asyncio.sleep(0)
         assert not admission.done() and not lane.effects

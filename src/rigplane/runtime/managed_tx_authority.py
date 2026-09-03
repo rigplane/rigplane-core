@@ -170,39 +170,46 @@ class ManagedTxAuthority:
         await submission.wait_settlement()
         return submission.outcome
 
-    async def submit_ptt(
+    def submit_ptt(
         self,
         on: bool,
         owner: str,
         *,
         ready: asyncio.Future[Any] | None = None,
         _registered: asyncio.Future[None] | None = None,
-    ) -> ManagedTxSubmission:
-        """Acknowledge pending membership, then return after admission."""
+    ) -> asyncio.Task[ManagedTxSubmission]:
+        """Start an owned submission and acknowledge its pending membership."""
         if _registered is not None:
             if not isinstance(_registered, asyncio.Future):
                 raise TypeError("PTT registration acknowledgement must be a Future")
             if _registered.done():
                 raise ValueError("PTT registration acknowledgement must be pending")
-        try:
+
+        async def submit() -> ManagedTxSubmission:
             worker, admitted = self._begin_ptt_operation(on, owner, ready=ready)
-        except asyncio.CancelledError:
             if _registered is not None:
-                _registered.cancel()
-            raise
-        except BaseException as error:
-            if _registered is not None:
-                _registered.set_exception(error)
-            raise
+                _registered.set_result(None)
+            try:
+                transition = await asyncio.shield(admitted)
+            except asyncio.CancelledError:
+                worker.cancel()
+                await self._drain_cancelled(worker)
+                raise
+            return ManagedTxSubmission(transition, worker)
+
+        submission = asyncio.create_task(submit())
         if _registered is not None:
-            _registered.set_result(None)
-        try:
-            transition = await asyncio.shield(admitted)
-        except asyncio.CancelledError:
-            worker.cancel()
-            await self._drain_cancelled(worker)
-            raise
-        return ManagedTxSubmission(transition, worker)
+
+            def settle_unstarted(task: asyncio.Task[ManagedTxSubmission]) -> None:
+                if _registered.done():
+                    return
+                if task.cancelled():
+                    _registered.cancel()
+                elif error := task.exception():
+                    _registered.set_exception(error)
+
+            submission.add_done_callback(settle_unstarted)
+        return submission
 
     async def _start_ptt_operation(
         self, on: bool, owner: str, *, ready: asyncio.Future[Any] | None = None
