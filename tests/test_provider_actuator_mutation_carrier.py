@@ -265,7 +265,7 @@ _MUTATIONS = (
             "test_release_and_abort_operations_use_profile_bytes_at_strict_priority",
             "test_force_release_overtakes_queued_abort_without_preempting_active",
         ),
-        2,
+        1,
     ),
     _Mutation(
         "M7-yaesu-final-currency-removed",
@@ -475,6 +475,84 @@ def _emit(terminal: Any, evidence: dict[str, Any]) -> None:
     terminal.write_line(
         "MUTATION_EVIDENCE "
         + json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation_id",
+    (
+        "M7-yaesu-final-currency-removed",
+        "M8-icom-final-currency-removed",
+    ),
+)
+def test_remaining_provider_actuator_mutation_proven(
+    mutation_id: str,
+    pytestconfig: pytest.Config,
+) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    terminal = pytestconfig.pluginmanager.get_plugin("terminalreporter")
+    assert terminal is not None
+    assert _run(["git", "status", "--porcelain=v1"], repo).stdout == ""
+    _assert_clean_product(repo)
+    mutation = next(item for item in _MUTATIONS if item.mutation_id == mutation_id)
+
+    with tempfile.TemporaryDirectory(prefix="provider-actuator-carrier-") as raw:
+        temporary = Path(raw)
+        assert _candidate_tree_without_harness(repo, temporary) == _CANDIDATE_TREE
+        path = repo / mutation.path
+        original = path.read_bytes()
+        original_text = original.decode("utf-8")
+        replacement_count = original_text.count(mutation.old)
+        assert replacement_count == 1, mutation
+        try:
+            path.write_text(
+                original_text.replace(mutation.old, mutation.new),
+                encoding="utf-8",
+            )
+            patch = _run(["git", "diff", "--", mutation.path], repo)
+            assert patch.returncode == 0 and patch.stdout, mutation
+            result = _run_pytest(
+                repo,
+                temporary,
+                mutation.mutation_id,
+                mutation.targets,
+                timeout=60,
+            )
+            _assert_mutant_killed(result, mutation)
+        finally:
+            path.write_bytes(original)
+        _assert_clean_product(repo)
+        assert _candidate_tree_without_harness(repo, temporary) == _CANDIDATE_TREE
+        _emit(
+            terminal,
+            {
+                "phase": "mutation",
+                "candidate_sha": _CANDIDATE_SHA,
+                "candidate_tree": _CANDIDATE_TREE,
+                "mutation_id": mutation.mutation_id,
+                "path": mutation.path,
+                "replacement_count": replacement_count,
+                "patch": patch.stdout,
+                "result": result,
+                "restore_sha256": _sha256(path),
+                "restored": True,
+            },
+        )
+
+    _assert_clean_product(repo)
+    assert _run(["git", "status", "--porcelain=v1"], repo).stdout == ""
+    _emit(
+        terminal,
+        {
+            "phase": "final",
+            "candidate_sha": _CANDIDATE_SHA,
+            "candidate_tree": _CANDIDATE_TREE,
+            "mutation_id": mutation.mutation_id,
+            "product_blobs": _product_blobs(repo),
+            "product_hashes": _product_hashes(repo),
+            "restored": True,
+            "status": "clean",
+        },
     )
 
 
