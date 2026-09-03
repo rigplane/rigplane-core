@@ -21,6 +21,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const h = vi.hoisted(() => ({
+  patchActiveReceiver: vi.fn(),
+  patchRadioState: vi.fn(),
+  patchReceiver: vi.fn(),
+}));
+
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
@@ -33,9 +39,9 @@ vi.mock('$lib/stores/radio.svelte', () => ({
     main: { freqHz: 14_074_000 }, sub: { freqHz: 7_074_000 },
     split: false, dualWatch: false, mainSubTracking: false,
   })),
-  patchActiveReceiver: vi.fn(),
-  patchRadioState: vi.fn(),
-  patchReceiver: vi.fn(),
+  patchActiveReceiver: h.patchActiveReceiver,
+  patchRadioState: h.patchRadioState,
+  patchReceiver: h.patchReceiver,
 }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => ({
@@ -57,9 +63,6 @@ vi.mock('$lib/audio/audio-manager', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import { audioManager } from '$lib/audio/audio-manager';
-import {
-  patchActiveReceiver, patchRadioState, patchReceiver,
-} from '$lib/stores/radio.svelte';
 import {
   makeSystemHandlers, makeVfoHandlers,
 } from '$lib/runtime/commands/panel-commands';
@@ -84,17 +87,27 @@ const OPS = [
   { prop: 'onSpeak', owner: 'systemIntents', handler: 'onSpeak', command: ['speak', { mode: 0 }] },
 ] as const;
 
-function facade(owner: (typeof OPS)[number]['owner']): Record<string, () => void> {
-  return (owner === 'vfo' ? makeVfoHandlers() : makeSystemHandlers())
-    as unknown as Record<string, () => void>;
+type OpHandlerName = (typeof OPS)[number]['handler'];
+
+function handlerFor(handler: OpHandlerName): () => void {
+  const vfo = makeVfoHandlers();
+  switch (handler) {
+    case 'onMainVfoClick': return vfo.onMainVfoClick;
+    case 'onSubVfoClick': return vfo.onSubVfoClick;
+    case 'onEqual': return vfo.onEqual;
+    case 'onSwap': return vfo.onSwap;
+    case 'onQuickSplit': return vfo.onQuickSplit;
+    case 'onQuickDw': return vfo.onQuickDw;
+    case 'onSpeak': return makeSystemHandlers().onSpeak;
+  }
 }
 
 beforeEach(() => {
   vi.mocked(sendCommand).mockClear();
   vi.mocked(audioManager.setAudioConfig).mockClear();
-  vi.mocked(patchActiveReceiver).mockClear();
-  vi.mocked(patchRadioState).mockClear();
-  vi.mocked(patchReceiver).mockClear();
+  h.patchActiveReceiver.mockClear();
+  h.patchRadioState.mockClear();
+  h.patchReceiver.mockClear();
 });
 
 describe('the wiring binds every VFO op to a handler the real command bus provides', () => {
@@ -107,29 +120,29 @@ describe('the wiring binds every VFO op to a handler the real command bus provid
   // Kills: a rename/removal in command-bus.ts that the mocked component test
   // cannot see.
   it.each(OPS)('$owner.$handler exists and is callable', ({ owner, handler }) => {
-    expect(typeof facade(owner)[handler]).toBe('function');
+    expect(typeof handlerFor(handler), owner).toBe('function');
   });
 
   // Kills: cross-wiring. Each handler must emit ITS command and no other —
   // "quick split fired something" is not the claim; "quick split fired
   // quick_split" is.
-  it.each(OPS)('$owner.$handler emits exactly $command.0 once with no side-channel mutation', ({ owner, handler, command, ...entry }) => {
-    facade(owner)[handler]();
+  it.each(OPS)('$owner.$handler emits exactly $command.0 once with no side-channel mutation', ({ handler, command, ...entry }) => {
+    handlerFor(handler)();
     expect(vi.mocked(sendCommand).mock.calls).toEqual([[command[0], command[1]]]);
     expect(vi.mocked(audioManager.setAudioConfig).mock.calls).toEqual(
       'focus' in entry ? [[{ focus: entry.focus }]] : [],
     );
-    expect(vi.mocked(patchActiveReceiver).mock.calls).toEqual([]);
-    expect(vi.mocked(patchRadioState).mock.calls).toEqual([]);
-    expect(vi.mocked(patchReceiver).mock.calls).toEqual([]);
+    expect(h.patchActiveReceiver.mock.calls).toEqual([]);
+    expect(h.patchRadioState.mock.calls).toEqual([]);
+    expect(h.patchReceiver.mock.calls).toEqual([]);
     expect(command[0]).not.toMatch(/ptt|key|start_tx|stop_tx|tune/i);
   });
 
   // R9. None of the seven may touch a key path: the transmitter is keyed only
   // through the App TX controller, never from a VFO action.
   it('no VFO op emits a TX key/unkey command', () => {
-    for (const { owner, handler } of OPS) {
-      facade(owner)[handler]();
+    for (const { handler } of OPS) {
+      handlerFor(handler)();
     }
     const sent = vi.mocked(sendCommand).mock.calls.map((c) => String(c[0]));
     for (const forbidden of ['set_ptt', 'ptt', 'start_tx', 'stop_tx', 'tx']) {
