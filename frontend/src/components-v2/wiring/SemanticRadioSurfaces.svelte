@@ -164,17 +164,9 @@
    * by `manifest.zones`, so the plan's KEY SET is exactly the active layout's
    * declared-zone set. App already computes it; this only consults it.
    *
-   * `null` → the caller renders BARE, byte-identical to the pre-S4 DOM. That is
-   * MOR-1069 enforced by construction: a zone element exists only where a
-   * layout actually declared one, never as an empty promise.
-   *
-   * LIMITATION, recorded rather than hidden: the plan is POST-subtraction, so
-   * "no zone declares this" and "a zone declared it and the workspace hid it"
-   * are indistinguishable here, and both render bare. That matches today
-   * exactly (these surfaces consult no plan at all before this slice), so no
-   * force-show is introduced and nothing regresses — but the workspace still
-   * cannot hide a zoned optional surface. Fixing that needs `SurfacePlan` to
-   * carry declaration and visibility separately (own ticket).
+   * A `null` result renders bare only when the caller permits that fallback.
+   * The ordered SDR caller below rejects it for a resolved plan, so workspace
+   * subtraction removes both zone and body; a no-plan mount keeps the body.
    */
   function zoneOwning(surface: SemanticSurfaceName): string | null {
     const plan = surfacePlan();
@@ -984,22 +976,10 @@
     declined renders the pre-1265 element shape exactly (pinned in
     `__tests__/semantic-tx-aux-wiring.component.test.ts`).
 
-    CORRECTION: the sentences that stood here described a bare, unzoned mount
-    in BOTH compositions because `'txAux'` was merely DECLARABLE. That held
-    only until MOR-1336 (S4), which routed this surface through the generic
-    `zoned()` path below AND declared the zone on both sides of the
-    composition split — `desktop-declarations.ts` (single, the flagship skin)
-    and `dual-receiver-cockpit.ts` (dual) each carry
-    `{ id: 'tx-aux', surfaces: ['txAux'] }`. It renders bare wherever
-    `zoneOwning()` finds no zone carrying it: under a layout that declares no
-    `tx-aux` zone, on a standalone mount that resolves no plan, OR when a
-    workspace subtraction has emptied the zone — see `zoneOwning`'s own
-    LIMITATION note above, which records that the plan is POST-subtraction and
-    that this last case is indistinguishable from the first two here.
-    `view?.txAux` (rather than the caller
-    nesting this under `{#if view}`) keeps the same "never renders while
-    view is null" behavior now that the surrounding structure changed
-    around it (MOR-1258).
+    The generic `zoned()` path owns placement. In the ordered SDR branch, a
+    resolved plan can subtract both the `tx-aux` host and body; a no-plan mount
+    keeps the available surface bare. `view?.txAux` keeps the surface absent
+    while the view is null.
   -->
   <!--
     MOR-1336 — the ONE zone-aware mount path, applied uniformly to every
@@ -1406,8 +1386,8 @@
     `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component
     .test.ts`'s MOR-2150 describe block. No longer bare under `desktop-v2`,
     which declared this zone in MOR-1370 (S6b-2) as the last surface in the
-    vocabulary to graduate; still bare under the single-composition layouts
-    that declare none (`sdr-test`/`mobile`/`lcd-*`).
+    vocabulary to graduate. `sdr-test` also declares this zone; the remaining
+    single-composition layouts (`mobile`/`lcd-*`) keep their existing bare path.
   -->
   {#snippet scopeControlsSurface()}
     {#if view?.scopeControls}
