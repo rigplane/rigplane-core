@@ -18,6 +18,7 @@ import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_observation import TxStateReading
 from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
@@ -215,6 +216,9 @@ def _make_radio() -> MagicMock:
     radio.read_mode = AsyncMock(side_effect=lambda receiver=0: ("USB", None))
     radio.get_tx_func = AsyncMock(return_value=0)
     radio.read_ptt = AsyncMock(return_value=False)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
+    )
     radio.read_filter_width = AsyncMock(return_value=500)
     radio.read_if_shift = AsyncMock(return_value=200)
     radio.read_narrow = AsyncMock(return_value=True)
