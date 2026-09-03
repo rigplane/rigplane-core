@@ -161,6 +161,12 @@ function render(view: RadioViewModel) {
       .map((el) => el.dataset.meter!),
     rfLabel: () => q('[data-testid="meters-rf-label"]')?.textContent?.trim() ?? null,
     rfMark: () => q('[data-testid="meters-rf-mark"]')?.textContent?.trim() ?? null,
+    // MOR-2250 (PR 2 of 2): SWR moved off its own `BarGauge` tile onto the
+    // shared lower-scale row inside the `signal` tile's `LinearSMeter` — its
+    // fault color and fill now read off THAT svg, not `tile('swr')` (there
+    // is no such tile any more).
+    signalSvg: () => target.querySelector<SVGSVGElement>('[data-testid="meter-signal"] svg'),
+    lowerFillCount: () => target.querySelectorAll('[data-testid="meter-signal"] [data-lower-fill]').length,
   };
 }
 
@@ -281,7 +287,11 @@ describe('relevance is read from the facts, not recomputed', () => {
    */
   it.each([
     ['receiving', 'power', true],
-    ['receiving', 'swr', true],
+    // MOR-2250 (PR 2 of 2): was 'swr' — SWR no longer has its own tile (it
+    // renders on the shared lower-scale row instead), so this row now
+    // exercises 'compression', the remaining `METER_BARS` field this table
+    // had not already covered.
+    ['receiving', 'compression', true],
     ['transmitting', 'signal', true],
     ['transmitting', 'power', false],
     ['unknown', 'drainVoltage', true],
@@ -479,10 +489,13 @@ describe('motion and forced-colors mechanisms are reused, not forked', () => {
   // and ATTRIBUTES (MOR-977/1250) — the RF word, the '?' placeholder and the
   // data attributes all do.
   it('encodes state as text and attributes, never colour alone', () => {
-    const view = withField(base('transmitting'), 'swr', { unknown: true });
+    // MOR-2250 (PR 2 of 2): was 'swr' — SWR no longer has its own tile, so
+    // this now exercises 'alc', an unrelated `METER_BARS` field the '?'
+    // placeholder property applies to identically.
+    const view = withField(base('transmitting'), 'alc', { unknown: true });
     withSurface(view, (s) => {
-      expect(s.tile('swr')!.textContent).toContain('?');
-      expect(s.tile('swr')!.dataset.observed).toBe('false');
+      expect(s.tile('alc')!.textContent).toContain('?');
+      expect(s.tile('alc')!.dataset.observed).toBe('false');
       expect(s.rfLabel()).toBe(RF_LABEL.transmitting);
     });
     // The surface's own stylesheet carries structure, not a palette.
@@ -498,8 +511,16 @@ describe('the meter table matches the shipped dock', () => {
   // level and its number from `components-v2/panels/meter-utils` — the same
   // calibrated functions MetersDockPanel uses — so the two never disagree
   // about what 0.6 on the SWR meter means.
-  it('covers exactly the seven meters the fact group carries', () => {
-    expect([...ALL_KEYS].sort()).toEqual(
+  // MOR-2250 (PR 2 of 2): `ALL_KEYS` (derived from `METER_BARS` + 'signal')
+  // is now six, not seven — 'swr' left `METER_BARS` for the shared
+  // lower-scale row inside `LinearSMeter`, so it no longer has a tile of its
+  // own for `ALL_KEYS`/`s.tile` purposes. It still exists as a real
+  // `MeterField` in the fact group, so this test adds it back explicitly to
+  // prove no field was silently dropped, rather than just shrinking the
+  // expectation to match whatever the surface happens to render.
+  it('covers exactly the seven meters the fact group carries (six tiled via ALL_KEYS, swr via the shared bar)', () => {
+    expect(ALL_KEYS).not.toContain('swr');
+    expect([...ALL_KEYS, 'swr'].sort()).toEqual(
       Object.keys(withMeters(topologyFixtures['1/single']).meters!)
         .filter((k) => k !== 'rfState').sort(),
     );
@@ -509,9 +530,11 @@ describe('the meter table matches the shipped dock', () => {
     expect(SOURCE).toMatch(/from '\.\.\/components-v2\/panels\/meter-utils'/);
   });
 
+  // MOR-2250 (PR 2 of 2): 'SWR' dropped from the expected list — it left
+  // `METER_BARS` for the shared lower-scale row.
   it('labels each bar with the dock\'s own short name', () => {
     expect(METER_BARS.map(([, label]) => label))
-      .toEqual(['Po', 'SWR', 'ALC', 'Id', 'Vd', 'COMP']);
+      .toEqual(['Po', 'ALC', 'Id', 'Vd', 'COMP']);
   });
 });
 
@@ -519,12 +542,16 @@ describe('the meter table matches the shipped dock', () => {
 
 describe('BarGauge peak channel (MOR-1282)', () => {
   // MUTATION KILLED: enabling (or dropping) the peak flag on the wrong
-  // meters. Matches the dock's own peak-held set exactly (MetersDockPanel's
-  // `PeakKey`) — Vd (continuous supply rail) and COMP were never peak-held
-  // there either, so the surface must not invent peak-hold for them.
-  it('enables the peak marker on exactly the meters the dock peak-holds (Po/SWR/ALC/Id)', () => {
+  // meters. Matches the dock's own peak-held set RESTRICTED to what
+  // `METER_BARS` still carries post-MOR-2250 (PR 2 of 2) — SWR left this
+  // table for the shared lower-scale row, and this PR does not give that row
+  // a peak-hold marker (not asked for, not implemented — MetersDockPanel
+  // itself, untouched, still peak-holds its own SWR bar). Vd (continuous
+  // supply rail) and COMP were never peak-held there either, so the surface
+  // must not invent peak-hold for them.
+  it('enables the peak marker on exactly the meters the dock peak-holds (Po/ALC/Id)', () => {
     const withPeak = METER_BARS.filter(([, , , , showPeak]) => showPeak).map(([field]) => field);
-    expect(withPeak).toEqual(['power', 'swr', 'alc', 'drainCurrent']);
+    expect(withPeak).toEqual(['power', 'alc', 'drainCurrent']);
   });
 
   // MUTATION KILLED: `showPeak` not reaching `<BarGauge>` (freezing it to
@@ -534,7 +561,7 @@ describe('BarGauge peak channel (MOR-1282)', () => {
   it('renders a peak marker on a peak-tracked meter and none on Vd/COMP', () => {
     withSurface(base('transmitting'), (s) => {
       expect(s.tile('power')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).not.toBeNull();
-      expect(s.tile('swr')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).not.toBeNull();
+      expect(s.tile('alc')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).not.toBeNull();
       expect(s.tile('drainVoltage')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
       expect(s.tile('compression')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
     });
@@ -617,20 +644,25 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
     clearCapabilities();
   });
 
+  // MOR-2250 (PR 2 of 2): SWR no longer has its own `BarGauge` tile — its
+  // fault color now reads off the `signal` tile's `LinearSMeter` svg
+  // (`data-lower-fault`), not `s.tile('swr')` (there is no such tile any
+  // more). ALC is untouched: still its own `BarGauge` tile, same as before.
+  //
   // MUTATION KILLED: a locally-invented threshold instead of the shared
   // predicate. Ratio 2.0 is the dock's own boundary fixture
   // (MetersDockPanel.isolated.test.ts) — not a fault.
   it('does not fault SWR at exactly the 2.0 boundary', () => {
     const view = withRaw(base('transmitting'), 'swr', 2.0);
     withSurface(view, (s) => {
-      expect(s.tile('swr')!.dataset.fault).toBe('false');
+      expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
     });
   });
 
   it('faults SWR just above the boundary (ratio 2.25)', () => {
     const view = withRaw(base('transmitting'), 'swr', 2.25);
     withSurface(view, (s) => {
-      expect(s.tile('swr')!.dataset.fault).toBe('true');
+      expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('true');
     });
   });
 
@@ -649,14 +681,14 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   });
 
   // MUTATION KILLED (wrong channel): swapping which predicate gates which
-  // field. The two fixtures below DISAGREE under a swapped FAULT_CHECKS
-  // map: isAlcFault(1.5) clamps to 1.0 -> true (vs the correct
+  // field. The two fixtures below DISAGREE under a swapped predicate:
+  // isAlcFault(1.5) clamps to 1.0 -> true (vs the correct
   // isSwrFault(1.5)=false), and isSwrFault(0.95)=false (vs the correct
   // isAlcFault(0.95)=true) — a swap flips both assertions.
   it('never cross-applies the SWR predicate to ALC or vice-versa', () => {
     const view = withRaw(withRaw(base('transmitting'), 'swr', 1.5), 'alc', 0.95);
     withSurface(view, (s) => {
-      expect(s.tile('swr')!.dataset.fault).toBe('false');
+      expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
       expect(s.tile('alc')!.dataset.fault).toBe('true');
     });
   });
@@ -679,8 +711,7 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   it('does not fault an over-threshold reading the fact layer marks irrelevant', () => {
     const view = withField(withRaw(base('transmitting'), 'swr', 3.0), 'swr', { relevant: false });
     withSurface(view, (s) => {
-      expect(s.tile('swr')!.dataset.relevant).toBe('false');
-      expect(s.tile('swr')!.dataset.fault).toBe('false');
+      expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
     });
   });
 
@@ -696,12 +727,18 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // red (verifier mutant M6b). The guard is therefore load-bearing the moment
   // that fallback changes — which is why the next test pins the fallback
   // itself, so the two edits can never pass independently.
-  it('does not fault an unobserved (unknown) reading even when relevant', () => {
+  //
+  // MOR-2250 (PR 2 of 2): an unobserved `swr` no longer removes any svg —
+  // the `signal` tile's `LinearSMeter` mounts on `meters.signal`'s OWN
+  // observed status, unrelated to `meters.swr`. What DOES still hold, and is
+  // the layout-stability property this PR adds: the lower row stays fully
+  // structural (0 lit fill segments, no fault) rather than disappearing.
+  it('does not fault an unobserved (unknown) SWR reading even when relevant, and still renders the lower row\'s structure with zero fill', () => {
     const view = withField(base('transmitting'), 'swr', { unknown: true, relevant: true });
     withSurface(view, (s) => {
-      expect(s.tile('swr')!.dataset.observed).toBe('false');
-      expect(s.tile('swr')!.dataset.fault).toBe('false');
-      expect(s.tile('swr')!.querySelector('svg')).toBeNull();
+      expect(s.signalSvg()).not.toBeNull();
+      expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
+      expect(s.lowerFillCount()).toBe(0);
     });
   });
 
@@ -722,18 +759,17 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
     expect(isAlcFault(raw)).toBe(false);
   });
 
-  // Threads the boolean through to the REAL BarGauge (no stub) — mirrors the
-  // MOR-1282 peak-marker test's own "real component" discipline.
-  it('threads the fault flag into the real BarGauge SVG', () => {
+  // Threads the boolean through to the REAL LinearSMeter (no stub) — mirrors
+  // the MOR-1282 peak-marker test's own "real component" discipline, updated
+  // for MOR-2250's move off BarGauge.
+  it('threads the fault flag into the real LinearSMeter svg (lower-scale row)', () => {
     const view = withRaw(base('transmitting'), 'swr', 3.0);
     withSurface(view, (s) => {
-      const svg = s.tile('swr')!.querySelector('svg');
-      expect(svg?.getAttribute('data-fault')).toBe('true');
+      expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('true');
     });
     const clean = withRaw(base('transmitting'), 'swr', 1.1);
     withSurface(clean, (s) => {
-      const svg = s.tile('swr')!.querySelector('svg');
-      expect(svg?.getAttribute('data-fault')).toBe('false');
+      expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
     });
   });
 
@@ -750,9 +786,258 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   });
 
   // The base surface itself stays colour-free (MOR-977) — the highlight's
-  // actual colour is drawn by BarGauge, which already owns colour.
+  // actual colour is drawn by whichever component this file hands the
+  // boolean to: `BarGauge` for ALC, `LinearSMeter`'s lower-scale row
+  // (MOR-2250, PR 2 of 2) for SWR.
   it('carries the fault as a boolean/attribute only — its own stylesheet stays colour-free', () => {
     const styles = SOURCE.slice(SOURCE.indexOf('<style>'));
     expect(styles).not.toMatch(/#[0-9a-f]{3,8}\b|\brgb\(|\bhsl\(/i);
+  });
+});
+
+// ── 12. MOR-2250 (PR 2 of 2) — the shared lower-scale bar ──────────────────
+
+describe('the SWR shared lower-scale row (MOR-2250, PR 2 of 2)', () => {
+  // MUTATION KILLED: SWR rendering through BOTH the old BarGauge path and
+  // the new shared row (double-rendering), or through NEITHER (silently
+  // dropped). It must render exactly once.
+  it('swr no longer renders through the BarGauge/METER_BARS path — it renders once, on the shared lower-scale row', () => {
+    withSurface(base('transmitting'), (s) => {
+      expect(s.tile('swr')).toBeNull();
+      expect(METER_BARS.map(([field]) => field)).not.toContain('swr');
+      expect(s.signalSvg()!.querySelector('[data-lower-row-label]')?.textContent).toBe('SWR');
+    });
+  });
+
+  // MUTATION KILLED: building/passing `lowerScale` only when
+  // `meters.rfState === 'transmitting'` (or any rfState-conditional guard) —
+  // the exact regression the layout-stability owner ruling forbids: the
+  // shared bar's bottom row must occupy the same geometry receiving or
+  // transmitting. Checked in BOTH rfStates, not just TX.
+  it.each(['receiving', 'transmitting'] as const)(
+    'passes the lowerScale descriptor to LinearSMeter while %s, not only while transmitting',
+    (rfState) => {
+      withSurface(base(rfState), (s) => {
+        const svg = s.signalSvg();
+        expect(svg).not.toBeNull();
+        expect(svg!.querySelector('[data-lower-row-label]')?.textContent).toBe('SWR');
+        expect(svg!.querySelectorAll('[data-lower-segment]')).toHaveLength(20);
+        expect(svg!.hasAttribute('data-lower-fault')).toBe(true);
+      });
+    },
+  );
+
+  // The RX/TX geometry itself must match — not just "both render something".
+  it('renders the identical svg viewBox (tile height) receiving and transmitting', () => {
+    // Each `withSurface` mounts into (and disposes from) the SAME shared
+    // `target` div in sequence — the viewBox is read out and disposed
+    // before the next mount, so the two reads can never cross-contaminate
+    // by querying into each other's leftover DOM.
+    let rxViewBox: string | null = null;
+    let txViewBox: string | null = null;
+    withSurface(base('receiving'), (s) => { rxViewBox = s.signalSvg()!.getAttribute('viewBox'); });
+    withSurface(base('transmitting'), (s) => { txViewBox = s.signalSvg()!.getAttribute('viewBox'); });
+    expect(rxViewBox).not.toBeNull();
+    expect(rxViewBox).toBe(txViewBox);
+  });
+});
+
+// ── 13. Fix cycle: SWR's own relevance dims its row, not the S-meter tile ──
+//
+// Replaces the pin the verifier found deleted without a replacement: before
+// MOR-2250 (PR 2 of 2), `s.tile('swr')!.dataset.relevant === 'false'` covered
+// this same fact through the (now-removed) standalone SWR `BarGauge` tile.
+// SWR no longer has a tile of its own (block 12 above pins that), so this
+// covers the fact through the shared row's own `data-lower-relevant`
+// instead — set from `meters.swr.relevant`, never from `meters.signal`'s.
+describe('SWR relevance drives the shared row\'s own dim (MOR-2250 fix cycle)', () => {
+  // MUTATION KILLED: reading `meters.signal.relevant` (the S-meter tile's
+  // own relevance) for the row instead of `meters.swr.relevant`. Under
+  // `base('transmitting')`, `signal.relevant` is false and `swr.relevant`
+  // is true (see `withMeters` in fixtures/topologies.ts) — a field swap
+  // flips this assertion.
+  it('marks the lower row NOT relevant when meters.swr.relevant is false while transmitting and observed', () => {
+    const view = withField(base('transmitting'), 'swr', { relevant: false });
+    withSurface(view, (s) => {
+      const group = s.signalSvg()!.querySelector('[data-lower-relevant]');
+      expect(group).not.toBeNull();
+      expect(group!.getAttribute('data-lower-relevant')).toBe('false');
+    });
+  });
+
+  it('marks the lower row relevant when meters.swr.relevant is true while transmitting and observed', () => {
+    const view = withField(base('transmitting'), 'swr', { relevant: true });
+    withSurface(view, (s) => {
+      const group = s.signalSvg()!.querySelector('[data-lower-relevant]');
+      expect(group).not.toBeNull();
+      expect(group!.getAttribute('data-lower-relevant')).toBe('true');
+    });
+  });
+});
+
+// ── 14. Fix cycle 2: the main bar and the SWR row dim through independent, ──
+//        non-compounding sibling groups (verifier-diagnosed compounding bug)
+//
+// The verifier proved (pixel measurement on real baseline PNGs, plus a
+// compiled-CSS-selector check) that nesting the SWR row's own `<g opacity>`
+// INSIDE the S-meter tile — while that tile ALSO carried the shared
+// `.meter-tile[data-relevant='false'] { opacity: 0.4 }` rule — composes
+// multiplicatively: RX landed at tile(1.0) * row(0.4) = 0.4, TX landed at
+// tile(0.4) * row(1.0) = 0.4. The row could never reach full opacity in ANY
+// state, in both the pre-fix code AND the first fix attempt (ae09a6b1),
+// whose own tests asserted each group's attribute correctly IN ISOLATION —
+// each group's own `opacity` attribute was already right in ae09a6b1, so an
+// attribute-only test stays green through the still-broken composed result;
+// only the composed/effective state (CSS on an ancestor PLUS opacity on a
+// descendant) exposes the bug, and that is the state proving this fix cycle
+// covers.
+//
+// jsdom does not apply a mounted Svelte component's own scoped `<style>`
+// block to `getComputedStyle` (confirmed empirically here, and already
+// documented as a known limitation by the F4 pattern in
+// `mor1536-armed-adoption.test.ts`), so block (A) below injects the file's
+// REAL `<style>` text as a literal `<style>` tag — the same technique — to
+// get a genuine cascade computation rather than reading one group's own
+// attribute in isolation.
+describe('main-bar and SWR-row opacity are independent, non-compounding channels (MOR-2250 fix cycle 2)', () => {
+  // ── (A) The composed/effective state: does the shared ancestor CSS rule ──
+  //     actually reach the S-meter tile? This is the one jsdom CAN answer
+  //     with a genuine cascade, because it is a real CSS rule (unlike the
+  //     `<g opacity>` SVG presentation attributes below, which jsdom's
+  //     computed style does not resolve at all — verified empirically).
+  describe('the shared .meter-tile CSS rule (real cascade, F4-pattern injection)', () => {
+    let styleEl: HTMLStyleElement;
+    beforeEach(() => {
+      const raw = readFileSync('src/semantic/MetersSurface.svelte', 'utf8');
+      const start = raw.indexOf('<style>') + '<style>'.length;
+      const end = raw.indexOf('</style>');
+      styleEl = document.createElement('style');
+      styleEl.textContent = raw.slice(start, end);
+      document.head.appendChild(styleEl);
+    });
+    afterEach(() => { styleEl.remove(); });
+
+    // Positive control: an ordinary bar tile (not excluded) still dims from
+    // this rule — proves the injected CSS and selector matching are real,
+    // so the negative result below is not just "nothing ever matches".
+    it('dims an ordinary irrelevant bar tile (power) through the shared rule', () => {
+      const view = withField(base(), 'power', { relevant: false });
+      withSurface(view, (s) => {
+        expect(s.tile('power')!.dataset.relevant).toBe('false');
+        expect(getComputedStyle(s.tile('power')!).opacity).toBe('0.4');
+      });
+    });
+
+    // MUTATION KILLED: dropping the whole
+    // `:not([data-meter='signal'][data-observed='true'])` qualifier from the
+    // CSS selector — the OBSERVED S-meter tile's computed opacity becomes
+    // '0.4' again, reinstating the ancestor half of the compounding bug.
+    // Verified by hand: with the qualifier removed, this assertion observes
+    // '0.4' instead of the empty string below.
+    it('does not dim the OBSERVED S-meter tile through the shared rule any more, even though data-relevant is false', () => {
+      withSurface(base('transmitting'), (s) => {
+        const tile = s.tile('signal')!;
+        expect(tile.dataset.relevant).toBe('false'); // block 3's pin still holds: the fact reaches the DOM
+        expect(tile.dataset.observed).toBe('true'); // `LinearSMeter` is mounted, so it owns the dim
+        expect(getComputedStyle(tile).opacity).not.toBe('0.4');
+      });
+    });
+
+    // Fix cycle 4 (F1): the UNOBSERVED half of the same tile. With no known
+    // reading, `MetersSurface` renders the `<span class="meter-unknown">S ?`
+    // fallback instead of `<LinearSMeter>` — so the `relevant` prop that
+    // carries the tile's dim in the observed branch does not exist, and this
+    // ancestor rule is the only thing left that can dim it. Reachable: a
+    // radio that stops reporting the S-meter while keyed, and the cold-start
+    // `rfState='unknown'` window.
+    //
+    // MUTATION KILLED: narrowing the selector's `:not(...)` back to
+    // `:not([data-meter='signal'])` (dropping the `[data-observed='true']`
+    // half) — this tile's computed opacity falls back to the empty string
+    // and the assertion below fails. That mutation leaves the test above
+    // green, which is exactly why this case needed its own test.
+    it('still dims the UNOBSERVED S-meter tile through the shared rule when it is irrelevant', () => {
+      const view = withField(base('transmitting'), 'signal', { unknown: true, relevant: false });
+      withSurface(view, (s) => {
+        const tile = s.tile('signal')!;
+        expect(tile.dataset.relevant).toBe('false');
+        expect(tile.dataset.observed).toBe('false');
+        // The `{:else}` fallback really did render — no `LinearSMeter`, so
+        // nothing inside the tile carries a dim of its own.
+        expect(s.signalSvg()).toBeNull();
+        expect(tile.querySelector('.meter-unknown')).not.toBeNull();
+        expect(getComputedStyle(tile).opacity).toBe('0.4');
+      });
+    });
+  });
+
+  // ── (B) Each group's own opacity attribute reads off the CORRECT fact ───
+  //     (`getAttribute`, not `getComputedStyle` — jsdom does not resolve SVG
+  //     presentation attributes into computed style, verified empirically:
+  //     `getComputedStyle(g).opacity` returns '' for every `<g opacity=...>`
+  //     here regardless of the actual attribute).  Combined with (C) below
+  //     (no main-bar group contains the lower row, or vice versa), a correct
+  //     value on each group's OWN attribute plus no nesting is the full
+  //     non-compounding guarantee: nothing else remains that COULD multiply
+  //     them.
+  //
+  // MUTATION KILLED: feeding `meters.swr.relevant` into the main-bar group
+  // or `meters.signal.relevant` into the lower-row group (a field swap) —
+  // `base('transmitting')` gives them opposite values (signal.relevant=
+  // false, swr.relevant=true; `withMeters` in fixtures/topologies.ts), so a
+  // swap flips both assertions below.
+  it('drives each group\'s own opacity attribute from its own fact, never the other one\'s', () => {
+    const view = base('transmitting');
+    expect(view.meters!.signal.relevant).toBe(false);
+    expect(view.meters!.swr.relevant).toBe(true);
+    withSurface(view, (s) => {
+      const mainGroups = [...s.signalSvg()!.querySelectorAll('[data-main-relevant]')];
+      const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
+      expect(mainGroups).toHaveLength(2);
+      for (const mainGroup of mainGroups) {
+        expect(mainGroup.getAttribute('data-main-relevant')).toBe('false');
+        expect(mainGroup.getAttribute('opacity')).toBe('0.4');
+      }
+      expect(lowerGroup.getAttribute('data-lower-relevant')).toBe('true');
+      expect(lowerGroup.getAttribute('opacity')).toBe('1');
+    });
+  });
+
+  it('reverses correctly while receiving (the complementary fact assignment)', () => {
+    const view = base('receiving');
+    expect(view.meters!.signal.relevant).toBe(true);
+    expect(view.meters!.swr.relevant).toBe(false);
+    withSurface(view, (s) => {
+      const mainGroups = [...s.signalSvg()!.querySelectorAll('[data-main-relevant]')];
+      const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
+      expect(mainGroups).toHaveLength(2);
+      for (const mainGroup of mainGroups) expect(mainGroup.getAttribute('opacity')).toBe('1');
+      expect(lowerGroup.getAttribute('opacity')).toBe('0.4');
+    });
+  });
+
+  // ── (C) Structural guarantee: neither group is an ancestor of the other ──
+  // `LinearSMeter` emits the main-bar content as TWO `<g data-main-relevant>`
+  // groups, split only because `{#if lowerScale}` sits between them in the
+  // markup. Fix cycle 4 (F2): this test checks BOTH of them — a `querySelector`
+  // (singular) reads only the first, so nesting the lower row inside the
+  // SECOND main group reinstates the compounding bug undetected.
+  //
+  // MUTATION KILLED: moving the lower-row `<g data-lower-relevant>` inside
+  // the SECOND `<g data-main-relevant>` in `LinearSMeter.svelte` — the count
+  // assertion still passes (still two main groups) but the second group's
+  // `contains(lowerGroup)` becomes true. Confirmed by hand that this
+  // mutation left the pre-fix, `querySelector`-based version of this test
+  // green.
+  it('renders every data-main-relevant group as a sibling of data-lower-relevant, neither containing the other', () => {
+    withSurface(base('transmitting'), (s) => {
+      const mainGroups = [...s.signalSvg()!.querySelectorAll('[data-main-relevant]')];
+      const lowerGroup = s.signalSvg()!.querySelector('[data-lower-relevant]')!;
+      expect(mainGroups).toHaveLength(2);
+      for (const mainGroup of mainGroups) {
+        expect(mainGroup.contains(lowerGroup)).toBe(false);
+        expect(lowerGroup.contains(mainGroup)).toBe(false);
+      }
+    });
   });
 });
