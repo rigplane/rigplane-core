@@ -20,7 +20,9 @@ import {
 } from '../../../../semantic/radio-view-model';
 import { topologyFixtures } from '../../../../semantic/fixtures/topologies';
 import { toMemoryPanelProps } from '../../props/panel-props';
-import { toRadioViewModel } from '../radio-view-model-adapter';
+import {
+  toRadioViewModel, type MetersTxAuthority,
+} from '../radio-view-model-adapter';
 
 const DUAL = ['scope', 'audio', 'tx', 'dual_rx'];
 const SINGLE = ['scope', 'audio', 'tx'];
@@ -86,8 +88,11 @@ const unobservedState = (): ServerState => ({
   ...observedState(), fieldStatus: {},
 } as ServerState);
 
-function model(state: ServerState | null, capabilities: Capabilities | null): RadioViewModel {
-  const view = toRadioViewModel(state, capabilities);
+function model(
+  state: ServerState | null, capabilities: Capabilities | null,
+  tx?: MetersTxAuthority | null,
+): RadioViewModel {
+  const view = toRadioViewModel(state, capabilities, tx);
   expect(view).not.toBeNull();
   // The single most important assertion in this file: the adapter's output is
   // a real view model by the contract's OWN validator, cross-field invariants
@@ -95,6 +100,148 @@ function model(state: ServerState | null, capabilities: Capabilities | null): Ra
   // isTxTarget). `lib/runtime` cannot import this type — the test can.
   return validateRadioViewModel(view);
 }
+
+const INDICATOR_CAPS = caps({
+  filters: ['FIL1'],
+  agcLabels: { '2': 'SLOW' },
+  capabilities: [
+    ...DUAL, 'agc', 'nb', 'nr', 'notch', 'attenuator', 'preamp',
+    'rf_gain', 'digisel', 'ip_plus',
+  ],
+});
+const INDICATOR_LEAVES = [
+  'sMeter', 'filterWidth', 'agc', 'nb', 'nr', 'autoNotch', 'manualNotch',
+  'att', 'preamp', 'rfGain', 'digisel', 'ipplus',
+] as const;
+const RECEIVING: MetersTxAuthority = { radioTx: 'off', txRisk: 'none' };
+
+function indicatorState(overrides: Partial<ServerState> = {}): ServerState {
+  const base = observedState();
+  const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
+  for (const receiverKey of ['main', 'sub'] as const) {
+    for (const leaf of INDICATOR_LEAVES) fieldStatus[`${receiverKey}.${leaf}`] = fresh;
+  }
+  return {
+    ...base,
+    main: {
+      ...base.main, sMeter: 0, filterWidth: 2400, agc: 0, nb: false, nr: true,
+      autoNotch: false, manualNotch: false, att: 0, preamp: 0, rfGain: 0,
+      digisel: false, ipplus: true,
+    },
+    sub: {
+      ...base.sub, sMeter: -37, filterWidth: 500, agc: 2, nb: true, nr: false,
+      autoNotch: true, manualNotch: false, att: 12, preamp: 2, rfGain: 0.75,
+      digisel: true, ipplus: false,
+    },
+    fieldStatus,
+    ...overrides,
+  } as ServerState;
+}
+
+describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 1)', () => {
+  it.each([
+    ['1/single', ['MAIN']],
+    ['1/ab', ['MAIN']],
+    ['2/ab_shared', ['MAIN', 'SUB']],
+    ['2/main_sub', ['MAIN', 'SUB']],
+  ] as const)('%s emits one row per structural receiver, never per A/B slot', (id, receivers) => {
+    const view = model(indicatorState(), TOPOLOGY_CAPS[id]);
+    expect(view.receiverIndicators?.map((indicator) => indicator.receiver)).toEqual(receivers);
+  });
+
+  it('keeps an unavailable structural SUB present but unknown and disabled', () => {
+    const view = model(
+      indicatorState(),
+      { ...INDICATOR_CAPS, capabilities: INDICATOR_CAPS.capabilities.filter((tag) => tag !== 'dual_rx') },
+      RECEIVING,
+    );
+    const sub = view.receiverIndicators?.find((indicator) => indicator.receiver === 'SUB');
+    expect(sub?.availability).toEqual({ structural: true, operational: false });
+    expect(sub?.sMeter.reading).toEqual({ status: 'unknown' });
+    expect(sub?.nbActive.reading).toEqual({ status: 'unknown' });
+    expect(sub?.rfState).toBe('unknown');
+  });
+
+  it('keeps deliberately different MAIN/SUB facts distinct across active-receiver switches', () => {
+    const before = model(indicatorState({ active: 'MAIN' }), INDICATOR_CAPS, RECEIVING);
+    const after = model(indicatorState({ active: 'SUB' }), INDICATOR_CAPS, RECEIVING);
+    const signature = (view: RadioViewModel) => view.receiverIndicators?.map((indicator) => ({
+      receiver: indicator.receiver,
+      s: indicator.sMeter.reading,
+      bw: indicator.bandwidthHz.reading,
+      agc: indicator.agcMode.reading,
+      nb: indicator.nbActive.reading,
+      att: indicator.attenuator.reading,
+      pre: indicator.preamp.reading,
+      rfg: indicator.rfGain.reading,
+      digi: indicator.digiSel.reading,
+      ip: indicator.ipPlus.reading,
+    }));
+    expect(signature(after)).toEqual(signature(before));
+    expect(signature(before)).toEqual([
+      {
+        receiver: 'MAIN', s: { status: 'known', value: 0 },
+        bw: { status: 'known', value: 2400 }, agc: { status: 'known', value: 0 },
+        nb: { status: 'known', value: false }, att: { status: 'known', value: 0 },
+        pre: { status: 'known', value: 0 }, rfg: { status: 'known', value: 0 },
+        digi: { status: 'known', value: false }, ip: { status: 'known', value: true },
+      },
+      {
+        receiver: 'SUB', s: { status: 'known', value: -37 },
+        bw: { status: 'known', value: 500 }, agc: { status: 'known', value: 'SLOW' },
+        nb: { status: 'known', value: true }, att: { status: 'known', value: 12 },
+        pre: { status: 'known', value: 2 }, rfg: { status: 'known', value: 0.75 },
+        digi: { status: 'known', value: true }, ip: { status: 'known', value: false },
+      },
+    ]);
+  });
+
+  it.each([
+    ['missing leaf', (statuses: Record<string, FieldStatus>) => { delete statuses['main.sMeter']; }],
+    ['unobserved leaf', (statuses: Record<string, FieldStatus>) => {
+      statuses['main.sMeter'] = { ...fresh, observed: false };
+    }],
+    ['stale leaf', (statuses: Record<string, FieldStatus>) => { statuses['main.sMeter'] = stale; }],
+    ['stale parent', (statuses: Record<string, FieldStatus>) => { statuses.main = stale; }],
+    ['parent-only', (statuses: Record<string, FieldStatus>) => {
+      delete statuses['main.sMeter'];
+      statuses.main = fresh;
+    }],
+  ] as const)('%s leaves the S-meter unknown', (_label, mutate) => {
+    const state = indicatorState();
+    const fieldStatus = { ...state.fieldStatus } as Record<string, FieldStatus>;
+    mutate(fieldStatus);
+    const main = model({ ...state, fieldStatus }, INDICATOR_CAPS, RECEIVING)
+      .receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN');
+    expect(main?.sMeter.reading).toEqual({ status: 'unknown' });
+    expect(main?.sMeter.availability.operational).toBe(false);
+  });
+
+  it('uses App authority only: ptt cannot override TX/RX, and assignment alone lights nothing', () => {
+    const pttFalse = indicatorState({ ptt: false });
+    const pttTrue = indicatorState({ ptt: true });
+    const transmitting = model(
+      pttFalse, INDICATOR_CAPS, { radioTx: 'on', txRisk: 'none' },
+    ).receiverIndicators!;
+    expect(transmitting.map((indicator) => indicator.rfState)).toEqual(['transmitting', 'unknown']);
+
+    const receiving = model(pttTrue, INDICATOR_CAPS, RECEIVING).receiverIndicators!;
+    expect(receiving.map((indicator) => indicator.rfState)).toEqual(['receiving', 'unknown']);
+
+    const assignmentOnly = model(pttTrue, INDICATOR_CAPS).receiverIndicators!;
+    expect(assignmentOnly.map((indicator) => indicator.rfState)).toEqual(['unknown', 'unknown']);
+  });
+
+  it('moves authoritative RX with the addressed target without labelling the other receiver RX', () => {
+    const state = indicatorState({
+      txTarget: { status: 'known', receiver: 'SUB', slot: 'A', frequencyHz: 14_300_000 },
+    });
+    const indicators = model(state, INDICATOR_CAPS, RECEIVING).receiverIndicators!;
+    expect(indicators.map((indicator) => [indicator.receiver, indicator.rfState])).toEqual([
+      ['MAIN', 'unknown'], ['SUB', 'receiving'],
+    ]);
+  });
+});
 
 describe('topology is derived from real capabilities', () => {
   it.each(Object.keys(TOPOLOGY_CAPS))('%s is reachable and validator-clean', (id) => {
@@ -579,7 +726,8 @@ describe('the emitted model carries only contract data', () => {
     expect(Object.keys(view)).not.toContain('capabilities');
     // The validator rejects extra keys, so this is belt-and-braces on shape.
     expect(Object.keys(view).sort()).toEqual([
-      'activeReceiver', 'disabledReasons', 'dualWatch', 'scope', 'scopeControls', 'split',
+      'activeReceiver', 'disabledReasons', 'dualWatch', 'receiverIndicators',
+      'scope', 'scopeControls', 'split',
       'topologyId', 'txPermit', 'txTarget', 'vfoScheme', 'vfos',
     ]);
   });

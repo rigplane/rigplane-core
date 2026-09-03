@@ -38,6 +38,7 @@
 <script lang="ts">
   import { t } from '$lib/i18n';
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
+  import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
   import type { BooleanFact, RadioViewModel, VfoViewModel } from './radio-view-model';
@@ -130,6 +131,13 @@
      */
     pendingFrequencyHz?: Partial<Record<ReceiverId, number>>;
     /**
+     * A dual-receiver cockpit passes its strip receiver so the root-level
+     * addressed collection is partitioned across the two strip mounts. The
+     * unsliced/default surface omits this prop and renders the collection
+     * once; the radio-wide `showVfoList={false}` mount renders no rows.
+     */
+    indicatorReceiver?: ReceiverId;
+    /**
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
      * (copy one VFO onto the other), swap, and the two composite "quick"
@@ -161,6 +169,7 @@
     hasDualReceiver = true,
     onTuneFrequency,
     pendingFrequencyHz,
+    indicatorReceiver,
     onEqualizeVfos,
     onSwapVfos,
     onQuickSplit,
@@ -457,6 +466,11 @@
   let txFrequencyHz = $derived(
     viewModel.txTarget.status === 'known' ? viewModel.txTarget.frequencyHz : null,
   );
+  let receiverIndicators = $derived(
+    (viewModel.receiverIndicators ?? []).filter(
+      (indicator) => indicatorReceiver === undefined || indicator.receiver === indicatorReceiver,
+    ),
+  );
 </script>
 
 <div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface">
@@ -620,6 +634,13 @@
       {/if}
     </div>
   {/if}
+  {#if receiverIndicators.length > 0}
+    <div class="receiver-indicators" data-testid="vfo-receiver-indicators">
+      {#each receiverIndicators as indicator (indicator.receiver)}
+        <VfoIndicatorRow {indicator} />
+      {/each}
+    </div>
+  {/if}
   {/if}
 
   {#if showRadioWideFacts}
@@ -737,6 +758,7 @@
   .vfo-surface { display: flex; flex-direction: column; gap: 8px; font-family: 'Roboto Mono', monospace; color: var(--v2-text-primary, #e8e8e8); }
   .active-receiver { margin: 0; font-size: 11px; color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
   .vfo-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .receiver-indicators { display: grid; gap: 6px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
   .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
   .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); }

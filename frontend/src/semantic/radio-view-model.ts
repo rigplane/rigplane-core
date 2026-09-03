@@ -992,6 +992,32 @@ export interface ScopeDisplayViewModel {
   hardwareConnected: ScopeDisplayField<boolean>;
 }
 
+/**
+ * Receiver-addressed facts mounted with the semantic VFO deck (MOR-2299
+ * slice 1). One entry represents one structural receiver, never one VFO
+ * slot: an A/B radio therefore still has one entry. Every live reading uses
+ * the existing `{reading, availability}` fact shape so zero and `false`
+ * survive without becoming an unknown/default.
+ */
+export type ReceiverIndicatorField<T> = TxAuxField<T>;
+export interface ReceiverIndicatorViewModel {
+  receiver: ReceiverId;
+  availability: Availability;
+  rfState: MeterRfState;
+  sMeter: ReceiverIndicatorField<number>;
+  bandwidthHz: ReceiverIndicatorField<number>;
+  /** Capability label when declared for the ordinal; raw ordinal otherwise. */
+  agcMode: ReceiverIndicatorField<number | string>;
+  nbActive: ReceiverIndicatorField<boolean>;
+  nrActive: ReceiverIndicatorField<boolean>;
+  notchMode: ReceiverIndicatorField<'off' | 'auto' | 'manual'>;
+  attenuator: ReceiverIndicatorField<number>;
+  preamp: ReceiverIndicatorField<number>;
+  rfGain: ReceiverIndicatorField<number>;
+  digiSel: ReceiverIndicatorField<boolean>;
+  ipPlus: ReceiverIndicatorField<boolean>;
+}
+
 export interface RadioViewModel {
   topologyId: string;
   vfoScheme: VfoScheme;
@@ -1005,6 +1031,11 @@ export interface RadioViewModel {
   txPermit: FrequencyPermit;
   scope: ScopeAvailabilityViewModel;
   disabledReasons: readonly DisabledReason[];
+  /**
+   * Optional for payload compatibility with pre-MOR-2299 fixtures; the live
+   * adapter always emits the complete structural receiver collection.
+   */
+  readonly receiverIndicators?: readonly ReceiverIndicatorViewModel[];
   /** Absent (MOR-1264 optional group) ⇒ structurally unavailable: this radio
    *  model has no TX-adjacent controls at all. Never emitted as a placeholder
    *  of all-unknowns — see `radio-view-model-adapter.ts`'s evidence gate. */
@@ -1093,6 +1124,9 @@ function nullableString(value: unknown, path: string): string | null {
 function num(value: unknown, path: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) invalid(path, 'a finite number');
   return value;
+}
+function strOrNum(value: unknown, path: string): string | number {
+  return typeof value === 'string' ? value : num(value, path);
 }
 
 /**
@@ -1335,6 +1369,36 @@ function validateTxAux(value: unknown, path: string): TxAuxViewModel {
     rfPower: validateTxAuxField(v.rfPower, `${path}.rfPower`, num),
     micGain: validateTxAuxField(v.micGain, `${path}.micGain`, num),
     driveGain: validateTxAuxField(v.driveGain, `${path}.driveGain`, num),
+  };
+}
+
+function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz', 'agcMode',
+    'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
+    'digiSel', 'ipPlus',
+  ], path);
+  return {
+    receiver: oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`),
+    availability: validateAvailability(v.availability, `${path}.availability`),
+    rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
+    sMeter: validateTxAuxField(v.sMeter, `${path}.sMeter`, num),
+    bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
+    agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
+    nbActive: validateTxAuxField(v.nbActive, `${path}.nbActive`, bool),
+    nrActive: validateTxAuxField(v.nrActive, `${path}.nrActive`, bool),
+    notchMode: validateTxAuxField(
+      v.notchMode, `${path}.notchMode`,
+      (candidate, candidatePath) => oneOf(
+        candidate, ['off', 'auto', 'manual'] as const, candidatePath,
+      ),
+    ),
+    attenuator: validateTxAuxField(v.attenuator, `${path}.attenuator`, num),
+    preamp: validateTxAuxField(v.preamp, `${path}.preamp`, num),
+    rfGain: validateTxAuxField(v.rfGain, `${path}.rfGain`, num),
+    digiSel: validateTxAuxField(v.digiSel, `${path}.digiSel`, bool),
+    ipPlus: validateTxAuxField(v.ipPlus, `${path}.ipPlus`, bool),
   };
 }
 
@@ -1702,7 +1766,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
     'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan', 'cwKeyer',
-    'scopeControls', 'scopeDisplay',
+    'scopeControls', 'scopeDisplay', 'receiverIndicators',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -1764,6 +1828,16 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const cwKeyer = optionalGroup(v.cwKeyer, '$.cwKeyer', validateCwKeyer);
   const scopeControls = optionalGroup(v.scopeControls, '$.scopeControls', validateScopeControls);
   const scopeDisplay = optionalGroup(v.scopeDisplay, '$.scopeDisplay', validateScopeDisplay);
+  let receiverIndicators: readonly ReceiverIndicatorViewModel[] | undefined;
+  if (v.receiverIndicators !== undefined) {
+    if (!Array.isArray(v.receiverIndicators)) invalid('$.receiverIndicators', 'an array');
+    receiverIndicators = v.receiverIndicators.map((indicator, i) =>
+      validateReceiverIndicator(indicator, `$.receiverIndicators[${i}]`));
+    const receiverIds = receiverIndicators.map((indicator) => indicator.receiver);
+    if (new Set(receiverIds).size !== receiverIds.length) {
+      invalid('$.receiverIndicators', 'at most one entry per receiver');
+    }
+  }
 
   const disabledReasons = v.disabledReasons.map((r, i) => validateDisabledReason(r, `$.disabledReasons[${i}]`));
   // SAFETY, MOR-1296 — the fail-closed half of "no second permit", enforced
@@ -1793,6 +1867,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
       audioFftScope: validateAvailability(scope.audioFftScope, '$.scope.audioFftScope'),
     },
     disabledReasons,
+    ...(receiverIndicators !== undefined ? { receiverIndicators } : {}),
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),
