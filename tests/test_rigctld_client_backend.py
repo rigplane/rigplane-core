@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import fake_rigctld
 from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
 from rigplane.backends.config import RigctldBackendConfig
 from rigplane.backends.factory import create_radio
@@ -42,6 +43,7 @@ async def test_transport_connect_query_and_close() -> None:
         try:
             assert transport.connected
             assert await transport.query("f", response_lines=1) == ["14074000"]
+            assert transport.connected
         finally:
             await transport.close()
 
@@ -140,8 +142,360 @@ async def test_transport_command_accepts_only_rprt_zero_and_preserves_failure_co
                     await transport.command("F 14074000")
                 assert exc_info.value.command == "F 14074000"
                 assert exc_info.value.code == code
+            assert transport.connected
         finally:
             await transport.close()
+
+
+class _ExchangeStream:
+    def __init__(self, phase: str = "read", *, hold_close: bool = False) -> None:
+        self.phase = phase
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.close_entered = asyncio.Event()
+        self.close_release = asyncio.Event()
+        if not hold_close:
+            self.close_release.set()
+        self.responses: asyncio.Queue[bytes | Exception] = asyncio.Queue()
+        self.cancel_on_entry: asyncio.Task | None = None
+        self.writes: list[bytes] = []
+        self.closes = 0
+        self.reads = 0
+
+    def _enter(self) -> None:
+        self.entered.set()
+        if self.cancel_on_entry is not None:
+            self.cancel_on_entry.cancel("cancel exchange")
+
+    async def read(self, size: int) -> bytes:
+        if self.phase == "stale":
+            self._enter()
+            await self.release.wait()
+        raise TimeoutError
+
+    async def readline(self) -> bytes:
+        self.reads += 1
+        if self.phase == "resync" and self.reads == 1:
+            return b"stray\n"
+        self._enter()
+        response = await self.responses.get()
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    async def drain(self) -> None:
+        if self.phase == "write":
+            self._enter()
+            await self.release.wait()
+
+    def is_closing(self) -> bool:
+        return bool(self.closes)
+
+    def close(self) -> None:
+        self.closes += 1
+
+    async def wait_closed(self) -> None:
+        self.close_entered.set()
+        await self.close_release.wait()
+
+
+async def _connect_exchange(
+    monkeypatch: pytest.MonkeyPatch, *streams: _ExchangeStream
+) -> RigctldTransport:
+    available = iter(streams)
+
+    async def connect(*args: object) -> tuple[_ExchangeStream, _ExchangeStream]:
+        stream = next(available)
+        return stream, stream
+
+    monkeypatch.setattr(asyncio, "open_connection", connect)
+    transport = RigctldTransport(host="127.0.0.1")
+    await transport.connect()
+    return transport
+
+
+async def _finish_exchanges(
+    transport: RigctldTransport,
+    streams: tuple[_ExchangeStream, ...],
+    tasks: list[asyncio.Task],
+) -> None:
+    for stream in streams:
+        stream.release.set()
+        stream.close_release.set()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
+    await asyncio.wait_for(transport.close(), 1)
+
+
+@pytest.mark.parametrize(
+    ("operation", "phase"),
+    [
+        ("command", "read"),
+        ("query", "read"),
+        ("command", "stale"),
+        ("query", "stale"),
+        ("command", "resync"),
+        ("command", "write"),
+    ],
+)
+async def test_cancelled_exchange_quarantines_before_close_barrier(
+    operation: str, phase: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = _ExchangeStream(phase, hold_close=True)
+    replacement = _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, stream, replacement)
+    notifications = []
+
+    def advance() -> int:
+        notifications.append((transport.connected, stream.closes))
+        if phase == "write":
+            raise RuntimeError("callback failed")
+        return len(notifications)
+
+    transport.bind_provider_generation(advance=advance)
+    request = (
+        transport.query("f", response_lines=1)
+        if operation == "query"
+        else transport.command("T 1")
+    )
+    tasks = [asyncio.create_task(request)]
+    stream.cancel_on_entry = tasks[0]
+    try:
+        await asyncio.wait_for(stream.entered.wait(), 1)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[0], 1)
+        expected_write = b"f\n" if operation == "query" else b"T 1\n"
+        assert stream.writes == ([] if phase == "stale" else [expected_write])
+        assert stream.closes == 1 and not transport.connected
+        assert notifications == [(False, 1)]
+        assert not stream.close_entered.is_set()
+        finish = transport.connect() if operation == "query" else transport.close()
+        tasks.append(asyncio.create_task(finish))
+        await asyncio.wait_for(stream.close_entered.wait(), 1)
+        assert not tasks[-1].done()
+        tasks[-1].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[-1], 1)
+        assert transport._writer is stream and not transport.connected
+        stream.close_entered.clear()
+        finish = transport.connect() if operation == "query" else transport.close()
+        tasks.append(asyncio.create_task(finish))
+        await asyncio.wait_for(stream.close_entered.wait(), 1)
+        assert not tasks[-1].done()
+        stream.close_release.set()
+        await asyncio.wait_for(tasks[-1], 1)
+        assert stream.closes == 1 and notifications == [(False, 1)]
+        if operation == "query":
+            assert transport._writer is replacement and transport.connected
+    finally:
+        await _finish_exchanges(transport, (stream, replacement), tasks)
+
+
+async def test_cancelled_lock_waiter_keeps_active_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, stream)
+    tasks = [asyncio.create_task(transport.command("T 1"))]
+    queued = asyncio.Event()
+
+    async def second() -> None:
+        queued.set()
+        await transport.command("T 0")
+
+    try:
+        await asyncio.wait_for(stream.entered.wait(), 1)
+        tasks.append(asyncio.create_task(second()))
+        await asyncio.wait_for(queued.wait(), 1)
+        tasks[-1].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[-1], 1)
+        assert transport.connected and stream.closes == 0
+        assert stream.writes == [b"T 1\n"]
+        stream.responses.put_nowait(b"RPRT 0\n")
+        await asyncio.wait_for(tasks[0], 1)
+        assert transport.connected
+    finally:
+        await _finish_exchanges(transport, (stream,), tasks)
+
+
+@pytest.mark.parametrize("operation", ["close", "connect"])
+async def test_cancelled_lifecycle_preserves_real_stream_close_future(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DelayedCloseTransport(asyncio.Transport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.written = asyncio.Event()
+            self.closing = False
+
+        def write(self, data: bytes) -> None:
+            self.written.set()
+
+        def close(self) -> None:
+            self.closing = True
+
+        def is_closing(self) -> bool:
+            return self.closing
+
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    wire = DelayedCloseTransport()
+    protocol.connection_made(wire)
+    writer = asyncio.StreamWriter(wire, protocol, reader, loop)
+    closed = protocol._get_close_waiter(writer)
+    entered = asyncio.Event()
+    read_entered = asyncio.Event()
+    native_wait_closed = writer.wait_closed
+    native_readline = reader.readline
+
+    async def observe_pending_read() -> bytes:
+        read_entered.set()
+        return await native_readline()
+
+    async def observe_close_wait() -> None:
+        entered.set()
+        await native_wait_closed()
+
+    monkeypatch.setattr(writer, "wait_closed", observe_close_wait)
+    monkeypatch.setattr(reader, "readline", observe_pending_read)
+    replacement = _ExchangeStream()
+    connections = iter(((reader, writer), (replacement, replacement)))
+
+    async def connect(*args: object) -> tuple[object, object]:
+        return next(connections)
+
+    monkeypatch.setattr(asyncio, "open_connection", connect)
+    transport = RigctldTransport(host="127.0.0.1")
+    await transport.connect()
+    tasks = [asyncio.create_task(transport.command("T 1"))]
+    lost = False
+    try:
+        await asyncio.wait_for(read_entered.wait(), 1)
+        assert wire.written.is_set()
+        assert reader._waiter is not None and not reader._waiter.done()
+        tasks[0].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[0], 1)
+        assert wire.closing and not closed.done()
+        finish = transport.close if operation == "close" else transport.connect
+        tasks.append(asyncio.create_task(finish()))
+        await asyncio.wait_for(entered.wait(), 1)
+        tasks[-1].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[-1], 1)
+        assert not closed.cancelled(), (
+            "caller cancellation poisoned shared close Future"
+        )
+        assert transport._writer is writer and not closed.done()
+        entered.clear()
+        tasks.append(asyncio.create_task(finish()))
+        await asyncio.wait_for(entered.wait(), 1)
+        assert not tasks[-1].done()
+        protocol.connection_lost(None)
+        lost = True
+        await asyncio.wait_for(tasks[-1], 1)
+        assert closed.done() and not closed.cancelled()
+        assert transport.connected == (operation == "connect")
+    finally:
+        if not lost:
+            protocol.connection_lost(None)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
+        # Broken-source RED may leave the native shared Future cancelled;
+        # retrieve that cleanup cancellation without masking the assertion.
+        await asyncio.wait_for(
+            asyncio.gather(transport.close(), return_exceptions=True), 1
+        )
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "eof", "oserror", "timeout"])
+async def test_old_exchange_interruption_does_not_retire_replacement(
+    interruption: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old, new = _ExchangeStream(), _ExchangeStream()
+    transport = await _connect_exchange(monkeypatch, old, new)
+    notifications = []
+    transport.bind_provider_generation(
+        advance=lambda: notifications.append(transport.connected) or len(notifications)
+    )
+    tasks = [asyncio.create_task(transport.query("f", response_lines=1))]
+    try:
+        await asyncio.wait_for(old.entered.wait(), 1)
+        await transport.close()
+        await transport.connect()
+        assert transport._writer is new
+        if interruption == "cancel":
+            tasks[0].cancel()
+            expected = asyncio.CancelledError
+        else:
+            response = {
+                "eof": b"",
+                "oserror": OSError("lost"),
+                "timeout": TimeoutError(),
+            }[interruption]
+            old.responses.put_nowait(response)
+            expected = (
+                RadioTimeoutError if interruption == "timeout" else RadioConnectionError
+            )
+        with pytest.raises(expected):
+            await asyncio.wait_for(tasks[0], 1)
+        assert transport.connected and new.closes == 0
+        assert notifications == [False]
+    finally:
+        await _finish_exchanges(transport, (old, new), tasks)
+
+
+async def test_delayed_cancelled_rprt_cannot_complete_next_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release, next_written = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    write_response = fake_rigctld._write_response
+
+    async def delayed_response(writer: asyncio.StreamWriter, data: bytes) -> None:
+        if data == b"RPRT 0\n" and not entered.is_set():
+            entered.set()
+            await release.wait()
+        await write_response(writer, data)
+
+    monkeypatch.setattr(fake_rigctld, "_write_response", delayed_response)
+    behavior = FakeRigctldBehavior(malformed_responses={"T 0": b"RPRT -5\n"})
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        tasks = [asyncio.create_task(transport.command("T 1"))]
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            tasks[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(tasks[0], 1)
+            await transport.connect()
+            writer = transport._writer
+            assert writer is not None
+            write = writer.write
+
+            def observe_write(data: bytes) -> None:
+                write(data)
+                next_written.set()
+
+            monkeypatch.setattr(writer, "write", observe_write)
+            tasks.append(asyncio.create_task(transport.command("T 0")))
+            await asyncio.wait_for(next_written.wait(), 1)
+            release.set()
+            with pytest.raises(CommandError) as caught:
+                await asyncio.wait_for(tasks[-1], 1)
+            assert caught.value.code == -5
+        finally:
+            release.set()
+            await _finish_exchanges(transport, (), tasks)
 
 
 @pytest.mark.parametrize(

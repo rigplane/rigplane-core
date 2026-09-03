@@ -20,6 +20,13 @@ remainder of `.claude/`.
   existing response wait but was discarded by its caller. The report makes no
   manufacturer, RF-stop, or whole-adapter claim.
 
+## 2026-09-02 — rigctld exchange boundary (tree `21814f3c0`)
+
+- [2026-09-02-mechanism-audit-rigctld-exchange.md](2026-09-02-mechanism-audit-rigctld-exchange.md)
+  — canonical external-rigctld transaction boundary. The report records a
+  missing response-isolation primitive for cancelled exchanges;
+  it does not claim adapter integration, final-OFF ordering, or RF proof.
+
 ## 2026-09-02 — ForceOff cleanup ordering (tree `7387c84e`)
 
 - [2026-09-02-mechanism-audit-force-off-cleanup.md](2026-09-02-mechanism-audit-force-off-cleanup.md)
