@@ -13,6 +13,13 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-03 — command queue and Web execution (tree `fdbd7403`)
+
+- [2026-09-03-mechanism-audit-command-queue-web.md](2026-09-03-mechanism-audit-command-queue-web.md)
+  — bounded static review of pending identity, cancellation lifetime and the
+  finite Web drain; provider migration remains incomplete. No runtime, RF,
+  stop/replacement or whole-module deletion claim.
+
 ## 2026-09-02 — Icom STOP CW NAK handling (tree `4cbd5ba4`)
 
 - [2026-09-02-mechanism-audit-icom-stop-cw.md](2026-09-02-mechanism-audit-icom-stop-cw.md)
