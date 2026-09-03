@@ -16,7 +16,7 @@ jobs:
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
     env:
-      SOURCE_PIN: d6ed456348ccaae8f1817181beef0fbe89fab33f
+      SOURCE_PIN: 44ca40e52e4176d075bf202c511b6643b7b95d1c
       UV_PYTHON: '3.11'
       PYTHONDONTWRITEBYTECODE: '1'
       PYTHONPATH: ${{ github.workspace }}/source/src:${{ github.workspace }}/source/tests
@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: d6ed456348ccaae8f1817181beef0fbe89fab33f
+          ref: 44ca40e52e4176d075bf202c511b6643b7b95d1c
           fetch-depth: 0
           persist-credentials: false
           path: source
@@ -100,7 +100,7 @@ jobs:
               )
           }
           required.update({
-              (f"tests.{admission}", f"test_failed_predecessor_prevents_on_and_removes_registration[{suffix}]")
+              (f"tests.{admission}", f"test_failed_predecessor_completion_allows_independent_on[{suffix}]")
               for suffix in ("cancel", "error")
           })
           required.update({
@@ -192,6 +192,11 @@ jobs:
           check_rc=$?
           uv run --no-sync ruff format --check src/rigplane/runtime/managed_tx_authority.py src/rigplane/runtime/managed_tx_fence.py tests/test_managed_tx_ingress_admission.py tests/test_managed_tx_fence.py > "$ARTIFACT_DIR/ruff-format.log" 2>&1
           format_rc=$?
+          if [ "$format_rc" -ne 0 ]; then
+            printf '%s\n' 'uv run --no-sync ruff format --diff src/rigplane/runtime/managed_tx_authority.py src/rigplane/runtime/managed_tx_fence.py tests/test_managed_tx_ingress_admission.py tests/test_managed_tx_fence.py' > "$ARTIFACT_DIR/ruff-format-diff-command.txt"
+            uv run --no-sync ruff format --diff src/rigplane/runtime/managed_tx_authority.py src/rigplane/runtime/managed_tx_fence.py tests/test_managed_tx_ingress_admission.py tests/test_managed_tx_fence.py > "$ARTIFACT_DIR/ruff-format-diff.log" 2>&1
+            printf '%s\n' "$?" > "$ARTIFACT_DIR/ruff-format-diff-exit.txt"
+          fi
           printf '%s\n' "$check_rc" > "$ARTIFACT_DIR/ruff-check-exit.txt"
           printf '%s\n' "$format_rc" > "$ARTIFACT_DIR/ruff-format-exit.txt"
           cat "$ARTIFACT_DIR/ruff-check.log" "$ARTIFACT_DIR/ruff-format.log"
