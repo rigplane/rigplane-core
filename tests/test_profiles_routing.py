@@ -187,7 +187,7 @@ def test_radio_poller_raw_civ_call_count_is_pinned() -> None:
     those collapsed into the one call below when the wire-frame assembly
     moved into the shared ``runtime._state_queries.wire_parts_for_query``,
     also used by ``RigctldServer._send_one_state_query`` and
-    ``runtime.radio_initial_state.fetch_initial_state``. The 6 that
+    ``runtime.radio_initial_state.fetch_initial_state``. The 5 that
     remain:
 
     - ``_send_cmd``: 2 — cmd29-wrapped vs. plain generic command dispatch.
