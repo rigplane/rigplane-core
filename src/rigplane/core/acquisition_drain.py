@@ -267,12 +267,9 @@ class AcquisitionDrain:
                 continue
 
             current_store = self._store()
-            generation_is_current = (
-                current_store is store
-                and (
-                    current_store is None
-                    or current_store.provider_generation == provider_generation
-                )
+            generation_is_current = current_store is store and (
+                current_store is None
+                or current_store.provider_generation == provider_generation
             )
             if not generation_is_current or not scheduler.claim_is_current(
                 request,
