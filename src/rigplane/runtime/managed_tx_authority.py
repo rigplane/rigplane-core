@@ -636,7 +636,6 @@ class ManagedTxAuthority:
             return transition, result
 
         completion = asyncio.create_task(settle())
-        self._own_submission(completion)
         return ManagedTxSubmission(transition, completion)
 
     def _transition_locked(
