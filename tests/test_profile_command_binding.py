@@ -33,6 +33,7 @@ profile's map, plain or empty.
 
 from __future__ import annotations
 
+import copy
 import functools
 import inspect
 import itertools
@@ -129,6 +130,53 @@ class TestCommandMapEquality:
         a = CommandMap({"ptt_on": (0x1C, 0x00)})
         b = CommandMap({"ptt_on": (0x1C, 0x00)})
         assert hash(a) == hash(b)
+
+    def test_value_variants_participate_in_equality_and_hashing(self) -> None:
+        commands = {"set_data_mode": (0x1A, 0x06)}
+        variants = {
+            "set_data_mode": {
+                0: (0x1A, 0x06, 0x00, 0x00),
+                1: (0x1A, 0x06, 0x01, 0x01),
+            }
+        }
+        same = CommandMap(commands, value_variants=variants)
+        equal = CommandMap(commands, value_variants=variants)
+        changed = CommandMap(
+            commands,
+            value_variants={
+                "set_data_mode": {
+                    0: (0x1A, 0x06, 0x00, 0x00),
+                    1: (0x1A, 0x06, 0x01, 0x02),
+                }
+            },
+        )
+
+        assert same == equal
+        assert hash(same) == hash(equal)
+        assert same != changed
+        assert hash(same) != hash(changed)
+
+    def test_value_variant_storage_is_copied_and_not_exposed_by_iteration(
+        self,
+    ) -> None:
+        values = {0: (0x1A, 0x06, 0x00, 0x00)}
+        variants = {"set_data_mode": values}
+        command_map = CommandMap(
+            {"set_data_mode": (0x1A, 0x06)}, value_variants=variants
+        )
+        values[0] = (0x1A, 0x06, 0x00)
+        variants["extra"] = {1: (0x00, 0x01)}
+
+        assert list(command_map) == ["set_data_mode"]
+        assert len(command_map) == 1
+        assert command_map.get("set_data_mode") == (0x1A, 0x06)
+        assert command_map._get_value_variant("set_data_mode", 0) == (
+            0x1A,
+            0x06,
+            0x00,
+            0x00,
+        )
+        assert copy.deepcopy(command_map) is command_map
 
 
 class TestBoundCommandsGetattr:

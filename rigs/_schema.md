@@ -512,6 +512,22 @@ get_af_level = [0x14, 0x01] # Command + sub-command
 
 All byte values must be integers in the range `0x00`–`0xFF`.
 
+When one semantic value selects a complete model-specific wire tuple, use the
+additive `bytes` + `value_variants` descriptor under that same command name:
+
+```toml
+set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00, 0x00], "1" = [0x1A, 0x06, 0x01, 0x01] } }
+```
+
+`bytes` is the non-empty base tuple. `value_variants` is a non-empty table
+whose keys are canonical decimal integers and whose values are unique,
+non-empty byte arrays. Every variant must strictly extend and start with the
+base tuple. The descriptor accepts exactly these two keys. The loader retains
+the variants behind the one command-map entry, so command discovery, map
+iteration, and reverse lookup continue to see only the base command name and
+tuple. Builders that opt into semantic-value selection reject values absent
+from the table; profiles using the original byte-array form are unchanged.
+
 ### Format 2: CAT Command Spec (Yaesu/Kenwood)
 
 For `yaesu_cat` and `kenwood_cat` protocols, commands are inline tables with a
@@ -553,7 +569,8 @@ read/write commands, or a verb like `ptt_on`, `scope_on`, `send_cw`.
 ### `[commands.overrides]` — Model-Specific Overrides
 
 Commands in this sub-table override the defaults for a specific radio model.
-Same format as `[commands]`: CI-V byte arrays or CAT inline tables.
+Same format as `[commands]`: CI-V byte arrays, CI-V value-variant descriptors,
+or CAT inline tables.
 
 ## Additional Parameterized Sections
 

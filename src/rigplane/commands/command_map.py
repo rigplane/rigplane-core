@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from ._frame import decode_wire_tuple
 
@@ -38,10 +39,23 @@ class CommandMap:
         list(cm)            # ["af_gain", "rf_gain"]
     """
 
-    __slots__ = ("_commands",)
+    __slots__ = ("_commands", "_value_variants")
 
-    def __init__(self, commands: dict[str, tuple[int, ...]]) -> None:
+    def __init__(
+        self,
+        commands: dict[str, tuple[int, ...]],
+        *,
+        value_variants: dict[str, dict[int, tuple[int, ...]]] | None = None,
+    ) -> None:
         self._commands: dict[str, tuple[int, ...]] = dict(commands)
+        self._value_variants = MappingProxyType(
+            {
+                name: MappingProxyType(
+                    {value: tuple(wire) for value, wire in variants.items()}
+                )
+                for name, variants in (value_variants or {}).items()
+            }
+        )
 
     def get(self, name: str) -> tuple[int, ...]:
         """Return wire bytes for *name*, or raise ``KeyError``."""
@@ -56,6 +70,17 @@ class CommandMap:
     def has(self, name: str) -> bool:
         """Return ``True`` if *name* is a known command."""
         return name in self._commands
+
+    def _has_value_variants(self, name: str) -> bool:
+        """Return whether *name* has semantic-value-specific wire tuples."""
+        return bool(self._value_variants.get(name))
+
+    def _get_value_variant(self, name: str, value: int) -> tuple[int, ...]:
+        """Return the complete wire tuple declared for *value*."""
+        variants = self._value_variants.get(name)
+        if variants is None or value not in variants:
+            raise ValueError(f"Command {name!r} value {value} is not declared")
+        return variants[value]
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._commands)
@@ -78,10 +103,25 @@ class CommandMap:
         """
         if not isinstance(other, CommandMap):
             return NotImplemented
-        return self._commands == other._commands
+        return (
+            self._commands == other._commands
+            and self._value_variants == other._value_variants
+        )
 
     def __hash__(self) -> int:
-        return hash(frozenset(self._commands.items()))
+        return hash(
+            (
+                frozenset(self._commands.items()),
+                frozenset(
+                    (name, frozenset(variants.items()))
+                    for name, variants in self._value_variants.items()
+                ),
+            )
+        )
+
+    def __deepcopy__(self, memo: dict[int, object]) -> CommandMap:
+        """Return this immutable map when snapshot code deep-copies a radio."""
+        return self
 
 
 @dataclass(frozen=True, slots=True)
