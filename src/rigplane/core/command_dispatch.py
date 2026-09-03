@@ -69,7 +69,7 @@ class DispatchQueue(Protocol):
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
-    ) -> None: ...
+    ) -> object: ...
 
 
 Binder = Callable[[Mapping[str, Any]], dict[str, Any]]
