@@ -298,7 +298,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: source
-          ref: 7fabe1c2014888663389696b13b00a007694435a
+          ref: 61d5cb442480ac83ab8893ae86074c86a1de5448
           fetch-depth: 0
           persist-credentials: false
       - name: Establish isolated evidence and dependency paths
@@ -556,9 +556,9 @@ jobs:
           import xml.etree.ElementTree as ET
           import pytest
 
-          SOURCE = '7fabe1c2014888663389696b13b00a007694435a'
-          SOURCE_TREE = 'ee3497a2dac9012e15fb6f5877abd25e973c39bf'
-          SOURCE_PARENT = '9cdb9faa585bde6fcf8255794530e80b8b51a8a3'
+          SOURCE = '61d5cb442480ac83ab8893ae86074c86a1de5448'
+          SOURCE_TREE = 'e5f673879ab39ebdecf77de9f31f40a442afc854'
+          SOURCE_PARENT = '7fabe1c2014888663389696b13b00a007694435a'
           BASE = 'e2ef93420cf4359f08781754db65ca08bd2288d3'
           QSRC = 'src/rigplane/runtime/_poller_types.py'
           WSRC = 'src/rigplane/web/radio_poller.py'
@@ -700,7 +700,7 @@ jobs:
               edit(QSRC, 'if reply.cancelled() and not isinstance(entry.command, PttOff):', 'if reply.cancelled():'),
           ], {
               Q + UNKEY + '[ptt-off]': qcheck(418, 'assert [entry.command for entry in entries] == expected, ('),
-              W + 'test_shutdown_drain_executes_cancelled_unkey_after_callback_turn': checkpoint(WFILE, 'assert radio.calls == ["set_ptt(False)", *_TEARDOWN]', line=6732),
+              W + 'test_shutdown_drain_executes_cancelled_unkey_after_callback_turn': checkpoint(WFILE, 'assert radio.calls == ["set_ptt(False)", *_TEARDOWN]', line=6734),
           }, [Q + UNKEY + '[ordinary]', Q + UNKEY + '[ptt-on]'])
           fault('08-removal-completes-reply', [
               edit(QSRC, REMOVE_CLEAR, REMOVE_CLEAR.replace(
@@ -786,7 +786,7 @@ jobs:
               edit(WSRC, '            for _ in range(self._queue.pending_count):', '            while self._queue.has_commands:'),
           ], {
               **kills(live_nodes, qcheck(377, 'assert seen == expected, "turn must use live pending claims, not a snapshot"')),
-              COMPOSITION: checkpoint(WFILE, 'assert boundary["leaves"] == (14_074_000,), "arrival must not refill initial quota"', line=1923),
+              COMPOSITION: checkpoint(WFILE, 'assert boundary["leaves"] == (14_074_000,), "arrival must not refill initial quota"', line=1925),
           })
           refund = '''        def entries_for_turn() -> Iterator[CommandQueueEntry]:
                       remaining = self._queue.pending_count
@@ -812,7 +812,7 @@ jobs:
               edit(WSRC, '        raise error\n\n    def _report_acquisition_sent(',
                   '        return\n\n    def _report_acquisition_sent('),
           ], {
-              COMPOSITION: checkpoint(WFILE, 'assert sleep.await_args_list.count(call(0.5)) == 1', line=1930),
+              COMPOSITION: checkpoint(WFILE, 'assert sleep.await_args_list.count(call(0.5)) == 1', line=1932),
           })
           FAILED_PATHS = '''        failed_paths = (
                       tuple(path for path in request.paths if path not in sent_paths)
