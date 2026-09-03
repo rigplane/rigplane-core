@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
@@ -43,7 +44,9 @@ class RigctldTransport:
         self.timeout = timeout
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._lock = asyncio.Lock()
+        self._exchange_active = False
+        self._urgent_waiters: deque[asyncio.Future[None]] = deque()
+        self._ordinary_waiters: deque[asyncio.Future[None]] = deque()
         self._lifecycle_lock = asyncio.Lock()
         self._provider_generation_advance: Callable[[], int] | None = None
         self._connection_retired = True
@@ -135,18 +138,47 @@ class RigctldTransport:
             if self._reader is reader and self._writer is writer:
                 await self._close_locked()
 
+    async def _admit_exchange(self, urgent: bool) -> None:
+        if not self._exchange_active:
+            self._exchange_active = True
+            return
+        queue = self._urgent_waiters if urgent else self._ordinary_waiters
+        waiter = asyncio.get_running_loop().create_future()
+        queue.append(waiter)
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            if not waiter.cancelled():
+                # Already granted, but no connection has been captured yet.
+                self._release_exchange()
+            elif waiter in queue:
+                queue.remove(waiter)
+            raise
+
+    def _release_exchange(self) -> None:
+        for queue in (self._urgent_waiters, self._ordinary_waiters):
+            while queue:
+                waiter = queue.popleft()
+                if not waiter.done():
+                    # Reserve ownership until this waiter resumes or cancels.
+                    waiter.set_result(None)
+                    return
+        self._exchange_active = False
+
     @asynccontextmanager
     async def _exchange(
-        self,
+        self, *, urgent: bool = False
     ) -> AsyncIterator[tuple[asyncio.StreamReader | None, asyncio.StreamWriter | None]]:
-        async with self._lock:
-            reader, writer = self._reader, self._writer
-            try:
-                yield reader, writer
-            except asyncio.CancelledError:
-                # No await: quarantine precedes release of transaction ownership.
-                self._retire_connection(reader, writer)
-                raise
+        await self._admit_exchange(urgent)
+        reader, writer = self._reader, self._writer
+        try:
+            yield reader, writer
+        except asyncio.CancelledError:
+            # No await: quarantine precedes release of transaction ownership.
+            self._retire_connection(reader, writer)
+            raise
+        finally:
+            self._release_exchange()
 
     async def _drain_stale(
         self,
@@ -197,11 +229,31 @@ class RigctldTransport:
                 lines.append(line)
         return lines
 
-    async def command(self, command: str) -> None:
+    async def command(
+        self,
+        command: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        urgent: bool = False,
+    ) -> None:
         """Send a write command and require ``RPRT 0`` success."""
-        async with self._exchange() as (reader, writer):
+        entry_reader, entry_writer = self._reader, self._writer
+        async with self._exchange(urgent=urgent) as (reader, writer):
+
+            def write_is_current() -> bool:
+                return (
+                    reader is entry_reader
+                    and writer is entry_writer
+                    and self._reader is reader
+                    and self._writer is writer
+                    and is_current is not None
+                    and is_current()
+                )
+
+            guard = write_is_current if is_current is not None else None
+            self._require_write_currency(guard)
             await self._drain_stale(command, reader, writer)
-            await self._write_line(command, reader, writer)
+            await self._write_line(command, reader, writer, is_current=guard)
             # Re-sync: do ONE blocking read for the server's response.
             # If it is not RPRT-shaped (stray value line that arrived in the
             # same transaction window), attempt non-blocking reads to find the
@@ -250,6 +302,8 @@ class RigctldTransport:
         command: str,
         reader: asyncio.StreamReader | None,
         writer: asyncio.StreamWriter | None,
+        *,
+        is_current: Callable[[], bool] | None = None,
     ) -> None:
         if reader is None or writer is None or writer.is_closing():
             raise RadioConnectionError(
@@ -258,6 +312,7 @@ class RigctldTransport:
         line = command.strip()
         if not line:
             raise CommandError("External rigctld command must be non-empty.")
+        self._require_write_currency(is_current)
         try:
             writer.write(f"{line}\n".encode("ascii"))
             await asyncio.wait_for(writer.drain(), timeout=self.timeout)
@@ -273,6 +328,17 @@ class RigctldTransport:
                 f"Connection to external rigctld at {self.host}:{self.port} "
                 f"failed while sending {line!r}: {exc}"
             ) from exc
+
+    @staticmethod
+    def _require_write_currency(is_current: Callable[[], bool] | None) -> None:
+        if is_current is None:
+            return
+        try:
+            current = is_current()
+        except (Exception, asyncio.CancelledError) as exc:
+            raise CommandError("Managed rigctld write currency check failed.") from exc
+        if not current:
+            raise CommandError("Managed rigctld write is no longer current.")
 
     async def _read_line(
         self,
