@@ -15,10 +15,11 @@ concurrency:
 jobs:
   test:
     # On push: only when commit message contains [full-ci].
-    # On schedule / manual dispatch: always run.
+    # On schedule / manual dispatch: except the isolated diagnostic ref.
     if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+      github.ref != 'refs/heads/codex/rigctld-observation-proof' &&
+      (github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]'))
     # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
@@ -184,11 +185,12 @@ jobs:
     #
     # Same push guard as the `test` job above: on `push`, only runs when
     # the commit message contains `[full-ci]`; on `schedule`/
-    # `workflow_dispatch`, always runs. This keeps the job off every
+    # `workflow_dispatch`, runs except on the isolated diagnostic ref. This keeps it off every
     # ordinary push to `main`.
     if: >-
-      github.event_name != 'push' ||
-      contains(github.event.head_commit.message, '[full-ci]')
+      github.ref != 'refs/heads/codex/rigctld-observation-proof' &&
+      (github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[full-ci]'))
     runs-on: [self-hosted, linux, build]
     # Budget: ~45s once the Playwright browser cache is warm (npm ci +
     # cached chromium + the capture matrix itself). 10 minutes is a
@@ -264,3 +266,238 @@ jobs:
       - name: Annotate result
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the fixture-harness-capture artifact." || true'
+
+  rigctld-observation-proof:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/rigctld-observation-proof'
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: '3.13'
+      PROOF_ROOT: ${{ runner.temp }}/rigctld-observation-${{ github.run_id }}-${{ github.run_attempt }}
+      UV_CACHE_DIR: ${{ runner.temp }}/rigctld-observation-${{ github.run_id }}-${{ github.run_attempt }}/uv-cache
+      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/rigctld-observation-${{ github.run_id }}-${{ github.run_attempt }}/venv
+      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/rigctld-observation-${{ github.run_id }}-${{ github.run_attempt }}/setup-bytecode
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: diagnostic
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          ref: 9b1a008441245057c60e73dd4ac3e846be8dd6d8
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: false
+      - name: Install locked dependencies and editable package metadata without build hooks
+        run: |
+          mkdir -p "$PROOF_ROOT/evidence"
+          HATCH_BUILD_NO_HOOKS=1 uv sync --locked --all-extras 2>&1 | tee "$PROOF_ROOT/evidence/setup.log"
+      - name: Run isolated causal proof
+        run: |
+          cat > "$PROOF_ROOT/evidence/proof.py" <<'PY'
+          import hashlib, importlib, json, os, subprocess, sys, tempfile
+          from collections import Counter
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          import pytest
+          PIN = "9b1a008441245057c60e73dd4ac3e846be8dd6d8"
+          BASE = "d350d6570549a3f713b91f427074d2c77b65f051"
+          FILE = "tests/test_rigctld_client_observation_adapter.py"
+          P = FILE + "::"
+          RADIO = "src/rigplane/backends/rigctld_client/radio.py"
+          OBS = "src/rigplane/backends/rigctld_client/observations.py"
+          OWNED = (RADIO, OBS, FILE)
+          CASES = [P + name for name in """
+          test_get_reads_emit_hamlib_observations
+          test_observation_poller_drains_web_commands_before_readback
+          test_observation_poller_does_not_reconcile_nonmatching_readback
+          test_observation_poller_discards_nonmatching_readback_expectation
+          test_observation_poller_correlates_slow_control_after_overlay_ttl_edge
+          test_observation_poller_reconciles_only_matching_source_session
+          test_observation_poller_unsupported_command_fails_future
+          test_radio_observation_poller_emits_adapter_covered_reads
+          test_command_response_observations_use_external_rigctld_provider
+          test_command_response_normalizes_receiver_zero_control_paths
+          test_capability_gaps_are_explicit_for_external_rigctld_profile
+          test_tx_capability_excludes_power_control_with_unsupported_power
+          test_filter_width_command_response_metadata_matches_adapter_behavior
+          test_vfo_observation_available_when_rigctld_supports_it
+          test_ptt_and_slow_control_reads_cover_declared_rigctld_capabilities
+          test_rigctld_client_observation_poller_intervals_come_from_the_acquisition_profile
+          test_external_rigctld_poll_intervals_reject_a_cadence_free_policy
+          test_disconnect_invalidates_observed_ptt_without_another_poll
+          test_cancelled_ptt_read_does_not_publish_unknown
+          test_observed_ptt_profile_declares_polling_without_write_controls
+          """.split()]
+          for name in ("test_newer_physical_dispatch_supersedes_older_readback", "test_observation_poller_discards_expectation_when_readback_unavailable", "test_stale_external_rigctld_poll_clears_correlation_at_generation_boundary"):
+              CASES += [P + f"{name}[{value}]" for value in ("False", "True")]
+          slow = "test_observation_poller_reconciles_slow_control_set_without_waiting_for_slow_poll"
+          for i, (command, path, value) in enumerate((("set_rf_gain", "operator_controls.rf_gain", "expected_value0"), ("set_af_level", "operator_controls.af_level", "expected_value1"), ("set_preamp", "operator_controls.preamp", "2"), ("set_attenuator", "operator_controls.att", "18"), ("set_nb", "operator_toggles.nb", "True"), ("set_nr", "operator_toggles.nr", "True"), ("set_mode", "active.freq_mode.mode", "USB"))):
+              CASES.append(P + f"{slow}[{command}-params{i}-queue_command{i}-receiver.main.{path}-{value}]")
+          CASES += [P + f"test_observed_ptt_arrives_before_later_vfo_read[{vfo}-{ptt}]" for vfo in ("vfo-ok", "vfo-error") for ptt in ("off", "on")]
+          ERRORS = [P + f"test_observed_ptt_read_error_replaces_seeded_on_with_unknown[{kind}]" for kind in ("malformed", "unsupported", "read-error")]
+          RETIRED = [P + f"test_retired_ptt_completion_cannot_replace_current_observation[{kind}]" for kind in ("success", "error")]
+          CASES += ERRORS + RETIRED
+          CONTROLS = [P + "test_get_reads_emit_hamlib_observations", P + "test_observed_ptt_profile_declares_polling_without_write_controls"]
+          M2 = [(RADIO, "            if self._provider_generation_is_current(provider_generation):\n                unknown =", "            if True:\n                unknown ="), (RADIO, "        if self._provider_generation_is_current(provider_generation):\n            observed_ptt =", "        if True:\n            observed_ptt =")]
+          M2 += [(RADIO, f"self._stamp_provider_generation(({name},), provider_generation)", f"self._stamp_provider_generation(({name},), None if capture is None else capture())") for name in ("unknown", "observed_ptt")]
+          FULL = dict.fromkeys(CASES)
+          PLAN = [("baseline", [], FULL),
+              ("M1-false-unknown", [(RADIO, "unknown = adapter.observed_ptt_observation(None)", "unknown = adapter.observed_ptt_observation(False)")], {**dict.fromkeys(CONTROLS), **dict.fromkeys(ERRORS, (1254, "failed current PTT read retained ON evidence"))}),
+              ("M2-current-stamp", M2, {**dict.fromkeys(CONTROLS), **dict.fromkeys(RETIRED, (1331, "retired PTT completion replaced current evidence"))}),
+              ("M3-cancel-as-data", [(RADIO, "            ptt = await adapter.read_ptt()\n        except Exception:\n", "            ptt = await adapter.read_ptt()\n        except BaseException:\n")], {**dict.fromkeys(CONTROLS), P + "test_cancelled_ptt_read_does_not_publish_unknown": (1373, None)}),
+              ("equivalent", [(OBS, "normalize_observed_ptt(value)", "normalize_observed_ptt(value=value)")], FULL), ("restored", [], FULL)]
+          def save(path, value):
+              path.write_text(json.dumps(value, indent=2) + "\n")
+          def git(root, *args):
+              return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.STDOUT, timeout=60)
+          def sha(data): return hashlib.sha256(data).hexdigest()
+          def snapshot(root):
+              return {name: sha((root / name).read_bytes()) for name in OWNED}
+          def status(root): return git(root, "status", "--porcelain=v1", "--untracked-files=all")
+          class Oracle:
+              def pytest_collection_finish(self, session):
+                  nodes = [item.nodeid for item in session.items]
+                  assert len(nodes) == len(set(nodes)) == len(expected) and set(nodes) == set(expected), nodes
+                  assert all(Path(item.path).resolve() == root / FILE and Path(item.module.__file__).resolve() == root / FILE for item in session.items)
+                  save(evidence / "collected.json", nodes)
+              @pytest.hookimpl(hookwrapper=True)
+              def pytest_runtest_makereport(self, item, call):
+                  report = (yield).get_result()
+                  row = {"node": item.nodeid, "phase": report.when, "outcome": report.outcome, "xfail": getattr(report, "wasxfail", None)}
+                  if call.excinfo is not None:
+                      last = call.excinfo.traceback[-1]
+                      row.update(exception=f"{call.excinfo.type.__module__}.{call.excinfo.type.__name__}", message=str(call.excinfo.value), path=str(Path(last.path).resolve()), line=last.lineno + 1)
+                  with (evidence / "phases.jsonl").open("a") as output:
+                      output.write(json.dumps(row) + "\n")
+          def validate(evidence, expected, rc, root):
+              assert rc == (1 if any(expected.values()) else 0), rc
+              xml = ET.parse(evidence / "junit.xml").getroot()
+              cases = xml.findall(".//testcase")
+              keys = [(case.get("classname"), case.get("name")) for case in cases]
+              wanted = {(FILE[:-3].replace("/", "."), node.removeprefix(P)): checkpoint for node, checkpoint in expected.items()}
+              assert len(keys) == len(set(keys)) == len(wanted) and set(keys) == set(wanted), keys
+              assert not xml.findall(".//error") and not xml.findall(".//skipped")
+              assert all(len(case.findall("failure")) == int(wanted[key] is not None) for case, key in zip(cases, keys))
+              phases = [json.loads(line) for line in (evidence / "phases.jsonl").read_text().splitlines()]
+              assert Counter((row["node"], row["phase"]) for row in phases) == Counter((node, phase) for node in expected for phase in ("setup", "call", "teardown"))
+              for row in phases:
+                  checkpoint = expected[row["node"]] if row["phase"] == "call" else None
+                  assert row["xfail"] is None, row
+                  if checkpoint is None:
+                      assert row["outcome"] == "passed" and "exception" not in row, row
+                  else:
+                      line, message = checkpoint
+                      assert row["outcome"] == "failed" and row["exception"] == "builtins.AssertionError", row
+                      assert row["path"] == str(root / FILE) and row["line"] == line, row
+                      assert message is None or row["message"].splitlines()[0] == message, row
+          if len(sys.argv) > 1:
+              root, evidence = Path.cwd().resolve(), Path(sys.argv[1])
+              spec = json.loads((evidence / "expected.json").read_text())
+              expected = spec["nodes"]
+              provenance = {}
+              for module, file in (("rigplane.backends.rigctld_client.radio", RADIO), ("rigplane.backends.rigctld_client.observations", OBS)):
+                  actual = Path(importlib.import_module(module).__file__).resolve()
+                  assert actual == root / file and sha(actual.read_bytes()) == spec["hashes"][file]
+                  provenance[module] = str(actual)
+              save(evidence / "imports.json", provenance)
+              args = ["-q", "-o", "addopts=", "-o", f"cache_dir={evidence / 'pytest-cache'}", "--tb=long", "--timeout=20", "--timeout-method=thread", f"--junitxml={evidence / 'junit.xml'}", *expected]
+              save(evidence / "pytest-command.json", args)
+              sys.exit(pytest.main(args, plugins=[Oracle()]))
+          seed, proof = Path.cwd().resolve(), Path(os.environ["PROOF_ROOT"])
+          artifacts = proof / "evidence"
+          originals = {file: git(seed, "show", f"{PIN}:{file}") for file in OWNED}
+          hashes = {file: sha(data) for file, data in originals.items()}
+          assert git(seed, "rev-parse", "HEAD").decode().strip() == PIN
+          assert snapshot(seed) == hashes and not status(seed)
+          git(seed, "merge-base", "--is-ancestor", BASE, PIN)
+          diagnostic = seed.parent / "diagnostic"
+          assert git(diagnostic, "rev-parse", "HEAD").decode().strip() == os.environ["GITHUB_SHA"]
+          git(diagnostic, "merge-base", "--is-ancestor", PIN, "HEAD")
+          assert sys.version_info[:2] == (3, 13) and len(CASES) == len(set(CASES)) == 42
+          assert len(PLAN) == 6 and sum(len(expected) for _, _, expected in PLAN) == 138
+          save(artifacts / "provenance.json", {"source": PIN, "base": BASE, "tree": git(seed, "rev-parse", "HEAD^{tree}").decode().strip(), "hashes": hashes, "python": sys.version, "pytest": pytest.__version__, "uv": subprocess.check_output(["uv", "--version"]).decode().strip(), "workflow_sha256": sha((diagnostic / ".github/workflows/full.yml").read_bytes()), **{key: os.environ.get(key) for key in ("GITHUB_SHA", "GITHUB_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_NAME")}})
+          prepared = {}
+          for label, edits, expected in PLAN:
+              contents = dict(originals)
+              for file, old, new in edits:
+                  assert originals[file].decode().count(old) == contents[file].decode().count(old) == 1 and old != new, (label, old)
+                  contents[file] = contents[file].decode().replace(old, new, 1).encode()
+              for file in (RADIO, OBS):
+                  compile(contents[file], file, "exec")
+              for checkpoint in expected.values():
+                  assert checkpoint is None or "assert " in originals[FILE].decode().splitlines()[checkpoint[0] - 1]
+              prepared[label] = contents
+          save(artifacts / "plan.json", PLAN)
+          records = []
+          try:
+              for label, edits, expected in PLAN:
+                  evidence = artifacts / label
+                  evidence.mkdir()
+                  root = Path(tempfile.mkdtemp(prefix=label + "-", dir=proof)) / "source"
+                  git(proof, "clone", "--shared", "--no-checkout", str(seed), str(root))
+                  git(root, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", PIN)
+                  assert git(root, "rev-parse", "HEAD").decode().strip() == PIN and snapshot(root) == hashes and not status(root)
+                  try:
+                      for file, data in prepared[label].items():
+                          if data != originals[file]:
+                              (root / file).write_bytes(data)
+                      variant = {file: sha(data) for file, data in prepared[label].items()}
+                      assert snapshot(root) == variant
+                      (evidence / "applied.diff").write_bytes(git(root, "diff", "HEAD"))
+                      save(evidence / "expected.json", {"nodes": expected, "hashes": variant})
+                      env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(root / "src"), str(root / "tests"))), "PYTEST_ADDOPTS": "", "PYTEST_PLUGINS": "", "PYTHONPYCACHEPREFIX": str(evidence / "bytecode")}
+                      args = ["uv", "run", "--no-sync", "python", str(Path(__file__).resolve()), str(evidence)]
+                      save(evidence / "invocation.json", {"args": args, "cwd": str(root), "pythonpath": env["PYTHONPATH"], "pycache": env["PYTHONPYCACHEPREFIX"]})
+                      (evidence / "exit.txt").write_text("INVALID: subprocess has not returned\n")
+                      with (evidence / "stdout.log").open("w") as stdout, (evidence / "stderr.log").open("w") as stderr:
+                          result = subprocess.run(args, cwd=root, env=env, stdout=stdout, stderr=stderr, timeout=180)
+                      (evidence / "exit.txt").write_text(str(result.returncode) + "\n")
+                      assert snapshot(root) == variant, "test altered source"
+                      validate(evidence, expected, result.returncode, root)
+                  except BaseException as error:
+                      save(evidence / "verdict.json", {"status": "INVALID", "error": repr(error)})
+                      raise
+                  finally:
+                      try:
+                          actual = snapshot(root)
+                          save(evidence / "before-restore.json", {"actual": actual, "base": hashes, "matches_base": actual == hashes})
+                          (evidence / "before-restore.status").write_bytes(status(root))
+                          (evidence / "before-restore.diff").write_bytes(git(root, "diff", "HEAD"))
+                          assert (actual == hashes) is (not bool(edits)), "base comparison negative control failed"
+                      finally:
+                          for file in (RADIO, OBS):
+                              (root / file).write_bytes(originals[file])
+                          save(evidence / "restored-hashes.json", snapshot(root))
+                          (evidence / "restored.status").write_bytes(status(root))
+                          (evidence / "restored.diff").write_bytes(git(root, "diff", "HEAD"))
+                          assert snapshot(root) == hashes and not status(root), "restoration failed"
+                  record = {"label": label, "cases": len(expected), "pass": sum(value is None for value in expected.values()), "expected_call_failures": sum(value is not None for value in expected.values())}
+                  records.append(record)
+                  save(evidence / "verdict.json", {"status": "PASS", **record})
+                  print(json.dumps(record), flush=True)
+              assert len(records) == 6 and sum(row["cases"] for row in records) == 138 and sum(row["pass"] for row in records) == 132 and sum(row["expected_call_failures"] for row in records) == 6
+          finally:
+              save(artifacts / "completed.json", records)
+              save(artifacts / "seed-final-hashes.json", snapshot(seed))
+              (artifacts / "seed-final.status").write_bytes(status(seed))
+              assert snapshot(seed) == hashes and not status(seed), "pristine seed changed"
+          save(artifacts / "verdict.json", {"status": "PASS", "records": records})
+          PY
+          uv run --no-sync python "$PROOF_ROOT/evidence/proof.py"
+      - name: Upload proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rigctld-observation-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROOF_ROOT }}/evidence/
+          if-no-files-found: error
+          retention-days: 14
