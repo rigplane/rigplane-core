@@ -20,6 +20,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldScope,
     Observation,
 )
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
 
 Clock = Callable[[], float]
 
@@ -238,6 +239,20 @@ class RigctldClientObservationAdapter:
             _PTT,
             await radio.get_ptt(),
             native_id="t",
+        )
+
+    def observed_ptt_observation(
+        self,
+        value: object,
+        *,
+        timestamp_monotonic: float | None = None,
+    ) -> Observation:
+        """Build canonical diagnostic evidence without another radio read."""
+        return self._adapter().observation(
+            OBSERVED_PTT_PATH,
+            normalize_observed_ptt(value),
+            native_id="t",
+            timestamp_monotonic=timestamp_monotonic,
         )
 
     async def read_freq(self) -> Observation:
