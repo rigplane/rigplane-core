@@ -174,7 +174,29 @@ class RigctldClientObservationPoller:
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
-        observations.append(await adapter.read_ptt())
+        try:
+            ptt = await adapter.read_ptt()
+        except Exception:
+            if self._provider_generation_is_current(provider_generation):
+                unknown = adapter.observed_ptt_observation(None)
+                try:
+                    self._callback(
+                        self._stamp_provider_generation((unknown,), provider_generation)
+                    )
+                except Exception:
+                    logger.warning(
+                        "rigctld-client PTT error observation publication failed",
+                        exc_info=True,
+                    )
+            raise
+        if self._provider_generation_is_current(provider_generation):
+            observed_ptt = adapter.observed_ptt_observation(
+                ptt.value, timestamp_monotonic=ptt.timestamp_monotonic
+            )
+            self._callback(
+                self._stamp_provider_generation((observed_ptt,), provider_generation)
+            )
+        observations.append(ptt)
         active_vfo = await adapter.read_active_vfo()
         if active_vfo is not None:
             observations.append(active_vfo)
