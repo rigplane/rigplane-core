@@ -784,7 +784,7 @@ class TestPtt:
         responses: asyncio.Queue[bytes] = asyncio.Queue()
         send_release, disconnect_release = asyncio.Event(), asyncio.Event()
 
-        async def send(frame: bytes) -> None:
+        async def send(frame: bytes, *, is_current: object = True) -> None:
             await send_release.wait()
             sent.append(frame)
 
@@ -792,7 +792,7 @@ class TestPtt:
             return await responses.get()
 
         link = AsyncMock()
-        link.send.side_effect = send
+        link.send_written.side_effect = send
         link.receive.side_effect = receive
         link.disconnect.side_effect = OSError("pre-disconnect failure")
         radio._civ_transport = serial.SerialCivTransport(link)
@@ -832,7 +832,7 @@ class TestPtt:
                 if radio._civ_transport is not replacement:
                     radio._civ_transport = replacement
                 await asyncio.wait_for(radio._retire_managed_tx_port(11), 0.5)
-                assert link.send.await_count == 1
+                assert link.send_written.await_count == 1
                 assert replacement.sent_packets == []
                 assert not replacement.disconnected
                 assert radio._civ_transport is replacement
@@ -876,7 +876,7 @@ class TestPtt:
             await asyncio.sleep(0)
         send_release.clear()
         pending_write = asyncio.create_task(radio._write_managed_ptt(11, True))
-        while link.send.await_count < 2:
+        while link.send_written.await_count < 2:
             await asyncio.sleep(0)
         if invalidation == "poison":
             assert runtime._managed_tx_port_is_current(token)
