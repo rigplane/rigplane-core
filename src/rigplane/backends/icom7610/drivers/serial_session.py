@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+from collections.abc import Callable
 from typing import Protocol
 
 from ....types import PacketType
@@ -28,6 +29,11 @@ class _LifecycleCivLink(CivLink, Protocol):
 
     async def disconnect(self) -> None:
         """Close the CI-V link."""
+
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        """Wait for local frame write/drain completion."""
 
     @property
     def connected(self) -> bool:
@@ -158,7 +164,9 @@ class SerialCivTransport:
     def start_idle_loop(self) -> None:
         return None
 
-    async def send_tracked(self, data: bytes) -> None:
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         # MOR-172: ``_send_open_close_on_transport`` in ``_control_phase.py``
         # emits a LAN-style binary OpenClose packet (type marker 0x01C0 at
         # offset 0x10) that the shared-core lifecycle calls on session
@@ -179,7 +187,7 @@ class SerialCivTransport:
         if not frame:
             return
         try:
-            await self._civ_link.send(frame)
+            await self._civ_link.send_written(frame, is_current=is_current)
             self.send_seq = (self.send_seq + 1) & 0xFFFF
             self._udp_error_count = 0
         except Exception:

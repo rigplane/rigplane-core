@@ -8,7 +8,10 @@ import importlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
+
+from ....core.exceptions import CommandError
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +136,16 @@ class SerialFrameCodec:
         self._partial_since = None
 
 
+@dataclass(slots=True)
+class _WriteRequest:
+    payload: bytes
+    queue: asyncio.Queue[bytes | _WriteRequest | None]
+    writer: Any
+    result: asyncio.Future[None]
+    is_current: Callable[[], bool] | None = None
+    started: bool = False
+
+
 class SerialCivLink:
     """Async serial CI-V link with framing, writer serialization, and health flags."""
 
@@ -173,7 +186,7 @@ class SerialCivLink:
         self._healthy = False
         self._max_write_queue = max_write_queue
         self._frames: asyncio.Queue[bytes] = asyncio.Queue()
-        self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue(
+        self._write_queue: asyncio.Queue[bytes | _WriteRequest | None] = asyncio.Queue(
             maxsize=max_write_queue
         )
         self._writer_task: asyncio.Task[None] | None = None
@@ -224,7 +237,7 @@ class SerialCivLink:
         self._connected = True
         self._healthy = True
         self._writer_task = asyncio.create_task(
-            self._writer_loop(), name="serial-civ-writer"
+            self._writer_loop(self._write_queue, writer), name="serial-civ-writer"
         )
 
     async def disconnect(self) -> None:
@@ -233,29 +246,86 @@ class SerialCivLink:
             self._healthy = False
             return
 
-        self._connected = False
-        self._healthy = False
+        await self._retire_writer(self._write_queue, self._writer, self._writer_task)
 
-        if self._writer_task is not None:
-            self._writer_task.cancel()
-            try:
-                await self._writer_task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self._writer_task = None
-
-        writer = self._writer
-        self._writer = None
-        self._reader = None
-        self._reset_session_buffers()
-
+    async def _retire_writer(
+        self,
+        queue: asyncio.Queue[bytes | _WriteRequest | None],
+        writer: Any,
+        worker: asyncio.Task[None] | None,
+    ) -> None:
+        # Detach and close captured resources before joining a worker whose
+        # drain may resist cancellation. Never clear a replacement after await.
+        if self._writer is writer and self._write_queue is queue:
+            self._connected = False
+            self._healthy = False
+            self._writer = None
+            self._reader = None
+            self._writer_task = None
+            self._reset_session_buffers()
+        self._fail_queued_writes(queue)
         if writer is not None:
             writer.close()
+        if worker is not None and not worker.done():
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+        if writer is not None:
             wait_closed = getattr(writer, "wait_closed", None)
             if wait_closed is not None:
                 with contextlib.suppress(Exception):
                     await wait_closed()
+
+    @staticmethod
+    def _fail_queued_writes(queue: asyncio.Queue[bytes | _WriteRequest | None]) -> None:
+        while not queue.empty():
+            item = queue.get_nowait()
+            if isinstance(item, _WriteRequest) and not item.result.done():
+                item.result.set_exception(ConnectionError("Serial writer retired."))
+
+    def _write_session_is_current(
+        self, queue: asyncio.Queue[bytes | _WriteRequest | None], writer: Any
+    ) -> bool:
+        return (
+            self._connected
+            and writer is not None
+            and self._writer is writer
+            and self._write_queue is queue
+        )
+
+    async def send_written(
+        self, frame: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        """Wait for this session's local write/drain, not a radio ACK."""
+        queue, writer, worker = self._write_queue, self._writer, self._writer_task
+        if worker is None or worker.done():
+            raise ConnectionError("Serial writer is not running.")
+        request = _WriteRequest(
+            bytes(frame),
+            queue,
+            writer,
+            asyncio.get_running_loop().create_future(),
+            is_current,
+        )
+        try:
+            while True:
+                if not self._write_session_is_current(queue, writer):
+                    raise ConnectionError("Serial write session is no longer current.")
+                if is_current is not None and not is_current():
+                    raise CommandError("Serial CI-V write is no longer current.")
+                try:
+                    queue.put_nowait(request)
+                    break
+                except asyncio.QueueFull:
+                    await asyncio.sleep(0)
+            await request.result
+        except asyncio.CancelledError:
+            request.result.cancel()
+            if request.started:
+                await self._retire_writer(queue, writer, worker)
+            raise
 
     async def send(self, frame: bytes) -> None:
         """Queue one CI-V payload/frame for serialized sending."""
@@ -344,29 +414,70 @@ class SerialCivLink:
         self._healthy = True
         return bytes(chunk)
 
-    async def _writer_loop(self) -> None:
-        while True:
-            payload = await self._write_queue.get()
-            if payload is None:
-                return
-
-            writer = self._writer
-            if writer is None:
-                self._healthy = False
-                continue
-            try:
-                writer.write(self._codec.encode(payload))
-                await writer.drain()
-                self._healthy = True
-            except (OSError, RuntimeError) as exc:
-                logger.warning("Recoverable serial write error: %s", exc)
-                self._healthy = False
-                await asyncio.sleep(0)
-            except Exception:
-                logger.exception("Unrecoverable serial write error.")
-                self._connected = False
-                self._healthy = False
-                return
+    async def _writer_loop(
+        self,
+        queue: asyncio.Queue[bytes | _WriteRequest | None] | None = None,
+        writer: Any = None,
+    ) -> None:
+        queue = self._write_queue if queue is None else queue
+        writer = self._writer if writer is None else writer
+        request: _WriteRequest | None = None
+        try:
+            while True:
+                item = await queue.get()
+                request = item if isinstance(item, _WriteRequest) else None
+                if item is None:
+                    return
+                if request is not None and request.result.done():
+                    continue
+                if not self._write_session_is_current(queue, writer):
+                    return
+                payload = item.payload if isinstance(item, _WriteRequest) else item
+                if request is not None:
+                    try:
+                        if request.queue is not queue or request.writer is not writer:
+                            raise ConnectionError("Serial write session changed.")
+                        if request.is_current is not None and not request.is_current():
+                            raise CommandError(
+                                "Serial CI-V write is no longer current."
+                            )
+                    except Exception as exc:
+                        request.result.set_exception(exc)
+                        continue
+                    request.started = True
+                try:
+                    writer.write(self._codec.encode(payload))
+                    await writer.drain()
+                except (OSError, RuntimeError) as exc:
+                    if request is not None:
+                        request.started = False
+                        if not request.result.done():
+                            request.result.set_exception(exc)
+                    logger.warning("Recoverable serial write error: %s", exc)
+                    if self._write_session_is_current(queue, writer):
+                        self._healthy = False
+                    await asyncio.sleep(0)
+                except Exception as exc:
+                    if request is not None and not request.result.done():
+                        request.result.set_exception(exc)
+                    logger.exception("Unrecoverable serial write error.")
+                    if self._write_session_is_current(queue, writer):
+                        self._connected = False
+                        self._healthy = False
+                    return
+                else:
+                    if not self._write_session_is_current(queue, writer):
+                        return
+                    self._healthy = True
+                    if request is not None and not request.result.done():
+                        request.result.set_result(None)
+                finally:
+                    if request is not None:
+                        request.started = False
+        finally:
+            if request is not None and not request.result.done():
+                request.result.set_exception(ConnectionError("Serial writer retired."))
+            self._fail_queued_writes(queue)
 
     def _resolve_opener(self) -> Callable[[], Awaitable[tuple[Any, Any]]]:
         if self._open_serial_connection is not None:
