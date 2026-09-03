@@ -601,8 +601,8 @@ const manifest = {
     + 'wiring) has no plan-ful twin in this slice — its manifest declares a different zone set and is '
     + 'separately scoped follow-up work.',
     'MOR-2243: `peer-split-chassis--desktop` runs no real behavior assertions — `fixtures/main.ts` '
-    + 'returns one hardcoded passing entry (`peer-split-no-assertion-pipeline`) for every '
-    + '`peer-split` fixture because `fixture.expect` is absent, so this capture\'s assertion cell '
+    + 'answers `peer-split-chassis`\'s absent `expect` with one hardcoded passing entry '
+    + '(`peer-split-no-assertion-pipeline`), so this capture\'s assertion cell '
     + 'confirms only that the harness mounted and cannot go red on a composition defect; the '
     + 'discriminating check for this fixture is the pixel baseline of the same name in '
     + '`tests/e2e/visual/visual-baselines.spec.ts`, which per `fixtures/approved-baselines/'
