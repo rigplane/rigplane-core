@@ -85,6 +85,7 @@ from ..core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
     civ_acquisition_executor_for_provider,
+    derive_tx_active,
 )
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -3478,11 +3479,22 @@ class RadioPoller:
         if scheduler is None:
             return
         now = time.monotonic()
-        # MOR-2280: this drain no longer calls ``due_requests``. The profile's
-        # cadence is emitted by ``StateFreshnessService.tick``, which derives
-        # the transmit fact with ``derive_tx_active`` over the same canonical
-        # ``global.tx_state.ptt``. Both seats now reach the cadence through
-        # that one driver; this method dispatches what it finds queued.
+        # MOR-2280: this drain no longer calls ``due_requests`` -- the
+        # profile's cadence is emitted by ``StateFreshnessService.tick``, and
+        # this method dispatches what it finds queued.
+        #
+        # It must still refresh the cached transmit fact, which that call used
+        # to keep current. This loop drains every 0.025 s (LAN) against a
+        # 0.05 s tick, so most drains land BETWEEN ticks; gating on the fact
+        # the last tick left would miss a de-key by up to one tick and send
+        # the tx_only group (power/SWR/ALC/comp) during confirmed RX -- the
+        # MOR-1525 SWR-flap loop. Same ``derive_tx_active`` over the same
+        # canonical store as the tick's own cadence call and as
+        # ``RigctldServer._drain_state_acquisition_once``, so the writers
+        # cannot disagree about one store state. See note_tx_active()'s
+        # docstring, and
+        # test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain.
+        scheduler.note_tx_active(derive_tx_active(self._state_store))
         # MOR-1533: dispatch must use the tx_active-gated view. Crediting an
         # already-sent answer (runtime._civ_rx) uses the unfiltered
         # pending_requests() instead, so an answer landing after de-key is

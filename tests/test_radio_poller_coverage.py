@@ -597,16 +597,16 @@ async def test_scheduler_due_request_timeout_is_terminal_not_resent_each_tick() 
     radio._acquisition_scheduler = scheduler
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
-    # Each cycle takes exactly two ``time.monotonic()`` readings: the
-    # ``derive_tx_active`` snapshot inside ``_tick_cadence`` (no
-    # ``tx_state.ptt`` observation exists here, so it reads False whatever the
-    # value) and the drain's own timestamp. ``now`` is passed explicitly to
-    # the cadence call so the pair stays two readings, not three.
+    # How many ``time.monotonic()`` readings one cycle takes is an
+    # implementation detail of the drain -- it changed twice while MOR-2280 was
+    # in flight. Drive a settable clock rather than a fixed sequence, so this
+    # test fails on the cadence behaviour it is about and not on a read count.
+    clock = {"t": 100.0}
     with patch(
-        "rigplane.web.radio_poller.time.monotonic",
-        side_effect=(100.0, 100.0, 101.1, 101.1, 101.2, 101.2),
+        "rigplane.web.radio_poller.time.monotonic", side_effect=lambda: clock["t"]
     ):
         for cycle_now in (100.0, 101.1, 101.2):
+            clock["t"] = cycle_now
             _tick_cadence(poller, now=cycle_now)
             await poller._send_query()  # noqa: SLF001
 
@@ -6255,9 +6255,18 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 # ``RadioPoller`` for ``StateFreshnessService.tick``. The frames below were
 # recorded from one drain cycle at ``e5fd5c8a`` (the merge base of this
 # change) by printing ``_drain_cycle_wire_frames`` before the poller was
-# touched, and are asserted unchanged after it. The test drives the tick and
-# then the poller, which is what production does in both trees, so it is the
-# same cycle either side of the move.
+# touched, and are asserted unchanged after it.
+#
+# Scope, and it is narrower than "web parity" sounds: this drives ONE tick
+# immediately followed by ONE drain. Production interleaves a 0.05 s tick
+# (``StateFreshnessService.__init__``'s ``interval_seconds``) with a 0.025 s
+# LAN / 0.100 s serial drain (``_FAST_INTERVAL`` / ``_FAST_INTERVAL_SERIAL``),
+# so most drains land BETWEEN ticks. An earlier revision of this change leaked
+# a ``tx_only`` read during RX in exactly that ordering, and this pin could not
+# see it: the ordering it fixes is the one where the cached transmit fact is
+# never stale. Between-ticks is
+# ``test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain``.
+# A pin that fixes an interleaving says nothing about the ones it excludes.
 # ---------------------------------------------------------------------------
 
 #: ``(command, sub, data)`` of every frame one IC-7300 drain cycle emits.
@@ -6344,3 +6353,83 @@ async def test_web_cadence_wire_frames_unchanged_when_due_requests_moves_to_the_
         assert call_.kwargs["priority"] is Priority.BACKGROUND
         assert call_.kwargs["wait_response"] is False
         assert call_.kwargs["wait_dispatch"] is False
+
+
+def _reconciliation_only_tx_only_profile(path: FieldPath) -> RadioAcquisitionProfile:
+    """One ``tx_only`` meter with no poll cadence of its own."""
+
+    return RadioAcquisitionProfile(
+        provider="icom_civ",
+        capabilities=(FieldCapability(path=path, command_response_observable=True),),
+        default_policy=AcquisitionPolicy(),
+        field_policies={path: AcquisitionPolicy(tx_only=True)},
+    )
+
+
+@pytest.mark.asyncio
+async def test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain() -> None:
+    """MOR-1525 leak: a drain landing between two ticks must re-read the fact.
+
+    The poller drains every 0.025 s (LAN) against a 0.05 s tick, so most drains
+    land between ticks. If the drain gates on the cached fact the last tick
+    left, a de-key that happened after that tick is invisible and the
+    ``tx_only`` group is dispatched during confirmed RX -- the SWR-flap loop.
+    Base ``e5fd5c8a`` sent 0 such reads because its drain called
+    ``due_requests`` with a drain-time derivation; this asserts the same 0.
+    """
+
+    radio = _make_radio(active="MAIN")
+    power = FieldPath.global_("meters", "power")
+    scheduler = AcquisitionScheduler(
+        profile=_reconciliation_only_tx_only_profile(power)
+    )
+    radio._acquisition_scheduler = scheduler
+    executor = _InjectedAcquisitionExecutor()
+
+    store = StateStore()
+    ptt = FieldPath.global_("tx_state", "ptt")
+    now = time.monotonic()
+    store.apply(
+        Observation(
+            path=ptt,
+            value=True,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=now,
+            max_age=1000.0,
+        )
+    )
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        radio_state=RadioState(),
+        state_store=store,
+        acquisition_executor=executor,
+    )
+
+    # Tick while transmitting, and queue the tx_only reconciliation it gates.
+    _tick_cadence(poller)
+    scheduler.ensure_fresh(
+        power,
+        max_age=2.0,
+        priority=AcquisitionPriority.RECONCILIATION,
+        reason="stale",
+    )
+
+    # De-key AFTER that tick. The next tick is up to 50 ms away; the drain is
+    # not.
+    store.apply(
+        Observation(
+            path=ptt,
+            value=False,
+            source=SourceMetadata(source="poll_response", provider="icom_civ"),
+            timestamp_monotonic=now + 0.001,
+            max_age=1000.0,
+        )
+    )
+
+    await poller._send_scheduler_requests()  # noqa: SLF001
+
+    assert executor.calls == [], (
+        "tx_only request reached the wire during confirmed RX -- the drain "
+        "gated on the previous tick's transmit fact, not the drain's"
+    )
