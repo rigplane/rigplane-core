@@ -57,15 +57,29 @@
      * measured host box, not on how an ancestor positioned it.
      */
     anchor?: 'top-left' | 'center';
+    /**
+     * Lower bound on the computed scale, in the same ratio units as the
+     * scale itself. Omitted (the default), there is no floor and the stage
+     * shrinks to whatever fits, which is what every consumer got before
+     * this prop existed. Given, the stage stops shrinking at this ratio and
+     * the holder scrolls the part that no longer fits (owner decision
+     * relayed 2026-09-02: an operator at a small window is better served by
+     * controls too large to fit than by a face too small to read).
+     */
+    minScale?: number;
     children: Snippet;
   }
 
-  let { nativeW, nativeH, anchor = 'top-left', children }: Props = $props();
+  let { nativeW, nativeH, anchor = 'top-left', minScale, children }: Props = $props();
 
   let holder: HTMLDivElement | undefined = $state();
   let scale = $state(1);
   let offsetX = $state(0);
   let offsetY = $state(0);
+  /** Whether `minScale` is currently raising the scale above the fit — i.e.
+   *  whether the stage is painted larger than the measured host box. Gates
+   *  the holder's `overflow`; see the markup below. */
+  let floorActive = $state(false);
 
   // `anchor === 'top-left'` ignores `offsetX`/`offsetY` entirely (see
   // `transform` below), so the default's rendered `transform` string is
@@ -79,8 +93,9 @@
 
     const native: StageBox = { width: nativeW, height: nativeH };
 
-    // Writes only to `scale`/`offsetX`/`offsetY` — never back onto `holder`
-    // (MOR-2147, see file header). `scale` is written but never READ as
+    // Writes only to `scale`/`offsetX`/`offsetY`/`floorActive` — never back
+    // onto `holder`'s size (MOR-2147, see file header). `scale` and
+    // `floorActive` are written but never READ as
     // `$state` inside this effect: `computeStageCenterOffset` takes the
     // local `nextScale` below instead of the `scale` binding. Reading
     // `scale` here would register it as a dependency of this effect, and
@@ -91,8 +106,10 @@
     // box). Regression found by an independent verifier on this branch.
     const measure = (host: StageBox) => {
       if (host.width <= 0 || host.height <= 0) return;
-      const nextScale = computeStageScale(host, native);
+      const fit = computeStageScale(host, native);
+      const nextScale = computeStageScale(host, native, minScale);
       scale = nextScale;
+      floorActive = nextScale > fit;
       const offset = computeStageCenterOffset(host, native, nextScale);
       offsetX = offset.x;
       offsetY = offset.y;
@@ -114,7 +131,20 @@
   });
 </script>
 
-<div class="scaled-stage-holder" bind:this={holder}>
+<!-- `overflow` is gated on the floor here rather than declared in the
+     `<style>` block below: `auto` only while the floor is holding the stage
+     past this box, so that overflow stays reachable, and `hidden` otherwise.
+     Unconditional `auto` is not inert when the floor is idle. The scrollable
+     area is the UNTRANSFORMED layout box of `.scaled-stage`, which the
+     inline width/height below hold at the native size at every scale — so
+     it overflows the host at every scale below 1. Measured in Chrome
+     on `LcdLayout variant="peer-split"` at a 1280x800 viewport: an 802x337
+     holder with a 1280x540 scroll area, scrollable 478x203 past a stage the
+     fit had already sized to fit it (scale 0.624, painted 799x337).
+     `hidden` takes away the scrollbars and the wheel path, not the area:
+     with the gate in place the same holder still reports `scrollWidth`/
+     `scrollHeight` 1280x540 and still scrolls 478x203 from script. -->
+<div class="scaled-stage-holder" style:overflow={floorActive ? 'auto' : 'hidden'} bind:this={holder}>
   <div class="scaled-stage" style:width="{nativeW}px" style:height="{nativeH}px" style:transform>
     {@render children()}
   </div>
@@ -125,7 +155,8 @@
     position: relative;
     width: 100%;
     height: 100%;
-    overflow: hidden;
+    /* No `overflow` here on purpose — it is an inline, floor-gated value on
+       the element itself. See the comment above the markup. */
   }
 
   .scaled-stage {

@@ -199,7 +199,7 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 function render(): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(PeerSplitLayout, { target, props: { canvasW: 1280, canvasH: 540 } });
+  component = mount(PeerSplitLayout, { target, props: { canvasW: 1280, canvasH: 540, minScale: 0.5 } });
   flushSync();
 }
 
@@ -381,5 +381,25 @@ describe('the glass bezel keeps its own CSS after the chassis class it used to w
   it('subgrids the channel strips onto the chassis columns instead of a separately-computed split', () => {
     const strips = declarationsFor('.peer-split-glass :global(.channel-strips.channel-strips)');
     expect(strips['grid-template-columns']).toBe('subgrid');
+  });
+});
+
+describe('the glass forwards the shell-resolved scale floor to its stage (MOR-2259)', () => {
+  // A SOURCE pin, not a behavioural one: jsdom computes no layout, so
+  // `ScaledStage`'s `measure()` sees a 0x0 holder and returns before the
+  // floor can influence anything observable here (the same limit this
+  // file's header and `../../../primitives/stage/__tests__/
+  // ScaledStage.isolated.test.ts`'s `flex-shrink` pin both record). The
+  // floor's arithmetic is pinned in `stage-scale.test.ts`; what is pinned
+  // here is the one link those tests cannot see — that this component
+  // actually hands its `minScale` prop on rather than accepting it and
+  // dropping it.
+  const source = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
+  const markup = source.replace(/<script[\s\S]*?<\/script>/, '').replace(/<style>[\s\S]*?<\/style>/, '');
+
+  it('passes minScale to ScaledStage in the markup', () => {
+    const tag = markup.match(/<ScaledStage[^>]*>/)?.[0];
+    expect(tag, 'no <ScaledStage ...> tag found in PeerSplitLayout.svelte markup').toBeDefined();
+    expect(tag).toMatch(/\{minScale\}|minScale=/);
   });
 });
