@@ -1,0 +1,164 @@
+name: Icom observed PTT mutation proof (staged)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mutation-proof:
+    runs-on: [self-hosted, linux, build]
+    env:
+      SOURCE_SHA: 04bb81d6255b8f7b0d89e7338852d07b3abed437
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify pinned source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Prove mutation and restoration structurally
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -eu
+          source_file=src/rigplane/runtime/_civ_rx.py
+          original_sha="$(git rev-parse HEAD)"
+          restore_source() {
+            git restore --source="$SOURCE_SHA" --worktree -- "$source_file"
+            test "$(git rev-parse HEAD)" = "$original_sha"
+            test -z "$(git diff --name-only -- "$source_file")"
+          }
+          trap restore_source EXIT
+
+          run_selected() {
+            label="$1"
+            proof_cache="$(mktemp -d)"
+            export UV_CACHE_DIR="$proof_cache/uv"
+            export PYTHONPYCACHEPREFIX="$proof_cache/pycache"
+            uv sync --all-extras --frozen
+            set +e
+            uv run pytest -q --junitxml="$label.xml" \
+              tests/test_civ_rx_coverage.py::test_civ_ptt_readback_emits_canonical_observed_state \
+              tests/test_civ_rx_coverage.py::test_unsolicited_civ_ptt_readback_has_unsolicited_provenance \
+              tests/test_civ_rx_coverage.py::test_civ_ptt_producer_drops_non_ptt_foreign_and_echo_frames \
+              tests/test_civ_rx_coverage.py::test_old_civ_epoch_ptt_readback_cannot_restore_observed_state \
+              tests/test_civ_rx_coverage.py::test_old_store_generation_ptt_readback_cannot_restore_observed_state \
+              tests/test_civ_rx_coverage.py::test_observed_ptt_expires_to_unknown_after_its_store_max_age \
+              tests/test_civ_rx_coverage.py::test_malformed_ptt_payloads_preserve_legacy_behavior
+            pytest_rc=$?
+            set -e
+            export pytest_rc
+            export junit_file="$label.xml"
+          }
+
+          python - <<'PY' > negative.patch
+          from pathlib import Path
+
+          path = Path("src/rigplane/runtime/_civ_rx.py")
+          old = '''                normalize_observed_ptt(
+                    False
+                    if frame.data == b"\\x00"
+                    else True
+                    if frame.data == b"\\x01"
+                    else None
+                ),
+          '''
+          new = '''                normalize_observed_ptt(bool(frame.data and frame.data[0])),
+          '''
+          text = path.read_text()
+          if text.count(old) != 1:
+              raise SystemExit("negative mutation target was not unique")
+          path.write_text(text.replace(old, new))
+          PY
+          git diff -- "$source_file" > negative.patch
+          run_selected negative
+          uv run python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          expected_failed = {
+              "test_civ_ptt_readback_emits_canonical_observed_state[empty]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[two]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[ff]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-off]",
+              "test_civ_ptt_readback_emits_canonical_observed_state[double-on]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[empty]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[two]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[ff]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-off]",
+              "test_malformed_ptt_payloads_preserve_legacy_behavior[double-on]",
+          }
+          root = ET.parse(os.environ["junit_file"]).getroot()
+          cases = list(root.iter("testcase"))
+          failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
+          errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
+          skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
+          if os.environ.get("pytest_rc") != "1":
+              raise SystemExit(f"expected pytest exit 1, got {os.environ.get('pytest_rc')}")
+          if failed != expected_failed:
+              raise SystemExit(f"unexpected failed nodes: {sorted(failed)!r}")
+          if errors or skipped:
+              raise SystemExit(f"unexpected errors/skips: {sorted(errors)!r} {sorted(skipped)!r}")
+          if len(cases) != 17:
+              raise SystemExit(f"expected 17 selected cases, got {len(cases)}")
+          PY
+          restore_source
+
+          python - <<'PY' > positive.patch
+          from pathlib import Path
+
+          path = Path("src/rigplane/runtime/_civ_rx.py")
+          old = '''                normalize_observed_ptt(
+                    False
+                    if frame.data == b"\\x00"
+                    else True
+                    if frame.data == b"\\x01"
+                    else None
+                ),
+          '''
+          new = '''                normalize_observed_ptt(
+                    True
+                    if frame.data == b"\\x01"
+                    else False
+                    if frame.data == b"\\x00"
+                    else None
+                ),
+          '''
+          text = path.read_text()
+          if text.count(old) != 1:
+              raise SystemExit("positive mutation target was not unique")
+          path.write_text(text.replace(old, new))
+          PY
+          git diff -- "$source_file" > positive.patch
+          run_selected positive
+          uv run python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(os.environ["junit_file"]).getroot()
+          cases = list(root.iter("testcase"))
+          failed = {case.attrib["name"] for case in cases if case.find("failure") is not None}
+          errors = {case.attrib["name"] for case in cases if case.find("error") is not None}
+          skipped = {case.attrib["name"] for case in cases if case.find("skipped") is not None}
+          if os.environ.get("pytest_rc") != "0":
+              raise SystemExit(f"expected pytest exit 0, got {os.environ.get('pytest_rc')}")
+          if failed or errors or skipped:
+              raise SystemExit(
+                  f"unexpected result: failures={sorted(failed)!r} "
+                  f"errors={sorted(errors)!r} skips={sorted(skipped)!r}"
+              )
+          if len(cases) != 17:
+              raise SystemExit(f"expected 17 selected cases, got {len(cases)}")
+          PY
+          restore_source
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: icom-observed-ptt-mutation-proof
+          path: |
+            negative.xml
+            positive.xml
+            negative.patch
+            positive.patch
