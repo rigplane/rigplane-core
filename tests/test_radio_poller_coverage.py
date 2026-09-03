@@ -131,6 +131,7 @@ from test_web_managed_tx_owner import _KEY, _TEARDOWN, _poller, _Radio, _Supervi
 # dispatch bodies; the interlock seat now lives at its head, so the RF
 # premise is stated once here (see the fixture docstring in conftest.py).
 pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+_OBSERVED_RF_STATE = RadioPoller._current_rf_state
 
 
 def _seed_fresh_rx(poller: RadioPoller) -> None:
@@ -146,6 +147,78 @@ def _seed_fresh_rx(poller: RadioPoller) -> None:
             provider_generation=store.provider_generation,
         )
     )
+
+
+def _web_queue_turn_poller(monkeypatch, queue, *, store=None):
+    poller = RadioPoller(_make_radio(), queue, state_store=store)
+    monkeypatch.setattr(poller, "_current_rf_state", _OBSERVED_RF_STATE.__get__(poller))
+    boundary = asyncio.Event()
+
+    async def query_boundary():
+        boundary.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(poller, "_fetch_nb_controls", AsyncMock())
+    monkeypatch.setattr(poller, "_fetch_mod_inputs", AsyncMock())
+    monkeypatch.setattr(poller, "_adaptive_gap", lambda: 0)
+    monkeypatch.setattr(poller, "_send_query", query_boundary)
+    return poller, boundary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["cancel", "replace", "error"])
+async def test_web_loop_claims_live_pending_finite_turn(mode, monkeypatch):
+    from test_command_queue_execution import assert_live_pending_turn
+
+    queue = CommandQueue()
+    poller, boundary = _web_queue_turn_poller(monkeypatch, queue)
+    _seed_fresh_rx(poller)
+    await assert_live_pending_turn(
+        queue,
+        poller._run,
+        lambda leaf: monkeypatch.setattr(poller, "_execute", leaf),
+        mode=mode,
+        boundary=boundary,
+    )
+
+
+@pytest.mark.asyncio
+async def test_web_loop_releases_held_entry_after_finite_current_turn(monkeypatch):
+    from test_command_queue_execution import wait_for_event_or_exit
+    from test_radio_poller_tx_interlock import _observe_ptt
+    from rigplane.runtime._poller_types import CommandQueueEntry
+
+    clock, queue = FreshnessClock(start=10.0), CommandQueue()
+    store = StateStore(freshness_clock=clock)
+    poller, boundary = _web_queue_turn_poller(monkeypatch, queue, store=store)
+    reply = asyncio.get_running_loop().create_future()
+    held, seen = SetSplit(True), []
+    _observe_ptt(store, True, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([CommandQueueEntry(held, reply)]) == []
+    clock.advance(0.1)
+    _observe_ptt(store, False, observed_at=clock.now())
+    assert poller._stage_tx_interlocked_entries([]) == []
+    clock.advance(1.0)
+    _observe_ptt(store, False, observed_at=clock.now())
+
+    async def leaf(command, **_kwargs):
+        seen.append(command)
+        if command == SetFreq(1):
+            queue.put_ordered(SetFreq(3))
+
+    monkeypatch.setattr(poller, "_execute", leaf)
+    queue.put_ordered(SetFreq(1))
+    queue.put_ordered(SetFreq(2))
+    task = asyncio.create_task(poller._run())
+    try:
+        await wait_for_event_or_exit(boundary, task)
+        assert seen == [SetFreq(1), SetFreq(2), held]
+        assert reply.result() is None
+        assert [e.command for e in queue.drain_entries()] == [SetFreq(3)]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        reply.cancel()
 
 
 @pytest.mark.asyncio
@@ -1773,6 +1846,102 @@ async def test_scheduler_polling_does_not_starve_user_command_queue() -> None:
 
     assert order[:2] == ["cmd", "poll"]
     assert radio.send_civ.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_finite_command_turn_composes_with_acquisition_error_backoff(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    queue, radio = CommandQueue(), _make_radio(active="MAIN")
+    loop = asyncio.get_running_loop()
+    first, second = loop.create_future(), loop.create_future()
+    later, leaves, boundary = [], [], {}
+
+    async def set_freq(freq: int) -> None:
+        leaves.append(freq)
+        if freq == 14_074_000:
+            later.append(queue.put_ordered(SetFreq(14_250_000), future=second))
+
+    async def send(
+        request: object,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> None:
+        if executor.execute.await_count == 1:
+            boundary.update(
+                first_complete=first.done() and first.result() is None,
+                pending=tuple(
+                    entry
+                    for segment in queue._segments  # noqa: SLF001
+                    for entry in segment.entries()
+                ),
+                second_pending=not second.done(),
+                leaves=tuple(leaves),
+            )
+            # Quota protects this pass only; remove the fixture's later work
+            # before observing the next pass's real acquisition backoff.
+            boundary["removed"] = queue.remove_pending(later[0])
+            raise ConnectionError("acquisition link down")
+        raise asyncio.CancelledError
+
+    radio.set_freq = AsyncMock(side_effect=set_freq)
+    scheduler = AcquisitionScheduler(
+        profile=_acquisition_profile(
+            FieldPath.receiver("main", "meters", "s_meter"),
+            FieldPath.receiver("sub", "meters", "s_meter"),
+        )
+    )
+    radio._acquisition_scheduler = scheduler
+    executor = SimpleNamespace(execute=AsyncMock(side_effect=send))
+    recorder = StateDiagnosticsRecorder(enabled=True)
+    poller = RadioPoller(
+        radio,
+        queue,
+        radio_state=RadioState(),
+        acquisition_executor=executor,
+        diagnostics=recorder,
+    )
+    _seed_fresh_rx(poller)
+    _tick_cadence(poller)
+    assert len(scheduler.pending_requests()) == 2
+    queue.put_ordered(SetFreq(14_074_000), future=first)
+    queue.wait = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
+    with (
+        patch(
+            "rigplane.web.radio_poller.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep,
+        caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"),
+    ):
+        task = asyncio.create_task(poller._run())  # noqa: SLF001
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        finally:
+            task.cancel()
+            first.cancel()
+            second.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert boundary["first_complete"]
+    assert boundary["leaves"] == (14_074_000,), "arrival must not refill initial quota"
+    assert len(boundary["pending"]) == 1 and boundary["pending"][0] is later[0]
+    assert later[0].future is second and boundary["second_pending"]
+    assert boundary["removed"]
+    radio.set_freq.assert_awaited_once_with(14_074_000)
+    assert first.result() is None
+    assert executor.execute.await_count == 2
+    assert sleep.await_args_list.count(call(0.5)) == 1
+    assert "radio disconnected, backing off 0.5s" in caplog.text
+    reported = [
+        event.details
+        for event in recorder.events()
+        if event.details.get("reason") == "acquisition_executor_error"
+    ]
+    assert [(event["error_type"], event["error"]) for event in reported] == [
+        ("ConnectionError", "acquisition link down")
+    ]
+    assert scheduler.diagnostics()["failureCountByReason"] == {
+        "acquisition_executor_error": 1
+    }
 
 
 @pytest.mark.asyncio
@@ -6548,3 +6717,21 @@ async def test_drain_between_ticks_gates_tx_only_on_the_fact_as_of_the_drain() -
         "tx_only request reached the wire during confirmed RX -- the drain "
         "gated on the previous tick's transmit fact, not the drain's"
     )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_executes_cancelled_unkey_after_callback_turn() -> None:
+    poller, radio, queue = _tx_poller(None)
+    radio.set_freq = AsyncMock()
+    reply = asyncio.get_running_loop().create_future()
+    queue.put_ordered(PttOff(), future=reply)
+    queue.put(SetFreq(14_074_000))
+    reply.cancel()
+    await asyncio.sleep(0)
+
+    await poller.drain_tx_safety_commands(timeout=1.0)
+
+    assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
+    radio.set_freq.assert_not_awaited()
+    assert reply.cancelled()
+    assert not queue.has_commands

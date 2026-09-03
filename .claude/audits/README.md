@@ -24,6 +24,14 @@ remainder of `.claude/`.
 - [2026-09-03-mechanism-audit-managed-command-queue.md](2026-09-03-mechanism-audit-managed-command-queue.md)
   — shared definitions, missing whole-operation claim/lifetime surfaces, and
   incomplete managed ingress migration; no implementation or runtime proof.
+
+## 2026-09-03 — command queue and Web execution (tree `fdbd7403`)
+
+- [2026-09-03-mechanism-audit-command-queue-web.md](2026-09-03-mechanism-audit-command-queue-web.md)
+  — bounded static review of pending identity, cancellation lifetime and the
+  finite Web drain; provider migration remains incomplete. No runtime, RF,
+  stop/replacement or whole-module deletion claim.
+
 ## 2026-09-03 — rigctld observed PTT (tree `9b1a0084`)
 
 - [2026-09-03-mechanism-audit-rigctld-observed-ptt.md](2026-09-03-mechanism-audit-rigctld-observed-ptt.md)
