@@ -1,4 +1,4 @@
-name: Canonical level formatter diagnostic
+name: Canonical level normalizers formatter diagnostic
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 1dff092f81df6e12268e40dca833dec921969b77
+          ref: fe026ad3fe52217f17d6a8cf94094a5eef7a5ad7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -35,13 +35,15 @@ jobs:
         run: |
           checked_head=$(git rev-parse HEAD)
           echo "checked_head=$checked_head"
-          if [ "$checked_head" != "1dff092f81df6e12268e40dca833dec921969b77" ]; then
+          if [ "$checked_head" != "fe026ad3fe52217f17d6a8cf94094a5eef7a5ad7" ]; then
             echo "unexpected checkout: $checked_head" >&2
             exit 1
           fi
           uv run ruff --version
           set +e
-          uv run ruff format --diff tests/test_canonical_receiver_levels.py > formatter.patch
+          uv run ruff format --diff \
+            src/rigplane/core/command_dispatch.py \
+            src/rigplane/core/command_service.py > formatter.patch
           rc=$?
           set -e
           echo "ruff_exit=$rc"
@@ -49,8 +51,12 @@ jobs:
             echo "unexpected Ruff exit: $rc" >&2
             exit "$rc"
           fi
-          if [ ! -s formatter.patch ]; then
-            echo "formatter.patch is empty" >&2
+          if [ "$rc" -eq 1 ] && [ ! -s formatter.patch ]; then
+            echo "Ruff reported a diff but formatter.patch is empty" >&2
+            exit 1
+          fi
+          if [ "$rc" -eq 0 ] && [ -s formatter.patch ]; then
+            echo "Ruff reported no diff but formatter.patch is nonempty" >&2
             exit 1
           fi
           git diff --exit-code
@@ -63,5 +69,5 @@ jobs:
       - name: Upload formatter patch
         uses: actions/upload-artifact@v7
         with:
-          name: canonical-level-format-1dff092f
+          name: canonical-level-normalizers-format-fe026ad3
           path: formatter.patch
