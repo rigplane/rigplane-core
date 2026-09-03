@@ -43,7 +43,13 @@ describe('dsp is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare a dsp zone (MOR-1368)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_DSP = ['desktop-v2'];
+  // MOR-2231 (step 1, batch 3) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force. This is the WIDEST of that batch's
+  // four: on that face the declaration retires five legacy hosts at once —
+  // `DspPanel` in both sidebars, `AgcPanel` in the left one, and the settings
+  // modal's `desktop-dsp` AND `desktop-agc` sections — because `DspSurface`
+  // owns the AGC leaf (5A/MOR-1290) and AGC has no zone of its own.
+  const DECLARES_DSP = ['desktop-v2', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

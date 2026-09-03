@@ -125,6 +125,7 @@
 </script>
 
 <script lang="ts">
+  import '../components-v2/controls/control-button.css';
   import type { RadioViewModel } from './radio-view-model';
   import { blockedLabel, keyBlockedReasons, type TxAuthoritySnapshot } from './rx-tx-surface';
 
@@ -203,9 +204,17 @@
     <div class="tx-aux-row">
       {#each TX_AUX_TOGGLES as [field, label] (field)}
         {#if txAux[field].availability.structural}
+          <!-- The `v2-*` classes and `data-surface`/`data-indicator-*`
+               attributes are the shared `control-button.css` vocabulary,
+               applied to this existing button; they add no gate and change no
+               handler. `data-active` is `pressedOf` — the same value
+               `aria-pressed` already carries, absent on an unobserved
+               reading rather than claiming "off". -->
           <button
-            type="button" class="tx-aux-toggle"
+            type="button" class="tx-aux-toggle v2-control-button v2-control-button--compact"
             data-testid={`tx-aux-${field}`} data-field={field}
+            data-surface="hardware" data-indicator-style="dot" data-indicator-color="cyan"
+            data-active={pressedOf(txAux[field])}
             data-disabled-reason={reasonOf(txAux[field])}
             title={reasonTextOf(txAux[field])} aria-describedby={reasonIdOf(field, txAux[field])}
             aria-pressed={pressedOf(txAux[field])}
@@ -220,7 +229,8 @@
       {#if txAux.atu.availability.structural}
         <!-- Transmit-causing. See the file header, rule (1). -->
         <button
-          type="button" class="tx-aux-tune"
+          type="button" class="tx-aux-tune v2-control-button v2-control-button--compact"
+          data-surface="hardware"
           data-testid="tx-aux-atu-tune" title={tuneReasonText} aria-describedby={tuneDescribedBy}
           disabled={tuneBlocked.length > 0 || !usable(txAux.atu)}
           onclick={requestTune}

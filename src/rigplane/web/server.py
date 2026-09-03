@@ -1033,6 +1033,7 @@ class WebServer:
             store=self.command_state_store,
             scheduler=scheduler,
             on_delta=self._on_state_freshness_delta,
+            radio=radio,
         )
         coalescer = MeterObservationCoalescer()
         self._state_freshness_service = freshness_service

@@ -19,6 +19,14 @@ remainder of `.claude/`.
   — shared definitions, missing whole-operation claim/lifetime surfaces, and
   incomplete managed ingress migration; no implementation or runtime proof.
 
+## 2026-09-03 — rigctld observed PTT (tree `9b1a0084`)
+
+- [2026-09-03-mechanism-audit-rigctld-observed-ptt.md](2026-09-03-mechanism-audit-rigctld-observed-ptt.md)
+  — bounded helper-level tract: records the existing canonical normalizer,
+  provider-metadata adapter, generation/TTL handling, and one PTT poll path;
+  the capability declaration is polling-only. It makes no RF, hardware,
+  producer-completion, TX-authority, or proven-mutation claim.
+
 ## 2026-09-02 — Icom STOP CW NAK handling (tree `4cbd5ba4`)
 
 - [2026-09-02-mechanism-audit-icom-stop-cw.md](2026-09-02-mechanism-audit-icom-stop-cw.md)

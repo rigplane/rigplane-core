@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -54,6 +55,8 @@ __all__ = [
     "provider_uses_civ_acquisition",
 ]
 
+
+logger = logging.getLogger(__name__)
 
 AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
 
@@ -1608,6 +1611,7 @@ class StateFreshnessService:
         "_interval_seconds",
         "_next_prime_monotonic",
         "_on_delta",
+        "_radio",
         "_scheduler",
         "_store",
     )
@@ -1619,10 +1623,12 @@ class StateFreshnessService:
         scheduler: AcquisitionScheduler | None = None,
         interval_seconds: float = 0.05,
         on_delta: Callable[[SnapshotDelta], None] | None = None,
+        radio: object | None = None,
     ) -> None:
         _validate_positive(interval_seconds, label="interval_seconds")
         self._store = store
         self._scheduler = scheduler
+        self._radio = radio
         self._interval_seconds = interval_seconds
         self._on_delta = on_delta
         # -inf so the first tick always primes immediately, regardless of
@@ -1633,11 +1639,11 @@ class StateFreshnessService:
     def tick(self, *, now: float | None = None) -> SnapshotDelta:
         """Advance freshness once and drive the profile's acquisition cadence.
 
-        One tick re-primes never-observed fields, ages the store, queues
-        the reconciliations that ageing produced, and calls
-        :meth:`AcquisitionScheduler.due_requests` (when a scheduler was
-        wired) with the transmit fact :func:`derive_tx_active` reads from
-        the same store.
+        One tick releases due meter samples, re-primes never-observed
+        fields, ages the store, queues the reconciliations that ageing
+        produced, and calls :meth:`AcquisitionScheduler.due_requests` (when
+        a scheduler was wired) with the transmit fact
+        :func:`derive_tx_active` reads from the same store.
 
         Invariant: ``now`` (explicit or defaulted) must come from the same
         monotonic domain as ``self._next_prime_monotonic`` — callers that
@@ -1648,6 +1654,7 @@ class StateFreshnessService:
         """
 
         timestamp = time.monotonic() if now is None else now
+        self.flush_due_meter_samples(now=timestamp)
         self._reprime_unobserved_if_due(now=timestamp)
         delta = self._store.mark_stale_due(now=now)
         for request in delta.reconciliation_requests:
@@ -1661,6 +1668,40 @@ class StateFreshnessService:
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
+
+    def flush_due_meter_samples(self, *, now: float | None = None) -> None:
+        """Release meter samples whose coalescing window has elapsed.
+
+        :class:`MeterObservationCoalescer` holds a burst's samples until one
+        ages past the window, and the flush that runs on arrival uses that
+        sample's own timestamp — so the newest sample of a burst is never due
+        on arrival and needs a clock-driven release. Reached through the
+        radio the service was constructed with; a service built without one
+        (or over a radio with no coalescer) does nothing here.
+        """
+
+        # ``web/server.py: WebServer.__init__`` builds a service with no radio
+        # and ``web/web_startup.py: start_web_server`` ticks it whether or not
+        # the bootstrap replaced it, so None reaches here in a radio-less web
+        # process. ``getattr`` below would tolerate None too; this returns on
+        # the documented case rather than falling through it.
+        radio = self._radio
+        if radio is None:
+            return
+        coalescer = getattr(radio, "_meter_observation_coalescer", None)
+        if not isinstance(coalescer, MeterObservationCoalescer):
+            return
+        runtime = getattr(radio, "_civ_runtime", None)
+        flush_due = getattr(runtime, "flush_due_meter_observations", None)
+        if not callable(flush_due):
+            return
+        try:
+            flush_due(now=time.monotonic() if now is None else now)
+        except Exception:
+            # The freshness loop must survive a failing flush: run() only
+            # catches CancelledError, so an exception here would stop the
+            # decay of every field.
+            logger.debug("state freshness: meter flush failed", exc_info=True)
 
     def _reprime_unobserved_if_due(self, *, now: float) -> None:
         """Re-derive the never-observed-field prime at an adaptive interval.

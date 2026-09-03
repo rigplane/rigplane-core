@@ -53,7 +53,10 @@ describe('rfFrontEnd is a declarable semantic surface', () => {
 
 describe('exactly the reviewed manifests declare an rfFrontEnd zone (MOR-1366)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
-  const DECLARES_RF_FRONT_END = ['desktop-v2'];
+  // MOR-2231 (step 1, batch 2) added `sdr-test`, by hand and with the layout
+  // review this literal exists to force: the same declaration retires that
+  // face's legacy twins through the `declared.has(...)` channel.
+  const DECLARES_RF_FRONT_END = ['desktop-v2', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface
   // (MOR-2061) — never hand-listed. See `manifest-guard.ts`.

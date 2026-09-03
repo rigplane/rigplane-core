@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-08-17T01:45:03.000Z",
-  "commit": "fac797a9e6330579edf9cc9c5f0126c78f99ae0c",
-  "commitShort": "fac797a9",
-  "branch": "codex/mor-1784-tx-fault-reset",
+  "generatedAt": "2026-09-03T12:45:15.103Z",
+  "commit": "ea6e2752ad4971b906cff51d14e7343dcdd4fcfd",
+  "commitShort": "ea6e2752",
+  "branch": "codex/tx-hardware-buttons",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",
