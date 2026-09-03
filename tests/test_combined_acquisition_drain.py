@@ -80,7 +80,7 @@ def _settlement() -> ChangeSet:
         sources=(
             SourceMetadata(
                 source="poll_response",
-                provider="combined-seat-test",
+                provider="combined_seat_test",
                 transport="fake",
             ),
         ),
@@ -537,7 +537,7 @@ async def test_pending_but_not_dispatchable_request_is_not_claimed() -> None:
             value=True,
             source=SourceMetadata(
                 source="poll_response",
-                provider="combined-seat-test",
+                provider="combined_seat_test",
                 transport="fake",
             ),
             timestamp_monotonic=1.0,

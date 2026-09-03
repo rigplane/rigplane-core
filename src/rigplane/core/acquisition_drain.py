@@ -254,16 +254,16 @@ class AcquisitionDrain:
                 self._forget(scheduler, request.id)
                 raise
             except Exception as exc:
-                try:
-                    self._report_executor_error(
-                        scheduler,
-                        request,
-                        error=exc,
-                        sent_paths=sent_paths,
-                        now=now,
-                    )
-                finally:
-                    self._forget(scheduler, request.id)
+                # The Web reporter completes the scheduler request before it
+                # re-raises, retaining that seat's in-flight expiry record.
+                self._report_executor_error(
+                    scheduler,
+                    request,
+                    error=exc,
+                    sent_paths=sent_paths,
+                    now=now,
+                )
+                self._forget(scheduler, request.id)
                 continue
 
             current_store = self._store()
