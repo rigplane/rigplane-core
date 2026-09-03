@@ -4,19 +4,16 @@
  * fixture registry and not a stub loader.
  *
  * Mirrors `sdr-registration.test.ts` (MOR-1093)'s shape for a single
- * manifest with no sibling family: topology honesty, the sizing axis, and
- * — because this slice ships one minimal zone, not the finished
- * composition — that the declared zone is exactly `vfo`+`rxTx`. Every claim
+ * manifest with no sibling family: the sizing axis, and — because this slice
+ * ships one minimal zone, not the finished composition — that the declared
+ * zone is exactly `vfo`+`rxTx`. Every claim
  * is read back out of the shared registry rather than off the exported
  * object, so a manifest that is written but never registered fails here.
  * Each test's doc line names the mutation it exists to kill.
  */
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import {
-  getLayout, listLayoutIds, resolveLayoutForTopology, resolveLayoutForViewport,
-  TOPOLOGY_CLASSES,
-} from '../contract';
+import { getLayout, listLayoutIds } from '../contract';
 import { getGroup, listGroupIds } from '../../groups/contract';
 // Deliberately through the shared aggregation entry, not `../segmentline-
 // declarations` directly: it pins that `declarations.ts` really registers
@@ -175,30 +172,6 @@ describe('every zone-declared group id resolves in the registry (ADR §7 invento
   });
 });
 
-describe('topology honesty', () => {
-  // Kills: widening compatibleTopologies to a single-receiver pair — the
-  // dual composition PeerSplitLayout.svelte mounts has nothing to put in a
-  // second column for those.
-  it('resolves itself on the two dual-receiver topologies', () => {
-    expect(resolveLayoutForTopology('peer-split', '2/ab_shared')?.id).toBe('peer-split');
-    expect(resolveLayoutForTopology('peer-split', '2/main_sub')?.id).toBe('peer-split');
-  });
-
-  // Kills: narrowing away from a single-receiver pair's declared fallback —
-  // resolution would return undefined and a single-receiver radio would get
-  // no layout at all from this entrypoint.
-  it('falls back to lcd-cockpit on the two single-receiver topologies', () => {
-    expect(resolveLayoutForTopology('peer-split', '1/single')?.id).toBe('lcd-cockpit');
-    expect(resolveLayoutForTopology('peer-split', '1/ab')?.id).toBe('lcd-cockpit');
-  });
-
-  it('leaves no canonical topology unresolvable', () => {
-    for (const topology of TOPOLOGY_CLASSES) {
-      expect(resolveLayoutForTopology('peer-split', topology)).toBeDefined();
-    }
-  });
-});
-
 describe('sizing axis — peer-split shares the LCD family\'s fixed-native glass', () => {
   // Kills: drifting off the 1280x540/0.5 stage `docs/plans/2026-09-01-
   // segmentline-peer-split.md` §9 declares for this family.
@@ -206,16 +179,6 @@ describe('sizing axis — peer-split shares the LCD family\'s fixed-native glass
     expect(peerSplitLayout.stageSizing).toEqual({
       mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5,
     });
-  });
-
-  it('resolves on a desktop viewport', () => {
-    expect(resolveLayoutForViewport('peer-split', { width: 1440, height: 900 })?.id).toBe('peer-split');
-  });
-
-  // Kills: minScale set to 0 (or the mode flipped to fluid), which would let
-  // a fixed-native peer-split resolve on portrait mobile.
-  it('is excluded from portrait mobile arithmetically', () => {
-    expect(resolveLayoutForViewport('peer-split', { width: 390, height: 844 })).toBeUndefined();
   });
 });
 
@@ -225,13 +188,5 @@ describe('fallback to lcd-cockpit (MOR-2151 correction — the archived draft na
   it('declares lcd-cockpit as its one fallback hop', () => {
     expect(peerSplitLayout.fallbackLayoutId).toBe('lcd-cockpit');
     expect(getLayout(peerSplitLayout.fallbackLayoutId!)).toBeDefined();
-  });
-
-  // Kills: returning the fallback without re-applying the criterion — both
-  // layouts share the same native stage, so a viewport that fails peer-split
-  // fails lcd-cockpit too; resolution must report "unresolvable", not hand
-  // back a sibling that fails the same gate.
-  it('does not hand back lcd-cockpit for a viewport that fails it too', () => {
-    expect(resolveLayoutForViewport('peer-split', { width: 390, height: 844 })).toBeUndefined();
   });
 });

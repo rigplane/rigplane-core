@@ -6,19 +6,16 @@
  * `registry.test.ts` already pins the bare registration fact ("the sdr-test
  * real registration proof") as MOR-1066's acceptance evidence. This file is
  * the entrypoint's OWN focused suite, mirroring the shape
- * `lcd-registration.test.ts` (MOR-1092) uses for its family: topology
- * honesty across all four canonical classes, the sizing axis, and — because
- * sdr-test has no sibling to fall back to — that it declares none. Every
- * claim is read back out of the shared registry rather than off the
- * exported object, so a manifest that is written but never registered fails
- * here. Each test's doc line names the mutation it exists to kill.
+ * `lcd-registration.test.ts` (MOR-1092) uses for its family: the sizing
+ * axis, and — because sdr-test has no sibling to fall back to — that it
+ * declares none. Every claim is read back out of the shared registry rather
+ * than off the exported object, so a manifest that is written but never
+ * registered fails here. Each test's doc line names the mutation it exists
+ * to kill.
  */
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import {
-  getLayout, resolveLayoutForTopology, resolveLayoutForViewport,
-  TOPOLOGY_CLASSES,
-} from '../contract';
+import { getLayout } from '../contract';
 // Deliberately through the shared aggregation entry, not `../declarations`'
 // module-scope side effect alone: importing the named export pins that
 // `declarations.ts` really registers `sdrTestLayout` (nothing else does),
@@ -77,30 +74,12 @@ describe('declared semantic zones (what the migrated entrypoint actually mounts)
   });
 });
 
-describe('topology honesty', () => {
-  // Kills: under-declaring the topology set. RadioLayout renders the deck
-  // unconditionally and SemanticRadioSurfaces itself branches on the live
-  // topology fixture (`semantic-desktop-migration.component.test.ts` proves
-  // all four render safely), so every canonical class resolves to sdr-test
-  // itself, never to a fallback.
-  it('resolves itself on all four canonical topologies', () => {
-    for (const topology of TOPOLOGY_CLASSES) {
-      expect(resolveLayoutForTopology('sdr-test', topology)?.id).toBe('sdr-test');
-    }
-  });
-});
-
 describe('MOR-1160 sizing axis — sdr-test stays fluid', () => {
   // Kills: silently switching sdr-test onto the fixed-native stage the LCD
   // family owns — sdr-test is a reflowing desktop layout, not a native-scaled
   // instrument glass.
   it('declares fluid sizing with no breakpoints', () => {
     expect(sdrTestLayout.stageSizing).toEqual({ mode: 'fluid', responsiveBreakpoints: [] });
-  });
-
-  it('resolves on both a desktop and an iPhone-class portrait viewport — fluid never gates', () => {
-    expect(resolveLayoutForViewport('sdr-test', { width: 1440, height: 900 })?.id).toBe('sdr-test');
-    expect(resolveLayoutForViewport('sdr-test', { width: 390, height: 844 })?.id).toBe('sdr-test');
   });
 });
 

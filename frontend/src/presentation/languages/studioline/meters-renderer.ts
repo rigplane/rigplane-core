@@ -6,7 +6,22 @@
  * the pixel width. Ballistics are NOT here: smoothing is a per-grammar
  * tuning applied at the smoother (MOR-977 §1.1), not a renderer behaviour.
  */
-import type { DesignLanguageTokens, RendererViewModel } from '../contract';
+import type { DesignLanguageTokens, RendererViewModel, Zone } from '../contract';
+
+/**
+ * MOR-2255 (slice A): studioline's bar-gauge zone palette. These three values
+ * are the ones `BarGauge` already draws — `DEFAULT_ZONES` in
+ * `components-v2/meters/bar-gauge-utils.ts` — so wiring the palette through
+ * this seam changes no pixel. Giving each language its own palette is a
+ * separate ticket. The literal is repeated in `fieldline` and `segmentline`
+ * rather than shared through a constant (coordinator ruling, MOR-2255): a
+ * language declares its own data.
+ */
+export const STUDIOLINE_METER_ZONES: readonly Zone[] = [
+  { end: 0.6, color: '#14A665' },
+  { end: 0.8, color: '#F2CF4A' },
+  { end: 1.0, color: '#F14C42' },
+];
 
 /**
  * Peak-hold: a 1px tick, in contrast with `fieldline`'s whole-segment hold —
@@ -49,6 +64,9 @@ export interface StudiolineMeter {
    */
   readonly toneBelowS9: string;
   readonly toneAboveS9: string;
+  /** MOR-2255: `STUDIOLINE_METER_ZONES`, the `MeterDisplay` field `BarGauge`
+   *  colors its segments from. */
+  readonly zones: readonly Zone[];
   readonly peakWidthPx: number;
   readonly unknown: boolean;
 }
@@ -76,6 +94,7 @@ export function renderMeter(
     overTone: tokens.tx.tuning,
     toneBelowS9: tokens.rx.active,
     toneAboveS9: tokens.tx.tuning,
+    zones: STUDIOLINE_METER_ZONES,
     peakWidthPx: PEAK_TICK_WIDTH_PX,
     unknown: value === null,
   };

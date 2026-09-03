@@ -16,10 +16,7 @@ import { registerLayout, type LayoutManifest } from './contract';
 /**
  * MOR-1160: the incoming LCD directions are authored on a 1280x540 native
  * stage and scaled as one uniform, letterboxed block — the LCD glass is the
- * archetype instrument surface. `minScale` 0.5 is what excludes portrait
- * mobile arithmetically (constraint 4): an iPhone-class 390x844 viewport
- * achieves min(390/1280, 844/540) ~= 0.30 and fails, with no
- * mobile-detection branch anywhere in the resolution path.
+ * archetype instrument surface.
  */
 const LCD_NATIVE_STAGE = {
   mode: 'fixed-native', nativeW: 1280, nativeH: 540, minScale: 0.5,
@@ -61,9 +58,6 @@ export const lcdCockpitLayout: LayoutManifest = {
 /**
  * The scope-dominant variant names the cockpit as its single fallback hop:
  * the cockpit is where the persisted `amber-lcd` preference already routes.
- * The registry re-validates that hop, so a viewport below the shared
- * `minScale` resolves to `undefined` rather than silently landing on a
- * sibling that fails the same gate (MOR-1066 review cycle 1, F1).
  */
 export const lcdScopeLayout: LayoutManifest = {
   schemaVersion: 1,

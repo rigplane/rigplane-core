@@ -165,7 +165,12 @@ class CommandService:
         self._overlays: list[PendingOverlay] = []
         self._readback_expectations: list[PendingOverlay] = []
 
-    async def execute(self, intent: CommandIntent) -> CommandServiceResult:
+    async def execute(
+        self,
+        intent: CommandIntent,
+        *,
+        executor: CommandExecutor | None = None,
+    ) -> CommandServiceResult:
         """Execute an intent through the injected backend executor."""
 
         start = len(self._events)
@@ -177,7 +182,8 @@ class CommandService:
         provider_generation = self._state_store.provider_generation
 
         try:
-            executor_result = await self._executor.execute(intent)
+            selected_executor = self._executor if executor is None else executor
+            executor_result = await selected_executor.execute(intent)
         except asyncio.CancelledError:
             if self._active_commands.get(key) is sent_event:
                 self.expire_command(

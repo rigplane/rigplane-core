@@ -25,7 +25,22 @@
  * which already snap rather than animate under prefers-reduced-motion; a
  * second loop here would be an unaudited one.
  */
-import type { DesignLanguageTokens, RendererViewModel } from '../contract';
+import type { DesignLanguageTokens, RendererViewModel, Zone } from '../contract';
+
+/**
+ * MOR-2255 (slice A): segmentline's bar-gauge zone palette. These three values
+ * are the ones `BarGauge` already draws — `DEFAULT_ZONES` in
+ * `components-v2/meters/bar-gauge-utils.ts` — so wiring the palette through
+ * this seam changes no pixel. Giving each language its own palette is a
+ * separate ticket. The literal is repeated in `studioline` and `fieldline`
+ * rather than shared through a constant (coordinator ruling, MOR-2255): a
+ * language declares its own data.
+ */
+export const SEGMENTLINE_METER_ZONES: readonly Zone[] = [
+  { end: 0.6, color: '#14A665' },
+  { end: 0.8, color: '#F2CF4A' },
+  { end: 1.0, color: '#F14C42' },
+];
 
 /** Above this fraction of full scale the family marks the track hot. */
 export const HOT_THRESHOLD = 0.8;
@@ -65,6 +80,11 @@ export interface SegmentlineMeter {
    */
   readonly toneBelowS9: string;
   readonly toneAboveS9: string;
+  /** MOR-2255: `SEGMENTLINE_METER_ZONES`, the `MeterDisplay` field `BarGauge`
+   *  colors its segments from. Emitted on BOTH return paths below — an
+   *  unobserved reading still declares the palette, exactly as it already
+   *  declares `segmentCount`/`segmentGapPx`/the tone pair. */
+  readonly zones: readonly Zone[];
 }
 
 const finite = (fields: RendererViewModel['fields'], key: string): number | null => {
@@ -84,6 +104,7 @@ export function renderMeter(
       kind: 'segmentline-meter', unknown: true, hot: false,
       segmentCount: SEGMENTLINE_SEGMENT_COUNT, segmentGapPx,
       toneBelowS9: tokens.rx.active, toneAboveS9: tokens.tx.tuning,
+      zones: SEGMENTLINE_METER_ZONES,
     };
   }
 
@@ -96,5 +117,6 @@ export function renderMeter(
     segmentGapPx,
     toneBelowS9: tokens.rx.active,
     toneAboveS9: tokens.tx.tuning,
+    zones: SEGMENTLINE_METER_ZONES,
   };
 }
