@@ -538,6 +538,9 @@ class TestLifecycle:
             cfg,
             state_store=store,
             state_model_service=model_service,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
         )
 
     async def test_start_bootstraps_profiled_standalone_state_acquisition(
@@ -577,6 +580,9 @@ class TestLifecycle:
             cfg,
             state_store=srv._state_store,
             state_model_service=srv._state_model_service,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
         )
         assert srv._state_store_freshness_task is None
 
@@ -620,6 +626,9 @@ class TestLifecycle:
             cfg,
             state_store=store,
             state_model_service=model_service,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
         )
 
     async def test_combined_seats_drive_the_shared_service_once(
@@ -896,6 +905,9 @@ class TestLifecycle:
             cfg,
             state_store=srv._state_store,
             state_model_service=None,
+            managed_tx_authority=None,
+            command_queue=None,
+            command_service=None,
         )
 
     async def test_standalone_shared_store_is_never_advanced_by_server(

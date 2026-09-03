@@ -19,6 +19,11 @@ remainder of `.claude/`.
   — bounded commander/captured-executor ownership and frozen-matrix evidence;
   pending independent adjudication, without whole-app or RF claims.
 
+## 2026-09-03 — managed command queue (tree `3c997a9d`)
+
+- [2026-09-03-mechanism-audit-managed-command-queue.md](2026-09-03-mechanism-audit-managed-command-queue.md)
+  — shared definitions, missing whole-operation claim/lifetime surfaces, and
+  incomplete managed ingress migration; no implementation or runtime proof.
 ## 2026-09-03 — rigctld observed PTT (tree `9b1a0084`)
 
 - [2026-09-03-mechanism-audit-rigctld-observed-ptt.md](2026-09-03-mechanism-audit-rigctld-observed-ptt.md)
