@@ -181,9 +181,7 @@ class ManagedTxAuthority:
             worker.cancel()
             await self._drain_cancelled(worker)
             raise
-        submission = ManagedTxSubmission(transition, worker)
-        await submission.wait_settlement()
-        return submission
+        return ManagedTxSubmission(transition, worker)
 
     async def _start_ptt_operation(
         self, on: bool, owner: str, *, ready: asyncio.Future[Any] | None = None
