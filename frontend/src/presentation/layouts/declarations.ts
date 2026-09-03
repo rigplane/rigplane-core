@@ -33,10 +33,32 @@ export const sdrTestLayout: LayoutManifest = {
   // surface and `SemanticRadioSurfaces` can build a real element for each
   // (its `regions` prop, passed from `RadioLayout.svelte`). Every zone here is
   // now one-surface, the shape `desktop-v2` has used since MOR-1266.
+  //
+  // MOR-2231 (step 1, batch 2): `filter`, `rfFrontEnd`, `band`, `antenna` and
+  // `ritXitScan` join, under the ids `desktop-declarations.ts` already uses.
+  // Each already mounted here BARE, through the single composition's `zoned()`
+  // calls in `SemanticRadioSurfaces.svelte` (whose `allowBare` defaults true),
+  // so declaring the zone gives it a `data-zone-id` host. Declaring it ALSO
+  // activates the MOR-1364 suppression channel on this face: `LeftSidebar`'s
+  // RF FRONT END, MODE, FILTER, RIT / XIT, ANTENNA and SCAN panels and the
+  // settings modal's `desktop-rf` and `desktop-rit` sections stop rendering,
+  // and both `BandSelector` mounts drop their HAM half through
+  // `hamBands={!declared.has('band')}`. That retirement is the point, not a
+  // side effect — the same move MOR-1366/1367 made for `desktop-v2`, closing a
+  // double presentation that was live on this face.
+  //
+  // None is `required`, matching `desktop-v2`: each surface self-gates on its
+  // own `view.*` group, so a radio whose evidence gate declined the group must
+  // still resolve this layout.
   zones: [
     { id: 'receiver-deck', surfaces: ['vfo'] },
     { id: 'rx-tx', surfaces: ['rxTx'] },
     { id: 'meters', surfaces: ['meters'] },
+    { id: 'filter', surfaces: ['filter'] },
+    { id: 'rf-front-end', surfaces: ['rfFrontEnd'] },
+    { id: 'band', surfaces: ['band'] },
+    { id: 'antenna', surfaces: ['antenna'] },
+    { id: 'rit-xit-scan', surfaces: ['ritXitScan'] },
   ],
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
   requiredSemanticSurfaces: ['vfo', 'rxTx'],

@@ -1145,6 +1145,16 @@ describe('a stored order naming every legacy panelId cannot resurrect a declared
   // order, mounted where nothing is declared, renders every one of the same
   // ten ids normally. Deleting them from the shared literal would have been
   // wrong for this shape, not just untested for it.
+  //
+  // MOR-2231 (step 1, batch 2) MOVED THIS PROBE off `sdr-test`. That face was
+  // never the "declares nothing" layout the title names — it declared `vfo`,
+  // `rxTx` and `meters`, none of which gates any of the ten — and it stopped
+  // being usable here the moment it declared `filter`, `rfFrontEnd`, `band`,
+  // `antenna` and `ritXitScan`, which retire six of the ten on that face. The
+  // unregistered id is the honest control and the one the title already
+  // described: `declaredSurfaces` resolves it to the empty set, so every
+  // legacy twin survives. It is the same `'no-such-layout'` probe the
+  // "an undeclared layout keeps its legacy presentation" describe above uses.
   it('the identical stored order renders all ten ids on a layout that declares nothing', () => {
     localStorage.setItem('rigplane:panel-order', JSON.stringify(
       ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band', 'antenna', 'scan']));
@@ -1152,7 +1162,7 @@ describe('a stored order naming every legacy panelId cannot resurrect a declared
       ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory']));
     h.caps = { ...(capsFor('2/main_sub') as object), antennas: 2 } as Capabilities;
     vi.mocked(hasCapability).mockImplementation((tag: string) => tag === 'cw');
-    const t = render('sdr-test');
+    const t = render('no-such-layout' as SkinId);
     const ids = new Set([...t.querySelectorAll('[data-panel-id]')]
       .map((el) => el.getAttribute('data-panel-id')));
     for (const id of RETIRED_ON_DESKTOP_V2) {
