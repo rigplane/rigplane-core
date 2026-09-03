@@ -154,9 +154,7 @@ class ManagedTxEffectLane:
                 return None
             self._slots[slot] = (token, operation)
             loop = asyncio.get_running_loop()
-            claim = _Claim(
-                token, operation, deadline, loop.create_future(), is_current
-            )
+            claim = _Claim(token, operation, deadline, loop.create_future(), is_current)
             self._claims[(token, operation)] = claim
             if operation is ActuationOperation.FORCE_RECEIVE:
                 active_ons = tuple(

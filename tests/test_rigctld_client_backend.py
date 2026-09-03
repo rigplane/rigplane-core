@@ -416,9 +416,7 @@ async def test_managed_actuator_forwards_live_currency_to_final_write(
         tasks.append(
             asyncio.create_task(
                 lane.settle(
-                    ManagedTxEffect(
-                        ActuationOperation.PTT_ON, EffectToken(7, 3, "on")
-                    ),
+                    ManagedTxEffect(ActuationOperation.PTT_ON, EffectToken(7, 3, "on")),
                     deadline_monotonic=asyncio.get_running_loop().time() + 3,
                     is_current=lambda: current[0],
                 )
