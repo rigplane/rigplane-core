@@ -3617,19 +3617,21 @@ class CivRuntime:
             return len(frame.data) == 0
         return len(frame.data) == 0
 
-    async def _drain_ack_sinks_before_blocking(self) -> None:
+    async def _drain_ack_sinks_before_blocking(
+        self, *, check_current: Callable[[], None] | None = None
+    ) -> None:
         """Give fire-and-forget ACK sinks a short chance to drain."""
-        if self._host._civ_request_tracker.ack_sink_count == 0:
+        tracker = self._host._civ_request_tracker
+        if tracker.ack_sink_count == 0:
             return
 
         deadline = time.monotonic() + self._host._civ_ack_sink_grace
-        while (
-            self._host._civ_request_tracker.ack_sink_count > 0
-            and time.monotonic() < deadline
-        ):
+        while tracker.ack_sink_count > 0 and time.monotonic() < deadline:
             await asyncio.sleep(0.005)
+            if check_current is not None:
+                check_current()
 
-        dropped = self._host._civ_request_tracker.drop_ack_sinks()
+        dropped = tracker.drop_ack_sinks()
         if dropped:
             logger.debug(
                 "Dropped %d stale ACK sink waiter(s) before blocking command", dropped
@@ -3643,6 +3645,17 @@ class CivRuntime:
         """Execute one CI-V command via request tracker (serialized by worker)."""
         assert self._host._civ_transport is not None
         self._ensure_civ_runtime()
+        transport = self._host._civ_transport
+        tracker = self._host._civ_request_tracker
+        epoch = self._host._civ_epoch
+
+        def check_current() -> None:
+            if (
+                self._host._civ_transport is not transport
+                or self._host._civ_request_tracker is not tracker
+                or self._host._civ_epoch != epoch
+            ):
+                raise ConnectionError("CI-V execution belongs to a retired session")
 
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
@@ -3654,36 +3667,38 @@ class CivRuntime:
             ack_sink_token: "int | None" = None
 
             if not expects_response:
-                token_or_future = self._host._civ_request_tracker.register_ack(
-                    wait=False
-                )
+                token_or_future = tracker.register_ack(wait=False)
                 if isinstance(token_or_future, int):
                     ack_sink_token = token_or_future
 
-            self.start_pump()
-
-            now = time.monotonic()
-            delta = now - self._host._last_civ_send_monotonic
-            if delta < self._host._civ_min_interval:
-                await asyncio.sleep(self._host._civ_min_interval - delta)
-
-            pkt = self._wrap_civ(civ_frame)
             try:
-                await self._host._civ_transport.send_tracked(pkt)
-            except Exception:
+                self.start_pump()
+                now = time.monotonic()
+                delta = now - self._host._last_civ_send_monotonic
+                if delta < self._host._civ_min_interval:
+                    await asyncio.sleep(self._host._civ_min_interval - delta)
+
+                check_current()
+                pkt = self._wrap_civ(civ_frame)
+                await transport.send_tracked(pkt)
+                check_current()
+            except (Exception, asyncio.CancelledError) as exc:
                 if ack_sink_token is not None:
-                    self._host._civ_request_tracker.unregister_ack_sink(ack_sink_token)
+                    tracker.unregister_ack_sink(ack_sink_token)
+                if not isinstance(exc, asyncio.CancelledError):
+                    check_current()
                 raise
 
             self._host._last_civ_send_monotonic = time.monotonic()
             return None
 
-        await self._drain_ack_sinks_before_blocking()
+        await self._drain_ack_sinks_before_blocking(check_current=check_current)
+        check_current()
 
         pending: "asyncio.Future[CivFrame] | None" = None
         try:
             if expects_response:
-                pending = self._host._civ_request_tracker.register_response(request_key)
+                pending = tracker.register_response(request_key)
             else:
                 # ``consume_backlog=False``: this waiter is registered before
                 # the frame is sent, so anything already in the orphan ACK/NAK
@@ -3691,7 +3706,7 @@ class CivRuntime:
                 # the oldest entry whatever it is, so it charges a stranger's
                 # NAK to this command -- or, worse, settles it from a stranger's
                 # ACK, reporting success for a write the radio never answered.
-                pending_or_token = self._host._civ_request_tracker.register_ack(
+                pending_or_token = tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
                 )
@@ -3706,8 +3721,10 @@ class CivRuntime:
             if delta < self._host._civ_min_interval:
                 await asyncio.sleep(self._host._civ_min_interval - delta)
 
+            check_current()
             pkt = self._wrap_civ(civ_frame)
-            await self._host._civ_transport.send_tracked(pkt)
+            await transport.send_tracked(pkt)
+            check_current()
             self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
             # The answer window is spent from here, not from method entry:
@@ -3720,16 +3737,26 @@ class CivRuntime:
             # ``tests/test_radio.py:
             # TestResponseDeadlineOpensAtSend`` fails on that mis-charge.
             try:
-                return await asyncio.wait_for(
+                response = await asyncio.wait_for(
                     pending, timeout=self._host._civ_get_timeout
                 )
             except asyncio.TimeoutError:
-                self._host._civ_request_tracker.note_timeout()
+                check_current()
+                tracker.note_timeout()
                 logger.debug(
                     "CI-V command 0x%02X timed out",
                     request_key.command,
                 )
                 raise TimeoutError("CI-V response timed out")
+            check_current()
+            return response
+        except Exception:
+            check_current()
+            raise
         finally:
             if pending is not None:
-                self._host._civ_request_tracker.unregister(pending)
+                tracker.unregister(pending)
+                if not pending.done():
+                    pending.cancel()
+                elif not pending.cancelled():
+                    pending.exception()

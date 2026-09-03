@@ -2,9 +2,8 @@
  * MOR-1070 — mutable holders the aliased fixture stubs read.
  *
  * VERIFICATION-ONLY TOOLING. Nothing under `src/` imports this file; it lives
- * outside `src/` on purpose so `eslint src/`, `svelte-check --tsconfig
- * tsconfig.app.json` (include: `src/**`) and `vitest` (include:
- * `src/ ** /*.test.ts`) all ignore it. The production tree is byte-unchanged.
+ * outside `src/` on purpose so `eslint src/` and `vitest` (include:
+ * `src/ ** /*.test.ts`) both ignore it. The production tree is byte-unchanged.
  *
  * The cockpit reaches live state through exactly four seams
  * (`$lib/runtime`, `$lib/runtime/tx-controller/app-host`,

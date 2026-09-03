@@ -2,7 +2,7 @@
  * MOR-1088 — mobile PTT gesture / orientation-swap safety harness.
  *
  * VERIFICATION-ONLY TOOLING (mirrors the MOR-1070/1087 fixture doctrine:
- * outside `src/`, unread by `tsconfig.app.json`/`eslint src/`/`vitest`).
+ * outside `src/`, unread by `eslint src/`/`vitest`).
  *
  * WHY THIS EXISTS. The MOR-1070/1085/1087 cockpit harness stubs
  * `$lib/runtime/tx-controller/app-host` entirely (`fixtures/stubs/app-host.ts`

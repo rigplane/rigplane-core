@@ -1,0 +1,12 @@
+{
+  /**
+   * Reached only via the explicit `tsc -p` in `package.json`'s `check`
+   * script: `tsconfig.json` is `"files": []`, and its `references` are not
+   * followed without `tsc --build`, which nothing here runs.
+   */
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.harness.tsbuildinfo"
+  },
+  "include": ["src/**/*.d.ts", "fixtures/**/*.ts", "tests/**/*.ts"]
+}

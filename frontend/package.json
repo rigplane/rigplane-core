@@ -18,7 +18,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json && tsc -p tsconfig.harness.json",
     "lint": "eslint src/",
     "lint:boundaries": "eslint src/components-v2/panels/ src/components-v2/layout/ src/presentation/",
     "i18n:check": "node scripts/i18n-check.mjs",
