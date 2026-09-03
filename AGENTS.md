@@ -131,6 +131,16 @@ gh workflow run focused.yml --ref main \
 The focused workflow does not replace required PR CI. The final Ready head
 still receives its one natural `quick` and, when selected by paths, `visual`.
 
+`quick.yml` keeps three independent path classes. `core` covers backend/source,
+tests, profiles, contracts, and Python project metadata; `frontend` covers
+`frontend/**` plus `src/rigplane/web/**`; `ci` covers only workflow controls
+under `.github/`. A pure frontend change does not run backend pytest, Ruff,
+import-linter, or validation goldens. A `src/rigplane/web/**` change selects
+both core and frontend because it crosses that boundary. A CI-only change runs
+only the workflow parser, injection/path contract tests, and Python control
+compilation. Pixel-diff `visual` runs only for actual `frontend/**` changes,
+never because `visual.yml` itself changed.
+
 ## Multi-agent Git hygiene
 
 This repo is developed from multiple machines and by multiple agents. Before

@@ -48,21 +48,21 @@ jobs:
             core:
               - 'src/**'
               - 'tests/**'
-              - 'frontend/**'
+              - '!tests/test_ci_path_filters.py'
               - 'rigs/**'
               - 'contracts/**'
               - 'pyproject.toml'
               - 'uv.lock'
               - '.importlinter'
-              - '.github/scripts/**'
-              - '.github/workflows/**'
             frontend:
               - 'frontend/**'
               - 'src/rigplane/web/**'
-              - '.github/workflows/quick.yml'
+            ci:
+              - '.github/scripts/**'
+              - '.github/workflows/**'
 
       - name: Install uv
-        if: steps.filter.outputs.core == 'true' || steps.filter.outputs.frontend == 'true'
+        if: steps.filter.outputs.core == 'true'
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
@@ -71,11 +71,11 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
-        if: steps.filter.outputs.core == 'true' || steps.filter.outputs.frontend == 'true'
+        if: steps.filter.outputs.core == 'true'
         run: uv python install 3.11
 
       - name: Install dependencies
-        if: steps.filter.outputs.core == 'true' || steps.filter.outputs.frontend == 'true'
+        if: steps.filter.outputs.core == 'true'
         # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
         # already installed its packages (pytest, ruff, mypy, pydantic,
         # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
@@ -88,12 +88,20 @@ jobs:
         run: uv sync --all-extras
 
       - name: Agent Review Gate parser tests
-        if: steps.filter.outputs.core == 'true'
+        if: steps.filter.outputs.ci == 'true'
         run: node --test .github/scripts/agent-review-gate.test.js
 
       - name: Focused workflow contract tests
-        if: steps.filter.outputs.core == 'true'
+        if: steps.filter.outputs.ci == 'true'
         run: python3 .github/scripts/run-focused-checks.test.py
+
+      - name: Quick path and event contract tests
+        if: steps.filter.outputs.ci == 'true'
+        run: python3 .github/scripts/quick-path-filters.test.py
+
+      - name: Compile Python workflow controls
+        if: steps.filter.outputs.ci == 'true'
+        run: python3 -m py_compile .github/scripts/*.py
 
       - name: Ruff (lint + format check)
         if: steps.filter.outputs.core == 'true'
@@ -193,8 +201,7 @@ jobs:
       # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
       # capture (`frontend/fixtures/capture.mjs`) into the PR leg. Gated by
       # the SAME `steps.filter.outputs.frontend` path filter as the rest of
-      # this frontend block (frontend/**, src/rigplane/web/**, or this
-      # workflow changed) —
+      # this frontend block (frontend/** or src/rigplane/web/**) —
       # minimum Actions minutes is a hard project policy (CLAUDE.md), so
       # this never runs on an unrelated push/PR.
       #
@@ -226,7 +233,7 @@ jobs:
           fi
 
       - name: Type-check web boundary
-        if: steps.filter.outputs.frontend == 'true'
+        if: steps.filter.outputs.core == 'true' && steps.filter.outputs.frontend == 'true'
         run: uv run mypy --strict src/rigplane/web
 
       - name: Run tests
@@ -295,3 +302,4 @@ jobs:
           fi
           echo "Core checks selected: ${{ steps.filter.outputs.core }}"
           echo "Frontend checks selected: ${{ steps.filter.outputs.frontend }}"
+          echo "CI contract checks selected: ${{ steps.filter.outputs.ci }}"

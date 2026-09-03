@@ -126,6 +126,14 @@ gh workflow run focused.yml --ref main \
 This focused run is development evidence only. It never substitutes for the
 final Ready PR's natural required checks.
 
+The natural quick run classifies changed paths before installing dependencies:
+backend/core, frontend, and CI controls are separate. Pure frontend changes do
+not run backend suites; `src/rigplane/web/**` selects both sides of the boundary;
+CI-only changes under `.github/` run only workflow parser, injection/path
+contract, and control-compilation checks. The separate pixel-diff workflow is
+selected only by product files under `frontend/**`, not by edits to its own
+workflow definition.
+
 Before merging a non-trivial PR:
 
 1. Use a fresh independent reviewer (the verifier) who did not author the
