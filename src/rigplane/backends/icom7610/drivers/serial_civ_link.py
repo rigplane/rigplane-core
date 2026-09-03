@@ -190,6 +190,7 @@ class SerialCivLink:
             maxsize=max_write_queue
         )
         self._writer_task: asyncio.Task[None] | None = None
+        self._retirement: tuple[Any, asyncio.Task[None]] | None = None
 
     @property
     def connected(self) -> bool:
@@ -244,6 +245,8 @@ class SerialCivLink:
         """Close serial CI-V transport and worker tasks."""
         if not self._connected and self._writer is None:
             self._healthy = False
+            if self._retirement is not None:
+                await self._join_retirement(self._retirement[1])
             return
 
         await self._retire_writer(self._write_queue, self._writer, self._writer_task)
@@ -254,6 +257,10 @@ class SerialCivLink:
         writer: Any,
         worker: asyncio.Task[None] | None,
     ) -> None:
+        previous = self._retirement
+        if previous is not None and previous[0] is writer:
+            await self._join_retirement(previous[1])
+            return
         # Detach and close captured resources before joining a worker whose
         # drain may resist cancellation. Never clear a replacement after await.
         if self._writer is writer and self._write_queue is queue:
@@ -266,17 +273,46 @@ class SerialCivLink:
         self._fail_queued_writes(queue)
         if writer is not None:
             writer.close()
-        if worker is not None and not worker.done():
+        if worker is not None and not worker.done() and not worker.cancelling():
             worker.cancel()
-            try:
-                await worker
-            except asyncio.CancelledError:
-                pass
-        if writer is not None:
-            wait_closed = getattr(writer, "wait_closed", None)
-            if wait_closed is not None:
-                with contextlib.suppress(Exception):
-                    await wait_closed()
+        cleanup = asyncio.create_task(
+            self._finish_retirement(
+                writer, worker, previous[1] if previous is not None else None
+            ),
+            name="serial-civ-retirement",
+        )
+        self._retirement = (writer, cleanup)
+        await self._join_retirement(cleanup)
+
+    async def _join_retirement(self, cleanup: asyncio.Task[None]) -> None:
+        try:
+            await asyncio.shield(cleanup)
+        finally:
+            if (
+                cleanup.done()
+                and self._retirement is not None
+                and self._retirement[1] is cleanup
+            ):
+                self._retirement = None
+
+    @staticmethod
+    async def _finish_retirement(
+        writer: Any,
+        worker: asyncio.Task[None] | None,
+        previous: asyncio.Task[None] | None,
+    ) -> None:
+        try:
+            if worker is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
+            if writer is not None:
+                wait_closed = getattr(writer, "wait_closed", None)
+                if wait_closed is not None:
+                    with contextlib.suppress(Exception):
+                        await wait_closed()
+        finally:
+            if previous is not None:
+                await asyncio.shield(previous)
 
     @staticmethod
     def _fail_queued_writes(queue: asyncio.Queue[bytes | _WriteRequest | None]) -> None:
@@ -421,6 +457,7 @@ class SerialCivLink:
     ) -> None:
         queue = self._write_queue if queue is None else queue
         writer = self._writer if writer is None else writer
+        worker = asyncio.current_task()
         request: _WriteRequest | None = None
         try:
             while True:
@@ -454,8 +491,11 @@ class SerialCivLink:
                         if not request.result.done():
                             request.result.set_exception(exc)
                     logger.warning("Recoverable serial write error: %s", exc)
-                    if self._write_session_is_current(queue, writer):
-                        self._healthy = False
+                    if not self._write_session_is_current(queue, writer) or (
+                        worker is not None and worker.cancelling()
+                    ):
+                        return
+                    self._healthy = False
                     await asyncio.sleep(0)
                 except Exception as exc:
                     if request is not None and not request.result.done():
@@ -466,7 +506,9 @@ class SerialCivLink:
                         self._healthy = False
                     return
                 else:
-                    if not self._write_session_is_current(queue, writer):
+                    if not self._write_session_is_current(queue, writer) or (
+                        worker is not None and worker.cancelling()
+                    ):
                         return
                     self._healthy = True
                     if request is not None and not request.result.done():
