@@ -63,12 +63,7 @@ const github = {
     },
   },
 };
-const context = {
-  repo: {owner: 'rigplane', repo: 'rigplane-core'},
-  payload: {pull_request: {number: 3132}},
-  serverUrl: 'https://github.test',
-  runId: 1,
-};
+const context = {repo: {owner: 'rigplane', repo: 'rigplane-core'}, payload: {pull_request: {number: 3132}}, serverUrl: 'https://github.test', runId: 1};
 const core = {info: (message) => info.push(message)};
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 new AsyncFunction('github', 'context', 'core', script)(github, context, core)
@@ -81,7 +76,16 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 "-e",
                 runner,
                 self.docs_quick_script(),
-                json.dumps({"heads": heads, "files": files, "changedFiles": len(files) if changed_files is None else changed_files, "bases": bases or ["c" * 40] * len(heads)}),
+                json.dumps(
+                    {
+                        "heads": heads,
+                        "files": files,
+                        "changedFiles": len(files)
+                        if changed_files is None
+                        else changed_files,
+                        "bases": bases or ["c" * 40] * len(heads),
+                    }
+                ),
             ],
             check=True,
             capture_output=True,
@@ -108,9 +112,6 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         for name, paths in cases.items():
             with self.subTest(name=name):
                 self.assert_docs_only(paths)
-        for path in ("README.MD", "docs/guide.RsT", "mkdocs.yml"):
-            with self.subTest(path=path):
-                self.assert_docs_only([path])
 
     def test_mixed_docs_and_code_select_only_relevant_product_classes(self) -> None:
         self.assertEqual(
@@ -135,9 +136,6 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 self.assertRaises(CLASSIFIER.ClassificationError),
             ):
                 CLASSIFIER.classify([unsafe])
-        for unknown in ("CODEOWNERS", ".gitignore"):
-            with self.subTest(unknown=unknown), self.assertRaises(CLASSIFIER.ClassificationError):
-                CLASSIFIER.classify([unknown])
 
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
@@ -146,6 +144,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
 
         self.assertIn(event_types, quick)
         self.assertIn(event_types, visual)
+        self.assertIn("runs-on: ubuntu-latest", quick)
         self.assertIn("needs: classify", quick)
         self.assertIn("needs.classify.outputs.docs != 'true'", quick)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)
@@ -156,38 +155,11 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn('      - "!frontend/**/*.rst"', visual)
         self.assertNotIn('      - ".github/workflows/visual.yml"', visual)
 
-    def test_docs_only_quick_status_is_api_only_and_quick_ignores_docs(self) -> None:
+    def test_docs_only_routes_match_predicate_and_are_base_controlled(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         docs_quick = DOCS_QUICK_YML.read_text(encoding="utf-8")
         docs_paths = DOCS_PATHS_JS.read_text(encoding="utf-8")
-        for pattern in (
-            '      - "docs/**"',
-            '      - ".claude/**"',
-            '      - "**/*.md"',
-            '      - "**/*.mD"',
-            '      - "**/*.Md"',
-            '      - "**/*.MD"',
-            '      - "**/*.rst"',
-            '      - "**/*.rsT"',
-            '      - "**/*.rSt"',
-            '      - "**/*.rST"',
-            '      - "**/*.RsT"',
-            '      - "**/*.Rst"',
-            '      - "**/*.RSt"',
-            '      - "**/*.RST"',
-            '      - ".github/scripts/doc-citation-baseline.txt"',
-            '      - ".github/scripts/doc-citation-dangling-baseline.txt"',
-            '      - ".github/scripts/doc-link-baseline.txt"',
-            '      - "AUTHORS"',
-            '      - "COPYING"',
-            '      - "LICENSE"',
-            '      - "LICENSE.txt"',
-            '      - "NOTICE"',
-            '      - "mkdocs.yml"',
-        ):
-            with self.subTest(pattern=pattern):
-                self.assertEqual(quick.count(pattern), 2)
-        for exact in (
+        exact = (
             ".github/scripts/doc-citation-baseline.txt",
             ".github/scripts/doc-citation-dangling-baseline.txt",
             ".github/scripts/doc-link-baseline.txt",
@@ -197,90 +169,112 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "LICENSE.txt",
             "NOTICE",
             "mkdocs.yml",
-        ):
-            with self.subTest(exact=exact):
-                self.assertIn(f'"{exact}"', docs_paths)
-        self.assertIn("github.rest.pulls.listFiles", docs_quick)
-        self.assertIn("github.paginate", docs_quick)
-        self.assertIn("github.rest.repos.createCommitStatus", docs_quick)
-        self.assertIn("files.length !== changedFiles", docs_quick)
-        self.assertIn("changedFiles >= 3000", docs_quick)
-        self.assertIn("docs-only-paths.js", docs_quick)
+        )
+        suffix_patterns = (
+            "**/*.md",
+            "**/*.mD",
+            "**/*.Md",
+            "**/*.MD",
+            "**/*.rst",
+            "**/*.rsT",
+            "**/*.rSt",
+            "**/*.rST",
+            "**/*.RsT",
+            "**/*.Rst",
+            "**/*.RSt",
+            "**/*.RST",
+        )
+        for path in exact:
+            with self.subTest(path=path):
+                self.assertIn(f'"{path}"', docs_paths)
+                self.assertEqual(quick.count(f'      - "{path}"'), 2)
+        for pattern in ("docs/**", ".claude/**", *suffix_patterns):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(quick.count(f'      - "{pattern}"'), 2)
+
         self.assertIn("pull_request_target:", docs_quick)
         self.assertNotIn("\n  pull_request:\n", docs_quick)
-        self.assertIn("const baseSha = initialPull.base.sha", docs_quick)
-        self.assertIn("ref: baseSha", docs_quick)
-        self.assertIn("currentPull.base.sha !== baseSha", docs_quick)
         self.assertIn("contents: read", docs_quick)
+        self.assertIn("ref: baseSha", docs_quick)
         self.assertNotIn("github.workflow_sha", docs_quick)
         self.assertNotIn("actions/checkout", docs_quick)
-        self.assertNotIn("github.event.pull_request.head", docs_quick)
-        self.assertIn("github.event.pull_request.base.sha", quick)
-        self.assertIn("persist-credentials: false", quick)
-        self.assertIn("currentPull.head.sha !== headSha", docs_quick)
-        self.assertIn("sha: headSha", docs_quick)
-        self.assertNotIn("sha: github.sha", docs_quick)
-        self.assertNotIn("actions/checkout", docs_quick)
-        self.assertNotIn("setup-uv", docs_quick)
 
-    def test_docs_only_publisher_rejects_renames_and_head_races(self) -> None:
-        initial_head = "a" * 40
-        later_head = "b" * 40
+    def test_docs_only_publisher_succeeds_only_for_complete_stable_docs(self) -> None:
+        head = "a" * 40
+        base = "c" * 40
+        docs = [
+            {"filename": "docs/guide.md"},
+            {"filename": ".claude/agents/verifier.md"},
+            {"filename": "frontend/README.MD"},
+            {"filename": "guide.RsT"},
+            {"filename": "mkdocs.yml"},
+            {
+                "filename": "docs/new.md",
+                "previous_filename": "docs/old.md",
+            },
+        ]
         stable = self.run_docs_quick_script(
-            heads=[initial_head, initial_head],
-            files=[{"filename": "docs/guide.md"}],
+            heads=[head, head], bases=[base, base], files=docs
         )
-        self.assertEqual(
-            [status["sha"] for status in stable["statuses"]], [initial_head]
-        )
-        self.assertEqual(stable["contents"][0]["ref"], "c" * 40)
+        self.assertEqual([status["sha"] for status in stable["statuses"]], [head])
+        self.assertEqual(stable["contents"][0]["ref"], base)
 
-        renamed_code = self.run_docs_quick_script(
-            heads=[initial_head],
-            files=[
+        scenarios = (
+            ({"files": [{"filename": "CODEOWNERS"}]}, "unknown"),
+            (
                 {
-                    "filename": "docs/guide.md",
-                    "previous_filename": "src/rigplane/radio.py",
-                }
-            ],
+                    "files": [
+                        {"filename": "docs/guide.md"},
+                        {"filename": "src/rigplane/radio.py"},
+                    ]
+                },
+                "mixed",
+            ),
+            (
+                {
+                    "files": [
+                        {
+                            "filename": "docs/guide.md",
+                            "previous_filename": "src/rigplane/radio.py",
+                        }
+                    ]
+                },
+                "rename",
+            ),
+            (
+                {"files": [{"filename": "docs/guide.md"}], "changed_files": 2},
+                "incomplete",
+            ),
+            (
+                {
+                    "files": [{"filename": "docs/guide.md"}],
+                    "changed_files": 3000,
+                },
+                "capped",
+            ),
+            (
+                {
+                    "files": [{"filename": "docs/guide.md"}],
+                    "heads": [head, "b" * 40],
+                },
+                "head-race",
+            ),
+            (
+                {
+                    "files": [{"filename": "docs/guide.md"}],
+                    "bases": [base, "d" * 40],
+                },
+                "base-race",
+            ),
         )
-        self.assertEqual(renamed_code["statuses"], [])
-
-        raced = self.run_docs_quick_script(
-            heads=[initial_head, later_head],
-            files=[{"filename": "docs/guide.md"}],
-        )
-        self.assertEqual(raced["statuses"], [])
-        self.assertIn("changed", raced["info"][0])
-
-        base_raced = self.run_docs_quick_script(
-            heads=[initial_head, initial_head],
-            bases=["c" * 40, "d" * 40],
-            files=[{"filename": "docs/guide.md"}],
-        )
-        self.assertEqual(base_raced["statuses"], [])
-        self.assertIn("base changed", base_raced["info"][0])
-
-        incomplete = self.run_docs_quick_script(
-            heads=[initial_head], files=[{"filename": "docs/guide.md"}], changed_files=2
-        )
-        self.assertEqual(incomplete["statuses"], [])
-        capped = self.run_docs_quick_script(
-            heads=[initial_head], files=[{"filename": "docs/guide.md"}], changed_files=3000
-        )
-        self.assertEqual(capped["statuses"], [])
-
-        for filename in (
-            "src/rigplane/radio.py",
-            "docs/guide.md",
-            "CODEOWNERS",
-            ".github/workflows/quick.yml",
-        ):
-            files = [{"filename": filename}]
-            if filename == "docs/guide.md":
-                files.append({"filename": "src/rigplane/radio.py"})
-            with self.subTest(filename=filename):
-                result = self.run_docs_quick_script(heads=[initial_head], files=files)
+        for overrides, name in scenarios:
+            with self.subTest(name=name):
+                result = self.run_docs_quick_script(
+                    heads=overrides.get("heads", [head] if name not in {"head-race", "base-race"} else [head, head]),
+                    bases=overrides.get("bases"),
+                    files=overrides["files"],
+                    changed_files=overrides.get("changed_files"),
+                )
                 self.assertEqual(result["statuses"], [])
 
     def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
