@@ -58,8 +58,12 @@ describe('band is a declarable semantic surface', () => {
 describe('exactly the reviewed manifests declare a band zone (MOR-1367)', () => {
   /** The literal — extend by hand, with a layout review, never silently. */
   // MOR-2231 (step 1, batch 2) added `sdr-test`, by hand and with the layout
-  // review this literal exists to force: the same declaration retires that
-  // face's legacy twins through the `declared.has(...)` channel.
+  // review this literal exists to force. UNLIKE the other four families in that
+  // batch, this declaration UNMOUNTS NOTHING: `declared.has('band')` feeds the
+  // `hamBands={!declared.has('band')}` PROP (S10 §4a), so both `BandSelector`
+  // mounts on that face drop their HAM tab and HAM grid while the BAND panel
+  // itself keeps rendering — it is the only production host of the broadcast
+  // presets. Measured on the rendered face, not inferred from the channel.
   const DECLARES_BAND = ['desktop-v2', 'sdr-test'];
 
   // [id, manifest] pairs derived from the barrel's export surface

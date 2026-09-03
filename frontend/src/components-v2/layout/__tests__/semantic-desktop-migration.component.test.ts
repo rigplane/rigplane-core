@@ -516,6 +516,218 @@ describe('vfo and rxTx gain zone hosts on the SDR face only (MOR-2231)', () => {
 });
 
 /**
+ * MOR-2231 (step 1, batch 2) — the SDR face's five control families, at the
+ * RENDER level.
+ *
+ * `sdrTestLayout` declares `filter`, `rf-front-end`, `band`, `antenna` and
+ * `rit-xit-scan`. That has two effects and this describe pins both, because
+ * until it existed the batch's PRINCIPAL effect was asserted nowhere: the
+ * manifest tests prove what is declared, not what the declaration does to the
+ * screen.
+ *
+ *   1. ZONE HOSTS. Each surface already mounted on this face BARE, through the
+ *      single composition's `zoned()` calls (`allowBare` defaults true), so the
+ *      declaration moves it inside a `[data-zone-id]` element. Read against a
+ *      resolved plan — `zoneOwning()` reads the PLAN, so a standalone mount
+ *      shows no wrapper whatever the manifest says (the S5 asymmetry
+ *      `renderWithPlan` in the S8 describe records).
+ *   2. SUPPRESSION. `declared.has(<surface>)` retires the legacy twins, which
+ *      reads the MANIFEST and so needs no plan.
+ *
+ * THE CONTROL IS A REGISTERED MANIFEST, NOT AN ARGUMENT. `PRE_BATCH_2` below
+ * is `sdr-test`'s zone list from before this batch. Suppression derives from
+ * `getLayout(skinId)` — the REGISTRY — so passing a different manifest object
+ * to a render helper could not have produced the "before" state; only a
+ * separately registered id can. It differs from `sdr-test` in exactly the
+ * dimension under test and nothing else.
+ */
+describe("the SDR face's five control families are zone-owned (MOR-2231, batch 2)", () => {
+  const LEFT_ALL = ['rf-front-end', 'mode', 'filter', 'agc', 'rit-xit', 'band',
+    'antenna', 'scan', 'rx-audio', 'dsp', 'tx', 'cw', 'memory'];
+  const RIGHT_ALL = ['rx-audio', 'audio-scope', 'dsp', 'tx', 'cw', 'memory'];
+
+  /** Same shape the S8 describe uses, for the same reason: without a real HAM
+   *  grid the band split pin would only ever be about the tab strip. */
+  const HAM_RANGES = [{
+    start: 1_800_000, end: 30_000_000, label: 'HF',
+    bands: [
+      { name: '40m', start: 7_000_000, end: 7_300_000, default: 7_100_000 },
+      { name: '20m', start: 14_000_000, end: 14_350_000, default: 14_225_000, bsrCode: 5 },
+    ],
+  }];
+
+  /** `sdr-test`'s zones as they stood BEFORE this batch — the "before" half of
+   *  every row below, registered so it is a real mount. */
+  const PRE_BATCH_2 = 'sdr-pre-batch-2-probe' as SkinId;
+  const PRE_BATCH_2_MANIFEST = probeManifest(PRE_BATCH_2, [
+    { id: 'receiver-deck', surfaces: ['vfo'] },
+    { id: 'rx-tx', surfaces: ['rxTx'] },
+    { id: 'meters', surfaces: ['meters'] },
+  ], ['vfo', 'rxTx']);
+  registerLayout(PRE_BATCH_2_MANIFEST);
+
+  /** zone id → the surface testid it must own. */
+  const FIVE = [
+    ['filter', 'filter-surface'],
+    ['rf-front-end', 'rf-front-end-surface'],
+    ['band', 'band-surface'],
+    ['antenna', 'antenna-surface'],
+    ['rit-xit-scan', 'ritxit-scan-surface'],
+  ] as const;
+
+  /**
+   * The eight legacy hosts these five declarations UNMOUNT on this face. BAND
+   * is deliberately absent: it is retired by PROP, never by mount (S10 §4a),
+   * and has its own row below.
+   */
+  const RETIRED = [
+    ['left sidebar MODE', '.left-sidebar [data-panel-id="mode"]'],
+    ['left sidebar FILTER', '.left-sidebar [data-panel-id="filter"]'],
+    ['left sidebar RF FRONT END', '.left-sidebar [data-panel-id="rf-front-end"]'],
+    ['left sidebar RIT / XIT', '.left-sidebar [data-panel-id="rit-xit"]'],
+    ['left sidebar SCAN', '.left-sidebar [data-panel-id="scan"]'],
+    ['left sidebar ANTENNA', '.left-sidebar [data-panel-id="antenna"]'],
+    ['settings modal RF FRONT END', '[data-panel-id="desktop-rf"]'],
+    ['settings modal RIT / XIT', '[data-panel-id="desktop-rit"]'],
+  ] as const;
+
+  /** Opens the settings modal — two of the eight retired hosts live there. */
+  function renderAll(skinId: SkinId): HTMLElement {
+    const target = render(skinId);
+    (target.querySelector('.settings-btn') as HTMLElement | null)?.click();
+    flushSync();
+    return target;
+  }
+
+  /** The zone-ELEMENT half needs the resolved plan in context — see the S8
+   *  describe's `renderWithPlan` for why `render()` alone cannot show one.
+   *  Takes the manifest, so the control resolves ITS OWN plan. */
+  function renderWithPlan(skinId: SkinId, manifest: LayoutManifest): HTMLElement {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const plan = resolveSurfacePlan(manifest, DEFAULT_WORKSPACE);
+    mounted.push(mount(RadioLayout, {
+      target, props: { skinId },
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    }));
+    flushSync();
+    return target;
+  }
+
+  const texts = (root: Element | null, selector: string) =>
+    [...(root?.querySelectorAll(selector) ?? [])].map((el) => el.textContent?.trim());
+
+  beforeEach(() => {
+    // A radio that fires all five evidence gates. Each field is here because a
+    // named gate in `radio-view-model-adapter.ts` reads it, and a fixture that
+    // missed one would make this whole describe pass vacuously:
+    //   `deriveModeFilter`   — non-empty `caps.modes` OR `caps.filters`;
+    //   `deriveRfFrontEnd`   — any of preamp/attenuator/rf_gain/squelch/
+    //                          digisel/ip_plus;
+    //   `deriveBand`         — non-empty `caps.freqRanges`;
+    //   `deriveAntenna`      — `caps.antennas > 1`;
+    //   `deriveRitXit`       — a `rit`/`xit` capability tag;
+    //   `deriveScan`         — scanning/scanType/scanResumeMode in state.
+    // The first two are this batch's additions to the S8 fixture; without them
+    // `filter-surface` and `rf-front-end-surface` never render at all, which is
+    // how the first draft of this describe failed.
+    h.caps = {
+      ...(capsFor('2/main_sub') as object),
+      antennas: 2,
+      capabilities: ['scope', 'audio', 'tx', 'dual_rx', 'rit', 'xit',
+        'preamp', 'attenuator', 'rf_gain'],
+      modes: ['LSB', 'USB', 'CW'],
+      filters: ['FIL1', 'FIL2', 'FIL3'],
+      freqRanges: HAM_RANGES,
+    } as Capabilities;
+    h.state = {
+      ...(liveState() as object),
+      scanning: false, scanType: 0x34, scanResumeMode: 1,
+      txAntenna: 1, rxAntenna1: 0, ritOn: false, ritTx: false, ritFreq: 0,
+    };
+    // The legacy `BandSelector` reads its HAM grid from the capabilities STORE,
+    // not from `runtime.caps` — without this the grid is empty and the band
+    // pin below would only ever be about the tab strip.
+    vi.mocked(getCapabilities).mockReturnValue(
+      { freqRanges: HAM_RANGES, modes: ['LSB', 'USB', 'CW'], filters: ['FIL1', 'FIL2', 'FIL3'] } as never,
+    );
+    vi.mocked(hasCapability).mockImplementation((tag: string) => tag === 'cw');
+    vi.mocked(hasAnyScope).mockReturnValue(true);
+    localStorage.setItem('rigplane:panel-order', JSON.stringify(LEFT_ALL));
+    localStorage.setItem('rigplane:right-panel-order', JSON.stringify(RIGHT_ALL));
+  });
+
+  afterEach(() => {
+    vi.mocked(getCapabilities).mockReturnValue({ freqRanges: [], modes: [], filters: [] } as never);
+    vi.mocked(hasAnyScope).mockReturnValue(false);
+    localStorage.clear();
+  });
+
+  // NON-VACUITY, half one: under this fixture the "before" face really does
+  // render all five surfaces AND all eight legacy hosts. Without this row every
+  // suppression pin below could pass because nothing ever rendered.
+  it('the pre-batch manifest renders all five surfaces and all eight legacy hosts', () => {
+    const t = renderAll(PRE_BATCH_2);
+    for (const [, testid] of FIVE) {
+      expect(t.querySelector(`[data-testid="${testid}"]`), testid).not.toBeNull();
+    }
+    for (const [host, selector] of RETIRED) {
+      expect(t.querySelector(selector), host).not.toBeNull();
+    }
+  });
+
+  // NON-VACUITY, half two: on the "before" face those five surfaces mount BARE.
+  // This is the state the declaration replaces, and the row that makes the zone
+  // assertions below a change rather than a restatement.
+  it.each(FIVE)('%s: the pre-batch manifest mounts its surface bare, in no zone', (zoneId, testid) => {
+    const t = renderWithPlan(PRE_BATCH_2, PRE_BATCH_2_MANIFEST);
+    const el = t.querySelector(`[data-testid="${testid}"]`);
+    expect(el, testid).not.toBeNull();
+    expect(el!.closest('.surface-zone')).toBeNull();
+    expect(t.querySelector(`[data-zone-id="${zoneId}"]`)).toBeNull();
+  });
+
+  // EFFECT 1 — each declared zone binds a real element that OWNS its surface,
+  // and there is no second bare mount beside it.
+  it.each(FIVE)('%s: sdr-test hosts its surface inside the declared zone element', (zoneId, testid) => {
+    const t = renderWithPlan('sdr-test', sdrTestLayout);
+    const el = t.querySelector(`[data-testid="${testid}"]`);
+    expect(el, `${testid} on screen`).not.toBeNull();
+    // Containment read from the SURFACE upward, not "some element with this id
+    // exists somewhere": the surface's own wrapper must be the declared zone.
+    const zone = el!.closest('.surface-zone');
+    expect(zone, `${testid} inside a zone element`).not.toBeNull();
+    expect(zone!.getAttribute('data-zone-id')).toBe(zoneId);
+    expect(t.querySelectorAll(`[data-testid="${testid}"]`).length).toBe(1);
+  });
+
+  // EFFECT 2 — the batch's principal effect. Each of the eight legacy hosts is
+  // gone on `sdr-test`, under the identical fixture that renders all eight on
+  // the pre-batch face.
+  it.each(RETIRED)('[%s] is unmounted on sdr-test', (host, selector) => {
+    expect(renderAll('sdr-test').querySelector(selector), host).toBeNull();
+  });
+
+  // THE BAND ASYMMETRY (S10 §4a) — the one family that is NOT unmounted, which
+  // is why it is not a `RETIRED` row. Both `BandSelector` mounts survive and
+  // keep the broadcast presets they alone host; only the HAM half goes.
+  it('drops the HAM half of both BandSelector mounts and keeps the BAND panel', () => {
+    const t = renderAll('sdr-test');
+    for (const [host, root] of [
+      ['left sidebar', t.querySelector('.left-sidebar [data-panel-id="band"]')],
+      ['settings modal', t.querySelector('[data-panel-id="desktop-vfo-ops"]')],
+    ] as const) {
+      expect(root, `${host} still hosts BandSelector`).not.toBeNull();
+      expect(texts(root, '.band-tab'), `${host} tabs`).toEqual(['LW/MW', 'SWL']);
+    }
+    // Zero HAM tabs anywhere, and the semantic replacement is on screen.
+    expect([...t.querySelectorAll('.band-tab')].filter((b) => b.textContent?.trim() === 'HAM').length)
+      .toBe(0);
+    expect(t.querySelectorAll('[data-testid="band-choices"]').length).toBe(1);
+  });
+});
+
+/**
  * The other half of the matrix. Suppression is derived from the manifest, so
  * an id no manifest is registered under declares nothing — and every legacy
  * twin must survive untouched. This is the branch that keeps the shared v2
