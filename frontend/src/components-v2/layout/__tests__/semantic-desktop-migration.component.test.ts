@@ -18,7 +18,7 @@
  * the all-semantic case.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
 import { readFileSync } from 'fs';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { SkinId } from '../../../skins/registry';
@@ -151,7 +151,7 @@ import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/de
 // MOR-1367 (S8): the zone-ELEMENT assertions need the resolved plan in context
 // — see `renderWithPlan` in the S8 describe for why `render()` cannot show one.
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../../../presentation/workspace/resolution';
-import { DEFAULT_WORKSPACE } from '../../../presentation/workspace/contract';
+import { DEFAULT_WORKSPACE, readWorkspace } from '../../../presentation/workspace/contract';
 
 /**
  * MOR-1313 fix round — PARTIALLY DECLARING manifests, the quadrants no shipped
@@ -1178,117 +1178,152 @@ describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () 
     expect(renderAll('sdr-test').querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
 });
-/**
- * MOR-2231 (step 1, batch 5) — the SDR face's fourteen zones laid out as five
- * regions.
- *
- * WHAT THIS FILE CAN AND CANNOT SEE. The mechanism is CSS: under the SDR
- * branch `.receiver-deck` and the wiring root both become `display: contents`,
- * so the zone boxes are direct grid items of `.radio-layout` and the shell
- * places each one. jsdom under this vitest config carries no stylesheets at
- * all, so no row below can observe `display: contents`, a grid track, or a
- * region boundary. Geometry is measured in a real engine instead (three
- * viewport widths, recorded in the PR). What is left for jsdom is the two
- * halves the CSS rests on: the DECLARATION reaching the DOM as a zone element
- * (rows 1-2), and every declared zone actually being named by a placement rule
- * (row 5) — an unplaced grid item is what the batch's browser probe measured
- * landing in an implicit row below the meters strip.
- *
- * THE CONTROL DIFFERS IN EXACTLY ONE DIMENSION: the `regions` prop. Both sides
- * resolve the SAME plan from the SAME `sdrTestLayout`, and neither mounts
- * `RadioLayout`, so no CSS class differs either. That matters here and not
- * before: `RadioLayout.svelte` derives `regions` and `class:sdr-test` from the
- * same `skinId === 'sdr-test'` predicate, so a control routed through the shell
- * cannot vary one without the other — and this batch is what makes the class
- * load-bearing.
- */
+/** MOR-2231 (step 1, batch 5): SDR semantic source order and grid inventory. */
 describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", () => {
-  /** The vertical alone, so `regions` is the only thing that varies. */
-  function renderVertical(regions: boolean, workspace = DEFAULT_WORKSPACE): HTMLElement {
+  type Workspace = typeof DEFAULT_WORKSPACE;
+  const sentinel = createRawSnippet(() => ({
+    render: () => '<section data-testid="region-content-sentinel"></section>',
+  }));
+
+  function renderVertical(
+    regions: boolean,
+    workspace: Workspace | null = DEFAULT_WORKSPACE,
+    regionContent?: Snippet,
+  ): HTMLElement {
     const target = document.createElement('div');
     document.body.appendChild(target);
-    const plan = resolveSurfacePlan(sdrTestLayout, workspace);
+    const context = workspace === null
+      ? undefined
+      : new Map([[SURFACE_PLAN_CONTEXT_KEY, () => resolveSurfacePlan(sdrTestLayout, workspace)]]);
     mounted.push(mount(SemanticRadioSurfaces, {
       target,
-      props: { regions },
-      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+      props: { regions, regionContent },
+      context,
     }));
     flushSync();
     return target;
   }
 
-  /** An imported/persisted workspace that hides `dsp` in its own zone. `dsp`
-   *  is not in `requiredSemanticSurfaces`, so `resolveSurfacePlan` does not
-   *  force it back and the zone resolves empty — the one reachable way to make
-   *  `zoneOwning()` answer null on this face. */
-  const DSP_HIDDEN = { ...DEFAULT_WORKSPACE, visibleSurfaces: { dsp: [] } };
+  const OPTIONAL = [
+    ['tx-aux', 'tx-aux-surface'],
+    ['meters', 'meters-surface'],
+    ['rx-audio', 'rx-audio-surface'],
+    ['filter', 'filter-surface'],
+    ['dsp', 'dsp-surface'],
+    ['rf-front-end', 'rf-front-end-surface'],
+    ['band', 'band-surface'],
+    ['antenna', 'antenna-surface'],
+    ['rit-xit-scan', 'ritxit-scan-surface'],
+    ['cw-keyer', 'cw-keyer-surface'],
+    ['scope-display', 'scope-display-surface'],
+    ['scope-controls', 'scope-controls-surface'],
+  ] as const;
 
-  // `deriveDsp` opens on any of nr / nb / notch / agc; without one the surface
-  // never renders and both subtraction rows below would pass vacuously — the
-  // failure the first draft of this describe actually hit.
   beforeEach(() => {
     h.caps = {
       ...(capsFor('2/main_sub') as object),
-      capabilities: ['scope', 'audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'agc'],
+      antennas: 2,
+      capabilities: [
+        'scope', 'audio', 'tx', 'dual_rx', 'rit', 'xit', 'preamp', 'attenuator',
+        'rf_gain', 'af_level', 'nr', 'nb', 'notch', 'agc', 'cw', 'break_in',
+        'apf', 'tuner', 'vox', 'compressor', 'monitor', 'drive_gain',
+      ],
+      modes: ['LSB', 'USB', 'CW'],
+      filters: ['FIL1', 'FIL2', 'FIL3'],
+      freqRanges: [{
+        start: 1_800_000, end: 30_000_000, label: 'HF',
+        bands: [{ name: '20m', start: 14_000_000, end: 14_350_000, default: 14_225_000 }],
+      }],
     } as Capabilities;
+    const state = liveState() as { main: Record<string, unknown> };
+    h.state = {
+      ...state,
+      main: { ...state.main, sMeter: 120 },
+      scanning: false, scanType: 0x34, scanResumeMode: 1,
+      txAntenna: 1, rxAntenna1: 0, ritOn: false, ritTx: false, ritFreq: 0,
+    };
   });
 
-  // NON-VACUITY for the two subtraction rows: with nothing subtracted this
-  // fixture really does render `dsp`, inside its declared zone.
-  it('renders dsp inside its declared zone with nothing subtracted', () => {
-    const t = renderVertical(true);
-    expect(t.querySelector('[data-zone-id="dsp"] [data-testid="dsp-surface"]')).not.toBeNull();
+  it('uses the SDR region sequence while regions=false keeps the previous surface sequence', () => {
+    const zoned = renderVertical(true, DEFAULT_WORKSPACE, sentinel)
+      .querySelector('[data-testid="semantic-radio-surfaces"]')!;
+    expect([...zoned.children].map((el) =>
+      el.getAttribute('data-zone-id')
+        ?? (el.matches('.content-row, [data-testid="region-content-sentinel"]') ? 'content-row' : null),
+    ).filter(Boolean)).toEqual([
+      'receiver-deck', 'rf-front-end', 'filter', 'band', 'antenna', 'rit-xit-scan',
+      'scope-controls', 'scope-display', 'content-row', 'rx-audio', 'dsp', 'cw-keyer',
+      'tx-aux', 'rx-tx', 'meters',
+    ]);
+    expect(zoned.querySelectorAll('[data-testid="region-content-sentinel"]').length).toBe(1);
+    expect(zoned.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+
+    const bare = renderVertical(false, DEFAULT_WORKSPACE, sentinel)
+      .querySelector('[data-testid="semantic-radio-surfaces"]')!;
+    expect([...bare.children].map((el) => el.getAttribute('data-testid')
+      ?? el.querySelector('[data-testid$="-surface"]')?.getAttribute('data-testid')).filter(Boolean)).toEqual([
+      'vfo-surface', 'rx-tx-surface', 'tx-aux-surface', 'meters-surface',
+      'rx-audio-surface', 'filter-surface', 'dsp-surface', 'rf-front-end-surface',
+      'band-surface', 'antenna-surface', 'ritxit-scan-surface', 'cw-keyer-surface',
+      'scope-display-surface', 'scope-controls-surface',
+    ]);
+    expect(bare.querySelector('[data-testid="region-content-sentinel"]')).toBeNull();
+    expect(bare.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
   });
 
-  // MUTATION KILLED: dropping `regions` from the `zoned()` route for `vfo`/
-  // `rxTx`. Nothing else separates these two rows.
-  it('hosts vfo and rxTx in their declared zone elements when regions is set', () => {
-    const t = renderVertical(true);
-    expect(t.querySelector('[data-zone-id="receiver-deck"] [data-testid="vfo-surface"]'))
+  it.each(OPTIONAL)('%s subtraction removes its SDR host and body but keeps the old bare fallback',
+    (zoneId, testid) => {
+      const present = renderVertical(true);
+      expect(present.querySelector(`[data-zone-id="${zoneId}"] [data-testid="${testid}"]`), testid)
+        .not.toBeNull();
+
+      const hidden = {
+        ...DEFAULT_WORKSPACE,
+        visibleSurfaces: { [zoneId]: [] },
+      } as Workspace;
+      const zoned = renderVertical(true, hidden);
+      expect(zoned.querySelector(`[data-zone-id="${zoneId}"]`)).toBeNull();
+      expect(zoned.querySelector(`[data-testid="${testid}"]`)).toBeNull();
+
+      const bare = renderVertical(false, hidden).querySelector(`[data-testid="${testid}"]`);
+      expect(bare).not.toBeNull();
+      expect(bare!.closest('.surface-zone')).toBeNull();
+    });
+
+  it('keeps available surfaces bare without a plan and restores required imported surfaces', () => {
+    const noPlan = renderVertical(true, null);
+    expect(noPlan.querySelectorAll('[data-zone-id]').length).toBe(0);
+    for (const [, testid] of OPTIONAL) {
+      expect(noPlan.querySelector(`[data-testid="${testid}"]`), testid).not.toBeNull();
+    }
+    expect(noPlan.querySelector('[data-testid="vfo-surface"]')).not.toBeNull();
+    expect(noPlan.querySelector('[data-testid="rx-tx-surface"]')).not.toBeNull();
+
+    const imported = readWorkspace({
+      ...DEFAULT_WORKSPACE,
+      visibleSurfaces: { 'receiver-deck': [], 'rx-tx': [], dsp: [] },
+    });
+    expect(imported.rejections).toEqual([]);
+    const restored = renderVertical(true, imported.workspace as Workspace);
+    expect(restored.querySelector('[data-zone-id="receiver-deck"] [data-testid="vfo-surface"]'))
       .not.toBeNull();
-    expect(t.querySelector('[data-zone-id="rx-tx"] [data-testid="rx-tx-surface"]'))
+    expect(restored.querySelector('[data-zone-id="rx-tx"] [data-testid="rx-tx-surface"]'))
       .not.toBeNull();
+    expect(restored.querySelector('[data-testid="dsp-surface"]')).toBeNull();
   });
 
-  // The control for the row above: same plan, same manifest, same component,
-  // `regions` flipped and nothing else.
-  it('renders vfo and rxTx bare when regions is unset', () => {
-    const t = renderVertical(false);
-    const vfo = t.querySelector('[data-testid="vfo-surface"]');
-    const rxTx = t.querySelector('[data-testid="rx-tx-surface"]');
-    expect(vfo).not.toBeNull();
-    expect(rxTx).not.toBeNull();
-    expect(vfo!.closest('.surface-zone')).toBeNull();
-    expect(rxTx!.closest('.surface-zone')).toBeNull();
-    expect(t.querySelector('[data-zone-id="receiver-deck"]')).toBeNull();
-    expect(t.querySelector('[data-zone-id="rx-tx"]')).toBeNull();
-  });
-
-  // MUTATION KILLED: dropping `allowBare={!regions}` from the twelve optional
-  // `zoned()` calls on the single path. Under the shipped configuration that
-  // argument is never reached (every surface has a zone), so a subtraction is
-  // the only state that can tell the two apart.
-  it('drops a subtracted surface entirely when regions is set', () => {
-    const t = renderVertical(true, DSP_HIDDEN);
-    expect(t.querySelector('[data-zone-id="dsp"]')).toBeNull();
-    expect(t.querySelector('[data-testid="dsp-surface"]')).toBeNull();
-  });
-
-  // The control: without `regions` the same subtraction still renders the
-  // surface bare, which is the pre-batch behaviour every other face keeps.
-  it('still renders a subtracted surface bare when regions is unset', () => {
-    const t = renderVertical(false, DSP_HIDDEN);
-    const dsp = t.querySelector('[data-testid="dsp-surface"]');
-    expect(dsp).not.toBeNull();
-    expect(dsp!.closest('.surface-zone')).toBeNull();
+  it('mounts the SDR shell content and semantic authority once', () => {
+    const shell = render('sdr-test');
+    expect(shell.querySelectorAll('.content-row').length).toBe(1);
+    expect(shell.querySelectorAll('[data-testid="semantic-radio-surfaces"]').length).toBe(1);
+    expect(shell.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
+    const root = shell.querySelector('[data-testid="semantic-radio-surfaces"]')!;
+    expect(root.querySelector('.content-row')).not.toBeNull();
   });
 
   /**
-   * The stylesheet half, read as a DERIVED list against the manifest rather
-   * than a hand-kept one: a zone declared with no placement rule becomes an
-   * auto-placed grid item, which is the failure the browser probe measured for
-   * the two status plates. This cannot see whether the placement is CORRECT —
-   * only that every declared zone has one.
+   * This source inventory detects missing placement selectors. Track and
+   * rectangle correctness is exercised by the browser acceptance probe.
    */
   const RADIO_LAYOUT_SOURCE = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
   const placementFor = (id: string): RegExpMatchArray[] => [...RADIO_LAYOUT_SOURCE.matchAll(
@@ -1303,21 +1338,83 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     expect(unplaced).toEqual([]);
   });
 
-  // The two direct children of the wiring root that are never wrapped in a
-  // `.surface-zone` — `txFaultRecovery` and `txAdjacentAlerts` — need a
-  // placement of their own for the same reason. Both class names are read back
-  // out of the components that render them, so a rename cannot leave a dead
-  // selector behind.
-  it('names both zone-less status plates in a placement rule', () => {
+  it('names every non-zone in-flow box in a placement rule', () => {
     for (const [cls, source] of [
+      ['control-link-lost', 'src/components-v2/layout/StatusBar.svelte'],
+      ['status-bar', 'src/components-v2/layout/StatusBar.svelte'],
+      ['content-row', 'src/components-v2/layout/RadioLayout.svelte'],
       ['tx-fault-recovery', 'src/components-v2/wiring/SemanticRadioSurfaces.svelte'],
       ['mod-input-tx-warning', 'src/components-v2/panels/ModInputTxWarning.svelte'],
     ] as const) {
       expect(readFileSync(source, 'utf8'), cls).toContain(`class="${cls}"`);
-      expect(RADIO_LAYOUT_SOURCE, cls).toMatch(
-        new RegExp(`\\.radio-layout\\.sdr-test[^{]*\\.${cls}\\)[^{]*\\{[^}]*grid-area`),
-      );
+      expect(RADIO_LAYOUT_SOURCE, cls).toMatch(new RegExp(
+        `\\.radio-layout\\.sdr-test[^{]*\\.${cls}(?:\\)|\\b)[^{]*\\{[^}]*grid-area`,
+      ));
     }
+  });
+
+  /**
+   * These declarations are deliberately pinned separately from the browser
+   * probe. Source assertions make every row assignment a cheap changed-file
+   * regression and mutation target; the browser remains authoritative for
+   * computed tracks, rectangles, viewport visibility and overlap.
+   */
+  const WIDE_PLACEMENTS = [
+    ["> :global(.control-link-lost)", '1 / 1 / 2 / -1'],
+    ["> :global(.status-bar)", '2 / 1 / 3 / -1'],
+    [":global([data-zone-id='receiver-deck'])", '3 / 1 / 4 / -1'],
+    [":global([data-zone-id='rf-front-end'])", '4 / 1 / 5 / 2'],
+    [":global([data-zone-id='filter'])", '5 / 1 / 6 / 2'],
+    [":global([data-zone-id='band'])", '6 / 1 / 7 / 2'],
+    [":global([data-zone-id='antenna'])", '7 / 1 / 8 / 2'],
+    [":global([data-zone-id='rit-xit-scan'])", '8 / 1 / 9 / 2'],
+    [":global([data-zone-id='scope-controls'])", '4 / 2 / 5 / 3'],
+    [":global([data-zone-id='scope-display'])", '5 / 2 / 6 / 3'],
+    [":global(.semantic-surfaces > .content-row)", '6 / 2 / 9 / 3'],
+    [":global([data-zone-id='rx-audio'])", '4 / 3 / 5 / 4'],
+    [":global([data-zone-id='dsp'])", '5 / 3 / 6 / 4'],
+    [":global([data-zone-id='cw-keyer'])", '6 / 3 / 7 / 4'],
+    [":global([data-zone-id='tx-aux'])", '7 / 3 / 8 / 4'],
+    [":global([data-zone-id='rx-tx'])", '8 / 3 / 9 / 4'],
+    [":global(.semantic-surfaces > .tx-fault-recovery)", '9 / 1 / 10 / -1'],
+    [":global(.semantic-surfaces > .mod-input-tx-warning)", '10 / 1 / 11 / -1'],
+    [":global([data-zone-id='meters'])", '11 / 1 / 12 / -1'],
+  ] as const;
+
+  const NARROW_OVERRIDES = [
+    [":global([data-zone-id='scope-controls'])", '9 / 1 / 10 / -1'],
+    [":global([data-zone-id='scope-display'])", '10 / 1 / 11 / -1'],
+    [":global(.semantic-surfaces > .content-row)", '11 / 1 / 12 / -1'],
+    [":global([data-zone-id='rx-audio'])", '12 / 1 / 13 / -1'],
+    [":global([data-zone-id='dsp'])", '13 / 1 / 14 / -1'],
+    [":global([data-zone-id='cw-keyer'])", '14 / 1 / 15 / -1'],
+    [":global([data-zone-id='tx-aux'])", '15 / 1 / 16 / -1'],
+    [":global([data-zone-id='rx-tx'])", '16 / 1 / 17 / -1'],
+    [":global(.semantic-surfaces > .tx-fault-recovery)", '17 / 1 / 18 / -1'],
+    [":global(.semantic-surfaces > .mod-input-tx-warning)", '18 / 1 / 19 / -1'],
+    [":global([data-zone-id='meters'])", '19 / 1 / 20 / -1'],
+  ] as const;
+
+  function expectPlacement(source: string, selector: string, area: string): void {
+    expect(source).toContain(`.radio-layout.sdr-test ${selector}`);
+    const rule = source.slice(source.indexOf(`.radio-layout.sdr-test ${selector}`));
+    expect(rule.slice(0, rule.indexOf('}') + 1)).toContain(`grid-area: ${area}`);
+  }
+
+  it('pins the wide warning, chrome, region, notice and meter row declarations', () => {
+    const wide = RADIO_LAYOUT_SOURCE.slice(0, RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
+    expect(wide).toContain('grid-template-columns: 228px minmax(0, 1fr) 228px');
+    expect(wide).toContain('grid-template-rows: auto 28px repeat(9, auto)');
+    expect(wide).toContain('min-height: 320px');
+    for (const [selector, area] of WIDE_PLACEMENTS) expectPlacement(wide, selector, area);
+  });
+
+  it('pins every declaration that changes at the narrow breakpoint', () => {
+    const narrow = RADIO_LAYOUT_SOURCE.slice(RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
+    expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(narrow).toContain('grid-template-rows: auto 28px repeat(17, auto)');
+    expect(narrow).toContain('min-height: 660px');
+    for (const [selector, area] of NARROW_OVERRIDES) expectPlacement(narrow, selector, area);
   });
 });
 

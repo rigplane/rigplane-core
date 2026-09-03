@@ -272,19 +272,46 @@
   });
 </script>
 
+{#snippet sdrRegionContent()}
+  <section class="content-row">
+    <div class="content-left">
+      <LeftSidebar hideTxPanel={semanticRxTx} {declared} />
+    </div>
+
+    <main class="content-center center-column">
+      {#if hasSpectrum()}
+        <div class="spectrum-slot">
+          <div class="spectrum-frame">
+            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} />
+          </div>
+        </div>
+      {/if}
+    </main>
+
+    <div class="content-right">
+      <RightSidebar hideTxPanel={semanticRxTx} {declared} />
+    </div>
+  </section>
+{/snippet}
+
 {#if skinId === 'mobile'}
   <MobileRadioLayout />
 {:else if skinId === 'lcd-cockpit'}
   <LcdLayout variant="cockpit" />
 {:else if skinId === 'lcd-scope'}
   <LcdLayout variant="scope" />
+{:else if skinId === 'sdr-test' && semanticDeck}
+  <div class="radio-layout sdr-test semantic-deck">
+    <StatusBar onSettings={() => (settingsOpen = true)} {declared} />
+    <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
+
+    <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
+      {#if semanticDeck}
+        <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent} />
+      {/if}
+    </section>
+  </div>
 {:else}
-<!--
-  `sdr-test` stays a pure IDENTITY hook (which entrypoint is on screen);
-  `semantic-deck` is the PRESENTATIONAL one — the taller deck row and the
-  wide-viewport promotion below belong to the semantic deck, not to one skin id,
-  now that a second family resolves into it (MOR-1313).
--->
 <div class="radio-layout" class:sdr-test={skinId === 'sdr-test'} class:semantic-deck={semanticDeck}>
   <StatusBar onSettings={() => (settingsOpen = true)} {declared} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
@@ -542,20 +569,12 @@
     deck was rejected — and deck sizing from a resolved canvas is MOR-2231
     step 2.
 
-    The two direct children of the wiring root that are never wrapped in a
-    `.surface-zone` (`txFaultRecovery`, `txAdjacentAlerts`) get rows 8 and 9.
-    Without a placement they auto-place into an implicit row below the meters
-    strip. Both self-hide completely, so an absent one collapses its row.
+    The direct status children and shell content receive explicit tracks beside
+    the fourteen zone boxes.
   */
   .radio-layout.sdr-test {
     grid-template-columns: 228px minmax(0, 1fr) 228px;
-    grid-template-rows: 28px auto auto auto auto auto auto auto auto auto;
-    /* Every row is content-sized, so the face is taller than the viewport with
-       fourteen surfaces on screen (measured: ~2.2x a 1000px-high viewport at
-       1920 wide). An `fr` row cannot help — there is no free space to
-       distribute, and the one this rule first carried collapsed to 0px and let
-       its items overlap the rows below. Scrolling the face is what keeps every
-       surface reachable; fitting it is deck sizing, MOR-2231 step 2. */
+    grid-template-rows: auto 28px repeat(9, auto);
     overflow-y: auto;
   }
   .radio-layout.sdr-test > .receiver-deck,
@@ -567,40 +586,41 @@
     align-self: start;
     min-width: 0;
   }
-  .radio-layout.sdr-test > :global(.status-bar) { grid-area: 1 / 1 / 2 / -1; }
+  .radio-layout.sdr-test > :global(.control-link-lost) { grid-area: 1 / 1 / 2 / -1; }
+  .radio-layout.sdr-test > :global(.status-bar) { grid-area: 2 / 1 / 3 / -1; }
   /* vfo-deck */
-  .radio-layout.sdr-test :global([data-zone-id='receiver-deck']) { grid-area: 2 / 1 / 3 / -1; }
+  .radio-layout.sdr-test :global([data-zone-id='receiver-deck']) { grid-area: 3 / 1 / 4 / -1; }
   /* left */
-  .radio-layout.sdr-test :global([data-zone-id='rf-front-end']) { grid-area: 3 / 1; }
-  .radio-layout.sdr-test :global([data-zone-id='filter']) { grid-area: 4 / 1; }
-  .radio-layout.sdr-test :global([data-zone-id='band']) { grid-area: 5 / 1; }
-  .radio-layout.sdr-test :global([data-zone-id='antenna']) { grid-area: 6 / 1; }
-  .radio-layout.sdr-test :global([data-zone-id='rit-xit-scan']) { grid-area: 7 / 1; }
+  .radio-layout.sdr-test :global([data-zone-id='rf-front-end']) { grid-area: 4 / 1 / 5 / 2; }
+  .radio-layout.sdr-test :global([data-zone-id='filter']) { grid-area: 5 / 1 / 6 / 2; }
+  .radio-layout.sdr-test :global([data-zone-id='band']) { grid-area: 6 / 1 / 7 / 2; }
+  .radio-layout.sdr-test :global([data-zone-id='antenna']) { grid-area: 7 / 1 / 8 / 2; }
+  .radio-layout.sdr-test :global([data-zone-id='rit-xit-scan']) { grid-area: 8 / 1 / 9 / 2; }
   /* centre-top, above the legacy spectrum this face keeps */
-  .radio-layout.sdr-test :global([data-zone-id='scope-controls']) { grid-area: 3 / 2; }
-  .radio-layout.sdr-test :global([data-zone-id='scope-display']) { grid-area: 4 / 2; }
-  .radio-layout.sdr-test > .content-row {
-    grid-area: 5 / 2 / 8 / 3;
+  .radio-layout.sdr-test :global([data-zone-id='scope-controls']) { grid-area: 4 / 2 / 5 / 3; }
+  .radio-layout.sdr-test :global([data-zone-id='scope-display']) { grid-area: 5 / 2 / 6 / 3; }
+  .radio-layout.sdr-test :global(.semantic-surfaces > .content-row) {
+    grid-area: 6 / 2 / 9 / 3;
     /* A floor, not a measurement: the legacy spectrum canvas has no intrinsic
        height, so a content-sized row collapses it to nothing. */
     min-height: 320px;
   }
   /* right */
-  .radio-layout.sdr-test :global([data-zone-id='rx-audio']) { grid-area: 3 / 3; }
-  .radio-layout.sdr-test :global([data-zone-id='dsp']) { grid-area: 4 / 3; }
-  .radio-layout.sdr-test :global([data-zone-id='cw-keyer']) { grid-area: 5 / 3; }
-  .radio-layout.sdr-test :global([data-zone-id='tx-aux']) { grid-area: 6 / 3; }
-  .radio-layout.sdr-test :global([data-zone-id='rx-tx']) { grid-area: 7 / 3; }
+  .radio-layout.sdr-test :global([data-zone-id='rx-audio']) { grid-area: 4 / 3 / 5 / 4; }
+  .radio-layout.sdr-test :global([data-zone-id='dsp']) { grid-area: 5 / 3 / 6 / 4; }
+  .radio-layout.sdr-test :global([data-zone-id='cw-keyer']) { grid-area: 6 / 3 / 7 / 4; }
+  .radio-layout.sdr-test :global([data-zone-id='tx-aux']) { grid-area: 7 / 3 / 8 / 4; }
+  .radio-layout.sdr-test :global([data-zone-id='rx-tx']) { grid-area: 8 / 3 / 9 / 4; }
   /* the two zone-less status plates */
   .radio-layout.sdr-test :global(.semantic-surfaces > .tx-fault-recovery) {
-    grid-area: 8 / 1 / 9 / -1;
+    grid-area: 9 / 1 / 10 / -1;
   }
   .radio-layout.sdr-test :global(.semantic-surfaces > .mod-input-tx-warning) {
-    grid-area: 9 / 1 / 10 / -1;
+    grid-area: 10 / 1 / 11 / -1;
   }
   /* meters-strip. Full width, and deliberately no `flex-direction` here: how
      the meters lay out inside their own box is not this grid's business. */
-  .radio-layout.sdr-test :global([data-zone-id='meters']) { grid-area: 10 / 1 / 11 / -1; }
+  .radio-layout.sdr-test :global([data-zone-id='meters']) { grid-area: 11 / 1 / 12 / -1; }
 
   .radio-layout, .radio-layout.semantic-deck {
     height: 100vh;
@@ -725,23 +745,26 @@
        fifth place, which is what the batch's browser probe measured. */
     .radio-layout.sdr-test {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: 28px repeat(17, auto);
+      grid-template-rows: auto 28px repeat(17, auto);
     }
-    .radio-layout.sdr-test :global([data-zone-id='scope-controls']) { grid-area: 8 / 1; }
-    .radio-layout.sdr-test :global([data-zone-id='scope-display']) { grid-area: 9 / 1; }
-    .radio-layout.sdr-test > .content-row { grid-area: 10 / 1; min-height: 660px; }
-    .radio-layout.sdr-test :global([data-zone-id='rx-audio']) { grid-area: 11 / 1; }
-    .radio-layout.sdr-test :global([data-zone-id='dsp']) { grid-area: 12 / 1; }
-    .radio-layout.sdr-test :global([data-zone-id='cw-keyer']) { grid-area: 13 / 1; }
-    .radio-layout.sdr-test :global([data-zone-id='tx-aux']) { grid-area: 14 / 1; }
-    .radio-layout.sdr-test :global([data-zone-id='rx-tx']) { grid-area: 15 / 1; }
+    .radio-layout.sdr-test :global([data-zone-id='scope-controls']) { grid-area: 9 / 1 / 10 / -1; }
+    .radio-layout.sdr-test :global([data-zone-id='scope-display']) { grid-area: 10 / 1 / 11 / -1; }
+    .radio-layout.sdr-test :global(.semantic-surfaces > .content-row) {
+      grid-area: 11 / 1 / 12 / -1;
+      min-height: 660px;
+    }
+    .radio-layout.sdr-test :global([data-zone-id='rx-audio']) { grid-area: 12 / 1 / 13 / -1; }
+    .radio-layout.sdr-test :global([data-zone-id='dsp']) { grid-area: 13 / 1 / 14 / -1; }
+    .radio-layout.sdr-test :global([data-zone-id='cw-keyer']) { grid-area: 14 / 1 / 15 / -1; }
+    .radio-layout.sdr-test :global([data-zone-id='tx-aux']) { grid-area: 15 / 1 / 16 / -1; }
+    .radio-layout.sdr-test :global([data-zone-id='rx-tx']) { grid-area: 16 / 1 / 17 / -1; }
     .radio-layout.sdr-test :global(.semantic-surfaces > .tx-fault-recovery) {
-      grid-area: 16 / 1;
+      grid-area: 17 / 1 / 18 / -1;
     }
     .radio-layout.sdr-test :global(.semantic-surfaces > .mod-input-tx-warning) {
-      grid-area: 17 / 1;
+      grid-area: 18 / 1 / 19 / -1;
     }
-    .radio-layout.sdr-test :global([data-zone-id='meters']) { grid-area: 18 / 1; }
+    .radio-layout.sdr-test :global([data-zone-id='meters']) { grid-area: 19 / 1 / 20 / -1; }
 
     .content-row {
       grid-template-columns: 1fr;

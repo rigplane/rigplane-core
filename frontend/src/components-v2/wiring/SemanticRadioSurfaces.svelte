@@ -90,6 +90,7 @@
   interface Props {
     strips?: 'single' | 'dual';
     regions?: boolean;
+    regionContent?: Snippet;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -111,7 +112,7 @@
    * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
    * `zoneOwning()` returns non-null on both faces.
    */
-  let { strips = 'single', regions = false }: Props = $props();
+  let { strips = 'single', regions = false, regionContent }: Props = $props();
 
   /**
    * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
@@ -147,7 +148,6 @@
    * A mount with NO plan at all is excluded deliberately: no zone element
    * exists then for ANY surface, so there is no arrangement to be unplaced
    * beside — withholding the body would cost a readout and prevent nothing.
-   * That is also the condition every standalone mount of this component is in.
    */
   let allowBareSurfaces = $derived(!regions || surfacePlan() === null);
   /**
@@ -1477,6 +1477,38 @@
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
     {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, false)}
   {:else}
+    {#if regions}
+      {#if singleOrder.includes('vfo')}
+        {@render zoned('vfo', view !== null, vfoSurface)}
+      {/if}
+      {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
+        allowBareSurfaces,
+      )}
+      {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
+      {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
+      {@render zoned(
+        'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+        allowBareSurfaces,
+      )}
+      {@render zoned(
+        'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
+        allowBareSurfaces,
+      )}
+      {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
+      {#if regionContent}{@render regionContent()}{/if}
+      {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
+      {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
+      {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
+      {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface, allowBareSurfaces)}
+      {#if singleOrder.includes('rxTx')}
+        {@render zoned('rxTx', view !== null, rxTxSurface)}
+      {/if}
+      {@render txFaultRecovery()}
+      {@render txAdjacentAlerts()}
+      {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
+    {:else}
     <!--
       Single/default path (sdr-test / LCD / mobile). No zone CONTAINS the
       alerts here (MOR-1069 — the dual composition's `.rx-tx-zone` has no twin
@@ -1491,17 +1523,17 @@
       mounts both (LCD `control-column`, mobile `portrait-deck`) it is what
       reorders within it.
 
-      MOR-2231: `regions` decides whether each of the two gets the zone element
-      its plan names. Unset — every mount that predates that ticket — renders
-      them exactly as before: no wrapper, no `data-zone-id`.
+      This branch keeps the pre-MOR-2231 single/default sequence with bare
+      required surfaces when `regions` is unset.
     -->
     {#each singleOrder as surface (surface)}
       {#if surface === 'vfo'}
-        {#if regions}{@render zoned('vfo', view !== null, vfoSurface)}
-        {:else}{@render vfoSurface()}{/if}
+        {@render vfoSurface()}
       {:else if surface === 'rxTx'}
-        {#if regions}{@render zoned('rxTx', view !== null, rxTxSurface)}
-        {:else}{@render rxTxSurface()}{/if}
+        <!-- Preserve the pre-region compiled anchor topology on this literal path. -->
+        {#if !regions}
+          {@render rxTxSurface()}
+        {/if}
       {/if}
     {/each}
     <!-- MOR-1784: `singleOrder` ends in `rxTx` in every shipped layout
@@ -1537,6 +1569,7 @@
       allowBareSurfaces,
     )}
     {@render txAdjacentAlerts()}
+    {/if}
   {/if}
 </div>
 
