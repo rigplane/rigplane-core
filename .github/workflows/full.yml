@@ -1,4 +1,4 @@
-name: Canonical levels mutation diagnostic
+name: Canonical ATT admission formatter diagnostic
 
 on:
   workflow_dispatch:
@@ -7,16 +7,15 @@ permissions:
   contents: read
 
 jobs:
-  mutation-seats:
+  formatter:
     runs-on: [self-hosted, linux, build]
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
       UV_PYTHON: "3.11"
-      SOURCE_SHA: 445f07c7699466f4200d06e85500d186cf589131
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 445f07c7699466f4200d06e85500d186cf589131
+          ref: b0e0da462e1ac8d84657964f6ccc3b71dba1242e
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -32,176 +31,42 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run isolated mutation seats
-        shell: bash
+      - name: Capture formatter diff
         run: |
-          set -euo pipefail
-          artifact_dir="$RUNNER_TEMP/canonical-level-mutation-445f07c7"
-          mkdir -p "$artifact_dir"
-          : > "$artifact_dir/exitcodes.txt"
           checked_head=$(git rev-parse HEAD)
-          printf '%s\n' "$checked_head" | tee "$artifact_dir/source-sha.txt"
-          if [[ "$checked_head" != "$SOURCE_SHA" ]]; then
+          echo "checked_head=$checked_head"
+          if [ "$checked_head" != "b0e0da462e1ac8d84657964f6ccc3b71dba1242e" ]; then
             echo "unexpected checkout: $checked_head" >&2
             exit 1
           fi
+          uv run ruff --version
+          set +e
+          uv run ruff format --diff \
+            tests/test_receiver_command_admission.py > formatter.patch
+          rc=$?
+          set -e
+          echo "ruff_exit=$rc"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+            echo "unexpected Ruff exit: $rc" >&2
+            exit "$rc"
+          fi
+          if [ "$rc" -eq 1 ] && [ ! -s formatter.patch ]; then
+            echo "Ruff reported a diff but formatter.patch is empty" >&2
+            exit 1
+          fi
+          if [ "$rc" -eq 0 ] && [ -s formatter.patch ]; then
+            echo "Ruff reported no diff but formatter.patch is nonempty" >&2
+            exit 1
+          fi
+          git diff --exit-code
+          status=$(git status --porcelain)
+          if [ "$status" != "?? formatter.patch" ]; then
+            echo "unexpected checkout status: $status" >&2
+            exit 1
+          fi
 
-          active_patch=""
-          cleanup() {
-            local original_rc=$?
-            local cleanup_rc=0
-            set +e
-            if [[ -n "$active_patch" ]]; then
-              git apply --reverse --check "$active_patch" > "$artifact_dir/trap-inverse-check.log" 2>&1
-              inverse_check_rc=$?
-              printf 'trap_inverse_check=%s\n' "$inverse_check_rc" >> "$artifact_dir/exitcodes.txt"
-              if [[ "$inverse_check_rc" -eq 0 ]]; then
-                git apply --reverse "$active_patch" > "$artifact_dir/trap-inverse-apply.log" 2>&1
-                inverse_apply_rc=$?
-                printf 'trap_inverse_apply=%s\n' "$inverse_apply_rc" >> "$artifact_dir/exitcodes.txt"
-                if [[ "$inverse_apply_rc" -ne 0 ]]; then
-                  cleanup_rc=1
-                fi
-              else
-                cleanup_rc=1
-              fi
-            fi
-            git diff --exit-code > "$artifact_dir/final-diff.log" 2>&1
-            diff_rc=$?
-            git status --porcelain > "$artifact_dir/final-status.txt"
-            status_rc=$?
-            printf 'final_diff=%s\nfinal_status_command=%s\n' "$diff_rc" "$status_rc" >> "$artifact_dir/exitcodes.txt"
-            if [[ "$diff_rc" -ne 0 || "$status_rc" -ne 0 || -s "$artifact_dir/final-status.txt" ]]; then
-              cleanup_rc=1
-            fi
-            if [[ "$original_rc" -eq 0 && "$cleanup_rc" -ne 0 ]]; then
-              exit "$cleanup_rc"
-            fi
-            exit "$original_rc"
-          }
-          trap cleanup EXIT
-
-          assert_clean() {
-            local phase=$1
-            git diff --exit-code > "$artifact_dir/${phase}-diff.log" 2>&1
-            git status --porcelain > "$artifact_dir/${phase}-status.txt"
-            if [[ -s "$artifact_dir/${phase}-status.txt" ]]; then
-              echo "checkout is not clean at $phase" >&2
-              cat "$artifact_dir/${phase}-status.txt" >&2
-              return 1
-            fi
-          }
-
-          run_node() {
-            local seat=$1
-            local phase=$2
-            local node=$3
-            set +e
-            uv run pytest -n 0 "$node" > "$artifact_dir/${seat}-${phase}.log" 2>&1
-            node_rc=$?
-            set -e
-            printf '%s_%s=%s\n' "$seat" "$phase" "$node_rc" >> "$artifact_dir/exitcodes.txt"
-            return 0
-          }
-
-          run_seat() {
-            local seat=$1
-            local node=$2
-            local patch=$3
-            local signature_one=$4
-            local signature_two=$5
-            assert_clean "${seat}-initial"
-            run_node "$seat" baseline "$node"
-            if [[ "$node_rc" -ne 0 ]]; then
-              echo "$seat baseline did not pass" >&2
-              return 1
-            fi
-            git apply --check "$patch" > "$artifact_dir/${seat}-apply-check.log" 2>&1
-            git apply "$patch" > "$artifact_dir/${seat}-apply.log" 2>&1
-            active_patch=$patch
-            run_node "$seat" mutated "$node"
-            if [[ "$node_rc" -ne 1 ]]; then
-              echo "$seat mutation exit was $node_rc, expected 1" >&2
-              return 1
-            fi
-            grep -F -- "$signature_one" "$artifact_dir/${seat}-mutated.log"
-            grep -F -- "$signature_two" "$artifact_dir/${seat}-mutated.log"
-            git apply --reverse --check "$patch" > "$artifact_dir/${seat}-inverse-check.log" 2>&1
-            git apply --reverse "$patch" > "$artifact_dir/${seat}-inverse-apply.log" 2>&1
-            active_patch=""
-            assert_clean "${seat}-restored"
-            run_node "$seat" restored "$node"
-            if [[ "$node_rc" -ne 0 ]]; then
-              echo "$seat restored node did not pass" >&2
-              return 1
-            fi
-          }
-
-          cat > "$artifact_dir/receiver-af-main.patch" <<'PATCH'
-          diff --git a/src/rigplane/core/command_dispatch.py b/src/rigplane/core/command_dispatch.py
-          --- a/src/rigplane/core/command_dispatch.py
-          +++ b/src/rigplane/core/command_dispatch.py
-          @@ -389,3 +389,6 @@ async def execute_command_intent(radio: Any, intent: CommandIntent) -> None:
-               _require_descriptor_policy_seat(descriptor)
-               method = getattr(radio, descriptor.method_name)
-          -    await method(**{name: intent.params[name] for name in descriptor.argument_names})
-          +    arguments = {name: intent.params[name] for name in descriptor.argument_names}
-          +    if intent.name == "set_af_level":
-          +        arguments["receiver"] = 0
-          +    await method(**arguments)
-          PATCH
-
-          cat > "$artifact_dir/yaesu-af-legacy-shared-bypass.patch" <<'PATCH'
-          diff --git a/src/rigplane/backends/yaesu_cat/poller.py b/src/rigplane/backends/yaesu_cat/poller.py
-          --- a/src/rigplane/backends/yaesu_cat/poller.py
-          +++ b/src/rigplane/backends/yaesu_cat/poller.py
-          @@ -900,4 +900,9 @@ class YaesuCatPoller:
-                   cmd = canonicalize_level_command(cmd, self._radio)
-                   if isinstance(cmd, CommandIntent):
-          -            await execute_command_intent(self._radio, cmd)
-          +            if cmd.name == "set_af_level":
-          +                await self._radio.set_af_level(
-          +                    cmd.params["level"], receiver=cmd.params["receiver"]
-          +                )
-          +                return
-          +            await execute_command_intent(self._radio, cmd)
-                       return
-          PATCH
-
-          cat > "$artifact_dir/icom-af-readback-skip.patch" <<'PATCH'
-          diff --git a/src/rigplane/web/radio_poller.py b/src/rigplane/web/radio_poller.py
-          --- a/src/rigplane/web/radio_poller.py
-          +++ b/src/rigplane/web/radio_poller.py
-          @@ -2090,4 +2090,3 @@ class RadioPoller:
-                   if isinstance(cmd, CommandIntent):
-                       await execute_command_intent(self._radio, cmd)
-          -            self._request_post_write_readback(cmd)
-                       return
-          PATCH
-
-          run_seat \
-            receiver-af-main \
-            'tests/test_canonical_receiver_levels.py::test_web_levels_invoke_canonical_executor_and_literal_receiver[SUB-set_af_level-af_level-AG]' \
-            "$artifact_dir/receiver-af-main.patch" \
-            'AG0073;' \
-            'AG1073;'
-          run_seat \
-            yaesu-af-legacy-shared-bypass \
-            'tests/test_canonical_receiver_levels.py::test_legacy_level_envelope_uses_shared_invocation[yaesu-SetAfLevel]' \
-            "$artifact_dir/yaesu-af-legacy-shared-bypass.patch" \
-            'Awaited 0 times' \
-            'Expected mock to have been awaited once'
-          run_seat \
-            icom-af-readback-skip \
-            'tests/test_canonical_receiver_levels.py::test_canonical_readback_waits_for_successful_write[complete-set_af_level-af_level-AG-icom]' \
-            "$artifact_dir/icom-af-readback-skip.patch" \
-            'AcquisitionPriority.BACKGROUND' \
-            'AcquisitionPriority.USER'
-
-      - name: Upload mutation evidence
-        if: always()
+      - name: Upload formatter patch
         uses: actions/upload-artifact@v7
         with:
-          name: canonical-levels-mutation-445f07c7
-          path: ${{ runner.temp }}/canonical-level-mutation-445f07c7
-          if-no-files-found: error
+          name: canonical-att-admission-format-b0e0da46
+          path: formatter.patch
