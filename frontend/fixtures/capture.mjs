@@ -526,14 +526,12 @@ try {
       tokens,
       paint,
     });
-    // eslint-disable-next-line no-console
     console.log(
       `${passed ? 'PASS' : 'FAIL'}  ${spec.name}`
       + `  (${assertions.filter((a) => a.ok).length}/${assertions.length} assertions)`,
     );
     if (!passed) {
       for (const a of assertions.filter((x) => !x.ok)) {
-        // eslint-disable-next-line no-console
         console.log(`        ✗ ${a.name}: ${a.detail}`);
       }
       for (const e of consoleErrors) console.log(`        ✗ console: ${e}`);
@@ -623,6 +621,5 @@ const manifest = {
   captures,
 };
 writeFileSync(path.join(OUT, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-// eslint-disable-next-line no-console
 console.log(`\n${captures.length} captures → ${OUT}  (${failures} invalid)`);
 process.exit(failures === 0 ? 0 : 1);
