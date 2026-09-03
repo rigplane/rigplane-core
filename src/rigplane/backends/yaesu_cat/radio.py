@@ -15,6 +15,12 @@ from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...runtime.callable_support import supports_callable
+from ...runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+)
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.tx_observation import TxStateReading
 from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
@@ -820,7 +826,14 @@ class YaesuCatRadio:
         # Transport strips trailing ';'; add it back for the parser.
         return parser.parse(raw + ";")
 
-    async def _write(self, cmd_name: str, **kwargs: Any) -> None:
+    async def _write(
+        self,
+        cmd_name: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        urgent: bool = False,
+        **kwargs: Any,
+    ) -> None:
         """Format and send a write command (no response expected).
 
         Raises:
@@ -844,7 +857,12 @@ class YaesuCatRadio:
 
         cmd = format_command(spec.write, **kwargs)
         try:
-            await self._transport.write(cmd)
+            if is_current is None and not urgent:
+                await self._transport.write(cmd)
+            else:
+                await self._transport.write(
+                    cmd, is_current=is_current, urgent=urgent
+                )
         except CatCommandRejected as exc:
             raise CommandRejectedError(str(exc)) from exc
 
@@ -1050,6 +1068,38 @@ class YaesuCatRadio:
             on: ``True`` to transmit, ``False`` to receive.
         """
         await self._write("set_ptt", state="1" if on else "0")
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        """Execute one profile-backed runtime-managed transmit operation."""
+        del token
+        if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+            command, params, urgent = "set_ptt", {"state": "1"}, False
+        elif operation is ActuationOperation.FORCE_RECEIVE:
+            command, params, urgent = "set_ptt", {"state": "0"}, True
+        elif operation is AbortOperation.STOP_CW:
+            command, params, urgent = "send_cw", {"type": " ", "mem": ""}, True
+        elif operation is AbortOperation.STOP_TUNE:
+            command, params, urgent = (
+                "set_tuner",
+                {"src": "0", "type": "0", "state": "0"},
+                True,
+            )
+        else:
+            return ActuationResult.REJECTED
+
+        try:
+            await self._write(
+                command, is_current=is_current, urgent=urgent, **params
+            )
+        except CommandError:
+            return ActuationResult.REJECTED
+        return ActuationResult.ACCEPTED
 
     def _warn_ptt_unrecognised(self, state: str) -> None:
         """Warn-once-then-DEBUG diagnostic for an unrecognised TX token.
