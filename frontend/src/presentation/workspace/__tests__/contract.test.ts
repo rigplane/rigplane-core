@@ -253,10 +253,10 @@ describe('decision 1 — `auto` is first class and resolution is deferred', () =
 
 describe('decisions 5 and 6 — zone constraints', () => {
   it('drops an unknown zone id and an unknown surface id', () => {
-    const result = readWorkspace({ ...VALID, visibleSurfaces: { 'no-such-zone': ['vfo'], main: ['vfo', 'nope'] } });
-    expect(result.workspace.visibleSurfaces).toEqual({ main: ['vfo'] });
+    const result = readWorkspace({ ...VALID, visibleSurfaces: { 'no-such-zone': ['vfo'], 'receiver-deck': ['vfo', 'nope'] } });
+    expect(result.workspace.visibleSurfaces).toEqual({ 'receiver-deck': ['vfo'] });
     expect(result.rejections).toContainEqual({ field: 'visibleSurfaces.no-such-zone', reason: 'unknown-id' });
-    expect(result.rejections).toContainEqual({ field: 'visibleSurfaces.main', reason: 'unknown-id' });
+    expect(result.rejections).toContainEqual({ field: 'visibleSurfaces.receiver-deck', reason: 'unknown-id' });
   });
 
   it('rejects the same surface claimed by two zones — the cross-zone move shape', () => {
@@ -266,8 +266,8 @@ describe('decisions 5 and 6 — zone constraints', () => {
   });
 
   it('preserves within-zone order — reordering is the whole point of the field', () => {
-    const result = readWorkspace({ ...VALID, zoneOrder: { main: ['rxTx', 'vfo'] } });
-    expect(result.workspace.zoneOrder.main).toEqual(['rxTx', 'vfo']);
+    const result = readWorkspace({ ...VALID, zoneOrder: { 'receiver-deck': ['rxTx', 'vfo'] } });
+    expect(result.workspace.zoneOrder['receiver-deck']).toEqual(['rxTx', 'vfo']);
   });
 
   it('a malformed zone map degrades to empty rather than throwing', () => {

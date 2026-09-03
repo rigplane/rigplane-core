@@ -254,12 +254,12 @@ describe('semantic actions go through the validator (MOR-1079)', () => {
     setDesignLanguage('fieldline');
     setTheme('lcd-warm');
     setZoneVisibleSurfaces('rx-tx', ['rxTx']);
-    setZoneOrder('main', ['vfo', 'meters']);
+    setZoneOrder('receiver-deck', ['vfo', 'meters']);
     setPinnedCommands(['set_compressor']);
 
     expect(getWorkspace()).toMatchObject({
       layout: 'lcd-cockpit', designLanguage: 'fieldline', theme: 'lcd-warm',
-      visibleSurfaces: { 'rx-tx': ['rxTx'] }, zoneOrder: { main: ['vfo', 'meters'] },
+      visibleSurfaces: { 'rx-tx': ['rxTx'] }, zoneOrder: { 'receiver-deck': ['vfo', 'meters'] },
       pinnedCommands: ['set_compressor'],
     });
     expect(stored(storage).theme).toBe('lcd-warm');
@@ -279,10 +279,10 @@ describe('semantic actions go through the validator (MOR-1079)', () => {
   });
 
   it('rejects a cross-zone duplicate rather than persisting it', () => {
-    setZoneOrder('main', ['vfo']);
+    setZoneOrder('receiver-deck', ['vfo']);
     setZoneOrder('rx-tx', ['vfo']);
 
-    expect(getWorkspace().zoneOrder).toEqual({ main: ['vfo'], 'rx-tx': [] });
+    expect(getWorkspace().zoneOrder).toEqual({ 'receiver-deck': ['vfo'], 'rx-tx': [] });
     expect(getWorkspaceNotice()?.rejections).toContainEqual({ field: 'zoneOrder.rx-tx', reason: 'cross-zone' });
   });
 
@@ -312,12 +312,12 @@ describe('resetWorkspace (MOR-1080)', () => {
   it('restores every typed field to the frozen defaults and returns the prior snapshot', () => {
     setTheme('nord', true);
     setLayout('lcd-scope');
-    setZoneOrder('main', ['vfo']);
+    setZoneOrder('receiver-deck', ['vfo']);
 
     const previous = resetWorkspace();
 
     expect(getWorkspace()).toEqual(DEFAULT_WORKSPACE);
-    expect(previous).toMatchObject({ theme: 'nord', layout: 'lcd-scope', zoneOrder: { main: ['vfo'] } });
+    expect(previous).toMatchObject({ theme: 'nord', layout: 'lcd-scope', zoneOrder: { 'receiver-deck': ['vfo'] } });
     expect(stored(storage).theme).toBe('default');
   });
 
