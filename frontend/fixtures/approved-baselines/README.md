@@ -74,7 +74,7 @@ done
 # 4. Re-run the comparator on Linux (or trust the just-copied images) to
 #    confirm 0 diffs, open each changed PNG to eyeball it, then commit.
 git status frontend/fixtures/approved-baselines/
-git add fixtures/approved-baselines/
+git add frontend/fixtures/approved-baselines/
 ```
 
 Do not regenerate this set on macOS for the pre-blocking re-pin — that reproduces the exact platform mismatch the Platform note warns about, just with a fresher timestamp.
@@ -88,7 +88,7 @@ cd frontend
 npm run test:e2e:visual -- --update-snapshots=all
 git status fixtures/approved-baselines/
 # Open each changed PNG — confirm the diff is the change you intended.
-git add frontend/fixtures/approved-baselines/
+git add fixtures/approved-baselines/
 ```
 
 `manifest.json` regenerates every run (`tests/e2e/visual/global-teardown.ts`), recording the commit, platform, and tool versions behind the committed set — commit it with the PNGs. Its `commit`/`commitShort` fields are read at run time, so when the regeneration is part of the commit being made, they necessarily record that commit's PARENT (the manifest can't know its own future commit hash) — this is documented, honest behaviour, not a bug. A PR that intentionally changes cockpit/PTT visuals MUST include regenerated baselines + `manifest.json`, reviewed as an image diff, not waved through — and when the change is a **regeneration** (as opposed to a from-scratch capture), the PR description must state which captures are expected to change and why, so the reviewer is confirming a named expectation rather than rubber-stamping N changed PNGs.
