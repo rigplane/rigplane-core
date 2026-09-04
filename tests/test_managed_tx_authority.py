@@ -492,17 +492,141 @@ async def test_repeated_force_off_is_accepted_and_advances_epoch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generation_is_monotonic_and_wakes_debt() -> None:
+async def test_unavailable_start_is_synchronous_idempotent_and_generation_is_strict() -> (
+    None
+):
     managed, _, _, _, fence, lane = authority(generation=7)
-    await managed.provider_unavailable()
-    await managed.provider_unavailable()
-    assert fence.calls == 0 and lane.effects == []
-    with pytest.raises(ValueError, match="increase"):
-        await managed.provider_available(6)
+    first = managed.start_provider_unavailable()
+    second = managed.start_provider_unavailable()
+
+    assert first is second
+    assert managed._provider_generation is None
+    assert managed._state.intent.kind is ManagedTxIntentKind.RX
+    assert not managed._state.release_required
+    assert fence.calls == 1 and lane.effects == []
+    await first
+    for stale_generation in (6, 7):
+        with pytest.raises(ValueError, match="increase"):
+            await managed.provider_available(stale_generation)
     await managed.provider_available(8)
     assert (await managed.snapshot()).provider_generation == 8
     with pytest.raises(RuntimeError, match="unavailable first"):
         await managed.provider_available(9)
+    await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_fence_only_then_scheduled_unavailable_can_admit_old_ptt() -> None:
+    managed, _, _, _, fence, lane = authority(generation=7)
+    cleanup = fence.force_off()
+    allow_unavailable = asyncio.Event()
+
+    async def delayed_unavailable() -> None:
+        await allow_unavailable.wait()
+        await managed.provider_unavailable()
+
+    unavailable = asyncio.create_task(delayed_unavailable())
+    submission = managed.start_ptt_submission(True, "owner")
+    accepted = await submission
+
+    assert accepted.outcome is ManagedTxOutcome.ACCEPTED
+    assert lane.effects[0].token.provider_generation == 7
+    allow_unavailable.set()
+    await unavailable
+    await cleanup
+    await managed.provider_available(8)
+    await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_start_invalidates_active_effect_before_return() -> None:
+    managed, _, _, _, fence, lane = authority(generation=7)
+    allow_old_on = lane.block_next()
+    old_on = asyncio.create_task(managed.transmit_on())
+    effect = await asyncio.wait_for(lane.started.get(), 0.2)
+    guard = lane.guards[-1]
+    assert effect.operation is ActuationOperation.TRANSMIT_ON
+    assert callable(guard) and guard()
+
+    completion = managed.start_provider_unavailable()
+
+    assert managed._provider_generation is None
+    assert managed._state.intent.kind is ManagedTxIntentKind.RX
+    assert managed._state.release_plan is ReleasePlan.FORCE_RELEASE
+    assert managed._state.pending_effect is None
+    assert fence.calls == 1
+    assert callable(guard) and not guard()
+
+    await completion
+    await managed.provider_available(8)
+    allow_old_on.set()
+    assert await old_on is ManagedTxOutcome.ACCEPTED
+    assert [item.operation for item in lane.effects] == [
+        ActuationOperation.TRANSMIT_ON,
+        ActuationOperation.FORCE_RECEIVE,
+    ]
+    assert lane.effects[-1].token.provider_generation == 8
+    assert not managed._state.release_required
+    await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_start_blocks_pending_and_new_on_while_cleanup_waits() -> (
+    None
+):
+    managed, _, _, _, fence, lane = authority(generation=7)
+    cleanup_started, allow_cleanup = asyncio.Event(), asyncio.Event()
+
+    async def cleanup() -> None:
+        cleanup_started.set()
+        await allow_cleanup.wait()
+
+    fence.register(fence.issue(), cleanup)
+    ready = asyncio.get_running_loop().create_future()
+    pending = managed.start_ptt_submission(True, "pending", ready=ready)
+
+    completion = managed.start_provider_unavailable()
+    after = managed.start_ptt_submission(True, "after")
+    transmit = asyncio.create_task(managed.submit_transmit_on())
+    after_receipt, transmit_receipt = await asyncio.gather(after, transmit)
+
+    await asyncio.wait_for(cleanup_started.wait(), 0.2)
+    await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), timeout=0.2)
+    assert cleanup_started.is_set()
+    assert not completion.done()
+    assert after_receipt.outcome is ManagedTxOutcome.REJECTED
+    assert transmit_receipt.outcome is ManagedTxOutcome.REJECTED
+    assert lane.effects == []
+    assert pending.cancelled()
+
+    allow_cleanup.set()
+    await completion
+    await managed.provider_available(8)
+    await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_unavailable_waiter_does_not_cancel_owned_cleanup() -> None:
+    managed, _, _, _, fence, _ = authority(generation=7)
+    cleanup_started, allow_cleanup = asyncio.Event(), asyncio.Event()
+
+    async def cleanup() -> None:
+        cleanup_started.set()
+        await allow_cleanup.wait()
+
+    fence.register(fence.issue(), cleanup)
+    completion = managed.start_provider_unavailable()
+    waiter = asyncio.create_task(managed.provider_unavailable())
+    await asyncio.wait_for(cleanup_started.wait(), 0.2)
+
+    waiter.cancel()
+    await asyncio.gather(waiter, return_exceptions=True)
+    assert not completion.cancelled() and not completion.done()
+    assert managed.start_provider_unavailable() is completion
+
+    allow_cleanup.set()
+    await completion
+    await managed.provider_available(8)
     await managed.close()
 
 
@@ -579,6 +703,78 @@ async def test_active_replacement_never_replays_on(
     assert not (await managed.snapshot()).state.release_required
     if not shutdown:
         await managed.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replacement_first", [True, False], ids=["replacement-first", "shutdown-first"]
+)
+async def test_unavailable_start_and_shutdown_overlap_drains_new_generation(
+    replacement_first: bool,
+) -> None:
+    managed, _, _, _, _, lane = authority(generation=7)
+    retired: list[int] = []
+    old_gate: asyncio.Event | None = None
+
+    if replacement_first:
+        await managed.start_provider_unavailable()
+        shutdown = asyncio.create_task(
+            managed.shutdown(
+                retire_provider=lambda generation: _append_async(retired, generation),
+                termination=asyncio.Event(),
+            )
+        )
+        while not managed._shutting_down:
+            await asyncio.sleep(0)
+    else:
+        old_gate = lane.block_next()
+        shutdown = asyncio.create_task(
+            managed.shutdown(
+                retire_provider=lambda generation: _append_async(retired, generation),
+                termination=asyncio.Event(),
+            )
+        )
+        old_release = await asyncio.wait_for(lane.started.get(), 0.2)
+        assert old_release.token.provider_generation == 7
+        await managed.start_provider_unavailable()
+        assert lane.guards[-1]() is False
+
+    await managed.provider_available(8)
+    if old_gate is not None:
+        old_gate.set()
+    assert await asyncio.wait_for(shutdown, 0.2) is ShutdownResult.DRAINED
+    assert retired == [8]
+    assert not managed._state.release_required
+
+
+@pytest.mark.asyncio
+async def test_unavailable_start_after_clean_shutdown_barrier_does_not_mutate() -> None:
+    managed, _, _, _, fence, _ = authority(generation=7)
+    retirement_started, allow_retirement = asyncio.Event(), asyncio.Event()
+
+    async def retire_provider(_generation: int) -> None:
+        retirement_started.set()
+        await allow_retirement.wait()
+
+    shutdown = asyncio.create_task(
+        managed.shutdown(
+            retire_provider=retire_provider,
+            termination=asyncio.Event(),
+        )
+    )
+    await asyncio.wait_for(retirement_started.wait(), 0.2)
+    state_before = managed._state
+    generation_before = managed._provider_generation
+    fence_calls_before = fence.calls
+
+    with pytest.raises(RuntimeError, match="shutdown drain is complete"):
+        managed.start_provider_unavailable()
+
+    assert managed._state is state_before
+    assert managed._provider_generation == generation_before
+    assert fence.calls == fence_calls_before
+    allow_retirement.set()
+    assert await asyncio.wait_for(shutdown, 0.2) is ShutdownResult.DRAINED
 
 
 @pytest.mark.asyncio

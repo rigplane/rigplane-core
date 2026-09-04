@@ -15,7 +15,14 @@ from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...runtime.callable_support import supports_callable
+from ...runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+)
 from ...commands import hz_to_table_index, table_index_to_hz
+from ...core.priority_exchange import ExchangeTier
 from ...core.tx_observation import TxStateReading
 from ...types import AudioCodec, BreakInMode, RepeaterShiftDirection
 from ...exceptions import AudioFormatError, CommandError, CommandRejectedError
@@ -820,7 +827,14 @@ class YaesuCatRadio:
         # Transport strips trailing ';'; add it back for the parser.
         return parser.parse(raw + ";")
 
-    async def _write(self, cmd_name: str, **kwargs: Any) -> None:
+    async def _write(
+        self,
+        cmd_name: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
+        **kwargs: Any,
+    ) -> None:
         """Format and send a write command (no response expected).
 
         Raises:
@@ -844,7 +858,10 @@ class YaesuCatRadio:
 
         cmd = format_command(spec.write, **kwargs)
         try:
-            await self._transport.write(cmd)
+            if is_current is None and tier is ExchangeTier.ORDINARY:
+                await self._transport.write(cmd)
+            else:
+                await self._transport.write(cmd, is_current=is_current, tier=tier)
         except CatCommandRejected as exc:
             raise CommandRejectedError(str(exc)) from exc
 
@@ -1050,6 +1067,44 @@ class YaesuCatRadio:
             on: ``True`` to transmit, ``False`` to receive.
         """
         await self._write("set_ptt", state="1" if on else "0")
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        """Execute one profile-backed runtime-managed transmit operation."""
+        del token
+        if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+            command, params, tier = "set_ptt", {"state": "1"}, ExchangeTier.ORDINARY
+        elif operation is ActuationOperation.FORCE_RECEIVE:
+            command, params, tier = (
+                "set_ptt",
+                {"state": "0"},
+                ExchangeTier.FORCE_RELEASE,
+            )
+        elif operation is AbortOperation.STOP_CW:
+            command, params, tier = (
+                "send_cw",
+                {"type": " ", "mem": ""},
+                ExchangeTier.ABORT,
+            )
+        elif operation is AbortOperation.STOP_TUNE:
+            command, params, tier = (
+                "set_tuner",
+                {"src": "0", "type": "0", "state": "0"},
+                ExchangeTier.ABORT,
+            )
+        else:
+            return ActuationResult.REJECTED
+
+        try:
+            await self._write(command, is_current=is_current, tier=tier, **params)
+        except CommandError:
+            return ActuationResult.REJECTED
+        return ActuationResult.ACCEPTED
 
     def _warn_ptt_unrecognised(self, state: str) -> None:
         """Warn-once-then-DEBUG diagnostic for an unrecognised TX token.
@@ -2204,14 +2259,20 @@ class YaesuCatRadio:
         """Set CW spot tone state."""
         await self._write("set_cw_spot", state="1" if state else "0")
 
-    async def send_cw(self, msg_type: str, mem: str) -> None:
+    async def send_cw(
+        self,
+        msg_type: str,
+        mem: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> None:
         """Send a CW message (KY command).
 
         Args:
             msg_type: Message type character.
             mem: CW message text to send.
         """
-        await self._write("send_cw", type=msg_type, mem=mem)
+        await self._write("send_cw", type=msg_type, mem=mem, is_current=is_current)
 
     async def read_break_in_delay(self) -> int:
         """Read CW break-in delay in ms (30–3000) without mutating legacy state."""
@@ -2482,9 +2543,22 @@ class YaesuCatRadio:
         """
         return await self.read_tuner()
 
-    async def set_tuner(self, state: int, src: int = 0, typ: int = 0) -> None:
+    async def set_tuner(
+        self,
+        state: int,
+        src: int = 0,
+        typ: int = 0,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> None:
         """Set antenna tuner (AC). state: 0=OFF, 1=ON, 2=tune."""
-        await self._write("set_tuner", src=str(src), type=str(typ), state=str(state))
+        await self._write(
+            "set_tuner",
+            src=str(src),
+            type=str(typ),
+            state=str(state),
+            is_current=is_current,
+        )
 
     # -- Contour / S-DX (CO) -----------------------------------------------
 
@@ -2641,11 +2715,15 @@ class YaesuCatRadio:
         """AdvancedControlCapable alias. Returns tuner state (0=OFF, 1=ON, 2=tuning)."""
         return await self.get_tuner()
 
-    async def set_tuner_status(self, value: int) -> None:
+    async def set_tuner_status(
+        self, value: int, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         """AdvancedControlCapable alias."""
-        await self.set_tuner(value)
+        await self.set_tuner(value, is_current=is_current)
 
-    async def send_cw_text(self, text: str) -> None:
+    async def send_cw_text(
+        self, text: str, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         """Send CW text via keyer (KY command), split into 24-character chunks.
 
         Uses ``send_cw(" ", text)`` — the space is the P1 type parameter
@@ -2655,11 +2733,11 @@ class YaesuCatRadio:
             text: CW text to send (A-Z, 0-9, punctuation).
         """
         if not text:
-            await self.send_cw(" ", "")
+            await self.send_cw(" ", "", is_current=is_current)
             return
         chunk_size = 24
         for i in range(0, len(text), chunk_size):
-            await self.send_cw(" ", text[i : i + chunk_size])
+            await self.send_cw(" ", text[i : i + chunk_size], is_current=is_current)
 
     async def stop_cw_text(self) -> None:
         """Stop CW sending by clearing the keyer buffer."""
