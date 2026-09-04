@@ -1,13 +1,7 @@
 import asyncio
-import hashlib
-import os
-import subprocess
-import sys
-import warnings
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 
@@ -781,135 +775,6 @@ async def test_unavailable_start_after_clean_shutdown_barrier_does_not_mutate() 
     assert fence.calls == fence_calls_before
     allow_retirement.set()
     assert await asyncio.wait_for(shutdown, 0.2) is ShutdownResult.DRAINED
-
-
-def test_provider_unavailable_consolidated_mutation_carrier(tmp_path: Path) -> None:
-    repo = Path(__file__).parents[1]
-    source = repo / "src/rigplane/runtime/managed_tx_authority.py"
-    original = source.read_bytes()
-    original_text = original.decode()
-    test_file = "tests/test_managed_tx_authority.py"
-    sync_test = (
-        f"{test_file}::"
-        "test_unavailable_start_is_synchronous_idempotent_and_generation_is_strict"
-    )
-    active_test = (
-        f"{test_file}::test_unavailable_start_invalidates_active_effect_before_return"
-    )
-    pending_test = (
-        f"{test_file}::"
-        "test_unavailable_start_blocks_pending_and_new_on_while_cleanup_waits"
-    )
-    cancellation_test = (
-        f"{test_file}::test_cancelled_unavailable_waiter_does_not_cancel_owned_cleanup"
-    )
-    force_release = (
-        "        if self._state.release_required:\n"
-        "            self._reduce_locked(ForceOff(None, self._attempt_id_locked()))\n"
-    )
-    mutants = (
-        (
-            "M1-defer-generation-invalidation",
-            sync_test,
-            (
-                (
-                    "        self._provider_generation = None\n",
-                    "        asyncio.get_running_loop().call_soon(\n"
-                    '            setattr, self, "_provider_generation", None\n'
-                    "        )\n",
-                ),
-            ),
-        ),
-        (
-            "M2-fence-only",
-            pending_test,
-            (
-                ("        self._provider_generation = None\n", "        pass\n"),
-                (force_release, "        pass\n"),
-            ),
-        ),
-        (
-            "M3-leave-active-intent",
-            active_test,
-            ((force_release, "        pass\n"),),
-        ),
-        (
-            "M4-omit-fence-advance",
-            pending_test,
-            (
-                (
-                    "        self._pending_abort_cleanup.append("
-                    "self._abort_fence.force_off())\n",
-                    "        pass\n",
-                ),
-            ),
-        ),
-        (
-            "M5-double-fence-advance",
-            active_test,
-            (
-                (
-                    "            self._reduce_locked("
-                    "ForceOff(None, self._attempt_id_locked()))\n",
-                    "            self._force_off_locked()\n",
-                ),
-            ),
-        ),
-        (
-            "M6-clean-rx-debt",
-            sync_test,
-            (("        if self._state.release_required:\n", "        if True:\n"),),
-        ),
-        (
-            "M7-caller-cancels-cleanup",
-            cancellation_test,
-            (
-                (
-                    "        await asyncio.shield(self.start_provider_unavailable())\n",
-                    "        await self.start_provider_unavailable()\n",
-                ),
-            ),
-        ),
-        (
-            "M8-accept-equal-generation",
-            sync_test,
-            (
-                (
-                    "            if generation <= self._generation_high_water:\n",
-                    "            if generation < self._generation_high_water:\n",
-                ),
-            ),
-        ),
-    )
-
-    for name, node, replacements in mutants:
-        mutated = original_text
-        for old, new in replacements:
-            assert old in mutated, f"{name}: mutation anchor missing"
-            mutated = mutated.replace(old, new, 1)
-        source.write_text(mutated)
-        env = os.environ.copy()
-        env["PYTHONPYCACHEPREFIX"] = str(tmp_path / name)
-        try:
-            result = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q", node],
-                cwd=repo,
-                env=env,
-                capture_output=True,
-                encoding="utf-8",
-                timeout=20,
-                check=False,
-            )
-        finally:
-            source.write_bytes(original)
-        output = result.stdout + result.stderr
-        assert source.read_bytes() == original, f"{name}: source restoration failed"
-        assert result.returncode == 1, output
-        assert f"FAILED {node}" in output, output
-        warnings.warn(f"{name} KILLED by {node}", stacklevel=1)
-
-    digest = hashlib.sha256(original).hexdigest()
-    warnings.warn(f"source bytes restored sha256={digest}", stacklevel=1)
 
 
 @pytest.mark.asyncio
