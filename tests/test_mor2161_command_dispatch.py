@@ -719,9 +719,7 @@ async def test_managed_shared_leaf_admits_exactly_once_before_execution() -> Non
     radio.set_rx_antenna_ant1 = AsyncMock()
     managed = MagicMock()
     managed.admit_managed_write = AsyncMock(return_value=True)
-    command = bind_command_intent(
-        "set_rx_antenna_ant1", {"on": True}, source="test"
-    )
+    command = bind_command_intent("set_rx_antenna_ant1", {"on": True}, source="test")
 
     await execute_command_intent(radio, command, managed_tx_authority=managed)
 
@@ -767,6 +765,24 @@ async def test_unmanaged_shared_leaf_remains_direct() -> None:
     await execute_command_intent(radio, command)
 
     radio.set_rx_antenna_ant1.assert_awaited_once_with(enabled=True)
+
+
+def test_antenna_descriptor_preflight_preserves_profile_rejection() -> None:
+    from rigplane.core.command_dispatch import (
+        CommandUnsupportedError,
+        prepare_command_intent,
+    )
+
+    radio = _radio(supported=False)
+    radio.set_rx_antenna_ant1 = AsyncMock()
+
+    with pytest.raises(CommandUnsupportedError, match="active profile"):
+        prepare_command_intent(
+            radio, "set_rx_antenna_ant1", {"on": True}, source="test"
+        )
+
+    radio.supports_command.assert_called_once_with("set_rx_antenna_ant1")
+    radio.set_rx_antenna_ant1.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
