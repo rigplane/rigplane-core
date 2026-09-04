@@ -22,6 +22,12 @@ vi.mock('../../../lib/local-extensions/LocalExtensionsHost.svelte', async () => 
   const stub = await import('./SpectrumPanelStub.svelte');
   return { default: stub.default };
 });
+const segmentlineMounts = vi.hoisted(() => [] as Array<{
+  canvasW: number; canvasH: number; minScale: number; displayVariant: string;
+}>);
+vi.mock('../../../skins/segmentline/PeerSplitLayout.svelte', () => ({
+  default: (_anchor: unknown, props: (typeof segmentlineMounts)[number]) => { segmentlineMounts.push(props); },
+}));
 vi.mock('$lib/stores/layout.svelte', () => ({
   useLcdLayout: vi.fn(() => true),
   getLayoutMode: vi.fn(() => 'lcd-cockpit'),
@@ -123,6 +129,9 @@ vi.stubGlobal('ResizeObserver', class {
 });
 
 import LcdLayout from '../LcdLayout.svelte';
+import LcdPeerSplitSkin from '../../../skins/lcd-peer-split/LcdPeerSplitSkin.svelte';
+import LcdUnifiedInstrumentSkin from '../../../skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte';
+import LcdPanadapterFirstSkin from '../../../skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte';
 import lcdLayoutSource from '../LcdLayout.svelte?raw';
 
 let components: ReturnType<typeof mount>[] = [];
@@ -139,6 +148,7 @@ function mountLayout(variant: 'cockpit' | 'scope' = 'cockpit') {
 beforeEach(() => {
   txHarness.reset();
   components = [];
+  segmentlineMounts.length = 0;
   rt.state = null;
 });
 
@@ -171,6 +181,17 @@ describe('LcdLayout canonical module surface (MOR-1409 A13b)', () => {
 });
 
 describe('LcdLayout mounts on the migrated handler surface (MOR-1409 A13b)', () => {
+  it.each([
+    [LcdPeerSplitSkin, 'peer', 540],
+    [LcdUnifiedInstrumentSkin, 'dominant', 540],
+    [LcdPanadapterFirstSkin, 'panadapter', 594],
+  ] as const)('maps a production skin through the real LCD shell', (Skin, displayVariant, canvasH) => {
+    const t = document.body.appendChild(document.createElement('div'));
+    components.push(mount(Skin, { target: t }));
+    flushSync();
+    expect(segmentlineMounts).toEqual([{ canvasW: 1280, canvasH, minScale: 0.5, displayVariant }]);
+  });
+
   it('renders .lcd-layout for the cockpit variant without throwing', () => {
     const t = mountLayout('cockpit');
     expect(t.querySelector('.lcd-layout')).not.toBeNull();
