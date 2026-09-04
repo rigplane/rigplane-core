@@ -39,23 +39,33 @@
     readonly major: boolean;
   }
 
-  const radialTicks = (count: number, cx: number, cy: number, rx: number, ry: number): Tick[] =>
+  interface Point { readonly x: number; readonly y: number }
+
+  const curveTicks = (
+    count: number, start: Point, control: Point, end: Point, majorEvery: number,
+  ): Tick[] =>
     Array.from({ length: count }, (_, index) => {
-      const angle = (-160 + (135 * index) / (count - 1)) * Math.PI / 180;
-      const major = index % 5 === 0;
-      const inset = major ? 14 : 8;
+      const t = (index + 0.5) / count;
+      const inverse = 1 - t;
+      const x1 = inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x;
+      const y1 = inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y;
+      const dx = 2 * inverse * (control.x - start.x) + 2 * t * (end.x - control.x);
+      const dy = 2 * inverse * (control.y - start.y) + 2 * t * (end.y - control.y);
+      const magnitude = Math.hypot(dx, dy);
+      const major = index % majorEvery === 0;
+      const inset = major ? 13 : 7;
       return {
-        x1: cx + rx * Math.cos(angle),
-        y1: cy + ry * Math.sin(angle),
-        x2: cx + (rx - inset) * Math.cos(angle),
-        y2: cy + (ry - inset * 0.6) * Math.sin(angle),
+        x1,
+        y1,
+        x2: x1 + (-dy / magnitude) * inset,
+        y2: y1 + (dx / magnitude) * inset,
         major,
       };
     });
 
-  const OUTER_TICKS = radialTicks(36, 320, 225, 304, 172);
-  const POWER_TICKS = radialTicks(26, 320, 225, 281, 139);
-  const INNER_TICKS = radialTicks(21, 320, 225, 238, 105);
+  const OUTER_TICKS = curveTicks(46, { x: 3, y: 112 }, { x: 300, y: -12 }, { x: 600, y: 112 }, 5);
+  const POWER_TICKS = curveTicks(36, { x: 22, y: 128 }, { x: 305, y: 12 }, { x: 590, y: 126 }, 5);
+  const INNER_TICKS = curveTicks(29, { x: 78, y: 158 }, { x: 310, y: 55 }, { x: 545, y: 154 }, 4);
 </script>
 
 <div
@@ -76,11 +86,6 @@
         <feGaussianBlur stdDeviation="1.1" result="blur" />
         <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
       </filter>
-      <linearGradient id="meter-needle" x1="0" x2="1">
-        <stop offset="0" stop-color="#73cfff" />
-        <stop offset="0.45" stop-color="#f5fbff" />
-        <stop offset="1" stop-color="#ffffff" />
-      </linearGradient>
     </defs>
 
     <rect width="640" height="240" fill="#020303" />
@@ -96,8 +101,8 @@
         <text x="106" y="18" text-anchor="middle">{selectedScale}</text>
       </g>
 
-      <path class="scale white heavy" d="M 12 110 Q 318 -38 626 102" />
-      <path class="scale red heavy" d="M 322 24 Q 478 13 626 102" />
+      <path class="scale white heavy" d="M 3 112 Q 300 -12 600 112" />
+      <path class="scale red heavy" d="M 316 50 Q 458 53 600 112" />
       {#each OUTER_TICKS as tick}
         <line
           class:major={tick.major}
@@ -108,15 +113,15 @@
 
       <g class="outer-labels">
         <text x="0" y="111">S</text>
-        <text x="67" y="68">1</text>
-        <text x="188" y="31">5</text>
-        <text x="300" y="22">9</text>
-        <text class="red-text" x="357" y="30">+20</text>
-        <text class="red-text" x="451" y="45">+40</text>
-        <text class="red-text" x="548" y="78">+60dB</text>
+        <text x="93" y="68">1</text>
+        <text x="190" y="31">5</text>
+        <text x="302" y="22">9</text>
+        <text class="red-text" x="356" y="34">+20</text>
+        <text class="red-text" x="449" y="48">+40</text>
+        <text class="red-text" x="543" y="79">+60dB</text>
       </g>
 
-      <path class="scale white" d="M 27 132 Q 318 -5 607 124" />
+      <path class="scale white" d="M 22 128 Q 305 12 590 126" />
       {#each POWER_TICKS as tick}
         <line
           class:major={tick.major}
@@ -125,15 +130,15 @@
         />
       {/each}
       <g class="power-labels">
-        <text x="54" y="136">0</text>
-        <text x="198" y="101">10</text>
-        <text x="356" y="96">50</text>
-        <text x="493" y="124">100</text>
-        <text x="592" y="139">W</text>
-        <text x="42" y="151">Po</text>
+        <text x="91" y="122">0</text>
+        <text x="210" y="91">10</text>
+        <text x="350" y="89">50</text>
+        <text x="468" y="116">100</text>
+        <text x="568" y="137">W</text>
+        <text x="68" y="151">Po</text>
       </g>
 
-      <path class="scale white" d="M 84 178 Q 318 55 550 165" />
+      <path class="scale white" d="M 78 158 Q 310 55 545 154" />
       {#each INNER_TICKS as tick}
         <line
           class:major={tick.major}
@@ -141,26 +146,27 @@
           x1={tick.x1} y1={tick.y1} x2={tick.x2} y2={tick.y2}
         />
       {/each}
+      <path class="scale white" d="M 100 174 Q 310 84 520 168" />
       <g class="inner-labels">
-        <text x="75" y="185">SWR</text>
-        <text x="151" y="165">1</text>
-        <text x="205" y="149">1.5</text>
-        <text x="294" y="141">2</text>
-        <text x="374" y="143">3</text>
-        <text x="486" y="163">∞</text>
+        <text x="94" y="178">SWR</text>
+        <text x="158" y="160">1</text>
+        <text x="218" y="146">1.5</text>
+        <text x="280" y="141">2</text>
+        <text x="340" y="145">3</text>
+        <text x="450" y="169">∞</text>
       </g>
 
-      <path class="scale blue heavy" d="M 126 210 Q 317 118 511 202" />
-      <path class="scale red heavy" d="M 160 222 Q 255 167 337 169" />
-      <path class="scale red heavy" d="M 334 169 Q 389 164 423 178" />
+      <path class="scale blue heavy" d="M 155 210 Q 310 145 465 207" />
+      <path class="scale red heavy" d="M 200 214 Q 230 195 258 200" />
+      <path class="scale red heavy" d="M 275 202 Q 295 193 315 198" />
       <g class="lower-labels">
-        <text class="blue-text" x="77" y="207">COMP</text>
-        <text class="blue-text" x="150" y="190">0</text>
-        <text class="blue-text" x="336" y="174">20</text>
-        <text class="blue-text" x="505" y="205">dB</text>
+        <text class="blue-text" x="95" y="207">COMP</text>
+        <text class="blue-text" x="174" y="191">0</text>
+        <text class="blue-text" x="350" y="177">20</text>
+        <text class="blue-text" x="462" y="202">dB</text>
         <text class="red-text" x="261" y="220">ALC</text>
-        <text x="333" y="225">Id</text>
-        <text x="384" y="225">Vd</text>
+        <text x="333" y="220">Id</text>
+        <text x="385" y="220">Vd</text>
       </g>
 
       {#if state === 'known'}
@@ -168,7 +174,7 @@
           <line class="needle-shadow" x1="274" y1="226" x2="490" y2="226" />
           <line class="needle" x1="274" y1="224" x2="490" y2="224" />
         </g>
-        <circle cx="280" cy="224" r="6" fill="#e8f6ff" />
+        <circle cx="280" cy="224" r="3.5" fill="#f6fbff" />
       {:else if state === 'unknown'}
         <text data-meter-unknown class="unknown" x="320" y="213" text-anchor="middle">?</text>
       {/if}
@@ -201,15 +207,15 @@
   .white { stroke: #f7fafc; }
   .red { stroke: #ff2f2f; }
   .blue { stroke: #24a6ff; }
-  .tick { stroke: #f7fafc; stroke-width: 2; }
-  .tick.major { stroke-width: 4; }
+  .tick { stroke: #f7fafc; stroke-width: 1.4; }
+  .tick.major { stroke-width: 3; }
   .outer-labels text { font-size: 22px; }
   .power-labels text, .inner-labels text { font-size: 15px; }
   .lower-labels text { font-size: 14px; }
   text.red-text { fill: #ff2f2f; }
   text.blue-text { fill: #2daaff; }
-  .needle-shadow { stroke: #163d54; stroke-width: 7; opacity: 0.8; }
-  .needle { stroke: url(#meter-needle); stroke-width: 3; }
+  .needle-shadow { stroke: #72a9c6; stroke-width: 3.2; opacity: 0.32; }
+  .needle { stroke: #f7fbff; stroke-width: 2.4; }
   .unknown { fill: #9ca7ad; font-size: 34px; }
   .visually-hidden {
     position: absolute;
