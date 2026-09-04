@@ -211,6 +211,9 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert ("GET", "/api/v1/state") in http
     assert ("GET", "/api/v1/capabilities") in http
     assert ("GET", "/api/v1/audio/analysis") in http
+    assert ("GET", "/api/v1/managed-transmit") in http
+    assert ("POST", "/api/v1/managed-transmit/command") in http
+    assert ("PUT", "/api/v1/managed-transmit/tot") in http
     assert ("GET", "/api/v1/bridge") in http
     assert ("POST", "/api/v1/bridge") in http
     assert ("DELETE", "/api/v1/bridge") in http
@@ -240,6 +243,17 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert RESPONSE_FIELD_CONTRACTS["/api/v1/commands/batch"]["required"] == (
         "ok",
         "results",
+    )
+    assert RESPONSE_FIELD_CONTRACTS["/api/v1/managed-transmit"]["required"] == (
+        "schemaVersion",
+        "sampledAt",
+        "managedTransmit",
+        "txObservation",
+    )
+    assert RESPONSE_FIELD_CONTRACTS["/api/v1/managed-transmit/command"]["required"] == (
+        "ok",
+        "operation",
+        "result",
     )
 
 
