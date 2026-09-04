@@ -721,7 +721,7 @@ rigplane serve --wsjtx-compat
 |--------|---------|-------------|
 | `--host` | `0.0.0.0` | Server listen address |
 | `--port` | `4532` | Server TCP port |
-| `--read-only` | off | Reject all set commands; allow only reads |
+| `--read-only` | off | Reject all set commands and all raw `w` / `send_raw` frames (including reads) with `RPRT -22`; allow structured reads |
 | `--max-clients` | `10` | Maximum concurrent TCP clients |
 | `--cache-ttl` | `0.2` | How long (seconds) to cache radio state before re-querying |
 | `--wsjtx-compat` | off | Pre-warm for WSJT-X: auto-enable DATA mode on first client connect |
@@ -1006,7 +1006,7 @@ rigplane --model IC-7300 --backend serial --serial-port /dev/cu.usbserial-XXX st
 | `--log-level LEVEL` | `serve` | `INFO` | Log verbosity: `DEBUG` `INFO` `WARNING` `ERROR` `CRITICAL` |
 | `--max-clients N` | `serve` | `10` | Maximum concurrent TCP clients |
 | `--rate-limit N` | `serve` | *(unlimited)* | Max commands per second per client; excess are dropped |
-| `--read-only` | `serve` | off | Reject all set (write) commands; allow reads only |
+| `--read-only` | `serve` | off | Reject all set commands and all raw `w` / `send_raw` frames (including reads) with `RPRT -22`; allow structured reads |
 | `--wsjtx-compat` | `serve` | off | Auto-enable DATA mode on first client connect (WSJT-X pre-warm) |
 | `--preset NAME` | `serve` | *(none)* | Apply a named preset: `hamradio`, `digimode`, `serial`, `headless` |
 
