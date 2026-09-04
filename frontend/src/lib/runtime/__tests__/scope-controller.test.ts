@@ -467,6 +467,39 @@ describe('ScopeController', () => {
     await defaultController.audioFftDriver.stop(handle);
   });
 
+  it.each(['audioFftDriver', 'hardwareScopeDriver'] as const)(
+    'keeps %s startup compatible with pre-session-transition channel doubles',
+    async (driverName) => {
+      const legacy = makeMockChannel();
+      Reflect.deleteProperty(legacy, 'onSessionTransition');
+      const controller = new ScopeController(() => legacy as any);
+      const driver = controller[driverName];
+
+      const handle = await driver.start();
+      expect(legacy.connect).toHaveBeenCalledTimes(1);
+      await driver.stop(handle);
+      expect(legacy.disconnect).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('preserves raw delivery but keeps display evidence closed without a public session epoch', async () => {
+    const legacy = makeMockChannel();
+    Reflect.deleteProperty(legacy, 'onSessionTransition');
+    Reflect.deleteProperty(legacy, 'sessionEpoch');
+    const controller = new ScopeController(() => legacy as any);
+    const subscriber = vi.fn();
+    controller.subscribeHardware(subscriber);
+    controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 1 });
+    const handle = await controller.hardwareScopeDriver.start();
+
+    legacy._setState('connected');
+    legacy._fire(makeScopeFrameBuffer());
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    expect(controller.snapshotHealth('hardware').frameSeen).toBe(true);
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+    await controller.hardwareScopeDriver.stop(handle);
+  });
+
   it('owns hardware first/shared/last demand without claiming frame liveness', async () => {
     const channels = { scope: makeMockChannel(), 'audio-scope': makeMockChannel() };
     const lookup = vi.fn((name: string) => channels[name as keyof typeof channels] as any);

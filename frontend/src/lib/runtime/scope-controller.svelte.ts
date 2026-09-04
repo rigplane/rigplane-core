@@ -246,7 +246,7 @@ export class ScopeController {
           frameSeen: state === 'connected' && this._arrivalIsLive('audio_fft'),
         });
       });
-      unsubscribeSession = ch.onSessionTransition((transition) => {
+      unsubscribeSession = this._subscribeSession(ch, (transition) => {
         this._sessionTransition('audio_fft', handle, transition);
       });
       unsubscribeBinary = ch.onBinary((buf: ArrayBuffer) => {
@@ -344,7 +344,7 @@ export class ScopeController {
           frameSeen: state === 'connected' && this._arrivalIsLive('hardware'),
         });
       });
-      unsubscribeSession = channel.onSessionTransition((transition) => {
+      unsubscribeSession = this._subscribeSession(channel, (transition) => {
         this._sessionTransition('hardware', handle, transition);
       });
       this._hardwareBindings.set(handle, {
@@ -411,6 +411,14 @@ export class ScopeController {
     }
   }
 
+  private _subscribeSession(
+    channel: WsChannel,
+    handler: (transition: ControlSessionTransition) => void,
+  ): () => void {
+    return typeof channel.onSessionTransition === 'function'
+      ? channel.onSessionTransition(handler) : () => {};
+  }
+
   private _acceptFrame(
     source: ScopeSource,
     channel: WsChannel,
@@ -420,8 +428,7 @@ export class ScopeController {
   ): boolean {
     const receivedAt = this._timing.now();
     const transportEpoch = channel.sessionEpoch;
-    if (!Number.isFinite(receivedAt) || receivedAt < 0
-      || !Number.isSafeInteger(transportEpoch) || transportEpoch <= 0) {
+    if (!Number.isFinite(receivedAt) || receivedAt < 0) {
       this._invalidateSource(source, authorityRevision === this._authorityRevision);
       return false;
     }
@@ -436,6 +443,11 @@ export class ScopeController {
 
     const authority = this._frameAuthority;
     if (authorityRevision !== this._authorityRevision || authority?.source !== source) return true;
+    if (!Number.isSafeInteger(transportEpoch) || transportEpoch <= 0) {
+      this._frameEnvelope = null;
+      this._notifyEvidence();
+      return true;
+    }
     if ((authority.receiver !== 0 && authority.receiver !== 1)
       || !Number.isSafeInteger(authority.providerGeneration)
       || (authority.providerGeneration as number) < 0) {
