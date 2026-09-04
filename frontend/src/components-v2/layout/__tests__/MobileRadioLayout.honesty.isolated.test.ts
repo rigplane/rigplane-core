@@ -96,7 +96,10 @@ vi.mock('$lib/stores/audio.svelte', () => ({
   })),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
-  audioManager: { start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() },
+  audioManager: {
+    onTxAudioDied: () => () => {},
+    start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(),
+  },
 }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasTx: vi.fn(() => true), hasDualReceiver: vi.fn(() => false), hasAnyScope: vi.fn(() => false),

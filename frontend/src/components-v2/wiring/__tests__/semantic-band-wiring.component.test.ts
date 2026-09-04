@@ -73,6 +73,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
 }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
     get audio() { return h.audio; },

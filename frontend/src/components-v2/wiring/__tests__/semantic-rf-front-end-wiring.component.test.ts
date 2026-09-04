@@ -59,6 +59,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },

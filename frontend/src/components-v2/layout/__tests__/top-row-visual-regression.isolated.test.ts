@@ -31,6 +31,7 @@ vi.mock('../../../skins/registry', () => ({
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     state: null,
     caps: null,
     connectionStatus: 'disconnected',

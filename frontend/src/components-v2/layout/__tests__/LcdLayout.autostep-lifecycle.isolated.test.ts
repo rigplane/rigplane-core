@@ -70,6 +70,7 @@ const rt = vi.hoisted(() => ({ state: null as unknown }));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return rt.state; },
     caps: null,
     connectionStatus: 'disconnected',

@@ -62,6 +62,7 @@ vi.mock('../skins/registry', async (importOriginal) => {
 
 vi.mock('../lib/runtime/frontend-runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return { stateRevision: 1, freshnessRevision: 1, observationSeq: 1, ptt: false }; },
     get caps() { return { tx: true, capabilities: ['tx'] }; },
     bootstrap: h.bootstrap,

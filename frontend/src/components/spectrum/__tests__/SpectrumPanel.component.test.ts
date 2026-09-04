@@ -130,6 +130,7 @@ const runtimeHarness = vi.hoisted(() => {
   const runtime = {
     get state() { return state.currentState; },
     get caps() { return state.currentCaps; },
+    onTxAudioDied: () => () => {},
     scope: {
       get hardwareScopeConnected() { return state.mockScopeConnected; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
