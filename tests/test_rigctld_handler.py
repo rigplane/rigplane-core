@@ -31,8 +31,14 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import StateStore
 from rigplane.radio_state import RadioState
-from rigplane.rigctld.contract import HamlibError, RigctldCommand, RigctldConfig
+from rigplane.rigctld.contract import (
+    ClientSession,
+    HamlibError,
+    RigctldCommand,
+    RigctldConfig,
+)
 from rigplane.rigctld.handler import RigctldHandler
+from rigplane.rigctld.protocol import format_response, parse_line
 from rigplane.types import CivFrame, Mode
 
 # ---------------------------------------------------------------------------
@@ -2376,6 +2382,38 @@ async def test_read_only_allows_get_mode(mock_radio: AsyncMock) -> None:
     mock_radio.get_mode_info.return_value = (Mode.USB, None)
     resp = await h.execute(get_cmd("get_mode"))
     assert resp.ok
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_only", [True, False])
+@pytest.mark.parametrize("command", ["w", r"\send_raw"])
+@pytest.mark.parametrize(
+    "frame",
+    ["FE FE 98 E0 00 00 40 07 14 FD", "FE FE 98 E0 03 FD"],
+    ids=["raw-write", "raw-read"],
+)
+async def test_read_only_raw_passthrough(
+    mock_radio: AsyncMock, read_only: bool, command: str, frame: str
+) -> None:
+    store = StateStore()
+    _seed_known_rx(store)
+    h = RigctldHandler(
+        mock_radio, RigctldConfig(read_only=read_only), state_store=store
+    )
+    mock_radio._send_civ_raw = AsyncMock(return_value=None)
+    cmd = parse_line(f"{command} {frame}".encode("ascii"))
+    assert isinstance(cmd, RigctldCommand)
+    assert not cmd.is_set
+
+    resp = await h.execute(cmd)
+
+    if read_only:
+        assert resp.error == HamlibError.EACCESS
+        assert format_response(cmd, resp, ClientSession()) == b"RPRT -22\n"
+        mock_radio._send_civ_raw.assert_not_called()
+    else:
+        assert resp.ok
+        mock_radio._send_civ_raw.assert_awaited_once_with(bytes.fromhex(frame))
 
 
 # ---------------------------------------------------------------------------
