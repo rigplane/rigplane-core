@@ -14,10 +14,22 @@
 
 import { getChannel } from '$lib/transport/ws-client';
 import { markScopeFrame } from '$lib/stores/connection.svelte';
-import { parseScopeFrame } from '$lib/runtime/adapters/scope-adapter';
+import {
+  parseScopeFrame,
+  qualifyScopeFrameEnvelope,
+  SCOPE_FRAME_SILENCE_MS,
+} from '$lib/runtime/adapters/scope-adapter';
 import { untrack } from 'svelte';
-import type { ScopeFrame } from '$lib/runtime/adapters/scope-adapter';
-import type { ConnectionState, WsChannel } from '$lib/transport/ws-client';
+import type {
+  QualifiedScopeFrameEnvelope,
+  ScopeFrameProjectionAuthority,
+  ScopeFrame,
+} from '$lib/runtime/adapters/scope-adapter';
+import type {
+  ConnectionState,
+  ControlSessionTransition,
+  WsChannel,
+} from '$lib/transport/ws-client';
 import type { PresentationResourceDriver, PresentationResourceHost } from './resource-host';
 
 export type { ScopeFrame };
@@ -29,11 +41,37 @@ export type ScopeHealth = Readonly<{
   demanded: boolean; transport: ConnectionState; frameSeen: boolean;
 }>;
 type HealthHandler = (source: ScopeSource, health: ScopeHealth) => void;
+type EvidenceHandler = () => void;
 type AudioFftHandle = Readonly<{ token: symbol }>;
 type ChannelBinding = {
-  channel: WsChannel; unsubscribeBinary: () => void; unsubscribeState: () => void;
+  channel: WsChannel;
+  authorityRevision: number;
+  unsubscribeBinary: () => void;
+  unsubscribeState: () => void;
+  unsubscribeSession: () => void;
 };
 type HardwareHandle = Readonly<{ generation: number }>;
+type TimerHandle = ReturnType<typeof setTimeout>;
+export type ScopeFrameCanonicalAuthority = Readonly<{
+  source: ScopeSource;
+  receiver: 0 | 1 | null;
+  providerGeneration: number | null;
+}>;
+export type ScopeFrameEvidence = Readonly<{
+  envelope: QualifiedScopeFrameEnvelope | null;
+  authority: ScopeFrameProjectionAuthority;
+}>;
+export interface ScopeFrameTiming {
+  now(): number;
+  setTimeout(callback: () => void, delayMs: number): TimerHandle;
+  clearTimeout(handle: TimerHandle): void;
+}
+
+const DEFAULT_TIMING: ScopeFrameTiming = {
+  now: () => performance.now(),
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: (handle) => clearTimeout(handle),
+};
 
 export class ScopeController {
   /** Latest parsed audio-scope frame (Svelte 5 reactive). */
@@ -51,18 +89,30 @@ export class ScopeController {
   private _subscribers = new Map<number, FrameHandler>();
   private _hardwareSubscribers = new Map<number, FrameHandler>();
   private _healthSubscribers = new Map<number, HealthHandler>();
+  private _evidenceSubscribers = new Map<number, EvidenceHandler>();
   private _nextId = 0;
   private _bindings = new Map<AudioFftHandle, ChannelBinding>();
   private _activeHandle: AudioFftHandle | null = null;
   private _hardwareBindings = new Map<HardwareHandle, ChannelBinding>();
   private _activeHardwareHandle: HardwareHandle | null = null;
   private _hardwareGeneration = 0;
+  private _authorityRevision = 0;
+  private _frameAuthority: ScopeFrameCanonicalAuthority | null = null;
+  private _frameEnvelope: QualifiedScopeFrameEnvelope | null = null;
+  private _acceptedSequence = 0;
+  private _arrivals: Record<ScopeSource, Readonly<{
+    receivedAt: number; acceptedSequence: number;
+  }> | null> = { hardware: null, audio_fft: null };
+  private _expiryTimers: Record<ScopeSource, TimerHandle | null> = {
+    hardware: null, audio_fft: null,
+  };
   private _registeredHosts = new WeakSet<object>();
   private _health: Record<ScopeSource, ScopeHealth> = $state({
     hardware: { demanded: false, transport: 'disconnected', frameSeen: false },
     audio_fft: { demanded: false, transport: 'disconnected', frameSeen: false },
   });
   private _getChannel: ChannelFactory;
+  private _timing: ScopeFrameTiming;
   readonly audioFftDriver: PresentationResourceDriver<unknown> = {
     start: () => this._connect(),
     stop: (handle) => this._disconnect(handle as AudioFftHandle),
@@ -74,8 +124,12 @@ export class ScopeController {
     dispose: (handle) => this._disconnectHardware(handle as HardwareHandle),
   };
 
-  constructor(channelFactory: ChannelFactory = (name) => getChannel(name)) {
+  constructor(
+    channelFactory: ChannelFactory = (name) => getChannel(name),
+    timing: ScopeFrameTiming = DEFAULT_TIMING,
+  ) {
     this._getChannel = channelFactory;
+    this._timing = timing;
   }
 
   /**
@@ -104,6 +158,60 @@ export class ScopeController {
     return () => { this._healthSubscribers.delete(id); };
   }
 
+  /**
+   * Installs the one canonical display identity. Changing any identity member
+   * retires the prior envelope synchronously. A provider-generation change
+   * also retires the channel revision: its callbacks may still serve legacy
+   * raw subscribers but cannot revive display facts under the new provider.
+   */
+  setFrameAuthority(authority: ScopeFrameCanonicalAuthority | null): void {
+    const normalized = authority
+      && (authority.source === 'hardware' || authority.source === 'audio_fft')
+      && (authority.receiver === null || authority.receiver === 0 || authority.receiver === 1)
+      && (authority.providerGeneration === null
+        || (Number.isSafeInteger(authority.providerGeneration) && authority.providerGeneration >= 0))
+      ? Object.freeze({ ...authority }) : null;
+    const current = this._frameAuthority;
+    if (current?.source === normalized?.source
+      && current?.receiver === normalized?.receiver
+      && current?.providerGeneration === normalized?.providerGeneration) return;
+    if (current?.providerGeneration !== normalized?.providerGeneration) {
+      this._authorityRevision += 1;
+    }
+    this._frameAuthority = normalized;
+    this._frameEnvelope = null;
+    this._notifyEvidence();
+  }
+
+  snapshotFrameEvidence(): ScopeFrameEvidence {
+    const authority = this._frameAuthority;
+    const source = authority?.source ?? 'hardware';
+    const health = this._readHealth(source);
+    const binding = source === 'hardware'
+      ? this._activeHardwareHandle && this._hardwareBindings.get(this._activeHardwareHandle)
+      : this._activeHandle && this._bindings.get(this._activeHandle);
+    const epoch = binding?.channel.sessionEpoch;
+    return Object.freeze({
+      envelope: this._frameEnvelope,
+      authority: Object.freeze({
+        source,
+        receiver: authority?.receiver ?? null,
+        providerGeneration: authority?.providerGeneration ?? null,
+        transportEpoch: Number.isSafeInteger(epoch) && (epoch as number) > 0
+          ? epoch as number : null,
+        demanded: authority !== null && health.demanded,
+        transport: health.transport,
+        nowMonotonic: this._timing.now(),
+      }),
+    });
+  }
+
+  subscribeFrameEvidence(handler: EvidenceHandler): () => void {
+    const id = this._nextId++;
+    this._evidenceSubscribers.set(id, handler);
+    return () => { this._evidenceSubscribers.delete(id); };
+  }
+
   registerPresentationDriver(
     host: Pick<PresentationResourceHost<unknown>, 'configure'>,
     initialConfig?: { available: boolean; selected: boolean },
@@ -122,41 +230,49 @@ export class ScopeController {
   private _connect(): AudioFftHandle {
     const ch = this._getChannel('audio-scope');
     const handle = Object.freeze({ token: Symbol('audio-fft') });
-    let unsubscribeBinary = () => {}, unsubscribeState = () => {};
+    const authorityRevision = this._authorityRevision;
+    let unsubscribeBinary = () => {}, unsubscribeState = () => {}, unsubscribeSession = () => {};
     this._activeHandle = handle;
-    this.audioScopeFrame = null;
+    this._invalidateSource('audio_fft');
     this._setHealth('audio_fft', {
       demanded: true, transport: ch.state, frameSeen: false,
     });
     try {
       unsubscribeState = ch.onStateChange((state) => {
         if (this._activeHandle !== handle) return;
-        if (state !== 'connected') this.audioScopeFrame = null;
+        if (state !== 'connected') this._invalidateSource('audio_fft');
         this._setHealth('audio_fft', {
           demanded: true, transport: state,
-          frameSeen: state === 'connected' && this._readHealth('audio_fft').frameSeen,
+          frameSeen: state === 'connected' && this._arrivalIsLive('audio_fft'),
         });
+      });
+      unsubscribeSession = this._subscribeSession(ch, (transition) => {
+        this._sessionTransition('audio_fft', handle, transition);
       });
       unsubscribeBinary = ch.onBinary((buf: ArrayBuffer) => {
         if (this._activeHandle !== handle || this._readHealth('audio_fft').transport !== 'connected') return;
         const frame = parseScopeFrame(buf);
-        if (frame) {
-          markScopeFrame();
-          this.audioScopeFrame = frame;
-          this._setHealth('audio_fft', { ...this._readHealth('audio_fft'), frameSeen: true });
-          for (const h of this._subscribers.values()) {
-            h(frame);
-          }
+        if (!frame) {
+          this._invalidateSource('audio_fft', authorityRevision === this._authorityRevision);
+          return;
+        }
+        if (this._acceptFrame('audio_fft', ch, authorityRevision, frame, buf)) {
+          for (const h of this._subscribers.values()) h(frame);
         }
       });
-      this._bindings.set(handle, { channel: ch, unsubscribeBinary, unsubscribeState });
+      this._bindings.set(handle, {
+        channel: ch, authorityRevision, unsubscribeBinary, unsubscribeState, unsubscribeSession,
+      });
       ch.connect('/api/v1/audio-scope');
       return handle;
     } catch (error) {
       this._bindings.delete(handle);
-      try { unsubscribeBinary(); } finally { unsubscribeState(); }
+      try { unsubscribeBinary(); } finally {
+        try { unsubscribeState(); } finally { unsubscribeSession(); }
+      }
       if (this._activeHandle === handle) {
         this._activeHandle = null;
+        this._invalidateSource('audio_fft');
         this._setHealth('audio_fft', {
           demanded: false, transport: 'disconnected', frameSeen: false,
         });
@@ -177,7 +293,7 @@ export class ScopeController {
     );
     if (this._activeHandle === handle) {
       this._activeHandle = null;
-      this.audioScopeFrame = null;
+      this._invalidateSource('audio_fft');
       this._setHealth('audio_fft', {
         demanded: false, transport: 'disconnected', frameSeen: false,
       });
@@ -188,7 +304,9 @@ export class ScopeController {
       try {
         binding.unsubscribeState();
       } finally {
-        if (!shared) binding.channel.disconnect();
+        try { binding.unsubscribeSession(); } finally {
+          if (!shared) binding.channel.disconnect();
+        }
       }
     }
   }
@@ -196,9 +314,10 @@ export class ScopeController {
   private _connectHardware(): HardwareHandle {
     const channel = this._getChannel('scope');
     const handle = Object.freeze({ generation: ++this._hardwareGeneration });
-    let unsubscribeBinary = () => {}, unsubscribeState = () => {};
+    const authorityRevision = this._authorityRevision;
+    let unsubscribeBinary = () => {}, unsubscribeState = () => {}, unsubscribeSession = () => {};
     this._activeHardwareHandle = handle;
-    this.scopeFrame = null;
+    this._invalidateSource('hardware');
     this._setHealth('hardware', {
       demanded: true, transport: channel.state, frameSeen: false,
     });
@@ -209,27 +328,37 @@ export class ScopeController {
           || this._readHealth('hardware').transport !== 'connected'
         ) return;
         const frame = parseScopeFrame(buf);
-        if (!frame) return;
-        markScopeFrame();
-        this.scopeFrame = frame;
-        this._setHealth('hardware', { ...this._readHealth('hardware'), frameSeen: true });
-        for (const subscriber of this._hardwareSubscribers.values()) subscriber(frame);
+        if (!frame) {
+          this._invalidateSource('hardware', authorityRevision === this._authorityRevision);
+          return;
+        }
+        if (this._acceptFrame('hardware', channel, authorityRevision, frame, buf)) {
+          for (const subscriber of this._hardwareSubscribers.values()) subscriber(frame);
+        }
       });
       unsubscribeState = channel.onStateChange((state: ConnectionState) => {
         if (this._activeHardwareHandle !== handle) return;
-        if (state !== 'connected') this.scopeFrame = null;
+        if (state !== 'connected') this._invalidateSource('hardware');
         this._setHealth('hardware', {
           demanded: true, transport: state,
-          frameSeen: state === 'connected' && this._readHealth('hardware').frameSeen,
+          frameSeen: state === 'connected' && this._arrivalIsLive('hardware'),
         });
       });
-      this._hardwareBindings.set(handle, { channel, unsubscribeBinary, unsubscribeState });
+      unsubscribeSession = this._subscribeSession(channel, (transition) => {
+        this._sessionTransition('hardware', handle, transition);
+      });
+      this._hardwareBindings.set(handle, {
+        channel, authorityRevision, unsubscribeBinary, unsubscribeState, unsubscribeSession,
+      });
       channel.connect('/api/v1/scope');
     } catch (error) {
       this._hardwareBindings.delete(handle);
-      try { unsubscribeBinary(); } finally { unsubscribeState(); }
+      try { unsubscribeBinary(); } finally {
+        try { unsubscribeState(); } finally { unsubscribeSession(); }
+      }
       if (this._activeHardwareHandle === handle) {
         this._activeHardwareHandle = null;
+        this._invalidateSource('hardware');
         this._setHealth('hardware', {
           demanded: false, transport: 'disconnected', frameSeen: false,
         });
@@ -248,7 +377,7 @@ export class ScopeController {
     this._hardwareBindings.delete(handle);
     if (this._activeHardwareHandle === handle) {
       this._activeHardwareHandle = null;
-      this.scopeFrame = null;
+      this._invalidateSource('hardware');
       this._setHealth('hardware', {
         demanded: false, transport: 'disconnected', frameSeen: false,
       });
@@ -257,9 +386,145 @@ export class ScopeController {
       binding.unsubscribeBinary();
     } finally {
       try { binding.unsubscribeState(); } finally {
-        if (![...this._hardwareBindings.values()].some((item) => item.channel === binding.channel)) {
-          binding.channel.disconnect();
+        try { binding.unsubscribeSession(); } finally {
+          if (![...this._hardwareBindings.values()].some((item) => item.channel === binding.channel)) {
+            binding.channel.disconnect();
+          }
         }
+      }
+    }
+  }
+
+  private _sessionTransition(
+    source: ScopeSource,
+    handle: AudioFftHandle | HardwareHandle,
+    transition: ControlSessionTransition,
+  ): void {
+    const active = source === 'hardware' ? this._activeHardwareHandle : this._activeHandle;
+    if (active !== handle) return;
+    const envelope = this._frameEnvelope;
+    if (transition.state !== 'connected'
+      || (envelope?.source === source && envelope.transportEpoch !== transition.epoch)) {
+      this._invalidateSource(source);
+    } else {
+      this._notifyEvidence();
+    }
+  }
+
+  private _subscribeSession(
+    channel: WsChannel,
+    handler: (transition: ControlSessionTransition) => void,
+  ): () => void {
+    return typeof channel.onSessionTransition === 'function'
+      ? channel.onSessionTransition(handler) : () => {};
+  }
+
+  private _acceptFrame(
+    source: ScopeSource,
+    channel: WsChannel,
+    authorityRevision: number,
+    frame: ScopeFrame,
+    buffer: ArrayBuffer,
+  ): boolean {
+    const receivedAt = this._timing.now();
+    const transportEpoch = channel.sessionEpoch;
+    if (!Number.isFinite(receivedAt) || receivedAt < 0) {
+      this._invalidateSource(source, authorityRevision === this._authorityRevision);
+      return false;
+    }
+    const acceptedSequence = ++this._acceptedSequence;
+    const arrival = Object.freeze({ receivedAt, acceptedSequence });
+    this._arrivals[source] = arrival;
+    if (source === 'hardware') this.scopeFrame = frame;
+    else this.audioScopeFrame = frame;
+    markScopeFrame();
+    this._setHealth(source, { ...this._readHealth(source), frameSeen: true });
+    this._armExpiry(source, arrival);
+
+    const authority = this._frameAuthority;
+    if (authorityRevision !== this._authorityRevision || authority?.source !== source) return true;
+    if (!Number.isSafeInteger(transportEpoch) || transportEpoch <= 0) {
+      this._frameEnvelope = null;
+      this._notifyEvidence();
+      return true;
+    }
+    if ((authority.receiver !== 0 && authority.receiver !== 1)
+      || !Number.isSafeInteger(authority.providerGeneration)
+      || (authority.providerGeneration as number) < 0) {
+      this._frameEnvelope = null;
+      this._notifyEvidence();
+      return true;
+    }
+    const view = new DataView(buffer);
+    this._frameEnvelope = qualifyScopeFrameEnvelope(frame, {
+      source,
+      receiver: authority.receiver,
+      providerGeneration: authority.providerGeneration as number,
+      transportEpoch,
+      receivedAt,
+      acceptedSequence,
+    }, view.getUint16(12, true));
+    this._notifyEvidence();
+    return true;
+  }
+
+  private _armExpiry(
+    source: ScopeSource,
+    arrival: Readonly<{ receivedAt: number; acceptedSequence: number }>,
+  ): void {
+    this._clearExpiry(source);
+    const wake = () => {
+      const current = this._arrivals[source];
+      if (!current || current.acceptedSequence !== arrival.acceptedSequence) return;
+      const age = this._timing.now() - arrival.receivedAt;
+      if (!Number.isFinite(age) || age < 0 || age >= SCOPE_FRAME_SILENCE_MS) {
+        this._expiryTimers[source] = null;
+        if (source === 'hardware') this.scopeFrame = null;
+        else this.audioScopeFrame = null;
+        this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
+        if (this._frameEnvelope?.source === source
+          && this._frameEnvelope.acceptedSequence === arrival.acceptedSequence) {
+          this._notifyEvidence();
+        }
+        return;
+      }
+      this._expiryTimers[source] = this._timing.setTimeout(
+        wake, SCOPE_FRAME_SILENCE_MS - age,
+      );
+    };
+    this._expiryTimers[source] = this._timing.setTimeout(wake, SCOPE_FRAME_SILENCE_MS);
+  }
+
+  private _clearExpiry(source: ScopeSource): void {
+    const timer = this._expiryTimers[source];
+    if (timer !== null) this._timing.clearTimeout(timer);
+    this._expiryTimers[source] = null;
+  }
+
+  private _invalidateSource(source: ScopeSource, clearEnvelope = true): void {
+    this._clearExpiry(source);
+    this._arrivals[source] = null;
+    if (source === 'hardware') this.scopeFrame = null;
+    else this.audioScopeFrame = null;
+    if (clearEnvelope && this._frameEnvelope?.source === source) this._frameEnvelope = null;
+    const current = this._readHealth(source);
+    if (current.frameSeen) this._setHealth(source, { ...current, frameSeen: false });
+    this._notifyEvidence();
+  }
+
+  private _arrivalIsLive(source: ScopeSource): boolean {
+    const arrival = this._arrivals[source];
+    if (!arrival) return false;
+    const age = this._timing.now() - arrival.receivedAt;
+    return Number.isFinite(age) && age >= 0 && age < SCOPE_FRAME_SILENCE_MS;
+  }
+
+  private _notifyEvidence(): void {
+    for (const listener of [...this._evidenceSubscribers.values()]) {
+      try {
+        listener();
+      } catch (error) {
+        console.warn('Scope frame evidence subscriber failed', error);
       }
     }
   }
