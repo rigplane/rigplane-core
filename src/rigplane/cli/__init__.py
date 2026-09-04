@@ -3701,6 +3701,12 @@ async def _cmd_web(
 
     from rigplane.web.server import WebConfig, WebServer
 
+    if managed_tx_composition is None:
+        print(
+            "Error: managed TX composition is required for Web startup", file=sys.stderr
+        )
+        return 1
+
     static_dir = pathlib.Path(args.web_static_dir) if args.web_static_dir else None
     if static_dir is not None and not static_dir.is_dir():
         print(
@@ -3784,21 +3790,21 @@ async def _cmd_web(
 
     config_kwargs["discovery"] = getattr(args, "web_discovery", True)
     config_kwargs["webrtc_enabled"] = getattr(args, "webrtc_enabled", False)
+    config_kwargs["managed_tx_required"] = True
     config_kwargs["radio_model"] = getattr(radio, "model", "IC-7610")
     config = WebConfig(**config_kwargs)
     server = WebServer(radio, config)
-    if managed_tx_composition is not None:
-        from rigplane.web.web_startup import (
-            attach_managed_tx_composition,
-            prepare_managed_tx_observation_generation,
-        )
+    from rigplane.web.web_startup import (
+        attach_managed_tx_composition,
+        prepare_managed_tx_observation_generation,
+    )
 
-        event = ManagedTxProviderEvent(
-            provider_generation=1,
-            observation_generation=prepare_managed_tx_observation_generation(server),
-        )
-        attach_managed_tx_composition(server, managed_tx_composition, event)
-        await managed_tx_composition.activate_provider(event)
+    event = ManagedTxProviderEvent(
+        provider_generation=1,
+        observation_generation=prepare_managed_tx_observation_generation(server),
+    )
+    attach_managed_tx_composition(server, managed_tx_composition, event)
+    await managed_tx_composition.activate_provider(event)
     runtime_log_path = getattr(args, "runtime_log_path", None)
     if isinstance(runtime_log_path, str) and runtime_log_path:
         server._runtime_log_path = runtime_log_path

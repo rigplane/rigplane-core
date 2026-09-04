@@ -1,11 +1,14 @@
+import ast
 import asyncio
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from rigplane.core.radio_protocol import ManagedTxApi
 from rigplane.core.tx_safety import TxOwner, TxSource
+from rigplane.cli import _cmd_web
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
@@ -19,7 +22,10 @@ from rigplane.runtime.radio import (
     ManagedTxProviderEvent,
     install_managed_tx_composition,
 )
-from rigplane.web.web_startup import attach_managed_tx_composition
+from rigplane.web.web_startup import (
+    attach_managed_tx_composition,
+    start_web_server,
+)
 
 
 class FakeActuator:
@@ -31,6 +37,52 @@ class FakeActuator:
         is_current: Callable[[], bool],
     ) -> ActuationResult:
         return ActuationResult.ACCEPTED
+
+
+def test_source_constructor_census_is_one_graph_and_zero_reachable_predecessor() -> (
+    None
+):
+    source_root = Path(__file__).parents[1] / "src" / "rigplane"
+    constructors = {
+        "ManagedTxAuthority": [],
+        "TxAbortFence": [],
+        "ManagedTxEffectLane": [],
+        "LocalTxWorkRunner": [],
+        "ManagedRadioRuntime": [],
+        "TxSafetySupervisor": [],
+    }
+    for path in source_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in constructors
+            ):
+                constructors[node.func.id].append(
+                    path.relative_to(source_root).as_posix()
+                )
+
+    assert constructors["ManagedTxAuthority"] == ["runtime/radio.py"]
+    assert constructors["TxAbortFence"] == ["runtime/radio.py"]
+    assert constructors["ManagedTxEffectLane"] == ["runtime/radio.py"]
+    assert constructors["LocalTxWorkRunner"] == ["runtime/radio.py"]
+    assert constructors["ManagedRadioRuntime"] == []
+    # Phase 3 removes this dead legacy implementation. Phase 1 proves that no
+    # production root can construct the ManagedRadioRuntime that reaches it.
+    assert constructors["TxSafetySupervisor"] == ["runtime/managed_radio_runtime.py"]
+
+
+@pytest.mark.asyncio
+async def test_managed_web_entrypoints_fail_closed_without_composition(capsys) -> None:
+    assert await _cmd_web(LegacyRadio(), SimpleNamespace()) == 1
+    assert "managed TX composition is required" in capsys.readouterr().err
+
+    unattached = SimpleNamespace(
+        _config=SimpleNamespace(managed_tx_required=True),
+    )
+    with pytest.raises(RuntimeError, match="managed TX composition is required"):
+        await start_web_server(unattached)
 
 
 @pytest.mark.asyncio

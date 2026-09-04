@@ -31,7 +31,7 @@ class RecordingActuator:
 
 
 @pytest.mark.asyncio
-async def test_one_event_drives_activation_and_idempotent_invalidation(
+async def test_provider_replacement_reuses_same_graph_without_on_replay(
     tmp_path,
 ) -> None:
     events: list[str] = []
@@ -49,17 +49,27 @@ async def test_one_event_drives_activation_and_idempotent_invalidation(
     await composition.activate_provider(event)
     assert composition.active_provider is event
     assert await composition.authority.ptt_down("web:1") is ManagedTxOutcome.ACCEPTED
+    graph = (
+        composition.authority,
+        composition.abort_fence,
+        composition._lane,
+        composition.local_tx_work_runner,
+    )
 
-    first = composition.start_provider_unavailable(event)
-    second = composition.start_provider_unavailable(event)
+    replacement = ManagedTxProviderEvent(2, 18)
+    first = composition.start_provider_replacement(event, replacement)
+    second = composition.start_provider_replacement(event, replacement)
     assert first is second
     assert composition.active_provider is None
     await first
     assert retired == [event]
-    assert events == ["ptt_on"]
-
-    replacement = ManagedTxProviderEvent(2, 18)
-    await composition.activate_provider(replacement)
+    assert composition.active_provider is replacement
+    assert graph == (
+        composition.authority,
+        composition.abort_fence,
+        composition._lane,
+        composition.local_tx_work_runner,
+    )
     assert events[-1] == "force_receive"
     assert events.count("ptt_on") == 1
     await composition.shutdown(asyncio.Event())

@@ -658,6 +658,7 @@ class WebConfig:
     discovery_port: int = 8470  # UDP port for discovery
     read_only: bool = False  # reject PTT and other transmit commands
     emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
+    managed_tx_required: bool = False  # production CLI must attach before start
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
     state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
     # Adaptive per-client egress codec controller (MOR-588, ADR §3.6):
