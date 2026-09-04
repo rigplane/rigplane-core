@@ -226,7 +226,9 @@ class _SideEffectingYaesuRadio:
     }
 
     def __init__(self) -> None:
-        self.profile = SimpleNamespace(max_watts=100)
+        profile = get_radio_profile("FTX-1")
+        assert profile.ctcss_tones_centihz is not None
+        self.profile = replace(profile, max_watts=100)
         self.radio_state = RadioState()
         self.radio_state.main.freq = 1
         self.radio_state.main.mode = "INIT-MAIN"
