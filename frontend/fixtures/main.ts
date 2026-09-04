@@ -29,6 +29,8 @@ import { readWorkspace } from '../src/presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../src/presentation/workspace/resolution';
 import DualReceiverCockpit from '../src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte';
 import PeerSplitLayout from '../src/skins/segmentline/PeerSplitLayout.svelte';
+import LcdUnifiedInstrumentSkin from '../src/skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte';
+import LcdPanadapterFirstSkin from '../src/skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte';
 // MOR-2253 slice 1 F1 (verifier BLOCKED): this is the harness's own mount of
 // the peer-split glass, the one other production/harness call site besides
 // `components-v2/layout/LcdLayout.svelte` — that file passes canvasW/canvasH
@@ -46,7 +48,7 @@ import {
   runAssertions, styleProbe, tokenSnapshot, type AssertionOptions,
 } from './assertions';
 import { clearCapabilities, setCapabilities } from '../src/lib/stores/capabilities.svelte';
-import { fixtureById } from './catalog';
+import { fixtureById, type Fixture } from './catalog';
 import { DEFAULT_AUDIO_RUNTIME, harness, IDLE_TX } from './harness-state';
 
 const params = new URLSearchParams(window.location.search);
@@ -75,8 +77,10 @@ const displayVariant = displayParam as typeof displayVariants[number];
  * file's header) rather than the composition `focusOrder()`/`activeControl()`
  * below are describing.
  */
+const isLcdDirection = fixture.layout === 'unified-instrument' || fixture.layout === 'panadapter-first';
 const ROOT_TEST_ID = fixture.layout === 'reference' ? 'reference-layout'
   : fixture.layout === 'peer-split' ? 'peer-split-glass'
+    : isLcdDirection ? 'fixture-lcd-layout'
     : 'dual-receiver-cockpit';
 
 if ((params.get('theme') ?? 'v2') === 'v2') {
@@ -134,6 +138,9 @@ harness.tx = { ...IDLE_TX, ...fixture.tx };
 harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
 harness.audioRuntime = { ...DEFAULT_AUDIO_RUNTIME, ...fixture.audioRuntime };
 harness.calls = [];
+harness.frameAuthority = null;
+harness.frameEvidence = null;
+harness.presentationAcquires = [];
 
 /**
  * MOR-1355 — the ONE place this harness can supply a real resolved
@@ -210,6 +217,15 @@ if (fixture.layout === 'peer-split') {
       displayVariant,
     },
   });
+} else if (fixture.layout === 'unified-instrument' || fixture.layout === 'panadapter-first') {
+  // This attribute is fixture chrome only (no visual/CSS effect): it gives
+  // the later visual-spec lane a stable root for assertions around the real
+  // skin's fixed-native stage, one compact TOT consumer, and source lease.
+  target.dataset.testid = ROOT_TEST_ID;
+  mount(fixture.layout === 'unified-instrument' ? LcdUnifiedInstrumentSkin : LcdPanadapterFirstSkin, {
+    target,
+    context,
+  });
 } else {
   mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, { target, context });
 }
@@ -231,6 +247,23 @@ declare global {
        *  this before and after a viewport resize to prove focus survives an
        *  orientation/layout reflow rather than silently dropping to `body`. */
       activeControl: () => string;
+      /** B/D fixture evidence from the real skin + fixture-only seams. */
+      lcd: () => null | {
+        variant: 'unified-instrument' | 'panadapter-first';
+        canvas: { w: 1280; h: 540 | 594 };
+        source: 'audio-fft' | 'hardware';
+        frameAuthority: { source: 'hardware' | 'audio_fft'; receiver: 0 | 1 | null; providerGeneration: number | null } | null;
+        frameEvidence: {
+          envelope: null;
+          authority: { source: 'hardware' | 'audio_fft'; receiver: 0 | 1 | null; providerGeneration: number | null };
+          transportEpoch: null;
+          demanded: false;
+          transport: 'disconnected';
+          nowMonotonic: 0;
+        } | null;
+        presentationAcquires: ReadonlyArray<{ resource: 'hardware-scope' | 'audio-fft'; consumer: string }>;
+        compactTotConsumers: number;
+      };
     };
   }
 }
@@ -246,11 +279,13 @@ window.__harness = {
   // it cannot check.
   assert: (options: AssertionOptions = {}) => (fixture.expect
     ? runAssertions(fixture.expect, { ...options, rootTestId: ROOT_TEST_ID })
-    : [{
-      name: 'peer-split-no-assertion-pipeline', ok: true,
-      detail: 'peer-split fixtures carry no behavior-assertion pipeline yet (MOR-2153) — this '
-        + 'confirms the harness mounted, not that the composition is correct.',
-    }]),
+    : fixture.layout === 'peer-split'
+      ? [{
+        name: 'peer-split-no-assertion-pipeline', ok: true,
+        detail: 'peer-split fixtures carry no behavior-assertion pipeline yet (MOR-2153) — this '
+          + 'confirms the harness mounted, not that the composition is correct.',
+      }]
+      : lcdFixtureAssertions(fixture.lcd!)),
   tokens: tokenSnapshot,
   // `styleProbe` takes its root explicitly (it cannot infer one) and
   // peer-split fixtures never call `runAssertions` — see `assert` above.
@@ -268,7 +303,63 @@ window.__harness = {
     const el = document.activeElement;
     return el === null || el === document.body ? 'NONE' : describe(el as HTMLElement);
   },
+  lcd: () => fixture.lcd === undefined ? null : ({
+    variant: fixture.lcd.variant,
+    canvas: { ...fixture.lcd.canvas },
+    source: fixture.lcd.source,
+    // Actual host-written authority/evidence, never a catalog substitute.
+    frameAuthority: harness.frameAuthority === null ? null : { ...harness.frameAuthority },
+    frameEvidence: harness.frameEvidence === null ? null : {
+      ...harness.frameEvidence,
+      authority: { ...harness.frameEvidence.authority },
+    },
+    presentationAcquires: harness.presentationAcquires.map((entry) => ({ ...entry })),
+    compactTotConsumers: document.querySelectorAll('[data-testid="managed-tot-status"]').length,
+  }),
 };
+
+function lcdFixtureAssertions(expected: NonNullable<Fixture['lcd']>) {
+  const expectedAuthority = {
+    source: expected.source === 'audio-fft' ? 'audio_fft' : 'hardware',
+    receiver: 0,
+    providerGeneration: 1,
+  } as const;
+  const authority = harness.frameAuthority;
+  const evidence = harness.frameEvidence;
+  const expectedResource = expected.source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
+  return [
+    {
+      name: 'lcd-fixed-native-glass-fixture-mounted', ok: true,
+      detail: 'B/D mounts its real fixed-native skin; the visual-spec lane checks the rendered stage geometry.',
+    },
+    {
+      name: 'lcd-frame-authority-from-real-host',
+      ok: authority?.source === expectedAuthority.source
+        && authority.receiver === expectedAuthority.receiver
+        && authority.providerGeneration === expectedAuthority.providerGeneration,
+      detail: `actual=${JSON.stringify(authority)} expected=${JSON.stringify(expectedAuthority)}`,
+    },
+    {
+      name: 'lcd-frame-evidence-is-honest-ghost',
+      ok: evidence?.envelope === null
+        && evidence.demanded === false
+        && evidence.transport === 'disconnected'
+        && evidence.transportEpoch === null,
+      detail: `actual=${JSON.stringify(evidence)}`,
+    },
+    {
+      name: 'lcd-selected-source-acquires-one-presentation-lease',
+      ok: harness.presentationAcquires.length === 1
+        && harness.presentationAcquires[0]?.resource === expectedResource,
+      detail: `actual=${JSON.stringify(harness.presentationAcquires)} expected=${expectedResource}`,
+    },
+    {
+      name: 'lcd-has-one-compact-tot-consumer',
+      ok: document.querySelectorAll('[data-testid="managed-tot-status"]').length === 1,
+      detail: `actual=${document.querySelectorAll('[data-testid="managed-tot-status"]').length}`,
+    },
+  ];
+}
 
 function describe(el: HTMLElement): string {
   const zone = (el.closest('[data-zone-id]') as HTMLElement | null)?.dataset.zoneId ?? 'NO-ZONE';

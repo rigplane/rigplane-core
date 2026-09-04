@@ -89,12 +89,16 @@ const COCKPIT: Spec[] = [
   },
   { name: 'tx-phase-fault--desktop--fieldline', fixture: 'tx-phase-fault', language: 'fieldline' },
   { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis', freezeClock: true },
+  { name: 'unified-instrument--desktop', fixture: 'lcd-unified-instrument' },
+  { name: 'panadapter-first--desktop', fixture: 'lcd-panadapter-first' },
   {
     name: 'peer-split-chassis--1100x800',
     fixture: 'peer-split-chassis',
     viewport: NARROW,
     freezeClock: true,
   },
+  { name: 'unified-instrument--1100x800', fixture: 'lcd-unified-instrument', viewport: NARROW },
+  { name: 'panadapter-first--1100x800', fixture: 'lcd-panadapter-first', viewport: NARROW },
 ];
 
 for (const spec of COCKPIT) {

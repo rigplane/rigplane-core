@@ -25,6 +25,8 @@ export interface TxSnapshot {
   faultDetail: null;
   fresh: boolean;
   releaseRequired: boolean;
+  /** Server-owned software-TOT configuration; null means explicitly disabled. */
+  configuredSeconds: number | null;
   remainingMs: number | null;
   lastOperation: 'ptt_on' | 'transmit_on' | 'force_receive' | null;
 }
@@ -50,12 +52,33 @@ export const DEFAULT_AUDIO_RUNTIME: AudioRuntimeState = {
 
 export const IDLE_TX: TxSnapshot = {
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
-  faultDetail: null, fresh: true, releaseRequired: false, remainingMs: null, lastOperation: null,
+  faultDetail: null, fresh: true, releaseRequired: false, configuredSeconds: null,
+  remainingMs: null, lastOperation: null,
 };
 
 export interface HarnessCall {
   fn: string;
   args: unknown[];
+}
+
+/**
+ * Fixture-only projection authority accepted by the real ScopeFrameHost.
+ * It intentionally carries no envelope or transport producer: B/D captures
+ * are a truthful missing-frame/ghost reading, never synthetic RF/AF data.
+ */
+export interface FixtureFrameAuthority {
+  source: 'hardware' | 'audio_fft';
+  receiver: 0 | 1 | null;
+  providerGeneration: number | null;
+}
+
+export interface FixtureFrameEvidence {
+  envelope: null;
+  authority: FixtureFrameAuthority;
+  transportEpoch: null;
+  demanded: false;
+  transport: 'disconnected';
+  nowMonotonic: 0;
 }
 
 export const harness = {
@@ -66,6 +89,9 @@ export const harness = {
   audioRuntime: { ...DEFAULT_AUDIO_RUNTIME } as AudioRuntimeState,
   calls: [] as HarnessCall[],
   listeners: new Set<(next: TxSnapshot) => void>(),
+  frameAuthority: null as FixtureFrameAuthority | null,
+  frameEvidence: null as FixtureFrameEvidence | null,
+  presentationAcquires: [] as Array<{ resource: 'hardware-scope' | 'audio-fft'; consumer: string }>,
 };
 
 export function record(fn: string, args: unknown[]): void {

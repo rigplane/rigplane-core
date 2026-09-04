@@ -405,7 +405,17 @@ export interface Fixture {
    * `toReferenceFixture()` below derives every `--reference` id from its
    * cockpit sibling; `peer-split` fixtures have no such derivation.
    */
-  layout?: 'cockpit' | 'reference' | 'peer-split';
+  layout?: 'cockpit' | 'reference' | 'peer-split' | 'unified-instrument' | 'panadapter-first';
+  /**
+   * Fixed-native LCD proof metadata. The harness mounts the real skin route;
+   * this only gives the visual-spec lane one declared expectation to compare
+   * to the mounted DOM/resource seam rather than duplicating it per capture.
+   */
+  lcd?: Readonly<{
+    variant: 'unified-instrument' | 'panadapter-first';
+    canvas: Readonly<{ w: 1280; h: 540 | 594 }>;
+    source: 'audio-fft' | 'hardware';
+  }>;
   /**
    * MOR-1355. `true` ⇒ `fixtures/main.ts` mounts this fixture with a REAL
    * resolved `SurfacePlan` (`resolveSurfacePlan(dualReceiverCockpitLayout,
@@ -974,6 +984,40 @@ const PEER_SPLIT_FIXTURES: readonly Fixture[] = [
 ];
 
 /**
+ * MOR-2325 B/D are fixture-only acceptance cells for the two selectable LCD
+ * directions. Both reuse the real dual MAIN/SUB shape and mutually coherent
+ * provider/capability generation 1. Their display-frame evidence is supplied
+ * by the runtime fixture seam as an honest null envelope: visible glass may
+ * show a ghost/missing trace, never invented RF or AF samples.
+ */
+const LCD_DIRECTION_FIXTURES: readonly Fixture[] = [
+  {
+    id: 'lcd-unified-instrument',
+    what: 'LCD unified-instrument: 2/main_sub MAIN active, native 1280×540 group, audio-FFT '
+      + 'selection with no received envelope (truthful ghost), and fresh software TOT 180s.',
+    state: () => ({ ...(withMeters(mainSubState('MAIN')) as object), providerGeneration: 1 }) as ServerState,
+    caps: mainSubCaps,
+    tx: tx({ configuredSeconds: 180, remainingMs: null }),
+    layout: 'unified-instrument',
+    lcd: {
+      variant: 'unified-instrument', canvas: { w: 1280, h: 540 }, source: 'audio-fft',
+    },
+  },
+  {
+    id: 'lcd-panadapter-first',
+    what: 'LCD panadapter-first: 2/main_sub MAIN active, native 1280×594 group, hardware '
+      + 'selection with no received envelope (truthful ghost), and fresh software TOT explicitly OFF.',
+    state: () => ({ ...(withMeters(mainSubState('MAIN')) as object), providerGeneration: 1 }) as ServerState,
+    caps: mainSubCaps,
+    tx: tx({ configuredSeconds: null, remainingMs: null }),
+    layout: 'panadapter-first',
+    lcd: {
+      variant: 'panadapter-first', canvas: { w: 1280, h: 594 }, source: 'hardware',
+    },
+  },
+];
+
+/**
  * The full MOR-1085 grid: every `CORE_FIXTURES` (dual-receiver-cockpit)
  * entry, plus its reference-layout twin — except `tx-adjacent-alerts`, whose
  * whole point is the cockpit's OWN zone-containment acceptance gate (b) and
@@ -990,6 +1034,7 @@ export const FIXTURES: readonly Fixture[] = [
   ...PLANNED_FIXTURES,
   ...AUDIO_RUNTIME_FIXTURES,
   ...PEER_SPLIT_FIXTURES,
+  ...LCD_DIRECTION_FIXTURES,
 ];
 
 export const fixtureById = (id: string): Fixture | undefined =>
