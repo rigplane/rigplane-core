@@ -18,7 +18,7 @@ from rigplane.core.state_acquisition_policy import (
     FieldCapability,
     RadioAcquisitionProfile,
 )
-from rigplane.core.state_pipeline_contracts import FieldPath, Observation
+from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath, Observation
 from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
@@ -43,6 +43,7 @@ from rigplane.backends.yaesu_cat.transport import (
 )
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.runtime._poller_types import SetTunerStatus
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import (
     CommandQueue,
@@ -1143,6 +1144,113 @@ async def _drain_with_ptt(
             poller._current_tx_target_generation()  # noqa: SLF001
         )
     await poller._drain_commands()  # noqa: SLF001
+
+
+class _ManagedWriteAuthority:
+    def __init__(self, *, allowed: bool, events: list[str] | None = None) -> None:
+        self.allowed = allowed
+        self.events = events
+        self.intents: list[CommandIntent] = []
+
+    async def admit_managed_write(self, intent: CommandIntent) -> bool:
+        self.intents.append(intent)
+        if self.events is not None:
+            self.events.append("admit")
+        return self.allowed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "provider_method", "expected_name"),
+    (
+        (
+            CommandIntent(
+                id="descriptor-level",
+                name="set_af_level",
+                params={"level": 17, "receiver": 0},
+                source="websocket",
+            ),
+            "set_af_level",
+            "set_af_level",
+        ),
+        (SetTunerStatus(0), "set_tuner", "set_tuner_status"),
+    ),
+)
+async def test_managed_non_ptt_write_admits_once_immediately_before_dispatch(
+    command: object, provider_method: str, expected_name: str
+) -> None:
+    events: list[str] = []
+    authority = _ManagedWriteAuthority(allowed=True, events=events)
+    radio, queue = make_radio(), CommandQueue()
+
+    async def provider_write(*_args: object, **_kwargs: object) -> None:
+        events.append("write")
+
+    setattr(radio, provider_method, AsyncMock(side_effect=provider_write))
+    poller = YaesuCatPoller(
+        radio,
+        command_queue=queue,
+        managed_tx_port=SimpleNamespace(authority=authority),
+    )
+    queue.put_ordered(command)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert [intent.name for intent in authority.intents] == [expected_name]
+    assert events == ["admit", "write"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", (False, True, None), ids=("rx", "tx", "unknown"))
+async def test_managed_rejection_never_writes_holds_or_replays(
+    active: bool | None,
+) -> None:
+    authority = _ManagedWriteAuthority(allowed=False)
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_tuner = AsyncMock()
+    service = MagicMock()
+    reply: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    poller = YaesuCatPoller(
+        radio,
+        command_queue=queue,
+        managed_tx_port=SimpleNamespace(authority=authority),
+    )
+    if active is None:
+        poller._invalidate_ptt_observation()  # noqa: SLF001
+    else:
+        _set_fresh_ptt_observation(poller, active=active)
+    queue.put_ordered(
+        SetTunerStatus(1),
+        future=reply,
+        command_id="rejected-tuner",
+        command_service=service,
+    )
+
+    await poller._drain_commands()  # noqa: SLF001
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert [intent.name for intent in authority.intents] == ["set_tuner_status"]
+    assert isinstance(reply.exception(), CommandError)
+    radio.set_tuner.assert_not_awaited()
+    service.emit_lifecycle.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_managed_port_without_authority_fails_closed_before_provider_write() -> None:
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_tuner = AsyncMock()
+    reply: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    poller = YaesuCatPoller(
+        radio,
+        command_queue=queue,
+        managed_tx_port=SimpleNamespace(authority=None),
+    )
+    queue.put_ordered(SetTunerStatus(0), future=reply)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert isinstance(reply.exception(), CommandError)
+    radio.set_tuner.assert_not_awaited()
 
 
 @pytest.mark.asyncio

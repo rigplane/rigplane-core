@@ -39,6 +39,7 @@ from rigplane.runtime._poller_types import (
     canonicalize_level_command,
     execute_command_queue_entry,
 )
+from rigplane.runtime.managed_write_intent_bridge import managed_write_intent
 from rigplane.runtime.tx_interlock import (
     DeferredTxCommandLane,
     RfState,
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from ..._poller_types import CommandQueue, CommandQueueEntry
     from ...radio_state import RadioState
     from ...core.state_pipeline_contracts import CommandSource, Observation
+    from ...runtime.radio import ManagedTxCompositionPort
     from .radio import YaesuCatRadio
 
 __all__ = ["YaesuCatPoller"]
@@ -103,6 +105,7 @@ class YaesuCatPoller:
         *,
         observation_callback: Callable[[Sequence["Observation"]], None] | None = None,
         command_queue: "CommandQueue | None" = None,
+        managed_tx_port: "ManagedTxCompositionPort | None" = None,
         fast_interval: float = _FAST_INTERVAL,
         medium_interval: float = _MEDIUM_INTERVAL,
         slow_interval: float = _SLOW_INTERVAL,
@@ -112,6 +115,7 @@ class YaesuCatPoller:
         self._callback = callback
         self._observation_callback = observation_callback
         self._command_queue = command_queue
+        self._managed_tx_port = managed_tx_port
         self._fast_interval = fast_interval
         self._medium_interval = medium_interval
         self._slow_interval = slow_interval
@@ -681,6 +685,36 @@ class YaesuCatPoller:
         if self._command_queue is None:
             return
 
+        if self._managed_tx_port is not None:
+            pending_count = self._command_queue.pending_count
+
+            async def finish_managed_entry(entry: CommandQueueEntry) -> None:
+                try:
+                    await self._execute_command(
+                        entry.command,
+                        command_id=entry.command_id,
+                        source=entry.source or "websocket",
+                        session_id=entry.session_id,
+                    )
+                    self._track_receiver_select_readback(entry)
+                except Exception as exc:
+                    self._mark_queued_command_failed(entry, exc)
+                    raise
+
+            for _ in range(pending_count):
+                entry = self._command_queue.take_entry()
+                if entry is None:
+                    break
+                try:
+                    await execute_command_queue_entry(entry, finish_managed_entry)
+                except Exception:
+                    logger.warning(
+                        "YaesuCatPoller: managed command %s failed",
+                        type(entry.command).__name__,
+                        exc_info=True,
+                    )
+            return
+
         boundary = self._deferred_generation_change()
         if boundary is not None:
             self._cancel_deferred_entry(boundary)
@@ -958,13 +992,64 @@ class YaesuCatPoller:
         0x0A: 10,  # 6m   → 50M
     }
 
-    async def _execute_command(self, cmd: Any) -> None:
+    async def _admit_managed_write(
+        self,
+        cmd: Any,
+        *,
+        command_id: str | None,
+        source: "CommandSource",
+        session_id: str | None,
+    ) -> None:
+        port = self._managed_tx_port
+        if port is None:
+            return
+        if isinstance(cmd, CommandIntent):
+            intent = cmd
+        else:
+            try:
+                intent = managed_write_intent(
+                    cmd,
+                    command_id=command_id or f"{source}-{time.monotonic_ns()}",
+                    source=source,
+                    session_id=session_id,
+                )
+            except TypeError as exc:
+                if str(exc).startswith("unsupported managed write command:"):
+                    return
+                raise
+        authority = getattr(port, "authority", None)
+        admit = getattr(authority, "admit_managed_write", None)
+        if not callable(admit):
+            raise CommandError("managed write authority is unavailable")
+        if not await admit(intent):
+            raise CommandError("managed write rejected by transmit authority")
+
+    async def _execute_command(
+        self,
+        cmd: Any,
+        *,
+        command_id: str | None = None,
+        source: "CommandSource" = "websocket",
+        session_id: str | None = None,
+    ) -> None:
         """Dispatch a single command to the radio.
 
         Commands come from the web UI CommandQueue.  The dispatcher handles
         all command types; unsupported commands fail truthfully.
         """
-        cmd = canonicalize_level_command(cmd, self._radio)
+        cmd = canonicalize_level_command(
+            cmd,
+            self._radio,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+        )
+        await self._admit_managed_write(
+            cmd,
+            command_id=command_id,
+            source=source,
+            session_id=session_id,
+        )
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
             return
