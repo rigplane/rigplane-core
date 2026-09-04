@@ -1485,8 +1485,8 @@ class RigctldHandler:
         ready_token = _RIGCTLD_PTT_READY.set(ptt_ready)
         # Read-only gate
         try:
-            if self._config.read_only and cmd.is_set:
-                logger.debug("read-only: rejecting set command %s", cmd.long_cmd)
+            if self._config.read_only and (cmd.is_set or cmd.long_cmd == "send_raw"):
+                logger.debug("read-only: rejecting command %s", cmd.long_cmd)
                 return _err(HamlibError.EACCESS)
 
             handler_fn = self._DISPATCH.get(cmd.long_cmd)

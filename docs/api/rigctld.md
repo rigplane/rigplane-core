@@ -54,7 +54,7 @@ Options:
 |------|---------|-------------|
 | `--host HOST` | `0.0.0.0` | Listen address |
 | `--port PORT` | `4532` | TCP port |
-| `--read-only` | off | Reject all set commands |
+| `--read-only` | off | Reject all set commands and all raw `w` / `send_raw` frames (including reads) with `RPRT -22` |
 | `--max-clients N` | `10` | Maximum concurrent clients |
 | `--cache-ttl S` | `0.2` | Frequency/mode cache TTL (seconds) |
 | `--wsjtx-compat` | off | Auto-enable DATA mode on first client connect |
@@ -194,7 +194,7 @@ RigctldConfig(
 |-------|------|---------|-------------|
 | `host` | `str` | `"0.0.0.0"` | TCP listen address |
 | `port` | `int` | `4532` | TCP port |
-| `read_only` | `bool` | `False` | Reject all set commands with `RPRT -22` |
+| `read_only` | `bool` | `False` | Reject all set commands and all raw `w` / `send_raw` frames (including reads) with `RPRT -22` |
 | `max_clients` | `int` | `10` | Maximum concurrent TCP connections |
 | `client_timeout` | `float` | `300.0` | Seconds of inactivity before idle disconnect |
 | `command_timeout` | `float` | `2.0` | Per-command CI-V timeout in seconds |
@@ -241,8 +241,8 @@ async def execute(self, cmd: RigctldCommand) -> RigctldResponse
 
 Execute a parsed rigctld command and return the response.
 
-Applies the read-only gate for set commands, looks up the handler in the
-dispatch table, and translates exceptions:
+Applies the read-only gate for set commands and all `send_raw` frames, looks up
+the handler in the dispatch table, and translates exceptions:
 
 | Exception | Hamlib code |
 |-----------|-------------|
@@ -311,6 +311,11 @@ dispatch table, and translates exceptions:
 ### `w` / `send_raw` passthrough
 
 Send raw CI-V bytes and return raw response bytes (space-separated uppercase hex).
+
+With `--read-only`, all `w` / `send_raw` frames are refused with `RPRT -22`,
+including raw read requests; use structured read commands instead. The gate in
+`src/rigplane/rigctld/handler.py: RigctldHandler.execute` does not inspect frame
+contents. Covered by `tests/test_rigctld_handler.py: test_read_only_raw_passthrough`.
 
 Accepted input formats:
 
