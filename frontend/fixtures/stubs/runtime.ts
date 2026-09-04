@@ -25,6 +25,29 @@ const DEFAULT_SCOPE_STATUS = {
   lifecycle: 'inactive' as const, transport: 'disconnected' as const, frameSeen: false,
 };
 
+type FixturePresentationResource = 'hardware-scope' | 'audio-fft';
+type FixturePresentationLease = Readonly<{
+  resource: FixturePresentationResource;
+  sessionEpoch: 'fixture';
+}>;
+const fixturePresentationLeases = new Set<FixturePresentationLease>();
+
+/**
+ * Fixture-only compatibility seam for explicitly selected LCD frame sources.
+ * It records lease identity for balanced release but intentionally owns no
+ * producer, controller, channel, or transport.
+ */
+export const presentationResources = Object.freeze({
+  acquire(resource: FixturePresentationResource, _consumer: string): FixturePresentationLease {
+    const lease = Object.freeze({ resource, sessionEpoch: 'fixture' as const });
+    fixturePresentationLeases.add(lease);
+    return lease;
+  },
+  release(lease: FixturePresentationLease): boolean {
+    return fixturePresentationLeases.delete(lease);
+  },
+});
+
 export const runtime = {
   get state() { return harness.state; },
   get caps() { return harness.caps; },

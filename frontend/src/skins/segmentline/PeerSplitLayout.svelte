@@ -23,6 +23,7 @@
   import CenterstageDisplay from './CenterstageDisplay.svelte';
   import DominantUnifiedDisplay from './DominantUnifiedDisplay.svelte';
   import LcdDisplayVariant, { type LcdDisplayVariantId } from './LcdDisplayVariant.svelte';
+  import type { LcdSpectrumFrame, LcdSpectrumSource } from './lcd-display-contract';
   import PanadapterDisplay from './PanadapterDisplay.svelte';
   import PeerSplitDisplay from './PeerSplitDisplay.svelte';
 
@@ -44,14 +45,27 @@
     displayVariant?: LcdDisplayVariantId;
   }
   let { canvasW, canvasH, minScale, displayVariant = 'peer' }: Props = $props();
+
+  /**
+   * The selected face declares exactly one potential LCD producer. The
+   * semantic host owns lifecycle and validates the resulting frame; this
+   * layout only selects the display's required source.
+   */
+  const displayFrameSource: LcdSpectrumSource | undefined = $derived(
+    displayVariant === 'dominant' || displayVariant === 'centerstage'
+      ? 'audio-fft'
+      : displayVariant === 'panadapter'
+        ? 'hardware'
+        : undefined,
+  );
 </script>
 
-{#snippet readonlyDisplay(view: RadioViewModel)}
+{#snippet readonlyDisplay(view: RadioViewModel, selectedFrame?: LcdSpectrumFrame)}
   {@const model = projectPeerSplitDisplay(view)}
   {#snippet peer()}<PeerSplitDisplay {model} />{/snippet}
-  {#snippet dominant()}<DominantUnifiedDisplay {model} />{/snippet}
-  {#snippet centerstage()}<CenterstageDisplay {model} />{/snippet}
-  {#snippet panadapter()}<PanadapterDisplay {model} />{/snippet}
+  {#snippet dominant()}<DominantUnifiedDisplay {model} spectrumFrame={selectedFrame} />{/snippet}
+  {#snippet centerstage()}<CenterstageDisplay {model} audioFftFrame={selectedFrame} />{/snippet}
+  {#snippet panadapter()}<PanadapterDisplay {model} rfFrame={selectedFrame} />{/snippet}
   <LcdDisplayVariant
     variant={displayVariant}
     {peer}
@@ -64,7 +78,7 @@
 <div class="peer-split-holder">
   <ScaledStage nativeW={canvasW} nativeH={canvasH} {minScale}>
     <div class="peer-split-glass" data-testid="peer-split-glass">
-      <SemanticRadioSurfaces strips="dual" {readonlyDisplay} />
+      <SemanticRadioSurfaces strips="dual" {displayFrameSource} {readonlyDisplay} />
     </div>
   </ScaledStage>
 </div>
