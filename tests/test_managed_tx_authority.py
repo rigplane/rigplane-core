@@ -505,8 +505,9 @@ async def test_unavailable_start_is_synchronous_idempotent_and_generation_is_str
     assert not managed._state.release_required
     assert fence.calls == 1 and lane.effects == []
     await first
-    with pytest.raises(ValueError, match="increase"):
-        await managed.provider_available(6)
+    for stale_generation in (6, 7):
+        with pytest.raises(ValueError, match="increase"):
+            await managed.provider_available(stale_generation)
     await managed.provider_available(8)
     assert (await managed.snapshot()).provider_generation == 8
     with pytest.raises(RuntimeError, match="unavailable first"):
@@ -744,6 +745,36 @@ async def test_unavailable_start_and_shutdown_overlap_drains_new_generation(
     assert await asyncio.wait_for(shutdown, 0.2) is ShutdownResult.DRAINED
     assert retired == [8]
     assert not managed._state.release_required
+
+
+@pytest.mark.asyncio
+async def test_unavailable_start_after_clean_shutdown_barrier_does_not_mutate() -> None:
+    managed, _, _, _, fence, _ = authority(generation=7)
+    retirement_started, allow_retirement = asyncio.Event(), asyncio.Event()
+
+    async def retire_provider(_generation: int) -> None:
+        retirement_started.set()
+        await allow_retirement.wait()
+
+    shutdown = asyncio.create_task(
+        managed.shutdown(
+            retire_provider=retire_provider,
+            termination=asyncio.Event(),
+        )
+    )
+    await asyncio.wait_for(retirement_started.wait(), 0.2)
+    state_before = managed._state
+    generation_before = managed._provider_generation
+    fence_calls_before = fence.calls
+
+    with pytest.raises(RuntimeError, match="shutdown drain is complete"):
+        managed.start_provider_unavailable()
+
+    assert managed._state is state_before
+    assert managed._provider_generation == generation_before
+    assert fence.calls == fence_calls_before
+    allow_retirement.set()
+    assert await asyncio.wait_for(shutdown, 0.2) is ShutdownResult.DRAINED
 
 
 @pytest.mark.asyncio
