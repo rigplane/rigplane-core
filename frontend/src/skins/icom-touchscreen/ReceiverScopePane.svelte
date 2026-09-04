@@ -4,10 +4,7 @@
     DisplayFact,
     ReceiverScopeDisplay,
   } from '../../semantic/icom-touchscreen-display-model';
-  import {
-    defaultSpectrumOptions,
-    renderSpectrum,
-  } from '../../lib/renderers/spectrum-renderer';
+  import { renderReceiverScopeTrace } from './receiver-scope-trace';
 
   interface Props {
     receiver: 'MAIN' | 'SUB';
@@ -32,19 +29,7 @@
       context.clearRect(0, 0, width, height);
       if (next.status !== 'known') return;
 
-      renderSpectrum(context, next.value.pixels, width, height, {
-        ...defaultSpectrumOptions,
-        bgColor: '#020707',
-        lineColor: '#c9e6df',
-        fillColor: 'rgba(35, 152, 164, 0.24)',
-        gridColor: 'rgba(116, 151, 151, 0.2)',
-        textColor: 'rgba(202, 221, 218, 0.68)',
-        // A frame carries range bounds but no confirmed tune/mode fact.
-        // Keep the shared renderer's carrier/passband overlay disabled;
-        // backed start/end labels are rendered separately below.
-        spanHz: 0,
-        centerHz: 0,
-      });
+      renderReceiverScopeTrace(context, next.value.pixels, width, height);
     });
   });
 

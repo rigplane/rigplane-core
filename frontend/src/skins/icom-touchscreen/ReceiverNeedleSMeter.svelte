@@ -86,6 +86,7 @@
 
   .needle-meter[data-meter-state='inactive'] { opacity: 0.48; }
   .needle-meter[data-meter-state='unsupported'] { opacity: 0.28; }
+  .needle-meter[data-meter-state='unknown'] .unavailable { fill: #7f9190; }
 
   .arc, line {
     fill: none;

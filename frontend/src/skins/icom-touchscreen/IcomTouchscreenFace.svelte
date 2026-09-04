@@ -128,7 +128,7 @@
     gap: 0.42rem;
   }
 
-  button {
+  button:disabled[data-control-contract='unwired'] {
     min-width: 0;
     color: #9da9a8;
     background: linear-gradient(#303b3d, #111718);

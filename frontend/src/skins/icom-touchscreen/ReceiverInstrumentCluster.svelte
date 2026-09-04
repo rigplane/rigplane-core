@@ -103,7 +103,7 @@
     gap: 0.25rem;
   }
 
-  button {
+  button:disabled[data-control-contract='unwired'] {
     min-width: 0;
     padding: 0.28rem;
     color: #8f9b9a;
