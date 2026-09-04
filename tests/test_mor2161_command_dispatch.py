@@ -627,6 +627,160 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
 
 
 @pytest.mark.parametrize(
+    ("name", "method_name", "target"),
+    [
+        ("set_antenna", "set_antenna_1", "global.slow_state.rx_antenna_1"),
+        ("set_antenna_1", "set_antenna_1", "global.slow_state.rx_antenna_1"),
+        ("set_antenna_2", "set_antenna_2", "global.slow_state.rx_antenna_2"),
+        (
+            "set_rx_antenna",
+            "set_rx_antenna_ant1",
+            "global.slow_state.rx_antenna_1",
+        ),
+        (
+            "set_rx_antenna_ant1",
+            "set_rx_antenna_ant1",
+            "global.slow_state.rx_antenna_1",
+        ),
+        (
+            "set_rx_antenna_ant2",
+            "set_rx_antenna_ant2",
+            "global.slow_state.rx_antenna_2",
+        ),
+    ],
+)
+def test_antenna_aliases_share_canonical_descriptor_policy(
+    name: str, method_name: str, target: str
+) -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        command_descriptor,
+    )
+
+    descriptor = command_descriptor(name)
+    assert descriptor is not None
+    assert descriptor.tx_policy is DescriptorTxPolicy.ANTENNA_SWITCH
+
+    command = bind_command_intent(name, {"on": True}, source="test")
+    assert command.name == method_name
+    assert command.params["on"] is True
+    assert command.params["enabled"] is True
+    assert str(command.target) == target
+
+
+def test_civ_output_ant_is_descriptor_tx_safe() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        command_descriptor,
+    )
+
+    descriptor = command_descriptor("set_civ_output_ant")
+    assert descriptor is not None
+    assert descriptor.tx_policy is DescriptorTxPolicy.TX_SAFE
+    command = bind_command_intent(
+        "set_civ_output_ant", {"enabled": False}, source="test"
+    )
+    assert command.name == "set_civ_output_ant"
+    assert command.params["on"] is False
+    assert command.params["enabled"] is False
+
+
+def test_descriptor_lookup_rejects_unrepresentable_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.core import command_dispatch
+
+    descriptor = command_dispatch.command_descriptor("set_repeater_shift")
+    assert descriptor is not None
+    invalid = replace(descriptor, tx_policy=cast(Any, "antenna-ish"))
+    monkeypatch.setattr(
+        command_dispatch, "_COMMAND_DESCRIPTORS", {invalid.name: invalid}
+    )
+
+    with pytest.raises(CommandError, match="is not admitted"):
+        command_dispatch.command_descriptor(invalid.name)
+    with pytest.raises(CommandError, match="is not admitted"):
+        command_dispatch.command_descriptors()
+
+
+@pytest.mark.asyncio
+async def test_managed_shared_leaf_admits_exactly_once_before_execution() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        execute_command_intent,
+    )
+
+    radio = MagicMock()
+    radio.set_rx_antenna_ant1 = AsyncMock()
+    managed = MagicMock()
+    managed.admit_managed_write = AsyncMock(return_value=True)
+    command = bind_command_intent("set_rx_antenna_ant1", {"on": True}, source="test")
+
+    await execute_command_intent(radio, command, managed_tx_authority=managed)
+
+    managed.admit_managed_write.assert_awaited_once_with(command)
+    radio.set_rx_antenna_ant1.assert_awaited_once_with(enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_managed_shared_leaf_refusal_is_immediate_and_not_deferred() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        execute_command_intent,
+    )
+
+    radio = MagicMock()
+    radio.set_rx_antenna_ant2 = AsyncMock()
+    managed = MagicMock()
+    managed.admit_managed_write = AsyncMock(return_value=False)
+    command = bind_command_intent(
+        "set_rx_antenna_ant2", {"enabled": False}, source="test"
+    )
+
+    with pytest.raises(CommandError, match="transmit authority"):
+        await execute_command_intent(radio, command, managed_tx_authority=managed)
+
+    managed.admit_managed_write.assert_awaited_once_with(command)
+    radio.set_rx_antenna_ant2.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_shared_leaf_remains_direct() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        execute_command_intent,
+    )
+
+    radio = MagicMock()
+    radio.set_rx_antenna_ant1 = AsyncMock()
+    command = bind_command_intent(
+        "set_rx_antenna_ant1", {"enabled": True}, source="public_api"
+    )
+
+    await execute_command_intent(radio, command)
+
+    radio.set_rx_antenna_ant1.assert_awaited_once_with(enabled=True)
+
+
+def test_antenna_descriptor_preflight_preserves_profile_rejection() -> None:
+    from rigplane.core.command_dispatch import (
+        CommandUnsupportedError,
+        prepare_command_intent,
+    )
+
+    radio = _radio(supported=False)
+    radio.set_rx_antenna_ant1 = AsyncMock()
+
+    with pytest.raises(CommandUnsupportedError, match="active profile"):
+        prepare_command_intent(
+            radio, "set_rx_antenna_ant1", {"on": True}, source="test"
+        )
+
+    radio.supports_command.assert_called_once_with("set_rx_antenna_ant1")
+    radio.set_rx_antenna_ant1.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
     ("params", "expected_db"),
     [
         ({"db": 20, "level": 3, "value": 1, "receiver": 1}, 3),

@@ -2,6 +2,7 @@ import asyncio
 import gc
 import inspect
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -350,6 +351,56 @@ async def test_managed_write_policy_uses_intent_not_observed_ptt() -> None:
         assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
         assert not await managed.admit_managed_write(antenna_observed_on)
         assert not await managed.admit_managed_write(antenna_observed_off)
+    finally:
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name",
+    [
+        "set_antenna",
+        "set_antenna_1",
+        "set_antenna_2",
+        "set_rx_antenna",
+        "set_rx_antenna_ant1",
+        "set_rx_antenna_ant2",
+    ],
+)
+async def test_managed_antenna_alias_policy_uses_one_descriptor_lookup(
+    name: str,
+) -> None:
+    from rigplane.core.command_dispatch import command_descriptor
+
+    managed, _, _, _, _, _ = authority()
+    command = intent(name, enabled=True)
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        with patch(
+            "rigplane.runtime.managed_tx_authority.command_descriptor",
+            wraps=command_descriptor,
+        ) as lookup:
+            assert not await managed.admit_managed_write(command)
+        lookup.assert_called_once_with(name)
+    finally:
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_civ_output_executes_unchanged_during_managed_transmit() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        execute_command_intent,
+    )
+
+    managed, _, _, _, _, _ = authority()
+    radio = MagicMock()
+    radio.set_civ_output_ant = AsyncMock()
+    command = bind_command_intent("set_civ_output_ant", {"on": True}, source="test")
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        await execute_command_intent(radio, command, managed_tx_authority=managed)
+        radio.set_civ_output_ant.assert_awaited_once_with(enabled=True)
     finally:
         await finish(managed)
 
