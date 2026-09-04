@@ -1364,9 +1364,8 @@ function deriveScopeDisplay(
  * the App (MOR-1058) and building a view model must never open, start or probe
  * the audio path (MOR-972 P0). Nothing in this file imports `audio-manager`,
  * `ws-client` or `AudioContext`; the caller reads its own already-live state
- * (`runtime.audio`, `runtime.connectionAudio`, the routing prefs
- * `AudioRoutingControl` restores) and hands the values in. Pinned by
- * `__tests__/rx-audio-purity.isolated.test.ts`.
+ * (`runtime.audio`, `runtime.connectionAudio`, the applied routing snapshot)
+ * and hands the values in. Pinned by `__tests__/rx-audio-purity.isolated.test.ts`.
  */
 export interface RxAudioSnapshot {
   /** `AudioUiState` (`lib/runtime/props/panel-props.ts`), verbatim. */
@@ -1376,9 +1375,7 @@ export interface RxAudioSnapshot {
   volume: number;
   /** Audio-WS link health (`runtime.connectionAudio`). */
   connected: boolean;
-  /** Browser-side routing prefs; absent/null ⇒ never restored, so the routing
-   *  facts read `unknown` rather than the control's own 'both'/false defaults. */
-  routing?: { focus: AudioFocus; splitStereo: boolean } | null;
+  routing?: { focus?: AudioFocus; splitStereo?: boolean } | null;
 }
 
 /**
@@ -1441,8 +1438,8 @@ function deriveRxAudio(
     // `txAuxField` is the shared `{reading, availability}` builder — `RxAudioField`
     // IS `TxAuxField` (see the contract's alias), so there is one builder, not a fork.
     afLevel: txAuxField(hasAfLevel, live || afObserved, afLevel),
-    routingFocus: txAuxField(hasDualRx, routing !== null, routing?.focus),
-    routingSplit: txAuxField(hasDualRx, routing !== null, routing?.splitStereo),
+    routingFocus: txAuxField(hasDualRx, routing?.focus !== undefined, routing?.focus),
+    routingSplit: txAuxField(hasDualRx, routing?.splitStereo !== undefined, routing?.splitStereo),
     modInputSource: txAuxField(hasModInput, source !== undefined, source),
     modInputReadiness: facts.modInputReadiness,
   };

@@ -87,7 +87,8 @@ vi.mock('$lib/stores/audio.svelte', () => ({
   getAudioState: vi.fn(() => ({ volume: 50, muted: false, rxEnabled: false, txEnabled: false, micEnabled: false, bridgeRunning: false })),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
-  audioManager: { start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() },
+  audioManager: {
+    onChange: () => () => {}, getAppliedAudioConfig: () => null, start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() },
 }));
 vi.mock('$lib/utils/tx-permit', () => ({ getTxPermit: vi.fn(() => 'allowed') }));
 vi.mock('$lib/stores/tuning.svelte', () => ({ applyModeDefault: vi.fn() }));

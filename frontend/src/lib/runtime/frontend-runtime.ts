@@ -26,6 +26,7 @@ import {
 import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
 import { audioManager } from '$lib/audio/audio-manager';
+import { makeAudioRoutingHandlers } from './commands/panel-commands';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
 import { derivePresentationCapabilities } from './adapters/presentation-capabilities';
 import { systemController } from './system-controller';
@@ -75,6 +76,7 @@ class FrontendRuntime {
   private _capabilitiesUnsubscribe: (() => void) | null = null;
   private _rxAudioLease: ResourceLease | null = null;
   private _ended = false;
+  private _audioRoutingSubscribe = createSubscriber((update) => audioManager.onChange(update));
   private _dxSubscribers = new Map<number, (message: DxMessage) => void>();
   private _dxControlUnsubscribe: (() => void) | null = null;
   private _nextDxSubscriber = 0;
@@ -178,6 +180,11 @@ class FrontendRuntime {
   /** Audio UI state — returns the live $state object directly. */
   get audio() {
     return getAudioState();
+  }
+
+  get audioRouting() {
+    this._audioRoutingSubscribe();
+    return audioManager.getAppliedAudioConfig();
   }
 
   /** Whether the runtime has a radio connection. */
@@ -313,6 +320,8 @@ class FrontendRuntime {
 
     // 3. Subscribe to the events stream (re-sent automatically on reconnect by WsChannel).
     transport.sendRaw({ type: 'subscribe', streams: ['events'] });
+
+    makeAudioRoutingHandlers().restoreFromStorage();
 
     // Only latch as started after the entire chain succeeds.
     let cleanupInFlight: Promise<void> | undefined;
