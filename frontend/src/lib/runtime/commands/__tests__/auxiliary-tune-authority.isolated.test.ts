@@ -57,9 +57,6 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 
 vi.mock('$lib/audio/audio-manager', () => ({ audioManager: { setAudioConfig: vi.fn() } }));
 vi.mock('$lib/stores/tuning.svelte', () => ({ getTuningStep: vi.fn(() => 1_000) }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({ snapshot: () => Object.freeze({ phase: 'idle', radioTx: 'off' }) }),
-}));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: vi.fn(() => null) }));
 vi.mock('$lib/runtime/adapters/qsy-history-adapter', () => ({ recordQsy: vi.fn() }));
 vi.mock('$lib/runtime/props/panel-props', () => ({

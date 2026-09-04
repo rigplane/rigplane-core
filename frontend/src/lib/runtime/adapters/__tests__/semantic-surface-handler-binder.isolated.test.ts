@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 const factories = vi.hoisted(() => Object.fromEntries([
   'makeAgcHandlers', 'makeAntennaHandlers', 'makeAudioRoutingHandlers',
@@ -11,9 +12,8 @@ const factories = vi.hoisted(() => Object.fromEntries([
 const tuner = vi.hoisted(() => ({
   state: { revision: 1 },
   caps: { generation: 1 },
-  snapshot: Object.freeze({ phase: 'idle', radioTx: 'off' }) as Readonly<{ phase: string; radioTx: string }>,
   view: { activeReceiver: 'MAIN' },
-  controller: null as unknown,
+  controller: null as ManagedAppTxController | null,
 }));
 
 vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => ({
@@ -27,14 +27,28 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     get caps() { return tuner.caps; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => tuner.controller,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => tuner.controller,
 }));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
   toRadioViewModel: vi.fn(() => tuner.view),
 }));
 
 import { bindSemanticSurfaceHandlers, bindVfoTunerContext } from '../panel-adapters';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+let txHarness: ManagedAppTxHarness;
+
+beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  tuner.controller = txHarness.controller;
+});
+
+afterEach(() => {
+  expect(txHarness.trace()).toEqual([]);
+  expect(txHarness.listenerCount()).toBe(0);
+  tuner.controller = null;
+});
 
 const expected = {
   agc: 'makeAgcHandlers', antenna: 'makeAntennaHandlers', audioRouting: 'makeAudioRoutingHandlers',
@@ -66,20 +80,21 @@ describe('semantic surface handler binder (MOR-1409 A04a)', () => {
   });
 
   it('binds a live read-only tuner context without leaking TX mutation authority', () => {
-    tuner.controller = { snapshot: vi.fn(() => tuner.snapshot) };
     const context = bindVfoTunerContext();
     const first = context.read();
-    tuner.snapshot = Object.freeze({ phase: 'fault', radioTx: 'unknown' });
+    txHarness.emitServerSnapshot({
+      intent: 'transmit', observedPtt: 'on', releaseRequired: true,
+    });
     const second = context.read();
 
     expect(Object.isFrozen(context)).toBe(true);
     expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.keys(context)).toEqual(['read']);
     expect(first.tx).not.toBe(second.tx);
-    expect(second.tx).toBe(tuner.snapshot);
+    expect(second.tx).toBe(txHarness.controller.snapshot());
+    expect(second.tx).toMatchObject({
+      phase: 'active', intent: 'latched', radioTx: 'on', fresh: true,
+    });
     expect(second.view).toBe(tuner.view);
-    for (const name of ['start', 'setIntent', 'release', 'resetFault']) {
-      expect(context).not.toHaveProperty(name);
-      expect(second).not.toHaveProperty(name);
-    }
   });
 });

@@ -23,9 +23,6 @@ const state = vi.hoisted(() => ({ view: null as unknown }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: { get state() { return null; }, get caps() { return null; } },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => null,
-}));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
   toRadioViewModel: () => state.view,
 }));
