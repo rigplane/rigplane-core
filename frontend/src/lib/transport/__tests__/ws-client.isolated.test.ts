@@ -305,6 +305,26 @@ describe('WsChannel', () => {
     expect(received[0].type).toBe('ack');
   });
 
+  it('drops binary frames from a replaced socket while delivering the current socket', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const received: ArrayBuffer[] = [];
+    ch.onBinary((frame) => received.push(frame));
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+    vi.advanceTimersByTime(1_300);
+    instances[1].simulateOpen();
+
+    const staleFrame = new ArrayBuffer(1);
+    const currentFrame = new ArrayBuffer(2);
+    instances[0].simulateMessage(staleFrame);
+    instances[1].simulateMessage(currentFrame);
+
+    expect(received).toEqual([currentFrame]);
+  });
+
   it('emits correlated PTT delivery events without fabricating RF state', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
