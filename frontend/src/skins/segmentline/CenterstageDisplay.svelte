@@ -7,11 +7,12 @@
   import LcdFilterScope from './LcdFilterScope.svelte';
   import LcdFrequencyReadout from './LcdFrequencyReadout.svelte';
   import LcdLinearSMeter from './LcdLinearSMeter.svelte';
+  import { resolveLcdSpectrumFrame } from './lcd-display-contract';
   import { stateText, telemetryText } from './lcd-display-helpers';
 
   interface Props {
     model: PeerSplitDisplayModel;
-    normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>;
+    audioFftFrame?: unknown;
   }
 
   interface OrbitItem {
@@ -19,7 +20,7 @@
     readonly field: DisplayValue<number | string>;
   }
 
-  let { model, normalizedFftBins = {} }: Props = $props();
+  let { model, audioFftFrame }: Props = $props();
 
   const ghostReceiver: PeerSplitReceiverDisplay = {
     receiver: 'MAIN',
@@ -71,8 +72,14 @@
     { label: 'BAND', field: active.band },
     { label: 'AGC', field: active.dsp.agc },
   ]);
+  const activeAudioFft = $derived(
+    resolveLcdSpectrumFrame(audioFftFrame, {
+      source: 'audio-fft',
+      receiver: model.activeReceiver?.receiver ?? null,
+    }),
+  );
   const activeFftBins = $derived(
-    model.activeReceiver ? normalizedFftBins[model.activeReceiver.receiver] : undefined,
+    activeAudioFft.state === 'live' ? activeAudioFft.frame.normalizedBins : undefined,
   );
   const telemetry = $derived([
     { label: 'VD', field: model.telemetry.drainVoltage },
