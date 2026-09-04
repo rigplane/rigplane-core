@@ -214,9 +214,9 @@ const SCENARIOS = [
       const calls = await page.evaluate(() => window.__ptt.callsSince(0));
       return {
         ok: held.guardId !== null && after.guardId === null
-          && calls.filter((c) => c === 'tx.release').length === 1,
+          && calls.filter((c) => c === 'ws.ptt_off').length === 1,
         detail: `held=${held.guardId !== null} · after rotation guard=${after.guardId !== null} · `
-          + `release calls=${calls.filter((c) => c === 'tx.release').length} (must be exactly 1: no strand, no double-release)`,
+          + `release calls=${calls.filter((c) => c === 'ws.ptt_off').length} (must be exactly 1: no strand, no double-release)`,
       };
     },
   },
@@ -231,8 +231,8 @@ const SCENARIOS = [
       await wait(page, 320); // past where the abandoned timer would have fired a SECOND release
       const calls = await page.evaluate(() => window.__ptt.callsSince(0));
       return {
-        ok: calls.filter((c) => c === 'tx.release').length === 1,
-        detail: `release calls=${calls.filter((c) => c === 'tx.release').length} (a surviving pending-release timer would double-fire)`,
+        ok: calls.filter((c) => c === 'ws.ptt_off').length === 1,
+        detail: `release calls=${calls.filter((c) => c === 'ws.ptt_off').length} (a surviving pending-release timer would double-fire)`,
       };
     },
   },
@@ -341,9 +341,7 @@ const manifest = {
   harness: {
     entry: 'frontend/fixtures/ptt-harness.html + ptt-main.ts + ptt-state.svelte.ts',
     realModules: [
-      'src/lib/runtime/tx-controller/controller.ts (TxController, unmodified)',
-      'src/lib/runtime/tx-controller/model.ts (transition(), unmodified)',
-      'src/components-v2/wiring/tx-ptt-gesture.ts (createPttGesture, unmodified)',
+      'src/components-v2/wiring/managed-tx-gesture.ts (managed gesture, unmodified)',
       'src/components-v2/controls/PttFab.svelte (unmodified)',
     ],
     intentionalDifferences: [
@@ -355,7 +353,7 @@ const manifest = {
       + '10/11 therefore prove the PATTERN is load-bearing where mirrored faithfully, not that '
       + 'MobileRadioLayout.svelte\'s own copy is byte-identical (verified by direct reading instead; '
       + 'see build report). A follow-up worth ticketing: extract that wiring into a reusable function '
-      + 'the same way tx-ptt-gesture.ts already is, so a future harness can mount the real thing.',
+      + 'the same way managed-tx-gesture.ts already is, so a future harness can mount the real thing.',
       'The landscape "role" is a plain button with direct handlers (matching the real m-ls-ptt '
       + 'strip\'s undelayed handlers), not a second PttFab instance — production does not reuse '
       + 'PttFab for landscape either.',
