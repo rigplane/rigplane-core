@@ -58,7 +58,6 @@ from .utils import get_mode_reader  # noqa: TID251
 if TYPE_CHECKING:
     from ..core.command_service import CommandService
     from ..radio_protocol import Radio
-    from ..runtime._poller_types import CommandQueue
     from ..runtime.managed_tx_authority import ManagedTxAuthority
 
 logger = logging.getLogger(__name__)
@@ -72,6 +71,30 @@ __all__ = ["RigctldServer", "run_rigctld_server"]
 # to this one alone can. Pinned by
 # ``test_external_cat_session_stands_the_cadence_down_but_not_a_user_read``.
 _POLICY_CADENCE_REASON = "policy-cadence"
+_MAX_PENDING_CLIENT_RESPONSES = 64
+
+
+class _ManagedPttReady(asyncio.Future[None]):
+    def __init__(self, revocation: asyncio.Event) -> None:
+        super().__init__()
+        self._revocation = revocation
+        self.validation_committed = False
+
+    @property
+    def superseded(self) -> bool:
+        return self._revocation.is_set() and not self.validation_committed
+
+    def set_result(self, result: None) -> None:
+        if self.superseded:
+            return
+        self.validation_committed = True
+        super().set_result(result)
+
+    def commit_failure(self) -> bool:
+        if self.superseded:
+            return False
+        self.validation_committed = True
+        return True
 
 
 class _AcquisitionExecutorUnavailable(RuntimeError):
@@ -139,7 +162,6 @@ class RigctldServer:
         config: RigctldConfig | None = None,
         *,
         managed_tx_authority: ManagedTxAuthority | None = None,
-        command_queue: CommandQueue | None = None,
         command_service: CommandService | None = None,
         _protocol: Any = None,
         _handler: Any = None,
@@ -147,17 +169,13 @@ class RigctldServer:
     ) -> None:
         supplied = (
             managed_tx_authority is not None,
-            command_queue is not None,
             command_service is not None,
         )
         if any(supplied) and not all(supplied):
-            raise ValueError(
-                "managed authority, queue and service must be supplied together"
-            )
+            raise ValueError("managed authority and service must be supplied together")
         if all(supplied) and _handler is not None:
             raise ValueError("managed references cannot be combined with _handler")
         self._managed_tx_authority = managed_tx_authority
-        self._command_queue = command_queue
         self._command_service = command_service
         self._radio = radio
         self._config = config or RigctldConfig()
@@ -195,7 +213,13 @@ class RigctldServer:
         return task
 
     def _handler_execute_call(
-        self, cmd: Any, *, session_id: str
+        self,
+        cmd: Any,
+        *,
+        session_id: str,
+        predecessor: asyncio.Future[None],
+        ptt_submission: asyncio.Task[Any] | None = None,
+        ptt_ready: asyncio.Future[None] | None = None,
     ) -> Coroutine[Any, Any, Any]:
         execute = getattr(self._rig_handler, "execute")
         try:
@@ -204,16 +228,43 @@ class RigctldServer:
             signature = None
 
         if signature is not None:
-            for parameter in signature.parameters.values():
-                if parameter.kind is inspect.Parameter.VAR_KEYWORD:
-                    return cast(
-                        Coroutine[Any, Any, Any], execute(cmd, session_id=session_id)
-                    )
-                if parameter.name == "session_id":
-                    return cast(
-                        Coroutine[Any, Any, Any], execute(cmd, session_id=session_id)
-                    )
+            parameters = signature.parameters.values()
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+            kwargs: dict[str, Any] = {}
+            if accepts_kwargs or "session_id" in signature.parameters:
+                kwargs["session_id"] = session_id
+            if accepts_kwargs or "predecessor" in signature.parameters:
+                kwargs["predecessor"] = predecessor
+            if ptt_submission is not None and (
+                accepts_kwargs or "ptt_submission" in signature.parameters
+            ):
+                kwargs["ptt_submission"] = ptt_submission
+            if ptt_ready is not None and (
+                accepts_kwargs or "ptt_ready" in signature.parameters
+            ):
+                kwargs["ptt_ready"] = ptt_ready
+            return cast(Coroutine[Any, Any, Any], execute(cmd, **kwargs))
         return cast(Coroutine[Any, Any, Any], execute(cmd))
+
+    def _is_managed_off(self, cmd: Any) -> bool:
+        if (
+            self._managed_tx_authority is None
+            or cmd.long_cmd != "set_ptt"
+            or not cmd.args
+        ):
+            return False
+        try:
+            return int(cmd.args[0]) == 0
+        except ValueError:
+            return False
+
+    def _is_managed_ptt(self, cmd: Any) -> bool:
+        return bool(
+            self._managed_tx_authority is not None and cmd.long_cmd == "set_ptt"
+        )
 
     async def _release_session_tx(self, session_id: str) -> None:
         """Give a departing client's managed TX lease back at teardown.
@@ -717,7 +768,7 @@ class RigctldServer:
                 state_store=self._state_store,
                 state_model_service=self._state_model_service,
                 managed_tx_authority=self._managed_tx_authority,
-                command_queue=self._command_queue,
+                command_queue=None,
                 command_service=self._command_service,
             )
 
@@ -939,7 +990,7 @@ class RigctldServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """Manage a single TCP client for its full lifetime."""
+        """Manage one client while receipt and ordered retirement stay separate."""
         proto = self._protocol
 
         peer = writer.get_extra_info("peername", ("?", 0))
@@ -955,8 +1006,61 @@ class RigctldServer:
         session_id = f"rigctld-client-{client_id}"
         logger.info("client #%d connected from %s", client_id, session.peername)
 
+        loop = asyncio.get_running_loop()
+        previous_execution: asyncio.Future[None] = loop.create_future()
+        previous_execution.set_result(None)
+        previous_retirement: asyncio.Future[None] = loop.create_future()
+        previous_retirement.set_result(None)
+        response_tasks: set[asyncio.Task[None]] = set()
+        ptt_revocation = asyncio.Event()
+        graceful_quit = False
+
+        def response_task_done(task: asyncio.Task[None]) -> None:
+            response_tasks.discard(task)
+            error = None if task.cancelled() else task.exception()
+            if error is not None:
+                logger.debug("client #%d response task failed: %s", client_id, error)
+                writer.close()
+
+        def schedule_response(
+            cmd: Any | None,
+            *,
+            immediate_error: HamlibError | None = None,
+            ptt_submission: asyncio.Task[Any] | None = None,
+            ptt_ready: asyncio.Future[None] | None = None,
+        ) -> None:
+            nonlocal previous_execution, previous_retirement
+            execution = loop.create_future()
+            retirement = loop.create_future()
+            task = loop.create_task(
+                self._execute_and_retire_client_command(
+                    writer=writer,
+                    session=session,
+                    session_id=session_id,
+                    client_id=client_id,
+                    cmd=cmd,
+                    immediate_error=immediate_error,
+                    predecessor_execution=previous_execution,
+                    predecessor_retirement=previous_retirement,
+                    execution=execution,
+                    retirement=retirement,
+                    ptt_submission=ptt_submission,
+                    ptt_ready=ptt_ready,
+                )
+            )
+            response_tasks.add(task)
+            task.add_done_callback(response_task_done)
+            previous_execution = execution
+            previous_retirement = retirement
+
         try:
             while True:
+                while len(response_tasks) > _MAX_PENDING_CLIENT_RESPONSES:
+                    await asyncio.wait(
+                        response_tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                at_capacity = len(response_tasks) >= _MAX_PENDING_CLIENT_RESPONSES
                 # ── read with idle timeout ───────────────────────────
                 try:
                     raw = await asyncio.wait_for(
@@ -991,36 +1095,145 @@ class RigctldServer:
                     # Unknown command or bad args → ENIMPL, not EPROTO
                     # (WSJT-X sends commands we don't support yet)
                     logger.debug("client #%d unknown/bad command: %s", client_id, exc)
-                    writer.write(proto.format_error(HamlibError.ENIMPL))
-                    await writer.drain()
+                    if at_capacity:
+                        logger.warning(
+                            "client #%d response capacity reached", client_id
+                        )
+                        break
+                    schedule_response(None, immediate_error=HamlibError.ENIMPL)
                     continue
                 except Exception as exc:
                     logger.warning("client #%d parse error: %s", client_id, exc)
-                    writer.write(proto.format_error(HamlibError.EPROTO))
-                    await writer.drain()
+                    if at_capacity:
+                        logger.warning(
+                            "client #%d response capacity reached", client_id
+                        )
+                        break
+                    schedule_response(None, immediate_error=HamlibError.EPROTO)
                     continue
 
                 # ── quit ─────────────────────────────────────────────
                 if cmd.short_cmd == "q":
                     logger.info("client #%d quit", client_id)
+                    graceful_quit = True
+                    break
+
+                managed_off = self._is_managed_off(cmd)
+                if at_capacity and not managed_off:
+                    logger.warning("client #%d response capacity reached", client_id)
                     break
 
                 # ── rate limit ───────────────────────────────────────
-                if not self._check_rate_limit(client_id):
+                if not self._check_rate_limit(client_id) and not managed_off:
                     logger.warning(
                         "client #%d rate limited (limit=%.1f cmds/sec)",
                         client_id,
                         self._config.command_rate_limit,
                     )
-                    writer.write(proto.format_error(HamlibError.EIO))
-                    await writer.drain()
+                    schedule_response(None, immediate_error=HamlibError.EIO)
                     continue
 
-                # ── execute with command timeout ─────────────────────
-                t_start = time.monotonic()
+                ptt_submission = None
+                ptt_ready = None
+                if self._is_managed_ptt(cmd) and cmd.args:
+                    try:
+                        ptt_on = bool(int(cmd.args[0]))
+                    except ValueError:
+                        pass
+                    else:
+                        if not ptt_on:
+                            ptt_revocation.set()
+                            ptt_revocation = asyncio.Event()
+                        if ptt_on:
+                            ptt_ready = _ManagedPttReady(ptt_revocation)
+                        assert self._managed_tx_authority is not None
+                        ptt_submission = (
+                            self._managed_tx_authority.start_ptt_submission(
+                                ptt_on,
+                                session_id,
+                                ready=ptt_ready,
+                            )
+                        )
+
+                schedule_response(
+                    cmd,
+                    ptt_submission=ptt_submission,
+                    ptt_ready=ptt_ready,
+                )
+
+        except asyncio.CancelledError:
+            logger.info("client #%d cancelled (server shutdown)", client_id)
+        except ConnectionResetError:
+            logger.info("client #%d connection reset by peer", client_id)
+        except Exception as exc:
+            logger.error(
+                "client #%d unexpected error: %s", client_id, exc, exc_info=True
+            )
+        finally:
+            self._rate_windows.pop(client_id, None)
+            tasks = tuple(response_tasks)
+            if not graceful_quit:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await self._release_session_tx(session_id)
+            finally:
+                # Unconditional, and nested so no failure above can skip it:
+                # since 3.12 the listener's ``wait_closed()`` returns only once
+                # every accepted connection has gone, so a socket abandoned
+                # here would leave ``stop()`` waiting on it forever (MOR-1014).
                 try:
+                    writer.close()
+                    await writer.wait_closed()
+                except (OSError, asyncio.CancelledError):
+                    pass
+                logger.info("client #%d disconnected", client_id)
+
+    async def _execute_and_retire_client_command(
+        self,
+        *,
+        writer: asyncio.StreamWriter,
+        session: ClientSession,
+        session_id: str,
+        client_id: int,
+        cmd: Any | None,
+        immediate_error: HamlibError | None,
+        predecessor_execution: asyncio.Future[None],
+        predecessor_retirement: asyncio.Future[None],
+        execution: asyncio.Future[None],
+        retirement: asyncio.Future[None],
+        ptt_submission: asyncio.Task[Any] | None,
+        ptt_ready: asyncio.Future[None] | None,
+    ) -> None:
+        """Execute one received line, then retire its reply in wire order."""
+        proto = self._protocol
+        started = time.monotonic()
+        resp = None
+        out = None
+        try:
+            if immediate_error is not None:
+                out = proto.format_error(immediate_error)
+            else:
+                assert cmd is not None
+                managed_off = self._is_managed_off(cmd)
+                handler_task: asyncio.Task[Any] | None = None
+                try:
+                    if not managed_off:
+                        await asyncio.shield(predecessor_execution)
+                    handler_task = asyncio.create_task(
+                        self._handler_execute_call(
+                            cmd,
+                            session_id=session_id,
+                            predecessor=predecessor_execution,
+                            ptt_submission=ptt_submission,
+                            ptt_ready=ptt_ready,
+                        )
+                    )
                     resp = await asyncio.wait_for(
-                        self._handler_execute_call(cmd, session_id=session_id),
+                        handler_task,
                         timeout=self._config.command_timeout,
                     )
                 except asyncio.TimeoutError:
@@ -1029,36 +1242,38 @@ class RigctldServer:
                         client_id,
                         cmd.short_cmd,
                     )
-                    writer.write(proto.format_error(HamlibError.ETIMEOUT))
-                    await writer.drain()
-                    continue
+                    out = proto.format_error(HamlibError.ETIMEOUT)
                 except Exception as exc:
                     logger.error("client #%d handler error: %s", client_id, exc)
-                    writer.write(proto.format_error(HamlibError.EIO))
-                    await writer.drain()
-                    continue
+                    out = proto.format_error(HamlibError.EIO)
+                finally:
+                    if handler_task is not None and not handler_task.done():
+                        handler_task.cancel()
+                        await asyncio.gather(handler_task, return_exceptions=True)
+                    if ptt_submission is not None and not ptt_submission.done():
+                        ptt_submission.cancel()
+                        await asyncio.gather(ptt_submission, return_exceptions=True)
+                    elif ptt_submission is not None and ptt_submission.cancelled():
+                        await asyncio.gather(ptt_submission, return_exceptions=True)
 
-                # ── session-state wiring (vfo_opt handshake) ─────────
-                # When the handler advertised vfo_opt via ``\chk_vfo`` →
-                # ``"1"``, Hamlib will start prefixing every command
-                # with ``VFOA``/``VFOB``/``currVFO``. Flip the session
-                # bit so the parser knows it's expected and so the
-                # diagnostic in protocol.parse_line stays quiet. Wired
-                # here (rather than in handler.py) to keep the leaf
-                # handlers free of session arguments. Dormant on `main`
-                # because Variant B (#1340) keeps chk_vfo at ``"0"``;
-                # #1346 (A5) flips it back to ``"1"`` for dual-RX.
+            await asyncio.shield(predecessor_execution)
+        finally:
+            if not execution.done():
+                execution.set_result(None)
+
+        try:
+            await asyncio.shield(predecessor_retirement)
+            if resp is not None:
                 if cmd.long_cmd == "chk_vfo" and resp.values == ["1"]:
                     session.vfo_mode = True
-
-                # ── send response ────────────────────────────────────
                 out = proto.format_response(cmd, resp, session)
-                duration_ms = round((time.monotonic() - t_start) * 1000, 3)
-                logger.debug("client #%d ← %r", client_id, out)
-                writer.write(out)
-                await writer.drain()
+            assert out is not None
+            duration_ms = round((time.monotonic() - started) * 1000, 3)
+            logger.debug("client #%d ← %r", client_id, out)
+            writer.write(out)
+            await writer.drain()
 
-                # ── audit ────────────────────────────────────────────
+            if resp is not None:
                 _audit.log_command(
                     _audit.AuditRecord(
                         timestamp=datetime.datetime.now(
@@ -1075,30 +1290,9 @@ class RigctldServer:
                         is_set=cmd.is_set,
                     )
                 )
-
-        except asyncio.CancelledError:
-            logger.info("client #%d cancelled (server shutdown)", client_id)
-        except ConnectionResetError:
-            logger.info("client #%d connection reset by peer", client_id)
-        except Exception as exc:
-            logger.error(
-                "client #%d unexpected error: %s", client_id, exc, exc_info=True
-            )
         finally:
-            self._rate_windows.pop(client_id, None)
-            try:
-                await self._release_session_tx(session_id)
-            finally:
-                # Unconditional, and nested so no failure above can skip it:
-                # since 3.12 the listener's ``wait_closed()`` returns only once
-                # every accepted connection has gone, so a socket abandoned
-                # here would leave ``stop()`` waiting on it forever (MOR-1014).
-                try:
-                    writer.close()
-                    await writer.wait_closed()
-                except (OSError, asyncio.CancelledError):
-                    pass
-                logger.info("client #%d disconnected", client_id)
+            if not retirement.done():
+                retirement.set_result(None)
 
     # ------------------------------------------------------------------
     # Line reader
