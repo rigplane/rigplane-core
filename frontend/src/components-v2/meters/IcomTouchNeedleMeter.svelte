@@ -40,9 +40,24 @@
   }
 
   interface Point { readonly x: number; readonly y: number }
+  interface Curve { readonly start: Point; readonly control: Point; readonly end: Point }
+  interface ScaleLabel extends Point {
+    readonly text: string;
+    readonly accent?: 'red';
+  }
+
+  const OUTER_CURVE: Curve = {
+    start: { x: 3, y: 112 }, control: { x: 300, y: -12 }, end: { x: 600, y: 112 },
+  };
+  const POWER_CURVE: Curve = {
+    start: { x: 22, y: 128 }, control: { x: 305, y: 12 }, end: { x: 590, y: 126 },
+  };
+  const INNER_CURVE: Curve = {
+    start: { x: 78, y: 158 }, control: { x: 310, y: 55 }, end: { x: 545, y: 154 },
+  };
 
   const curveTicks = (
-    count: number, start: Point, control: Point, end: Point, majorEvery: number,
+    count: number, { start, control, end }: Curve, majorEvery: number,
   ): Tick[] =>
     Array.from({ length: count }, (_, index) => {
       const t = (index + 0.5) / count;
@@ -63,9 +78,56 @@
       };
     });
 
-  const OUTER_TICKS = curveTicks(46, { x: 3, y: 112 }, { x: 300, y: -12 }, { x: 600, y: 112 }, 5);
-  const POWER_TICKS = curveTicks(36, { x: 22, y: 128 }, { x: 305, y: 12 }, { x: 590, y: 126 }, 5);
-  const INNER_TICKS = curveTicks(29, { x: 78, y: 158 }, { x: 310, y: 55 }, { x: 545, y: 154 }, 4);
+  const curveLabel = (
+    text: string, curve: Curve, t: number, offset: number, side: 'outside' | 'inside',
+    accent?: 'red',
+  ): ScaleLabel => {
+    const inverse = 1 - t;
+    const x = inverse * inverse * curve.start.x
+      + 2 * inverse * t * curve.control.x + t * t * curve.end.x;
+    const y = inverse * inverse * curve.start.y
+      + 2 * inverse * t * curve.control.y + t * t * curve.end.y;
+    const dx = 2 * inverse * (curve.control.x - curve.start.x)
+      + 2 * t * (curve.end.x - curve.control.x);
+    const dy = 2 * inverse * (curve.control.y - curve.start.y)
+      + 2 * t * (curve.end.y - curve.control.y);
+    const magnitude = Math.hypot(dx, dy);
+    const direction = side === 'outside' ? 1 : -1;
+    return {
+      text,
+      x: x + direction * (dy / magnitude) * offset,
+      // Six pixels account for the text baseline while keeping every glyph
+      // center at the same normal distance from its own curved scale.
+      y: y - direction * (dx / magnitude) * offset + 6,
+      accent,
+    };
+  };
+
+  const OUTER_TICKS = curveTicks(46, OUTER_CURVE, 5);
+  const POWER_TICKS = curveTicks(36, POWER_CURVE, 5);
+  const INNER_TICKS = curveTicks(29, INNER_CURVE, 4);
+  const OUTER_LABELS = [
+    curveLabel('1', OUTER_CURVE, 0.16, 30, 'outside'),
+    curveLabel('5', OUTER_CURVE, 0.32, 30, 'outside'),
+    curveLabel('9', OUTER_CURVE, 0.50, 30, 'outside'),
+    curveLabel('+20', OUTER_CURVE, 0.61, 30, 'outside', 'red'),
+    curveLabel('+40', OUTER_CURVE, 0.77, 30, 'outside', 'red'),
+    curveLabel('+60dB', OUTER_CURVE, 0.94, 30, 'outside', 'red'),
+  ];
+  const POWER_LABELS = [
+    curveLabel('0', POWER_CURVE, 0.11, 18, 'inside'),
+    curveLabel('10', POWER_CURVE, 0.33, 18, 'inside'),
+    curveLabel('50', POWER_CURVE, 0.57, 18, 'inside'),
+    curveLabel('100', POWER_CURVE, 0.79, 18, 'inside'),
+    curveLabel('W', POWER_CURVE, 0.96, 18, 'inside'),
+  ];
+  const INNER_LABELS = [
+    curveLabel('1', INNER_CURVE, 0.17, 20, 'inside'),
+    curveLabel('1.5', INNER_CURVE, 0.30, 20, 'inside'),
+    curveLabel('2', INNER_CURVE, 0.43, 20, 'inside'),
+    curveLabel('3', INNER_CURVE, 0.56, 20, 'inside'),
+    curveLabel('∞', INNER_CURVE, 0.80, 20, 'inside'),
+  ];
 </script>
 
 <div
@@ -83,8 +145,12 @@
   <svg viewBox="0 0 640 240" width="100%" height="100%" preserveAspectRatio="none">
     <defs>
       <filter id="meter-soft-glow" x="-20%" y="-20%" width="140%" height="140%">
-        <feGaussianBlur stdDeviation="1.1" result="blur" />
-        <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        <feGaussianBlur in="SourceGraphic" stdDeviation="1.35" result="bloom" />
+        <feComponentTransfer in="bloom" result="soft-bloom">
+          <feFuncA type="linear" slope="0.58" />
+        </feComponentTransfer>
+        <feGaussianBlur in="SourceGraphic" stdDeviation="0.22" result="soft-core" />
+        <feMerge><feMergeNode in="soft-bloom" /><feMergeNode in="soft-core" /></feMerge>
       </filter>
     </defs>
 
@@ -113,12 +179,9 @@
 
       <g class="outer-labels">
         <text x="0" y="111">S</text>
-        <text x="93" y="68">1</text>
-        <text x="190" y="31">5</text>
-        <text x="302" y="22">9</text>
-        <text class="red-text" x="356" y="34">+20</text>
-        <text class="red-text" x="449" y="48">+40</text>
-        <text class="red-text" x="543" y="79">+60dB</text>
+        {#each OUTER_LABELS as mark}
+          <text class:red-text={mark.accent === 'red'} x={mark.x} y={mark.y} text-anchor="middle">{mark.text}</text>
+        {/each}
       </g>
 
       <path class="scale white" d="M 22 128 Q 305 12 590 126" />
@@ -130,11 +193,9 @@
         />
       {/each}
       <g class="power-labels">
-        <text x="91" y="122">0</text>
-        <text x="210" y="91">10</text>
-        <text x="350" y="89">50</text>
-        <text x="468" y="116">100</text>
-        <text x="568" y="137">W</text>
+        {#each POWER_LABELS as mark}
+          <text x={mark.x} y={mark.y} text-anchor="middle">{mark.text}</text>
+        {/each}
         <text x="68" y="151">Po</text>
       </g>
 
@@ -148,25 +209,23 @@
       {/each}
       <path class="scale white" d="M 100 174 Q 310 84 520 168" />
       <g class="inner-labels">
-        <text x="94" y="178">SWR</text>
-        <text x="158" y="160">1</text>
-        <text x="218" y="146">1.5</text>
-        <text x="280" y="141">2</text>
-        <text x="340" y="145">3</text>
-        <text x="450" y="169">∞</text>
+        <text x="92" y="190">SWR</text>
+        {#each INNER_LABELS as mark}
+          <text x={mark.x} y={mark.y} text-anchor="middle">{mark.text}</text>
+        {/each}
       </g>
 
       <path class="scale blue heavy" d="M 155 210 Q 310 145 465 207" />
-      <path class="scale red heavy" d="M 200 214 Q 230 195 258 200" />
-      <path class="scale red heavy" d="M 275 202 Q 295 193 315 198" />
+      <path class="scale red heavy" d="M 198 212 Q 230 191 262 198" />
+      <path class="scale red heavy" d="M 272 200 Q 295 189 318 196" />
       <g class="lower-labels">
-        <text class="blue-text" x="95" y="207">COMP</text>
+        <text class="blue-text" x="92" y="216">COMP</text>
         <text class="blue-text" x="174" y="191">0</text>
         <text class="blue-text" x="350" y="177">20</text>
         <text class="blue-text" x="462" y="202">dB</text>
-        <text class="red-text" x="261" y="220">ALC</text>
-        <text x="333" y="220">Id</text>
-        <text x="385" y="220">Vd</text>
+        <text class="red-text" x="258" y="230">ALC</text>
+        <text x="334" y="230">Id</text>
+        <text x="386" y="230">Vd</text>
       </g>
 
       {#if state === 'known'}

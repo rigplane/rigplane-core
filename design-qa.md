@@ -90,5 +90,4 @@ in the native image.
 - Populate the currently empty AF/footer positions only from the v3
   receiver-scoped FFT, receiver-scoped passband, memory, and telemetry
   mechanisms documented in the primitive-field map.
-
 final result: passed
