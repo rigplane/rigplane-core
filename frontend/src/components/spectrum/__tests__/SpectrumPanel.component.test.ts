@@ -8,6 +8,7 @@ import { mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 // ---------------------------------------------------------------------------
 // Global mocks (must be before component import)
@@ -258,20 +259,9 @@ const spectrumRendererHarness = vi.hoisted(() => ({
   setPeakHoldEnabled: vi.fn(),
 }));
 
-const appTxHostHarness = vi.hoisted(() => {
-  const controller = Object.freeze({
-    snapshot: vi.fn(() => Object.freeze({
-      phase: 'idle', intent: null, sourceId: null, leaseId: null, guard: null,
-      fault: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false,
-    })),
-    subscribe: vi.fn(() => () => {}),
-    start: vi.fn(),
-    setIntent: vi.fn(),
-    release: vi.fn(),
-    resetFault: vi.fn(),
-  });
-  return { controller, getAppTxController: vi.fn(() => controller) };
-});
+const appTxHostHarness = vi.hoisted(() => ({
+  controller: null as ManagedAppTxController | null,
+}));
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: runtimeHarness.runtime,
@@ -311,8 +301,8 @@ vi.mock('$lib/renderers/spectrum-renderer', async (importOriginal) => {
   return { ...actual, SpectrumRenderer };
 });
 
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: appTxHostHarness.getAppTxController,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => appTxHostHarness.controller,
 }));
 
 vi.mock('$lib/stores/radio.svelte', () => ({
@@ -378,6 +368,7 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
 
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 const authorityPluginSource = readFileSync(
   resolve(process.cwd(), 'scripts/radio-authority-eslint-plugin.mjs'),
   'utf8',
@@ -398,6 +389,7 @@ import { IC7300_CAPABILITIES, IC7300_STATE } from '../../../lib/runtime/adapters
 // ---------------------------------------------------------------------------
 
 let components: ReturnType<typeof mount>[] = [];
+let txHarness: ManagedAppTxHarness;
 
 type TestRule = Readonly<{
   kind: 'step';
@@ -541,6 +533,8 @@ function mountPanel(props: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   components = [];
+  txHarness = new ManagedAppTxHarness();
+  appTxHostHarness.controller = txHarness.controller;
   runtimeHarness.state.capturedHardwareFrame = null;
   runtimeHarness.state.capturedDxMessage = null;
   runtimeHarness.state.mockScopeConnected = true;
@@ -561,6 +555,9 @@ beforeEach(() => {
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
+  expect(txHarness.trace()).toEqual([]);
+  expect(txHarness.listenerCount()).toBe(0);
+  appTxHostHarness.controller = null;
   document.body.innerHTML = '';
 });
 
@@ -572,15 +569,8 @@ describe('SpectrumPanel component', () => {
   it('mounts without errors', () => {
     const target = mountPanel();
     expect(target.querySelector('.spectrum-panel')).not.toBeNull();
-    expect(appTxHostHarness.getAppTxController).toHaveBeenCalledOnce();
-    for (const surface of [
-      appTxHostHarness.controller.snapshot,
-      appTxHostHarness.controller.subscribe,
-      appTxHostHarness.controller.start,
-      appTxHostHarness.controller.setIntent,
-      appTxHostHarness.controller.release,
-      appTxHostHarness.controller.resetFault,
-    ]) expect(surface).not.toHaveBeenCalled();
+    expect(appTxHostHarness.controller).toBe(txHarness.controller);
+    expect(txHarness.trace()).toEqual([]);
   });
 
   it('renders the toolbar section', () => {

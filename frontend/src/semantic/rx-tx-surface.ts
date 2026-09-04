@@ -2,25 +2,19 @@
  * MOR-1064 — the semantic RX/TX status and action vocabulary.
  *
  * Pure. It maps (a) the MOR-1062 `RadioViewModel` and (b) a snapshot of the
- * App-owned TX authority onto the words the operator reads and the gate the key
- * action obeys. It never computes TX truth, never keys anything, and never
- * imports the TX controller: v3 ADR invariant 11 keeps TX authority in
- * `lib/runtime/tx-controller` (App-root host, MOR-1059); this module renders
- * that authority's conclusions rather than becoming a second one.
+ * server-owned TX projection onto the words the operator reads. It never
+ * computes TX truth, never keys anything, and never imports the TX controller.
+ * It renders the server projection rather than becoming a second authority.
  *
  * Every mapping fails CLOSED: an unrecognised phase reads as "keying in
  * progress", an unobserved RF state reads as "unknown" rather than RX, and any
- * doubt blocks the key intent. Only the unkey intent is ungated — stopping
- * transmission must never depend on this surface agreeing that it is happening.
+ * doubt renders as unknown. ForceOFF remains ungated.
  */
 import { t } from '$lib/i18n';
 import type { DisabledReason, RadioViewModel, TxTargetViewModel } from './radio-view-model';
 
 /**
- * The subset of the App TX controller's `TxState` this surface reads, with
- * identical field names and union members so a real snapshot is assignable
- * without adaptation (pinned against the real reducer in
- * `__tests__/rx-tx-authority-parity.test.ts`). `fault` stays `string | null`
+ * The subset of the managed server projection this surface reads. `fault` stays `string | null`
  * deliberately: a fault code this surface has never heard of must still show.
  * `faultDetail` (MOR-1792) is `string[]` for the same reason and is OPTIONAL,
  * so a caller that predates it — or a fault that carries no detail — renders
@@ -31,14 +25,13 @@ export interface TxAuthoritySnapshot {
   intent: 'momentary' | 'latched' | null;
   radioTx: 'off' | 'on' | 'unknown';
   txRisk: 'none' | 'uncertain' | 'confirmed-on';
-  mayOwnKey: boolean;
   fault: string | null;
   faultDetail?: readonly string[] | null;
+  fresh?: boolean;
 }
 
 export type RfState = 'receiving' | 'transmitting' | 'uncertain' | 'unknown';
 export type TxSessionState = 'idle' | 'pending' | 'keyed' | 'releasing' | 'failed';
-export type TxOrigin = 'local' | 'external';
 export type KeyBlockedReason =
   | 'tx-target-unknown' | 'tx-permit-denied' | 'tx-permit-unknown'
   | 'tx-fault' | 'tx-busy' | 'radio-transmitting' | 'rf-state-unknown';
@@ -190,14 +183,9 @@ export function rfState(tx: TxAuthoritySnapshot): RfState {
 export const txSessionState = (tx: TxAuthoritySnapshot): TxSessionState =>
   SESSION_BY_PHASE[tx.phase] ?? 'pending';
 
-/** 'external' only when the authority is provably uninvolved — "not you" is the dangerous claim. */
-export const txOrigin = (tx: TxAuthoritySnapshot): TxOrigin =>
-  tx.mayOwnKey || tx.phase !== 'idle' ? 'local' : 'external';
-
 /**
- * Both halves must agree before a key intent may leave this surface: the
- * permit says the FREQUENCY is legal, the authority says the TRANSMITTER is
- * free. A 'unknown' permit is not a permit.
+ * Reasons remain visible for operator context; the server performs admission
+ * after this surface emits a typed intent.
  */
 export function keyBlockedReasons(
   view: RadioViewModel, tx: TxAuthoritySnapshot,
@@ -216,7 +204,7 @@ export function keyBlockedReasons(
   // phase itself, not on `fault` being non-null, so the verdict cannot go
   // missing should a future state ever reach 'failed' without a code.
   if (tx.fault !== null || tx.phase === 'failed') add('tx-fault');
-  if (tx.mayOwnKey || (tx.phase !== 'idle' && tx.phase !== 'failed')) add('tx-busy');
+  if (tx.phase !== 'idle' && tx.phase !== 'failed') add('tx-busy');
   /**
    * MOR-1906. `txRisk` used to collapse into `tx-busy`, which renders as "a TX
    * session is already in progress" — told to an operator on a demonstrably

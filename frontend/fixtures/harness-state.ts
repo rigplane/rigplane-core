@@ -6,10 +6,10 @@
  * `src/ ** /*.test.ts`) both ignore it. The production tree is byte-unchanged.
  *
  * The cockpit reaches live state through exactly four seams
- * (`$lib/runtime`, `$lib/runtime/tx-controller/app-host`,
+ * (`$lib/runtime`, `$lib/runtime/tx-controller/managed-app-host`,
  * `$lib/runtime/adapters/mod-input-tx-guard.svelte` and the wiring's
- * `command-bus`). `vite.fixtures.config.ts` re-points those four at
- * `fixtures/stubs/*`, which read the holders below. Everything else — the real
+ * `panel-adapters`). `vite.fixtures.config.ts` re-points those four at
+ * `fixtures/stubs/*`, which read the server-shaped holders below. Everything else — the real
  * view-model adapter, the real presentation-capability derivation, the real
  * semantic surfaces, the real i18n catalog, the real CSS — is the shipped code.
  */
@@ -17,13 +17,16 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 
 export interface TxSnapshot {
-  phase: 'idle' | 'audio-start-pending' | 'key-confirm-pending' | 'active' | 'releasing' | 'failed';
+  phase: 'idle' | 'key-confirm-pending' | 'active' | 'releasing' | 'failed';
   intent: 'momentary' | 'latched' | null;
-  guard: { leaseId: string } | null;
   radioTx: 'off' | 'on' | 'unknown';
   txRisk: 'none' | 'uncertain' | 'confirmed-on';
-  mayOwnKey: boolean;
   fault: string | null;
+  faultDetail: null;
+  fresh: boolean;
+  releaseRequired: boolean;
+  remainingMs: number | null;
+  lastOperation: 'ptt_on' | 'transmit_on' | 'force_receive' | null;
 }
 
 export interface ModGuardProps {
@@ -46,8 +49,8 @@ export const DEFAULT_AUDIO_RUNTIME: AudioRuntimeState = {
 };
 
 export const IDLE_TX: TxSnapshot = {
-  phase: 'idle', intent: null, guard: null,
-  radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
+  faultDetail: null, fresh: true, releaseRequired: false, remainingMs: null, lastOperation: null,
 };
 
 export interface HarnessCall {

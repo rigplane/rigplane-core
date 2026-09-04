@@ -10,11 +10,10 @@
  * those closures, so it reads `semantic/` types (`import type`) the same
  * one-way way `projection.ts` already does — nothing forbids it a value
  * import either (no eslint rule bans one, and it is outside the purity
- * closures), but its `RF_STATES`/`TX_SESSION_STATES`/`TX_ORIGINS` are
+ * closures), but its `RF_STATES`/`TX_SESSION_STATES` are
  * written as literal arrays rather than derived from `rx-tx-surface.ts`'s
  * `RF_LABEL`/`SESSION_LABEL` keys. Agreement with the real unions is pinned
- * below by set-equality against those keys (and a `TxOrigin` self-map,
- * which has no label record to diff against).
+ * below by set-equality against those keys.
  *
  * The second half proves the two name collisions the vocabulary documents
  * (`data-fault`: an open-ended fault CODE on RxTxSurface vs. a plain
@@ -25,16 +24,16 @@
  * `*.component.test.ts` mounts real Svelte components and routes to the
  * isolated vitest project (`vite.config.ts`).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import MetersSurface from '../MetersSurface.svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
 import { topologyFixtures, withMeters } from '../fixtures/topologies';
 import { BLOCKED_LABEL, RF_LABEL, SESSION_LABEL, type TxAuthoritySnapshot } from '../rx-tx-surface';
 import {
-  RF_STATES, TX_ORIGINS, TX_SESSION_STATES, TX_TARGET_STATUSES,
+  RF_STATES, TX_SESSION_STATES, TX_TARGET_STATUSES,
   type DisabledReasonCode, type KeyBlockedReason, type MetersFaultValue, type RxTxFaultValue,
-  type TxOrigin, type TxTargetStatus, type TxTargetUnknownReason,
+  type TxTargetStatus, type TxTargetUnknownReason,
 } from '../../presentation/languages/state-vocabulary';
 
 /** Mounts `component`, runs `fn` over its DOM, always unmounts (mirrors `design-language-wiring.component.test.ts`). */
@@ -57,33 +56,24 @@ describe('state-vocabulary.ts arrays are not a fork of the real unions (MOR-2036
   it('TX_SESSION_STATES is exactly TxSessionState — SESSION_LABEL\'s own exhaustive keys', () => {
     expect(new Set(TX_SESSION_STATES)).toEqual(new Set(Object.keys(SESSION_LABEL)));
   });
-
-  it('TX_ORIGINS has exactly TxOrigin\'s two members', () => {
-    // No existing exported Record to diff against (txOrigin() has no label
-    // map), so this is pinned directly against the TYPE via a self-map:
-    // a member added to `TxOrigin` without a matching key here fails
-    // `npm run check` (missing property), and a bogus extra key fails it
-    // too (excess property) — same mechanism as `meters.test.ts`'s
-    // `surfaceToMeter`/`meterToSurface` pair.
-    const originSelf: Record<TxOrigin, true> = { local: true, external: true };
-    expect(new Set(TX_ORIGINS)).toEqual(new Set(Object.keys(originSelf)));
-  });
 });
 
 const IDLE: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
 };
 const FAULT: TxAuthoritySnapshot = {
-  phase: 'failed', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: 'audio-failed',
+  phase: 'failed', intent: null, radioTx: 'off', txRisk: 'none', fault: 'audio-failed',
 };
 
 describe('RxTxSurface renders exactly the contract\'s vocabulary (MOR-2036)', () => {
-  it('data-rf/data-session/data-origin/data-target are members of the exported vocabulary, on a known-target idle fixture', () => {
-    withMounted(RxTxSurface, { view: topologyFixtures['1/single'], tx: IDLE }, (root) => {
+  it('data-rf/data-session/data-target are members of the exported vocabulary, on a known-target idle fixture', () => {
+    withMounted(RxTxSurface, {
+      view: topologyFixtures['1/single'], tx: IDLE,
+      onRequestKey: vi.fn(), onRequestUnkey: vi.fn(),
+    }, (root) => {
       const state = root.querySelector('[data-testid="rx-tx-state"]')!;
       expect(RF_STATES).toContain(state.getAttribute('data-rf'));
       expect(TX_SESSION_STATES).toContain(state.getAttribute('data-session'));
-      expect(TX_ORIGINS).toContain(state.getAttribute('data-origin'));
       const targetEl = root.querySelector('[data-testid="rx-tx-target"]')!;
       expect(TX_TARGET_STATUSES).toContain(targetEl.getAttribute('data-target'));
       const expectedTargetStatus: TxTargetStatus = 'known';
@@ -92,7 +82,10 @@ describe('RxTxSurface renders exactly the contract\'s vocabulary (MOR-2036)', ()
   });
 
   it('data-reason\'s THREE collision cases and data-fault\'s fault-code case, on a faulted unknown-target fixture', () => {
-    withMounted(RxTxSurface, { view: topologyFixtures['1/ab'], tx: FAULT }, (root) => {
+    withMounted(RxTxSurface, {
+      view: topologyFixtures['1/ab'], tx: FAULT,
+      onRequestKey: vi.fn(), onRequestUnkey: vi.fn(),
+    }, (root) => {
       const targetEl = root.querySelector('[data-testid="rx-tx-target"]')!;
       const expectedTargetStatus: TxTargetStatus = 'unknown';
       expect(targetEl.getAttribute('data-target')).toBe(expectedTargetStatus);

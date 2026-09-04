@@ -31,6 +31,9 @@
  * different value at initialization and the assertions can actually fail.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 import { mount, unmount, flushSync } from 'svelte';
 
 vi.mock('../../../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
@@ -93,18 +96,11 @@ vi.mock('$lib/runtime', () => ({
   },
 }));
 
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => ({ phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null }),
-      subscribe: () => () => {},
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -170,6 +166,7 @@ function mountFresh(variant: 'cockpit' | 'scope' = 'cockpit') {
 }
 
 beforeEach(() => {
+  txHarness.reset();
   components = [];
   rt.state = null;
   tuningHarness.applyModeDefault.mockClear();

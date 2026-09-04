@@ -33,17 +33,16 @@ const PORT = Number(process.env.RP_VISUAL_PORT ?? '5399');
 // reach the real App.svelte demo route too — vite.fixtures.config.ts's
 // `root` stays the app root ("not a second project"), so `GET /` there
 // serves the real index.html, not a 404. It is deliberately not reused
-// here: App.svelte calls `provideAppTxControllerHost` from
-// `$lib/runtime/tx-controller/app-host` unconditionally, at script top
+// here: App.svelte calls `provideManagedAppTxHost` from
+// `$lib/runtime/tx-controller/managed-app-host` unconditionally, at script top
 // level, on EVERY load including the demo route — the file's four
 // `demoMode === 'control-buttons'` checks are two `$effect`/`onMount`
 // callbacks (run after the script's synchronous body) and two template
 // `{#if}` blocks outside `<script>` (gate markup, not script execution),
 // so none of them run before or in place of that call.
-// `fixtureStubs()` in vite.fixtures.config.ts re-points
-// `tx-controller/app-host.ts` (plus three other runtime modules) to
-// `fixtures/stubs/app-host.ts`, whose only export is
-// `getAppTxController` — not `provideAppTxControllerHost`. On the
+// `fixtureStubs()` in vite.fixtures.config.ts re-points that module to the
+// server-shaped snapshot stub in `fixtures/stubs/app-host.ts`. The production
+// entry also needs the provider side of the managed host. On the
 // fixtures server this import fails to resolve. A dedicated, unstubbed `vite` (no --config
 // override) runs the actual production entry instead, on a port that
 // doesn't collide with this fixtures port, the fixtures dev port (5199),

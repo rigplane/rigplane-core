@@ -1,21 +1,11 @@
-<script module lang="ts">
-  /**
-   * Per-instance TX lease identity. Both sidebars list a draggable "tx" panel,
-   * so two TxPanel instances can be mounted at once; the App TX controller keys
-   * lease ownership by sourceId, and a shared id would let one instance release
-   * the other's lease.
-   */
-  let panelSeq = 0;
-</script>
-
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl, normalizedPercentDisplay, rawToPercentDisplay } from '../controls/value-control';
   import { txStatusColor } from './tx-utils';
   import { deriveTxProps, getTxHandlers } from '$lib/runtime/adapters/panel-adapters';
-  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
-  import { createPttGesture } from '../wiring/tx-ptt-gesture';
+  import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+  import { createManagedTxGesture } from '../wiring/managed-tx-gesture';
   import {
     deriveAutoLanModInputProps,
     setAutoLanModInputEnabled,
@@ -61,53 +51,45 @@
   let monLevelAvailable = $derived(p.monLevelAvailable ?? true);
   let driveGainAvailable = $derived(p.driveGainAvailable ?? true);
 
-  // ── PTT (hold-to-talk + double-tap latch) ──
-  // MOR-1011: this panel owns no TX state. It is one lease source among several
-  // (mobile layout, keyboard, future hardware key), so audio start, key
-  // confirmation, safety deadlines and fail-closed release all live in the App
-  // TX controller; the panel only renders that state and feeds it gesture intent.
-  const tx = getAppTxController();
-  const sourceId = `tx-panel-${++panelSeq}`;
-  let leaseSeq = 0;
+  // Gesture timing is local; all displayed TX truth comes from the server snapshot.
+  const tx = getManagedAppTxController();
   let txState = $state.raw(tx.snapshot());
   const stopWatchingTx = tx.subscribe((next) => { txState = next; });
-
-  const ptt = createPttGesture(
-    { guard: () => txState.guard, latched: () => txState.intent === 'latched' },
+  const ptt = createManagedTxGesture(
     {
-      start: () => {
-        // A stale fault would swallow the start (the model only leaves 'failed'
-        // on an explicit reset), so clear it as part of the same press.
-        if (txState.phase === 'failed') tx.resetFault();
-        tx.start(sourceId, `${sourceId}-${++leaseSeq}`, 'momentary');
-      },
-      latch: (guard) => tx.setIntent(sourceId, guard, 'latched'),
-      release: (guard) => tx.release(sourceId, guard),
+      latched: () => tx.snapshot().intent === 'latched',
+      transmitAvailable: () => tx.snapshot().fresh,
     },
+    { pttOn: tx.pttOn, pttOff: tx.pttOff, transmitOn: tx.transmitOn, forceOff: tx.forceOff },
     {
       schedule: (callback, ms) => setTimeout(callback, ms),
       cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     },
   );
+  const isPttKey = (event: KeyboardEvent) => event.key === ' ' || event.key === 'Enter';
+  const pttKeyDown = (event: KeyboardEvent) => {
+    if (!isPttKey(event) || event.repeat) return;
+    event.preventDefault(); ptt.down();
+  };
+  const pttKeyUp = (event: KeyboardEvent) => {
+    if (!isPttKey(event)) return;
+    event.preventDefault(); ptt.up();
+  };
 
-  // Unsubscribe BEFORE the teardown release: the release is fail-closed and must
-  // run to completion inside the controller, not bounce back into a component
-  // that is already being destroyed.
   onDestroy(() => { stopWatchingTx(); ptt.destroy(); });
 
-  let owned = $derived(txState.guard !== null);
-  let starting = $derived(txState.phase === 'audio-start-pending');
+  let owned = $derived(txState.intent === 'momentary');
+  let starting = $derived(txState.phase === 'key-confirm-pending');
   let keyed = $derived(txState.phase === 'key-confirm-pending' || txState.phase === 'active');
   let latched = $derived(txState.intent === 'latched');
   let busy = $derived(txState.phase === 'releasing');
   let fault = $derived(txState.fault);
-  // Controller authority wins; the props snapshot is only a fallback for the
-  // idle case, where the controller never observes PTT at all.
+  // Only the managed projection may name RX/TX. Stale or uncertain stays unknown.
   let rf = $derived(
-    txState.radioTx !== 'unknown'
-      ? txState.radioTx
-      : (p.txActiveAvailable ?? true)
-        ? (p.txActive ? 'on' : 'off')
+    txState.radioTx === 'on' || txState.txRisk === 'confirmed-on'
+      ? 'on'
+      : txState.fresh && txState.radioTx === 'off' && txState.txRisk === 'none'
+        ? 'off'
         : 'unknown',
   );
 
@@ -161,11 +143,21 @@
       onpointerdown={(e) => { e.preventDefault(); ptt.down(); }}
       onpointerup={(e) => { e.preventDefault(); ptt.up(); }}
       onpointerleave={() => ptt.cancel()}
+      onpointercancel={() => ptt.cancel()}
+      onlostpointercapture={() => ptt.cancel()}
+      onkeydown={pttKeyDown}
+      onkeyup={pttKeyUp}
+      onblur={() => ptt.cancel()}
     >
-      {starting ? 'MIC…' : latched ? 'TX 🔒' : keyed ? 'TX' : busy ? 'UNKEYING…' : 'PTT'}
+      {latched ? 'TX 🔒' : starting ? 'MIC…' : keyed ? 'TX' : busy ? 'UNKEYING…' : 'PTT'}
     </button>
     {#if fault}
       <div class="tx-error" data-testid="tx-fault" data-fault={fault}>TX FAULT: {fault}</div>
+    {/if}
+    {#if txState.remainingMs !== null}
+      <div class="tx-countdown" data-testid="tx-countdown">
+        TOT {Math.ceil(txState.remainingMs / 1000)}s
+      </div>
     {/if}
 
     <!-- MOR-617: warn when TX was keyed with a non-LAN MOD input -->

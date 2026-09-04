@@ -152,11 +152,9 @@
          (`PeerSplitLayout.svelte`) mounts its own `SemanticRadioSurfaces
          strips="dual"` instead, so this slot is suppressed whenever that
          glass actually mounts (`peerSplitStage`, MOR-2153 PR-1 / MOR-2253
-         slice 1) — each SemanticRadioSurfaces instance takes a
-         distinct TX-lease `sourceId` from its own module-level counter
-         (`components-v2/wiring/SemanticRadioSurfaces.svelte`), so two
-         mounted instances would not crash, just silently duplicate the TX
-         affordance. The legacy TX panel is suppressed on BOTH sidebars for
+         slice 1). Every presentation consumes the single App-root managed TX
+         facade, so a presentation switch cannot create a second writer. The
+         legacy TX panel is suppressed on BOTH sidebars for
          every variant (a cross-sidebar drag can move it), and
          VfoControlPanel drops the two facts the surface now presents. The
          amber glass (`cockpit`/`scope`) keeps its legacy presentation for

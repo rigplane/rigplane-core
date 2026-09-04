@@ -15,6 +15,18 @@ import { test, expect } from '@playwright/test';
 
 const DESKTOP = { width: 1280, height: 800 };
 const PHONE = { width: 375, height: 812 };
+const PTT_SERVER = {
+  held: {
+    phase: 'active', intent: 'momentary', radioTx: 'on', txRisk: 'confirmed-on',
+    fault: null, faultDetail: null, fresh: true, releaseRequired: true,
+    remainingMs: 12_000, lastOperation: 'ptt_on',
+  },
+  rx: {
+    phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none',
+    fault: null, faultDetail: null, fresh: true, releaseRequired: false,
+    remainingMs: null, lastOperation: 'force_receive',
+  },
+} as const;
 /**
  * MOR-2243 — narrower than the peer-split glass's own 1280px native canvas,
  * so `computeStageScale` resolves below 1 (1100/1280 ≈ 0.859; the group's
@@ -119,7 +131,13 @@ test('ptt-held--mobile', async ({ page }) => {
   const box = (await page.locator('.ptt-fab').boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
+  await expect.poll(() => page.evaluate(() => window.__ptt.deliveryTrace()))
+    .toEqual(['ws.ptt_on']);
+  await page.evaluate((snapshot) => window.__ptt.emitServerSnapshot(snapshot), PTT_SERVER.held);
   await page.waitForSelector('.ptt-fab.ptt-fab-held', { timeout: 2_000 });
   await expect(page).toHaveScreenshot('ptt-held--mobile.png', { animations: 'disabled' });
   await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.__ptt.deliveryTrace()))
+    .toEqual(['ws.ptt_on', 'ws.ptt_off']);
+  await page.evaluate((snapshot) => window.__ptt.emitServerSnapshot(snapshot), PTT_SERVER.rx);
 });

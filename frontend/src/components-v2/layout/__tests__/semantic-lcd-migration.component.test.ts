@@ -21,16 +21,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
-
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
+let txHarness: ManagedAppTxHarness;
 
 const h = vi.hoisted(() => {
   const box = {
@@ -41,11 +34,6 @@ const h = vi.hoisted(() => {
     acquired: [] as [string, string][],
     released: [] as unknown[],
     leases: [] as unknown[],
-    snapshot: null as unknown,
-    listeners: new Set<(next: unknown) => void>(),
-    start: vi.fn(),
-    release: vi.fn(),
-    resetFault: vi.fn(),
   };
   return {
     ...box,
@@ -152,24 +140,11 @@ vi.mock('$lib/runtime/frontend-runtime', async () => ({
 }));
 vi.mock('$lib/runtime', async () => ({ runtime: await h.runtime() }));
 
-// The App TX controller is provided by App.svelte in production; LcdLayout is
-// mounted here without it, so the authority is a recording spy (same idiom as
-// the MOR-1065 desktop suite, extended to observe owner/guard identity).
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => h.snapshot,
-      subscribe: (listener: (next: unknown) => void) => {
-        h.listeners.add(listener);
-        return () => { h.listeners.delete(listener); };
-      },
-      start: h.start,
-      setIntent: vi.fn(),
-      release: h.release,
-      resetFault: h.resetFault,
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -268,14 +243,8 @@ function render(variant: Variant = 'cockpit'): HTMLElement {
   return target;
 }
 
-/** Push a new authority snapshot exactly as the real controller would. */
-function push(next: Partial<Snapshot>): void {
-  h.snapshot = { ...(h.snapshot as Snapshot), ...next };
-  for (const listener of h.listeners) listener(h.snapshot);
-  flushSync();
-}
-
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
   mounted = [];
   h.state = liveState();
   h.caps = capsFor('2/main_sub');
@@ -283,11 +252,6 @@ beforeEach(() => {
   h.acquired = [];
   h.released = [];
   h.leases = [];
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
-  h.start.mockReset();
-  h.release.mockReset();
-  h.resetFault.mockReset();
   h.scope.registerPresentationDriver.mockClear();
   h.scope.subscribe.mockClear();
   vi.mocked(hasCapability).mockReturnValue(false);
@@ -455,66 +419,43 @@ describe('App-global singletons stay global (MOR-1059)', () => {
   });
 });
 
-describe('TX authority: lease-safe teardown in the LCD context (MOR-1065 F1)', () => {
-  function keyFromLcd(): { owner: string; guard: { leaseId: string } } {
-    (target.querySelector('[data-testid="rx-tx-key"]') as HTMLButtonElement).click();
+describe('TX authority: the LCD consumes one App-root managed controller', () => {
+  const click = (testId: 'rx-tx-key' | 'rx-tx-unkey') => {
+    (target.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement).click();
     flushSync();
-    const [owner, leaseId] = h.start.mock.calls[0] as [string, string];
-    const guard = { leaseId };
-    push({ phase: 'active', intent: 'latched', guard, radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
-    return { owner, guard };
-  }
+  };
 
-  it('keys as a latched lease under one owner identity', () => {
-    render();
-    const { owner } = keyFromLcd();
-    expect(h.start).toHaveBeenCalledTimes(1);
-    expect(h.start.mock.calls[0][2]).toBe('latched');
-    expect(owner).toMatch(/^semantic-rx-tx-\d+$/);
-  });
+  it('emits TRANSMIT without inventing state before the server snapshot arrives', () => {
+    const t = render();
+    expect(t.querySelector('[data-testid="rx-tx-state"]')?.getAttribute('data-rf')).toBe('receiving');
+    click('rx-tx-key');
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'transmit_on' }]);
+    expect(t.querySelector('[data-testid="rx-tx-state"]')?.getAttribute('data-rf')).toBe('receiving');
 
-  // MUTATION KILLED: dropping the lease release from the LCD teardown path.
-  // MOR-1060 destroys this subtree on any presentation change; the lease is
-  // LATCHED and outlives the component, the model refuses a release from any
-  // other sourceId and AppGlobalHost exposes no unkey — so swapping away
-  // while keyed would strand the transmitter with no UI exit.
-  it('releases the live lease exactly once when the LCD subtree is destroyed', () => {
-    render();
-    const { owner, guard } = keyFromLcd();
-
-    unmount(mounted.pop()!);
-
-    expect(h.release).toHaveBeenCalledTimes(1);
-    expect(h.release).toHaveBeenCalledWith(owner, guard);
-  });
-
-  // MUTATION KILLED: releasing the render-time guard instead of the live one.
-  // A lease regenerated after the last render would be released under a stale
-  // guard, which the model rejects — indistinguishable from never releasing.
-  it('releases the guard the authority holds at teardown, not the last rendered one', () => {
-    render();
-    const { owner } = keyFromLcd();
-    h.snapshot = { ...(h.snapshot as Snapshot), guard: { leaseId: 'gen-2' } };
-
-    unmount(mounted.pop()!);
-
-    expect(h.release).toHaveBeenCalledWith(owner, { leaseId: 'gen-2' });
-  });
-
-  // The operator-visible half: after the swap the incoming LCD is usable.
-  it('lets the LCD key again after a swap, under a fresh owner identity', () => {
-    render();
-    const { owner: first } = keyFromLcd();
-    unmount(mounted.pop()!);
-    expect(h.release).toHaveBeenCalledTimes(1);
-
-    h.snapshot = { ...IDLE };
-    render();
-    (target.querySelector('[data-testid="rx-tx-key"]') as HTMLButtonElement).click();
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     flushSync();
+    expect(t.querySelector('[data-testid="rx-tx-state"]')?.getAttribute('data-rf')).toBe('transmitting');
+  });
 
-    expect(h.start).toHaveBeenCalledTimes(2);
-    expect(h.start.mock.calls[1][0]).not.toBe(first);
+  it('keeps one controller identity across an LCD presentation switch without TX writes', () => {
+    render('cockpit');
+    expect(txHarness.listenerCount()).toBe(1);
+    unmount(mounted.pop()!);
+    expect(txHarness.listenerCount()).toBe(0);
+    render('scope');
+    expect(txHarness.listenerCount()).toBe(1);
+    expect(txHarness.trace()).toEqual([]);
+  });
+
+  it.each([
+    ['momentary PTT', { intent: 'ptt', observedPtt: 'on' }],
+    ['canonical TRANSMIT', { intent: 'transmit', observedPtt: 'on' }],
+    ['server release debt', { intent: 'rx', observedPtt: 'off', releaseRequired: true }],
+  ] as const)('maps explicit Unkey for %s to exactly one HTTP ForceOFF', (_label, snapshot) => {
+    txHarness.emitServerSnapshot(snapshot);
+    render();
+    click('rx-tx-unkey');
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
   });
 });
 

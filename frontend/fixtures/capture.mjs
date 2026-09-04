@@ -185,7 +185,8 @@ const MATRIX = [
     resizeTo: 'phone-landscape',
   },
   // P. MOR-1087 item 3 — native Space/Enter activation of a real <button>,
-  // proven via the same command-bus recording every click already uses.
+  // proven at the action seam each control owns. VFO uses the command bus;
+  // managed TX emits a facade intent whose transport is tested separately.
   {
     name: 'keyboard-activation-vfo-split--desktop', fixture: 'topology-2-main-sub',
     viewport: 'desktop',
@@ -194,7 +195,9 @@ const MATRIX = [
   {
     name: 'keyboard-activation-rx-tx-key--desktop', fixture: 'tx-phase-rx',
     viewport: 'desktop',
-    keyboardActivate: { selector: '[data-testid="rx-tx-key"]', key: 'Enter', expectCall: 'tx.start' },
+    keyboardActivate: {
+      selector: '[data-testid="rx-tx-key"]', key: 'Enter', expectCall: 'tx.transmitOn',
+    },
   },
   // Q. MOR-1087 items 5/7 — per-language contrast + unmistakable RX/TX/fault
   // indication, over both registered design languages (section A covers
@@ -441,7 +444,7 @@ try {
       keyboardActivation = {
         selector: spec.keyboardActivate.selector,
         key: spec.keyboardActivate.key,
-        reachedCommandBus: calls.some((c) => c.fn === spec.keyboardActivate.expectCall),
+        reachedActionSeam: calls.some((c) => c.fn === spec.keyboardActivate.expectCall),
       };
     }
 
@@ -480,10 +483,10 @@ try {
     }
     if (keyboardActivation) {
       assertions.push({
-        name: 'keyboard-activation-reaches-command-bus',
-        ok: keyboardActivation.reachedCommandBus,
+        name: 'keyboard-activation-reaches-action-seam',
+        ok: keyboardActivation.reachedActionSeam,
         detail: `${keyboardActivation.key} on ${keyboardActivation.selector} · `
-          + `reached command bus=${keyboardActivation.reachedCommandBus}`,
+          + `reached action seam=${keyboardActivation.reachedActionSeam}`,
       });
     }
     const passed = assertions.every((a) => a.ok) && consoleErrors.length === 0;
@@ -552,17 +555,16 @@ const manifest = {
     config: 'frontend/vite.fixtures.config.ts (additive; vite.config.ts untouched)',
     stubbedSeams: [
       '$lib/runtime',
-      '$lib/runtime/tx-controller/app-host',
+      '$lib/runtime/tx-controller/managed-app-host',
       '$lib/runtime/adapters/mod-input-tx-guard.svelte',
       '$lib/runtime/adapters/panel-adapters',
-      'components-v2/wiring/command-bus',
     ],
     productionFilesChanged: 0,
   },
   intentionalDifferences: [
     'The cockpit is mounted DIRECTLY (fixtures/main.ts) — resolveSkinId() has no '
     + 'cockpit branch on this commit, so no navigation path can produce these views.',
-    'Five live seams are stubbed (see harness.stubbedSeams); every other module in the '
+    'Four managed-app-host/server-state seams are stubbed (see harness.stubbedSeams); every other module in the '
     + 'render path — adapter, capability derivation, semantic surfaces, i18n, CSS — is shipped code.',
     'Screenshots are taken with Playwright `animations: "disabled"` and `caret: "hide"` for '
     + 'determinism. The cockpit declares no animation of its own; the only transition in the '

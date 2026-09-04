@@ -90,11 +90,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import '../../../presentation/languages/declarations';
 import { getDesignLanguage, listDesignLanguageIds } from '../../../presentation/languages/contract';
 import type { MeterField, RadioViewModel } from '../../../semantic/radio-view-model';
 import { topologyFixtures, withMeters } from '../../../semantic/fixtures/topologies';
-import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import VfoSurface from '../../../semantic/VfoSurface.svelte';
 import RxTxSurface from '../../../semantic/RxTxSurface.svelte';
 import MetersSurface from '../../../semantic/MetersSurface.svelte';
@@ -102,6 +102,7 @@ import MetersSurface from '../../../semantic/MetersSurface.svelte';
 const h = vi.hoisted(() => ({
   state: null as ServerState | null,
   caps: null as Capabilities | null,
+  txController: null as ManagedAppTxController | null,
 }));
 vi.mock('$lib/runtime', () => ({
   runtime: {
@@ -120,19 +121,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    // `SemanticRadioSurfaces.svelte` reads `.phase` off this unconditionally
-    // at mount (`let txState = $state.raw(tx.snapshot())`); the `.channel-strip`/
-    // `.semantic-surfaces` scene never exercises a TX state, so a fixed idle
-    // snapshot is enough — it is never asked to be anything else.
-    snapshot: () => ({
-      phase: 'idle', intent: null, guard: null,
-      radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
-    }),
-    subscribe: () => () => {},
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
@@ -140,6 +130,9 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import {
+  ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
+} from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 // ── CSS parsing: same block/selector-list splitting `stylesheet.test.ts`
 // uses in each language's own directory, extended with a line number per
@@ -227,10 +220,8 @@ function deactivate(): void {
   delete document.documentElement.dataset.designLanguage;
 }
 
-// ── A small RX/TX state vocabulary. Five of the six `TxAuthoritySnapshot`
-// `['phase']` members get their own snapshot below — `audio-start-pending`
-// has none, because `SESSION_BY_PHASE` (rx-tx-surface.ts) already maps it to
-// the same `'pending'` session `key-confirm-pending` (`PENDING`) produces, so
+// ── A small server-owned RX/TX vocabulary. The canonical harness projects
+// these documents through the same managed-state mapper used by the App, so
 // every `[data-session=...]` value the CSS can select on is still rendered
 // at least once. `PENDING`'s `txRisk: 'uncertain'` gives `[data-rf='uncertain']`
 // coverage. `[data-rf='unknown']` coverage comes from `RF_UNKNOWN` below, NOT
@@ -239,26 +230,20 @@ function deactivate(): void {
 // yields `rf='uncertain'` too, same as `PENDING`. `FAILED`'s non-null `fault`
 // is what makes `.rx-tx-fault` render at all. ─────────────────────────────
 
-const RX_IDLE: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
-};
-const PENDING: TxAuthoritySnapshot = {
-  phase: 'key-confirm-pending', intent: 'latched', radioTx: 'off', txRisk: 'uncertain',
-  mayOwnKey: true, fault: null,
-};
-const KEYED: TxAuthoritySnapshot = {
-  phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true, fault: null,
-};
+const RX_IDLE: ManagedAppTxServerSnapshot = { intent: 'rx', observedPtt: 'off' };
+const PENDING: ManagedAppTxServerSnapshot = { intent: 'transmit', observedPtt: 'off' };
+const KEYED: ManagedAppTxServerSnapshot = { intent: 'transmit', observedPtt: 'on' };
 // Not covered by any `frontend/fixtures/catalog.ts` TX-phase fixture (its
 // four `tx-phase-*` fixtures span idle/pending/active/failed only) — the one
 // state this file adds beyond that vocabulary, needed because both
 // studioline.css and fieldline.css key a rule off `[data-session='releasing']`.
-const RELEASING: TxAuthoritySnapshot = {
-  phase: 'releasing', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true, fault: null,
+const RELEASING: ManagedAppTxServerSnapshot = {
+  intent: 'rx', observedPtt: 'on', releaseRequired: true,
 };
-const FAILED: TxAuthoritySnapshot = {
-  phase: 'failed', intent: null, radioTx: 'unknown', txRisk: 'uncertain', mayOwnKey: false, fault: 'audio-failed',
+const FAILED: ManagedAppTxServerSnapshot = {
+  intent: 'rx', observedPtt: 'unknown', releaseRequired: true, lastError: 'audio-failed',
 };
+const STALE: ManagedAppTxServerSnapshot = { intent: 'rx', observedPtt: 'off', stale: true };
 // `rfState()` (rx-tx-surface.ts) returns 'unknown' only when NEITHER the
 // transmitting NOR the uncertain branch fires AND the radio is not
 // positively observed off — `radioTx: 'unknown', txRisk: 'none'` is the one
@@ -266,9 +251,7 @@ const FAILED: TxAuthoritySnapshot = {
 // rule off `.rx-tx-surface:has([data-rf='unknown'])` as an alternative to
 // `[data-rf='uncertain']` (already covered by `PENDING`), so this state is
 // needed for that alternative to be exercised at all.
-const RF_UNKNOWN: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'unknown', txRisk: 'none', mayOwnKey: false, fault: null,
-};
+const RF_UNKNOWN: ManagedAppTxServerSnapshot = { intent: 'rx', observedPtt: 'unknown' };
 
 // ── Meter field builders, for the two segmentline-only attribute states
 // (`[data-dl-unknown='true']` / `[data-dl-hot='true']`) neither studioline
@@ -319,12 +302,16 @@ const MINIMAL_CAPS = {
   txBands: [], scopeSource: null, audioFftAvailable: false,
 } as unknown as Capabilities;
 
-const rxTxScene = (name: string, tx: TxAuthoritySnapshot, focusSelector?: string): Scene => ({
+const rxTxScene = (name: string, input: ManagedAppTxServerSnapshot, focusSelector?: string): Scene => ({
   name: `rx-tx-surface (${name})`,
   render() {
-    const { cleanup } = mountInto(RxTxSurface, { view: topologyFixtures['2/main_sub'], tx });
+    const txHarness = new ManagedAppTxHarness(input);
+    const { cleanup } = mountInto(RxTxSurface, {
+      view: topologyFixtures['2/main_sub'], tx: txHarness.controller.snapshot(),
+      onRequestKey: vi.fn(), onRequestUnkey: vi.fn(),
+    });
     if (focusSelector) document.querySelector<HTMLElement>(focusSelector)?.focus();
-    return { cleanup };
+    return { cleanup: () => { cleanup(); expect(txHarness.trace()).toEqual([]); } };
   },
 });
 
@@ -344,10 +331,17 @@ const SCENES: readonly Scene[] = [
     // no directly-mounted VfoSurface/RxTxSurface/MetersSurface ever emits.
     name: 'semantic-radio-surfaces (dual strips)',
     render() {
+      const txHarness = new ManagedAppTxHarness();
+      h.txController = txHarness.controller;
       h.state = MINIMAL_STATE;
       h.caps = MINIMAL_CAPS;
       const { cleanup } = mountInto(SemanticRadioSurfaces, { strips: 'dual' });
-      return { cleanup: () => { cleanup(); h.state = null; h.caps = null; } };
+      return { cleanup: () => {
+        cleanup();
+        expect(txHarness.listenerCount()).toBe(0);
+        expect(txHarness.trace()).toEqual([]);
+        h.state = null; h.caps = null; h.txController = null;
+      } };
     },
   },
   {
@@ -392,6 +386,7 @@ const SCENES: readonly Scene[] = [
   rxTxScene('keyed — RF transmitting', KEYED),
   rxTxScene('releasing', RELEASING),
   rxTxScene('failed — fault text rendered', FAILED),
+  rxTxScene('stale — key disabled', STALE),
   rxTxScene('RF unknown', RF_UNKNOWN),
   metersScene('signal unknown', meterField()),
   metersScene('signal hot', meterField(999999)),
@@ -469,7 +464,11 @@ describe('reachable() judges a trailing pseudo-element by its subject', () => {
 
   it('reports a live subject reachable, and a dead one not, for every sampled tail', () => {
     activate('studioline');
-    const { cleanup } = mountInto(RxTxSurface, { view: topologyFixtures['2/main_sub'], tx: RX_IDLE });
+    const txHarness = new ManagedAppTxHarness(RX_IDLE);
+    const { cleanup } = mountInto(RxTxSurface, {
+      view: topologyFixtures['2/main_sub'], tx: txHarness.controller.snapshot(),
+      onRequestKey: vi.fn(), onRequestUnkey: vi.fn(),
+    });
     try {
       for (const tail of SAMPLE_TAILS) {
         expect(reachable(`${LIVE}${tail}`), `${LIVE}${tail} should be reachable`).toBe(true);
@@ -503,8 +502,8 @@ describe('reachable() judges a trailing pseudo-element by its subject', () => {
       expect(reachable(`${LIVE}:has(.no-such-descendant)`), `${LIVE}:has(.no-such-descendant) should NOT be reachable`).toBe(false);
     } finally {
       cleanup();
+      expect(txHarness.trace()).toEqual([]);
       deactivate();
     }
   });
 });
-

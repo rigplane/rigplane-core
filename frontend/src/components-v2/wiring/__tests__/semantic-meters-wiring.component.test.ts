@@ -20,19 +20,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
-  start: vi.fn(),
-  release: vi.fn(),
+  txController: null as ManagedAppTxController | null,
   noop: vi.fn(),
 }));
 
@@ -60,18 +54,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: h.start,
-    setIntent: vi.fn(),
-    release: h.release,
-    resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
@@ -149,11 +133,10 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import {
+  ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
+} from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -206,6 +189,7 @@ const liveCaps = (withMeters: boolean): Capabilities => ({
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}): void {
   target = document.createElement('div');
@@ -214,9 +198,8 @@ function render(props: { strips?: 'single' | 'dual' } = {}): void {
   flushSync();
 }
 
-function push(next: Partial<Snapshot>): void {
-  h.snapshot = { ...(h.snapshot as Snapshot), ...next };
-  for (const listener of h.listeners) listener(h.snapshot);
+function push(next: ManagedAppTxServerSnapshot): void {
+  txHarness.emitServerSnapshot(next);
   flushSync();
 }
 
@@ -231,18 +214,18 @@ const relevance = (): Record<string, string> => Object.fromEntries(
 );
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
-  h.start.mockReset();
-  h.release.mockReset();
   h.noop.mockReset();
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });
 
@@ -365,7 +348,7 @@ describe('meter TX relevance follows the App TX authority and nothing else', () 
     expect(rx.power).toBe('false');
     expect(qSvg('[data-testid="meter-signal"] svg')!.dataset.lowerFault).toBe('false');
 
-    push({ radioTx: 'on', txRisk: 'confirmed-on', phase: 'active', mayOwnKey: true });
+    push({ intent: 'transmit', observedPtt: 'on' });
     expect(rfState()).toBe('transmitting');
     const tx = relevance();
     expect(tx.signal).toBe('false');
@@ -387,7 +370,7 @@ describe('meter TX relevance follows the App TX authority and nothing else', () 
   // hide. An uncertain transmitter must not read as RX.
   it('renders an uncertain transmitter as uncertain, never as receiving', () => {
     render();
-    push({ txRisk: 'uncertain' });
+    push({ intent: 'transmit', observedPtt: 'off' });
     expect(rfState()).toBe('uncertain');
     expect(relevance().power).toBe('true');
   });
@@ -400,7 +383,7 @@ describe('the cold-start window renders fail-closed', () => {
   // styling on a radio that may be keyed), or suppressing the surface until
   // the authority speaks (a flash of nothing, then a reflow).
   it('renders the surface with rfState unknown before the authority has spoken', () => {
-    h.snapshot = { ...IDLE, radioTx: 'unknown' };
+    txHarness.emitServerSnapshot({ observedPtt: 'unknown' });
     render();
     expect(q('[data-testid="meters-surface"]')).not.toBeNull();
     expect(rfState()).toBe('unknown');
@@ -410,7 +393,7 @@ describe('the cold-start window renders fail-closed', () => {
   // The adapter emits NO meters group without a TX authority snapshot, so the
   // "no honest relevance can be stated" case is absence, not a guess.
   it('never renders RX styling while the RF state is unknown', () => {
-    h.snapshot = { ...IDLE, radioTx: 'unknown' };
+    txHarness.emitServerSnapshot({ observedPtt: 'unknown' });
     render();
     expect(target.innerHTML).not.toContain('data-rf-state="receiving"');
   });
@@ -434,7 +417,6 @@ describe('the meters surface adds no control and no TX path', () => {
     const surface = q('[data-testid="meters-surface"]')!;
     expect(surface.querySelectorAll('button, input, select, a[href], [tabindex]'))
       .toHaveLength(0);
-    expect(h.start).not.toHaveBeenCalled();
-    expect(h.release).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 });

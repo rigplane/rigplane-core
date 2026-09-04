@@ -4,22 +4,13 @@
   This is the ONLY place the two pure surfaces meet live state: it derives the
   MOR-1062 view model from the real runtime through
   `lib/runtime/adapters/radio-view-model-adapter`, hands the RX/TX surface a
-  snapshot of the App-owned TX authority (v3 ADR invariant 11 — the controller
-  in `lib/runtime/tx-controller/app-host`, provided once by App.svelte), and
+  server-shaped TX snapshot from
+  `lib/runtime/tx-controller/managed-app-host`, and
   turns the surfaces' callback intents into commands. The surfaces themselves
-  stay presentation-only; the authoritative global TX lamp stays in
+  stay presentation-only; the global TX lamp stays in
   AppGlobalHost (MOR-1059) and is not duplicated here.
+  Both render the same server snapshot.
 -->
-<script module lang="ts">
-  /**
-   * Per-instance TX lease identity. The App TX controller keys lease ownership
-   * by `sourceId`: an id recomputed per render — or shared with another mounted
-   * source — makes `release()` a silent no-op and can strand a key DOWN. Same
-   * identity discipline as TxPanel (MOR-1011) and the MOR-1221/1226 audits.
-   */
-  let surfaceSeq = 0;
-</script>
-
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
@@ -29,8 +20,7 @@
     EMPTY_PBT_PRESENTATION, projectPbtPresentation, type PbtField,
     type PbtPresentationEvidence, type PbtPresentationState,
   } from '../../semantic/pbt-presentation-continuity';
-  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
-  import { txFaultObligation, type TxFaultObligation } from '$lib/runtime/tx-controller/model';
+  import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
@@ -410,29 +400,14 @@
     centerType: scopeIntents.onCenterTypeChange, rbw: scopeIntents.onRbwChange,
     receiver: scopeIntents.onReceiverChange,
   };
-  const tx = getAppTxController();
-  const sourceId = `semantic-rx-tx-${++surfaceSeq}`;
-  let leaseSeq = 0;
+  const tx = getManagedAppTxController();
 
   let txState = $state.raw(tx.snapshot());
   const stopWatchingTx = tx.subscribe((next) => { txState = next; });
 
   onDestroy(() => {
-    // Unsubscribe FIRST: the release below is fail-closed and must run to
-    // completion inside the controller, not bounce back into a component that
-    // is already being destroyed (TxPanel's documented teardown order).
     stopWatchingTx();
-    // `requestKey` starts a LATCHED lease — it outlives this component. The
-    // App TX controller keeps the lease across a presentation swap (MOR-1060
-    // destroys this subtree on any skinId change), the model refuses a release
-    // from any other sourceId, and `start` is a no-op off-idle: without this,
-    // swapping away while keyed STRANDS the transmitter with no UI exit.
-    // Same fail-safe direction as MobileRadioLayout's recognizer teardown
-    // ("rotating away while keyed or latched drops TX rather than stranding
-    // it") and TxPanel's `ptt.destroy()`. Blind release is safe — the model's
-    // owner check makes it inert when another source holds the lease.
-    const guard = tx.snapshot().guard;
-    if (guard) tx.release(sourceId, guard);
+    // Presentation replacement does not alter canonical server TX intent.
   });
 
   /**
@@ -489,7 +464,7 @@
   // true, so a value that type-checks but breaks a structural or cross-field
   // invariant still throws here instead of reaching the surfaces below
   // silently. Dead code in a production build; see `radio-view-model-guard.ts`.
-  // MOR-1262 slice 2A: the live authority snapshot is the THIRD argument — the
+  // MOR-1262 slice 2A: the managed server snapshot is the THIRD argument — the
   // meter facts read their TX relevance from it and never from `state.ptt`
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
@@ -613,70 +588,13 @@
   let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
   let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
 
-  // Bound once per instance, never per render — see `surfaceSeq` above.
   function requestKey(): void {
-    tx.start(sourceId, `${sourceId}-${++leaseSeq}`, 'latched');
+    tx.transmitOn();
   }
-  /**
-   * NEVER gated. Reads the LIVE authority guard and releases: no phase,
-   * permit, fault or view-model condition may stand between the operator and
-   * stopping transmission.
-   *
-   * MOR-1906 — and never SWALLOWED either. `if (guard) release()` alone left
-   * the button live-looking and completely inert after a refused key press:
-   * the refusal branch of the reducer's `start` clears the lease, so there was
-   * no guard to release, and the press produced no command, no reset and no
-   * feedback while the key sat disabled behind the latched fault. To be exact
-   * about what was and was not missing: the MOR-1784 dismiss affordance was
-   * present and working the whole time (it renders unconditionally on a failed
-   * phase, and the wiring tests prove it). What was dead was THIS control —
-   * the one an operator reaches for when the transmitter will not let go — and
-   * an operator who does not connect the two reloads the page.
-   *
-   * With no lease held there is nothing to de-key — the transmitter is not
-   * this surface's to stop — so the intent falls through to the only thing
-   * left between the operator and the transmitter: the latched fault. That
-   * discharges nothing and commands nothing. `reset-fault` issues no effects
-   * and the reducer re-checks `txFaultObligation` at the moment of the event,
-   * so it can neither key a radio nor stand in for an outstanding de-key; it
-   * simply hands the key control back. The release path is untouched and stays
-   * first: while a lease is live, stopping transmission is the whole job.
-   */
+  /** Unconditional HTTP ForceOFF remains reachable in stale/faulted states. */
   function requestUnkey(): void {
-    const live = tx.snapshot();
-    if (live.guard) { tx.release(sourceId, live.guard); return; }
-    if (live.phase === 'failed') tx.resetFault();
+    tx.forceOff();
   }
-  /** App-owned fault recovery (MOR-1065 wiring decision, recorded on the
-   *  ticket). The pure RX/TX surface deliberately has no `resetFault` intent,
-   *  and a `failed` phase blocks the key action — without this affordance in
-   *  the layout chrome the operator has no UI exit from a fault. */
-  function clearFault(): void {
-    tx.resetFault();
-  }
-  /**
-   * MOR-1784 — is the latched fault dismissable right now, and if not, which
-   * obligation is in the way?
-   *
-   * `txFaultObligation` is the reducer's OWN `reset-fault` guard (exported from
-   * `model.ts` for exactly this), not a copy of it: this wiring can never offer
-   * a reset the controller would refuse, nor withhold one it would accept. The
-   * bench finding (owner session, IC-7300): a fault latched, the key read
-   * "an unresolved TX fault is blocking the key", and the only recovery found
-   * was reloading the page — the reset was permitted the whole time and simply
-   * unreachable. Dismissing clears the surface's latch and nothing else: it
-   * issues no command, so it can neither key a radio nor discharge a pending
-   * de-key obligation, and while one is outstanding the reducer refuses it and
-   * this reads out WHY instead of offering a button that silently no-ops.
-   */
-  let faultObligation = $derived(txState.phase === 'failed' ? txFaultObligation(txState) : null);
-  let faultDismissable = $derived(txState.phase === 'failed' && faultObligation === null);
-  const FAULT_OBLIGATION_KEY: Record<TxFaultObligation, string> = {
-    'dekey-pending': 'core.rxTx.fault.reset.reason.dekeyPending',
-    'key-held': 'core.rxTx.fault.reset.reason.keyHeld',
-    'mod-restore': 'core.rxTx.fault.reset.reason.modRestore',
-    cleanup: 'core.rxTx.fault.reset.reason.cleanup',
-  };
 
   /**
    * ATU TUNE emits a CARRIER — a transmit-causing action (MOR-1262 §2 slice 1
@@ -918,43 +836,13 @@
     {/if}
   {/snippet}
 
-  <!--
-    MOR-1784. The fault-recovery block, split out of `txAdjacentAlerts` below
-    so it can render where the fault is READ — directly behind the surface
-    that prints "TX fault: <code>" and the blocked list — in both
-    compositions. It stayed an rx-tx zone member either way (MOR-1258 owner
-    ruling, gate item (b)); what changed is that in the single/default path
-    (sdr-test / LCD / mobile) it no longer sits at the far end of a scrolling
-    column, which is how the owner's IC-7300 session concluded there was no
-    way out of a fault at all.
-
-    Deliberately NOT under `{#if view}` or `zoneShows` (see the render sites):
-    a fault latched by another lease source — the mobile PTT surface, TxPanel,
-    a keyboard key — must stay dismissable even on a screen whose view model
-    or workspace plan has no RX/TX surface. Recovery availability only ever
-    widens here; it never narrows.
-
-    The refusal branch is not decoration: while the reducer would refuse the
-    reset (`txFaultObligation` above), a button would silently no-op, which is
-    the same dead end one click further in. It states the obligation instead,
-    and what discharges it. `role="status"` because the swap between the two
-    branches is a live change an operator may be reading rather than watching.
-  -->
+  <!-- Server failure stays visible beside every RX/TX presentation. -->
   {#snippet txFaultRecovery()}
     {#if txState.phase === 'failed'}
-      <div class="tx-fault-recovery" data-testid="tx-fault-recovery" data-dismissable={faultDismissable}>
-        {#if faultDismissable}
-          <button
-            type="button" class="tx-fault-reset" data-testid="tx-fault-reset" onclick={clearFault}
-          >{t('core.rxTx.fault.reset.action')}</button>
-          <span class="tx-fault-note" data-testid="tx-fault-reset-note"
-          >{t('core.rxTx.fault.reset.note')}</span>
-        {:else}
-          <p
-            class="tx-fault-note" data-testid="tx-fault-reset-blocked" role="status"
-            data-reason={faultObligation}
-          >{t('core.rxTx.fault.reset.blocked', { reason: t(FAULT_OBLIGATION_KEY[faultObligation!]) })}</p>
-        {/if}
+      <div class="tx-fault-recovery" data-testid="tx-fault-recovery" data-dismissable="false">
+        <p class="tx-fault-note" data-testid="tx-fault-reset-blocked" role="status">
+          TX recovery is pending on the server. Force Off remains available.
+        </p>
       </div>
     {/if}
   {/snippet}
@@ -1589,16 +1477,6 @@
   .tx-fault-note {
     margin: 0;
     font-size: 0.85em;
-  }
-  .tx-fault-reset {
-    align-self: flex-start;
-    padding: 3px 8px;
-    border: 1px solid var(--v2-accent-red, #ef4444);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--v2-accent-red, #ef4444);
-    font: inherit;
-    cursor: pointer;
   }
   /* MOR-1067: two borderless channel strips sharing one optical left margin —
      the RxTxSurface below stays a single shared block, outside this grid. */

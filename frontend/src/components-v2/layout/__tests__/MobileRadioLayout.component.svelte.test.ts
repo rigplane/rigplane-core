@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
-import { TxController } from '$lib/runtime/tx-controller/controller';
-import type { TxControllerDependencies } from '$lib/runtime/tx-controller/controller';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 // -- Child component stubs --
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -173,14 +173,13 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   };
 });
 
-// MOR-1012: the layout owns no PTT state any more — it renders the App TX
-// controller and feeds it gesture intent. Only the *host* (the context lookup)
-// is mocked; behind it sits a REAL TxController over stub dependencies, so
-// these tests exercise the production state machine instead of a double.
-const txHost = vi.hoisted(() => ({ current: undefined as unknown as TxHostFacade }));
+// The layout sees the same read-only App-root facade as production. The
+// harness records transport intent and changes visible state only when a
+// canonical server snapshot is emitted.
+const txHost = vi.hoisted(() => ({ current: undefined as unknown as ManagedAppTxController }));
 
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => txHost.current,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHost.current,
 }));
 
 // MOR-1409 A13a: the layout reads the canonical projections now. This fixture
@@ -217,100 +216,7 @@ import {
 import { getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { getTxPermit } from '$lib/utils/tx-permit';
 
-// ---------------------------------------------------------------------------
-// Real-controller harness
-//
-// Copied verbatim (bar this note) from
-// src/components-v2/panels/__tests__/TxPanel.isolated.test.ts, which in turn follows
-// tx-controller/__tests__/controller-contract. Duplicated rather than shared
-// because the two suites live in different pools and a shared helper module
-// would pin the controller in the ``isolate: false`` cache for siblings that
-// mock it — see vite.config.ts / #771. Keep the two copies in step.
-// ---------------------------------------------------------------------------
-
-type TxEvent = Parameters<TxController['dispatch']>[0];
-type StartEvent = Extract<TxEvent, { type: 'start' }>;
-type Eligibility = StartEvent['eligibility'];
-type Observation = StartEvent['ptt'];
-type Intent = StartEvent['intent'];
-type Guard = Extract<TxEvent, { type: 'intent' }>['guard'];
-type Command = Parameters<TxControllerDependencies['sendPtt']>[0];
-type Report = Parameters<TxControllerDependencies['sendPtt']>[3];
-type TxHostFacade = ReturnType<typeof createTxHarness>['facade'];
-
-const marker = (seq: number) => ({
-  authorityEpoch: 1, pttObservationSeq: seq, pttLastObservedMonotonic: seq,
-});
-const allowed: Eligibility = {
-  catPtt: true, browserTxAudio: true, controlLive: true, permit: 'allowed',
-  target: { receiver: 'MAIN', slot: 'A', frequencyHz: 14_074_000 },
-};
-const observe = (value: boolean, seq: number): Observation =>
-  ({ value, observed: true, fresh: true, source: 'radio-readback', marker: marker(seq) });
-
-/** Mirrors the deep-frozen snapshot/subscribe payloads app-host hands out. */
-function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== 'object') return value;
-  const copy = Object.fromEntries(Object.entries(value as Record<string, unknown>)
-    .map(([key, child]) => [key, deepFreeze(child)]));
-  return Object.freeze(copy) as unknown as T;
-}
-
-function createTxHarness() {
-  const sends: Array<{ command: Command; report: Report }> = [];
-  const audio: { next: Promise<string | null> } = { next: Promise.resolve(null) };
-  const eligibility = { current: allowed };
-  let id = 0;
-  let seq = 0;
-  const dependencies: TxControllerDependencies = {
-    startAudio: vi.fn(() => audio.next),
-    sendPtt: vi.fn((command, _commandId, _correlation, report) => { sends.push({ command, report }); }),
-    stopLocalAudio: vi.fn(),
-    restoreMod: vi.fn(),
-    commandId: vi.fn((command) => `${command}-${++id}`),
-    schedule: vi.fn((callback, delay) => setTimeout(callback, delay)),
-    cancel: vi.fn((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)),
-    // Far beyond the 300 ms gesture window so controller deadlines never race it.
-    timeoutMs: { 'audio-start': 60_000, 'on-confirmation': 60_000, 'off-confirmation': 60_000 },
-  };
-  const controller = new TxController(1, marker(0), dependencies);
-  const facade = {
-    snapshot: () => deepFreeze(controller.snapshot()),
-    subscribe: (listener: (state: unknown) => void) =>
-      controller.subscribe((state) => listener(deepFreeze(state))),
-    start: (sourceId: string, leaseId: string, intent: Intent) => controller.dispatch({
-      type: 'start', sourceId, leaseId, intent,
-      eligibility: eligibility.current, ptt: observe(false, ++seq),
-    }),
-    setIntent: (sourceId: string, guard: Guard, intent: Intent) =>
-      controller.dispatch({ type: 'intent', sourceId, guard: { ...guard }, intent }),
-    release: (sourceId: string, guard: Guard) => controller.dispatch({
-      type: 'release', sourceId, guard: { ...guard }, commandId: dependencies.commandId('off'),
-    }),
-    resetFault: () => controller.dispatch({ type: 'reset-fault' }),
-  };
-  return {
-    controller, dependencies, sends, facade, audio, eligibility,
-    /** Feed an authoritative PTT readback (what the App host does on session updates). */
-    authority: (value: boolean) => controller.dispatch({
-      type: 'authority', epoch: 1, ptt: observe(value, ++seq),
-      eligibility: eligibility.current, offCommandId: dependencies.commandId('off'),
-    }),
-    /** Report the most recent command of `command` as delivered. */
-    confirm: (command: Command) => {
-      const send = [...sends].reverse().find((item) => item.command === command);
-      expect(send).toBeDefined();
-      send!.report({ outcome: 'sent', eventEpoch: 1, barrier: marker(++seq) });
-    },
-    /** A competing lease source (e.g. a desktop TxPanel on the same session). */
-    startOther: (leaseId: string) => controller.dispatch({
-      type: 'start', sourceId: 'other-panel', leaseId, intent: 'momentary',
-      eligibility: eligibility.current, ptt: observe(false, ++seq),
-    }),
-  };
-}
-
-let tx: ReturnType<typeof createTxHarness>;
+let tx: ManagedAppTxHarness;
 let components: ReturnType<typeof mount>[] = [];
 
 /** PttFab's press-and-hold guard, and the recognizer's double-tap window. */
@@ -345,8 +251,8 @@ function rotate(landscape: boolean) {
 beforeEach(() => {
   components = [];
   setViewport(false);
-  tx = createTxHarness();
-  txHost.current = tx.facade;
+  tx = new ManagedAppTxHarness();
+  txHost.current = tx.controller;
   vi.mocked(hasTx).mockReturnValue(true);
   vi.mocked(hasDualReceiver).mockReturnValue(false);
   vi.mocked(getTxPermit).mockReturnValue('allowed');
@@ -362,6 +268,7 @@ beforeEach(() => {
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
+  expect(tx.listenerCount()).toBe(0);
   document.body.innerHTML = '';
 });
 
@@ -402,6 +309,13 @@ describe('MobileRadioLayout structure', () => {
     expect(mountMobile().querySelector('.m-tx-indicator')).not.toBeNull();
   });
 
+  it('keeps stale managed authority unknown despite legacy txActive false', () => {
+    tx.emitStale();
+    const indicator = mountMobile().querySelector<HTMLElement>('.m-tx-indicator')!;
+    expect(indicator.dataset.rf).toBe('unknown');
+    expect(indicator.style.background).toContain('#facc15');
+  });
+
   it('renders settings button', () => {
     expect(mountMobile().querySelector('.m-settings-btn')).not.toBeNull();
   });
@@ -430,7 +344,7 @@ describe('MobileRadioLayout hides the AUTO toggle (MOR-1486 ruling B)', () => {
 
 describe('MOR-1409 local mobile meter selection', () => {
   it('changes only component-local presentation state', () => {
-    tx.authority(true);
+    tx.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on', releaseRequired: true });
     const unsubscribe = subscribeRadioState(() => {});
     const t = mountMobile();
     const txChip = Array.from(t.querySelectorAll<HTMLButtonElement>('.m-chip'))
@@ -448,7 +362,7 @@ describe('MOR-1409 local mobile meter selection', () => {
       subscribers: radioSubscriberTracker.active,
       wsFrames: wsFrameSpy.mock.calls.length,
       intents: radioIntentSpy.mock.calls.length,
-      commands: tx.sends.length,
+      commands: tx.trace().length,
       lifecycle: JSON.parse(JSON.stringify(getCommandLifecycles())),
       txLifecycle: tx.controller.snapshot(),
     };
@@ -478,7 +392,7 @@ describe('MOR-1409 local mobile meter selection', () => {
     expect(radioSubscriberTracker.active).toBe(before.subscribers);
     expect(wsFrameSpy.mock.calls).toHaveLength(before.wsFrames);
     expect(radioIntentSpy.mock.calls).toHaveLength(before.intents);
-    expect(tx.sends).toHaveLength(before.commands);
+    expect(tx.trace()).toHaveLength(before.commands);
     expect(JSON.parse(JSON.stringify(getCommandLifecycles()))).toEqual(before.lifecycle);
     expect(tx.controller.snapshot()).toEqual(before.txLifecycle);
     unsubscribe();
@@ -672,9 +586,6 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
 
   const fabEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.ptt-fab')!;
   const stripEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.m-ls-ptt')!;
-  const offs = () => tx.sends.filter((item) => item.command === 'off').length;
-  const flushAudio = async () => { await Promise.resolve(); await Promise.resolve(); flushSync(); };
-
   function pointer(el: Element, type: string, init: PointerEventInit = {}) {
     el.dispatchEvent(new PointerEvent(type, {
       bubbles: true, pointerId: 1, clientX: 0, clientY: 0, ...init,
@@ -690,65 +601,6 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
   }
   const fabRelease = (t: HTMLElement) => pointer(fabEl(t), 'pointerup');
 
-  /** Press and hold the FAB until the radio has acknowledged the ON command. */
-  async function hold(t: HTMLElement) {
-    fabPress(t);
-    await flushAudio();
-    tx.confirm('on');
-    flushSync();
-  }
-
-  /** Hold, then double-tap the FAB into the latched lock. */
-  async function latch(t: HTMLElement) {
-    await hold(t);
-    fabRelease(t);
-    vi.advanceTimersByTime(100);
-    fabPress(t);
-  }
-
-  /** Same two gestures, on the landscape strip (no 50 ms hold guard there). */
-  async function holdStrip(t: HTMLElement) {
-    pointer(stripEl(t), 'pointerdown');
-    await flushAudio();
-    tx.confirm('on');
-    flushSync();
-  }
-
-  async function latchStrip(t: HTMLElement) {
-    await holdStrip(t);
-    pointer(stripEl(t), 'pointerup');
-    vi.advanceTimersByTime(100);
-    pointer(stripEl(t), 'pointerdown');
-  }
-
-  function selectChip(t: HTMLElement, label: string) {
-    const chip = Array.from(t.querySelectorAll<HTMLButtonElement>('.m-chip'))
-      .find((b) => b.textContent?.trim() === label);
-    expect(chip, `chip ${label} should exist`).toBeDefined();
-    chip!.click();
-    flushSync();
-  }
-
-  // -- A: portrait FAB ------------------------------------------------------
-
-  it('keys a FAB hold through audio start and the ON confirmation', async () => {
-    const t = mountMobile();
-    fabPress(t);
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(tx.controller.snapshot().phase).toBe('audio-start-pending');
-    await flushAudio();
-    tx.confirm('on');
-    flushSync();
-    expect(tx.controller.snapshot().phase).toBe('key-confirm-pending');
-    expect(fabEl(t).classList.contains('ptt-fab-held')).toBe(true);
-    tx.authority(true);
-    flushSync();
-    expect(tx.controller.snapshot().phase).toBe('active');
-    // No local safety timer any more — the controller owns every deadline.
-    vi.advanceTimersByTime(5 * 60 * 1000);
-    expect(offs()).toBe(0);
-  });
-
   it('ignores a press released before the FAB 50 ms hold guard closes', () => {
     const t = mountMobile();
     pointer(fabEl(t), 'pointerdown');
@@ -756,292 +608,110 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     pointer(fabEl(t), 'pointerup');
     vi.advanceTimersByTime(HOLD_MS);
     flushSync();
-    expect(tx.dependencies.startAudio).not.toHaveBeenCalled();
-    expect(tx.controller.snapshot().phase).toBe('idle');
+    expect(tx.trace()).toEqual([]);
   });
 
-  it('holds the lease for 299 ms after release and drops it at 300 ms', async () => {
+  it('short press emits WS ptt_on then one deferred WS ptt_off', () => {
     const t = mountMobile();
-    await hold(t);
+    fabPress(t);
+    expect(tx.trace()).toEqual([{ transport: 'ws', operation: 'ptt_on' }]);
     fabRelease(t);
     vi.advanceTimersByTime(GESTURE_WINDOW_MS - 1);
-    flushSync();
-    expect(offs()).toBe(0);
-    expect(tx.controller.snapshot().phase).toBe('key-confirm-pending');
+    expect(tx.trace()).toHaveLength(1);
     vi.advanceTimersByTime(1);
-    flushSync();
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
   });
 
-  it('latches on a double tap without starting a second lease', async () => {
+  it('routes keyboard hold/release through the same WS recognizer', () => {
     const t = mountMobile();
-    await latch(t);
-    expect(tx.controller.snapshot().intent).toBe('latched');
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(fabEl(t).classList.contains('ptt-fab-latched')).toBe(true);
-    // Confirm the key on the radio, then sit on it far longer than the retired
-    // 3-minute local safety timer: a latched lease must stay up.
-    tx.authority(true);
-    flushSync();
-    vi.advanceTimersByTime(5 * 60 * 1000);
-    expect(offs()).toBe(0);
+    fabEl(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    fabEl(t).dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
   });
 
-  it('unlatches on the next tap instead of starting a new lease', async () => {
+  it('double tap emits one HTTP transmit_on without a second WS lease', () => {
     const t = mountMobile();
-    await latch(t);
+    fabPress(t);
     fabRelease(t);
-    pointer(fabEl(t), 'pointerdown'); // latched → PttFab delegates immediately
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(100);
+    fabPress(t);
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'http', operation: 'transmit_on' },
+    ]);
+    expect(tx.controller.snapshot().intent).toBeNull();
   });
 
-  it('drops a quick tap taken while TX audio is still pending, and never keys late', async () => {
-    let resolveAudio!: (value: string | null) => void;
-    tx.audio.next = new Promise((resolve) => { resolveAudio = resolve; });
+  it('canonical latched tap emits HTTP force_off', () => {
+    tx.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on', releaseRequired: true });
+    const t = mountMobile();
+    pointer(fabEl(t), 'pointerdown');
+    expect(tx.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
+  });
+
+  it('unavailable double tap emits no transmit_on and releases the WS PTT', () => {
+    tx.emitStale();
     const t = mountMobile();
     fabPress(t);
-    expect(tx.controller.snapshot().phase).toBe('audio-start-pending');
     fabRelease(t);
-    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
-    flushSync();
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-    resolveAudio(null);
-    await flushAudio();
-    expect(tx.sends.filter((item) => item.command === 'on')).toHaveLength(0);
-  });
-
-  it('needs the documented two-step press when the UI TX permit is denied', () => {
-    vi.mocked(getTxPermit).mockReturnValue('denied');
-    const t = mountMobile();
+    vi.advanceTimersByTime(100);
     fabPress(t);
-    expect(tx.dependencies.startAudio).not.toHaveBeenCalled();
-    expect(fabEl(t).classList.contains('ptt-fab-armed')).toBe(true);
-    fabPress(t); // second press inside the 2 s arm window engages
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
   });
 
-  // A.6b — without resetFault() in the recognizer's start command, one denied
-  // press leaves the model in 'failed' and every later press is swallowed:
-  // mobile TX would be bricked for the rest of the session.
-  it('clears a stale controller fault on the next press instead of bricking TX', async () => {
-    tx.eligibility.current = { ...allowed, permit: 'denied' };
-    const t = mountMobile();
-    fabPress(t);
-    expect(tx.controller.snapshot()).toMatchObject({ phase: 'failed', fault: 'not-eligible' });
-    fabRelease(t);
-
-    tx.eligibility.current = allowed;
-    fabPress(t);
-    await flushAudio();
-    expect(tx.controller.snapshot()).toMatchObject({ fault: null, phase: 'audio-start-pending' });
-  });
-
-  // -- B: landscape strip ---------------------------------------------------
-
-  it('keys and releases from the landscape strip', async () => {
+  it('cancel/lostcapture/up release a landscape momentary exactly once', () => {
     const t = mountLandscape();
-    await holdStrip(t);
-    expect(tx.controller.snapshot().phase).toBe('key-confirm-pending');
-    expect(stripEl(t).classList.contains('m-ptt-held')).toBe(true);
-    pointer(stripEl(t), 'pointerup');
-    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
-    flushSync();
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-  });
-
-  it('cancels the landscape press only once the finger slides past 8 px', async () => {
-    const t = mountLandscape();
-    await holdStrip(t);
-    pointer(stripEl(t), 'pointermove', { clientX: 5, clientY: 0 });
-    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
-    flushSync();
-    expect(offs()).toBe(0);
-    pointer(stripEl(t), 'pointermove', { clientX: 20, clientY: 0 });
-    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
-    flushSync();
-    expect(offs()).toBe(1);
-  });
-
-  it('treats pointercancel, lostpointercapture and pointerup as one release', async () => {
-    const t = mountLandscape();
-    await holdStrip(t);
+    pointer(stripEl(t), 'pointerdown');
     pointer(stripEl(t), 'pointercancel');
     pointer(stripEl(t), 'lostpointercapture');
     pointer(stripEl(t), 'pointerup');
     vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
-    flushSync();
-    expect(offs()).toBe(1);
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
   });
 
-  // -- C: surface lifecycle -------------------------------------------------
-
-  // C.10 — the portrait recognizer is destroyed by the rotation, and destroy()
-  // releases the live lease. Before MOR-1012 this depended on a bespoke
-  // orientation $effect that only covered portrait → landscape while 'held'.
-  it('releases TX when a rotation to landscape tears the portrait recognizer down', async () => {
-    const t = mountMobile();
-    await hold(t);
-    expect(tx.controller.snapshot().phase).toBe('key-confirm-pending');
-    rotate(true);
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-  });
-
-  // C.11 — the direction and the state the old orientation guard did NOT cover.
-  // Documented behaviour change: rotating while latched drops TX.
-  it('drops a LATCHED TX when the operator rotates back to portrait', async () => {
-    const t = mountLandscape();
-    await latchStrip(t);
+  it('presentation rotation preserves canonical TRANSMIT and sends nothing', () => {
+    tx.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on', releaseRequired: true });
+    mountLandscape();
+    rotate(false);
+    expect(tx.trace()).toEqual([]);
     expect(tx.controller.snapshot().intent).toBe('latched');
-    rotate(false);
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
   });
 
-  it('releases TX when the radio stops reporting TX capability', async () => {
-    const capable = $state({ on: true });
-    vi.mocked(hasTx).mockImplementation(() => capable.on);
+  it('destroy releases pending momentary exactly once', () => {
     const t = mountMobile();
-    await hold(t);
-    capable.on = false;
-    flushSync();
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-  });
-
-  // C.13 — the layout imported onDestroy but never used it, so an unmount left
-  // the rig keyed and the safety timer armed.
-  it('releases TX when the layout unmounts', async () => {
-    const t = mountMobile();
-    await hold(t);
-    expect(tx.controller.snapshot().phase).toBe('key-confirm-pending');
-    unmount(components.pop()!);
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-  });
-
-  // C.14 — PttFab does not clear its 50 ms hold timer on unmount (R3), so the
-  // orphaned timer still calls onDown() after the rotation.
-  it('ignores a stale FAB hold timer that fires after a rotation to landscape', () => {
-    const t = mountMobile();
-    pointer(fabEl(t), 'pointerdown');
-    rotate(true);
-    vi.advanceTimersByTime(HOLD_MS);
-    flushSync();
-    expect(tx.dependencies.startAudio).not.toHaveBeenCalled();
-    expect(tx.controller.snapshot().phase).toBe('idle');
-  });
-
-  // C.14b (MOR-1376) — the SAFETY case a coarse 'portrait'/'landscape' liveness
-  // label cannot see. Rotating away and straight back inside the 50 ms hold
-  // delay leaves the FIRST surface's abandoned press pointing at a recognizer
-  // generation that never saw a finger: the label says 'portrait' again, so the
-  // guard passes and TX keys with no press behind it — and no pointer capture
-  // left to release it. The press must complete against the generation it was
-  // armed on, not whatever happens to be live when its timer fires.
-  it('does not key a fresh recognizer when a double flip strands a press mid-hold-delay', () => {
-    const t = mountMobile();
-    pointer(fabEl(t), 'pointerdown'); // generation 1 arms its 50 ms hold timer
-    vi.advanceTimersByTime(HOLD_MS - 30);
-    rotate(true);                     // generation 2
-    rotate(false);                    // generation 3 — a brand new recognizer
-    vi.advanceTimersByTime(HOLD_MS);  // generation 1's orphaned timer fires here
-    flushSync();
-
-    expect(tx.dependencies.startAudio).not.toHaveBeenCalled();
-    expect(tx.controller.snapshot().phase).toBe('idle');
-    expect(tx.controller.snapshot().guard).toBeNull();
-  });
-
-  // The other direction: the guard must block the ghost, not the operator. The
-  // surface that survives the double flip stays fully usable.
-  it('still keys on the surviving surface after a double flip stranded a press', () => {
-    const t = mountMobile();
-    pointer(fabEl(t), 'pointerdown');
-    vi.advanceTimersByTime(HOLD_MS - 30);
-    rotate(true);
-    rotate(false);
-    vi.advanceTimersByTime(HOLD_MS * 4); // well past the stranded timer
-    flushSync();
-    expect(tx.controller.snapshot().phase).toBe('idle');
-
-    fabPress(t); // a real press, on the live FAB
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(tx.controller.snapshot().phase).toBe('audio-start-pending');
-  });
-
-  // -- D: other lease sources on the same controller -------------------------
-
-  // D.15 — the guard alone always matches (it is the single live lease), so the
-  // per-surface sourceId is the only thing stopping mobile from releasing or
-  // latching a lease a desktop panel owns.
-  it('cannot release or latch a lease owned by another source', async () => {
-    const t = mountMobile();
-    tx.startOther('desktop-panel-lease');
-    flushSync();
-    const owner = tx.controller.snapshot().sourceId;
-
-    fabPress(t);   // start() is a silent no-op — the model is not idle
-    fabRelease(t); // arms a window against the DESKTOP guard
-    vi.advanceTimersByTime(100);
-    fabPress(t);   // a double tap that would latch if the sourceId were shared
-    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
-    flushSync();
-
-    expect(offs()).toBe(0);
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(tx.controller.snapshot()).toMatchObject({
-      sourceId: owner, intent: 'momentary', phase: 'audio-start-pending',
-    });
-  });
-
-  // D.16 — the two failures the old machine had here: the orphaned FAB timer
-  // engaged TX unconditionally, and its release path issued a raw ptt_off that
-  // bypassed the controller and could dekey whoever actually owned the key.
-  it('cannot key or dekey a desktop owner when a stale FAB timer fires after a rotation', () => {
-    const t = mountMobile();
-    pointer(fabEl(t), 'pointerdown'); // press starts, hold timer armed
-    rotate(true);                     // PttFab unmounts; its timer is NOT cleared
-    tx.startOther('desktop-panel-lease');
-    flushSync();
-    const owner = tx.controller.snapshot().sourceId;
-
-    vi.advanceTimersByTime(HOLD_MS);  // the orphaned FAB timer fires here
-    flushSync();
-    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
-    flushSync();
-
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce(); // only the desktop start
-    expect(offs()).toBe(0);
-    expect(tx.controller.snapshot()).toMatchObject({
-      sourceId: owner, phase: 'audio-start-pending',
-    });
-  });
-
-  // D.17 — the recognizer effect is keyed on the surface alone, so unrelated
-  // sheet/chip churn must neither recreate it nor disturb the live lease.
-  it('keeps one live lease across TX sheet and chip churn', async () => {
-    const t = mountMobile();
-    await hold(t);
-    const guard = tx.controller.snapshot().guard;
-
-    selectChip(t, 'TX');
-    t.querySelector<HTMLButtonElement>('.m-tx-settings-btn')!.click();
-    flushSync();
-    selectChip(t, 'BAND');
-    selectChip(t, 'ESSENTIALS');
-
-    expect(offs()).toBe(0);
-    expect(tx.controller.snapshot().guard).toEqual(guard);
-
+    fabPress(t);
     fabRelease(t);
-    vi.advanceTimersByTime(GESTURE_WINDOW_MS);
-    flushSync();
-    expect(offs()).toBe(1);
+    unmount(components.pop()!);
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
+  });
+
+  it('destroyed orientation generations stay inert while the survivor remains usable', () => {
+    const t = mountMobile();
+    pointer(fabEl(t), 'pointerdown');
+    vi.advanceTimersByTime(HOLD_MS - 30);
+    rotate(true);
+    rotate(false);
+    vi.advanceTimersByTime(HOLD_MS * 4);
+    expect(tx.trace()).toEqual([]);
+    fabPress(t);
+    expect(tx.trace()).toEqual([{ transport: 'ws', operation: 'ptt_on' }]);
   });
 
   // -- E: source-level proof the legacy machine is gone ----------------------
@@ -1058,10 +728,8 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(mobileLayoutSource).not.toContain('lastPttDown');
     // Deliberately NOT asserting on 'ptt' as a bare substring — PttFab and the
     // landscape lsPtt* handlers legitimately keep it.
-    expect(mobileLayoutSource).toContain('getAppTxController');
-    // MOR-1378: the recognizer wiring moved to wiring/mobile-ptt-surface.ts —
-    // this layout now composes it instead of building the gesture inline.
-    expect(mobileLayoutSource).toContain('createMobilePttSurface');
+    expect(mobileLayoutSource).toContain('getManagedAppTxController');
+    expect(mobileLayoutSource).toContain('createManagedMobilePttSurface');
     expect(mobileLayoutSource).not.toContain('createPttGesture');
   });
 });

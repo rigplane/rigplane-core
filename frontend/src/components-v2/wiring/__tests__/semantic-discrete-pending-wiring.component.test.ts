@@ -36,27 +36,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
+const h = vi.hoisted(() => ({
+  txController: null as ManagedAppTxController | null,
+}));
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
-
-// The App TX controller lives in Svelte context, provided by `AppGlobalHost`
-// in production; a standalone mount needs a stand-in or `getAppTxController`
-// throws. Not the seam this file tests — same stand-in role as every other
-// wiring-component test in this directory.
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => IDLE,
-    subscribe: () => () => {},
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
@@ -77,6 +64,7 @@ import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.sve
 import { setRadioState, resetRadioState } from '$lib/stores/radio.svelte';
 import { acknowledgeCommand, getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const PROVIDER_GENERATION = 0;
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh' as const, availability: 'available' as const };
@@ -198,6 +186,7 @@ function freqReobservedState(seq = 2): ServerState {
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(): void {
   target = document.createElement('div');
@@ -209,6 +198,8 @@ function render(): void {
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   // Assert acceptance, not just call it — a rejected fixture would leave
   // `runtime.state`/`runtime.caps` at `null` and every assertion below would
   // pass or fail for the wrong reason (mirrors
@@ -220,6 +211,8 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
   resetRadioState();
   clearCapabilities();

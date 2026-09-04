@@ -18,39 +18,19 @@
  * be permanently unfalsifiable. The grid actually applying is verified in a
  * real browser via the `fixtures/` harness; see the MOR-2153 build report
  * for the exact command and what it showed.
- *
- * The mock boilerplate below is copied from `semantic-rx-tx-wiring
- * .component.test.ts` (the pattern `SemanticRadioSurfaces.svelte`'s own file
- * header names as the minimal precedent). MEASURED, not estimated: 47 files
- * under `src/` match `grep -rl "tx-controller/app-host" --include="*.test.ts"
- * src` (46 before this file existed) — spanning both `*.component.test.ts`
- * and `*.isolated.test.ts`, not only the former; of the 41 total
- * `*.component.test.ts` files (`find src -name '*.component.test.ts'`), 27
- * carry this mock shape. No shared helper wraps it: `find src -iname
- * "*test-helper*" -o -iname "*test-util*"` returns nothing.
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-  pendingOff: { commandId: string } | null; modRestorePending: boolean;
-  cleanupGuard: { leaseId: string } | null;
-};
+let txHarness: ManagedAppTxHarness;
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
-  start: vi.fn(),
-  release: vi.fn(),
-  setIntent: vi.fn(),
-  resetFault: vi.fn(),
   noop: vi.fn(),
   modInputGuard: { visible: false, sourceLabel: null } as { visible: boolean; sourceLabel: string | null },
 }));
@@ -72,18 +52,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => h.listeners.delete(listener);
-    },
-    start: h.start,
-    setIntent: h.setIntent,
-    release: h.release,
-    resetFault: h.resetFault,
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => h.modInputGuard,
@@ -140,11 +110,6 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 const { default: PeerSplitLayout } = await import('../PeerSplitLayout.svelte');
-
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null, pendingOff: null, modRestorePending: false, cleanupGuard: null,
-};
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 
@@ -205,14 +170,9 @@ function render(displayVariant: 'peer' | 'dominant' | 'centerstage' | 'panadapte
 }
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
   h.state = abSharedState();
   h.caps = liveCaps();
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
-  h.start.mockReset();
-  h.release.mockReset();
-  h.setIntent.mockReset();
-  h.resetFault.mockReset();
   h.noop.mockReset();
   h.modInputGuard = { visible: false, sourceLabel: null };
 });

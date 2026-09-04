@@ -27,19 +27,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
+  txController: null as ManagedAppTxController | null,
   audio: { muted: false, rxEnabled: true, volume: 42 },
   audioConnected: true,
-  listeners: new Set<(next: unknown) => void>(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
@@ -89,15 +85,8 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime', async () => ({
   runtime: (await import('$lib/runtime/frontend-runtime')).runtime,
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: 'MIC' }),
@@ -106,17 +95,11 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { makeAntennaHandlers } from '$lib/runtime/commands/panel-commands';
 
-const RECEIVING: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
-const TRANSMITTING: Snapshot = {
-  ...RECEIVING, phase: 'active', intent: 'latched', guard: { leaseId: 'x' },
-  radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true,
-};
-const RF_UNKNOWN: Snapshot = { ...RECEIVING, radioTx: 'unknown' };
+const TRANSMITTING = { intent: 'transmit', observedPtt: 'on' } as const;
+const RF_UNKNOWN = { observedPtt: 'unknown' } as const;
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -159,6 +142,7 @@ const ANTENNA_TAGS = ['tx', 'dual_rx', 'rx_antenna', 'tuner'] as const;
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}): void {
   target = document.createElement('div');
@@ -177,16 +161,18 @@ function forceClick(node: HTMLElement): void {
 }
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState();
   h.caps = liveCaps(2, ANTENNA_TAGS);
-  h.snapshot = { ...RECEIVING };
-  h.listeners.clear();
   vi.mocked(sendCommand).mockClear();
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });
 
@@ -301,7 +287,7 @@ describe('no antenna command leaves the tree while the transmitter is not idle',
   // slice — a relay switched under power damages the radio.
   it.each([['transmitting', TRANSMITTING], ['RF-state unknown', RF_UNKNOWN]] as const)(
     'sends nothing on a forced port click while %s', (_label, snapshot) => {
-      h.snapshot = { ...snapshot };
+      txHarness.emitServerSnapshot(snapshot);
       render();
       forceClick(btn('port-2')!);
       forceClick(btn('rx-toggle')!);
@@ -323,12 +309,11 @@ describe('no antenna command leaves the tree while the transmitter is not idle',
 
   // The gate must open again — a surface that can never switch is not a gate.
   it('sends the command once the authority reports a positively receiving radio', () => {
-    h.snapshot = { ...TRANSMITTING };
+    txHarness.emitServerSnapshot(TRANSMITTING);
     render();
     forceClick(btn('port-2')!);
     expect(sendCommand).not.toHaveBeenCalled();
-    h.snapshot = { ...RECEIVING };
-    for (const listener of h.listeners) listener(h.snapshot);
+    txHarness.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' });
     flushSync();
     btn('port-2')!.click();
     flushSync();

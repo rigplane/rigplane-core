@@ -6,7 +6,7 @@
   import { presentationResources, runtime } from './lib/runtime/frontend-runtime';
   import type { ResourceLease } from '$lib/runtime/resource-demand';
   import { systemController } from '$lib/runtime/system-controller';
-  import { provideAppTxControllerHost } from '$lib/runtime/tx-controller/app-host';
+  import { provideManagedAppTxHost } from '$lib/runtime/tx-controller/managed-app-host';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
   import { getLayoutMode } from './lib/stores/layout.svelte';
   import { readQaCockpitLayoutOverride } from './lib/stores/qa-cockpit-override';
@@ -216,7 +216,7 @@
     while (leases.length > 0) presentationResources.release(leases.pop()!);
   }
 
-  const txHost = provideAppTxControllerHost({
+  const txHost = provideManagedAppTxHost({
     registerPreDisconnectBarrier: (barrier) =>
       systemController.registerPreDisconnectBarrier(barrier),
     lifecycleReleaseSource: (release) => {
@@ -224,13 +224,16 @@
         return () => {};
       }
       const onPageHide = () => release();
+      const onBlur = () => release();
       const onVisibilityLoss = () => {
         if (document.visibilityState === 'hidden') release();
       };
       window.addEventListener('pagehide', onPageHide);
+      window.addEventListener('blur', onBlur);
       document.addEventListener('visibilitychange', onVisibilityLoss);
       return () => {
         window.removeEventListener('pagehide', onPageHide);
+        window.removeEventListener('blur', onBlur);
         document.removeEventListener('visibilitychange', onVisibilityLoss);
       };
     },

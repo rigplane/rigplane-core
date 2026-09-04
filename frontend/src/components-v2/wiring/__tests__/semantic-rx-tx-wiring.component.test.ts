@@ -1,19 +1,4 @@
-/**
- * MOR-1065 — the semantic RX/TX surface wired to the REAL App TX authority.
- *
- * SAFETY-CRITICAL. This is the first slice where the pure surface's key/unkey
- * intents reach a controller, so the failure modes are operational, not
- * cosmetic:
- *   (a) a lease owner identity that changes between `start` and `release`,
- *       which makes unkey a silent no-op and strands a key DOWN
- *       (the MOR-1221/1226 identity discipline);
- *   (b) any condition inserted in front of the unkey path;
- *   (c) a `failed` phase with no App-owned way out (the RX/TX surface has no
- *       `resetFault` intent by design — recorded on the ticket).
- *
- * The controller here is a spy that records the exact `sourceId` and guard it
- * is handed; the surfaces are the real ones.
- */
+/** Semantic RX/TX surfaces consume one App-root managed TX projection. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -21,13 +6,9 @@ import type { ServerState } from '$lib/types/state';
 import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
 
 type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-  // MOR-1784: the three remaining fields of the reducer's `reset-fault` guard.
-  // Present here so a fixture can put a real outstanding obligation on the
-  // authority, which is what separates a dismissable fault from a blocked one.
-  pendingOff: { commandId: string } | null; modRestorePending: boolean;
-  cleanupGuard: { leaseId: string } | null;
+  phase: string; intent: string | null; radioTx: string; txRisk: string;
+  fault: string | null;
+  fresh?: boolean;
 };
 
 const h = vi.hoisted(() => ({
@@ -37,8 +18,6 @@ const h = vi.hoisted(() => ({
   listeners: new Set<(next: unknown) => void>(),
   start: vi.fn(),
   release: vi.fn(),
-  setIntent: vi.fn(),
-  resetFault: vi.fn(),
   selectVfo: vi.fn(),
   splitToggle: vi.fn(),
   dualWatchToggle: vi.fn(),
@@ -47,8 +26,6 @@ const h = vi.hoisted(() => ({
   modInputGuard: { visible: false, sourceLabel: null } as { visible: boolean; sourceLabel: string | null },
   subscribeCalls: 0,
   unsubscribeCalls: 0,
-  /** `listeners.size` sampled at the instant each `release` re-enters. */
-  listenersAtRelease: [] as number[],
   /** MOR-1265: stand-in for every txAux intent. These fixtures declare no
    *  txAux capability and carry no txAux state, so the MOR-1244 evidence gate
    *  omits the group and none of these is ever reachable here. */
@@ -81,25 +58,24 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => {
+  const controller = Object.freeze({
+    snapshot: () => ({ ...(h.snapshot as object), fresh: (h.snapshot as Snapshot).fresh ?? true, remainingMs: null }),
     subscribe: (listener: (next: unknown) => void) => {
       h.subscribeCalls += 1;
-      h.listeners.add(listener);
-      return () => { h.unsubscribeCalls += 1; h.listeners.delete(listener); };
+      const managed = (next: unknown) => listener({
+        ...(next as object), fresh: (next as Snapshot).fresh ?? true, remainingMs: null,
+      });
+      h.listeners.add(managed);
+      return () => { h.unsubscribeCalls += 1; h.listeners.delete(managed); };
     },
-    start: h.start,
-    setIntent: h.setIntent,
-    // Sample the live subscription count at the instant release re-enters —
-    // this is what makes the teardown ORDER observable (see the teardown suite).
-    release: (...args: unknown[]) => {
-      h.listenersAtRelease.push(h.listeners.size);
-      return (h.release as (...a: unknown[]) => unknown)(...args);
-    },
-    resetFault: h.resetFault,
-  }),
-}));
+    pttOn: vi.fn(),
+    pttOff: vi.fn(),
+    transmitOn: h.start,
+    forceOff: h.release,
+  });
+  return { getManagedAppTxController: () => controller };
+});
 // The MOR-617 preflight's own adapter — stubbed so the test drives the
 // warning's real trigger condition (`visible`) without a live TX guard.
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
@@ -184,9 +160,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 
 const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-  pendingOff: null, modRestorePending: false, cleanupGuard: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
 };
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
@@ -247,11 +221,8 @@ beforeEach(() => {
   h.listeners.clear();
   h.subscribeCalls = 0;
   h.unsubscribeCalls = 0;
-  h.listenersAtRelease = [];
   h.start.mockReset();
   h.release.mockReset();
-  h.setIntent.mockReset();
-  h.resetFault.mockReset();
   h.selectVfo = vi.fn();
   h.splitToggle = vi.fn();
   h.dualWatchToggle = vi.fn();
@@ -325,349 +296,66 @@ describe('the surfaces render from the live adapter output', () => {
   });
 });
 
-describe('TX intents reach the App controller under one stable owner identity', () => {
-  // MUTATION KILLED: deriving `sourceId` per render (or per call) instead of
-  // once per instance. `release` would carry an id the controller never
-  // registered, the model's `event.sourceId === state.sourceId` check would
-  // reject it, and the key would stay DOWN with the UI showing "unkeyed".
-  it('releases under the exact sourceId it started with, across re-renders', () => {
+describe('managed TX intent boundary', () => {
+  it('emits one unscoped HTTP TRANSMIT intent', () => {
     render();
     q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
-    flushSync();
-    expect(h.start).toHaveBeenCalledTimes(1);
-    const [startSource, leaseId, intent] = h.start.mock.calls[0];
-    expect(intent).toBe('latched');
-    expect(leaseId).toContain(startSource);
-
-    // Everything the component renders from changes underneath it: a new
-    // authority snapshot AND a new radio state. Any per-render binding is
-    // rebuilt here.
-    const guard = { leaseId };
-    push({ phase: 'active', intent: 'latched', guard, radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
-    h.state = { ...liveState(), split: true };
-    flushSync();
-
-    q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!.click();
-    flushSync();
-    expect(h.release).toHaveBeenCalledTimes(1);
-    expect(h.release).toHaveBeenCalledWith(startSource, guard);
+    expect(h.start).toHaveBeenCalledExactlyOnceWith();
   });
 
-  // MUTATION KILLED: re-subscribing (or re-reading a cached snapshot) per
-  // render — a leaked subscription per render both grows without bound and
-  // lets a stale listener overwrite the live snapshot.
-  it('subscribes to the authority exactly once and unsubscribes on destroy', () => {
+  it('keeps unconditional ForceOFF enabled in stale fault state', () => {
+    h.snapshot = { ...IDLE, fresh: false, phase: 'failed', fault: 'release-not-confirmed' };
     render();
-    push({ radioTx: 'unknown' });
-    h.state = { ...liveState(), dualWatch: true };
-    flushSync();
-    expect(h.subscribeCalls).toBe(1);
-
-    unmount(component!);
-    component = null;
-    expect(h.unsubscribeCalls).toBe(1);
+    const off = q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!;
+    expect(off.disabled).toBe(false);
+    off.click();
+    expect(h.release).toHaveBeenCalledExactlyOnceWith();
   });
 
-  // MUTATION KILLED: two mounted wiring instances sharing one lease id — one
-  // would be able to release the other's lease (the TxPanel precedent).
-  it('gives a second mounted instance a different lease owner', () => {
+  it('does not emit a command on presentation teardown', () => {
     render();
-    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
-    flushSync();
-    const first = h.start.mock.calls[0][0];
-
-    const second = document.createElement('div');
-    document.body.appendChild(second);
-    const other = mount(SemanticRadioSurfaces, { target: second });
-    flushSync();
-    (second.querySelector('[data-testid="rx-tx-key"]') as HTMLButtonElement).click();
-    flushSync();
-    expect(h.start.mock.calls[1][0]).not.toBe(first);
-    unmount(other);
-  });
-
-  it('passes the authority snapshot straight through to the surface', () => {
-    render();
-    push({ phase: 'key-confirm-pending', txRisk: 'uncertain', mayOwnKey: true, radioTx: 'off' });
-    expect(q('[data-testid="rx-tx-state"]')?.dataset.rf).toBe('uncertain');
+    unmount(component!); component = null;
+    expect(h.release).not.toHaveBeenCalled();
     expect(h.start).not.toHaveBeenCalled();
   });
-});
 
-describe('the unkey path is ungated end to end', () => {
-  // MUTATION KILLED: gating unkey on phase/permit/fault or on the view model
-  // agreeing that transmission is happening. Stopping TX must never depend on
-  // this layer's opinion.
-  it.each([
-    ['a fault is latched', { phase: 'failed', fault: 'on-timeout' }],
-    ['the radio reports RX', { radioTx: 'off', txRisk: 'none' }],
-    ['the RF state is unknown', { radioTx: 'unknown' }],
-    ['a release is already in flight', { phase: 'releasing' }],
-  ] as const)('still releases while %s', (_label, over) => {
-    render();
-    const guard = { leaseId: 'lease-x' };
-    push({ ...over, guard, mayOwnKey: true } as Partial<Snapshot>);
-
-    const unkey = q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!;
-    expect(unkey.disabled).toBe(false);
-    unkey.click();
-    flushSync();
-    expect(h.release).toHaveBeenCalledWith(expect.any(String), guard);
-  });
-
-  // MUTATION KILLED: caching the guard at render time. A guard captured before
-  // the lease generation bumped is rejected by the controller, so the unkey
-  // silently does nothing.
-  it('releases the guard the authority holds NOW, not the one seen at render', () => {
-    render();
-    push({ phase: 'active', guard: { leaseId: 'gen-1' }, mayOwnKey: true, radioTx: 'on' });
-    // A regeneration the component never re-rendered for.
-    h.snapshot = { ...(h.snapshot as Snapshot), guard: { leaseId: 'gen-2' } };
-
-    q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!.click();
-    expect(h.release).toHaveBeenCalledWith(expect.any(String), { leaseId: 'gen-2' });
-  });
-});
-
-describe('a failed phase has an App-owned way out', () => {
-  // MUTATION KILLED: relying on the RX/TX surface for recovery. It has no
-  // `resetFault` intent by design, and `keyBlockedReasons` disables the key
-  // action while `fault !== null` — so without this affordance the operator is
-  // stuck behind a failed phase with no UI exit at all.
-  it('offers a recovery control only while the authority phase is failed', () => {
+  it('renders server failure without a browser reset action', () => {
+    h.snapshot = { ...IDLE, phase: 'failed', fault: 'not-eligible' };
     render();
     expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
+    expect(q('[data-testid="tx-fault-reset-blocked"]')).not.toBeNull();
+  });
 
-    push({ phase: 'failed', fault: 'audio-failed' });
+  it('keeps canonical unknown fail-closed without optimistic browser truth', () => {
+    h.snapshot = { ...IDLE, fresh: false, radioTx: 'unknown', phase: 'unknown' };
+    render();
+    expect(q('[data-testid="rx-tx-state"]')?.getAttribute('data-rf')).toBe('unknown');
     expect(q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.disabled).toBe(true);
-    const reset = q<HTMLButtonElement>('[data-testid="tx-fault-reset"]');
-    expect(reset).not.toBeNull();
-
-    reset!.click();
-    flushSync();
-    expect(h.resetFault).toHaveBeenCalledTimes(1);
-
-    push({ phase: 'idle', fault: null });
-    expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!.disabled).toBe(false);
   });
 
-  // MUTATION KILLED: an unconditional `tx.resetFault()` at the top of
-  // `requestKey`. The failed-phase variant below CANNOT kill it — the key
-  // button is disabled there, so the click never reaches the handler and the
-  // assertion is vacuous (proven: the mutation left the suite 14/14 green).
-  // This one drives the handler through the ENABLED path, where the mutation
-  // has to show. "No implicit reset" is a deliberate contract: recovery is an
-  // explicit operator action, per the ticket's recorded decision.
-  it('never resets the fault as a side effect of a key request (enabled path)', () => {
+  it('does not replay rejected ON and recovers only after a fresh canonical snapshot', () => {
     render();
-    const key = q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!;
-    expect(key.disabled).toBe(false);
-
-    key.click();
-    flushSync();
-
+    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
+    push({ fresh: false, phase: 'failed', fault: 'not-eligible', radioTx: 'unknown' });
+    expect(q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.disabled).toBe(true);
     expect(h.start).toHaveBeenCalledTimes(1);
-    expect(h.resetFault).not.toHaveBeenCalled();
-  });
-
-  it('leaves the key action disabled in a failed phase, so no reset can leak through it', () => {
-    render();
-    push({ phase: 'failed', fault: 'audio-failed' });
-    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
-    flushSync();
-    expect(h.resetFault).not.toHaveBeenCalled();
-    expect(h.start).not.toHaveBeenCalled();
-  });
-});
-
-/**
- * MOR-1784 — the recovery affordance the operator can actually find and read.
- *
- * The bench finding it exists to close: after a `not-eligible` fault the key
- * read "an unresolved TX fault is blocking the key" with no stated way out, and
- * only a page reload restored the transmitter. The reset event existed and the
- * reducer would have accepted it; the affordance sat at the far end of the
- * single/default column, unlabelled as to what it does and silent about the
- * cases where the reducer refuses.
- */
-describe('MOR-1784 — a cleared TX fault is dismissable where the fault is displayed', () => {
-  // MUTATION KILLED: parking the recovery block back at the bottom of the
-  // column. It renders in DOM order right behind the surface that prints the
-  // fault line and the blocked list — the operator reads the verdict and the
-  // way out without hunting.
-  it.each(['single', 'dual'] as const)(
-    'renders immediately after the RX/TX surface — %s composition', (strips) => {
-      // The MOD-input banner is a zone member too, and in the dual composition
-      // it shares the box: made visible so "immediately after" is a real
-      // ordering claim rather than an artefact of an empty sibling.
-      h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
-      render({ strips });
-      push({ phase: 'failed', fault: 'not-eligible' });
-      const surface = q('[data-testid="rx-tx-surface"]')!;
-      const recovery = q('[data-testid="tx-fault-recovery"]')!;
-      expect(recovery).not.toBeNull();
-      expect(surface.nextElementSibling).toBe(recovery);
-      expect(recovery.contains(q('[data-testid="tx-fault-reset"]'))).toBe(true);
-    },
-  );
-
-  // MUTATION KILLED: an unlabelled button. "Dismiss" alone cannot tell an
-  // operator mid-contact whether pressing it will put the radio on the air.
-  it('states what dismissing does — and that it does not transmit', () => {
-    render();
-    push({ phase: 'failed', fault: 'not-eligible' });
-
-    expect(q('[data-testid="tx-fault-reset"]')!.textContent!.trim()).toBe('Dismiss TX fault');
-    expect(q('[data-testid="tx-fault-reset-note"]')!.textContent!.trim())
-      .toBe('Clears the fault and re-enables the key. It does not transmit.');
-    expect(q('[data-testid="tx-fault-reset-blocked"]')).toBeNull();
-
-    q<HTMLButtonElement>('[data-testid="tx-fault-reset"]')!.click();
-    flushSync();
-    expect(h.resetFault).toHaveBeenCalledTimes(1);
-    // Dismissing is the ONLY thing the control may do.
-    expect(h.start).not.toHaveBeenCalled();
+    push({ ...IDLE, fresh: true });
+    expect(q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.disabled).toBe(false);
+    expect(h.start).toHaveBeenCalledTimes(1);
     expect(h.release).not.toHaveBeenCalled();
   });
 
-  // MUTATION KILLED: offering the dismiss unconditionally. The reducer refuses
-  // a reset while a de-key obligation, a MOD restore or a cleanup generation is
-  // still outstanding; a button that silently no-ops there is the same dead end
-  // as no button at all, one click further in.
-  it.each([
-    ['a de-key the radio has not confirmed', { pendingOff: { commandId: 'off' }, mayOwnKey: true, modRestorePending: true },
-      'dekey-pending', 'the unkey command has not been confirmed by the radio'],
-    ['a key this session may still hold', { mayOwnKey: true, modRestorePending: true },
-      'key-held', 'this session may still be holding the key down'],
-    ['a MOD input not yet switched back', { modRestorePending: true },
-      'mod-restore', "the radio's audio input has not been switched back yet"],
-    ['a cleanup still outstanding', { cleanupGuard: { leaseId: 'lease' } },
-      'cleanup', 'the previous transmission has not finished cleaning up'],
-  ] as const)('refuses the dismiss and names the obligation — %s', (
-    _label, obligation, reason, sentence,
-  ) => {
+  it('reuses the App-root host across A to B to A presentation mounts without TX writes', () => {
     render();
-    push({ phase: 'failed', fault: 'release-not-confirmed', ...obligation });
-
-    expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
-    const blocked = q('[data-testid="tx-fault-reset-blocked"]')!;
-    expect(blocked).not.toBeNull();
-    expect(blocked.dataset.reason).toBe(reason);
-    expect(blocked.textContent).toContain(sentence);
-    // The wording must not stop at "no": it says what makes it dismissable.
-    expect(blocked.textContent).toContain('once the radio confirms the transmitter is off');
-  });
-
-  it('shows nothing at all while no fault is latched', () => {
+    unmount(component!); component = null;
+    render({ strips: 'dual' });
+    unmount(component!); component = null;
     render();
-    expect(q('[data-testid="tx-fault-recovery"]')).toBeNull();
-    push({ phase: 'failed', fault: 'not-eligible' });
-    expect(q('[data-testid="tx-fault-recovery"]')).not.toBeNull();
-    push({ phase: 'idle', fault: null });
-    expect(q('[data-testid="tx-fault-recovery"]')).toBeNull();
-  });
-
-  // MUTATION KILLED: hardcoding the English literals. Every string here is
-  // operator-facing safety wording and must route through the catalog.
-  it('routes both wordings through the locale catalog', () => {
-    setLocale('ru-RU');
-    try {
-      render();
-      push({ phase: 'failed', fault: 'not-eligible' });
-      expect(q('[data-testid="tx-fault-reset"]')!.textContent!.trim()).toBe('Сбросить ошибку TX');
-
-      push({ phase: 'failed', fault: 'release-not-confirmed', modRestorePending: true });
-      expect(q('[data-testid="tx-fault-reset-blocked"]')!.textContent)
-        .toContain('аудиовход радио ещё не переключён обратно');
-    } finally {
-      _resetLocale();
-    }
-  });
-});
-
-describe('teardown releases the lease rather than stranding the transmitter', () => {
-  // MUTATION KILLED: `onDestroy(() => stopWatchingTx())` alone. `requestKey`
-  // starts a LATCHED lease that outlives this component; MOR-1060 destroys the
-  // presentation subtree on any skinId change (resize across 640px, a skin
-  // preference change, a capability update). The App TX controller keeps the
-  // lease, `model.ts` refuses a release from any other sourceId, `start` is a
-  // no-op off-idle, and AppGlobalHost exposes no unkey — so without a release
-  // here the key is DOWN with no UI exit anywhere.
-  it('releases the live lease exactly once when the subtree is destroyed', () => {
-    render();
-    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
-    flushSync();
-    const [owner, leaseId] = h.start.mock.calls[0];
-    const guard = { leaseId };
-    push({
-      phase: 'active', intent: 'latched', guard, radioTx: 'on',
-      txRisk: 'confirmed-on', mayOwnKey: true,
-    });
-
-    unmount(component!);
-    component = null;
-
-    expect(h.release).toHaveBeenCalledTimes(1);
-    expect(h.release).toHaveBeenCalledWith(owner, guard);
-    expect(h.unsubscribeCalls).toBe(1);
-    // MUTATION KILLED: swapping the teardown order (release BEFORE
-    // unsubscribe). The release is fail-closed and re-enters the controller
-    // synchronously, which re-emits state to every live listener — into a
-    // component Svelte is mid-way through destroying. Sampling the live
-    // subscription count at the instant release re-enters is what makes the
-    // ORDER observable at all: [0] means we were already detached, [1] means
-    // the release can still bounce back into the dying component. Same
-    // documented order as TxPanel's `stopWatchingTx(); ptt.destroy();`.
-    expect(h.listenersAtRelease).toEqual([0]);
-  });
-
-  // MUTATION KILLED: releasing the render-time `txState.guard` instead of the
-  // live snapshot — a lease regenerated after the last render (the model bumps
-  // `generation` on every release/authority churn) would be released under a
-  // stale guard, which `sameGuard` rejects. Same failure as never releasing.
-  it('releases the guard the authority holds at teardown, not the last rendered one', () => {
-    render();
-    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
-    flushSync();
-    const [owner] = h.start.mock.calls[0];
-    push({ phase: 'active', guard: { leaseId: 'gen-1' }, mayOwnKey: true, radioTx: 'on' });
-    // A regeneration the component never re-rendered for.
-    h.snapshot = { ...(h.snapshot as Snapshot), guard: { leaseId: 'gen-2' } };
-
-    unmount(component!);
-    component = null;
-
-    expect(h.release).toHaveBeenCalledWith(owner, { leaseId: 'gen-2' });
-  });
-
-  it('issues no release when it holds no lease', () => {
-    render();
-    unmount(component!);
-    component = null;
+    expect(h.subscribeCalls).toBe(3);
+    expect(h.unsubscribeCalls).toBe(2);
+    expect(h.start).not.toHaveBeenCalled();
     expect(h.release).not.toHaveBeenCalled();
-  });
-
-  // The operator-visible half of F1: after the swap, the incoming subtree is
-  // usable again. Under the un-released mutation the controller is stuck
-  // off-idle and this key request can never take a lease.
-  it('lets a remounted instance key again, under its own owner identity', () => {
-    render();
-    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
-    flushSync();
-    const [firstOwner, leaseId] = h.start.mock.calls[0];
-    push({ phase: 'active', intent: 'latched', guard: { leaseId }, mayOwnKey: true, radioTx: 'on' });
-
-    unmount(component!);            // the swap
-    component = null;
-    expect(h.release).toHaveBeenCalledTimes(1);
-
-    h.snapshot = { ...IDLE };       // the release lands; the authority is idle
-    render();                       // the incoming presentation
-    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
-    flushSync();
-
-    expect(h.start).toHaveBeenCalledTimes(2);
-    expect(h.start.mock.calls[1][0]).not.toBe(firstOwner);
   });
 });
 
@@ -710,15 +398,6 @@ describe('MOR-1258 — the three TX-adjacent alerts join the rx-tx zone in the d
   // all (MOR-1069). Direct containment checks at the wiring level, one layer
   // below the full cockpit shell mount in
   // `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts`.
-  it('contains tx-fault-reset inside the rx-tx zone while a fault is latched', () => {
-    render({ strips: 'dual' });
-    push({ phase: 'failed', fault: 'audio-failed' });
-
-    const zone = q('.rx-tx-zone')!;
-    expect(zone).not.toBeNull();
-    expect(zone.contains(q('[data-testid="tx-fault-reset"]'))).toBe(true);
-  });
-
   it('contains both ModInputTxWarning buttons inside the rx-tx zone', () => {
     h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
     render({ strips: 'dual' });
@@ -731,14 +410,6 @@ describe('MOR-1258 — the three TX-adjacent alerts join the rx-tx zone in the d
   // The single/default path has no bound zone at all (MOR-1069) — the
   // ticket's explicit, honest carve-out (no containment is possible there).
   // The alerts keep their pre-MOR-1258 bare placement, unchanged.
-  it('leaves the alerts bare on the single/default path — there is no zone to contain them in', () => {
-    render();
-    push({ phase: 'failed', fault: 'audio-failed' });
-    expect(target.querySelectorAll('[data-zone-id]')).toHaveLength(0);
-    expect(q('.rx-tx-zone')).toBeNull();
-    expect(q('[data-testid="tx-fault-reset"]')).not.toBeNull();
-  });
-
   // MOR-617's invariant survives the containment move even in the dual
   // composition: the warning still is not gated on the view model.
   it('still shows the MOD-input warning before capabilities load, in the dual composition too', () => {
@@ -749,128 +420,5 @@ describe('MOR-1258 — the three TX-adjacent alerts join the rx-tx zone in the d
     const zone = q('.rx-tx-zone')!;
     expect(zone).not.toBeNull();
     expect(zone.contains(q('[data-testid="mod-input-tx-warning"]'))).toBe(true);
-  });
-});
-
-/**
- * MOR-1906 — the first key press after page load, and what the operator is
- * told and left with when it is refused.
- *
- * Bench episode (IC-7300, `rigplane web`, 2026-08-20): the key control went
- * live, the first press was refused `not-eligible` (MOR-1792, a separate
- * defect), and the screen then contradicted itself — the fault line read "TX
- * not ready: waiting for the first confirmed PTT reading" while the blocking
- * reason read "a TX session is already in progress". Nothing held the
- * transmitter. Afterwards the key was dead and `Unkey transmitter` did
- * nothing at all, in either direction, until the page was reloaded.
- */
-describe('MOR-1906 — an unconfirmed RF state is not a busy TX session', () => {
-  const blockedReasons = (): (string | undefined)[] =>
-    Array.from(target.querySelectorAll('[data-testid="rx-tx-blocked"] li'))
-      .map((item) => (item as HTMLElement).dataset.reason);
-
-  // MUTATION KILLED: restoring the collapsed
-  // `phase !== 'idle' || mayOwnKey || txRisk !== 'none'` condition. It reports
-  // a lease nobody holds for the one case the ticket was raised on — an idle
-  // authority whose RF state has simply not been confirmed yet.
-  it('reports rf-state-unknown for uncertain RF on an idle, unowned authority', () => {
-    render();
-    push({ phase: 'idle', mayOwnKey: false, txRisk: 'uncertain', radioTx: 'off', fault: null });
-    expect(blockedReasons()).toContain('rf-state-unknown');
-    expect(blockedReasons()).not.toContain('tx-busy');
-  });
-
-  // The same doubt the RF label already prints. `rfState()` reads a
-  // 'confirmed-on' risk as transmitting and an 'uncertain' one as uncertain;
-  // the blocking reason now says the same thing rather than a third thing.
-  it('reports radio-transmitting for a confirmed-on risk, not a busy session', () => {
-    render();
-    push({ phase: 'idle', mayOwnKey: false, txRisk: 'confirmed-on', radioTx: 'off', fault: null });
-    expect(blockedReasons()).toContain('radio-transmitting');
-    expect(blockedReasons()).not.toContain('tx-busy');
-  });
-
-  // The reasons that really do mean "a session is in progress" keep saying so.
-  it.each([
-    ['a lease is starting', { phase: 'audio-start-pending' }],
-    ['this browser may hold the key', { mayOwnKey: true }],
-  ] as const)('still reports tx-busy while %s', (_label, over) => {
-    render();
-    push({ ...over, fault: null } as Partial<Snapshot>);
-    expect(blockedReasons()).toContain('tx-busy');
-  });
-
-  // A latched fault is a fault, not a session. `tx-fault` already names it and
-  // is emitted for the phase itself, so the verdict cannot go missing if a
-  // future state ever reaches 'failed' without a code.
-  it('names a failed phase as a fault rather than a session in progress', () => {
-    render();
-    push({ phase: 'failed', fault: 'not-eligible' });
-    expect(blockedReasons()).toContain('tx-fault');
-    expect(blockedReasons()).not.toContain('tx-busy');
-  });
-});
-
-/**
- * MOR-1906 item 2 — the wedge. A refused press latches `failed`, which
- * disables the key, and clears the lease guard, which used to make
- * `requestUnkey` a silent no-op: `if (guard) tx.release(...)` swallowed the
- * intent with no command, no reset and no feedback. Both controls dead, and
- * only a page reload out.
- */
-describe('MOR-1906 — a refused key press leaves both controls operable', () => {
-  /** Exactly the state `transition`'s `start` refusal branch produces. */
-  const REFUSED: Partial<Snapshot> = {
-    phase: 'failed', fault: 'not-eligible', guard: null, mayOwnKey: false,
-    txRisk: 'none', radioTx: 'off', pendingOff: null, modRestorePending: false,
-    cleanupGuard: null,
-  };
-
-  // MUTATION KILLED: gating the unkey path on holding a lease guard. Without a
-  // lease there is nothing to release, and the operator was left pressing a
-  // live-looking button that did nothing whatsoever.
-  it('never swallows the unkey intent after a refusal cleared the lease', () => {
-    render();
-    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
-    flushSync();
-    expect(h.start).toHaveBeenCalledTimes(1);
-
-    push(REFUSED);
-    expect(q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.disabled).toBe(true);
-    const unkey = q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!;
-    expect(unkey.disabled).toBe(false);
-
-    unkey.click();
-    flushSync();
-    expect(h.resetFault).toHaveBeenCalledTimes(1);
-    expect(h.release).not.toHaveBeenCalled();
-
-    // …and the authority acting on it puts the key back in the operator's hands.
-    push({ phase: 'idle', fault: null });
-    expect(q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.disabled).toBe(false);
-  });
-
-  // MUTATION KILLED: turning unkey into a fault reset unconditionally. With a
-  // lease live the only correct action is still the release.
-  it('releases rather than resets while a lease is live', () => {
-    render();
-    const guard = { leaseId: 'lease-live' };
-    push({ phase: 'active', guard, mayOwnKey: true, radioTx: 'on', txRisk: 'confirmed-on' });
-    q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!.click();
-    flushSync();
-    expect(h.release).toHaveBeenCalledWith(expect.any(String), guard);
-    expect(h.resetFault).not.toHaveBeenCalled();
-  });
-
-  // The other half of "recover in-page": the dismiss affordance MOR-1784 added
-  // is offered for THIS fault too, so there are two ways back, not zero.
-  it('offers the dismiss affordance for a refused press', () => {
-    render();
-    push(REFUSED);
-    const reset = q<HTMLButtonElement>('[data-testid="tx-fault-reset"]')!;
-    expect(reset).not.toBeNull();
-    reset.click();
-    flushSync();
-    expect(h.resetFault).toHaveBeenCalledTimes(1);
   });
 });

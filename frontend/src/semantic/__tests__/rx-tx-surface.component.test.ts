@@ -3,11 +3,11 @@
  *
  * SAFETY-CRITICAL. Every test below names the mutation it kills, because a
  * surface that merely "looks right" is worthless here: the failure modes are
- * (a) showing RX while the browser may own the key, (b) offering a key action
+ * (a) showing RX while key confirmation is uncertain, (b) offering a key action
  * the authority would refuse, and (c) gating the *unkey* path.
  *
- * ADR invariant 11: TX authority lives in the App-owned TX controller. This
- * surface is NOT a second authority — it renders the authority snapshot and
+ * TX authority lives on the server. This surface is NOT a second authority —
+ * it renders the server projection and
  * emits intents. It never derives TX truth from the radio view model, and it
  * never keys anything itself. See `AppGlobalHost.svelte` (MOR-1059) for the
  * authoritative global lamp, which this surface must not duplicate.
@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
+import rxTxSurfaceSource from '../RxTxSurface.svelte?raw';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import type { RadioViewModel } from '../radio-view-model';
 import {
@@ -28,7 +29,7 @@ const IDS: readonly TopologyFixtureId[] = ['1/single', '1/ab', '2/ab_shared', '2
 const PERMITTED: TopologyFixtureId[] = ['1/single', '2/main_sub'];
 
 const IDLE_RX: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
 };
 const snap = (over: Partial<TxAuthoritySnapshot> = {}): TxAuthoritySnapshot => ({ ...IDLE_RX, ...over });
 
@@ -36,8 +37,9 @@ let target: HTMLDivElement;
 beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target); });
 afterEach(() => { target.remove(); });
 
-type Handlers = { onRequestKey?: () => void; onRequestUnkey?: () => void };
-function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = {}) {
+type Handlers = { onRequestKey: () => void; onRequestUnkey: () => void };
+const inertHandlers = (): Handlers => ({ onRequestKey: vi.fn(), onRequestUnkey: vi.fn() });
+function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = inertHandlers()) {
   const component = mount(RxTxSurface, { target, props: { view, tx, ...handlers } });
   flushSync();
   const q = (sel: string) => target.querySelector(sel);
@@ -53,7 +55,7 @@ function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handler
 }
 function withSurface(
   view: RadioViewModel, tx: TxAuthoritySnapshot,
-  fn: (s: ReturnType<typeof render>) => void, handlers: Handlers = {},
+  fn: (s: ReturnType<typeof render>) => void, handlers: Handlers = inertHandlers(),
 ): void {
   const s = render(view, tx, handlers);
   try { fn(s); } finally { s.dispose(); }
@@ -61,7 +63,7 @@ function withSurface(
 
 // ── 1. TX state display mirrors the AUTHORITY snapshot, and only it ─────────
 
-describe('RX/TX status mirrors the App TX authority snapshot', () => {
+describe('RX/TX status mirrors the server TX projection', () => {
   it.each(IDS)('%s: an idle authority with an observed OFF radio reads RX', (id) => {
     withSurface(topologyFixtures[id], IDLE_RX, (s) => {
       expect(s.state().dataset.rf).toBe('receiving');
@@ -74,7 +76,7 @@ describe('RX/TX status mirrors the App TX authority snapshot', () => {
     // so an unconfirmed key-down falls through to 'receiving'. radioTx is still
     // 'off' here (no readback yet) — exactly the state that tempts a naive
     // implementation into showing RX while the key may be down.
-    withSurface(topologyFixtures[id], snap({ txRisk: 'uncertain', mayOwnKey: true, phase: 'key-confirm-pending' }), (s) => {
+    withSurface(topologyFixtures[id], snap({ txRisk: 'uncertain', phase: 'key-confirm-pending' }), (s) => {
       expect(s.state().dataset.rf).toBe('uncertain');
       expect(s.state().dataset.rf).not.toBe('receiving');
       expect(s.state().textContent).not.toContain('RX');
@@ -145,36 +147,12 @@ describe('RX/TX status mirrors the App TX authority snapshot', () => {
   });
 
   it.each(['momentary', 'latched'] as const)('surfaces a %s (held/latched) intent', (intent) => {
-    withSurface(topologyFixtures['1/single'], snap({ phase: 'active', intent, mayOwnKey: true, radioTx: 'on' }), (s) => {
+    withSurface(topologyFixtures['1/single'], snap({ phase: 'active', intent, radioTx: 'on' }), (s) => {
       expect(s.state().dataset.intent).toBe(intent);
       expect(s.state().textContent?.toLowerCase()).toContain(intent);
     });
   });
 
-  it('distinguishes external TX from locally-owned TX', () => {
-    withSurface(topologyFixtures['1/single'], snap({ radioTx: 'on' }), (s) => {
-      expect(s.state().dataset.origin).toBe('external');
-    });
-    withSurface(topologyFixtures['1/single'], snap({ radioTx: 'on', mayOwnKey: true, phase: 'active' }), (s) => {
-      expect(s.state().dataset.origin).toBe('local');
-    });
-  });
-
-  it('never labels TX "external" while the browser may own the key', () => {
-    // Kill-mutation: `origin = mayOwnKey ? 'local' : 'external'` narrowed to
-    // `phase === 'idle' ? 'external' : 'local'` (or vice versa). Telling the
-    // operator "not you" while a lease is live is the dangerous direction.
-    for (const tx of [
-      snap({ mayOwnKey: true, txRisk: 'uncertain' }),
-      snap({ phase: 'releasing', mayOwnKey: true, txRisk: 'confirmed-on', radioTx: 'on' }),
-      snap({ phase: 'audio-start-pending' }),
-      snap({ phase: 'failed', fault: 'on-timeout' }),
-    ]) {
-      withSurface(topologyFixtures['1/single'], tx, (s) => {
-        expect(s.state().dataset.origin).toBe('local');
-      });
-    }
-  });
 });
 
 // ── 4. No duplicate authority: this surface displays, it does not indicate ──
@@ -269,6 +247,14 @@ describe('fault display without a second authority', () => {
 // ── 2. TX action intents ────────────────────────────────────────────────────
 
 describe('key intent gating', () => {
+  it('requires both action callbacks and binds them directly without a silent optional path', () => {
+    expect(rxTxSurfaceSource).toContain('onRequestKey: () => void;');
+    expect(rxTxSurfaceSource).toContain('onRequestUnkey: () => void;');
+    expect(rxTxSurfaceSource).toContain('onclick={onRequestKey}');
+    expect(rxTxSurfaceSource).toContain('onclick={onRequestUnkey}');
+    expect(rxTxSurfaceSource).not.toMatch(/onRequest(?:Key|Unkey)\?[:.]/);
+  });
+
   it.each(PERMITTED)('%s: emits exactly one key intent when permit is allowed and the authority is idle/RX', (id) => {
     const onRequestKey = vi.fn();
     withSurface(topologyFixtures[id], IDLE_RX, (s) => {
@@ -276,25 +262,21 @@ describe('key intent gating', () => {
       s.key().click();
       flushSync();
       expect(onRequestKey).toHaveBeenCalledTimes(1);
-    }, { onRequestKey });
+    }, { onRequestKey, onRequestUnkey: vi.fn() });
   });
 
   it.each([
     ['1/ab', 'tx-permit-unknown'],
     ['2/ab_shared', 'tx-permit-denied'],
-  ] as const)('%s: a non-allowed permit disables keying and names the reason (%s)', (id, reason) => {
-    // Kill-mutation: `permit.status !== 'denied'` as the gate (treats the
-    // tri-state 'unknown' as permission). The contract validator already
-    // rejects permit='allowed' + unknown target; the surface must independently
-    // treat 'unknown' as NOT allowed.
+  ] as const)('%s: a non-allowed permit remains advisory and names the reason (%s)', (id, reason) => {
     const onRequestKey = vi.fn();
     withSurface(topologyFixtures[id], IDLE_RX, (s) => {
-      expect(s.key().disabled).toBe(true);
+      expect(s.key().disabled).toBe(false);
       expect(s.reasons()).toContain(reason);
       s.key().click();
       flushSync();
-      expect(onRequestKey).not.toHaveBeenCalled();
-    }, { onRequestKey });
+      expect(onRequestKey).toHaveBeenCalledTimes(1);
+    }, { onRequestKey, onRequestUnkey: vi.fn() });
   });
 
   it.each(IDS)('%s: audio-only scope does not change the key gate (scope is not a TX fact)', (id) => {
@@ -307,16 +289,13 @@ describe('key intent gating', () => {
   });
 
   it.each([
-    ['external TX in progress', snap({ radioTx: 'on' }), 'radio-transmitting'],
+    ['observed RF on', snap({ radioTx: 'on' }), 'radio-transmitting'],
     ['RF state unknown', snap({ radioTx: 'unknown' }), 'rf-state-unknown'],
-    ['a lease already pending', snap({ phase: 'audio-start-pending' }), 'tx-busy'],
-    ['a key already owned', snap({ phase: 'active', mayOwnKey: true, txRisk: 'confirmed-on', radioTx: 'on' }), 'tx-busy'],
-    ['a release in flight', snap({ phase: 'releasing', mayOwnKey: true, txRisk: 'uncertain' }), 'tx-busy'],
+    ['audio start pending', snap({ phase: 'audio-start-pending' }), 'tx-busy'],
+    ['an active server session', snap({ phase: 'active', txRisk: 'confirmed-on', radioTx: 'on' }), 'tx-busy'],
+    ['a release in flight', snap({ phase: 'releasing', txRisk: 'uncertain' }), 'tx-busy'],
     ['an unresolved fault', snap({ phase: 'failed', fault: 'not-eligible' }), 'tx-fault'],
-  ] as const)('%s: the authority forbids keying even with an allowed permit', (_name, tx, reason) => {
-    // Kill-mutation: gate on `view.txPermit` alone. The permit says the
-    // FREQUENCY is legal; only the authority knows whether the transmitter is
-    // free. Both must agree before a key intent may leave this surface.
+  ] as const)('%s: the canonical server projection fail-closes Key and reports the reason', (_name, tx, reason) => {
     const onRequestKey = vi.fn();
     withSurface(topologyFixtures['1/single'], tx, (s) => {
       expect(s.key().disabled).toBe(true);
@@ -324,7 +303,14 @@ describe('key intent gating', () => {
       s.key().click();
       flushSync();
       expect(onRequestKey).not.toHaveBeenCalled();
-    }, { onRequestKey });
+    }, { onRequestKey, onRequestUnkey: vi.fn() });
+  });
+
+  it('a stale canonical snapshot disables Key without disabling Unkey', () => {
+    withSurface(topologyFixtures['1/single'], snap({ fresh: false }), (s) => {
+      expect(s.key().disabled).toBe(true);
+      expect(s.unkey().disabled).toBe(false);
+    });
   });
 
   it('surfaces the view model disabled reasons that concern TX', () => {
@@ -339,41 +325,40 @@ describe('key intent gating', () => {
 });
 
 describe('unkey intent is never gated (fail-safe direction)', () => {
-  const EVERY_STATE: TxAuthoritySnapshot[] = [
-    IDLE_RX,
-    snap({ radioTx: 'unknown' }),
-    snap({ radioTx: 'on' }),
-    snap({ phase: 'audio-start-pending' }),
-    snap({ phase: 'key-confirm-pending', mayOwnKey: true, txRisk: 'uncertain' }),
-    snap({ phase: 'active', mayOwnKey: true, txRisk: 'confirmed-on', radioTx: 'on', intent: 'latched' }),
-    snap({ phase: 'releasing', mayOwnKey: true, txRisk: 'confirmed-on' }),
-    snap({ phase: 'failed', fault: 'on-command-failed' }),
+  const UNKEY_STATES: readonly (readonly [string, TxAuthoritySnapshot])[] = [
+    ['RX', IDLE_RX],
+    ['momentary PTT', snap({ phase: 'active', intent: 'momentary', radioTx: 'on', txRisk: 'confirmed-on' })],
+    ['latched TRANSMIT', snap({ phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on' })],
+    ['error', snap({ phase: 'failed', fault: 'on-command-failed', radioTx: 'unknown', txRisk: 'uncertain' })],
+    ['stale/unknown', snap({ fresh: false, radioTx: 'unknown', txRisk: 'uncertain' })],
   ];
 
-  it('stays enabled and emits for every topology × every authority state', () => {
+  it.each(UNKEY_STATES)('%s: stays visible, focusable, enabled, and calls forceOff', (_name, tx) => {
     // Kill-mutation: add ANY condition to the unkey path — `disabled={...}`,
     // `{#if}` around the button, or an early return in the handler. Stopping
     // transmission must never require the surface to agree that TX is happening;
     // the whole point of the uncertain/unknown states is that it may not know.
     for (const id of IDS) {
-      for (const tx of EVERY_STATE) {
-        const onRequestUnkey = vi.fn();
-        withSurface(topologyFixtures[id], tx, (s) => {
-          expect(s.unkey()).not.toBeNull();
-          expect(s.unkey().disabled).toBe(false);
-          expect(s.unkey().hasAttribute('aria-disabled')).toBe(false);
-          s.unkey().click();
-          flushSync();
-          expect(onRequestUnkey).toHaveBeenCalledTimes(1);
-        }, { onRequestUnkey });
-      }
+      const forceOff = vi.fn();
+      withSurface(topologyFixtures[id], tx, (s) => {
+        const unkey = s.unkey();
+        expect(unkey).not.toBeNull();
+        expect(unkey.textContent?.trim()).toBe('Unkey transmitter');
+        expect(unkey.disabled).toBe(false);
+        expect(unkey.hasAttribute('aria-disabled')).toBe(false);
+        unkey.focus();
+        expect(document.activeElement).toBe(unkey);
+        unkey.click();
+        flushSync();
+        expect(forceOff).toHaveBeenCalledTimes(1);
+      }, { onRequestKey: vi.fn(), onRequestUnkey: forceOff });
     }
   });
 
-  it('emits unkey even when a denied permit blocks keying', () => {
+  it('emits unkey even while canonical TX state blocks a new Key', () => {
     const onRequestKey = vi.fn();
     const onRequestUnkey = vi.fn();
-    withSurface(topologyFixtures['2/ab_shared'], snap({ phase: 'active', mayOwnKey: true, radioTx: 'on' }), (s) => {
+    withSurface(topologyFixtures['2/ab_shared'], snap({ phase: 'active', radioTx: 'on' }), (s) => {
       expect(s.key().disabled).toBe(true);
       s.unkey().click();
       flushSync();
@@ -386,14 +371,14 @@ describe('unkey intent is never gated (fail-safe direction)', () => {
 // ── 3. txTarget unknown ⇒ target-unknown state, never a guess ───────────────
 
 describe('unknown TX target', () => {
-  it('renders an explicit target-unknown state with its reason and disables keying', () => {
+  it('renders an explicit target-unknown state while leaving admission server-owned', () => {
     // Kill-mutation: fall back to the active VFO / vfos[0] as the target.
     // MOR-988 §3.2: missing observation never synthesizes a target.
     withSurface(topologyFixtures['1/ab'], IDLE_RX, (s) => {
       const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
       expect(t.dataset.target).toBe('unknown');
       expect(t.dataset.reason).toBe('not-observed');
-      expect(s.key().disabled).toBe(true);
+      expect(s.key().disabled).toBe(false);
       expect(s.reasons()).toContain('tx-target-unknown');
     });
   });
@@ -442,9 +427,9 @@ describe('accessibility', () => {
       expect(s.key().getAttribute('aria-pressed')).toBe('false');
     });
     for (const tx of [
-      snap({ phase: 'key-confirm-pending', mayOwnKey: true, txRisk: 'uncertain' }),
-      snap({ phase: 'active', mayOwnKey: true, txRisk: 'confirmed-on', radioTx: 'on' }),
-      snap({ phase: 'releasing', mayOwnKey: true, txRisk: 'confirmed-on' }),
+      snap({ phase: 'key-confirm-pending', txRisk: 'uncertain' }),
+      snap({ phase: 'active', txRisk: 'confirmed-on', radioTx: 'on' }),
+      snap({ phase: 'releasing', txRisk: 'confirmed-on' }),
     ]) {
       withSurface(topologyFixtures['1/single'], tx, (s) => {
         expect(s.key().getAttribute('aria-pressed')).toBe('true');
@@ -453,7 +438,7 @@ describe('accessibility', () => {
   });
 
   it('keeps the unkey action focusable in every state (it must never be reached only by mouse)', () => {
-    withSurface(topologyFixtures['1/single'], snap({ phase: 'active', mayOwnKey: true, radioTx: 'on' }), (s) => {
+    withSurface(topologyFixtures['1/single'], snap({ phase: 'active', radioTx: 'on' }), (s) => {
       s.unkey().focus();
       expect(document.activeElement).toBe(s.unkey());
     });
@@ -566,8 +551,8 @@ describe('MOR-2231 — TX controls carry the shared control-button vocabulary', 
     // value would show an idle button while the transmitter is keyed.
     for (const [tx, expected] of [
       [IDLE_RX, 'false'],
-      [snap({ phase: 'key-confirm-pending', mayOwnKey: true, txRisk: 'uncertain' }), 'true'],
-      [snap({ phase: 'active', mayOwnKey: true, txRisk: 'confirmed-on', radioTx: 'on' }), 'true'],
+      [snap({ phase: 'key-confirm-pending', txRisk: 'uncertain' }), 'true'],
+      [snap({ phase: 'active', txRisk: 'confirmed-on', radioTx: 'on' }), 'true'],
     ] as const) {
       withSurface(topologyFixtures['1/single'], tx, (s) => {
         expect(s.key().dataset.active).toBe(expected);

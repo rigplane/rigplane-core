@@ -4,7 +4,7 @@
  * SAFETY-CRITICAL. This surface carries ATU **TUNE**, which emits a carrier:
  * it is a transmit-causing action, not a settings control. Every test below
  * names the mutation it kills, because the failure modes are operational:
- *   (a) TUNE reachable while the App TX authority would refuse a key intent
+ *   (a) TUNE reachable while the server TX projection reports a blocked key intent
  *       (MOR-1262 §2 slice 1 safety note i);
  *   (b) VOX armed on a field this radio never reported (safety note ii);
  *   (c) this surface growing a key/unkey control and becoming a SECOND TX
@@ -26,7 +26,7 @@ import type { Availability, RadioViewModel, TxAuxViewModel } from '../radio-view
 import { blockedLabel, keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
 
 const IDLE_RX: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
 };
 const snap = (over: Partial<TxAuthoritySnapshot> = {}): TxAuthoritySnapshot => ({ ...IDLE_RX, ...over });
 
@@ -289,18 +289,17 @@ describe('VOX arming obeys the two-level gate (safety note ii)', () => {
 
 // ── 4. ATU TUNE — safety note (i), a transmit-causing action ───────────────
 
-/** Every way the App TX authority (or the permit) refuses a key intent. */
+/** Every way the server projection (or the permit) reports a blocked key intent. */
 const BLOCKING: readonly (readonly [string, Partial<TxAuthoritySnapshot>])[] = [
   ['a fault is latched', { fault: 'on-timeout' }],
   ['a lease is in progress', { phase: 'key-confirm-pending' }],
-  ['this browser may own the key', { mayOwnKey: true }],
   ['the radio is already transmitting', { radioTx: 'on' }],
   ['the RF state is unknown', { radioTx: 'unknown' }],
   ['TX risk is uncertain', { txRisk: 'uncertain' }],
   ['TX risk is confirmed-on', { txRisk: 'confirmed-on' }],
 ];
 
-describe('ATU TUNE is gated by the App TX authority, exactly like the key intent', () => {
+describe('ATU TUNE is gated by the server TX projection, exactly like the key intent', () => {
   it('offers TUNE when the authority is idle and the permit allows', () => {
     withSurface(base(), snap(), (s) => {
       expect(s.tune()).not.toBeNull();

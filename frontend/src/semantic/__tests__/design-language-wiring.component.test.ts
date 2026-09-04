@@ -32,7 +32,7 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import MetersSurface from '../MetersSurface.svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
@@ -63,21 +63,21 @@ const V2_READOUT = '14.250.000';
 const THIN_SPACE = ' ';
 
 const IDLE_RX: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
 };
 const KEYED: TxAuthoritySnapshot = {
   phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on',
-  mayOwnKey: true, fault: null,
+  fault: null,
 };
 /**
- * The R9 discriminator: the radio's transmit bit is ON while the App authority
- * owns no session at all (a foot switch, or another client). `radioTx` and
+ * The R9 discriminator: the radio's transmit bit is ON while the server projection
+ * reports no session at all. `radioTx` and
  * `txSessionState(tx)` disagree here and nowhere else in this file, so anything
  * that reads the raw bit instead of the authority's conclusion shows up.
  */
-const EXTERNALLY_KEYED: TxAuthoritySnapshot = {
+const RF_ON_WITH_IDLE_PHASE: TxAuthoritySnapshot = {
   phase: 'idle', intent: null, radioTx: 'on', txRisk: 'confirmed-on',
-  mayOwnKey: false, fault: null,
+  fault: null,
 };
 
 function activate(id: string | null): void {
@@ -266,14 +266,13 @@ function rxTxProbe(language: string | null, tx: TxAuthoritySnapshot): {
 } {
   activate(language);
   let out = { facts: {} as Record<string, string | null>, annotations: [] as string[] };
-  withMounted(RxTxSurface, { view: VIEW, tx }, (root) => {
+  withMounted(RxTxSurface, { view: VIEW, tx, onRequestKey: vi.fn(), onRequestUnkey: vi.fn() }, (root) => {
     const state = root.querySelector('[data-testid="rx-tx-state"]')!;
     const key = root.querySelector<HTMLButtonElement>('[data-testid="rx-tx-key"]')!;
     out = {
       facts: {
         rf: state.getAttribute('data-rf'),
         session: state.getAttribute('data-session'),
-        origin: state.getAttribute('data-origin'),
         text: state.textContent!.replace(/\s+/g, ' ').trim(),
         keyDisabled: String(key.disabled),
         keyPressed: key.getAttribute('aria-pressed'),
@@ -304,16 +303,16 @@ describe('MOR-1275 — the state-feedback slot displays the authority, never a s
     });
 
   it.each(['studioline', 'fieldline'])(
-    '%s: an externally-keyed radio does NOT read as a keyed session (R9)', (id) => {
+    '%s: observed RF on with an idle phase does NOT read as a keyed session (R9)', (id) => {
       // The one snapshot where `radioTx` and `txSessionState(tx)` disagree.
       // Kill-mutation: passing `tx.radioTx === 'on' ? 'keyed' : 'idle'` as the
       // session — indistinguishable on every other fixture in this file, and
       // exactly the "second TX opinion" R9 forbids. The authority owns no
       // session here, so the descriptor must land on doubt, not on TX.
-      const external = rxTxProbe(id, EXTERNALLY_KEYED).annotations;
-      expect(external).toContain('rx-tx-surface:data-dl-meter-scale-label=S');
-      expect(external).toContain('rx-tx-surface:data-dl-numeral-tone=primary');
-      expect(external).not.toContain('rx-tx-surface:data-dl-meter-scale-label=PO');
+      const rfOnIdle = rxTxProbe(id, RF_ON_WITH_IDLE_PHASE).annotations;
+      expect(rfOnIdle).toContain('rx-tx-surface:data-dl-meter-scale-label=S');
+      expect(rfOnIdle).toContain('rx-tx-surface:data-dl-numeral-tone=primary');
+      expect(rfOnIdle).not.toContain('rx-tx-surface:data-dl-meter-scale-label=PO');
     });
 
   it('emits no annotation when no language is active', () => {

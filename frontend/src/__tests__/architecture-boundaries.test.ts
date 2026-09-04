@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ESLint } from 'eslint';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -310,9 +310,8 @@ describe('v3 package boundaries (MOR-1061)', () => {
   });
 
   // ── Review cycle 2, C1-B: ADR INV-6 was only partially encoded ─────────
-  // system-controller, scope-controller, and the TX-authority
-  // tx-controller/app-host (INV-11) were still reachable from
-  // presentation/semantic despite the F1 barrel ban.
+  // system-controller, scope-controller, and the App-root managed TX facade
+  // (INV-11) must remain unreachable from presentation/semantic.
 
   it('rejects semantic importing system-controller directly', async () => {
     const hits = await restrictedImportHits(
@@ -330,28 +329,32 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('rejects presentation importing tx-controller/app-host (alias) — the TX authority', async () => {
+  it('rejects semantic importing the managed App-root TX facade', async () => {
     const hits = await restrictedImportHits(
-      `import { getAppTxController } from '$lib/runtime/tx-controller/app-host';`,
-      'src/presentation/layouts/SpectrumFirst.ts',
+      `import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';`,
+      'src/semantic/VfoDisplay.ts',
     );
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('rejects presentation importing tx-controller/app-host (relative)', async () => {
+  it('allows runtime tests to consume the managed TX facade read-only', async () => {
     const hits = await restrictedImportHits(
-      `import { getAppTxController } from '../../lib/runtime/tx-controller/app-host';`,
-      'src/presentation/layouts/SpectrumFirst.ts',
-    );
-    expect(hits).toBeGreaterThan(0);
-  });
-
-  it('still allows adapters to import tx-controller/app-host after C1-B', async () => {
-    const hits = await restrictedImportHits(
-      `import { getAppTxController } from '$lib/runtime/tx-controller/app-host';`,
-      'src/lib/runtime/adapters/vfo-adapter.ts',
+      `import type { ManagedAppTxController } from '../managed-app-host';`,
+      'src/lib/runtime/tx-controller/__tests__/support/managed-app-probe.ts',
     );
     expect(hits).toBe(0);
+  });
+
+  it('keeps every retired browser TX authority module absent', () => {
+    for (const retired of [
+      'src/lib/runtime/tx-controller/app-host.ts',
+      'src/lib/runtime/tx-controller/controller.ts',
+      'src/lib/runtime/tx-controller/model.ts',
+      'src/lib/runtime/tx-controller/app-authority.ts',
+      'src/components-v2/wiring/tx-ptt-gesture.ts',
+      'src/components-v2/wiring/mobile-ptt-surface.ts',
+      'src/components-v2/wiring/__tests__/tx-ptt-gesture.test.ts',
+    ]) expect(existsSync(path.join(FRONTEND_ROOT, retired)), retired).toBe(false);
   });
 
   // ── Review cycle 2, minor 3: pin the $lib/runtime/index ban ────────────

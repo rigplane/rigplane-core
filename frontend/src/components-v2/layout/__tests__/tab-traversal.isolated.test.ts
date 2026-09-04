@@ -24,6 +24,9 @@
  * that narrower pin).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 import { mount, unmount, flushSync } from 'svelte';
 import {
   IC7300_STATE, IC7300_CAPABILITIES,
@@ -93,18 +96,11 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
   applyModeDefault: vi.fn(),
 }));
 
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => ({ phase: 'idle', intent: null, guard: null, radioTx: 'unknown', txRisk: 'none', mayOwnKey: false, fault: null }),
-      subscribe: () => () => {},
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -177,6 +173,7 @@ function mountLayout(skinId: any = 'desktop-v2') {
 }
 
 beforeEach(() => {
+  txHarness.reset({ stale: true });
   components = [];
   rt.state = null;
   rt.caps = null;

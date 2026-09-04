@@ -2,14 +2,14 @@
  * MOR-1086 — presentation switching preserves TX authority identity.
  *
  * Evidence-only (no production change). The MOR-1060 suite proves that a
- * switch does not RE-PROVIDE the TX host (`provideAppTxControllerHost` is
+ * switch does not re-provide the managed TX host (the provider is
  * called once) against a MOCKED host. That leaves the operator-facing
  * question unanswered: with a key actually DOWN, does replacing the
  * presentation de-key the radio, lose the lease, or hand the incoming
  * subtree a different controller?
  *
  * This file answers it through the real stack — real `App.svelte`, real
- * `provideAppTxControllerHost`/`TxController`, real `WsChannel` singleton
+ * `provideManagedAppTxHost`/`ManagedTxController`, real `WsChannel` singleton
  * driven only at the socket boundary by the shared `MockWebSocket` — so
  * "no de-key" is a wire fact (`ptt_off` frame count), not a mock call count.
  *
@@ -21,9 +21,9 @@
  * can be compared by object identity with the one the outgoing subtree held.
  *
  * Pinned here:
- *   1. a switch under a confirmed-on key keeps phase/risk/guard and sends no
+ *   1. a switch under a held PTT intent sends no
  *      `ptt_off` and no second `ptt_on` — the swap neither de-keys nor replays;
- *   2. the incoming subtree receives the IDENTICAL `AppTxController` object;
+ *   2. the incoming subtree receives the IDENTICAL managed controller object;
  *   3. rapid A → B → A under a key is the same, with one live subtree;
  *   4. a stale resolution landing after a switch-during-TX cannot mount and
  *      cannot touch the TX source;
@@ -31,18 +31,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync, tick } from 'svelte';
-import type { Capabilities } from '$lib/types/capabilities';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 import type { SkinId } from '../skins/registry';
 
-type Pending = { id: SkinId; resolve: (component: unknown) => void };
+type ProbeComponent = (...args: Parameters<typeof TxControllerProbe>) => ReturnType<typeof TxControllerProbe>;
+type Pending = { id: SkinId; resolve: (component: ProbeComponent) => void };
 
 const h = vi.hoisted(() => ({
-  radio: null as any,
-  caps: null as any,
   start: vi.fn(async (): Promise<string | null> => null),
   stop: vi.fn(),
-  restore: vi.fn(),
+  submit: vi.fn(async () => 'accepted' as const),
   registerBarrier: vi.fn(),
   bootstrap: vi.fn(),
   bootstrapCleanup: vi.fn(),
@@ -56,27 +54,16 @@ const h = vi.hoisted(() => ({
   provideCalls: 0,
 }));
 
-// ── Same facts seam as the U6 integration harness ──
-vi.mock('$lib/stores/radio.svelte', () => ({
-  getRadioState: () => h.radio,
-  setRadioState: () => {},
-  patchActiveReceiver: () => {},
-  patchRadioState: () => {},
-  resetRadioState: () => {},
-}));
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: () => h.caps,
-  hasAnyScope: () => false,
-  capabilitiesMatchGeneration: () => true,
-  clearCapabilities: () => {},
-  setCapabilities: () => true,
+vi.mock('$lib/stores/managed-transmit.svelte', () => ({
+  managedTransmitSnapshot: () => null, managedTransmitIsStale: () => true,
+  managedTransmitRemainingMs: () => null, refreshManagedTransmit: vi.fn(async () => {}),
+  invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
 }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({
     onTxAudioDied: () => () => {},
-    startTx: h.start,
+    startManagedTx: h.start,
     stopLocalAudio: h.stop,
-    restoreModAfterConfirmedOff: h.restore,
   }),
 }));
 vi.mock('../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
@@ -139,7 +126,7 @@ import {
   resetCapturedController,
 } from '../lib/runtime/tx-controller/__tests__/support/TxControllerProbe.svelte';
 import TxControllerProbe from '../lib/runtime/tx-controller/__tests__/support/TxControllerProbe.svelte';
-import type { AppTxController } from '../lib/runtime/tx-controller/app-host';
+import type { ManagedAppTxController } from '../lib/runtime/tx-controller/managed-app-host';
 
 /** Viewport width → skin id. Reuses App's own resize reactivity as the knob. */
 const WIDTH_FOR: Record<SkinId, number> = {
@@ -167,38 +154,15 @@ function widthToSkin(): SkinId {
  * A distinct component identity per skin id, each delegating to the real
  * `TxControllerProbe` — so every switch is a genuine destroy/recreate of the
  * presentation subtree, and every incoming subtree calls the real
- * `getAppTxController()` from inside the real mounted App tree.
+ * `getManagedAppTxController()` from inside the real mounted App tree.
  */
-type ClientComponent = (anchor: unknown, props: Record<string, unknown>) => void;
-const probeFor = new Map<string, ClientComponent>();
-function probeComponent(id: string): ClientComponent {
-  let probe = probeFor.get(id);
-  if (!probe) {
-    probe = (anchor, props) => (TxControllerProbe as unknown as ClientComponent)(anchor, props);
-    probeFor.set(id, probe);
-  }
+const probeFor = new Map<string, ProbeComponent>();
+function probeComponent(id: string): ProbeComponent {
+  const existing = probeFor.get(id);
+  if (existing) return existing;
+  const probe: ProbeComponent = (...args) => TxControllerProbe(...args);
+  probeFor.set(id, probe);
   return probe;
-}
-
-const field = (at: number) => ({
-  observed: true,
-  freshness: 'fresh' as const,
-  availability: 'available' as const,
-  lastObservedMonotonic: at,
-  source: { source: 'poll_response' },
-});
-const txTarget = { receiver: 'SUB' as const, slot: 'B' as const, frequencyHz: 150 };
-
-function resetFacts(): void {
-  h.radio = {
-    revision: 1, ptt: false, active: 'SUB', txTarget: { status: 'known', ...txTarget },
-    main: { dataMode: 0 }, sub: { dataMode: 1 }, data1ModInput: 5,
-    fieldStatus: { ptt: field(1), txTarget: field(1), data1ModInput: field(1) },
-  };
-  h.caps = {
-    tx: true, audioTx: true, capabilities: ['tx', 'mod_input_routing'],
-    vfoScheme: 'main_sub', audioTxRequiredModInputSource: 5, txBands: [{ start: 100, end: 200 }],
-  } as Capabilities;
 }
 
 /** Drain past App's post-commit `await tick()`. */
@@ -206,12 +170,6 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 4; i++) await Promise.resolve();
   await tick();
   flushSync();
-}
-
-async function observePtt(value: boolean, at: number): Promise<void> {
-  h.radio = { ...h.radio, ptt: value, fieldStatus: { ...h.radio.fieldStatus, ptt: field(at) } };
-  h.notifyRuntime();
-  await settle();
 }
 
 function sentFrames(socket: MockWebSocket): Array<{ name: string }> {
@@ -257,9 +215,8 @@ const probeCount = () => document.querySelectorAll('.tx-controller-probe').lengt
 let mountedComponent: object | null = null;
 
 async function mountConnectedApp(): Promise<{
-  component: object; controller: AppTxController; socket: MockWebSocket;
+  component: object; controller: ManagedAppTxController; socket: MockWebSocket;
 }> {
-  resetFacts();
   resetCapturedController();
   const target = document.createElement('div');
   document.body.appendChild(target);
@@ -278,21 +235,15 @@ async function mountConnectedApp(): Promise<{
   const socket = instances[0];
   socket.simulateOpen();
 
-  await observePtt(false, 2);
-
   const controller = capturedController();
   if (!controller) throw new Error('TxControllerProbe never captured a controller');
   return { component, controller, socket };
 }
 
-/** Bring the real controller to a confirmed-on, owned key. */
-async function keyDown(controller: AppTxController, leaseId: string): Promise<void> {
-  controller.start('probe', leaseId, 'momentary');
+/** Start one momentary PTT flow without inventing browser RF truth. */
+async function keyDown(controller: ManagedAppTxController): Promise<void> {
+  controller.pttOn();
   await settle();
-  await observePtt(true, 3);
-  expect(controller.snapshot()).toMatchObject({
-    phase: 'active', txRisk: 'confirmed-on', mayOwnKey: true,
-  });
 }
 
 describe('MOR-1086 — TX authority identity across a presentation switch', () => {
@@ -315,7 +266,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
     h.bootstrap.mockReset().mockResolvedValue(h.bootstrapCleanup);
     h.start.mockReset().mockResolvedValue(null);
     h.stop.mockClear();
-    h.restore.mockClear();
+    h.submit.mockClear();
     h.registerBarrier.mockReset().mockImplementation(() => () => {});
     h.initBattery.mockReset().mockResolvedValue(h.batteryCleanup);
     h.batteryCleanup.mockReset();
@@ -338,9 +289,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
   // `stopLocalAudio` called — purely because the operator changed skin.
   it('never de-keys and hands the incoming subtree the identical controller', async () => {
     const { controller, socket } = await mountConnectedApp();
-    await keyDown(controller, 'lease-swap');
-    const guardBefore = controller.snapshot().guard;
-    expect(guardBefore).not.toBeNull();
+    await keyDown(controller);
     expect(countFrames('ptt_on', socket)).toBe(1);
 
     // The old subtree's capture is cleared, so a non-null capture afterwards
@@ -351,21 +300,16 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
     expect(probeCount()).toBe(1);
     // Object identity — not "a controller", THE controller.
     expect(capturedController()).toBe(controller);
-    // The key is still down, still owned, still confirmed, same lease.
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'active', txRisk: 'confirmed-on', mayOwnKey: true, fault: null,
-    });
-    expect(controller.snapshot().guard).toEqual(guardBefore);
     // Wire truth: the swap caused neither a de-key nor a re-key/replay.
     expect(countFrames('ptt_off', socket)).toBe(0);
     expect(countFrames('ptt_on', socket)).toBe(1);
+    expect(h.submit).not.toHaveBeenCalled();
     expect(h.stop).not.toHaveBeenCalled();
     // …and it opened no second control socket: still the one session.
     expect(instances).toHaveLength(1);
 
     // And the surviving authority still releases normally afterwards.
-    controller.release('probe', controller.snapshot().guard!);
-    await settle();
+    await controller.pttOff();
     expect(countFrames('ptt_off', socket)).toBe(1);
   });
 
@@ -374,8 +318,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
   // newest request (two live probes would mean two subtrees owning TX UI).
   it('survives rapid A → B → A under a confirmed key with one live subtree', async () => {
     const { controller, socket } = await mountConnectedApp();
-    await keyDown(controller, 'lease-rapid');
-    const guardBefore = controller.snapshot().guard;
+    await keyDown(controller);
     const probeBefore = document.querySelector('.tx-controller-probe');
 
     // ── Leg 1: superseded in flight ──
@@ -411,12 +354,9 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
     }
     expect(document.querySelector('.tx-controller-probe')).not.toBe(probeBefore);
 
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'active', txRisk: 'confirmed-on', mayOwnKey: true, fault: null,
-    });
-    expect(controller.snapshot().guard).toEqual(guardBefore);
     expect(countFrames('ptt_off', socket)).toBe(0);
     expect(countFrames('ptt_on', socket)).toBe(1);
+    expect(h.submit).not.toHaveBeenCalled();
     expect(h.stop).not.toHaveBeenCalled();
     expect(instances).toHaveLength(1);
   });
@@ -426,8 +366,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
   // subtree on top of a live TX session — a stale surface owning the key's UI.
   it('makes a stale resolution that lands after a switch-during-TX inert', async () => {
     const { controller, socket } = await mountConnectedApp();
-    await keyDown(controller, 'lease-stale');
-    const guardBefore = controller.snapshot().guard;
+    await keyDown(controller);
     const snapshotBefore = controller.snapshot();
 
     requestSkin('mobile');       // request 2 — left in flight
@@ -442,17 +381,14 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
     // It mounted nothing and touched no TX state at all.
     expect(capturedController()).toBeNull();
     expect(controller.snapshot()).toEqual(snapshotBefore);
-    expect(controller.snapshot().guard).toEqual(guardBefore);
     expect(countFrames('ptt_off', socket)).toBe(0);
+    expect(h.submit).not.toHaveBeenCalled();
     expect(h.stop).not.toHaveBeenCalled();
 
     completeLoad('sdr-test');    // the current one commits normally
     await settle();
     expect(probeCount()).toBe(1);
     expect(capturedController()).toBe(controller);
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'active', txRisk: 'confirmed-on', mayOwnKey: true,
-    });
     expect(countFrames('ptt_off', socket)).toBe(0);
   });
 
@@ -460,12 +396,13 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
   // at App teardown — the switches above would each add a `ptt_off`.
   it('releases exactly once at teardown after a run of switches under a key', async () => {
     const { component, controller, socket } = await mountConnectedApp();
-    await keyDown(controller, 'lease-teardown');
+    await keyDown(controller);
 
     for (const id of ['lcd-cockpit', 'mobile', 'desktop-v2'] as const) {
       await switchTo(id);
     }
     expect(countFrames('ptt_off', socket)).toBe(0);
+    expect(h.submit).not.toHaveBeenCalled();
 
     unmount(component);
     mountedComponent = null;

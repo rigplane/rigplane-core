@@ -55,8 +55,10 @@
     bindSemanticSurfaceHandlers, getPresetHandlers, getKeyboardHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
-  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
-  import { createMobilePttSurface, type MobilePttBinding } from '../wiring/mobile-ptt-surface';
+  import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+  import {
+    createManagedMobilePttSurface, type ManagedMobilePttBinding,
+  } from '../wiring/managed-tx-gesture';
   import { onMount, onDestroy } from 'svelte';
 
   // ── State — via runtime ──
@@ -336,14 +338,10 @@
     };
   });
 
-  // ── PTT — App TX controller (MOR-1012) ──
-  // This layout owns no TX state. Audio start, key confirmation, safety
-  // deadlines and fail-closed release all live in the App TX controller; the
-  // mobile surfaces only render that state and feed it gesture intent, exactly
-  // as TxPanel does (MOR-1011). What used to live here — a local held/latched
-  // machine, a 3-minute safety timer and raw ptt_on/ptt_off commands — could
-  // dekey a lease owned by another source, so it is gone rather than adapted.
-  const txCtl = getAppTxController();
+  // The mobile layout renders canonical server TX state. Its recognizer owns
+  // pointer timing only; admission, deadlines, confirmation and release live
+  // in ManagedTxAuthority.
+  const txCtl = getManagedAppTxController();
   let txState = $state.raw(txCtl.snapshot());
   const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
   // Registered BEFORE the recognizer effect below on purpose: Svelte tears
@@ -352,39 +350,50 @@
   // bouncing back into a component that is already being destroyed.
   onDestroy(stopWatchingTx);
 
-  let owned = $derived(txState.guard !== null);
+  let owned = $derived(txState.intent === 'momentary');
   let latched = $derived(txState.intent === 'latched');
-  // "The rig is keyed" for display purposes: our own lease, or an observed
-  // radio-side TX that may well belong to a different source.
-  let txKeyed = $derived(owned || txState.radioTx === 'on');
+  // The server projection is the only displayed RF truth; stale never means RX.
+  let managedTxRf: 'on' | 'off' | 'unknown' = $derived(
+    txState.radioTx === 'on' || txState.txRisk === 'confirmed-on'
+      ? 'on'
+      : txState.fresh && txState.radioTx === 'off' && txState.txRisk === 'none'
+        ? 'off'
+        : 'unknown'
+  );
   // PttFab's visual contract is unchanged — it still takes idle/held/latched.
   let pttMode: 'idle' | 'held' | 'latched' = $derived(
     latched ? 'latched' : owned ? 'held' : 'idle'
   );
 
-  // ── TX color (depends on mainVfo, tx, txKeyed — declared above) ──
+  // ── TX color (depends only on canonical managed RF state) ──
   let txPermit = $derived(getTxPermit(mainVfo.freq, caps?.txBands));
   let txIndicatorColor = $derived(
-    (tx.txActive || txKeyed) ? 'var(--v2-accent-red, #ef4444)' :
-    txPermit === 'allowed' ? 'var(--v2-accent-green, #4ade80)' :
-    'var(--v2-text-dim, #555)'
+    managedTxRf === 'on' ? 'var(--v2-accent-red, #ef4444)' :
+    managedTxRf === 'unknown' ? 'var(--v2-accent-yellow, #facc15)' :
+    txPermit === 'allowed' ? 'var(--v2-accent-green, #4ade80)' : 'var(--v2-text-dim, #555)'
   );
 
   // One recognizer per input surface — the orchestration itself lives in
-  // `wiring/mobile-ptt-surface.ts` (MOR-1378) so it is testable and mountable
-  // without this component's runtime-store dependencies. Re-keying the effect
-  // on the surface destroys the old binding, which releases a live lease
-  // exactly once: rotating away while keyed or latched drops TX rather than
-  // stranding it.
+  // The per-orientation recognizer is gesture-only. Presentation replacement
+  // releases an in-progress session PTT but never changes canonical TRANSMIT.
   let pttSurface: 'none' | 'portrait' | 'landscape' = $derived(
     !txCapable ? 'none' : isLandscape ? 'landscape' : 'portrait'
   );
-  let ptt = $state<MobilePttBinding | null>(null);
+  let ptt = $state<ManagedMobilePttBinding | null>(null);
 
   $effect(() => {
     const surface = pttSurface;
     if (surface === 'none') return;
-    const binding = createMobilePttSurface(surface, txCtl, {
+    const binding = createManagedMobilePttSurface(
+      surface,
+      {
+        latched: () => txCtl.snapshot().intent === 'latched',
+        transmitAvailable: () => txCtl.snapshot().fresh,
+      },
+      {
+        pttOn: txCtl.pttOn, pttOff: txCtl.pttOff,
+        transmitOn: txCtl.transmitOn, forceOff: txCtl.forceOff,
+      }, {
       schedule: (callback, ms) => setTimeout(callback, ms),
       cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     });
@@ -396,7 +405,7 @@
   // forwarder that re-reads `ptt`. PttFab snapshots them when a press arms, so
   // a press stranded by a rotation completes against the (now destroyed)
   // binding it started on instead of spuriously keying whichever generation is
-  // live 50 ms later — see `mobile-ptt-surface.ts` for the full rationale.
+  // live 50 ms later; the destroyed generation must stay inert.
   const noPtt = () => {};
 
   // ── Landscape PTT guards (#843 parity with FAB) ──
@@ -411,18 +420,9 @@
 
   function lsPttPointerDown(event: PointerEvent) {
     if (pttMode === 'latched') {
-      // Tap-to-unlatch — the recognizer releases the live lease on a down().
+      // Explicit unlock is the unconditional HTTP ForceOFF intent.
       ptt?.down();
       return;
-    }
-    if (txPermit === 'denied' && pttMode === 'idle') {
-      // Refuse the first press on out-of-band frequency. Second press
-      // within ~2s bypasses (user insists). Reuse the FAB convention.
-      const now = Date.now();
-      if (!lsLastDeniedPressAt || now - lsLastDeniedPressAt > 2000) {
-        lsLastDeniedPressAt = now;
-        return;
-      }
     }
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
     lsPttStartX = event.clientX;
@@ -450,7 +450,15 @@
     ptt?.up();
   }
 
-  let lsLastDeniedPressAt = 0;
+  function lsPttKeyDown(event: KeyboardEvent) {
+    if ((event.key !== ' ' && event.key !== 'Enter') || event.repeat) return;
+    event.preventDefault(); lsPttEngaged = true; ptt?.down();
+  }
+
+  function lsPttKeyUp(event: KeyboardEvent) {
+    if (event.key !== ' ' && event.key !== 'Enter') return;
+    event.preventDefault(); lsPttPointerUp();
+  }
 
   // ── ATU (long-press = tune) ──
   let atuTimer: ReturnType<typeof setTimeout> | null = null;
@@ -524,7 +532,7 @@
   {/if}
   <div class="m-ls-overlay">
     <div class="m-ls-vfo">
-      <span class="m-tx-indicator" style="background: {txIndicatorColor}"></span>
+      <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}"></span>
       <FrequencyDisplay freq={mainVfo.freq} compact active />
     </div>
     <div class="m-ls-quick-modes">
@@ -562,6 +570,9 @@
           onpointerup={lsPttPointerUp}
           onpointercancel={lsPttPointerUp}
           onlostpointercapture={lsPttPointerUp}
+          onkeydown={lsPttKeyDown}
+          onkeyup={lsPttKeyUp}
+          onblur={lsPttPointerUp}
           oncontextmenu={(e) => e.preventDefault()}
           title={txPermit === 'denied' ? t('core.mobile.tx.notAllowedFreq') : t('core.mobile.tx.pushToTalk')}
         >
@@ -620,7 +631,7 @@
       </div>
     {/if}
     <div class="m-vfo-row">
-      <span class="m-tx-indicator" style="background: {txIndicatorColor}" title={txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
+      <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? 'TX status unknown' : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
         <FrequencyDisplay freq={mainVfo.freq} compact active />
       </div>
@@ -666,13 +677,8 @@
       </section>
     {/if}
 
-    <!-- MOR-1094: the portrait deck's VFO facts and RX/TX status/action are
-         owned by the semantic surfaces (MOR-1063/1064), wired exactly once by
-         the shared SemanticRadioSurfaces — no new TX path, and no change to
-         the press-and-hold PTT below, which keeps its own gesture recognizer
-         and its own per-surface sourceId on the App TX controller. Mounted
-         outside the chip panels on purpose: a chip tap destroys and recreates
-         its panel, and this subtree is a TX lease source. -->
+    <!-- The semantic deck and PTT gesture both use the single App-root managed
+         intent facade; the deck adds no transport or authority. -->
     <section class="m-semantic-deck">
       <SemanticRadioSurfaces />
     </section>
@@ -745,7 +751,7 @@
             <!-- Power readout (tap → power modal) -->
             <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
               <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : '—'}</span>
-              {#if tx.txActive || txKeyed}
+              {#if managedTxRf === 'on'}
                 <span class="m-tx-swr-value">SWR {meter.swr > 0 ? (meter.swr / 10).toFixed(1) : '—'}</span>
               {/if}
             </button>
@@ -773,7 +779,7 @@
             <!-- Inline PTT button removed (#840) — PttFab at bottom-right
                  is the persistent, guarded TX affordance. -->
           </div>
-          {#if (tx.txActive || txKeyed) && txMetersObserved}
+          {#if managedTxRf === 'on' && txMetersObserved}
             <div class="m-tx-meter">
               <DockMeterPanel
                 sValue={mainVfo.sValue}
@@ -948,8 +954,7 @@
        Landscape has its own guarded `.m-ls-ptt` button (#843); mounting
        FAB there would give two simultaneous TX controls (codex P1 on
        PR #928). Layered guards (50 ms hold, 8 px move-cancel, haptics,
-       TX-permit two-step) live in the FAB component; the TX state machine
-       lives in the App TX controller (MOR-1012). -->
+       TX permit styling) live in the FAB component; server authority owns TX. -->
   <PttFab
     mode={pttMode}
     txPermit={txPermit}
