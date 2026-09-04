@@ -23,10 +23,11 @@ import { getGroup, listGroupIds } from '../../groups/contract';
 // module graph (and a phantom "layout not registered") happens. See
 // vite.config.ts #771 and `sdr-registration.test.ts`'s identical note.
 import { peerSplitLayout } from '../declarations';
+import { panadapterFirstLayout, unifiedInstrumentLayout } from '../segmentline-declarations';
 // MOR-2253 slice 1: the zone's `group` reference, read back from the same
 // declaration the manifest points at rather than a hand-typed literal id, so
 // a future rename of `peer-split-glass` cannot silently desync this pin.
-import { peerSplitGlassGroup } from '../../groups/declarations';
+import { panadapterFirstGlassGroup, peerSplitGlassGroup, unifiedInstrumentGlassGroup } from '../../groups/declarations';
 // MOR-2151 review round: a new zone id has no guard of its own in this
 // ticket's files — it was caught only by `workspace/__tests__/contract.
 // test.ts`'s cross-file derivation (`WORKSPACE_ZONE_IDS` must equal the set
@@ -62,6 +63,18 @@ describe('the peer-split entrypoint is registered in the real registry', () => {
   // Kills: a manifest that declares no compiled loader at all.
   it('declares a compiled loader', () => {
     expect(typeof peerSplitLayout.loader).toBe('function');
+  });
+});
+
+describe('the additional segmentline directions are production layouts', () => {
+  it.each([
+    [unifiedInstrumentLayout, unifiedInstrumentGlassGroup, 540],
+    [panadapterFirstLayout, panadapterFirstGlassGroup, 594],
+  ] as const)('registers %s with its own fixed-native group', (layout, group, height) => {
+    expect(getLayout(layout.id)).toBe(layout);
+    expect(layout.zones).toEqual([{ id: 'peer-columns', surfaces: ['vfo', 'rxTx'], group: group.id }]);
+    expect(layout.stageSizing).toEqual({ mode: 'fixed-native', nativeW: 1280, nativeH: height, minScale: 0.5 });
+    expect(layout.fallbackLayoutId).toBe('peer-split');
   });
 });
 
@@ -182,9 +195,7 @@ describe('sizing axis — peer-split shares the LCD family\'s fixed-native glass
   });
 });
 
-describe('fallback to lcd-cockpit (MOR-2151 correction — the archived draft named unified-instrument)', () => {
-  // Kills: reverting to the archived draft's fallbackLayoutId, which names a
-  // layout this slice does not build.
+describe('fallback to lcd-cockpit (MOR-2151 historical correction)', () => {
   it('declares lcd-cockpit as its one fallback hop', () => {
     expect(peerSplitLayout.fallbackLayoutId).toBe('lcd-cockpit');
     expect(getLayout(peerSplitLayout.fallbackLayoutId!)).toBeDefined();

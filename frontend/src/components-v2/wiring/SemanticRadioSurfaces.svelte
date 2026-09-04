@@ -61,6 +61,7 @@
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
   } from './dual-receiver-strips';
   import { guardRadioViewModel } from './radio-view-model-guard';
+  import { toLcdDisplayFrame, type LcdDisplayFrames } from './lcd-display-frame-adapter';
 
   /**
    * `'single'` (default) is the pre-MOR-1067 composition, wrapped per zone
@@ -82,7 +83,8 @@
     strips?: 'single' | 'dual';
     regions?: boolean;
     regionContent?: Snippet;
-    readonlyDisplay?: Snippet<[RadioViewModel]>;
+    readonlyDisplay?: Snippet<[RadioViewModel, LcdDisplayFrames]>;
+    hardwareScopeDemand?: boolean;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -104,7 +106,7 @@
    * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
    * `zoneOwning()` returns non-null on both faces.
    */
-  let { strips = 'single', regions = false, regionContent, readonlyDisplay }: Props = $props();
+  let { strips = 'single', regions = false, regionContent, readonlyDisplay, hardwareScopeDemand = false }: Props = $props();
 
   /**
    * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
@@ -480,6 +482,16 @@
   // only comparable inside one provider generation and receiver stream.
   let pbtObservationFloors = $state(new Map<string, number>());
   let view = $state<RadioViewModel | null>(null);
+  let displayReceiver = $derived(view?.activeReceiver.status === 'known' ? view.activeReceiver.receiver : null);
+  let displayFrames: LcdDisplayFrames = $derived({
+    audio: toLcdDisplayFrame(runtime.scope.audioScopeFrame, 'audio-fft', displayReceiver),
+    hardware: toLcdDisplayFrame(runtime.scope.scopeFrame, 'hardware', displayReceiver),
+  });
+  $effect(() => {
+    if (!hardwareScopeDemand || typeof runtime.acquireHardwareScope !== 'function') return;
+    const lease = runtime.acquireHardwareScope('SemanticRadioSurfaces:panadapter');
+    return () => { runtime.releaseHardwareScope(lease); };
+  });
   const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
   const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
   let controlSession = $state(readControlSession?.() ?? { state: 'disconnected', epoch: -1 });
@@ -688,7 +700,7 @@
 
 <div class="semantic-surfaces" data-testid="semantic-radio-surfaces">
   {#if readonlyDisplay}
-    {#if view}{@render readonlyDisplay(view)}{/if}
+    {#if view}{@render readonlyDisplay(view, displayFrames)}{/if}
   {:else}
   {#if view}
     {#if strips === 'dual'}

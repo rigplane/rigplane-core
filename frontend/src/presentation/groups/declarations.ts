@@ -20,4 +20,15 @@ export const peerSplitGlassGroup = {
   scaling: { mode: 'fixed-native', minScale: 0.5 },
 } as const satisfies InstrumentGroup;
 
+export const unifiedInstrumentGlassGroup = {
+  schemaVersion: 1, id: 'unified-instrument-glass', canvas: { w: 1280, h: 540 },
+  scaling: { mode: 'fixed-native', minScale: 0.5 },
+} as const satisfies InstrumentGroup;
+export const panadapterFirstGlassGroup = {
+  schemaVersion: 1, id: 'panadapter-first-glass', canvas: { w: 1280, h: 594 },
+  scaling: { mode: 'fixed-native', minScale: 0.5 },
+} as const satisfies InstrumentGroup;
+
 registerGroup(peerSplitGlassGroup);
+registerGroup(unifiedInstrumentGlassGroup);
+registerGroup(panadapterFirstGlassGroup);

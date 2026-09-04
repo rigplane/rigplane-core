@@ -18,6 +18,7 @@
   import '../../components-v2/theme/index';
   import ScaledStage from '../../primitives/stage/ScaledStage.svelte';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
+  import type { LcdDisplayFrames } from '../../components-v2/wiring/lcd-display-frame-adapter';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import { projectPeerSplitDisplay } from '../../semantic/radio-display-model';
   import CenterstageDisplay from './CenterstageDisplay.svelte';
@@ -46,12 +47,12 @@
   let { canvasW, canvasH, minScale, displayVariant = 'peer' }: Props = $props();
 </script>
 
-{#snippet readonlyDisplay(view: RadioViewModel)}
+{#snippet readonlyDisplay(view: RadioViewModel, frames: LcdDisplayFrames)}
   {@const model = projectPeerSplitDisplay(view)}
   {#snippet peer()}<PeerSplitDisplay {model} />{/snippet}
-  {#snippet dominant()}<DominantUnifiedDisplay {model} />{/snippet}
-  {#snippet centerstage()}<CenterstageDisplay {model} />{/snippet}
-  {#snippet panadapter()}<PanadapterDisplay {model} />{/snippet}
+  {#snippet dominant()}<DominantUnifiedDisplay {model} spectrumFrame={frames.audio} />{/snippet}
+  {#snippet centerstage()}<CenterstageDisplay {model} audioFftFrame={frames.audio} />{/snippet}
+  {#snippet panadapter()}<PanadapterDisplay {model} rfFrame={frames.hardware} normalizedFftBins={model.activeReceiver && frames.audio ? { [model.activeReceiver.receiver]: frames.audio.normalizedBins } : {}} />{/snippet}
   <LcdDisplayVariant
     variant={displayVariant}
     {peer}
@@ -64,7 +65,7 @@
 <div class="peer-split-holder">
   <ScaledStage nativeW={canvasW} nativeH={canvasH} {minScale}>
     <div class="peer-split-glass" data-testid="peer-split-glass">
-      <SemanticRadioSurfaces strips="dual" {readonlyDisplay} />
+      <SemanticRadioSurfaces strips="dual" {readonlyDisplay} hardwareScopeDemand={displayVariant === 'panadapter'} />
     </div>
   </ScaledStage>
 </div>

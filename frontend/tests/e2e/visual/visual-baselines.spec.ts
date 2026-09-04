@@ -44,6 +44,7 @@ interface Spec {
   fixture: string;
   language?: 'studioline' | 'fieldline';
   mode?: 'light';
+  display?: 'dominant' | 'panadapter';
   viewport?: typeof DESKTOP;
   /**
    * Pin `Date` before the page loads. `PeerSplitLayout.svelte` renders a live
@@ -89,6 +90,8 @@ const COCKPIT: Spec[] = [
   },
   { name: 'tx-phase-fault--desktop--fieldline', fixture: 'tx-phase-fault', language: 'fieldline' },
   { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis', freezeClock: true },
+  { name: 'unified-instrument--desktop', fixture: 'peer-split-chassis', display: 'dominant', freezeClock: true },
+  { name: 'panadapter-first--desktop', fixture: 'peer-split-chassis', display: 'panadapter', freezeClock: true },
   {
     name: 'peer-split-chassis--1100x800',
     fixture: 'peer-split-chassis',
@@ -105,7 +108,8 @@ for (const spec of COCKPIT) {
     await page.setViewportSize(spec.viewport ?? DESKTOP);
     const url = `/fixtures/index.html?fixture=${spec.fixture}&theme=v2`
       + (spec.language ? `&language=${spec.language}` : '')
-      + (spec.mode ? `&mode=${spec.mode}` : '');
+      + (spec.mode ? `&mode=${spec.mode}` : '')
+      + (spec.display ? `&display=${spec.display}` : '');
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForSelector('body[data-harness-ready="true"]');
     await expect(page).toHaveScreenshot(`${spec.name}.png`, { animations: 'disabled', caret: 'hide' });

@@ -69,7 +69,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SkinId } from '../registry';
 
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
-const mountedLcdVariants = vi.hoisted(() => [] as Array<'cockpit' | 'scope' | 'peer-split'>);
+const mountedLcdVariants = vi.hoisted(() => [] as Array<'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first'>);
 const mobileLayoutMounts = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
@@ -79,7 +79,7 @@ vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
 }));
 
 vi.mock('../../components-v2/layout/LcdLayout.svelte', () => ({
-  default: (_anchor: unknown, props: { variant?: 'cockpit' | 'scope' | 'peer-split' }) => {
+  default: (_anchor: unknown, props: { variant?: 'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first' }) => {
     if (props.variant) mountedLcdVariants.push(props.variant);
   },
 }));
@@ -105,7 +105,7 @@ afterEach(() => {
 
 type EntrypointCoverage =
   | { readonly kind: 'radio-layout' }
-  | { readonly kind: 'lcd-layout'; readonly variant: 'cockpit' | 'scope' | 'peer-split' }
+  | { readonly kind: 'lcd-layout'; readonly variant: 'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first' }
   | { readonly kind: 'mobile-layout' }
   | { readonly kind: 'covered-elsewhere'; readonly testFile: string; readonly entryComponentFile: string };
 
@@ -125,6 +125,8 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
   },
   mobile: { kind: 'mobile-layout' },
   'peer-split': { kind: 'lcd-layout', variant: 'peer-split' },
+  'unified-instrument': { kind: 'lcd-layout', variant: 'unified-instrument' },
+  'panadapter-first': { kind: 'lcd-layout', variant: 'panadapter-first' },
   'dual-sdr-face': {
     kind: 'covered-elsewhere',
     testFile: 'src/skins/dual-sdr-face/__tests__/DualSdrFaceSkin.component.test.ts',

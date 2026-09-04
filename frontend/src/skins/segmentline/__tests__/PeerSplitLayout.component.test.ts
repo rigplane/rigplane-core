@@ -33,6 +33,10 @@ const h = vi.hoisted(() => ({
   caps: null as unknown,
   noop: vi.fn(),
   modInputGuard: { visible: false, sourceLabel: null } as { visible: boolean; sourceLabel: string | null },
+  audioFrame: null as unknown,
+  hardwareFrame: null as unknown,
+  acquireHardware: vi.fn(() => ({ resource: 'hardware-scope' })),
+  releaseHardware: vi.fn(),
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -49,7 +53,9 @@ vi.mock('$lib/runtime', () => ({
       };
     },
     get radioPowerOn() { return null; },
-    get scope() { return { hardwareScopeConnected: false }; },
+    get scope() { return { hardwareScopeConnected: false, audioScopeFrame: h.audioFrame, scopeFrame: h.hardwareFrame }; },
+    acquireHardwareScope: h.acquireHardware,
+    releaseHardwareScope: h.releaseHardware,
   },
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -144,7 +150,7 @@ const liveCaps = (): Capabilities => ({
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
-  scopeSource: null, audioFftAvailable: false,
+  scopeSource: null, audioFftAvailable: true,
 } as unknown as Capabilities);
 
 let target: HTMLDivElement;
@@ -175,6 +181,10 @@ beforeEach(() => {
   h.caps = liveCaps();
   h.noop.mockReset();
   h.modInputGuard = { visible: false, sourceLabel: null };
+  h.audioFrame = null;
+  h.hardwareFrame = null;
+  h.acquireHardware.mockClear();
+  h.releaseHardware.mockClear();
 });
 
 afterEach(() => {
@@ -224,6 +234,25 @@ describe('the peer-split chassis mounts', () => {
       '[data-testid="peer-split-display"], [data-testid="dominant-unified-display"], '
       + '[data-testid="centerstage-display"], [data-testid="panadapter-display"]',
     )).toHaveLength(1);
+  });
+
+  it('qualifies live frames by source and active receiver without inventing samples', () => {
+    h.audioFrame = { receiver: 0, mode: 0, startFreq: 0, endFreq: 24000, pixels: new Uint8Array([0, 128, 255]) };
+    h.hardwareFrame = { receiver: 0, mode: 0, startFreq: 14000000, endFreq: 14350000, pixels: new Uint8Array([32, 255]) };
+    render('panadapter');
+    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(2);
+    expect(q('[data-testid="lcd-af-fft"]')?.dataset.fftMode).toBe('live');
+    expect(h.acquireHardware).toHaveBeenCalledTimes(1);
+  });
+
+  it('ghosts receiver-mismatched input and releases hardware demand', () => {
+    h.audioFrame = { receiver: 1, mode: 0, startFreq: 0, endFreq: 24000, pixels: new Uint8Array([0, 255]) };
+    h.hardwareFrame = { receiver: 1, mode: 0, startFreq: 1, endFreq: 2, pixels: new Uint8Array([0, 255]) };
+    render('panadapter');
+    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(0);
+    expect(q('[data-testid="lcd-af-fft"]')?.dataset.fftMode).toBe('safe-empty');
+    unmount(component!); component = null;
+    expect(h.releaseHardware).toHaveBeenCalledTimes(1);
   });
 
   // NOT ASSERTED HERE: that `.semantic-surfaces` actually receives

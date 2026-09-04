@@ -16,6 +16,8 @@
  * 'peer-split'  = force the segmentline peer-split skin (MOR-2151/MOR-2155;
  *                 two-column FTX-1 dual-receiver symmetry, see
  *                 `skins/segmentline/PeerSplitLayout.svelte`)
+ * 'unified-instrument' = force the segmentline dominant unified instrument
+ * 'panadapter-first' = force the segmentline hardware-scope panadapter
  * 'dual-receiver-cockpit' = QA-ONLY (MOR-1257): reachable solely via the
  *                 exact `?layout=dual-receiver-cockpit` query param (see
  *                 `lib/stores/qa-cockpit-override.ts`) — deliberately NOT a
@@ -26,7 +28,8 @@
  */
 export type LayoutMode =
   | 'auto' | 'lcd' | 'lcd-cockpit' | 'lcd-scope' | 'standard' | 'sdr-test'
-  | 'peer-split' | 'dual-sdr-face' | 'dual-receiver-cockpit';
+  | 'peer-split' | 'unified-instrument' | 'panadapter-first'
+  | 'dual-sdr-face' | 'dual-receiver-cockpit';
 export type CanonicalLayoutMode = Exclude<LayoutMode, 'lcd' | 'dual-receiver-cockpit'>;
 
 export const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
@@ -36,6 +39,8 @@ export const CANONICAL_LAYOUT_MODES = new Set<CanonicalLayoutMode>([
   'standard',
   'sdr-test',
   'peer-split',
+  'unified-instrument',
+  'panadapter-first',
   'dual-sdr-face',
 ]);
 

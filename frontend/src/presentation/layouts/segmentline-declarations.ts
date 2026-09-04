@@ -1,9 +1,8 @@
 /**
  * MOR-2151 — `peer-split` as a v1 layout manifest (schema, validator and
- * registry: `./contract.ts`, MOR-1066). The first of the externally
- * authored `segmentline` amber-glass directions to land; the other two
- * (`unified-instrument`, `panadapter-first`) are excluded from this slice —
- * see `docs/plans/2026-09-01-segmentline-peer-split.md` §3.1/§8.
+ * registry: `./contract.ts`, MOR-1066). The externally authored
+ * `segmentline` amber-glass family now also registers `unified-instrument`
+ * and `panadapter-first` below.
  *
  * The FTX-1 has two genuinely different receivers (MAIN: HF, SUB: separate
  * VHF/UHF) — not a VFO A/B swap. `peer-split` is the direction that says
@@ -20,8 +19,8 @@
  *
  * The archived handoff's `peerSplitLayout` draft (never executed by its
  * author) needed three corrections:
- *   1. `fallbackLayoutId` named `unified-instrument`, which is not being
- *      built in this slice — retargeted to `lcd-cockpit`, where the
+ *   1. `fallbackLayoutId` named `unified-instrument`, which was not built
+ *      in that slice — retargeted to `lcd-cockpit`, where the
  *      persisted amber preference already routes.
  *   2. The draft's `dsp-rail`/`front-end-rail`/`offsets`/`band-rail` zone
  *      ids did not match this repo's stable-id convention
@@ -31,7 +30,7 @@
  *      collapsed to the one minimal zone below.
  */
 import { registerLayout, type LayoutManifest } from './contract';
-import { peerSplitGlassGroup } from '../groups/declarations';
+import { panadapterFirstGlassGroup, peerSplitGlassGroup, unifiedInstrumentGlassGroup } from '../groups/declarations';
 
 /**
  * The `segmentline` family's canonical glass. Its native size and minScale
@@ -74,3 +73,20 @@ export const peerSplitLayout: LayoutManifest = {
 };
 
 registerLayout(peerSplitLayout);
+
+type SegmentlineGroup = typeof peerSplitGlassGroup | typeof unifiedInstrumentGlassGroup | typeof panadapterFirstGlassGroup;
+function segmentlineVariant(id: string, displayName: string, group: SegmentlineGroup, loader: LayoutManifest['loader']): LayoutManifest {
+  return {
+    schemaVersion: 1, id, displayName, loader,
+    zones: [{ id: 'peer-columns', surfaces: ['vfo', 'rxTx'], group: group.id }],
+    compatibleTopologies: ['2/ab_shared', '2/main_sub'], requiredSemanticSurfaces: ['vfo', 'rxTx'],
+    stageSizing: { mode: 'fixed-native', nativeW: group.canvas.w, nativeH: group.canvas.h, minScale: group.scaling.minScale },
+    fallbackLayoutId: 'peer-split',
+  };
+}
+export const unifiedInstrumentLayout = segmentlineVariant('unified-instrument', 'Unified Instrument', unifiedInstrumentGlassGroup,
+  () => import('../../skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte'));
+export const panadapterFirstLayout = segmentlineVariant('panadapter-first', 'Panadapter First', panadapterFirstGlassGroup,
+  () => import('../../skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte'));
+registerLayout(unifiedInstrumentLayout);
+registerLayout(panadapterFirstLayout);
