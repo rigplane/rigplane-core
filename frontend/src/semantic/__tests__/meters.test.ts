@@ -192,13 +192,13 @@ describe('meters (MOR-1262 slice 2A)', () => {
  * so it carries a copy; these tests prove the copy is not a fork, and that
  * `MeterRfState` is member-for-member the surface's `RfState`.
  */
-describe('meters RF state is the App TX authority vocabulary, verbatim (R9)', () => {
+describe('meters RF state is the server TX projection vocabulary, verbatim (R9)', () => {
   const RADIO_TX = ['off', 'on', 'unknown'] as const;
   const TX_RISK = ['none', 'uncertain', 'confirmed-on'] as const;
   const snapshot = (
     radioTx: (typeof RADIO_TX)[number], txRisk: (typeof TX_RISK)[number],
   ): TxAuthoritySnapshot => ({
-    phase: 'idle', intent: null, radioTx, txRisk, mayOwnKey: false, fault: null,
+    phase: 'idle', intent: null, radioTx, txRisk, fault: null,
   });
 
   function caps(): Capabilities {

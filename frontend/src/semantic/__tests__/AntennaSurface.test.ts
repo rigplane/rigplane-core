@@ -45,10 +45,10 @@ const OFF: Availability = { structural: false, operational: false };
 const DEGRADED: Availability = { structural: true, operational: false };
 
 /** The canonical permitted snapshot: transmitter positively observed OFF, no
- *  lease, no risk, authority idle.
+ *  risk, authority idle.
  *
  *  MOR-1906 — it is NOT the only one, and saying so hid a real behaviour
- *  change. This gate reads the RF FACTS (`radioTx` / `txRisk` / `mayOwnKey`),
+ *  change. This gate reads the RF FACTS (`radioTx` / `txRisk`),
  *  never the authority's session bookkeeping, so a LATCHED FAULT sitting over
  *  those same observed-OFF facts is permitted too. That is the file's own
  *  doctrine, stated at `RF_MUST_BE_IDLE`: `tx-fault` is deliberately not a
@@ -56,11 +56,10 @@ const DEGRADED: Availability = { structural: true, operational: false };
  *  hot. The two `phase: 'failed'` pins below hold that in BOTH directions.
  *  MOR-1361 tracks the allow-list itself. */
 const RECEIVING: TxAuthoritySnapshot = {
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
 };
 const TRANSMITTING: TxAuthoritySnapshot = {
   ...RECEIVING, phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on',
-  mayOwnKey: true,
 };
 /** The fail-closed case: nobody keyed anything here, the RF state simply was
  *  never confirmed. It must gate exactly as hard as TRANSMITTING. */
@@ -154,7 +153,7 @@ describe('the antenna surface owns no state and no TX authority (R9)', () => {
   });
 
   // Kills: the surface growing a live-state prop beyond the view model and the
-  // App-owned authority snapshot.
+  // server-owned authority projection.
   it('takes exactly two state props — the view model and the TX snapshot', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1]))
@@ -338,9 +337,8 @@ describe('antenna switching is gated while the transmitter is not provably idle'
    *
    * MOR-1906 moved a `failed` phase out of `tx-busy` and into `tx-fault`, and
    * `tx-fault` is deliberately not a member of `RF_MUST_BE_IDLE`. That
-   * DELIBERATELY relaxes this gate for exactly two of the 216 (phase ×
-   * radioTx × txRisk × mayOwnKey × fault) combinations — both of them
-   * `radioTx: 'off'`, `txRisk: 'none'`, `!mayOwnKey`, i.e. provably idle RF by
+   * DELIBERATELY relaxes this gate for the failed-phase combinations with
+   * `radioTx: 'off'` and `txRisk: 'none'`, i.e. provably idle RF by
    * the very standard the `idle` phase already passes on. Nothing tightened,
    * nothing else loosened, and only a 2-port radio renders this surface at
    * all. The relaxation matches the doctrine at `RF_MUST_BE_IDLE`; what it did

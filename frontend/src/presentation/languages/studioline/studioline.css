@@ -131,8 +131,7 @@
 [data-design-language='studioline'][data-design-language] .active-receiver,
 [data-design-language='studioline'][data-design-language] .vfo-role,
 [data-design-language='studioline'][data-design-language] .vfo-mode,
-[data-design-language='studioline'][data-design-language] .rx-tx-session,
-[data-design-language='studioline'][data-design-language] .rx-tx-origin {
+[data-design-language='studioline'][data-design-language] .rx-tx-session {
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.22em;

@@ -38,7 +38,7 @@ import { renderStateFeedback as renderStudiolineFeedback } from '../../presentat
 import { STUDIOLINE_TOKENS } from '../../presentation/languages/studioline/tokens';
 
 const authority = (over: Partial<TxAuthoritySnapshot> = {}): TxAuthoritySnapshot => ({
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null, ...over,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null, ...over,
 });
 
 /** The same four primitives a renderer reads off its `RendererViewModel`, via `stringField`. */
@@ -49,9 +49,9 @@ const fieldsOf = (
 });
 
 const RX = authority();
-const PENDING = authority({ phase: 'key-confirm-pending', intent: 'latched', mayOwnKey: true, txRisk: 'uncertain' });
-const TX = authority({ phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
-const RELEASING = authority({ phase: 'releasing', radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
+const PENDING = authority({ phase: 'key-confirm-pending', intent: 'latched', txRisk: 'uncertain' });
+const TX = authority({ phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on' });
+const RELEASING = authority({ phase: 'releasing', radioTx: 'on', txRisk: 'confirmed-on' });
 const FAULT = authority({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' });
 const UNKNOWN_RF = authority({ radioTx: 'unknown' });
 

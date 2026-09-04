@@ -671,8 +671,8 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     what: 'TX keying in progress — RF uncertain, session pending, key blocked, unkey still live.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({
-      phase: 'key-confirm-pending', intent: 'latched', guard: { leaseId: 'L1' },
-      radioTx: 'off', txRisk: 'uncertain', mayOwnKey: true,
+      phase: 'key-confirm-pending', intent: 'latched',
+      radioTx: 'off', txRisk: 'uncertain',
     }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
@@ -685,8 +685,8 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
     what: 'transmitting — RF TX, session key down, key blocked, unkey the only way out.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({
-      phase: 'active', intent: 'latched', guard: { leaseId: 'L1' },
-      radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true,
+      phase: 'active', intent: 'latched',
+      radioTx: 'on', txRisk: 'confirmed-on',
     }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
@@ -696,13 +696,13 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
   },
   {
     id: 'tx-phase-fault',
-    what: 'TX fault — session fault, fault line shown, the App-owned fault reset affordance renders.',
+    what: 'TX fault — session fault and fault line shown; server recovery note renders and unkey stays live.',
     state: () => withMeters(mainSubState('MAIN')), caps: mainSubCaps,
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
+      faultResetPresent: false, zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
@@ -744,27 +744,27 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
   },
   {
     // MOR-1085 checklist item 2: renamed from `zoneless-controls`. The old id
-    // and `what` both dated to before MOR-1258 moved these three controls'
-    // render site — `tx-fault-reset` and the two `ModInputTxWarning` buttons
+    // and `what` both dated to before MOR-1258 moved these three items'
+    // render site — `tx-fault-recovery` and the two `ModInputTxWarning` buttons
     // — to sit BESIDE `RxTxSurface` inside the bound `.rx-tx-zone` div. They
     // are formal members of the `rx-tx` zone now (`zonelessControls: 0`
     // below already asserted that; only the name and prose still claimed
     // the pre-MOR-1258 shape). The fixture still earns its keep: it is the
-    // one state where all three conditional controls render simultaneously,
+    // one state where all three conditional items render simultaneously,
     // which is what acceptance gate (b) actually needs proving.
     id: 'tx-adjacent-alerts',
-    what: 'acceptance gate (b): the three conditional controls render INSIDE the rx-tx zone (MOR-1258), '
+    what: 'acceptance gate (b): the three conditional items render INSIDE the rx-tx zone (MOR-1258), '
       + 'never zone-less, even with all three present at once.',
     state: () => mainSubState('MAIN'), caps: mainSubCaps,
     tx: tx({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' }),
     modGuard: { visible: true, sourceLabel: 'MIC' },
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied — the
-    // acceptance gate this fixture proves (the three TX-adjacent alerts are
+    // acceptance gate this fixture proves (the three TX-adjacent items are
     // inside `rx-tx`, never zone-less) is UNCHANGED; the 13 txAux controls
     // are a separate, honestly-disclosed zone-less class alongside it.
     expect: mainSubExpect({
       keyDisabled: true, rfLabel: 'TX?', sessionLabel: 'fault',
-      faultResetPresent: true, modInputWarningPresent: true,
+      faultResetPresent: false, modInputWarningPresent: true,
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },

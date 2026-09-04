@@ -19,10 +19,10 @@ import { SEGMENTLINE_INK, SEGMENTLINE_PALETTE, SEGMENTLINE_TOKENS } from '../tok
 import { renderStateFeedback, type SegmentlineStateFeedback } from '../state-feedback-renderer';
 
 const authority = (over: Partial<TxAuthoritySnapshot> = {}): TxAuthoritySnapshot => ({
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null, ...over,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null, ...over,
 });
 
-/** Exactly the projection the real call site (`RxTxSurface.svelte`) performs: App-authority conclusions in, flat primitives out. */
+/** Exactly the projection the real call site (`RxTxSurface.svelte`) performs: server conclusions in, flat primitives out. */
 const fromAuthority = (
   tx: TxAuthoritySnapshot, extra: Record<string, string | number | boolean | null> = {},
 ): SegmentlineStateFeedback => renderStateFeedback({
@@ -31,9 +31,9 @@ const fromAuthority = (
 }, SEGMENTLINE_TOKENS);
 
 const RX = authority();
-const PENDING = authority({ phase: 'key-confirm-pending', intent: 'latched', mayOwnKey: true, txRisk: 'uncertain' });
-const TX = authority({ phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
-const RELEASING = authority({ phase: 'releasing', radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
+const PENDING = authority({ phase: 'key-confirm-pending', intent: 'latched', txRisk: 'uncertain' });
+const TX = authority({ phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on' });
+const RELEASING = authority({ phase: 'releasing', radioTx: 'on', txRisk: 'confirmed-on' });
 const FAULT = authority({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' });
 const UNKNOWN_RF = authority({ radioTx: 'unknown' });
 const ALL = [RX, PENDING, TX, RELEASING, FAULT, UNKNOWN_RF];
@@ -171,7 +171,7 @@ describe('perimeter.transition follows the token motion duration, not a private 
   });
 });
 
-describe('R9 — TX truth comes from App authority, never from the renderer', () => {
+describe('R9 — TX truth comes from the server projection, never from the renderer', () => {
   it('a raw ptt field cannot light the perimeter: authority says RX, so it renders RX', () => {
     const withPtt = fromAuthority(RX, { ptt: true, radioStatePtt: true });
     expect(withPtt).toEqual(fromAuthority(RX));
