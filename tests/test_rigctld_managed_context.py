@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -36,10 +37,28 @@ class _RecordingRadio(SerialMockRadio):
         super().__init__()
         self.state_store = store
         self.frequency_calls = []
+        self.write_calls = []
 
     async def set_freq(self, freq, receiver=0):
         self.frequency_calls.append((freq, receiver))
+        self.write_calls.append(("freq", freq, receiver))
         await super().set_freq(freq, receiver=receiver)
+
+    async def set_mode(self, mode, filter_width=None, receiver=0):
+        self.write_calls.append(("mode", mode, filter_width, receiver))
+        await super().set_mode(mode, filter_width=filter_width, receiver=receiver)
+
+    async def set_vfo(self, vfo):
+        self.write_calls.append(("vfo", vfo))
+        await super().set_vfo(vfo)
+
+    async def set_split(self, on):
+        self.write_calls.append(("split", on))
+        await super().set_split(on)
+
+    async def _send_civ_raw(self, frame):
+        self.write_calls.append(("raw", frame))
+        return None
 
 
 class _DefaultExecutor:
@@ -147,3 +166,41 @@ async def test_handler_leaf_preserves_shared_service_default(context):
         assert context.radio.frequency_calls == [(14_075_000, 0)]
     finally:
         unsubscribe()
+
+
+@pytest.mark.parametrize(
+    ("wire", "expected_family"),
+    [
+        (b"F 14075000", "freq"),
+        (b"M USB 2400", "mode"),
+        (b"V VFOB", "vfo"),
+        (b"S 0 VFOA", "split"),
+        (b"w FE FE 98 E0 03 FD", "raw"),
+    ],
+)
+async def test_managed_non_tuner_writes_bypass_legacy_rf_gates(
+    context, monkeypatch, wire, expected_family
+):
+    context.store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=True,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=1e9,
+        )
+    )
+    handler = RigctldHandler(context.radio, RigctldConfig(), **context.refs)
+    legacy_defer = Mock(side_effect=AssertionError("managed write used defer gate"))
+    legacy_rf = Mock(side_effect=AssertionError("managed write used observed RF gate"))
+    monkeypatch.setattr(handler, "_defer_write_gate", legacy_defer)
+    monkeypatch.setattr(handler, "_resolve_rigctld_rf_state", legacy_rf)
+
+    response = await handler.execute(parse_line(wire), session_id="client")
+
+    assert response.ok
+    assert len(context.radio.write_calls) == 1
+    assert context.radio.write_calls[0][0] == expected_family
+    legacy_defer.assert_not_called()
+    legacy_rf.assert_not_called()
+    assert handler._command_service.lifecycle_events()[-1].state == "acknowledged"  # noqa: SLF001

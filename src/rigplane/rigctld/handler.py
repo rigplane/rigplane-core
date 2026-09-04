@@ -611,13 +611,15 @@ class _RigctldCommandExecutor:
         ):
             return await self._execute_managed_tuner(intent)
 
-        classification = _classify_rigctld_tx_intent(intent)
-        if (
-            classification.disposition is TxInterlockDisposition.BLOCK
-            and self.handler._has_canonical_state_store
-            and self.handler._resolve_rigctld_rf_state() is not tx_interlock.RfState.RX
-        ):
-            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if not managed:
+            classification = _classify_rigctld_tx_intent(intent)
+            if (
+                classification.disposition is TxInterlockDisposition.BLOCK
+                and self.handler._has_canonical_state_store
+                and self.handler._resolve_rigctld_rf_state()
+                is not tx_interlock.RfState.RX
+            ):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
         await self._wait_predecessor()
         params = intent.params
         if intent.name == "set_freq":
@@ -1646,9 +1648,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-freq-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -1815,9 +1818,10 @@ class RigctldHandler:
                 command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
                 session_id=self._session_id(),
             )
-            dropped = self._defer_write_gate(intent)
-            if dropped is not None:
-                return dropped
+            if self._managed_tx_authority is None:
+                dropped = self._defer_write_gate(intent)
+                if dropped is not None:
+                    return dropped
             await self._execute_write(intent)
             # ``filter_width`` (the local var) is a filter NUMBER, so the
             # readback overlay belongs on ``filter_num`` — that is the key the
@@ -1847,9 +1851,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         self._cache.update_mode(base_mode_str, filter_width)
         if requested_mode in packet_modes:
@@ -2370,9 +2375,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-vfo-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -2829,7 +2835,7 @@ class RigctldHandler:
             command_id=f"rigctld-set-func-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        if not (self._managed_tx_authority is not None and func == "TUNER"):
+        if self._managed_tx_authority is None:
             dropped = self._defer_write_gate(intent)
             if dropped is not None:
                 return dropped
@@ -2918,9 +2924,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-split-vfo-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -3065,9 +3072,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-rit-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
@@ -3096,9 +3104,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-xit-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if self._managed_tx_authority is None:
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 
