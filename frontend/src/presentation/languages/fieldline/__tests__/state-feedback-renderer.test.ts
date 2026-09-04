@@ -23,10 +23,10 @@ import { FIELDLINE_KNOCKOUT, FIELDLINE_PALETTE, FIELDLINE_TOKENS } from '../toke
 import { renderStateFeedback, type FieldlineStateFeedback } from '../state-feedback-renderer';
 
 const authority = (over: Partial<TxAuthoritySnapshot> = {}): TxAuthoritySnapshot => ({
-  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null, ...over,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null, ...over,
 });
 
-/** Exactly the projection a consumer performs: App-authority conclusions in, flat primitives out. */
+/** Exactly the projection a consumer performs: server conclusions in, flat primitives out. */
 const fields = (tx: TxAuthoritySnapshot, extra: Record<string, string | number | boolean | null> = {}) => ({
   rf: rfState(tx), session: txSessionState(tx), fault: tx.fault, keyBlocked: false, ...extra,
 });
@@ -36,9 +36,9 @@ const fromAuthority = (
   renderStateFeedback({ kind: 'state-feedback', fields: fields(tx, extra) }, FIELDLINE_TOKENS);
 
 const RX = authority();
-const PENDING = authority({ phase: 'key-confirm-pending', intent: 'latched', mayOwnKey: true, txRisk: 'uncertain' });
-const TX = authority({ phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
-const RELEASING = authority({ phase: 'releasing', radioTx: 'on', txRisk: 'confirmed-on', mayOwnKey: true });
+const PENDING = authority({ phase: 'key-confirm-pending', intent: 'latched', txRisk: 'uncertain' });
+const TX = authority({ phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on' });
+const RELEASING = authority({ phase: 'releasing', radioTx: 'on', txRisk: 'confirmed-on' });
 const FAULT = authority({ phase: 'failed', radioTx: 'unknown', txRisk: 'uncertain', fault: 'audio-failed' });
 const UNKNOWN_RF = authority({ radioTx: 'unknown' });
 const ALL = [RX, PENDING, TX, RELEASING, FAULT, UNKNOWN_RF];
@@ -194,7 +194,7 @@ describe('the action slab gets an intentional treatment, not a UA default (N2)',
   });
 });
 
-describe('R9 — TX truth comes from App authority, never from the renderer', () => {
+describe('R9 — TX truth comes from the server projection, never from the renderer', () => {
   it('a raw ptt field cannot move the rail: authority says RX, so it renders RX', () => {
     const withPtt = fromAuthority(RX, { ptt: true, radioStatePtt: true });
     expect(withPtt).toEqual(fromAuthority(RX));

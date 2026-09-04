@@ -2,7 +2,7 @@
   Semantic RX/TX status and action surface (MOR-1064).
 
   Presentation only. It receives the MOR-1062 `RadioViewModel` and a snapshot
-  of the App-owned TX authority as props, and emits TX intents as callbacks.
+  of the server-owned TX projection as props, and emits TX intents as callbacks.
   It holds no TX state, keys nothing, and consults no controller — v3 ADR
   invariant 11. The authoritative global TX lamp stays in `AppGlobalHost`
   (MOR-1059); this surface is polite status, not a second alert.
@@ -17,7 +17,7 @@
   import type { RadioViewModel } from './radio-view-model';
   import {
     RF_LABEL, RF_MARK, SESSION_LABEL, blockedLabel, faultMessage, keyBlockedReasons, nextSurfaceId,
-    rfState, targetUnknownMessage, txDisabledReasons, txOrigin, txSessionState,
+    rfState, targetUnknownMessage, txDisabledReasons, txSessionState,
     type RfState, type TxAuthoritySnapshot,
   } from './rx-tx-surface';
 
@@ -55,7 +55,7 @@
   let session = $derived(txSessionState(tx));
   let blocked = $derived(keyBlockedReasons(view, tx));
   let viewBlocked = $derived(txDisabledReasons(view));
-  let pressed = $derived(tx.mayOwnKey || (tx.phase !== 'idle' && tx.phase !== 'failed'));
+  let pressed = $derived(tx.phase !== 'idle' && tx.phase !== 'failed');
   let known = $derived(view.txTarget.status === 'known');
   let receiver = $derived(view.txTarget.status === 'known' ? view.txTarget.receiver : undefined);
   let slot = $derived(view.txTarget.status === 'known'
@@ -72,8 +72,8 @@
    * MOR-1275: the active design language's `stateFeedback` renderer.
    *
    * R9 — every field handed over is a CONCLUSION this surface already renders:
-   * `rf`/`session` are `rfState()`/`txSessionState()` over the App-owned
-   * authority snapshot, `fault` is the snapshot's own code, and `keyBlocked` is
+   * `rf`/`session` are `rfState()`/`txSessionState()` over the server
+   * projection, `fault` is the snapshot's own code, and `keyBlocked` is
    * the very predicate that gates the key button below. No raw `ptt`, no store,
    * no new state path — and the descriptor comes back as annotations only, so
    * it cannot re-gate a control or rename one.
@@ -89,7 +89,7 @@
 >
   <p
     class="rx-tx-state" role="status" data-testid="rx-tx-state"
-    data-rf={rf} data-session={session} data-origin={txOrigin(tx)} data-intent={tx.intent ?? undefined}
+    data-rf={rf} data-session={session} data-intent={tx.intent ?? undefined}
   >
     <span class="rx-tx-mark" data-testid="rx-tx-rf-mark" aria-hidden="true">{RF_MARK[rf]}</span>
     <span
@@ -98,7 +98,6 @@
     >{RF_LABEL[rf]}</span>
     <span class="rx-tx-session">{SESSION_LABEL[session]}</span>
     {#if tx.intent}<span class="rx-tx-intent">· {tx.intent}</span>{/if}
-    <span class="rx-tx-origin">· {txOrigin(tx)}</span>
   </p>
 
   <!-- MOR-1792: `data-fault` stays the machine channel and gains

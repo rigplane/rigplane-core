@@ -3,10 +3,8 @@
  *
  * Pure. It maps (a) the MOR-1062 `RadioViewModel` and (b) a snapshot of the
  * server-owned TX projection onto the words the operator reads. It never
- * computes TX truth, never keys anything, and never
- * imports the TX controller: v3 ADR invariant 11 keeps TX authority in
- * `lib/runtime/tx-controller` (App-root host, MOR-1059); this module renders
- * that authority's conclusions rather than becoming a second one.
+ * computes TX truth, never keys anything, and never imports the TX controller.
+ * It renders the server projection rather than becoming a second authority.
  *
  * Every mapping fails CLOSED: an unrecognised phase reads as "keying in
  * progress", an unobserved RF state reads as "unknown" rather than RX, and any
@@ -27,7 +25,6 @@ export interface TxAuthoritySnapshot {
   intent: 'momentary' | 'latched' | null;
   radioTx: 'off' | 'on' | 'unknown';
   txRisk: 'none' | 'uncertain' | 'confirmed-on';
-  mayOwnKey?: boolean;
   fault: string | null;
   faultDetail?: readonly string[] | null;
   fresh?: boolean;
@@ -35,7 +32,6 @@ export interface TxAuthoritySnapshot {
 
 export type RfState = 'receiving' | 'transmitting' | 'uncertain' | 'unknown';
 export type TxSessionState = 'idle' | 'pending' | 'keyed' | 'releasing' | 'failed';
-export type TxOrigin = 'local' | 'external';
 export type KeyBlockedReason =
   | 'tx-target-unknown' | 'tx-permit-denied' | 'tx-permit-unknown'
   | 'tx-fault' | 'tx-busy' | 'radio-transmitting' | 'rf-state-unknown';
@@ -187,13 +183,9 @@ export function rfState(tx: TxAuthoritySnapshot): RfState {
 export const txSessionState = (tx: TxAuthoritySnapshot): TxSessionState =>
   SESSION_BY_PHASE[tx.phase] ?? 'pending';
 
-/** Browser ownership is shown only when the server projection supplies it. */
-export const txOrigin = (tx: TxAuthoritySnapshot): TxOrigin =>
-  tx.mayOwnKey ? 'local' : 'external';
-
 /**
- * Reasons remain visible for operator context; ManagedTxAuthority performs
- * admission after this surface emits a typed intent.
+ * Reasons remain visible for operator context; the server performs admission
+ * after this surface emits a typed intent.
  */
 export function keyBlockedReasons(
   view: RadioViewModel, tx: TxAuthoritySnapshot,
@@ -212,7 +204,7 @@ export function keyBlockedReasons(
   // phase itself, not on `fault` being non-null, so the verdict cannot go
   // missing should a future state ever reach 'failed' without a code.
   if (tx.fault !== null || tx.phase === 'failed') add('tx-fault');
-  if (tx.mayOwnKey || (tx.phase !== 'idle' && tx.phase !== 'failed')) add('tx-busy');
+  if (tx.phase !== 'idle' && tx.phase !== 'failed') add('tx-busy');
   /**
    * MOR-1906. `txRisk` used to collapse into `tx-busy`, which renders as "a TX
    * session is already in progress" — told to an operator on a demonstrably

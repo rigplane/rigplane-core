@@ -42,7 +42,7 @@ let target: HTMLDivElement;
 
 const allowed = Object.freeze({
   view: Object.freeze({ txTarget: { status: 'known' }, txPermit: { status: 'allowed' } }) as Parameters<typeof keyBlockedReasons>[0],
-  tx: Object.freeze({ phase: 'idle', radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null }) as Parameters<typeof keyBlockedReasons>[1],
+  tx: Object.freeze({ phase: 'idle', radioTx: 'off', txRisk: 'none', fault: null }) as Parameters<typeof keyBlockedReasons>[1],
 });
 
 const blockedCases: readonly Readonly<{
@@ -56,7 +56,6 @@ const blockedCases: readonly Readonly<{
   { name: 'unknown permit', expected: 'tx-permit-unknown', view: { ...allowed.view, txPermit: { status: 'unknown' } } as typeof allowed.view, tx: allowed.tx },
   { name: 'fault', expected: 'tx-fault', view: allowed.view, tx: { ...allowed.tx, fault: 'fault' } as typeof allowed.tx },
   { name: 'non-idle phase', expected: 'tx-busy', view: allowed.view, tx: { ...allowed.tx, phase: 'key-confirm-pending' } as typeof allowed.tx },
-  { name: 'key ownership', expected: 'tx-busy', view: allowed.view, tx: { ...allowed.tx, mayOwnKey: true } as typeof allowed.tx },
   // MOR-1906: RF doubt is not a lease. Both rows still block the TUNE carrier
   // exactly as before — only the reason the operator is given changed, from
   // "a TX session is already in progress" to what the authority actually knows

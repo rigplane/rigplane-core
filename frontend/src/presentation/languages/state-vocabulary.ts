@@ -14,8 +14,8 @@
  * `data-vfo-*`/`data-active-receiver`/`data-split-*` attribute today — that
  * family carries none of the reverse-engineering burden this module
  * removes, so it is not exported here. Likewise `RxTxSurface.svelte`'s own
- * `data-origin`/`data-intent`/`data-fault-legs`/`data-receiver`/`data-slot`/
- * `data-field` and `MetersSurface.svelte`'s `data-relevant`/`data-observed`/
+ * `data-intent`/`data-fault-legs`/`data-receiver`/`data-slot`/`data-field`
+ * and `MetersSurface.svelte`'s `data-relevant`/`data-observed`/
  * `data-meter` are real vocabularies (documented in each file's own source)
  * that no stylesheet keys off yet either; only the two collisions below
  * (`data-fault`, `data-reason`) are exported without a stylesheet consumer,
@@ -38,11 +38,11 @@
  * imports.
  */
 import type {
-  KeyBlockedReason, RfState, TxOrigin, TxSessionState, TxTargetUnknownReason,
+  KeyBlockedReason, RfState, TxSessionState, TxTargetUnknownReason,
 } from '../../semantic/rx-tx-surface';
 import type { DisabledReasonCode } from '../../semantic/radio-view-model';
 
-export type { KeyBlockedReason, RfState, TxOrigin, TxSessionState };
+export type { KeyBlockedReason, RfState, TxSessionState };
 
 /**
  * `RxTxSurface.svelte`'s `[data-testid="rx-tx-state"] data-rf` — also
@@ -55,8 +55,6 @@ export type { KeyBlockedReason, RfState, TxOrigin, TxSessionState };
 export const RF_STATES: readonly RfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
 /** `RxTxSurface.svelte`'s `[data-testid="rx-tx-state"] data-session`. */
 export const TX_SESSION_STATES: readonly TxSessionState[] = ['idle', 'pending', 'keyed', 'releasing', 'failed'];
-/** `RxTxSurface.svelte`'s `[data-testid="rx-tx-state"] data-origin`. */
-export const TX_ORIGINS: readonly TxOrigin[] = ['local', 'external'];
 /** `RxTxSurface.svelte`'s `[data-testid="rx-tx-target"] data-target`. */
 export const TX_TARGET_STATUSES = ['known', 'unknown'] as const;
 export type TxTargetStatus = (typeof TX_TARGET_STATUSES)[number];
