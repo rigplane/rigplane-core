@@ -308,6 +308,26 @@ which is why they are worth more than a screenshot.
 values, and cannot show what transmit, a fault, or a lost connection look like.
 Anything it implies about those is inference of the weakest kind.
 
+### Freeze an image map before any component generation
+
+When the user wants code from an image, Phase 2 must leave a machine-checkable
+`face-map.json`, not only prose. Read
+[references/visual-reconstruction.md](references/visual-reconstruction.md) in
+full and follow its two-stage workflow. Run `./validate-face-map.py selftest`,
+then validate the map with `./validate-face-map.py validate <map>`.
+
+Classify the reference as `flat` or `compound`. A flat segmented/LCD face may
+advance as one composition after its map is accepted. A compound reference —
+any face combining an analog dial, dense curved scale, trace/waterfall, complex
+chrome, or several unfamiliar graphic families — may generate **one selected
+instrument or one already-proven repeated cluster per pass**. Do not generate a
+complete compound face directly from the screenshot. Repetition is composed
+only after the first instance passes a same-crop visual comparison.
+
+The map preserves normalized bounds, literal labels, grouping, confidence,
+renderer choice, and repeated-element identity even for unidentified elements.
+Tests and semantic correctness do not substitute for this visual gate.
+
 ## Phase 3 — cross them
 
 First, three lists:
@@ -426,7 +446,10 @@ Proposal mode stops after the buildability checks below. If the user explicitly
 asks to generate, build, or implement the selected face, instrument, or radio
 control, read
 [references/component-generation.md](references/component-generation.md) in
-full and follow its build workflow.
+full and follow its build workflow. When an image is the source, also read
+[references/visual-reconstruction.md](references/visual-reconstruction.md) and
+build only the `selectedRegion` recorded in the validated face map unless the
+reference is classified `flat`.
 
 That workflow turns the Phase 3 field map and Phase 4 ownership tiers into code:
 it searches for the nearest existing radio primitive, chooses composition,
