@@ -422,6 +422,10 @@ async def test_control_run_admits_next_off_while_level_write_is_unsettled(path):
     )
     path.server._production_managed_tx_port = SimpleNamespace(authority=authority)
     path.handler._managed_tx_authority = path.server._managed_tx_authority()
+    path.poller.bind_provider_generation(
+        capture=lambda: path.server.command_state_store.provider_generation,
+        advance=path.server.command_state_store.begin_provider_generation,
+    )
 
     async def send_text(payload):
         message = json.loads(payload)

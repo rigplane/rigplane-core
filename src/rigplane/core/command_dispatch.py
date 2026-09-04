@@ -278,6 +278,8 @@ def _rx_antenna_method(params: Mapping[str, Any]) -> str:
 
 
 def _bind_tuner_status(params: Mapping[str, Any]) -> dict[str, Any]:
+    if "value" not in params:
+        raise ValueError("missing required 'value' parameter")
     value = params["value"]
     if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1, 2):
         raise ValueError("tuner value must be 0, 1, or 2")

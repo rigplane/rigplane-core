@@ -253,8 +253,11 @@ class ManagedTxAuthority:
         """Register one cancellable positive transition before it can admit."""
         if action not in ("ptt_down", "transmit_on"):
             raise ValueError("positive managed TX action is invalid")
-        if action == "ptt_down" and (type(owner) is not str or not owner):
-            raise ValueError("PTT intent requires an owner token")
+        if action == "ptt_down":
+            if type(owner) is not str:
+                raise TypeError("PTT requires a builtin str owner")
+            if not owner:
+                raise ValueError("PTT intent requires an owner token")
         if ready is not None and not isinstance(ready, asyncio.Future):
             raise TypeError("positive TX readiness must be an existing Future or Task")
         generation = self._provider_generation

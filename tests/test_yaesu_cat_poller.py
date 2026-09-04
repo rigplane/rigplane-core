@@ -173,6 +173,21 @@ async def test_canonical_ptt_fixture_has_valid_non_meter_policy(
 
 
 @pytest.mark.asyncio
+async def test_stopped_poller_releases_connection_generation_binding() -> None:
+    queue = CommandQueue()
+    retired = YaesuCatPoller(make_radio(), command_queue=queue)
+    with pytest.raises(RuntimeError, match="already bound"):
+        YaesuCatPoller(make_radio(), command_queue=queue)
+
+    await retired.stop()
+    fresh = YaesuCatPoller(make_radio(), command_queue=queue)
+    assert queue.capture_connection_generation() == (
+        fresh._current_tx_target_generation()  # noqa: SLF001
+    )
+    await fresh.stop()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("frame", "state_map", "expected", "legacy"),
     [

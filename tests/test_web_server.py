@@ -2650,7 +2650,8 @@ class TestScopeLifecycle:
         # A delayed old enable cannot roll back the queue watermark or revive
         # hardware after the authoritative last-viewer disable.
         server._command_queue.put(enable)
-        poller = RadioPoller(radio, server._command_queue, radio_state=RadioState())
+        poller = server._radio_poller
+        assert isinstance(poller, RadioPoller)
         for command in server._command_queue.drain():
             await poller._execute(command)  # noqa: SLF001
         assert radio.enable_scope.await_count == 1

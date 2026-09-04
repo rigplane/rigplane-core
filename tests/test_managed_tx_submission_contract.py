@@ -42,7 +42,10 @@ def test_command_queue_binds_one_non_null_connection_generation_source() -> None
         queue.capture_connection_generation()
 
     current: object | None = "connection-1"
-    queue.bind_connection_generation(lambda: current)
+    def capture() -> object | None:
+        return current
+
+    queue.bind_connection_generation(capture)
     assert queue.capture_connection_generation() == "connection-1"
     with pytest.raises(RuntimeError, match="already bound"):
         queue.bind_connection_generation(lambda: "connection-2")
@@ -50,6 +53,21 @@ def test_command_queue_binds_one_non_null_connection_generation_source() -> None
     current = None
     with pytest.raises(RuntimeError, match="unavailable"):
         queue.capture_connection_generation()
+
+    def wrong_capture() -> object | None:
+        return current
+
+    with pytest.raises(RuntimeError, match="another consumer"):
+        queue.unbind_connection_generation(wrong_capture)
+    queue.unbind_connection_generation(capture)
+    with pytest.raises(RuntimeError, match="not bound"):
+        queue.capture_connection_generation()
+
+    def replacement() -> object:
+        return "connection-2"
+
+    queue.bind_connection_generation(replacement)
+    assert queue.capture_connection_generation() == "connection-2"
 
 
 @pytest.mark.asyncio

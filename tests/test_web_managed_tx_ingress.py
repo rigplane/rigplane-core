@@ -48,6 +48,26 @@ class _Authority:
         self.disconnect_started = asyncio.Event()
         self.disconnect_gate: asyncio.Event | None = None
 
+    def start_ptt_submission(
+        self,
+        on: bool,
+        owner: str,
+        *,
+        ready: asyncio.Future[None],
+        expires_at_monotonic: float,
+    ) -> asyncio.Task[_Submission]:
+        self.calls.append((on, owner))
+        submission = _Submission(self.next_outcome)
+
+        async def complete() -> _Submission:
+            await ready
+            if submission.outcome is ManagedTxOutcome.ACCEPTED:
+                self.intent = f"ptt:{owner}" if on else "rx"
+            return submission
+
+        del expires_at_monotonic
+        return asyncio.create_task(complete())
+
     async def submit_ptt(self, on: bool, owner: str) -> _Submission:
         self.calls.append((on, owner))
         submission = _Submission(self.next_outcome)
@@ -121,6 +141,16 @@ def _handler(
         task.add_done_callback(retained.discard)
         return task
 
+    async def enqueue_managed_positive_tx(
+        *,
+        ready: asyncio.Future[None],
+        submission: asyncio.Task[_Submission],
+        **_kwargs: Any,
+    ) -> _Submission:
+        queue.put_ordered(None, positive_tx_ready=ready, positive_tx_submission=submission)
+        ready.set_result(None)
+        return await submission
+
     server = SimpleNamespace(
         command_queue=queue,
         command_state_store=_state_store(observed, stale=stale),
@@ -128,6 +158,7 @@ def _handler(
         unregister_control_event_queue=MagicMock(),
         build_state_update_envelope=MagicMock(return_value={}),
         _managed_tx_authority=lambda: authority,
+        enqueue_managed_positive_tx=enqueue_managed_positive_tx,
         _spawn=spawn,
         retained=retained,
     )
@@ -155,7 +186,7 @@ def _handler(
         ("ptt_off", {}, False, {}),
     ),
 )
-async def test_ws_ptt_aliases_submit_exact_owner_without_queue_or_raw_fallback(
+async def test_ws_ptt_aliases_use_shared_queue_for_on_and_direct_authority_for_off(
     name: str, params: dict[str, Any], on: bool, result: dict[str, Any]
 ) -> None:
     authority = _Authority()
@@ -164,7 +195,10 @@ async def test_ws_ptt_aliases_submit_exact_owner_without_queue_or_raw_fallback(
     assert authority.calls == [(on, "websocket-test")]
     assert authority.force_off_calls == 0
     server.command_queue.put.assert_not_called()
-    server.command_queue.put_ordered.assert_not_called()
+    if on:
+        server.command_queue.put_ordered.assert_called_once()
+    else:
+        server.command_queue.put_ordered.assert_not_called()
     radio.set_ptt.assert_not_awaited()
 
 

@@ -114,8 +114,9 @@ class YaesuCatPoller:
         self._callback = callback
         self._observation_callback = observation_callback
         self._command_queue = command_queue
-        if command_queue is not None:
-            command_queue.bind_connection_generation(self._current_tx_target_generation)
+        self._connection_generation_capture = self._current_tx_target_generation
+        self._connection_generation_bound = False
+        self._bind_connection_generation()
         self._managed_tx_authority: ManagedWriteAdmission | None = None
         self._fast_interval = fast_interval
         self._medium_interval = medium_interval
@@ -240,6 +241,7 @@ class YaesuCatPoller:
         """Start all three polling loops."""
         if self._tasks:
             return
+        self._bind_connection_generation()
         self._paused.set()
         loop = asyncio.get_running_loop()
         self._tasks = [
@@ -257,7 +259,20 @@ class YaesuCatPoller:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         self._cancel_deferred_entry("poller stopped")
+        if self._command_queue is not None and self._connection_generation_bound:
+            self._command_queue.unbind_connection_generation(
+                self._connection_generation_capture
+            )
+            self._connection_generation_bound = False
         logger.info("YaesuCatPoller: stopped")
+
+    def _bind_connection_generation(self) -> None:
+        if self._command_queue is None or self._connection_generation_bound:
+            return
+        self._command_queue.bind_connection_generation(
+            self._connection_generation_capture
+        )
+        self._connection_generation_bound = True
 
     async def pause(self) -> None:
         """Suspend polling.  In-flight requests complete; new ones wait."""

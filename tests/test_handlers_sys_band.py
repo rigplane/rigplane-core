@@ -8,19 +8,20 @@ Issue #411: band/split advanced commands (band_edge_freq, xfc_status,
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from _caps import FULL_ICOM_CAPS
+from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import (
     QuickDualWatch,
     QuickSplit,
     SetAfMute,
-    SetCivOutputAnt,
     SetCivTransceive,
     SetQuickDualWatch,
     SetQuickSplit,
@@ -41,6 +42,7 @@ def _capable_radio() -> SimpleNamespace:
     return SimpleNamespace(
         capabilities=set(FULL_ICOM_CAPS),
         profile=resolve_radio_profile(model="IC-7610"),
+        supports_command=MagicMock(return_value=True),
         # ScopeCapable attrs required for isinstance check
         enable_scope=AsyncMock(),
         disable_scope=AsyncMock(),
@@ -184,8 +186,14 @@ class _QueueRecorder:
     def __init__(self) -> None:
         self.items: list[object] = []
 
-    def put(self, item: object) -> None:
+    def put(self, item: object, **_metadata: object) -> None:
         self.items.append(item)
+
+    def put_ordered(self, item: object, **_metadata: object) -> None:
+        self.items.append(item)
+        future = _metadata.get("future")
+        if isinstance(future, asyncio.Future) and not future.done():
+            future.set_result(None)
 
 
 def _handler(
@@ -286,8 +294,8 @@ async def test_set_civ_output_ant() -> None:
     h = _handler(radio=_capable_radio(), server=srv)
     result = await h._enqueue_command("set_civ_output_ant", {"on": True})
     assert result == {"on": True}
-    assert isinstance(q.items[0], SetCivOutputAnt)
-    assert q.items[0].on is True
+    assert isinstance(q.items[0], CommandIntent)
+    assert q.items[0].params["on"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -1180,6 +1180,16 @@ class CommandQueue:
             raise RuntimeError("command queue connection generation is already bound")
         self._capture_connection_generation = capture
 
+    def unbind_connection_generation(
+        self, capture: Callable[[], object | None]
+    ) -> None:
+        """Release the connection identity source owned by a retired consumer."""
+        if self._capture_connection_generation is not capture:
+            raise RuntimeError(
+                "command queue connection generation is bound to another consumer"
+            )
+        self._capture_connection_generation = None
+
     def capture_connection_generation(self) -> object:
         """Capture one required dispatch identity for a managed enqueue."""
         capture = self._capture_connection_generation

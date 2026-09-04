@@ -630,9 +630,11 @@ class RadioPoller:
         # so the map never leaks.
         self._acquisition_healthy_grace_started: dict[str, float] = {}
         self._queue = queue
-        self._queue.bind_connection_generation(
-            lambda: getattr(self._radio, "_civ_epoch", None)
+        self._connection_generation_capture = lambda: getattr(
+            self._radio, "_civ_epoch", None
         )
+        self._connection_generation_bound = False
+        self._bind_connection_generation()
         self._on_state_event = on_state_event
         self._task: asyncio.Task[None] | None = None
         self._caps: set[str] = self._radio_capabilities()
@@ -1065,10 +1067,17 @@ class RadioPoller:
     def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
+        self._bind_connection_generation()
         self._task = asyncio.get_running_loop().create_task(
             self._run(), name="radio-poller"
         )
         logger.info("radio-poller: started")
+
+    def _bind_connection_generation(self) -> None:
+        if self._connection_generation_bound:
+            return
+        self._queue.bind_connection_generation(self._connection_generation_capture)
+        self._connection_generation_bound = True
 
     def stop(self) -> None:
         """Cancel the loop and drop the task; deliberately synchronous.
@@ -1085,6 +1094,11 @@ class RadioPoller:
         # On this path the teardown ``PttOff`` is the whole cover for an
         # unmanaged rig: ``CoreRadio.disconnect`` de-keys the managed path only.
         self._cancel_max_key_down()
+        if self._connection_generation_bound:
+            self._queue.unbind_connection_generation(
+                self._connection_generation_capture
+            )
+            self._connection_generation_bound = False
         if self._task is not None:
             self._task.cancel()
             self._task = None
