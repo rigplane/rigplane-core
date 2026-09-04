@@ -95,9 +95,7 @@ def test_rx_release_debt_is_not_inferred_from_observed_ptt() -> None:
 def test_observation_changes_only_the_diagnostic_block(
     observed_ptt: ObservedPtt,
 ) -> None:
-    view = build_managed_tx_view(
-        _projection(), observed_ptt, sampled_at=_SAMPLED_AT
-    )
+    view = build_managed_tx_view(_projection(), observed_ptt, sampled_at=_SAMPLED_AT)
 
     assert view["managedTransmit"] == {
         "status": "available",
@@ -162,4 +160,3 @@ def test_diagnostics_preserve_normalized_values_and_hide_internal_tokens() -> No
     }
     assert "providerGeneration" not in str(view)
     assert "effectEpoch" not in str(view)
-

@@ -27,9 +27,7 @@ def build_managed_tx_view(
         and projection.remaining_tot_seconds is not None
     )
     remaining_ms = (
-        None
-        if not active
-        else max(0, floor(projection.remaining_tot_seconds * 1000))
+        None if not active else max(0, floor(projection.remaining_tot_seconds * 1000))
     )
     sampled_at_text = _utc_milliseconds(sampled_at)
     return {
@@ -60,7 +58,9 @@ def build_managed_tx_view(
                 "expiresAt": (
                     None
                     if remaining_ms is None
-                    else _utc_milliseconds(sampled_at + timedelta(milliseconds=remaining_ms))
+                    else _utc_milliseconds(
+                        sampled_at + timedelta(milliseconds=remaining_ms)
+                    )
                 ),
             },
         },
@@ -80,4 +80,6 @@ def _intent_view(intent: ManagedTxIntent) -> dict[str, str]:
 
 
 def _utc_milliseconds(value: datetime) -> str:
-    return value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return (
+        value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    )
