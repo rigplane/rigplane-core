@@ -250,9 +250,11 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
         "managedTransmit",
         "txObservation",
     )
-    assert RESPONSE_FIELD_CONTRACTS["/api/v1/managed-transmit/command"][
-        "required"
-    ] == ("ok", "operation", "result")
+    assert RESPONSE_FIELD_CONTRACTS["/api/v1/managed-transmit/command"]["required"] == (
+        "ok",
+        "operation",
+        "result",
+    )
 
 
 def test_command_batch_docs_use_numeric_data_mode_contract() -> None:

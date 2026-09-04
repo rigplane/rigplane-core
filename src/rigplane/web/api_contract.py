@@ -216,9 +216,7 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "txObservation",
         )
     },
-    "/api/v1/managed-transmit/command": {
-        "required": ("ok", "operation", "result")
-    },
+    "/api/v1/managed-transmit/command": {"required": ("ok", "operation", "result")},
     "/api/v1/managed-transmit/tot": {
         "required": (
             "schemaVersion",
