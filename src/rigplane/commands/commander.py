@@ -13,6 +13,8 @@ __all__ = ["IcomCommander", "Priority"]
 
 
 class Priority(IntEnum):
+    FORCE_RELEASE = -20
+    ABORT = -10
     IMMEDIATE = 0
     NORMAL = 10
     BACKGROUND = 20
@@ -26,7 +28,7 @@ T = TypeVar("T")
 # against pathological growth, not a normal-operation limit.  When the cap is
 # reached, the newest BACKGROUND fire-and-forget send is dropped (its future is
 # resolved with ``None`` so the caller still returns immediately).  The cap
-# NEVER applies to NORMAL/IMMEDIATE sends or to ``wait_dispatch=True`` sends.
+# NEVER applies to non-background sends or to ``wait_dispatch=True`` sends.
 _MAX_BG_INFLIGHT = 64
 
 
@@ -45,6 +47,10 @@ class _QueueItem:
     # ever awaits ``future``, so whoever fails it must retrieve the exception
     # itself or GC logs "Future exception was never retrieved" (MOR-595).
     fire_and_forget: bool = False
+    # Authority-owned currency predicate.  The commander only transports it
+    # to the executor; the final wire seam decides whether the attempt still
+    # belongs to the live authority effect.
+    is_current: Callable[[], bool] | None = None
 
 
 def _fail_item(item: _QueueItem, exc: BaseException) -> None:
@@ -143,6 +149,7 @@ class IcomCommander:
         timeout: float | None = None,
         wait_response: bool = True,
         wait_dispatch: bool = True,
+        is_current: Callable[[], bool] | None = None,
     ) -> CivFrame | None:
         """Enqueue a CI-V command.
 
@@ -195,6 +202,7 @@ class IcomCommander:
             wait_response=wait_response,
             counts_bg_inflight=counts_bg_inflight,
             fire_and_forget=not wait_dispatch,
+            is_current=is_current,
         )
 
         if key is not None:
@@ -263,9 +271,15 @@ class IcomCommander:
                     # in-flight command and the worker can move on, instead
                     # of blocking on a dropped reply while the rest of the
                     # queue piles up with pre-cancelled futures (#1188).
-                    execute_task = asyncio.ensure_future(
-                        self._execute(item.payload, item.wait_response)
-                    )
+                    if item.is_current is None:
+                        execution = self._execute(item.payload, item.wait_response)
+                    else:
+                        execution = self._execute(
+                            item.payload,
+                            item.wait_response,
+                            is_current=item.is_current,
+                        )
+                    execute_task = asyncio.ensure_future(execution)
                     inflight = execute_task
 
                     def _propagate_cancel(

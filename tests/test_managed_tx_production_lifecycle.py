@@ -30,13 +30,6 @@ class RecordingActuator:
         return ActuationResult.REJECTED
 
 
-def install_invalidation_seam(composition: ManagedTxComposition) -> None:
-    def start() -> asyncio.Task[None]:
-        return asyncio.create_task(composition.authority.provider_unavailable())
-
-    setattr(composition.authority, "start_provider_unavailable", start)
-
-
 @pytest.mark.asyncio
 async def test_one_event_drives_activation_and_idempotent_invalidation(
     tmp_path,
@@ -52,7 +45,6 @@ async def test_one_event_drives_activation_and_idempotent_invalidation(
         config_path=tmp_path / "managed-tx.json",
         retire_provider=retire,
     )
-    install_invalidation_seam(composition)
     event = ManagedTxProviderEvent(1, 17)
     await composition.activate_provider(event)
     assert composition.active_provider is event
@@ -64,7 +56,7 @@ async def test_one_event_drives_activation_and_idempotent_invalidation(
     assert composition.active_provider is None
     await first
     assert retired == [event]
-    assert events == ["ptt_on", "force_receive"]
+    assert events == ["ptt_on"]
 
     replacement = ManagedTxProviderEvent(2, 18)
     await composition.activate_provider(replacement)
@@ -87,7 +79,6 @@ async def test_shutdown_force_receive_precedes_retirement_and_is_joinable(
         config_path=tmp_path / "managed-tx.json",
         retire_provider=retire,
     )
-    install_invalidation_seam(composition)
     await composition.activate_provider(ManagedTxProviderEvent(3, 9))
     assert await composition.authority.transmit_on() is ManagedTxOutcome.ACCEPTED
 
@@ -96,4 +87,10 @@ async def test_shutdown_force_receive_precedes_retirement_and_is_joinable(
         composition.shutdown(asyncio.Event()),
     )
     assert first is second
-    assert events == ["transmit_on", "force_receive", "retire:3"]
+    assert events == [
+        "transmit_on",
+        "force_receive",
+        "stop_cw",
+        "stop_tune",
+        "retire:3",
+    ]

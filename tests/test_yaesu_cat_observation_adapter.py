@@ -56,6 +56,7 @@ def _make_radio() -> MagicMock:
         "notch",
         "split",
         "rit",
+        "xit",
         "tuner",
         "dial_lock",
         "cw",
@@ -214,6 +215,7 @@ class _SideEffectingYaesuRadio:
         "vox",
         "compressor",
         "rit",
+        "xit",
         "tuner",
         "dial_lock",
         "cw",
@@ -1108,11 +1110,8 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
         # split (MOR-446) is a global tx_state bool, gated on the ``split``
         # capability — mirroring the legacy poller's ``"split" in caps`` gate.
         ("global.tx_state.split", True),
-        # Clarifier RIT/XIT (MOR-454): global tx_state bools + global
-        # operator-control signed Hz offset, gated on the ``rit`` capability —
-        # mirroring the legacy poller's ``"rit" in caps`` gate. A single
-        # ``read_clarifier`` read feeds both flags; ``read_clarifier_freq``
-        # feeds the signed offset on the device scale.
+        # Clarifier RIT/XIT (MOR-454): independently declared global tx_state
+        # flags plus the shared global operator-control signed offset.
         ("global.tx_state.rit_on", True),
         ("global.tx_state.rit_tx", False),
         ("global.operator_controls.rit_freq", -250),
@@ -1226,7 +1225,7 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_vox.assert_not_awaited()
     # split is dropped: the ``split`` runtime cap is absent here.
     radio.read_split.assert_not_awaited()
-    # RIT/XIT is dropped: the ``rit`` runtime cap is absent here (MOR-454).
+    # RIT/XIT is dropped: neither runtime capability is present (MOR-454).
     radio.read_clarifier.assert_not_awaited()
     radio.read_clarifier_freq.assert_not_awaited()
     # Tuner + dial-lock are dropped: ``tuner``/``dial_lock`` caps absent (MOR-455).
@@ -1237,6 +1236,63 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_cw_pitch.assert_not_awaited()
     radio.read_break_in.assert_not_awaited()
     radio.read_break_in_delay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capabilities", "expected_paths"),
+    [
+        (
+            {"rit"},
+            {
+                "global.tx_state.rit_on",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (
+            {"xit"},
+            {
+                "global.tx_state.rit_tx",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (
+            {"rit", "xit"},
+            {
+                "global.tx_state.rit_on",
+                "global.tx_state.rit_tx",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (set(), set()),
+    ],
+)
+async def test_tx_controls_poll_scopes_clarifier_state_to_declared_capabilities(
+    capabilities: set[str], expected_paths: set[str]
+) -> None:
+    radio = _make_radio()
+    radio.capabilities = capabilities
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_tx_controls()
+
+    clarifier_observations = {
+        str(item.path): item.value
+        for item in observations
+        if str(item.path).startswith("global.tx_state.rit_")
+        or str(item.path) == "global.operator_controls.rit_freq"
+    }
+    assert set(clarifier_observations) == expected_paths
+    if capabilities:
+        radio.read_clarifier.assert_awaited_once()
+        radio.read_clarifier_freq.assert_awaited_once()
+    else:
+        radio.read_clarifier.assert_not_awaited()
+        radio.read_clarifier_freq.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1330,9 +1386,8 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.operator_controls.compressor_level", 25),
         ("global.tx_state.vox_on", True),
         # split is skipped: this radio lacks the ``split`` runtime cap.
-        # Clarifier RIT/XIT (MOR-454): gated on the ``rit`` cap (present here);
-        # a single ``read_clarifier`` feeds both flags, ``read_clarifier_freq``
-        # the signed Hz offset — none of which mutate legacy state.
+        # Clarifier RIT/XIT (MOR-454): both capabilities are present; shared
+        # clarifier reads do not mutate legacy state.
         ("global.tx_state.rit_on", True),
         ("global.tx_state.rit_tx", False),
         ("global.operator_controls.rit_freq", -250),

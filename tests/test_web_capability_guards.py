@@ -523,6 +523,40 @@ class TestCapabilitiesEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
+        ("tx_count", "has_rx_antenna", "has_rx_actuator"),
+        [
+            (2, False, True),
+            (1, True, False),
+        ],
+    )
+    async def test_capabilities_keeps_antenna_topology_and_actuator_independent(
+        self, tx_count: int, has_rx_antenna: bool, has_rx_actuator: bool
+    ):
+        radio = _make_radio("IC-7610")
+        capabilities = set(radio.profile.capabilities)
+        if has_rx_actuator:
+            capabilities.add("rx_antenna")
+        else:
+            capabilities.discard("rx_antenna")
+        radio.profile = replace(
+            radio.profile,
+            antenna_tx_count=tx_count,
+            antenna_has_rx_ant=has_rx_antenna,
+            capabilities=frozenset(capabilities),
+        )
+        radio.capabilities = capabilities
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert data["antennas"] == tx_count
+        assert data["hasRxAntenna"] is has_rx_antenna
+        assert ("rx_antenna" in data["capabilities"]) is has_rx_actuator
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
         ("model", "expected"),
         [
             ("IC-705", {"vfo_swap", "vfo_equalize"}),

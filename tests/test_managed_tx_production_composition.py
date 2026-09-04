@@ -30,13 +30,6 @@ class FakeActuator:
         return ActuationResult.ACCEPTED
 
 
-def install_invalidation_seam(composition: ManagedTxComposition) -> None:
-    def start() -> asyncio.Task[None]:
-        return asyncio.create_task(composition.authority.provider_unavailable())
-
-    setattr(composition.authority, "start_provider_unavailable", start)
-
-
 @pytest.mark.asyncio
 async def test_builds_one_authority_fence_lane_and_tot_store(tmp_path) -> None:
     actuator = FakeActuator()
@@ -44,8 +37,6 @@ async def test_builds_one_authority_fence_lane_and_tot_store(tmp_path) -> None:
         actuator,
         config_path=tmp_path / "managed-tx.json",
     )
-    install_invalidation_seam(composition)
-
     assert isinstance(actuator, ManagedTxActuator)
     assert isinstance(composition, ManagedTxCompositionPort)
     assert composition.authority._lane is composition._lane
@@ -80,7 +71,8 @@ async def test_install_blocks_legacy_raw_ptt_fallback(tmp_path) -> None:
     await composition.shutdown(asyncio.Event())
 
 
-def test_duplicate_install_is_rejected(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_duplicate_install_is_rejected(tmp_path) -> None:
     radio = LegacyRadio()
     composition = ManagedTxComposition(
         FakeActuator(), config_path=tmp_path / "managed-tx.json"
@@ -88,3 +80,4 @@ def test_duplicate_install_is_rejected(tmp_path) -> None:
     install_managed_tx_composition(radio, composition)
     with pytest.raises(RuntimeError, match="already installed"):
         install_managed_tx_composition(radio, composition)
+    await composition.shutdown(asyncio.Event())

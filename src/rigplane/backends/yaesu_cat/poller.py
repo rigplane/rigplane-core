@@ -1475,11 +1475,13 @@ class YaesuCatPoller:
                 logger.debug("YaesuCatPoller: get_if_shift failed", exc_info=True)
 
         # -- Clarifier (RIT/XIT) --
-        if "rit" in caps:
+        if "rit" in caps or "xit" in caps:
             try:
                 rx_clar, tx_clar = await radio.get_clarifier()
-                state.rit_on = rx_clar
-                state.rit_tx = tx_clar
+                if "rit" in caps:
+                    state.rit_on = rx_clar
+                if "xit" in caps:
+                    state.rit_tx = tx_clar
                 state.rit_freq = await radio.get_clarifier_freq()
             except NotImplementedError:
                 pass

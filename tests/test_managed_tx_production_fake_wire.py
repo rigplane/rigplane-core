@@ -40,14 +40,6 @@ class DelayedFinalWire:
         return ActuationResult.ACCEPTED
 
 
-def install_invalidation_seam(composition: ManagedTxComposition) -> None:
-    def start() -> asyncio.Task[None]:
-        composition.abort_fence.force_off()
-        return asyncio.create_task(composition.authority.provider_unavailable())
-
-    setattr(composition.authority, "start_provider_unavailable", start)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["icom", "yaesu", "rigctld-client"])
 async def test_stale_on_is_rejected_at_each_fake_final_wire(
@@ -57,7 +49,6 @@ async def test_stale_on_is_rejected_at_each_fake_final_wire(
     composition = ManagedTxComposition(
         actuator, config_path=tmp_path / f"{provider}.json"
     )
-    install_invalidation_seam(composition)
     event = ManagedTxProviderEvent(1, 1)
     await composition.activate_provider(event)
 
@@ -67,6 +58,7 @@ async def test_stale_on_is_rejected_at_each_fake_final_wire(
     actuator.release_on.set()
     await submission.wait_settlement()
     await invalidation
+    await composition.activate_provider(ManagedTxProviderEvent(2, 2))
 
     assert "ptt_on" not in actuator.wire
     assert actuator.wire[-1:] == ["force_receive"]

@@ -1392,6 +1392,23 @@ class TestToProfile:
         assert profile.supports_command("get_antenna") is False
         assert profile.supports_command("set_antenna") is False
 
+    @pytest.mark.parametrize(
+        ("filename", "tx_count", "has_rx_antenna"),
+        [
+            ("ic705.toml", 1, True),
+            ("ic7610.toml", 2, True),
+            ("ic7300.toml", 1, False),
+            ("ic9700.toml", 1, False),
+        ],
+    )
+    def test_antenna_topology_propagates_to_profile(
+        self, filename: str, tx_count: int, has_rx_antenna: bool
+    ):
+        profile = load_rig(RIGS_DIR / filename).to_profile()
+
+        assert profile.antenna_tx_count == tx_count
+        assert profile.antenna_has_rx_ant is has_rx_antenna
+
     def test_capabilities_frozenset(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert isinstance(profile.capabilities, frozenset)

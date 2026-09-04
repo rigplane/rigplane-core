@@ -2,8 +2,8 @@
 
 Architecture
 ~~~~~~~~~~~~
-All serial I/O is serialized through a single ``asyncio.Lock``.  Every public
-method (``write``, ``query``) acquires the lock before touching the wire.
+All serial I/O is serialized through a single exchange gate.  Every public
+method (``write``, ``query``) acquires the gate before touching the wire.
 
 Design principles (learned from production):
 
@@ -33,11 +33,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    pass
+from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
 
 __all__ = [
     "YaesuCatTransport",
@@ -115,7 +115,7 @@ class TransportStats:
 class YaesuCatTransport:
     """Async serial transport for Yaesu CAT protocol.
 
-    All public methods are safe to call concurrently — the internal lock
+    All public methods are safe to call concurrently — the internal gate
     guarantees strict serialization of serial I/O.
 
     Usage::
@@ -143,7 +143,7 @@ class YaesuCatTransport:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
-        self._lock = asyncio.Lock()
+        self._exchange_gate = PriorityExchangeGate()
         self._stats = TransportStats()
         self._last_reconnect: float = 0.0
 
@@ -227,13 +227,18 @@ class YaesuCatTransport:
         await asyncio.sleep(0.5)  # Let OS release the port
         await self.connect()
 
-    # ── Low-level I/O (caller MUST hold self._lock) ──────────────────
+    # ── Low-level I/O (caller MUST hold the exchange gate) ───────────
 
     def _check_connected(self) -> None:
         if not self._connected or not self._writer or not self._reader:
             raise CatTransportError("Transport not connected")
 
-    async def _raw_write(self, command: str) -> None:
+    async def _raw_write(
+        self,
+        command: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> None:
         """Send raw bytes to serial port."""
         self._check_connected()
         assert self._writer is not None  # for type checker
@@ -244,6 +249,7 @@ class YaesuCatTransport:
         if self._debug_logging:
             logger.debug("CAT TX: %r", command)
 
+        self._require_write_currency(is_current)
         try:
             self._writer.write(command.encode("ascii"))
             await self._writer.drain()
@@ -254,8 +260,8 @@ class YaesuCatTransport:
     async def readline(self, *, timeout: float | None = None) -> str:
         """Read one semicolon-terminated line.
 
-        .. note:: Caller must hold ``self._lock`` when used internally.
-           External callers should prefer ``query()`` which handles locking.
+        .. note:: Caller must hold the exchange gate when used internally.
+           External callers should prefer ``query()`` which handles serialization.
 
         Returns the line with trailing ``;`` stripped.
         """
@@ -343,14 +349,20 @@ class YaesuCatTransport:
         """Check if consecutive errors warrant a reconnect."""
         return self._stats.consecutive_errors >= _RECONNECT_AFTER_ERRORS
 
-    # ── Public API (all acquire lock) ─────────────────────────────────
+    # ── Public API (all acquire exchange gate) ────────────────────────
 
-    async def write(self, command: str) -> None:
+    async def write(
+        self,
+        command: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: ExchangeTier = ExchangeTier.ORDINARY,
+    ) -> None:
         """Send a SET command and drain echo / auto-info.
 
-        Acquires the transport lock, flushes stale RX data, sends the
+        Acquires the transport gate, flushes stale RX data, sends the
         command, then reads (and discards) any echo or auto-info the radio
-        sends back.  The lock is only released once the wire is clean.
+        sends back.  The gate is only released once the wire is clean.
 
         Args:
             command: CAT command string (e.g. ``"MD0E;"``).
@@ -359,9 +371,10 @@ class YaesuCatTransport:
             CatCommandRejected: If the radio returns ``?;`` (MOR-2103).
             CatTransportError: On serial I/O failure.
         """
-        async with self._lock:
+        async with self._exchange_gate.exchange(tier=tier):
             await self.flush_rx()
-            await self._raw_write(command)
+            self._require_write_currency(is_current)
+            await self._raw_write(command, is_current=is_current)
             self._stats.writes += 1
             drained = await self._drain_responses(command)
             self._stats.record_success()
@@ -371,7 +384,7 @@ class YaesuCatTransport:
     async def query(self, command: str, *, timeout: float | None = None) -> str:
         """Send a GET command and return the matching response.
 
-        Acquires the transport lock, flushes stale RX data, sends the
+        Acquires the transport gate, flushes stale RX data, sends the
         command, then reads lines until one matches the expected prefix.
         Echo lines and stale auto-info are silently skipped.
 
@@ -387,7 +400,7 @@ class YaesuCatTransport:
             CatTimeoutError: If no matching response within timeout.
             CatTransportError: On serial I/O failure.
         """
-        async with self._lock:
+        async with self._exchange_gate.exchange():
             await self.flush_rx()
             await self._raw_write(command)
             self._stats.queries += 1
@@ -436,6 +449,19 @@ class YaesuCatTransport:
                 f"Query {command!r}: exhausted {_QUERY_MAX_ATTEMPTS} attempts, "
                 "no matching response"
             )
+
+    @staticmethod
+    def _require_write_currency(is_current: Callable[[], bool] | None) -> None:
+        if is_current is None:
+            return
+        try:
+            current = is_current()
+        except (Exception, asyncio.CancelledError) as exc:
+            raise CatTransportError(
+                "Managed Yaesu CAT write currency check failed."
+            ) from exc
+        if not current:
+            raise CatTransportError("Managed Yaesu CAT write is no longer current.")
 
     async def query_safe(
         self, command: str, *, timeout: float | None = None, default: Any = None
