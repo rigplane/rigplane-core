@@ -20,7 +20,9 @@
   let preNext = $derived.by(() => {
     if (!preEnabled || !pre || pre.reading.status !== 'known') return null;
     const current = pre.reading.value;
-    return view.rfFrontEnd?.preValues.find((value) => value !== current) ?? null;
+    const values = view.rfFrontEnd?.preValues ?? [];
+    const index = values.indexOf(current);
+    return index < 0 || values.length === 0 ? null : values[(index + 1) % values.length];
   });
 </script>
 

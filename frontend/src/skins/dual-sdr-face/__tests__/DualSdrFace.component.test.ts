@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
 import DualSdrFace from '../DualSdrFace.svelte';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
@@ -6,6 +6,8 @@ import type { ScopeFrame } from '../../../lib/runtime/adapters/scope-adapter';
 
 const known = <T>(value: T) => ({ reading: { status: 'known' as const, value }, availability: { structural: true, operational: true } });
 const unknown = () => ({ reading: { status: 'unknown' as const }, availability: { structural: true, operational: false } });
+const canvas = { clearRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), strokeStyle: '', lineWidth: 0 };
+beforeEach(() => { for (const call of Object.values(canvas)) if (typeof call === 'function') call.mockClear(); vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(canvas as unknown as CanvasRenderingContext2D); Object.defineProperty(HTMLCanvasElement.prototype, 'clientWidth', { configurable: true, get: () => 10 }); Object.defineProperty(HTMLCanvasElement.prototype, 'clientHeight', { configurable: true, get: () => 10 }); });
 
 function view(): RadioViewModel {
   return {
@@ -36,10 +38,12 @@ describe('DualSdrFace', () => {
     const pixels = new Uint8Array([1, 2]);
     listener?.({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels });
     await tick();
+    await Promise.resolve();
     expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
     expect(target.querySelector('[data-receiver-cluster="1"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('unknown');
     pixels[0] = 255;
     expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('2');
+    expect(canvas.lineTo).toHaveBeenCalledWith(1, expect.closeTo(8.96, 2));
     listener?.({ receiver: 1, mode: 0, startFreq: 3, endFreq: 4, pixels: new Uint8Array([3]) });
     await tick();
     expect(target.querySelector('[data-receiver-cluster="1"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
@@ -58,7 +62,7 @@ describe('DualSdrFace', () => {
     expect(target.querySelector('[data-receiver-cluster="1"] [data-frequency]')?.textContent).toContain('—');
     expect(target.querySelector('[data-receiver-cluster="1"] [data-needle]')).toBeNull();
     const pre = target.querySelector<HTMLButtonElement>('[data-control="pre"]')!;
-    expect(pre.disabled).toBe(false); await pre.click(); await tick(); expect(onPreChange).toHaveBeenCalledWith(0);
+    expect(pre.disabled).toBe(false); await pre.click(); await tick(); expect(onPreChange).toHaveBeenCalledWith(2);
     for (const name of ['hold', 'main-sub', 'dual', 'mode', 'edge', 'att', 'ip', 'agc', 'vox', 'comp', 'ant', 'menu1', 'cent-fix', 'expd-set']) expect(target.querySelector<HTMLButtonElement>(`[data-control="${name}"]`)?.disabled).toBe(true);
   });
 });
