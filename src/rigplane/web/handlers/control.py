@@ -1476,8 +1476,7 @@ class ControlHandler:
         ):
             descriptor = None
         if descriptor is not None and (
-            self._server is None
-            or getattr(self._server, "command_queue", None) is None
+            self._server is None or getattr(self._server, "command_queue", None) is None
         ):
             raise RuntimeError("no command queue available")
         if descriptor is not None:

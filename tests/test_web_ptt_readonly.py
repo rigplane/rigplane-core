@@ -84,6 +84,7 @@ def _make_handler(
         radio = MagicMock()
 
     if authority is not None and not hasattr(authority, "start_ptt_submission"):
+
         def start_ptt_submission(
             on: bool,
             owner: str,

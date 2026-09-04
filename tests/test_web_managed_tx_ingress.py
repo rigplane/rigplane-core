@@ -147,7 +147,9 @@ def _handler(
         submission: asyncio.Task[_Submission],
         **_kwargs: Any,
     ) -> _Submission:
-        queue.put_ordered(None, positive_tx_ready=ready, positive_tx_submission=submission)
+        queue.put_ordered(
+            None, positive_tx_ready=ready, positive_tx_submission=submission
+        )
         ready.set_result(None)
         return await submission
 

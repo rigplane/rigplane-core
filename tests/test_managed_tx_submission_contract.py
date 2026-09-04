@@ -42,6 +42,7 @@ def test_command_queue_binds_one_non_null_connection_generation_source() -> None
         queue.capture_connection_generation()
 
     current: object | None = "connection-1"
+
     def capture() -> object | None:
         return current
 
