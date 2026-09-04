@@ -1831,6 +1831,65 @@ async def test_ctcss_tone_freq_emits_both_paths_in_centihz(
 
 
 @pytest.mark.asyncio
+async def test_ctcss_tone_freq_uses_active_profile_domain() -> None:
+    """CN indices resolve through the active profile, not a provider-private table."""
+    radio = _make_radio()
+    domain = list(radio.profile.ctcss_tones_centihz or ())
+    domain[8] = 8_888
+    radio.profile = replace(radio.profile, ctcss_tones_centihz=tuple(domain))
+    radio.read_ctcss_tone_index = AsyncMock(return_value=8)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert by_path["receiver.main.operator_controls.tone_freq"] == 8_888
+    assert by_path["receiver.main.operator_controls.tsql_freq"] == 8_888
+
+
+@pytest.mark.asyncio
+async def test_ctcss_tone_freq_skipped_without_profile_domain_before_cn_read() -> None:
+    """A missing CTCSS domain suppresses CN rather than manufacturing a value."""
+    radio = _make_radio()
+    radio.profile = replace(radio.profile, ctcss_tones_centihz=None)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = {str(item.path) for item in observations}
+
+    assert "receiver.main.operator_controls.tone_freq" not in paths
+    assert "receiver.main.operator_controls.tsql_freq" not in paths
+    radio.read_ctcss_tone_index.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ctcss_tone_freq_skipped_for_out_of_range_cn_index() -> None:
+    """An invalid CN index emits no fabricated CTCSS observations."""
+    radio = _make_radio()
+    radio.read_ctcss_tone_index = AsyncMock(return_value=50)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = {str(item.path) for item in observations}
+
+    assert "receiver.main.operator_controls.tone_freq" not in paths
+    assert "receiver.main.operator_controls.tsql_freq" not in paths
+    assert radio.read_ctcss_tone_index.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_ctcss_tone_freq_skipped_without_ctcss_capability() -> None:
     """MOR-458: neither tone_freq nor tsql_freq emits without the ``sql_type`` cap."""
     radio = _make_radio()

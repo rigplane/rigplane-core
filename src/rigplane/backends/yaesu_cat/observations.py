@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
+from rigplane.commands import table_index_to_hz
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import FieldPath, Observation
@@ -21,11 +22,11 @@ from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
 from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
-from .radio import _ctcss_index_to_centihz
 from .transport import CatCommandRejected, CatTimeoutError, CatTransportError
 
 if TYPE_CHECKING:
     from rigplane.core.types import BreakInMode
+    from rigplane.profiles import RadioProfile
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,9 @@ YAESU_PTT_PATH = _PTT
 
 
 class YaesuObservationRadio(Protocol):
+    @property
+    def profile(self) -> RadioProfile: ...
+
     @property
     def capabilities(self) -> set[str]: ...
 
@@ -907,11 +911,10 @@ class YaesuObservationAdapter:
         # CTCSS tone FREQUENCY (MOR-458) — MAIN-only per-receiver
         # ``operator_controls``, grouped with the CTCSS squelch-type toggles
         # above. A SINGLE ``read_ctcss_tone_index(0)`` CAT ``CN`` read
-        # (FTX-1_CAT_OM_ENG_2508-C) yields the 0-49 standard-EIA tone-chart index,
-        # which ``_ctcss_index_to_centihz`` maps index → Hz → centiHz (the
-        # index→Hz Tone Chart is verbatim from the manual). The neutral unit is
-        # centiHz = round(Hz * 100), matching the Icom MOR-451 convention so
-        # consumers see one unit. SINGLE-YAESU-TONE: the FTX-1 has ONE CTCSS
+        # (FTX-1_CAT_OM_ENG_2508-C) yields an index into the active profile's
+        # exact-centiHz domain. The neutral unit is centiHz (8850 = 88.5 Hz),
+        # matching the Icom convention so consumers see one unit. SINGLE-YAESU-TONE:
+        # the FTX-1 has ONE CTCSS
         # tone frequency (CN P2=0) used for BOTH encode (TONE) and decode
         # (TSQL) — Icom can carry distinct freqs, Yaesu cannot — so the SAME
         # centiHz value is emitted to BOTH tone_freq and tsql_freq from one
@@ -922,28 +925,39 @@ class YaesuObservationAdapter:
         # SET capabilities are intentionally off — no false advertising, bug
         # #550). MAIN only (CN P1=0). DCS (CN P2=1) is a documented limitation:
         # NO neutral DCS path is emitted.
-        if self._has_runtime_capability("sql_type"):
+        domain = self.radio.profile.ctcss_tones_centihz
+        if (
+            self._has_runtime_capability("sql_type")
+            and isinstance(domain, tuple)
+            and domain
+            and all(type(tone_centihz) is int for tone_centihz in domain)
+        ):
             ok, tone_index = await self._safe_read(
                 "main.ctcss_tone_index", self.radio.read_ctcss_tone_index(0)
             )
-            if ok and tone_index is not None:
-                tone_centihz = _ctcss_index_to_centihz(tone_index)
-                if self._can_poll(_MAIN_TONE_FREQ):
-                    observations.append(
-                        adapter.observation(
-                            _MAIN_TONE_FREQ,
-                            tone_centihz,
-                            native_id="read_ctcss_tone_index",
+            if ok and type(tone_index) is int:
+                try:
+                    tone_centihz = table_index_to_hz(tone_index, table=domain)
+                except ValueError:
+                    pass
+                else:
+                    assert type(tone_centihz) is int
+                    if self._can_poll(_MAIN_TONE_FREQ):
+                        observations.append(
+                            adapter.observation(
+                                _MAIN_TONE_FREQ,
+                                tone_centihz,
+                                native_id="read_ctcss_tone_index",
+                            )
                         )
-                    )
-                if self._can_poll(_MAIN_TSQL_FREQ):
-                    observations.append(
-                        adapter.observation(
-                            _MAIN_TSQL_FREQ,
-                            tone_centihz,
-                            native_id="read_ctcss_tone_index",
+                    if self._can_poll(_MAIN_TSQL_FREQ):
+                        observations.append(
+                            adapter.observation(
+                                _MAIN_TSQL_FREQ,
+                                tone_centihz,
+                                native_id="read_ctcss_tone_index",
+                            )
                         )
-                    )
         # Repeater shift direction (MOR-2111/MOR-2160). OS0 and OS1 are read
         # independently so one side's malformed/rejected answer never hides
         # or relabels the other side. P2 is already the neutral 0-3 value.
