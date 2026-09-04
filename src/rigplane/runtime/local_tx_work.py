@@ -17,10 +17,7 @@ LocalTxWork = Callable[[CurrencyCheck], Awaitable[_T]]
 
 
 async def _drain(task: asyncio.Task[object]) -> None:
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    await asyncio.gather(task, return_exceptions=True)
 
 
 class LocalTxWorkRunner:
