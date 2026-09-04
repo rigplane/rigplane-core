@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
 from ...exceptions import TimeoutError as RadioTimeoutError
-from ...core.command_dispatch import execute_command_intent
+from ...core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ...core.radio_protocol import (
     PhysicalWriteReadbackResult,
     PhysicalWriteReadbackStatus,
@@ -28,6 +28,8 @@ from ...radio_state import RadioState
 from ...runtime._poller_types import (
     canonicalize_level_command,
     execute_command_queue_entry,
+    execute_positive_tx_queue_entry,
+    validate_command_queue_entry_currency,
 )
 from ...runtime.callable_support import supports_explicit_callable
 from ...runtime.managed_tx_state import (
@@ -104,6 +106,27 @@ class RigctldClientObservationPoller:
         self._pending_readback_entries: list[_ReadbackCorrelation] = []
         self._capture_provider_generation: Callable[[], int] | None = None
         self._clock = clock
+        self._managed_tx_authority: ManagedWriteAdmission | None = None
+        self._connection_generation_capture = self._current_connection_generation
+        self._connection_generation_bound = False
+        self._bind_connection_generation()
+
+    def bind_managed_tx_authority(self, authority: ManagedWriteAdmission) -> None:
+        if self._managed_tx_authority is not None:
+            raise RuntimeError("managed transmit authority is already bound")
+        self._managed_tx_authority = authority
+
+    def _current_connection_generation(self) -> object | None:
+        transport = self._radio._transport
+        return transport._writer if transport.connected else None
+
+    def _bind_connection_generation(self) -> None:
+        if self._command_queue is None or self._connection_generation_bound:
+            return
+        self._command_queue.bind_connection_generation(
+            self._connection_generation_capture
+        )
+        self._connection_generation_bound = True
 
     def bind_provider_generation(
         self,
@@ -139,6 +162,7 @@ class RigctldClientObservationPoller:
     async def start(self) -> None:
         if self._tasks:
             return
+        self._bind_connection_generation()
         loop = asyncio.get_running_loop()
         self._tasks = [
             loop.create_task(self._run_loop(self._poll_medium, self._medium_interval)),
@@ -151,6 +175,11 @@ class RigctldClientObservationPoller:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._command_queue is not None and self._connection_generation_bound:
+            self._command_queue.unbind_connection_generation(
+                self._connection_generation_capture
+            )
+            self._connection_generation_bound = False
         self._finish_readbacks(self._pending_readback_entries, "cancelled")
 
     async def _run_loop(
@@ -238,6 +267,24 @@ class RigctldClientObservationPoller:
 
         successful: list["CommandQueueEntry"] = []
 
+        def validate_currency(entry: "CommandQueueEntry") -> None:
+            assert self._command_queue is not None
+            capture = self._capture_provider_generation
+            validate_command_queue_entry_currency(
+                entry,
+                now=self._clock(),
+                provider_generation=None if capture is None else capture(),
+                connection_generation=self._current_connection_generation(),
+                session_is_live=self._command_queue.session_is_live,
+                require_connection_generation=(
+                    self._managed_tx_authority is not None
+                    and (
+                        entry.positive_tx_submission is not None
+                        or isinstance(entry.command, CommandIntent)
+                    )
+                ),
+            )
+
         async def execute_entry(entry: "CommandQueueEntry") -> None:
             cmd = entry.command
             capture = self._capture_provider_generation
@@ -247,7 +294,13 @@ class RigctldClientObservationPoller:
                 provider_generation=None if capture is None else capture(),
             )
             try:
-                await self._execute_command(cmd)
+                validate_currency(entry)
+                if entry.positive_tx_submission is not None:
+                    await execute_positive_tx_queue_entry(entry)
+                    return
+                await self._execute_command(
+                    cmd, validate_currency=lambda: validate_currency(entry)
+                )
             except Exception as exc:
                 if correlation is not None:
                     self._finish_readbacks((correlation,), "rejected")
@@ -358,10 +411,17 @@ class RigctldClientObservationPoller:
                 self._finish_readbacks((entry,), "mismatched", mismatch)
         return tuple(annotated)
 
-    async def _execute_command(self, cmd: Any) -> None:
+    async def _execute_command(
+        self, cmd: Any, *, validate_currency: Callable[[], None] | None = None
+    ) -> None:
         cmd = canonicalize_level_command(cmd, self._radio)
         if isinstance(cmd, CommandIntent):
-            await execute_command_intent(self._radio, cmd)
+            await execute_command_intent(
+                self._radio,
+                cmd,
+                managed_tx_authority=self._managed_tx_authority,
+                validate_currency=validate_currency,
+            )
             return
         from ..._poller_types import (
             PttOff,
@@ -385,6 +445,10 @@ class RigctldClientObservationPoller:
                     receiver=rx,
                 )
             case PttOn():
+                if self._managed_tx_authority is not None:
+                    raise CommandError(
+                        "managed PTT ON requires a positive TX queue submission"
+                    )
                 await self._radio.set_ptt(True)
             case PttOff():
                 await self._radio.set_ptt(False)
