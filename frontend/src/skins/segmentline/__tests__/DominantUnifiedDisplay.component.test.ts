@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
+import type { LcdSpectrumFrame } from '../lcd-display-contract';
 import DominantUnifiedDisplay from '../DominantUnifiedDisplay.svelte';
 
 const known = <T>(value: T) => ({ state: 'known' as const, value });
@@ -69,14 +70,26 @@ afterEach(() => {
 
 function render(
   displayModel: PeerSplitDisplayModel = model,
-  normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>,
+  spectrumFrame?: unknown,
 ) {
   const target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(DominantUnifiedDisplay, {
-    target, props: { model: displayModel, normalizedFftBins },
+    target, props: { model: displayModel, spectrumFrame },
   });
   return target;
+}
+
+function audioFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFrame {
+  return {
+    source: 'audio-fft',
+    receiver: 'MAIN',
+    freshness: 'fresh',
+    startHz: 0,
+    endHz: 24_000,
+    normalizedBins: [0, 0.5, 1],
+    ...overrides,
+  };
 }
 
 describe('DominantUnifiedDisplay', () => {
@@ -102,7 +115,7 @@ describe('DominantUnifiedDisplay', () => {
   });
 
   it('uses exactly one unified AF FFT/filter scope for the active receiver', () => {
-    const target = render(model, { MAIN: [0, 0.5, 1], SUB: [1, 0.5, 0] });
+    const target = render(model, audioFrame());
 
     expect(target.querySelectorAll('[data-testid="lcd-af-fft"]')).toHaveLength(1);
     expect(target.querySelector('[data-testid="lcd-af-fft"]')?.getAttribute('data-fft-mode')).toBe('live');
@@ -117,7 +130,7 @@ describe('DominantUnifiedDisplay', () => {
     ];
     const target = render({
       ...model, receivers: subActiveReceivers, activeReceiver: subActiveReceivers[1],
-    }, { MAIN: [0, 0, 0], SUB: [0, 0.5, 1] });
+    }, audioFrame({ receiver: 'SUB', normalizedBins: [0, 0.5, 1] }));
 
     expect(target.querySelector('[data-testid="lcd-dominant-main"]')?.getAttribute('data-receiver-activity')).toBe('inactive');
     expect(target.querySelector('[data-testid="lcd-dominant-sub"]')?.getAttribute('data-receiver-activity')).toBe('active');
@@ -133,7 +146,8 @@ describe('DominantUnifiedDisplay', () => {
       { ...receivers[1], activity: 'unknown' },
     ];
     const target = render({ ...model, receivers: unknownReceivers, activeReceiver: null }, {
-      MAIN: [1, 0.5, 0], SUB: [0, 0.5, 1],
+      source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh',
+      startHz: 0, endHz: 24_000, normalizedBins: [1, 0.5, 0],
     });
 
     expect(target.querySelector('[data-testid="lcd-dominant-scope-unknown"]')).not.toBeNull();
@@ -178,5 +192,26 @@ describe('DominantUnifiedDisplay', () => {
     expect(style).toContain('grid-template-rows: 132px 56px 52px minmax(0, 1fr);');
     expect(style).toContain(".fact[data-state='unsupported'] { visibility: hidden; }");
     expect(style).toContain(".fact[data-state='unknown'] { color: var(--ink-soft); }");
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['stale', audioFrame({ freshness: 'stale' })],
+    ['source mismatch', audioFrame({ source: 'hardware' })],
+    ['receiver mismatch', audioFrame({ receiver: 'SUB' })],
+    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', startHz: 0, endHz: 0, normalizedBins: [0] }],
+  ])('fails closed to an empty AF trace for %s input', (_label, spectrumFrame) => {
+    const target = render(model, spectrumFrame);
+
+    expect(target.querySelector('[data-testid="lcd-af-fft"]')?.getAttribute('data-fft-mode'))
+      .toBe('safe-empty');
+  });
+
+  it('uses the frozen source-qualified spectrum resolver', () => {
+    const source = readFileSync('src/skins/segmentline/DominantUnifiedDisplay.svelte', 'utf8');
+
+    expect(source).toContain("import { resolveLcdSpectrumFrame } from './lcd-display-contract';");
+    expect(source).toContain("source: 'audio-fft'");
+    expect(source).toContain("spectrumResolution.state === 'live'");
   });
 });
