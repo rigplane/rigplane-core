@@ -57,7 +57,7 @@ const h = vi.hoisted(() => ({
 vi.mock('$lib/stores/managed-transmit.svelte', () => ({
   managedTransmitSnapshot: () => null, managedTransmitIsStale: () => true,
   managedTransmitRemainingMs: () => null, refreshManagedTransmit: vi.fn(async () => {}),
-  invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
+  invalidateManagedTransmit: vi.fn(), setManagedTransmitTot: vi.fn(async () => {}), submitManagedTransmit: h.submit,
 }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({
@@ -141,6 +141,8 @@ const WIDTH_FOR: Record<SkinId, number> = {
   // only to satisfy `Record<SkinId, number>` exhaustiveness. 1600 is unused
   // by every other entry in this table.
   'peer-split': 1600,
+  'unified-instrument': 1280,
+  'panadapter-first': 1281,
   // Production entrypoint is readonly and receives no command callback.
   'dual-sdr-face': 1700,
 };
@@ -345,7 +347,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
     expect(document.querySelector('.tx-controller-probe')).toBe(probeBefore);
 
     // ── Leg 2: two committed hops, each a real destroy/recreate ──
-    for (const id of ['lcd-cockpit', 'desktop-v2'] as const) {
+    for (const id of ['lcd-cockpit', 'unified-instrument', 'panadapter-first', 'desktop-v2'] as const) {
       resetCapturedController();
       await switchTo(id);
       expect(probeCount()).toBe(1);

@@ -31,7 +31,11 @@
   import StatusBar from './StatusBar.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
   import { getKeyboardHandlers } from '$lib/runtime/adapters/panel-adapters';
-  import { peerSplitLayout } from '../../presentation/layouts/segmentline-declarations';
+  import {
+    panadapterFirstLayout,
+    peerSplitLayout,
+    unifiedInstrumentLayout,
+  } from '../../presentation/layouts/segmentline-declarations';
   import { getGroup } from '../../presentation/groups/contract';
 
   // Twin-skin variant selector (#887), widened to three by MOR-2153 PR-1.
@@ -40,20 +44,25 @@
   let {
     variant = 'cockpit',
     peerSplitDisplay = 'peer',
+    showManagedTotControl = true,
   }: {
-    variant?: 'cockpit' | 'scope' | 'peer-split';
+    variant?: 'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first';
     peerSplitDisplay?: LcdDisplayVariantId;
+    showManagedTotControl?: boolean;
   } = $props();
 
-  // MOR-2253 slice 1: the peer-split glass's canvas comes from the
-  // `peer-split-glass` instrument group, resolved through the `peer-split`
-  // manifest's zone reference — never a hardcoded group id here (instrument-
-  // group ADR §4: "the variant branch resolves the group through the
-  // manifest instead of hardcoding an id"). `undefined` when no zone names a
-  // group, or the named group is not registered/fixed-native (defensive; no
-  // such case exists among registered layouts today).
-  const peerSplitGroupId = peerSplitLayout.zones.find((zone) => zone.group !== undefined)?.group;
-  const peerSplitGroup = peerSplitGroupId ? getGroup(peerSplitGroupId) : undefined;
+  // Each production segmentline direction resolves the stage from its
+  // manifest's group reference. Renderer code owns no parallel size table.
+  let segmentlineManifest = $derived(
+    variant === 'peer-split' ? peerSplitLayout
+      : variant === 'unified-instrument' ? unifiedInstrumentLayout
+        : variant === 'panadapter-first' ? panadapterFirstLayout
+          : undefined,
+  );
+  let segmentlineGroup = $derived.by(() => {
+    const groupId = segmentlineManifest?.zones.find((zone) => zone.group !== undefined)?.group;
+    return groupId ? getGroup(groupId) : undefined;
+  });
   // Gates BOTH the glass mount below and the right-sidebar suppression
   // (MOR-2153 PR-1's former `variant === 'peer-split'` check) on the same
   // value, so a resolution failure (unreachable today — see above) falls
@@ -63,10 +72,15 @@
   // MOR-2259 carries the group's `minScale` down the same path as its
   // canvas: one resolved object, so the floor cannot be plumbed from a
   // different source than the size it floors.
-  let peerSplitStage = $derived(
-    variant === 'peer-split' && peerSplitGroup && peerSplitGroup.scaling.mode === 'fixed-native'
-      ? { canvas: peerSplitGroup.canvas, minScale: peerSplitGroup.scaling.minScale }
+  let segmentlineStage = $derived(
+    segmentlineGroup && segmentlineGroup.scaling.mode === 'fixed-native'
+      ? { canvas: segmentlineGroup.canvas, minScale: segmentlineGroup.scaling.minScale }
       : undefined,
+  );
+  let segmentlineDisplay: LcdDisplayVariantId = $derived(
+    variant === 'unified-instrument' ? 'dominant'
+      : variant === 'panadapter-first' ? 'panadapter'
+        : peerSplitDisplay,
   );
 
   let radioState = $derived(runtime.state);
@@ -107,7 +121,7 @@
 </script>
 
 <div class="lcd-layout">
-  <StatusBar />
+  <StatusBar {showManagedTotControl} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <section class="content-row">
@@ -119,7 +133,7 @@
       <div
         class="lcd-slot"
         data-lcd-variant={variant}
-        style:aspect-ratio={peerSplitStage ? `${peerSplitStage.canvas.w} / ${peerSplitStage.canvas.h}` : undefined}
+        style:aspect-ratio={segmentlineStage ? `${segmentlineStage.canvas.w} / ${segmentlineStage.canvas.h}` : undefined}
       >
         <div
           class="lcd-frame lcd-mode-{displayMode}"
@@ -128,12 +142,12 @@
         >
           {#if variant === 'scope'}
             <AmberScope />
-          {:else if peerSplitStage}
+          {:else if segmentlineStage}
             <PeerSplitLayout
-              canvasW={peerSplitStage.canvas.w}
-              canvasH={peerSplitStage.canvas.h}
-              minScale={peerSplitStage.minScale}
-              displayVariant={peerSplitDisplay}
+              canvasW={segmentlineStage.canvas.w}
+              canvasH={segmentlineStage.canvas.h}
+              minScale={segmentlineStage.minScale}
+              displayVariant={segmentlineDisplay}
             />
           {:else}
             <AmberCockpit />
@@ -151,7 +165,7 @@
          here by SemanticRadioSurfaces — no new TX path. `peer-split`'s glass
          (`PeerSplitLayout.svelte`) mounts its own `SemanticRadioSurfaces
          strips="dual"` instead, so this slot is suppressed whenever that
-         glass actually mounts (`peerSplitStage`, MOR-2153 PR-1 / MOR-2253
+         glass actually mounts (`segmentlineStage`, MOR-2153 PR-1 / MOR-2253
          slice 1). Every presentation consumes the single App-root managed TX
          facade, so a presentation switch cannot create a second writer. The
          legacy TX panel is suppressed on BOTH sidebars for
@@ -160,7 +174,7 @@
          amber glass (`cockpit`/`scope`) keeps its legacy presentation for
          this slice; MOR-1162 redesigns it. -->
     <div class="content-right">
-      {#if !peerSplitStage}
+      {#if !segmentlineStage}
         <div class="semantic-slot">
           <SemanticRadioSurfaces />
         </div>
@@ -271,8 +285,8 @@
     max-height: 100%;
   }
 
-  /* `peer-split`'s glass (`PeerSplitLayout.svelte`) is a fixed-native stage
-     sized from `peerSplitStage` (script above), not the fluid 16/7.5 the
+  /* The segmentline glass (`PeerSplitLayout.svelte`) is a fixed-native stage
+     sized from `segmentlineStage` (script above), not the fluid 16/7.5 the
      amber cockpit/scope variants were tuned for. Matching the slot to the
      glass's own ratio means the frame hits `ScaledStage`'s max-scale-1 clamp
      on both axes at once instead of one axis being starved by a mismatched
@@ -287,9 +301,9 @@
      primitive nor a fixed-native sizing literal appears in this file, which
      is exactly what let a plain CSS number slip past it once already).
      Replaced with the `style:aspect-ratio` binding on the element above,
-     computed from the same `peerSplitStage` the glass mount itself uses —
+     computed from the same `segmentlineStage` the glass mount itself uses —
      one JS value, not two independent numbers. `undefined` (any variant but
-     `peer-split`) makes Svelte's `style:` directive omit the inline
+     the production segmentline directions) makes Svelte's `style:` directive omit the inline
      property entirely, so the base rule below applies unchanged. */
 
   .lcd-frame {

@@ -217,6 +217,8 @@ const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
   // `RightSidebar`'s `AudioSpectrumPanel` — the same `audio-fft` producer
   // `lcd-cockpit`/`lcd-scope` already demand it for.
   'peer-split': ['audio-fft'],
+  'unified-instrument': ['audio-fft'],
+  'panadapter-first': ['hardware-scope', 'audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
   'dual-sdr-face': ['hardware-scope'],
 };
@@ -229,6 +231,8 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'sdr-test': 1400,
   'mobile': 390,
   'peer-split': 1600,
+  'unified-instrument': 1280,
+  'panadapter-first': 1281,
   'dual-sdr-face': 1700,
 };
 function widthToSkin(): SkinId {
@@ -449,9 +453,12 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     const globalHost = document.querySelector('.spectrum-panel-stub');
     expect(globalHost).not.toBeNull();
 
-    // Every presentation family: desktop → LCD (both variants) → SDR →
-    // mobile → desktop.
-    for (const id of ['lcd-cockpit', 'lcd-scope', 'sdr-test', 'mobile', 'desktop-v2'] as const) {
+    // Every presentation family: desktop → LCD (legacy and selected B/D
+    // variants) → SDR → mobile → desktop.
+    for (const id of [
+      'lcd-cockpit', 'lcd-scope', 'unified-instrument', 'panadapter-first',
+      'sdr-test', 'mobile', 'desktop-v2',
+    ] as const) {
       await switchTo(id);
       expect(mountedSkin()).toBe(id);
       expect(mountedCount()).toBe(1);

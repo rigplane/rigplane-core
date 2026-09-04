@@ -780,4 +780,10 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(mobileLayoutSource).toContain('createManagedMobilePttSurface');
     expect(mobileLayoutSource).not.toContain('createPttGesture');
   });
+
+  it('mounts the managed TOT control only through the TxPanel fallback', () => {
+    expect(mobileLayoutSource).toContain('<TxPanel showManagedTotControl={true} />');
+    expect(mobileLayoutSource).not.toContain('import ManagedTotControl');
+    expect(mobileLayoutSource).not.toContain('<ManagedTotControl');
+  });
 });

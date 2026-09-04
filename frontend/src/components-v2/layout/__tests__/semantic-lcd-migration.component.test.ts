@@ -56,6 +56,12 @@ const h = vi.hoisted(() => {
     scope: {
       registerPresentationDriver: vi.fn(),
       subscribe: vi.fn(() => () => {}),
+      // B/D resolves its frame inside the existing ScopeFrameHost. This
+      // migration fixture has no frame evidence, so retain the fail-closed
+      // null envelope while exposing the host's complete controller seam.
+      subscribeFrameEvidence: vi.fn(() => () => {}),
+      setFrameAuthority: vi.fn(),
+      snapshotFrameEvidence: vi.fn(() => ({ envelope: null, authority: null })),
       // MOR-1312 slice 12B: `SemanticRadioSurfaces`'s scope-display snapshot
       // reads `runtime.scope.hardwareScopeConnected` directly.
       hardwareScopeConnected: false,
@@ -138,7 +144,10 @@ vi.mock('$lib/runtime/frontend-runtime', async () => ({
   runtime: await h.runtime(),
   presentationResources: h.presentationResources,
 }));
-vi.mock('$lib/runtime', async () => ({ runtime: await h.runtime() }));
+vi.mock('$lib/runtime', async () => ({
+  runtime: await h.runtime(),
+  presentationResources: h.presentationResources,
+}));
 
 vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
@@ -189,6 +198,7 @@ import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixt
 import { lcdCockpitLayout, lcdScopeLayout } from '../../../presentation/layouts/lcd-declarations';
 
 type Variant = 'cockpit' | 'scope';
+type LcdVariant = Variant | 'unified-instrument' | 'panadapter-first';
 const VARIANTS: readonly Variant[] = ['cockpit', 'scope'];
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
@@ -235,7 +245,7 @@ function capsFor(id: TopologyFixtureId, extra: readonly string[] = []): Capabili
 let mounted: ReturnType<typeof mount>[] = [];
 let target: HTMLElement;
 
-function render(variant: Variant = 'cockpit'): HTMLElement {
+function render(variant: LcdVariant = 'cockpit'): HTMLElement {
   target = document.createElement('div');
   document.body.appendChild(target);
   mounted.push(mount(LcdLayout, { target, props: { variant } }));
@@ -439,13 +449,40 @@ describe('TX authority: the LCD consumes one App-root managed controller', () =>
 
   it('keeps one controller identity across an LCD presentation switch without TX writes', () => {
     render('cockpit');
-    expect(txHarness.listenerCount()).toBe(1);
+    // The semantic RX/TX surface and the status-bar TOT presentation are
+    // independent consumers of the one injected App-root facade.
+    expect(txHarness.listenerCount()).toBe(2);
     unmount(mounted.pop()!);
     expect(txHarness.listenerCount()).toBe(0);
     render('scope');
-    expect(txHarness.listenerCount()).toBe(1);
+    expect(txHarness.listenerCount()).toBe(2);
     expect(txHarness.trace()).toEqual([]);
   });
+
+  it.each(['unified-instrument', 'panadapter-first'] as const)(
+    'mounts one status-bar TOT consumer for %s through the same facade',
+    (variant) => {
+      const t = render(variant);
+      expect(t.querySelectorAll('[data-testid="managed-tot-status"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="managed-tot-trigger"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(0);
+      expect(txHarness.listenerCount()).toBe(2);
+
+      t.querySelector<HTMLButtonElement>('[data-testid="managed-tot-trigger"]')!.click();
+      flushSync();
+      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(1);
+
+      const input = t.querySelector<HTMLInputElement>('[data-testid="managed-tot-draft"]')!;
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      t.querySelector<HTMLButtonElement>('[data-testid="managed-tot-save"]')!.click();
+
+      expect(txHarness.trace()).toEqual([
+        { transport: 'http', operation: 'set_tot', configuredSeconds: null },
+      ]);
+    },
+  );
 
   it.each([
     ['momentary PTT', { intent: 'ptt', observedPtt: 'on' }],

@@ -65,6 +65,8 @@ const lcdLayoutSource = readFileSync('src/components-v2/layout/LcdLayout.svelte'
 const mobileLayoutSource = readFileSync('src/components-v2/layout/MobileRadioLayout.svelte', 'utf8');
 const cockpitShellSource = readFileSync('src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte', 'utf8');
 const peerSplitShellSource = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
+const unifiedInstrumentShellSource = readFileSync('src/skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte', 'utf8');
+const panadapterFirstShellSource = readFileSync('src/skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte', 'utf8');
 
 /**
  * MOR-1313. `sdr-test` and `desktop-v2` share the one shell whose semantic
@@ -109,6 +111,14 @@ const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   // composition unconditionally, so its manifest-declared VFO/RX-TX
   // surfaces have a real DOM path rather than a forward declaration.
   'peer-split': () => /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(peerSplitShellSource),
+  'unified-instrument': () =>
+    /<LcdLayout\s+variant="unified-instrument"\s*\/>/.test(unifiedInstrumentShellSource)
+    && /<PeerSplitLayout[\s\S]*displayVariant=\{segmentlineDisplay\}/.test(lcdLayoutSource)
+    && /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(peerSplitShellSource),
+  'panadapter-first': () =>
+    /<LcdLayout\s+variant="panadapter-first"\s*\/>/.test(panadapterFirstShellSource)
+    && /<PeerSplitLayout[\s\S]*displayVariant=\{segmentlineDisplay\}/.test(lcdLayoutSource)
+    && /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(peerSplitShellSource),
 };
 
 describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () => {

@@ -145,7 +145,7 @@ import { hasTx } from '$lib/stores/capabilities.svelte';
 const RX: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
   faultDetail: null, fresh: true, releaseRequired: false, remainingMs: null,
-  lastOperation: null,
+  configuredSeconds: 180, lastOperation: null,
 });
 
 function createTxHarness() {
@@ -155,13 +155,14 @@ function createTxHarness() {
   const pttOff = vi.fn();
   const transmitOn = vi.fn();
   const forceOff = vi.fn();
+  const setTot = vi.fn(async () => {});
   const facade: ManagedAppTxController = Object.freeze({
     snapshot: () => state,
     subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-    pttOn, pttOff, transmitOn, forceOff,
+    pttOn, pttOff, transmitOn, forceOff, setTot,
   });
   return {
-    facade, pttOn, pttOff, transmitOn, forceOff,
+    facade, pttOn, pttOff, transmitOn, forceOff, setTot,
     project: (next: ManagedTxState) => {
       state = Object.freeze({ ...next });
       for (const listener of listeners) listener(state);

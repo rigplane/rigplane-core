@@ -51,7 +51,7 @@ import { getLayout, type LayoutManifest } from '../contract';
 // `isolate: false`, would leak the registration into sibling files.
 import {
   desktopV2Layout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
-  peerSplitLayout, sdrTestLayout,
+  panadapterFirstLayout, peerSplitLayout, sdrTestLayout, unifiedInstrumentLayout,
 } from '../declarations';
 // Namespace import of the SAME barrel, used ONLY to derive the completeness
 // set structurally (never to register anything — a namespace import has no
@@ -76,6 +76,8 @@ const ALL_MANIFESTS = {
   mobile: mobileLayout,
   'desktop-v2': desktopV2Layout,
   'peer-split': peerSplitLayout,
+  'unified-instrument': unifiedInstrumentLayout,
+  'panadapter-first': panadapterFirstLayout,
 } as const;
 
 /**
@@ -95,6 +97,8 @@ const EXPECTED_LOADER_SPECIFIER: Readonly<Record<keyof typeof ALL_MANIFESTS, str
   mobile: '/src/skins/mobile/MobileSkin.svelte',
   'desktop-v2': '/src/skins/desktop-v2/DesktopSkin.svelte',
   'peer-split': '/src/skins/segmentline/PeerSplitLayout.svelte',
+  'unified-instrument': '/src/skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte',
+  'panadapter-first': '/src/skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte',
 };
 
 /** Pulls the quoted argument out of a stringified `() => import('...')`

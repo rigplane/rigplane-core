@@ -22,6 +22,7 @@ vi.mock('$lib/stores/managed-transmit.svelte', () => ({
   managedTransmitSnapshot: () => ({ schemaVersion: 1, sampledAt: '2026-09-04T00:00:00Z', managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false, lastError: null, lastActuation: null, abortErrors: [], tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null } }, txObservation: { observedPtt: 'off' } }),
   managedTransmitIsStale: () => false, managedTransmitRemainingMs: () => null,
   refreshManagedTransmit: vi.fn(async () => {}), invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
+  setManagedTransmitTot: vi.fn(async () => {}),
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: () => h.radio,

@@ -111,9 +111,11 @@ describe('segmentline token set implements the MOR-2148 amber-LCD grammar', () =
     expect(segmentline.density).toEqual({ kind: 'clamped', supported: ['comfortable', 'compact'] });
   });
 
-  it('declares ONLY peer-split compatible (MOR-2148 decision) — desktop-v2 stays explicitly incompatible', () => {
+  it('declares all production segmentline layouts compatible — desktop-v2 stays explicitly incompatible', () => {
     expect(segmentline.layoutCompatibility).toEqual([
       { layoutId: 'peer-split', compatible: true },
+      { layoutId: 'unified-instrument', compatible: true },
+      { layoutId: 'panadapter-first', compatible: true },
       {
         layoutId: 'desktop-v2',
         compatible: false,

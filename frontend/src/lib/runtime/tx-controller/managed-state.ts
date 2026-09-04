@@ -13,6 +13,7 @@ export interface ManagedTxState {
   faultDetail: null;
   fresh: boolean;
   releaseRequired: boolean;
+  configuredSeconds: number | null;
   remainingMs: number | null;
   lastOperation: 'ptt_on' | 'transmit_on' | 'force_receive' | null;
 }
@@ -20,7 +21,8 @@ export interface ManagedTxState {
 const UNKNOWN: ManagedTxState = Object.freeze({
   phase: 'idle', intent: null, radioTx: 'unknown', txRisk: 'none',
   fault: null, faultDetail: null,
-  fresh: false, releaseRequired: false, remainingMs: null, lastOperation: null,
+  fresh: false, releaseRequired: false, configuredSeconds: null,
+  remainingMs: null, lastOperation: null,
 });
 
 export function projectManagedTx(
@@ -45,7 +47,9 @@ export function projectManagedTx(
   return Object.freeze({
     phase, intent, radioTx, txRisk,
     fault: managed.lastError, faultDetail: null, fresh: true,
-    releaseRequired: managed.releaseRequired, remainingMs,
+    releaseRequired: managed.releaseRequired,
+    configuredSeconds: managed.tot.configuredSeconds,
+    remainingMs,
     lastOperation: managed.lastActuation?.operation ?? null,
   });
 }

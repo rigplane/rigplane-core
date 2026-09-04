@@ -41,6 +41,19 @@ describe('StatusBar skinOptions (MOR-1257 F1)', () => {
     expect(match![1]).toMatch(/\{\s*value:\s*'peer-split',\s*label:\s*'LCD Peer Split'\s*\}/);
   });
 
+  it.each([
+    ['unified-instrument', 'LCD Unified Instrument'],
+    ['panadapter-first', 'LCD Panadapter'],
+  ])('lists production segmentline layout %s', (value, label) => {
+    const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+    expect(source).toContain(`{ value: '${value}', label: '${label}' }`);
+  });
+
+  it('pins closed selector geometry independently of its longest option', () => {
+    const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+    expect(source).toMatch(/\.skin-select\s*\{[^}]*box-sizing:\s*border-box;[^}]*inline-size:\s*128px;/s);
+  });
+
   it('lists the production dual SDR face', () => {
     const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
     const match = source.match(/const skinOptions[^=]*=\s*\[([\s\S]*?)\n\s*\];/);

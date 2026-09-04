@@ -3,12 +3,14 @@ import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transp
 const h = vi.hoisted(() => ({
   deliveries: new Set<(event: CommandDeliveryEvent) => void>(),
   sessions: new Set<(event: ControlSessionTransition) => void>(), send: vi.fn((_name: string, _params: Record<string, unknown>, _id?: string) => true),
-  start: vi.fn(async () => null), stop: vi.fn(), submit: vi.fn(async () => 'accepted' as const), ids: 0,
+  start: vi.fn(async () => null), stop: vi.fn(), submit: vi.fn(async () => 'accepted' as const),
+  setTot: vi.fn(async () => {}), ids: 0, stale: true, remainingMs: null as number | null,
 }));
 vi.mock('$lib/stores/managed-transmit.svelte', () => ({
-  managedTransmitSnapshot: () => ({ available: false }), managedTransmitIsStale: () => true,
-  managedTransmitRemainingMs: () => null, refreshManagedTransmit: vi.fn(async () => {}),
+  managedTransmitSnapshot: () => ({ available: false }), managedTransmitIsStale: () => h.stale,
+  managedTransmitRemainingMs: () => h.remainingMs, refreshManagedTransmit: vi.fn(async () => {}),
   invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
+  setManagedTransmitTot: h.setTot,
 }));
 vi.mock('$lib/types/protocol', () => ({ makeCommandId: () => `cmd-${++h.ids}` }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({ getTxAudioControl: () => ({
@@ -29,6 +31,7 @@ const emit = (event: CommandDeliveryEvent) => [...h.deliveries].forEach((fn) => 
 beforeEach(() => {
   vi.useFakeTimers(); h.deliveries.clear(); h.sessions.clear(); h.send.mockReset().mockReturnValue(true);
   h.start.mockClear(); h.stop.mockClear(); h.submit.mockClear(); h.ids = 0;
+  h.setTot.mockClear(); h.stale = true; h.remainingMs = null;
 });
 describe('managed browser TX dependencies', () => {
   it('is dormant, delegates media, forwards sessions, and disposes idempotently', async () => {
@@ -67,6 +70,13 @@ describe('managed browser TX dependencies', () => {
     expect(h.send).toHaveBeenCalledExactlyOnceWith('ptt_on', {}, 'cmd-1');
   });
 
+  it('routes TOT edits through the canonical managed HTTP store path', async () => {
+    const browser = createManagedBrowserDependencies();
+    await browser.dependencies.setTot(240);
+    await browser.dependencies.setTot(null);
+    expect(h.setTot.mock.calls).toEqual([[240], [null]]);
+  });
+
   it('uses no client confirmation timer and rejects a pending write on dispose', async () => {
     const browser = createManagedBrowserDependencies();
     const pending = browser.dependencies.sendPtt('ptt_off');
@@ -74,5 +84,25 @@ describe('managed browser TX dependencies', () => {
     browser.dispose();
     await expect(pending).resolves.toBe('rejected');
     expect(h.deliveries.size).toBe(0);
+  });
+
+  it('owns a presentation-only countdown ticker and clears it on dispose', () => {
+    const browser = createManagedBrowserDependencies();
+    h.stale = false;
+    h.remainingMs = 900;
+    const seen: Array<number | null> = [];
+    browser.dependencies.onPresentationTick?.(() => seen.push(h.remainingMs));
+    expect(vi.getTimerCount()).toBe(1);
+
+    vi.advanceTimersByTime(250);
+    h.stale = true;
+    h.remainingMs = null;
+    vi.advanceTimersByTime(250);
+    expect(seen).toEqual([900, null]);
+    expect(browser.dependencies.snapshot()).toMatchObject({ fresh: false, remainingMs: null });
+
+    browser.dispose();
+    vi.advanceTimersByTime(1_000);
+    expect([seen, vi.getTimerCount()]).toEqual([[900, null], 0]);
   });
 });

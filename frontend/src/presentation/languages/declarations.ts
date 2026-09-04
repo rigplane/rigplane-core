@@ -22,14 +22,11 @@
  * its three renderer slots below, the same way MOR-1073/1074 filled
  * studioline's and fieldline's.
  *
- * `layoutCompatibility` declares `peer-split: true` and `desktop-v2:
+ * `layoutCompatibility` declares all three production segmentline layouts and `desktop-v2:
  * false`. Activation matches the resolved `SkinId`, not a
  * `presentation/layouts/` manifest id: `App.svelte` calls
  * `designLanguageActivation(language, skinId)` (`../workspace/activation.ts`),
- * whose parameter is merely *named* `layoutId`. `unified-instrument` and
- * `panadapter-first`, the handoff's other two proposed directions, are
- * named nowhere in this repository — no `SkinId`, no layout
- * manifest — so they are absent from this list. `desktop-v2: false`
+ * whose parameter is merely *named* `layoutId`. `desktop-v2: false`
  * is kept because segmentline's fixed-native glass and desktop-v2's fluid
  * chrome are a real, current incompatibility.
  */
@@ -97,6 +94,8 @@ export const segmentline: DesignLanguageManifest = {
   density: { kind: 'clamped', supported: ['comfortable', 'compact'] },
   layoutCompatibility: [
     { layoutId: 'peer-split', compatible: true },
+    { layoutId: 'unified-instrument', compatible: true },
+    { layoutId: 'panadapter-first', compatible: true },
     {
       layoutId: 'desktop-v2',
       compatible: false,

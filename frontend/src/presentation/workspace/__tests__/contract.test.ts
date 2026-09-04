@@ -232,11 +232,10 @@ describe('decision 1 — `auto` is first class and resolution is deferred', () =
     }
   });
 
-  // MOR-2152: peer-split's manifest id matches the exact string, not merely
-  // "is a string" (the generic loop above would pass on any typo'd value).
-  it('bridges peer-split to its own manifest id', () => {
-    expect(workspaceLayoutManifestId('peer-split')).toBe('peer-split');
-  });
+  it.each(['peer-split', 'unified-instrument', 'panadapter-first'] as const)(
+    'bridges production segmentline layout %s to its own manifest id',
+    (id) => expect(workspaceLayoutManifestId(id)).toBe(id),
+  );
 
   it('normalizes a legacy alias on read instead of rejecting it', () => {
     const result = readWorkspace({ ...VALID, layout: 'amber-lcd' });

@@ -134,4 +134,8 @@ export { desktopV2Layout } from './desktop-declarations';
 // peer-split's manifest into the app, and a named re-export gives every test
 // a real binding to assert against, so dropping this line cannot pass
 // unnoticed.
-export { peerSplitLayout } from './segmentline-declarations';
+export {
+  panadapterFirstLayout,
+  peerSplitLayout,
+  unifiedInstrumentLayout,
+} from './segmentline-declarations';

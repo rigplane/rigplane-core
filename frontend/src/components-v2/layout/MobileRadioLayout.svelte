@@ -936,7 +936,7 @@
 
   <!-- ═══ TX SETTINGS MODAL ═══ -->
   <BottomSheet bind:open={txSettingsOpen} title={t('core.mobile.sheet.txSettings')}>
-          <TxPanel />
+          <TxPanel showManagedTotControl={true} />
   </BottomSheet>
 </div>
 {/if}
