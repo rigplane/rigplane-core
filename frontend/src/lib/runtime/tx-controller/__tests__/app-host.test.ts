@@ -106,6 +106,19 @@ describe('managed App TX host', () => {
     expect(h.stopAudio).toHaveBeenCalledTimes(1);
   });
 
+  it('releases session PTT over WS before submitting latched TRANSMIT over HTTP', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    const facade = getManagedAppTxController();
+    facade.pttOn();
+    await vi.waitFor(() => expect(h.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on'));
+    facade.transmitOn();
+    await vi.waitFor(() => expect(h.submit).toHaveBeenCalledExactlyOnceWith('transmit_on'));
+    expect(h.sendPtt.mock.calls.map(([operation]) => operation)).toEqual(['ptt_on', 'ptt_off']);
+    expect(h.sendPtt.mock.invocationCallOrder[1]).toBeLessThan(h.submit.mock.invocationCallOrder[0]!);
+    host.dispose();
+    await flush();
+  });
+
   it('makes disposed callbacks and facade actions inert', async () => {
     const host = provideManagedAppTxHost(bindings());
     const facade = getManagedAppTxController();

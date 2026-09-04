@@ -13,7 +13,10 @@ const emitServerSnapshot = (next: Snapshot) => { state = next; setPttMode(next.i
 const commands = {
   pttOn: () => { deliveries.push('ws.ptt_on'); },
   pttOff: () => { deliveries.push('ws.ptt_off'); },
-  transmitOn: () => { deliveries.push('http.transmit_on'); },
+  // The gesture reaches this transition only after a momentary PTT attempt.
+  // Match ManagedTxController's cross-transport handoff exactly: release the
+  // session-owned WS PTT before submitting the latched HTTP intent.
+  transmitOn: () => { deliveries.push('ws.ptt_off', 'http.transmit_on'); },
   forceOff: () => { deliveries.push('http.force_off'); },
 };
 const host = { snapshot: () => state, subscribe: (f: (s: Snapshot) => void) => { listeners.add(f); return () => listeners.delete(f); }, ...commands };

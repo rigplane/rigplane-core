@@ -308,6 +308,7 @@ const rxTxScene = (name: string, input: ManagedAppTxServerSnapshot, focusSelecto
     const txHarness = new ManagedAppTxHarness(input);
     const { cleanup } = mountInto(RxTxSurface, {
       view: topologyFixtures['2/main_sub'], tx: txHarness.controller.snapshot(),
+      onRequestKey: vi.fn(), onRequestUnkey: vi.fn(),
     });
     if (focusSelector) document.querySelector<HTMLElement>(focusSelector)?.focus();
     return { cleanup: () => { cleanup(); expect(txHarness.trace()).toEqual([]); } };
@@ -466,6 +467,7 @@ describe('reachable() judges a trailing pseudo-element by its subject', () => {
     const txHarness = new ManagedAppTxHarness(RX_IDLE);
     const { cleanup } = mountInto(RxTxSurface, {
       view: topologyFixtures['2/main_sub'], tx: txHarness.controller.snapshot(),
+      onRequestKey: vi.fn(), onRequestUnkey: vi.fn(),
     });
     try {
       for (const tail of SAMPLE_TAILS) {

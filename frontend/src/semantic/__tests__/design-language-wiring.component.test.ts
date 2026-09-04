@@ -32,7 +32,7 @@
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import MetersSurface from '../MetersSurface.svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
@@ -266,7 +266,7 @@ function rxTxProbe(language: string | null, tx: TxAuthoritySnapshot): {
 } {
   activate(language);
   let out = { facts: {} as Record<string, string | null>, annotations: [] as string[] };
-  withMounted(RxTxSurface, { view: VIEW, tx }, (root) => {
+  withMounted(RxTxSurface, { view: VIEW, tx, onRequestKey: vi.fn(), onRequestUnkey: vi.fn() }, (root) => {
     const state = root.querySelector('[data-testid="rx-tx-state"]')!;
     const key = root.querySelector<HTMLButtonElement>('[data-testid="rx-tx-key"]')!;
     out = {

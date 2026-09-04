@@ -45,8 +45,8 @@
   interface Props {
     view: RadioViewModel;
     tx: TxAuthoritySnapshot;
-    onRequestKey?: () => void;
-    onRequestUnkey?: () => void;
+    onRequestKey: () => void;
+    onRequestUnkey: () => void;
   }
   let { view, tx, onRequestKey, onRequestUnkey }: Props = $props();
 
@@ -129,13 +129,13 @@
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
       disabled={tx.fresh === false} aria-pressed={pressed} aria-describedby={blockedId}
-      onclick={() => onRequestKey?.()}
+      onclick={onRequestKey}
     >Key transmitter</button>
     <!-- Never gated: no `disabled`, no `{#if}`, no guard in the handler. -->
     <button
       type="button" class="rx-tx-unkey v2-control-button v2-control-button--pill" data-testid="rx-tx-unkey"
       data-surface="hardware"
-      onclick={() => onRequestUnkey?.()}
+      onclick={onRequestUnkey}
     >Unkey transmitter</button>
   </div>
 

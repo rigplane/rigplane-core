@@ -24,7 +24,7 @@
  * `*.component.test.ts` mounts real Svelte components and routes to the
  * isolated vitest project (`vite.config.ts`).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import MetersSurface from '../MetersSurface.svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
@@ -67,7 +67,10 @@ const FAULT: TxAuthoritySnapshot = {
 
 describe('RxTxSurface renders exactly the contract\'s vocabulary (MOR-2036)', () => {
   it('data-rf/data-session/data-target are members of the exported vocabulary, on a known-target idle fixture', () => {
-    withMounted(RxTxSurface, { view: topologyFixtures['1/single'], tx: IDLE }, (root) => {
+    withMounted(RxTxSurface, {
+      view: topologyFixtures['1/single'], tx: IDLE,
+      onRequestKey: vi.fn(), onRequestUnkey: vi.fn(),
+    }, (root) => {
       const state = root.querySelector('[data-testid="rx-tx-state"]')!;
       expect(RF_STATES).toContain(state.getAttribute('data-rf'));
       expect(TX_SESSION_STATES).toContain(state.getAttribute('data-session'));
@@ -79,7 +82,10 @@ describe('RxTxSurface renders exactly the contract\'s vocabulary (MOR-2036)', ()
   });
 
   it('data-reason\'s THREE collision cases and data-fault\'s fault-code case, on a faulted unknown-target fixture', () => {
-    withMounted(RxTxSurface, { view: topologyFixtures['1/ab'], tx: FAULT }, (root) => {
+    withMounted(RxTxSurface, {
+      view: topologyFixtures['1/ab'], tx: FAULT,
+      onRequestKey: vi.fn(), onRequestUnkey: vi.fn(),
+    }, (root) => {
       const targetEl = root.querySelector('[data-testid="rx-tx-target"]')!;
       const expectedTargetStatus: TxTargetStatus = 'unknown';
       expect(targetEl.getAttribute('data-target')).toBe(expectedTargetStatus);

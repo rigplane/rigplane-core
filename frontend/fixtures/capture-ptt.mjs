@@ -120,7 +120,7 @@ const SCENARIOS = [
       await emit(page, SERVER.latched);
       const after = await snap(page);
       return {
-        ok: matches(delivery, ['ws.ptt_on', 'http.transmit_on']) && latched.intent === 'latched'
+        ok: matches(delivery, ['ws.ptt_on', 'ws.ptt_off', 'http.transmit_on']) && latched.intent === 'latched'
           && matches(afterTrace, delivery) && after.intent === 'latched',
         detail: `delivery=${afterTrace.join(' -> ')} · server intent=${after.intent}`,
       };
@@ -144,7 +144,7 @@ const SCENARIOS = [
       await emit(page, SERVER.rx);
       const after = await snap(page);
       return {
-        ok: matches(latchTrace, ['ws.ptt_on', 'http.transmit_on']) && before.intent === 'latched'
+        ok: matches(latchTrace, ['ws.ptt_on', 'ws.ptt_off', 'http.transmit_on']) && before.intent === 'latched'
           && matches(releaseTrace, [...latchTrace, 'http.force_off']) && after.intent === null,
         detail: `delivery=${releaseTrace.join(' -> ')} · server intent ${before.intent} -> ${after.intent}`,
       };
@@ -202,7 +202,7 @@ const SCENARIOS = [
       await emit(page, SERVER.latched);
       const after = await snap(page);
       return {
-        ok: matches(latchTrace, ['ws.ptt_on', 'http.transmit_on']) && latched.intent === 'latched'
+        ok: matches(latchTrace, ['ws.ptt_on', 'ws.ptt_off', 'http.transmit_on']) && latched.intent === 'latched'
           && matches(afterTrace, latchTrace) && after.intent === 'latched',
         detail: `delivery=${afterTrace.join(' -> ')} · server intent=${after.intent}`,
       };

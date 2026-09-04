@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
+import rxTxSurfaceSource from '../RxTxSurface.svelte?raw';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import type { RadioViewModel } from '../radio-view-model';
 import {
@@ -36,8 +37,9 @@ let target: HTMLDivElement;
 beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target); });
 afterEach(() => { target.remove(); });
 
-type Handlers = { onRequestKey?: () => void; onRequestUnkey?: () => void };
-function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = {}) {
+type Handlers = { onRequestKey: () => void; onRequestUnkey: () => void };
+const inertHandlers = (): Handlers => ({ onRequestKey: vi.fn(), onRequestUnkey: vi.fn() });
+function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = inertHandlers()) {
   const component = mount(RxTxSurface, { target, props: { view, tx, ...handlers } });
   flushSync();
   const q = (sel: string) => target.querySelector(sel);
@@ -53,7 +55,7 @@ function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handler
 }
 function withSurface(
   view: RadioViewModel, tx: TxAuthoritySnapshot,
-  fn: (s: ReturnType<typeof render>) => void, handlers: Handlers = {},
+  fn: (s: ReturnType<typeof render>) => void, handlers: Handlers = inertHandlers(),
 ): void {
   const s = render(view, tx, handlers);
   try { fn(s); } finally { s.dispose(); }
@@ -245,6 +247,14 @@ describe('fault display without a second authority', () => {
 // ── 2. TX action intents ────────────────────────────────────────────────────
 
 describe('key intent gating', () => {
+  it('requires both action callbacks and binds them directly without a silent optional path', () => {
+    expect(rxTxSurfaceSource).toContain('onRequestKey: () => void;');
+    expect(rxTxSurfaceSource).toContain('onRequestUnkey: () => void;');
+    expect(rxTxSurfaceSource).toContain('onclick={onRequestKey}');
+    expect(rxTxSurfaceSource).toContain('onclick={onRequestUnkey}');
+    expect(rxTxSurfaceSource).not.toMatch(/onRequest(?:Key|Unkey)\?[:.]/);
+  });
+
   it.each(PERMITTED)('%s: emits exactly one key intent when permit is allowed and the authority is idle/RX', (id) => {
     const onRequestKey = vi.fn();
     withSurface(topologyFixtures[id], IDLE_RX, (s) => {
@@ -252,7 +262,7 @@ describe('key intent gating', () => {
       s.key().click();
       flushSync();
       expect(onRequestKey).toHaveBeenCalledTimes(1);
-    }, { onRequestKey });
+    }, { onRequestKey, onRequestUnkey: vi.fn() });
   });
 
   it.each([
@@ -266,7 +276,7 @@ describe('key intent gating', () => {
       s.key().click();
       flushSync();
       expect(onRequestKey).toHaveBeenCalledTimes(1);
-    }, { onRequestKey });
+    }, { onRequestKey, onRequestUnkey: vi.fn() });
   });
 
   it.each(IDS)('%s: audio-only scope does not change the key gate (scope is not a TX fact)', (id) => {
@@ -293,7 +303,7 @@ describe('key intent gating', () => {
       s.key().click();
       flushSync();
       expect(onRequestKey).toHaveBeenCalledTimes(1);
-    }, { onRequestKey });
+    }, { onRequestKey, onRequestUnkey: vi.fn() });
   });
 
   it('surfaces the view model disabled reasons that concern TX', () => {
@@ -334,7 +344,7 @@ describe('unkey intent is never gated (fail-safe direction)', () => {
         unkey.click();
         flushSync();
         expect(forceOff).toHaveBeenCalledTimes(1);
-      }, { onRequestUnkey: forceOff });
+      }, { onRequestKey: vi.fn(), onRequestUnkey: forceOff });
     }
   });
 
