@@ -26,6 +26,7 @@ from .transport import CatCommandRejected, CatTimeoutError, CatTransportError
 
 if TYPE_CHECKING:
     from rigplane.core.types import BreakInMode
+    from rigplane.profiles import RadioProfile
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ _MAIN_REPEATER_TSQL = FieldPath.receiver("main", "operator_toggles", "repeater_t
 # command (FTX-1_CAT_OM_ENG_2508-C) reports the MAIN tone as a 0-49 INDEX into
 # the standard 50-tone EIA chart (NOT an absolute frequency; cf. Icom 0x1B
 # BCD-Hz). The radio maps that index → Hz → centiHz (the index→Hz Tone Chart
-# is verbatim from the manual; see ``radio._CTCSS_TONE_CENTIHZ``). The neutral
+# is resolved by the active ``RadioProfile`` catalog). The neutral
 # value is centiHz = round(Hz * 100), matching the Icom MOR-451 convention
 # (``round(_decode_tone_freq(...) * 100)``) so consumers see one unit.
 # SINGLE-YAESU-TONE: unlike Icom (which can carry distinct TONE/TSQL freqs),
@@ -199,6 +200,9 @@ YAESU_PTT_PATH = _PTT
 
 
 class YaesuObservationRadio(Protocol):
+    @property
+    def profile(self) -> RadioProfile: ...
+
     @property
     def capabilities(self) -> set[str]: ...
 
@@ -908,8 +912,8 @@ class YaesuObservationAdapter:
         # ``operator_controls``, grouped with the CTCSS squelch-type toggles
         # above. A SINGLE ``read_ctcss_tone_index(0)`` CAT ``CN`` read
         # (FTX-1_CAT_OM_ENG_2508-C) yields the 0-49 standard-EIA tone-chart index,
-        # which ``_ctcss_index_to_centihz`` maps index → Hz → centiHz (the
-        # index→Hz Tone Chart is verbatim from the manual). The neutral unit is
+        # which ``_ctcss_index_to_centihz`` maps through the active profile's
+        # resolved catalog domain. The neutral unit is
         # centiHz = round(Hz * 100), matching the Icom MOR-451 convention so
         # consumers see one unit. SINGLE-YAESU-TONE: the FTX-1 has ONE CTCSS
         # tone frequency (CN P2=0) used for BOTH encode (TONE) and decode
@@ -927,23 +931,34 @@ class YaesuObservationAdapter:
                 "main.ctcss_tone_index", self.radio.read_ctcss_tone_index(0)
             )
             if ok and tone_index is not None:
-                tone_centihz = _ctcss_index_to_centihz(tone_index)
-                if self._can_poll(_MAIN_TONE_FREQ):
-                    observations.append(
-                        adapter.observation(
-                            _MAIN_TONE_FREQ,
-                            tone_centihz,
-                            native_id="read_ctcss_tone_index",
-                        )
+                try:
+                    tone_centihz = _ctcss_index_to_centihz(
+                        tone_index,
+                        domain=self.radio.profile.ctcss_tones_centihz,
                     )
-                if self._can_poll(_MAIN_TSQL_FREQ):
-                    observations.append(
-                        adapter.observation(
-                            _MAIN_TSQL_FREQ,
-                            tone_centihz,
-                            native_id="read_ctcss_tone_index",
-                        )
+                except ValueError as exc:
+                    logger.warning(
+                        "Skipping CTCSS observations for invalid profile domain: %s",
+                        exc,
                     )
+                    tone_centihz = None
+                if tone_centihz is not None:
+                    if self._can_poll(_MAIN_TONE_FREQ):
+                        observations.append(
+                            adapter.observation(
+                                _MAIN_TONE_FREQ,
+                                tone_centihz,
+                                native_id="read_ctcss_tone_index",
+                            )
+                        )
+                    if self._can_poll(_MAIN_TSQL_FREQ):
+                        observations.append(
+                            adapter.observation(
+                                _MAIN_TSQL_FREQ,
+                                tone_centihz,
+                                native_id="read_ctcss_tone_index",
+                            )
+                        )
         # Repeater shift direction (MOR-2111/MOR-2160). OS0 and OS1 are read
         # independently so one side's malformed/rejected answer never hides
         # or relabels the other side. P2 is already the neutral 0-3 value.

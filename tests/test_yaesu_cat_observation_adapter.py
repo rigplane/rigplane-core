@@ -223,7 +223,10 @@ class _SideEffectingYaesuRadio:
     }
 
     def __init__(self) -> None:
-        self.profile = SimpleNamespace(max_watts=100)
+        self.profile = SimpleNamespace(
+            max_watts=100,
+            ctcss_tones_centihz=get_radio_profile("FTX-1").ctcss_tones_centihz,
+        )
         self.radio_state = RadioState()
         self.radio_state.main.freq = 1
         self.radio_state.main.mode = "INIT-MAIN"
@@ -1827,6 +1830,56 @@ async def test_ctcss_tone_freq_emits_both_paths_in_centihz(
     assert by_path["receiver.main.operator_controls.tone_freq"] == expected_centihz
     assert by_path["receiver.main.operator_controls.tsql_freq"] == expected_centihz
     # A SINGLE CN read feeds both emissions.
+    assert radio.read_ctcss_tone_index.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ctcss_tone_freq_uses_active_profile_domain() -> None:
+    """A synthetic resolved tuple changes mapping without model branching."""
+    radio = _make_radio()
+    radio.profile = replace(radio.profile, ctcss_tones_centihz=(1234, 5678))
+    radio.read_ctcss_tone_index = AsyncMock(return_value=1)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    by_path = {str(item.path): item.value for item in observations}
+
+    assert by_path["receiver.main.operator_controls.tone_freq"] == 5678
+    assert by_path["receiver.main.operator_controls.tsql_freq"] == 5678
+
+
+@pytest.mark.parametrize(
+    ("domain", "index"),
+    [
+        (None, 0),
+        ((), 0),
+        ((6700,), 1),
+        ((6700, "invalid"), 0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ctcss_tone_freq_invalid_profile_domain_emits_nothing(
+    domain: object, index: int
+) -> None:
+    """Missing, malformed, or out-of-range profile domains fail closed."""
+    radio = _make_radio()
+    radio.profile = replace(radio.profile, ctcss_tones_centihz=domain)
+    radio.read_ctcss_tone_index = AsyncMock(return_value=index)
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_slow_controls()
+    paths = {str(item.path) for item in observations}
+
+    assert "receiver.main.operator_controls.tone_freq" not in paths
+    assert "receiver.main.operator_controls.tsql_freq" not in paths
     assert radio.read_ctcss_tone_index.await_count == 1
 
 
