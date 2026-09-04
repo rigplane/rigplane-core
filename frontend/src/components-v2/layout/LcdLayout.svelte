@@ -44,9 +44,11 @@
   let {
     variant = 'cockpit',
     peerSplitDisplay = 'peer',
+    showManagedTotControl = true,
   }: {
     variant?: 'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first';
     peerSplitDisplay?: LcdDisplayVariantId;
+    showManagedTotControl?: boolean;
   } = $props();
 
   // Each production segmentline direction resolves the stage from its
@@ -119,7 +121,7 @@
 </script>
 
 <div class="lcd-layout">
-  <StatusBar />
+  <StatusBar {showManagedTotControl} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <section class="content-row">

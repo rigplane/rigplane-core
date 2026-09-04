@@ -347,7 +347,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
     expect(document.querySelector('.tx-controller-probe')).toBe(probeBefore);
 
     // ── Leg 2: two committed hops, each a real destroy/recreate ──
-    for (const id of ['lcd-cockpit', 'desktop-v2'] as const) {
+    for (const id of ['lcd-cockpit', 'unified-instrument', 'panadapter-first', 'desktop-v2'] as const) {
       resetCapturedController();
       await switchTo(id);
       expect(probeCount()).toBe(1);

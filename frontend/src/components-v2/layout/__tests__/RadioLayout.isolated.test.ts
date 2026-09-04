@@ -396,6 +396,20 @@ afterEach(() => {
 });
 
 describe('RadioLayout structure', () => {
+  it.each(['desktop-v2', 'sdr-test'] as const)(
+    'mounts one StatusBar-managed TOT consumer through the App-root facade for %s',
+    (skinId) => {
+      const t = mountLayout(skinId);
+
+      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(1);
+      // The shell, its semantic RX/TX surface, and the StatusBar readout are
+      // the three presentation consumers of the single injected App-root
+      // controller — no layout-local authority is introduced.
+      expect(txHarness.listenerCount()).toBe(3);
+      expect(txHarness.trace()).toEqual([]);
+    },
+  );
+
   it('renders the SDR branch from its skinId prop', () => {
     const t = mountLayout('sdr-test');
     expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();

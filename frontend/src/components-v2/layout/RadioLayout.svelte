@@ -294,12 +294,12 @@
 {#if skinId === 'mobile'}
   <MobileRadioLayout />
 {:else if skinId === 'lcd-cockpit'}
-  <LcdLayout variant="cockpit" />
+  <LcdLayout variant="cockpit" showManagedTotControl={true} />
 {:else if skinId === 'lcd-scope'}
-  <LcdLayout variant="scope" />
+  <LcdLayout variant="scope" showManagedTotControl={true} />
 {:else if skinId === 'sdr-test' && semanticDeck}
   <div class="radio-layout sdr-test semantic-deck">
-    <StatusBar onSettings={() => (settingsOpen = true)} {declared} />
+    <StatusBar onSettings={() => (settingsOpen = true)} {declared} showManagedTotControl={true} />
     <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
     <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
@@ -310,7 +310,7 @@
   </div>
 {:else}
 <div class="radio-layout" class:sdr-test={skinId === 'sdr-test'} class:semantic-deck={semanticDeck}>
-  <StatusBar onSettings={() => (settingsOpen = true)} {declared} />
+  <StatusBar onSettings={() => (settingsOpen = true)} {declared} showManagedTotControl={true} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>

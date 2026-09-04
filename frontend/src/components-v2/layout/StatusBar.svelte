@@ -55,6 +55,7 @@
 <script lang="ts">
   import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, Settings, Bug } from 'lucide-svelte';
   import ThemePicker from '../controls/ThemePicker.svelte';
+  import ManagedTotControl from '../controls/ManagedTotControl.svelte';
   import SendReportDialog from '../dialogs/SendReportDialog.svelte';
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
@@ -76,6 +77,11 @@
 
   interface Props {
     onSettings?: () => void;
+    /**
+     * The App-root managed-TX facade remains the only authority. This shell
+     * merely decides whether its existing presentation consumer is visible.
+     */
+    showManagedTotControl?: boolean;
     /** MOR-1364 (v3-rework S6-pre) — the manifest-driven legacy-twin
      *  suppression channel, reaching the status bar for its one twin: the
      *  scope indicator, whose semantic replacement is `ScopeDisplaySurface`
@@ -87,7 +93,11 @@
      *  (radio/control/audio/http) have no semantic twin and are never gated. */
     declared?: ReadonlySet<SemanticSurfaceName>;
   }
-  let { onSettings, declared = new Set<SemanticSurfaceName>() }: Props = $props();
+  let {
+    onSettings,
+    showManagedTotControl = false,
+    declared = new Set<SemanticSurfaceName>(),
+  }: Props = $props();
 
   // Canonicalize legacy 'lcd' to 'lcd-cockpit' for UI binding — the persisted
   // value may still be 'lcd' (from pre-#889 installs), but the dropdown only
@@ -369,6 +379,9 @@
   </div>
 
   <div class="status-controls">
+    {#if showManagedTotControl}
+      <ManagedTotControl />
+    {/if}
     <button
       type="button"
       class="control-btn report-btn"
