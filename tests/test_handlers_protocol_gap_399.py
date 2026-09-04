@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,8 +34,8 @@ from rigplane.web.radio_poller import (
 # ---------------------------------------------------------------------------
 
 
-def _capable_radio() -> SimpleNamespace:
-    """Radio mock with IC-7610 profile (has all required capabilities)."""
+def _capable_radio(model: str = "IC-7610") -> SimpleNamespace:
+    """Radio mock with a real profile and all handler-test capabilities."""
     return SimpleNamespace(
         capabilities={
             "nb",
@@ -49,7 +50,7 @@ def _capable_radio() -> SimpleNamespace:
             "rx_antenna",
             "dual_rx",
         },
-        profile=resolve_radio_profile(model="IC-7610"),
+        profile=resolve_radio_profile(model=model),
         # ScopeCapable attrs required for isinstance check
         enable_scope=AsyncMock(),
         disable_scope=AsyncMock(),
@@ -179,19 +180,19 @@ def _server() -> tuple[SimpleNamespace, _QueueRecorder]:
 @pytest.mark.asyncio
 async def test_set_tone_freq_happy_path() -> None:
     srv, q = _server()
-    h = _handler(radio=_capable_radio(), server=srv)
-    result = await h._enqueue_command("set_tone_freq", {"freq": 8800})
-    assert result == {"freq": 8800, "receiver": 0}
+    h = _handler(radio=_capable_radio("IC-7300"), server=srv)
+    result = await h._enqueue_command("set_tone_freq", {"freq": 8850})
+    assert result == {"freq": 8850, "receiver": 0}
     assert len(q.items) == 1
     assert isinstance(q.items[0], SetToneFreq)
-    assert q.items[0].freq_hz == 8800
+    assert q.items[0].freq_centihz == 8850
     assert q.items[0].receiver == 0
 
 
 @pytest.mark.asyncio
 async def test_set_tone_freq_sub_receiver() -> None:
     srv, q = _server()
-    h = _handler(radio=_capable_radio(), server=srv)
+    h = _handler(radio=_capable_radio("IC-9700"), server=srv)
     result = await h._enqueue_command("set_tone_freq", {"freq": 10000, "receiver": 1})
     assert result == {"freq": 10000, "receiver": 1}
     assert q.items[0].receiver == 1
@@ -202,7 +203,7 @@ async def test_set_tone_freq_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
     with pytest.raises(ValueError, match="repeater_tone"):
-        await h._enqueue_command("set_tone_freq", {"freq": 8800})
+        await h._enqueue_command("set_tone_freq", {"freq": 8850})
 
 
 # ---------------------------------------------------------------------------
@@ -213,18 +214,18 @@ async def test_set_tone_freq_missing_capability() -> None:
 @pytest.mark.asyncio
 async def test_set_tsql_freq_happy_path() -> None:
     srv, q = _server()
-    h = _handler(radio=_capable_radio(), server=srv)
-    result = await h._enqueue_command("set_tsql_freq", {"freq": 9700})
-    assert result == {"freq": 9700, "receiver": 0}
+    h = _handler(radio=_capable_radio("IC-7300"), server=srv)
+    result = await h._enqueue_command("set_tsql_freq", {"freq": 9740})
+    assert result == {"freq": 9740, "receiver": 0}
     assert isinstance(q.items[0], SetTsqlFreq)
-    assert q.items[0].freq_hz == 9700
+    assert q.items[0].freq_centihz == 9740
 
 
 @pytest.mark.asyncio
 async def test_set_tsql_freq_sub_receiver() -> None:
     srv, q = _server()
-    h = _handler(radio=_capable_radio(), server=srv)
-    result = await h._enqueue_command("set_tsql_freq", {"freq": 9700, "receiver": 1})
+    h = _handler(radio=_capable_radio("IC-9700"), server=srv)
+    result = await h._enqueue_command("set_tsql_freq", {"freq": 9740, "receiver": 1})
     assert result["receiver"] == 1
     assert q.items[0].receiver == 1
 
@@ -234,7 +235,62 @@ async def test_set_tsql_freq_missing_capability() -> None:
     srv, _ = _server()
     h = _handler(radio=_incapable_radio(), server=srv)
     with pytest.raises(ValueError, match="tsql"):
-        await h._enqueue_command("set_tsql_freq", {"freq": 9700})
+        await h._enqueue_command("set_tsql_freq", {"freq": 9740})
+
+
+@pytest.mark.parametrize("command", ["set_tone_freq", "set_tsql_freq"])
+@pytest.mark.parametrize(
+    "params",
+    [{}, {"freq": True}, {"freq": 88.5}, {"freq": "8850"}, {"freq": 8800}],
+)
+@pytest.mark.asyncio
+async def test_ctcss_frequency_rejects_invalid_input_before_queue(
+    command: str, params: dict[str, object]
+) -> None:
+    srv, q = _server()
+    h = _handler(radio=_capable_radio("IC-7300"), server=srv)
+
+    with pytest.raises(ValueError, match="freq"):
+        await h._enqueue_command(command, params)
+
+    assert q.items == []
+
+
+@pytest.mark.parametrize("command", ["set_tone_freq", "set_tsql_freq"])
+@pytest.mark.asyncio
+async def test_ctcss_frequency_requires_profile_domain_before_queue(
+    command: str,
+) -> None:
+    radio = _capable_radio("IC-7300")
+    radio.profile = replace(radio.profile, ctcss_tones_centihz=None)
+    srv, q = _server()
+    h = _handler(radio=radio, server=srv)
+
+    with pytest.raises(ValueError, match="no valid CTCSS tone domain"):
+        await h._enqueue_command(command, {"freq": 8850})
+
+    assert q.items == []
+
+
+@pytest.mark.parametrize(
+    ("command", "capability"),
+    [("set_tone_freq", "repeater_tone"), ("set_tsql_freq", "tsql")],
+)
+@pytest.mark.asyncio
+async def test_ctcss_domain_does_not_grant_capability(
+    command: str, capability: str
+) -> None:
+    radio = _capable_radio("IC-7300")
+    assert radio.profile.ctcss_tones_centihz
+    radio.capabilities = set()
+    radio.profile = replace(radio.profile, capabilities=frozenset())
+    srv, q = _server()
+    h = _handler(radio=radio, server=srv)
+
+    with pytest.raises(ValueError, match=capability):
+        await h._enqueue_command(command, {"freq": 8850})
+
+    assert q.items == []
 
 
 # ---------------------------------------------------------------------------
