@@ -79,6 +79,32 @@ async def test_force_off_poisons_predicate_before_cancellation_runs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_poisoned_operation_cannot_return_stale_success_before_cleanup() -> None:
+    fence = TxAbortFence()
+    runner = LocalTxWorkRunner(fence)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def operation(is_current: Callable[[], bool]) -> str:
+        assert is_current()
+        started.set()
+        await release.wait()
+        return "stale success"
+
+    work = asyncio.create_task(runner.run(operation))
+    await started.wait()
+    cleanup = fence.force_off()
+    try:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await work
+    finally:
+        result = await cleanup
+
+    assert result.failures == ()
+
+
+@pytest.mark.asyncio
 async def test_blocked_local_cleanup_does_not_block_separate_urgent_off() -> None:
     fence = TxAbortFence()
     runner = LocalTxWorkRunner(fence)
@@ -139,6 +165,30 @@ async def test_force_off_cancels_and_drains_active_operation_once() -> None:
     assert first.failures == second.failures == ()
     assert cancellations == 1
     with pytest.raises(asyncio.CancelledError):
+        await work
+
+
+@pytest.mark.asyncio
+async def test_force_off_reports_provider_cancellation_cleanup_failure() -> None:
+    fence = TxAbortFence()
+    runner = LocalTxWorkRunner(fence)
+    started = asyncio.Event()
+
+    async def operation(is_current: Callable[[], bool]) -> None:
+        del is_current
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("provider cancellation cleanup failed")
+
+    work = asyncio.create_task(runner.run(operation))
+    await started.wait()
+    result = await fence.force_off()
+
+    assert len(result.failures) == 1
+    assert result.failures[0].error.args == ("provider cancellation cleanup failed",)
+    with pytest.raises(RuntimeError, match="provider cancellation cleanup failed"):
         await work
 
 
