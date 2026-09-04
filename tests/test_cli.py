@@ -1901,6 +1901,29 @@ class TestProductionManagedTxComposition:
         )
 
     @pytest.mark.asyncio
+    async def test_serve_passes_the_exact_preconnect_composition_to_cmd_serve(
+        self,
+    ) -> None:
+        from rigplane.cli import _run
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "serve"])
+        radio = self._Radio()
+        with (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli._cmd_serve", new_callable=AsyncMock) as command,
+        ):
+            command.return_value = 0
+            result = await _run(args)
+
+        assert result == 0
+        composition = radio._managed_tx_composition
+        assert radio.entered and composition is not None
+        command.assert_awaited_once_with(
+            radio, args, managed_tx_composition=composition
+        )
+
+    @pytest.mark.asyncio
     async def test_install_failure_closes_candidate_before_radio_connect(
         self, capsys
     ) -> None:

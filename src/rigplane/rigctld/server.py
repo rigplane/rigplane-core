@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from ..core.command_service import CommandService
     from ..radio_protocol import Radio
     from ..runtime.managed_tx_authority import ManagedTxAuthority
+    from ..runtime.managed_tx_composition import ManagedTxCompositionPort
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,7 @@ class RigctldServer:
         radio: "Radio",
         config: RigctldConfig | None = None,
         *,
+        managed_tx_composition: ManagedTxCompositionPort | None = None,
         managed_tx_authority: ManagedTxAuthority | None = None,
         command_service: CommandService | None = None,
         _protocol: Any = None,
@@ -175,7 +177,18 @@ class RigctldServer:
             raise ValueError("managed authority and service must be supplied together")
         if all(supplied) and _handler is not None:
             raise ValueError("managed references cannot be combined with _handler")
-        self._managed_tx_authority = managed_tx_authority
+        if managed_tx_composition is not None and (
+            any(supplied) or _handler is not None
+        ):
+            raise ValueError(
+                "managed composition is exclusive with injected references"
+            )
+        self._managed_tx_composition = managed_tx_composition
+        self._managed_tx_authority = (
+            managed_tx_composition.authority
+            if managed_tx_composition is not None
+            else managed_tx_authority
+        )
         self._command_service = command_service
         self._radio = radio
         self._config = config or RigctldConfig()
@@ -191,6 +204,8 @@ class RigctldServer:
         self._state_store: StateStore | None = None
         self._uses_fallback_state_store = False
         self._fallback_state_store_attached = False
+        self._managed_tx_bound_store: StateStore | None = None
+        self._unmanaged_warning_emitted = False
         self._acquisition_scheduler: AcquisitionScheduler | None = None
         self._state_model_service: StateModelService | None = None
         self._state_freshness_service: StateFreshnessService | None = None
@@ -759,9 +774,33 @@ class RigctldServer:
         if self._state_store is None:
             self._bootstrap_state_acquisition()
 
+        store = self._state_store
+        if store is not None:
+            if (
+                self._uses_fallback_state_store
+                and not self._fallback_state_store_attached
+            ):
+                store.begin_provider_generation()
+                self._fallback_state_store_attached = True
+
+            composition = self._managed_tx_composition
+            if composition is not None:
+                namespace = getattr(self._radio, "__dict__", {})
+                if namespace.get("_managed_tx_composition") is not composition:
+                    raise RuntimeError("managed TX composition identity mismatch")
+                if self._managed_tx_bound_store is None:
+                    await composition.bind_state_store(store)
+                    self._managed_tx_bound_store = store
+                elif self._managed_tx_bound_store is not store:
+                    raise RuntimeError("managed TX composition store mismatch")
+                composition.validate_state_store(store)
+
         if self._rig_handler is None:
             from . import handler as _handler_mod  # noqa: PLC0415, TID251
 
+            handler_kwargs: dict[str, Any] = {}
+            if self._managed_tx_composition is not None:
+                handler_kwargs["build_local_managed_command_service"] = True
             self._rig_handler = _handler_mod.RigctldHandler(
                 self._radio,
                 self._config,
@@ -770,21 +809,26 @@ class RigctldServer:
                 managed_tx_authority=self._managed_tx_authority,
                 command_queue=None,
                 command_service=self._command_service,
+                **handler_kwargs,
             )
 
-        store = self._state_store
         if store is not None:
             bind_provider_generation = getattr(
                 self._rig_handler, "bind_provider_generation", None
             )
             if callable(bind_provider_generation):
                 bind_provider_generation(lambda: store.provider_generation)
-            if (
-                self._uses_fallback_state_store
-                and not self._fallback_state_store_attached
-            ):
-                store.begin_provider_generation()
-                self._fallback_state_store_attached = True
+
+        if (
+            self._managed_tx_authority is None
+            and not self._config.read_only
+            and not self._unmanaged_warning_emitted
+        ):
+            logger.warning(
+                "writable unmanaged rigctld: Managed TX authority, ForceOff, "
+                "and software TOT are inactive"
+            )
+            self._unmanaged_warning_emitted = True
 
         self._server = await asyncio.start_server(
             self._accept_client,
