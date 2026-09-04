@@ -512,7 +512,7 @@ def bind_command_intent(
     target = descriptor.target(normalized)
     return CommandIntent(
         id=command_id or f"{source}-{time.monotonic_ns()}",
-        name=descriptor.method_name,
+        name=descriptor.name,
         params=normalized,
         source=source,
         target=target,
