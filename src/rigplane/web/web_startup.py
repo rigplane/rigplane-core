@@ -25,13 +25,68 @@ from .radio_poller import RadioPoller  # noqa: TID251
 from .runtime_helpers import runtime_capabilities  # noqa: TID251
 
 if TYPE_CHECKING:
+    from ..runtime.managed_tx_composition import ManagedTxCompositionPort
     from .server import WebServer  # noqa: TID251
 
-__all__ = ["start_web_server", "stop_web_server"]
+__all__ = [
+    "attach_managed_tx_composition",
+    "prepare_managed_tx_observation_generation",
+    "start_web_server",
+    "stop_web_server",
+]
 
 logger = logging.getLogger(__name__)
 
 _SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S = 1.0
+_MANAGED_TX_FALLBACK_ADVANCED_ATTR = "_production_managed_tx_fallback_advanced"
+
+
+def _installed_managed_tx_composition(radio: object) -> object | None:
+    try:
+        namespace = vars(radio)
+    except TypeError:
+        return None
+    return namespace.get("_managed_tx_composition")
+
+
+def prepare_managed_tx_observation_generation(server: WebServer) -> int:
+    radio = server._radio
+    if isinstance(radio, ObservationPollable):
+        shared_store = isinstance(radio, StateStoreCapable) and (
+            radio.state_store is server.command_state_store
+        )
+        if not shared_store:
+            generation = int(server.command_state_store.begin_provider_generation())
+            setattr(server, _MANAGED_TX_FALLBACK_ADVANCED_ATTR, True)
+            return generation
+    return int(server.command_state_store.provider_generation)
+
+
+def attach_managed_tx_composition(
+    server: WebServer,
+    port: ManagedTxCompositionPort,
+) -> None:
+    installed = _installed_managed_tx_composition(server._radio)
+    if installed is not port:
+        raise RuntimeError("managed TX composition identity does not match the radio")
+    if vars(server).get("_production_managed_tx_port") is not None:
+        raise RuntimeError("managed TX composition is already attached")
+    server._production_managed_tx_port = port
+
+
+def _validate_managed_tx(server: WebServer) -> None:
+    installed = _installed_managed_tx_composition(server._radio)
+    server_namespace = vars(server)
+    attached = server_namespace.get("_production_managed_tx_port")
+    if installed is None:
+        if attached is not None:
+            raise RuntimeError("managed TX composition is not installed on the radio")
+        return
+    if attached is None:
+        raise RuntimeError("managed TX composition is not attached to Web")
+    if attached is not installed:
+        raise RuntimeError("managed TX composition identity mismatch")
+    attached.validate_state_store(server.command_state_store)
 
 
 def _supports_scope_local(server: WebServer) -> bool:
@@ -39,6 +94,11 @@ def _supports_scope_local(server: WebServer) -> bool:
 
 
 async def start_web_server(server: WebServer) -> None:
+    _validate_managed_tx(server)
+    await _start_web_server(server)
+
+
+async def _start_web_server(server: WebServer) -> None:
     """Start the HTTP/WS listener and RadioPoller (if radio is connected).
 
     Mirrors the original :meth:`WebServer.start` body verbatim — the method
@@ -152,7 +212,9 @@ async def start_web_server(server: WebServer) -> None:
                 "_uses_fallback_provider_generation",
                 fallback_store,
             )
-            if fallback_store:
+            if fallback_store and not getattr(
+                server, _MANAGED_TX_FALLBACK_ADVANCED_ATTR, False
+            ):
                 server.command_state_store.begin_provider_generation()
             server._spawn(server._state_poller.start())
             logger.info("observation poller started")
@@ -181,7 +243,8 @@ async def start_web_server(server: WebServer) -> None:
                 # Register callback so CI-V RX stream can notify us of state changes.
                 server._radio.set_state_change_callback(server._on_radio_state_change)
                 # Re-enable scope after soft_reconnect (CI-V stream reset loses scope state)
-                server._radio.set_reconnect_callback(server._on_radio_reconnect)
+                if _installed_managed_tx_composition(server._radio) is None:
+                    server._radio.set_reconnect_callback(server._on_radio_reconnect)
             server._radio_poller = RadioPoller(
                 server._radio,
                 server._command_queue,
@@ -250,6 +313,10 @@ async def start_web_server(server: WebServer) -> None:
 
 
 async def stop_web_server(server: WebServer) -> None:
+    await _stop_web_server(server)
+
+
+async def _stop_web_server(server: WebServer) -> None:
     """Close the listener, stop RadioPoller, disconnect radio, cancel tasks.
 
     Mirrors the original :meth:`WebServer.stop` body verbatim — the method

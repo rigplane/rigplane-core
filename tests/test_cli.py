@@ -1066,6 +1066,97 @@ class TestWebRigctldDefault:
         assert "rigctld:" in out
         assert "4532" in out
 
+    @pytest.mark.asyncio
+    async def test_cli_web_managed_rigctld_receives_exact_authority_and_service(
+        self,
+    ) -> None:
+        import asyncio
+
+        from rigplane.cli import _cmd_web
+
+        authority = object()
+        command_service = object()
+        composition = MagicMock(authority=authority)
+        composition.bind_state_store = AsyncMock()
+        captured: dict[str, object] = {}
+        web_stores: list[object] = []
+
+        class FakeWebServer:
+            def __init__(self, _radio, _cfg):
+                self.command_service = command_service
+                self.command_state_store = object()
+                web_stores.append(self.command_state_store)
+
+            async def serve_forever(self):
+                raise asyncio.CancelledError
+
+        class FakeRigctldServer:
+            def __init__(self, _radio, _cfg, **kwargs):
+                captured.update(kwargs)
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        args.web_bridge = None
+        with (
+            patch("rigplane.web.server.WebServer", FakeWebServer),
+            patch("rigplane.rigctld.server.RigctldServer", FakeRigctldServer),
+            patch(
+                "rigplane.web.web_startup.prepare_managed_tx_observation_generation",
+                return_value=3,
+            ),
+            patch("rigplane.web.web_startup.attach_managed_tx_composition"),
+            patch("rigplane.cli._detect_loopback_hint", return_value=None),
+        ):
+            assert (
+                await _cmd_web(AsyncMock(), args, managed_tx_composition=composition)
+                == 0
+            )
+
+        assert captured == {
+            "managed_tx_authority": authority,
+            "command_service": command_service,
+        }
+        composition.bind_state_store.assert_awaited_once_with(web_stores[0])
+
+    @pytest.mark.asyncio
+    async def test_cli_web_managed_rigctld_does_not_retry_legacy_constructor(
+        self,
+    ) -> None:
+        from rigplane.cli import _cmd_web
+
+        composition = MagicMock(authority=object())
+        composition.bind_state_store = AsyncMock()
+
+        class FakeWebServer:
+            command_service = object()
+
+            def __init__(self, _radio, _cfg):
+                self.command_state_store = object()
+
+        class LegacyOnlyRigctldServer:
+            def __init__(self, _radio, _cfg):
+                pass
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        args.web_bridge = None
+        with (
+            patch("rigplane.web.server.WebServer", FakeWebServer),
+            patch("rigplane.rigctld.server.RigctldServer", LegacyOnlyRigctldServer),
+            patch(
+                "rigplane.web.web_startup.prepare_managed_tx_observation_generation",
+                return_value=3,
+            ),
+            patch("rigplane.web.web_startup.attach_managed_tx_composition"),
+            patch("rigplane.cli._detect_loopback_hint", return_value=None),
+        ):
+            with pytest.raises(TypeError, match="managed_tx_authority"):
+                await _cmd_web(AsyncMock(), args, managed_tx_composition=composition)
+
     async def test_cli_web_direct_lan_wsjtx_configures_data2_lan(self, capsys):
         """Direct Icom LAN backend maps WSJT-X packet mode to DATA2/LAN."""
         import asyncio
@@ -1758,6 +1849,153 @@ class TestCheckPortsAvailable:
         assert str(occupied_rigctld_port) in captured.err
         assert "lsof" in captured.err.lower()
 
+
+class TestProductionManagedTxComposition:
+    class _Radio:
+        capabilities: set[str] = set()
+
+        def __init__(self) -> None:
+            self.entered = False
+            self._managed_tx_composition = None
+
+        async def __aenter__(self):
+            self.entered = True
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def actuate(self, _token, _operation, *, is_current):
+            from rigplane.runtime.managed_tx_state import ActuationResult
+
+            return (
+                ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+            )
+
+        async def set_ptt(self, _on: bool) -> None:
+            raise AssertionError("raw PTT must be replaced before connect")
+
+        def install_managed_tx_composition(self, composition) -> None:
+            self._managed_tx_composition = composition
+
+    @pytest.mark.asyncio
+    async def test_web_passes_the_exact_preconnect_composition_to_cmd_web(self) -> None:
+        from rigplane.cli import _run
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        radio = self._Radio()
+        with (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli._cmd_web", new_callable=AsyncMock) as command,
+        ):
+            command.return_value = 0
+            result = await _run(args)
+
+        assert result == 0
+        assert radio.entered
+        composition = radio._managed_tx_composition
+        assert composition is not None
+        command.assert_awaited_once_with(
+            radio, args, managed_tx_composition=composition
+        )
+
+    @pytest.mark.asyncio
+    async def test_install_failure_closes_candidate_before_radio_connect(
+        self, capsys
+    ) -> None:
+        from rigplane.cli import _run
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        radio = self._Radio()
+        candidate = MagicMock()
+        candidate.shutdown = AsyncMock()
+
+        def fail_install(_composition) -> None:
+            raise RuntimeError("identity install failed")
+
+        radio.install_managed_tx_composition = fail_install  # type: ignore[method-assign]
+        with (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli.ManagedTxComposition", return_value=candidate),
+        ):
+            result = await _run(args)
+
+        assert result == 1
+        assert not radio.entered
+        candidate.shutdown.assert_awaited_once()
+        assert "managed TX composition unavailable" in capsys.readouterr().err
+
+    @pytest.mark.asyncio
+    async def test_cli_is_sole_ordered_joinable_shutdown_owner(self) -> None:
+        import asyncio
+
+        from rigplane.cli import _ManagedTxRadioSession
+
+        events: list[str] = []
+        started, release = asyncio.Event(), asyncio.Event()
+        radio = MagicMock()
+
+        async def exit_radio(*_args):
+            events.append("radio-exit")
+            return False
+
+        async def shutdown(_termination):
+            events.append("tx-start")
+            started.set()
+            await release.wait()
+            events.append("tx-stop")
+
+        radio.__aexit__ = AsyncMock(side_effect=exit_radio)
+        candidate = MagicMock()
+        candidate.shutdown = AsyncMock(side_effect=shutdown)
+        session = _ManagedTxRadioSession(radio, candidate)
+
+        cancelled = asyncio.create_task(session.shutdown())
+        await started.wait()
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        joining = asyncio.create_task(session.shutdown())
+        exiting = asyncio.create_task(session.__aexit__(None, None, None))
+        await asyncio.sleep(0)
+        assert not joining.done() and not exiting.done()
+        shared = session._shutdown_task
+        assert shared is not None and session._shutdown_task is shared
+        radio.__aexit__.assert_not_awaited()
+
+        release.set()
+        await asyncio.gather(joining, exiting)
+        await session.shutdown()
+
+        assert events == ["tx-start", "tx-stop", "radio-exit"]
+        candidate.shutdown.assert_awaited_once()
+        radio.__aexit__.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cli_shutdowns_once_when_radio_enter_fails(self) -> None:
+        from rigplane.cli import _run
+
+        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        radio = self._Radio()
+        radio.__aenter__ = AsyncMock(side_effect=RuntimeError("connect failed"))  # type: ignore[method-assign]
+        radio.__aexit__ = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        candidate = MagicMock()
+        candidate.transport_ready = AsyncMock()
+        candidate.shutdown = AsyncMock()
+        with (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.cli.ManagedTxComposition", return_value=candidate),
+        ):
+            assert await _run(args) == 1
+
+        candidate.shutdown.assert_awaited_once()
+        radio.__aexit__.assert_not_awaited()
+
+
+class TestRemainingPortPreflight:
     def test_no_rigctld_flag_skips_busy_rigctld_port_preflight(self):
         """MOR-1437: --no-rigctld opts out of the rigctld port check entirely —
         a busy rigctld port must not block a clean web-only start.
@@ -1791,6 +2029,12 @@ class TestCheckPortsAvailable:
             )
 
             mock_radio = MagicMock()
+            mock_radio._managed_tx_composition = None
+            mock_radio.actuate = AsyncMock()
+            mock_radio.set_ptt = AsyncMock()
+            mock_radio.install_managed_tx_composition.side_effect = lambda value: (
+                setattr(mock_radio, "_managed_tx_composition", value)
+            )
             mock_radio.__aenter__ = AsyncMock(return_value=mock_radio)
             mock_radio.__aexit__ = AsyncMock(return_value=False)
             with (
@@ -1802,7 +2046,12 @@ class TestCheckPortsAvailable:
 
         assert result == 0
         mock_radio.__aenter__.assert_called_once()
-        cmd_web.assert_awaited_once_with(mock_radio, args)
+        assert cmd_web.await_args is not None
+        assert cmd_web.await_args.args == (mock_radio, args)
+        assert (
+            cmd_web.await_args.kwargs["managed_tx_composition"]
+            is mock_radio._managed_tx_composition
+        )
 
     def test_station_preflight_blocks_on_occupied_rigctld_port_at_managed_host(
         self, capsys

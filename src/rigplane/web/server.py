@@ -37,7 +37,7 @@ from collections.abc import Callable, Collection, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
@@ -125,7 +125,7 @@ if TYPE_CHECKING:
 
     from ..profiles import RadioProfile
     from ..radio_protocol import Radio
-    from ..runtime.radio import ManagedTxCompositionPort
+    from ..runtime.managed_tx_composition import ManagedTxCompositionPort
     from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
 
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
@@ -1012,8 +1012,9 @@ class WebServer:
     def _projected_runtime_capabilities(self) -> set[str]:
         """Return runtime tags with VFO primitives trusted only from a profile."""
         caps = _runtime_capabilities(self._radio) - VFO_CAPABILITY_TAGS
-        return caps | projected_vfo_capability_tags(
-            self._radio, self._config.radio_model
+        return cast(
+            set[str],
+            caps | projected_vfo_capability_tags(self._radio, self._config.radio_model),
         )
 
     def _bootstrap_state_acquisition(self) -> None:

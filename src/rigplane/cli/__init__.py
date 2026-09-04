@@ -40,7 +40,7 @@ from pathlib import Path
 import time
 import uuid
 import wave
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,12 @@ from rigplane.core.radio_protocol import (  # noqa: E402
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
 from rigplane.core.types import Mode, get_audio_capabilities  # noqa: E402
+from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator  # noqa: E402
+from rigplane.runtime.managed_tx_composition import (  # noqa: E402
+    ManagedTxComposition,
+    ManagedTxCompositionPort,
+    install_managed_tx_composition,
+)
 
 _AUDIO_FRAME_MS = 20
 _PCM_SAMPLE_WIDTH_BYTES = 2
@@ -1869,6 +1875,51 @@ async def _cmd_list_audio_devices(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _shutdown_managed_tx_composition(
+    composition: ManagedTxCompositionPort,
+) -> None:
+    termination = asyncio.Event()
+    shutdown = asyncio.create_task(composition.shutdown(termination))
+    try:
+        await asyncio.wait_for(asyncio.shield(shutdown), timeout=3.0)
+    except TimeoutError:
+        termination.set()
+        await asyncio.shield(shutdown)
+
+
+class _ManagedTxRadioSession:
+    def __init__(
+        self,
+        radio: Any,
+        composition: ManagedTxCompositionPort,
+    ) -> None:
+        self._radio = radio
+        self._composition = composition
+        self._shutdown_task: asyncio.Task[None] | None = None
+
+    async def __aenter__(self) -> Any:
+        entered = await self._radio.__aenter__()
+        await self._composition.transport_ready(entered)
+        return entered
+
+    async def shutdown(self) -> None:
+        task = self._shutdown_task
+        if task is None:
+            task = asyncio.create_task(
+                _shutdown_managed_tx_composition(self._composition)
+            )
+            self._shutdown_task = task
+        await asyncio.shield(task)
+
+    async def __aexit__(self, *exc: object) -> bool:
+        result = False
+        try:
+            await self.shutdown()
+        finally:
+            result = bool(await self._radio.__aexit__(*exc))
+        return result
+
+
 async def _run(args: argparse.Namespace) -> int:
     wants_stats = bool(getattr(args, "stats", False))
     if args.command == "audio" and args.audio_command == "caps" and not wants_stats:
@@ -1925,8 +1976,36 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
+    managed_tx_composition: ManagedTxCompositionPort | None = None
+    if args.command in ("web", "station"):
+        candidate_composition: ManagedTxComposition | None = None
+        try:
+            import platformdirs
+
+            from rigplane._platformdirs_migration import migrate_legacy_platformdirs
+
+            migrate_legacy_platformdirs()
+            candidate_composition = ManagedTxComposition(
+                cast(ManagedTxActuator, radio),
+                config_path=(
+                    Path(platformdirs.user_config_path("rigplane")) / "managed-tx.json"
+                ),
+            )
+            install_managed_tx_composition(radio, candidate_composition)
+            managed_tx_composition = candidate_composition
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            if candidate_composition is not None:
+                await _shutdown_managed_tx_composition(candidate_composition)
+            print(f"Error: managed TX composition unavailable: {exc}", file=sys.stderr)
+            return 1
+
+    session = (
+        radio
+        if managed_tx_composition is None
+        else _ManagedTxRadioSession(radio, managed_tx_composition)
+    )
     try:
-        async with radio:
+        async with session:
             if args.command == "audio" and args.audio_command == "caps":
                 if CAP_AUDIO not in radio.capabilities:
                     print(
@@ -2033,7 +2112,11 @@ async def _run(args: argparse.Namespace) -> int:
                     return 1
                 return await _cmd_levels(radio, args)
             elif args.command in ("web", "station"):
-                return await _cmd_web(radio, args)
+                return await _cmd_web(
+                    radio,
+                    args,
+                    managed_tx_composition=managed_tx_composition,
+                )
             elif args.command == "scope":
                 return await _cmd_scope(radio, args)
             elif args.command == "serve":
@@ -2075,6 +2158,9 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         logger.debug("Traceback:", exc_info=True)
         return 1
+    finally:
+        if isinstance(session, _ManagedTxRadioSession):
+            await session.shutdown()
 
 
 def _audio_frame_bytes(
@@ -3496,7 +3582,7 @@ async def _cmd_audio_bridge(radio: Radio, args: argparse.Namespace) -> int:
 
     try:
         bridge = AudioBridge(
-            radio,  # type: ignore[arg-type]
+            radio,
             device_name=args.device,
             tx_device_name=getattr(args, "tx_device", None),
             tx_enabled=not args.rx_only,
@@ -3641,7 +3727,12 @@ async def _cmd_serve(radio: Radio, args: argparse.Namespace) -> int:
     return 0
 
 
-async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
+async def _cmd_web(
+    radio: Radio,
+    args: argparse.Namespace,
+    *,
+    managed_tx_composition: ManagedTxCompositionPort | None = None,
+) -> int:
     import pathlib
 
     from rigplane.web.server import WebConfig, WebServer
@@ -3732,6 +3823,15 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
     config_kwargs["radio_model"] = getattr(radio, "model", "IC-7610")
     config = WebConfig(**config_kwargs)
     server = WebServer(radio, config)
+    if managed_tx_composition is not None:
+        from rigplane.web.web_startup import (
+            attach_managed_tx_composition,
+            prepare_managed_tx_observation_generation,
+        )
+
+        prepare_managed_tx_observation_generation(server)
+        await managed_tx_composition.bind_state_store(server.command_state_store)
+        attach_managed_tx_composition(server, managed_tx_composition)
     runtime_log_path = getattr(args, "runtime_log_path", None)
     if isinstance(runtime_log_path, str) and runtime_log_path:
         server._runtime_log_path = runtime_log_path
@@ -3841,7 +3941,15 @@ async def _cmd_web(radio: Radio, args: argparse.Namespace) -> int:
             wsjtx_data_mode=wsjtx_data_mode,
             wsjtx_data_mod_input=wsjtx_data_mod_input,
         )
-        candidate = RigctldServer(radio, rigctld_config)
+        if managed_tx_composition is None:
+            candidate = RigctldServer(radio, rigctld_config)
+        else:
+            candidate = RigctldServer(
+                radio,
+                rigctld_config,
+                managed_tx_authority=managed_tx_composition.authority,
+                command_service=server.command_service,
+            )
         try:
             await candidate.start()
         except OSError as exc:
@@ -4041,7 +4149,7 @@ def _default_daemon_log_file(*, managed_runtime: bool) -> Path:
     from rigplane.diagnostics._log_paths import resolve_core_log_dir
 
     migrate_legacy_platformdirs()
-    return resolve_core_log_dir() / filename
+    return cast(Path, resolve_core_log_dir() / filename)
 
 
 def main() -> None:
