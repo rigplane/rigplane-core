@@ -29,7 +29,7 @@
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
   import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
-  import { getAppTxController } from '$lib/runtime/tx-controller/app-host';
+  import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
   import MetersDockPanel from '../panels/MetersDockPanel.svelte';
@@ -91,11 +91,8 @@
   // the two disagree: a manifest declaring `vfo` WITHOUT `rxTx` (which
   // `validateLayoutManifest` permits, and which the programme's additive
   // subset-declaration pattern positively invites) would render the semantic
-  // RxTxSurface AND the legacy TxPanel — two key/unkey authorities, each holding
-  // its own TX lease `sourceId`, so keying from one cannot be released by the
-  // other. That is the stranded-transmitter hazard R9 and MOR-1011 exist to
-  // prevent; the pre-MOR-1313 single boolean made it structurally impossible and
-  // this rule keeps it so.
+  // RxTxSurface AND TxPanel — duplicate controls for the same App-root managed
+  // intent facade. The single boolean keeps exactly one visible control surface.
   //
   // Truth table, all four quadrants: deck mounted → semantic surface 1 / legacy
   // 0; deck not mounted → semantic 0 / legacy 1. Exactly one, always. Should
@@ -152,7 +149,7 @@
   // exactly in the uncertain/confirming windows the lamp fails closed on, and
   // a meters panel that says RX there greys out the SWR/ALC fault tiles
   // mid-transmission. Predicate below is AppGlobalHost's own, verbatim.
-  const txCtl = getAppTxController();
+  const txCtl = getManagedAppTxController();
   let txState = $state.raw(txCtl.snapshot());
   const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
   onDestroy(() => stopWatchingTx());
