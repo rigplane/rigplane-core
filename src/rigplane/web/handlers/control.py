@@ -721,6 +721,25 @@ class ControlHandler:
             f"(missing capability: {capability})"
         )
 
+    def _require_profile_ctcss_frequency(self, value: object, command_name: str) -> int:
+        if type(value) is not int:
+            raise ValueError(f"{command_name}: freq must be an exact integer centiHz")
+        profile = getattr(self._radio, "profile", None)
+        domain = getattr(profile, "ctcss_tones_centihz", None)
+        if (
+            not isinstance(domain, tuple)
+            or not domain
+            or any(type(tone_centihz) is not int for tone_centihz in domain)
+        ):
+            raise ValueError(
+                f"{command_name}: active profile has no valid CTCSS tone domain"
+            )
+        if value not in domain:
+            raise ValueError(
+                f"{command_name}: freq {value} is not declared by the active profile"
+            )
+        return value
+
     def _radio_ready(self) -> bool:
         """Return backend radio readiness (CI-V healthy), with fallback."""
         return bool(radio_ready(self._radio))
@@ -2766,11 +2785,15 @@ class ControlHandler:
                 q.put(SetRepeaterTone(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_tone_freq":
-                freq = int(params["freq"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("repeater_tone", "set_tone_freq")
                 self._ensure_receiver_supported(rx)
-                q.put(SetToneFreq(freq, receiver=rx))
+                if "freq" not in params:
+                    raise ValueError("set_tone_freq: freq is required")
+                freq = self._require_profile_ctcss_frequency(
+                    params["freq"], "set_tone_freq"
+                )
+                q.put(SetToneFreq(freq_centihz=freq, receiver=rx))
                 return {"freq": freq, "receiver": rx}
             case "set_repeater_tsql":
                 on = bool(params.get("on", False))
@@ -2780,11 +2803,15 @@ class ControlHandler:
                 q.put(SetRepeaterTsql(on, receiver=rx))
                 return {"on": on, "receiver": rx}
             case "set_tsql_freq":
-                freq = int(params["freq"])
                 rx = int(params.get("receiver", 0))
                 self._ensure_capability("tsql", "set_tsql_freq")
                 self._ensure_receiver_supported(rx)
-                q.put(SetTsqlFreq(freq, receiver=rx))
+                if "freq" not in params:
+                    raise ValueError("set_tsql_freq: freq is required")
+                freq = self._require_profile_ctcss_frequency(
+                    params["freq"], "set_tsql_freq"
+                )
+                q.put(SetTsqlFreq(freq_centihz=freq, receiver=rx))
                 return {"freq": freq, "receiver": rx}
             case "set_ref_adjust":
                 value = int(params["value"])
