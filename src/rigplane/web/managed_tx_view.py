@@ -22,10 +22,11 @@ def build_managed_tx_view(
     """Serialize one authority snapshot and independent observed PTT evidence."""
 
     state = projection.state
-    active = (
-        state.tot_deadline_monotonic is not None
-        and projection.remaining_tot_seconds is not None
-    )
+    has_deadline = state.tot_deadline_monotonic is not None
+    has_remaining = projection.remaining_tot_seconds is not None
+    if has_deadline != has_remaining:
+        raise ValueError("TOT deadline and remaining time disagree")
+    active = has_deadline
     remaining_ms = (
         None if not active else max(0, floor(projection.remaining_tot_seconds * 1000))
     )
@@ -80,6 +81,8 @@ def _intent_view(intent: ManagedTxIntent) -> dict[str, str]:
 
 
 def _utc_milliseconds(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("sampled_at must be timezone-aware")
     return (
         value.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     )

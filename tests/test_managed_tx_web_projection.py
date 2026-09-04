@@ -1,6 +1,6 @@
 """Pure public projection for one managed-transmit authority snapshot."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -34,6 +34,15 @@ def _projection(
         configured_tot_seconds,
         remaining_tot_seconds,
         provider_generation=123,
+    )
+
+
+def _active_state() -> ManagedTxState:
+    return ManagedTxState(
+        intent=ManagedTxIntent(ManagedTxIntentKind.TRANSMIT),
+        release_plan=ReleasePlan.PTT_RELEASE,
+        tx_started_at_monotonic=10.0,
+        tot_deadline_monotonic=55.0,
     )
 
 
@@ -160,3 +169,75 @@ def test_diagnostics_preserve_normalized_values_and_hide_internal_tokens() -> No
     }
     assert "providerGeneration" not in str(view)
     assert "effectEpoch" not in str(view)
+
+
+@pytest.mark.parametrize(
+    ("state", "remaining_tot_seconds"),
+    [
+        (_active_state(), None),
+        (ManagedTxState(), 1.0),
+    ],
+)
+def test_mismatched_tot_deadline_and_remaining_time_are_rejected(
+    state: ManagedTxState, remaining_tot_seconds: float | None
+) -> None:
+    with pytest.raises(ValueError, match="TOT deadline and remaining time disagree"):
+        build_managed_tx_view(
+            _projection(state, remaining_tot_seconds=remaining_tot_seconds),
+            ObservedPtt.UNKNOWN,
+            sampled_at=_SAMPLED_AT,
+        )
+
+
+@pytest.mark.parametrize(
+    ("remaining_tot_seconds", "remaining_ms", "expires_at"),
+    [
+        (0.0, 0, "2026-09-04T12:34:56.789Z"),
+        (-0.0001, 0, "2026-09-04T12:34:56.789Z"),
+        (604800.9999, 604800999, "2026-09-11T12:34:56.788Z"),
+    ],
+)
+def test_active_tot_clamps_expired_time_and_preserves_large_remaining_time(
+    remaining_tot_seconds: float, remaining_ms: int, expires_at: str
+) -> None:
+    tot = build_managed_tx_view(
+        _projection(_active_state(), remaining_tot_seconds=remaining_tot_seconds),
+        ObservedPtt.UNKNOWN,
+        sampled_at=_SAMPLED_AT,
+    )["managedTransmit"]["tot"]  # type: ignore[index]
+
+    assert tot == {
+        "configuredSeconds": 180.0,
+        "active": True,
+        "remainingMs": remaining_ms,
+        "expiresAt": expires_at,
+    }
+
+
+def test_naive_sample_time_is_rejected() -> None:
+    with pytest.raises(ValueError, match="sampled_at must be timezone-aware"):
+        build_managed_tx_view(
+            _projection(),
+            ObservedPtt.UNKNOWN,
+            sampled_at=datetime(2026, 9, 4, 12, 34, 56, 789_000),
+        )
+
+
+def test_non_utc_sample_time_converts_sample_and_expiry_to_utc() -> None:
+    view = build_managed_tx_view(
+        _projection(_active_state(), remaining_tot_seconds=1.0),
+        ObservedPtt.UNKNOWN,
+        sampled_at=datetime(
+            2026,
+            9,
+            4,
+            8,
+            34,
+            56,
+            789_000,
+            tzinfo=timezone(-timedelta(hours=4)),
+        ),
+    )
+
+    assert view["sampledAt"] == "2026-09-04T12:34:56.789Z"
+    assert view["managedTransmit"]["tot"]["expiresAt"] == "2026-09-04T12:34:57.789Z"  # type: ignore[index]
