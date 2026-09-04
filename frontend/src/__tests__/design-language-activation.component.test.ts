@@ -48,6 +48,11 @@ const h = vi.hoisted(() => ({
   bootstrap: vi.fn(),
   initBattery: vi.fn(),
   provide: vi.fn(),
+  txHost: {
+    refreshAuthority: vi.fn(),
+    release: vi.fn(async () => {}),
+    dispose: vi.fn(),
+  },
   registerBarrier: vi.fn(),
 }));
 
@@ -76,7 +81,7 @@ vi.mock('../lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime/system-controller', () => ({
   systemController: { registerPreDisconnectBarrier: h.registerBarrier },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({ provideAppTxControllerHost: h.provide }));
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({ provideManagedAppTxHost: h.provide }));
 vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({ hasAnyScope: () => false }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession: vi.fn(), destroyMediaSession: vi.fn() }));
@@ -119,7 +124,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute('data-density');
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
-  h.provide.mockImplementation(() => ({ refreshAuthority: vi.fn(), dispose: vi.fn() }));
+  h.provide.mockImplementation(() => h.txHost);
   h.bootstrap.mockResolvedValue(vi.fn());
   h.loadSkin.mockImplementation(
     (id: string) => new Promise((resolve) => { h.pending.push({ id, resolve }); }),

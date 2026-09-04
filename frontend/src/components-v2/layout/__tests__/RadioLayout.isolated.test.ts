@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness({ stale: true });
 import { mount, unmount, flushSync } from 'svelte';
 
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -303,32 +306,14 @@ describe('extractVfoState partial data', () => {
 // RadioLayout component
 // ---------------------------------------------------------------------------
 
-// MOR-1011: TxPanel resolves the App TX controller from Svelte context, which
-// only App.svelte provides. RadioLayout is mounted here without that provider,
-// so stub the host lookup — the layout still renders the real panel tree.
-// (Partial mock: the App-mount test below still needs the real provider.)
-// MOR-1235: the snapshot is a MUTABLE holder now — the meters dock reads its
-// TX chrome from this controller, so a test has to be able to key it.
-const txAuthority = vi.hoisted(() => {
-  const idle = {
-    phase: 'idle', intent: null, guard: null, radioTx: 'unknown',
-    txRisk: 'none', mayOwnKey: false, fault: null,
-  };
-  return { idle, current: idle as Record<string, unknown> };
-});
-
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
+// RadioLayout is mounted without App.svelte, so the shared harness supplies
+// the managed server projection. The partial mock preserves the real provider
+// for the App-mount test below.
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => txAuthority.current,
-      subscribe: () => () => {},
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -387,10 +372,10 @@ function mountLayout(skinId: SkinId = 'desktop-v2') {
 }
 
 beforeEach(() => {
+  txHarness.reset({ stale: true });
   components = [];
   radio.current = null;
   rt.state = null;
-  txAuthority.current = txAuthority.idle;
   vi.mocked(hasDualReceiver).mockReturnValue(false);
   vi.mocked(resolveSkinId).mockReturnValue('desktop-v2');
   // JSDOM defaults to 0x0 — force desktop dimensions so isMobile stays false
@@ -407,7 +392,7 @@ afterEach(() => {
   // or a keyed authority left behind by one test would be read by the next one
   // that does not set its own. Reset on the way OUT as well as the way in.
   rt.state = null;
-  txAuthority.current = txAuthority.idle;
+  txHarness.reset({ stale: true });
 });
 
 describe('RadioLayout structure', () => {
@@ -569,7 +554,7 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
 
   it('shows TX when the authority is keyed while radioState.ptt reads false', () => {
     rt.state = { active: 'MAIN', ptt: false, main: { sMeter: 120 } };
-    txAuthority.current = { ...txAuthority.idle, radioTx: 'on', txRisk: 'confirmed-on' };
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
     const t = mountLayout(UNDECLARED);
     expect(txTag(t)?.getAttribute('data-active')).toBe('true');
     expect(txTag(t)?.textContent).toBe('TX');
@@ -577,7 +562,7 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
 
   it('shows RX when the authority is idle while radioState.ptt reads true', () => {
     rt.state = { active: 'MAIN', ptt: true, main: { sMeter: 120 } };
-    txAuthority.current = { ...txAuthority.idle, radioTx: 'off', txRisk: 'none' };
+    txHarness.emitServerSnapshot({ observedPtt: 'off' });
     const t = mountLayout(UNDECLARED);
     expect(txTag(t)?.getAttribute('data-active')).toBe('false');
     expect(txTag(t)?.textContent).toBe('RX');
@@ -585,7 +570,7 @@ describe('meters dock TX chrome follows the App TX authority (MOR-1235)', () => 
 
   it('fails closed: an uncertain authority shows TX even with ptt false', () => {
     rt.state = { active: 'MAIN', ptt: false, main: { sMeter: 120 } };
-    txAuthority.current = { ...txAuthority.idle, radioTx: 'off', txRisk: 'uncertain' };
+    txHarness.emitServerSnapshot({ observedPtt: 'off', releaseRequired: true });
     const t = mountLayout(UNDECLARED);
     expect(txTag(t)?.getAttribute('data-active')).toBe('true');
   });

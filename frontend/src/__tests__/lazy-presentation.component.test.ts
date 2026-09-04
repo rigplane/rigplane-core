@@ -77,7 +77,7 @@ vi.mock('../lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime/system-controller', () => ({
   systemController: { registerPreDisconnectBarrier: h.registerBarrier },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({ provideAppTxControllerHost: h.provide }));
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({ provideManagedAppTxHost: h.provide }));
 vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({ hasAnyScope: () => false }));
 vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' }));

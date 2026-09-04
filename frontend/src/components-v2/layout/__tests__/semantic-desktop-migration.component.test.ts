@@ -18,6 +18,9 @@
  * the all-semantic case.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
 import { readFileSync } from 'fs';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -83,24 +86,11 @@ vi.mock('$lib/stores/connection.svelte', () => ({
 vi.mock('../../../lib/runtime/frontend-runtime', () => ({ runtime: h.runtime }));
 vi.mock('$lib/runtime', () => ({ runtime: h.runtime }));
 
-// MOR-1011: the App TX controller comes from Svelte context that only
-// App.svelte provides; RadioLayout is mounted here without it.
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
-  const idle = {
-    phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-    mayOwnKey: false, fault: null,
-  };
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => idle,
-      subscribe: () => () => {},
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -249,6 +239,7 @@ function render(skinId: SkinId): HTMLElement {
 }
 
 beforeEach(() => {
+  txHarness.reset();
   mounted = [];
   h.state = liveState();
   h.caps = capsFor('2/main_sub');
@@ -1464,10 +1455,9 @@ describe('an undeclared layout keeps its legacy presentation (MOR-1313)', () => 
  * 4938 tests.
  *
  * The invariant is a COUNT, not a preference for either presentation: exactly
- * one element that can key or unkey the transmitter, in every quadrant. Two is
- * the stranded-transmitter hazard (each affordance holds its own TX lease
- * `sourceId`, so the controller refuses a release from the other one); zero
- * leaves the operator no way to stop transmitting.
+ * one element that can key or unkey the transmitter, in every quadrant. Two
+ * creates competing TX controls; zero leaves the operator no way to stop
+ * transmitting.
  */
 describe('exactly one key authority on a partially declaring manifest (R9)', () => {
   // MUTATION KILLED — the one this file was missing. Gating the TX twin on

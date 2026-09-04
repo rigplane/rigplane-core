@@ -172,10 +172,10 @@ vi.mock('../skins/registry', () => ({
   loadSkin: h.loadSkin,
   presentationResourcePlan: (id: SkinId) => SKIN_PLAN[id] ?? [],
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   // TX controller identity across a switch has its own real-stack proof
   // (presentation-switch-tx.component.test.ts). Inert here.
-  provideAppTxControllerHost: h.provide,
+  provideManagedAppTxHost: h.provide,
 }));
 vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({
