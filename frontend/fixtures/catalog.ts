@@ -708,25 +708,27 @@ const CORE_FIXTURES: readonly (Fixture & { expect: Expectation })[] = [
   {
     id: 'connection-loss-stale',
     what: 'radio link lost, values retained but every field STALE — every fact degrades to unknown.',
-    state: () => mainSubState('MAIN', stale), caps: mainSubCaps, tx: tx({}),
+    state: () => mainSubState('MAIN', stale), caps: mainSubCaps,
+    tx: tx({ fresh: false, radioTx: 'unknown' }),
     // MOR-1355: `mainSubCaps` carries txAux evidence, no plan supplied.
     expect: mainSubExpect({
       stripActive: [false, false], selectsEnabled: 4, selectsDisabled: 0,
-      radioWideSwitchesDisabled: true, keyDisabled: true,
+      radioWideSwitchesDisabled: true, keyDisabled: true, rfLabel: 'RF ?',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },
   {
     id: 'connection-loss-state-null',
     what: 'reconnect window — capabilities known, no state payload at all; everything present and inert.',
-    state: () => null, caps: mainSubCaps, tx: tx({}),
+    state: () => null, caps: mainSubCaps,
+    tx: tx({ fresh: false, radioTx: 'unknown' }),
     // MOR-1355: `toRadioViewModel` gates only on `caps` being non-null
     // (`radio-view-model-adapter.ts:1195`), so `mainSubCaps`'s txAux evidence
     // still emits the group here even though `state` is null — no plan
     // supplied, so still NO-ZONE.
     expect: mainSubExpect({
       stripActive: [false, false], tiles: 2, selectsEnabled: 0, selectsDisabled: 2,
-      radioWideSwitchesDisabled: true, keyDisabled: true,
+      radioWideSwitchesDisabled: true, keyDisabled: true, rfLabel: 'RF ?',
       zonelessControls: TX_AUX_ZONELESS_CONTROLS,
     }),
   },

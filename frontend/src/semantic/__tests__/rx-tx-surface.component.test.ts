@@ -295,15 +295,22 @@ describe('key intent gating', () => {
     ['an active server session', snap({ phase: 'active', txRisk: 'confirmed-on', radioTx: 'on' }), 'tx-busy'],
     ['a release in flight', snap({ phase: 'releasing', txRisk: 'uncertain' }), 'tx-busy'],
     ['an unresolved fault', snap({ phase: 'failed', fault: 'not-eligible' }), 'tx-fault'],
-  ] as const)('%s: the server projection reports the reason without browser admission', (_name, tx, reason) => {
+  ] as const)('%s: the canonical server projection fail-closes Key and reports the reason', (_name, tx, reason) => {
     const onRequestKey = vi.fn();
     withSurface(topologyFixtures['1/single'], tx, (s) => {
-      expect(s.key().disabled).toBe(false);
+      expect(s.key().disabled).toBe(true);
       expect(s.reasons()).toContain(reason);
       s.key().click();
       flushSync();
-      expect(onRequestKey).toHaveBeenCalledTimes(1);
+      expect(onRequestKey).not.toHaveBeenCalled();
     }, { onRequestKey, onRequestUnkey: vi.fn() });
+  });
+
+  it('a stale canonical snapshot disables Key without disabling Unkey', () => {
+    withSurface(topologyFixtures['1/single'], snap({ fresh: false }), (s) => {
+      expect(s.key().disabled).toBe(true);
+      expect(s.unkey().disabled).toBe(false);
+    });
   });
 
   it('surfaces the view model disabled reasons that concern TX', () => {
@@ -348,11 +355,11 @@ describe('unkey intent is never gated (fail-safe direction)', () => {
     }
   });
 
-  it('emits unkey even when a denied permit blocks keying', () => {
+  it('emits unkey even while canonical TX state blocks a new Key', () => {
     const onRequestKey = vi.fn();
     const onRequestUnkey = vi.fn();
     withSurface(topologyFixtures['2/ab_shared'], snap({ phase: 'active', radioTx: 'on' }), (s) => {
-      expect(s.key().disabled).toBe(false);
+      expect(s.key().disabled).toBe(true);
       s.unkey().click();
       flushSync();
       expect(onRequestUnkey).toHaveBeenCalledTimes(1);

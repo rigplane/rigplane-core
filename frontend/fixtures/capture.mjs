@@ -185,7 +185,8 @@ const MATRIX = [
     resizeTo: 'phone-landscape',
   },
   // P. MOR-1087 item 3 — native Space/Enter activation of a real <button>,
-  // proven via the same command-bus recording every click already uses.
+  // proven at the action seam each control owns. VFO uses the command bus;
+  // managed TX emits a facade intent whose transport is tested separately.
   {
     name: 'keyboard-activation-vfo-split--desktop', fixture: 'topology-2-main-sub',
     viewport: 'desktop',
@@ -194,7 +195,9 @@ const MATRIX = [
   {
     name: 'keyboard-activation-rx-tx-key--desktop', fixture: 'tx-phase-rx',
     viewport: 'desktop',
-    keyboardActivate: { selector: '[data-testid="rx-tx-key"]', key: 'Enter', expectCall: 'tx.start' },
+    keyboardActivate: {
+      selector: '[data-testid="rx-tx-key"]', key: 'Enter', expectCall: 'tx.transmitOn',
+    },
   },
   // Q. MOR-1087 items 5/7 — per-language contrast + unmistakable RX/TX/fault
   // indication, over both registered design languages (section A covers
@@ -441,7 +444,7 @@ try {
       keyboardActivation = {
         selector: spec.keyboardActivate.selector,
         key: spec.keyboardActivate.key,
-        reachedCommandBus: calls.some((c) => c.fn === spec.keyboardActivate.expectCall),
+        reachedActionSeam: calls.some((c) => c.fn === spec.keyboardActivate.expectCall),
       };
     }
 
@@ -480,10 +483,10 @@ try {
     }
     if (keyboardActivation) {
       assertions.push({
-        name: 'keyboard-activation-reaches-command-bus',
-        ok: keyboardActivation.reachedCommandBus,
+        name: 'keyboard-activation-reaches-action-seam',
+        ok: keyboardActivation.reachedActionSeam,
         detail: `${keyboardActivation.key} on ${keyboardActivation.selector} · `
-          + `reached command bus=${keyboardActivation.reachedCommandBus}`,
+          + `reached action seam=${keyboardActivation.reachedActionSeam}`,
       });
     }
     const passed = assertions.every((a) => a.ok) && consoleErrors.length === 0;
