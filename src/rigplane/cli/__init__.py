@@ -1977,7 +1977,7 @@ async def _run(args: argparse.Namespace) -> int:
             return 1
 
     managed_tx_composition: ManagedTxCompositionPort | None = None
-    if args.command in ("web", "station"):
+    if args.command in ("web", "station", "serve"):
         candidate_composition: ManagedTxComposition | None = None
         try:
             import platformdirs
@@ -2120,7 +2120,12 @@ async def _run(args: argparse.Namespace) -> int:
             elif args.command == "scope":
                 return await _cmd_scope(radio, args)
             elif args.command == "serve":
-                return await _cmd_serve(radio, args)
+                assert managed_tx_composition is not None
+                return await _cmd_serve(
+                    radio,
+                    args,
+                    managed_tx_composition=managed_tx_composition,
+                )
             elif args.command == "audio":
                 if args.audio_command == "rx":
                     return await _cmd_audio_rx(radio, args)
@@ -3679,7 +3684,12 @@ def _print_startup_banner(
     print("\n".join(lines))
 
 
-async def _cmd_serve(radio: Radio, args: argparse.Namespace) -> int:
+async def _cmd_serve(
+    radio: Radio,
+    args: argparse.Namespace,
+    *,
+    managed_tx_composition: ManagedTxCompositionPort,
+) -> int:
     import logging as _logging
 
     from rigplane.rigctld.audit import AUDIT_LOGGER_NAME, RigctldAuditFormatter
@@ -3721,7 +3731,11 @@ async def _cmd_serve(radio: Radio, args: argparse.Namespace) -> int:
         rigctld_addr=f"{args.serve_host}:{args.serve_port}",
     )
     try:
-        await RigctldServer(radio, config).serve_forever()
+        await RigctldServer(
+            radio,
+            config,
+            managed_tx_composition=managed_tx_composition,
+        ).serve_forever()
     except asyncio.CancelledError:
         pass
     return 0

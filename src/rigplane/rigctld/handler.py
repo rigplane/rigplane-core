@@ -515,13 +515,15 @@ class _RigctldCommandExecutor:
         if managed and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
 
-        classification = _classify_rigctld_tx_intent(intent)
-        if (
-            classification.disposition is TxInterlockDisposition.BLOCK
-            and self.handler._has_canonical_state_store
-            and self.handler._resolve_rigctld_rf_state() is not tx_interlock.RfState.RX
-        ):
-            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if not managed:
+            classification = _classify_rigctld_tx_intent(intent)
+            if (
+                classification.disposition is TxInterlockDisposition.BLOCK
+                and self.handler._has_canonical_state_store
+                and self.handler._resolve_rigctld_rf_state()
+                is not tx_interlock.RfState.RX
+            ):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
         await self._wait_predecessor()
         params = intent.params
         if intent.name == "set_freq":
@@ -731,12 +733,18 @@ class RigctldHandler:
         managed_tx_authority: ManagedTxAuthority | None = None,
         command_queue: tx_commands.CommandQueue | None = None,
         command_service: CommandService | None = None,
+        build_local_managed_command_service: bool = False,
     ) -> None:
         supplied = (
             managed_tx_authority is not None,
             command_service is not None,
         )
-        if any(supplied) and not all(supplied):
+        if build_local_managed_command_service:
+            if managed_tx_authority is None or command_service is not None:
+                raise ValueError(
+                    "local managed service requires only a managed authority"
+                )
+        elif any(supplied) and not all(supplied):
             raise ValueError("managed authority and service must be supplied together")
         self._managed_tx_authority = managed_tx_authority
         self._radio = radio
@@ -878,6 +886,11 @@ class RigctldHandler:
           before this design and from what BLOCK-classified families still
           do inside the executor.
         """
+        # Managed ingress has one admission seat: ManagedTxAuthority.  The
+        # retiring observed-RF interlock remains only for the compatible
+        # unmanaged SDK constructor until its separate deletion cutover.
+        if self._managed_tx_authority is not None:
+            return None
         classification = _classify_rigctld_tx_intent(intent)
         if (
             classification.disposition is not TxInterlockDisposition.DEFER
@@ -940,6 +953,10 @@ class RigctldHandler:
         routing rigctld writes through the correlated queue without holding
         the socket — post-beta work, tracked separately.
         """
+        authority = self._managed_tx_authority
+        if authority is not None and intent.name != "set_ptt":
+            if not await authority.admit_managed_write(intent):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
         try:
             result = await self._command_service.execute(
                 intent,
