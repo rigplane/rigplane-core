@@ -27,20 +27,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
+  txController: null as ManagedAppTxController | null,
   audio: { muted: true, rxEnabled: false, volume: 0 },
   audioConnected: false,
   guardVisible: false,
-  listeners: new Set<(next: unknown) => void>(),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
@@ -68,15 +64,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: h.guardVisible, sourceLabel: 'MIC' }),
@@ -87,6 +76,7 @@ import { sendCommand } from '$lib/transport/ws-client';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { getRadioState, resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 // MOR-1370 (S6b-2): the REAL manifests + the REAL resolution seam, mirroring
 // `semantic-scope-display-wiring.component.test.ts`'s "MOR-1365 (S6a)"
 // section — the only way to prove the `scope-controls` zone binding and the
@@ -100,10 +90,6 @@ import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
@@ -158,6 +144,7 @@ const NO_SCOPE_TAGS = ['tx'] as const;
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
@@ -178,20 +165,22 @@ function useState(state: ServerState): void {
 }
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   setCapabilities(liveCaps(SCOPE_TAGS));
   useState(liveState());
   h.caps = liveCaps(SCOPE_TAGS);
-  h.snapshot = { ...IDLE };
   h.audio = { muted: true, rxEnabled: false, volume: 0 };
   h.audioConnected = false;
   h.guardVisible = false;
-  h.listeners.clear();
   vi.mocked(sendCommand).mockClear();
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });
 

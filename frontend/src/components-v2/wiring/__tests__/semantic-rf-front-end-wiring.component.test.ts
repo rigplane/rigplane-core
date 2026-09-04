@@ -37,17 +37,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
+  txController: null as ManagedAppTxController | null,
   noop: vi.fn(),
   att: vi.fn(),
   pre: vi.fn(),
@@ -77,15 +73,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
@@ -174,6 +163,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 // MOR-1366 (S7), N1 fold (verify-MOR-1365 ruling item 3): the REAL manifest +
 // the REAL resolution seam, mirroring `semantic-scope-display-wiring
 // .component.test.ts`'s S6a context-injection recipe — the only way to prove
@@ -183,10 +173,6 @@ import { desktopV2Layout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
@@ -234,6 +220,7 @@ const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'com
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
@@ -249,10 +236,10 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 const el = (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -261,6 +248,8 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });
 
@@ -391,8 +380,7 @@ describe('the surface mounts only when the view model carries the group', () => 
   it('never changes with the App TX authority or the raw transmit bit', () => {
     render();
     const before = el('surface')!.outerHTML;
-    h.snapshot = { ...IDLE, phase: 'transmitting', radioTx: 'on', mayOwnKey: true };
-    for (const listener of h.listeners) listener(h.snapshot);
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     h.state = liveState(true);
     (h.state as unknown as { ptt: boolean }).ptt = true;
     flushSync();
