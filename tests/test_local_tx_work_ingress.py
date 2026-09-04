@@ -149,11 +149,18 @@ async def test_positive_tuner_without_runner_fails_closed_without_queue_fallback
 
 
 @pytest.mark.asyncio
-async def test_tuner_off_remains_a_direct_release_without_admission_or_runner() -> None:
+async def test_composed_tuner_off_uses_runner_without_legacy_interlock_or_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     radio = _radio(CAP_TUNER)
     authority = _Authority()
     runner = _Runner()
     handler = _handler(radio, authority=authority, runner=runner)
+    monkeypatch.setattr(
+        handler,
+        "_observed_rf_state",
+        lambda: pytest.fail("composed tuner release must not use legacy interlock"),
+    )
 
     assert await handler._enqueue_command("set_tuner_status", {"value": 0}) == {
         "value": 0,
@@ -161,5 +168,7 @@ async def test_tuner_off_remains_a_direct_release_without_admission_or_runner() 
     }
 
     assert authority.intents == []
-    assert runner.operations == []
-    radio.set_tuner_status.assert_awaited_once_with(0)
+    assert len(runner.operations) == 1
+    radio.set_tuner_status.assert_awaited_once()
+    assert radio.set_tuner_status.await_args.args == (0,)
+    assert radio.set_tuner_status.await_args.kwargs["is_current"]()
