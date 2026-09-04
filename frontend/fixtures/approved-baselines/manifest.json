@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-09-03T23:10:46.096Z",
-  "commit": "97acf7bafcf6973bfab1144bd5a7ee32f9ddb27d",
-  "commitShort": "97acf7ba",
-  "branch": "codex/MOR-2309",
+  "generatedAt": "2026-09-04T11:00:35.713Z",
+  "commit": "59d7504423f2da636c85a35f887d0cdc6f795f44",
+  "commitShort": "59d75044",
+  "branch": "codex/tmp-3156-visual-regen",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",
