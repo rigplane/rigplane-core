@@ -2,6 +2,7 @@ import asyncio
 import gc
 import inspect
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -356,6 +357,37 @@ async def test_managed_write_policy_uses_intent_not_observed_ptt() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "name",
+    [
+        "set_antenna",
+        "set_antenna_1",
+        "set_antenna_2",
+        "set_rx_antenna",
+        "set_rx_antenna_ant1",
+        "set_rx_antenna_ant2",
+    ],
+)
+async def test_managed_antenna_alias_policy_uses_one_descriptor_lookup(
+    name: str,
+) -> None:
+    from rigplane.core.command_dispatch import command_descriptor
+
+    managed, _, _, _, _, _ = authority()
+    command = intent(name, enabled=True)
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        with patch(
+            "rigplane.runtime.managed_tx_authority.command_descriptor",
+            wraps=command_descriptor,
+        ) as lookup:
+            assert not await managed.admit_managed_write(command)
+        lookup.assert_called_once_with(name)
+    finally:
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("command", "admitted"),
     [
         (intent("set_band", band="20m"), True),
@@ -366,6 +398,9 @@ async def test_managed_write_policy_uses_intent_not_observed_ptt() -> None:
         (intent("set_antenna_1", on=True), False),
         (intent("set_antenna_2", on=False), False),
         (intent("set_rx_antenna", enabled=True), False),
+        (intent("set_rx_antenna_ant1", enabled=True), False),
+        (intent("set_rx_antenna_ant2", enabled=False), False),
+        (intent("set_civ_output_ant", enabled=True), True),
         (intent("set_tuner_status", value=1), False),
         (intent("set_tuner_status", value=2), False),
         (intent("set_tuner_status", value=0), True),
