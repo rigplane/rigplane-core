@@ -27,10 +27,9 @@
    * LcdLayout.svelte`), which resolves them from the `peer-split-glass`
    * instrument group through the `peer-split` manifest's zone reference
    * (MOR-2253 slice 1, MOR-2259). This
-   * replaces this component's own former `NATIVE_W`/`NATIVE_H` constants,
-   * which duplicated `SEGMENTLINE_GLASS_STAGE` in `presentation/layouts/
-   * segmentline-declarations.ts` as a second, independent literal
-   * (instrument-group ADR §4, F2).
+   * replaces this component's former local canvas-size constants, which
+   * duplicated the layout declaration's derived stage as a second,
+   * independent literal (instrument-group ADR §4, F2).
    */
   interface Props {
     canvasW: number;
@@ -49,7 +48,7 @@
 <div class="peer-split-holder">
   <ScaledStage nativeW={canvasW} nativeH={canvasH} {minScale}>
     <div class="peer-split-glass" data-testid="peer-split-glass">
-      <SemanticRadioSurfaces {readonlyDisplay} />
+      <SemanticRadioSurfaces strips="dual" {readonlyDisplay} />
     </div>
   </ScaledStage>
 </div>
