@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from rigplane._runtime_protocols import ControlPhaseHost
     from rigplane.core.acquisition_scheduler import RadioStateModelService
     from rigplane.core.tx_safety import ProviderPttObservation
-    from rigplane.runtime.local_tx_work import LocalTxWorkRunner
     from rigplane.runtime.managed_tx_composition import ManagedTxCompositionPort
 
     def _managed_tx_runtime_satisfies_supervisor(
@@ -674,7 +673,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # NOT_READY, never back to ``None`` (see ``_arm_managed_tx``).
         self._managed_tx_runtime: ManagedRadioRuntime | None = None
         self._managed_tx_composition: ManagedTxCompositionPort | None = None
-        self._local_tx_work: LocalTxWorkRunner | None = None
         # CI-V epoch the last arming attempt was made against; ``None`` until
         # the first attempt.  Bounds arming to one attempt per epoch.
         self._managed_tx_armed_epoch: int | None = None
