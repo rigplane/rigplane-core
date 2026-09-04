@@ -25,13 +25,64 @@ from .radio_poller import RadioPoller  # noqa: TID251
 from .runtime_helpers import runtime_capabilities  # noqa: TID251
 
 if TYPE_CHECKING:
+    from ..runtime.radio import (  # noqa: TID251
+        ManagedTxCompositionPort,
+        ManagedTxProviderEvent,
+    )
     from .server import WebServer  # noqa: TID251
 
-__all__ = ["start_web_server", "stop_web_server"]
+__all__ = [
+    "attach_managed_tx_composition",
+    "prepare_managed_tx_observation_generation",
+    "start_web_server",
+    "stop_web_server",
+]
 
 logger = logging.getLogger(__name__)
 
 _SHUTDOWN_SCOPE_RESTORE_TIMEOUT_S = 1.0
+_MANAGED_TX_SHUTDOWN_TIMEOUT_S = 3.0
+_MANAGED_TX_PORT_ATTR = "_production_managed_tx_port"
+_MANAGED_TX_EVENT_ATTR = "_production_managed_tx_event"
+_MANAGED_TX_UNSUBSCRIBE_ATTR = "_production_managed_tx_unsubscribe"
+_MANAGED_TX_FALLBACK_ADVANCED_ATTR = "_production_managed_tx_fallback_advanced"
+
+
+def prepare_managed_tx_observation_generation(server: WebServer) -> int:
+    """Capture the initial observation token before any listener can bind."""
+
+    radio = server._radio
+    if isinstance(radio, ObservationPollable):
+        shared_store = isinstance(radio, StateStoreCapable) and (
+            radio.state_store is server.command_state_store
+        )
+        if not shared_store:
+            generation = server.command_state_store.begin_provider_generation()
+            setattr(server, _MANAGED_TX_FALLBACK_ADVANCED_ATTR, True)
+            return generation
+    return server.command_state_store.provider_generation
+
+
+def attach_managed_tx_composition(
+    server: WebServer,
+    port: ManagedTxCompositionPort,
+    event: ManagedTxProviderEvent,
+) -> None:
+    """Attach the one pre-listener production port by identity."""
+
+    if getattr(server, _MANAGED_TX_PORT_ATTR, None) is not None:
+        raise RuntimeError("managed TX composition is already attached")
+    setattr(server, _MANAGED_TX_PORT_ATTR, port)
+    setattr(server, _MANAGED_TX_EVENT_ATTR, event)
+
+
+def _managed_tx_attachment(
+    server: WebServer,
+) -> tuple[ManagedTxCompositionPort | None, ManagedTxProviderEvent | None]:
+    return (
+        getattr(server, _MANAGED_TX_PORT_ATTR, None),
+        getattr(server, _MANAGED_TX_EVENT_ATTR, None),
+    )
 
 
 def _supports_scope_local(server: WebServer) -> bool:
@@ -44,6 +95,26 @@ async def start_web_server(server: WebServer) -> None:
     Mirrors the original :meth:`WebServer.start` body verbatim — the method
     now delegates here so the public API is preserved.
     """
+    managed_tx, provider_event = _managed_tx_attachment(server)
+    if managed_tx is not None:
+        if provider_event is None or managed_tx.active_provider is not provider_event:
+            raise RuntimeError(
+                "managed TX provider must be active before the Web listener"
+            )
+
+        def provider_generation_changed(observation_generation: int) -> None:
+            current = managed_tx.active_provider
+            if (
+                current is not None
+                and observation_generation != current.observation_generation
+            ):
+                managed_tx.start_provider_unavailable(current)
+
+        unsubscribe = server.command_state_store.subscribe_provider_generation(
+            provider_generation_changed
+        )
+        setattr(server, _MANAGED_TX_UNSUBSCRIBE_ATTR, unsubscribe)
+
     # Load band plan TOML files
     # Try project-level band-plans/ directory first, then package fallback
     project_bp = Path(__file__).resolve().parents[3] / "band-plans"
@@ -152,7 +223,9 @@ async def start_web_server(server: WebServer) -> None:
                 "_uses_fallback_provider_generation",
                 fallback_store,
             )
-            if fallback_store:
+            if fallback_store and not getattr(
+                server, _MANAGED_TX_FALLBACK_ADVANCED_ATTR, False
+            ):
                 server.command_state_store.begin_provider_generation()
             server._spawn(server._state_poller.start())
             logger.info("observation poller started")
@@ -255,6 +328,22 @@ async def stop_web_server(server: WebServer) -> None:
     Mirrors the original :meth:`WebServer.stop` body verbatim — the method
     now delegates here so the public API is preserved.
     """
+    managed_tx, _provider_event = _managed_tx_attachment(server)
+    if managed_tx is not None:
+        termination = asyncio.Event()
+        shutdown = asyncio.create_task(managed_tx.shutdown(termination))
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(shutdown), timeout=_MANAGED_TX_SHUTDOWN_TIMEOUT_S
+            )
+        except TimeoutError:
+            termination.set()
+            await asyncio.shield(shutdown)
+        unsubscribe = getattr(server, _MANAGED_TX_UNSUBSCRIBE_ATTR, None)
+        if callable(unsubscribe):
+            unsubscribe()
+        setattr(server, _MANAGED_TX_UNSUBSCRIBE_ATTR, None)
+
     # 1. Stop poller first (no more CI-V queries). The reference outlives the
     #    call deliberately (MOR-1181): a session's teardown PttOff is enqueued
     #    only when its client task is cancelled at step 6, so the poller is
