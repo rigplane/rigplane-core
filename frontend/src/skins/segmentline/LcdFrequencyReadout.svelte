@@ -60,4 +60,6 @@
   .frequency-group.ranked { color: var(--ink-mid); font-size: 62%; }
   .frequency-cell { display: inline-block; flex: 0 0 auto; text-align: center; }
   .frequency-unknown { color: var(--ink-soft); }
+  .frequency[data-state='unknown'] { opacity: 0.34; }
+  .frequency[data-state='unsupported'] { visibility: hidden; }
 </style>

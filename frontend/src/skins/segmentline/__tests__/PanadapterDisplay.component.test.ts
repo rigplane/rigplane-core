@@ -94,6 +94,38 @@ describe('PanadapterDisplay', () => {
       .toContain('14.195.500');
   });
 
+  it('ghosts unknown frequency/facts and hides unsupported facts', () => {
+    const guardedReceivers: PeerSplitDisplayModel['receivers'] = [
+      {
+        ...model.receivers[0],
+        frequency: { state: 'unknown' },
+        mode: { state: 'unknown' },
+        filter: { state: 'unsupported' },
+        band: { state: 'unsupported' },
+      },
+      model.receivers[1],
+    ];
+    const target = render({
+      ...model,
+      receivers: guardedReceivers,
+      activeReceiver: guardedReceivers[0],
+    });
+    const main = target.querySelector('[data-receiver="MAIN"]')!;
+
+    expect(main.querySelector('[data-testid="lcd-frequency-MAIN"]')
+      ?.getAttribute('data-state')).toBe('unknown');
+    expect([...main.querySelectorAll('.receiver-facts [data-state]')]
+      .map((node) => node.getAttribute('data-state')))
+      .toEqual(['unknown', 'unsupported', 'unsupported']);
+
+    const frequencySource = readFileSync('src/skins/segmentline/LcdFrequencyReadout.svelte', 'utf8');
+    expect(frequencySource).toContain(".frequency[data-state='unknown'] { opacity: 0.34; }");
+    expect(frequencySource).toContain(".frequency[data-state='unsupported'] { visibility: hidden; }");
+    const source = readFileSync('src/skins/segmentline/PanadapterDisplay.svelte', 'utf8');
+    expect(source).toContain(".receiver-facts [data-state='unknown'] { opacity: 0.34; }");
+    expect(source).toContain(".receiver-facts [data-state='unsupported'] { visibility: hidden; }");
+  });
+
   it('keeps absent RF data ghosted without fabricating bins or peak annotations', () => {
     const target = render();
 
