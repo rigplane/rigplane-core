@@ -34,9 +34,6 @@ vi.mock('$lib/stores/commands.svelte', () => ({
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: { get state() { return runtimeState.state; }, get caps() { return null; } },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => null,
-}));
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
   toRadioViewModel: () => null,
 }));

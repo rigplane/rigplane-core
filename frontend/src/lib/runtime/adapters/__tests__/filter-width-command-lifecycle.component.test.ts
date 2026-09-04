@@ -27,7 +27,6 @@ vi.mock('$lib/runtime/commands/radio-intents', async (importOriginal) => {
   return { ...actual, currentControlSessionEpoch: () => h.epoch };
 });
 vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewModel: () => null }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({ getAppTxController: () => null }));
 
 function observed(width: number, active: 'MAIN' | 'SUB' = 'MAIN', otherWidth = 2400) {
   const path = active === 'MAIN' ? 'main.filterWidth' : 'sub.filterWidth';
