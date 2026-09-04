@@ -17,13 +17,16 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 
 export interface TxSnapshot {
-  phase: 'idle' | 'audio-start-pending' | 'key-confirm-pending' | 'active' | 'releasing' | 'failed';
+  phase: 'idle' | 'key-confirm-pending' | 'active' | 'releasing' | 'failed';
   intent: 'momentary' | 'latched' | null;
-  guard: { leaseId: string } | null;
   radioTx: 'off' | 'on' | 'unknown';
   txRisk: 'none' | 'uncertain' | 'confirmed-on';
-  mayOwnKey: boolean;
   fault: string | null;
+  faultDetail: null;
+  fresh: boolean;
+  releaseRequired: boolean;
+  remainingMs: number | null;
+  lastOperation: 'ptt_on' | 'transmit_on' | 'force_receive' | null;
 }
 
 export interface ModGuardProps {
@@ -46,8 +49,8 @@ export const DEFAULT_AUDIO_RUNTIME: AudioRuntimeState = {
 };
 
 export const IDLE_TX: TxSnapshot = {
-  phase: 'idle', intent: null, guard: null,
-  radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null,
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
+  faultDetail: null, fresh: true, releaseRequired: false, remainingMs: null, lastOperation: null,
 };
 
 export interface HarnessCall {

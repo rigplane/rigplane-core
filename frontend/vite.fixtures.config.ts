@@ -34,7 +34,7 @@ const panelAdapters = path.resolve(here, 'src/lib/runtime/adapters/panel-adapter
 /** production module (repo-relative) → fixture stub (repo-relative) */
 const STUBS: Readonly<Record<string, string>> = {
   'src/lib/runtime/index.ts': 'fixtures/stubs/runtime.ts',
-  'src/lib/runtime/tx-controller/app-host.ts': 'fixtures/stubs/app-host.ts',
+  'src/lib/runtime/tx-controller/managed-app-host.ts': 'fixtures/stubs/app-host.ts',
   'src/lib/runtime/adapters/mod-input-tx-guard.svelte.ts': 'fixtures/stubs/mod-input-tx-guard.ts',
   'src/lib/runtime/adapters/panel-adapters.ts': 'fixtures/stubs/panel-adapters.ts',
 };
