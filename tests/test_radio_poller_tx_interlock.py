@@ -331,6 +331,31 @@ def test_authority_approved_commands_do_not_inspect_observed_rf() -> None:
 
 
 @pytest.mark.asyncio
+async def test_managed_non_ptt_bypasses_legacy_observed_rf_and_deferred_lane() -> None:
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    authority = SimpleNamespace(admit_managed_write=AsyncMock(return_value=True))
+    poller = RadioPoller(
+        radio,
+        queue,
+        state_store=store,
+        managed_tx_authority=authority,
+    )
+    poller._current_rf_state = lambda *_: pytest.fail(  # type: ignore[method-assign] # noqa: SLF001
+        "managed non-PTT dispatch inspected legacy RF state"
+    )
+    future = asyncio.get_running_loop().create_future()
+    entry = CommandQueueEntry(SetSplit(True), future=future)
+
+    assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
+    await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+    assert future.result() is None
+    radio.set_split.assert_awaited_once_with(True)
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_descriptor_intent_uses_bound_authority_before_radio_write() -> None:
     radio, store, queue = _radio(), StateStore(), CommandQueue()
     store.begin_provider_generation()
@@ -713,6 +738,42 @@ async def test_ptt_on_dispatches_in_fresh_rx() -> None:
     await _dispatch(poller, PttOn())
 
     radio.set_ptt.assert_awaited_once_with(True)
+
+
+async def test_managed_typed_ptt_on_fails_before_raw_write_or_legacy_timer() -> None:
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    _observe_ptt(store, False)
+    authority = SimpleNamespace(admit_managed_write=AsyncMock(return_value=True))
+    poller = RadioPoller(
+        radio,
+        queue,
+        state_store=store,
+        managed_tx_authority=authority,
+    )
+    poller._arm_max_key_down = MagicMock()  # type: ignore[method-assign] # noqa: SLF001
+
+    with pytest.raises(CommandError, match="positive TX queue submission"):
+        await poller._execute(PttOn())  # noqa: SLF001
+
+    radio.set_ptt.assert_not_awaited()
+    poller._arm_max_key_down.assert_not_called()  # type: ignore[attr-defined] # noqa: SLF001
+
+
+async def test_managed_typed_ptt_off_remains_unconditionally_attemptable() -> None:
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    authority = SimpleNamespace(admit_managed_write=AsyncMock(return_value=True))
+    poller = RadioPoller(
+        radio,
+        queue,
+        state_store=store,
+        managed_tx_authority=authority,
+    )
+
+    await poller._execute(PttOff())  # noqa: SLF001
+
+    radio.set_ptt.assert_awaited_once_with(False)
 
 
 @pytest.mark.parametrize("ptt", (None, True), ids=("unknown", "tx"))
