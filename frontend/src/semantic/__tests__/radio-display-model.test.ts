@@ -48,7 +48,7 @@ function view(): RadioViewModel {
     txTarget: {
       status: 'known', receiver: 'SUB', slot: { kind: 'unslotted' }, frequencyHz: 14_195_500,
     },
-    txPermit: { status: 'allowed' },
+    txPermit: { status: 'allowed', band: '20m' },
     scope: { hardwareScope: availability(false, false), audioFftScope: availability() },
     disabledReasons: [],
     receiverIndicators: [indicator('MAIN'), indicator('SUB')],

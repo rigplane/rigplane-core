@@ -32,8 +32,9 @@
   };
 
   const formatOffset = (field: DisplayOffset): string => {
-    if (field.state === 'unknown') return '?';
-    if (field.state === 'unsupported') return '—';
+    if (field.state !== 'active' && field.state !== 'inactive') {
+      return field.state === 'unknown' ? '?' : '—';
+    }
     if (field.offsetHz === undefined) return '—';
     const sign = field.offsetHz < 0 ? '−' : '+';
     return `${sign}${(Math.abs(field.offsetHz) / 1000).toFixed(3)}`;

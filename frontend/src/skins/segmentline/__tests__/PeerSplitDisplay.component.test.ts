@@ -6,30 +6,35 @@ import PeerSplitDisplay from '../PeerSplitDisplay.svelte';
 const known = <T>(value: T) => ({ state: 'known' as const, value });
 const indicator = (state: 'active' | 'inactive' = 'inactive') => ({ state });
 
+const receivers: PeerSplitDisplayModel['receivers'] = [
+  {
+    receiver: 'MAIN', label: 'VFO A', activity: 'active', operational: true,
+    frequency: known(14_250_000), mode: known('USB'), filter: known('FIL1'), band: known('20m'),
+    sMeter: known(-18), bandwidthHz: known(2400), ifShiftHz: known(0),
+    pbtInnerHz: known(400), pbtOuterHz: known(-400), spectrum: 'waiting',
+    dsp: { agc: known('MID'), nb: indicator(), nr: indicator('active'), notch: known('off') },
+    front: {
+      preamp: known(1), attenuator: known(0), rfGain: known(0.7),
+      digiSel: { state: 'unsupported' }, ipPlus: indicator(),
+    },
+  },
+  {
+    receiver: 'SUB', label: 'VFO B', activity: 'inactive', operational: false,
+    frequency: known(14_195_500), mode: known('CW'), filter: known('FIL2'), band: { state: 'unsupported' },
+    sMeter: { state: 'unknown' }, bandwidthHz: known(500), ifShiftHz: { state: 'unsupported' },
+    pbtInnerHz: { state: 'unsupported' }, pbtOuterHz: { state: 'unsupported' }, spectrum: 'inactive',
+    dsp: { agc: known('MID'), nb: indicator(), nr: indicator('inactive'), notch: known('off') },
+    front: {
+      preamp: known(0), attenuator: known(0), rfGain: known(0.7),
+      digiSel: { state: 'unsupported' }, ipPlus: indicator(),
+    },
+  },
+];
+
 const model: PeerSplitDisplayModel = {
   kind: 'peer-split',
   rfState: 'receiving',
-  receivers: ['MAIN', 'SUB'].map((receiver, index) => ({
-    receiver: receiver as 'MAIN' | 'SUB',
-    label: index === 0 ? 'VFO A' : 'VFO B',
-    activity: index === 0 ? 'active' as const : 'inactive' as const,
-    operational: index === 0,
-    frequency: known(index === 0 ? 14_250_000 : 14_195_500),
-    mode: known(index === 0 ? 'USB' : 'CW'),
-    filter: known(index === 0 ? 'FIL1' : 'FIL2'),
-    band: index === 0 ? known('20m') : { state: 'unsupported' as const },
-    sMeter: index === 0 ? known(-18) : { state: 'unknown' as const },
-    bandwidthHz: known(index === 0 ? 2400 : 500),
-    ifShiftHz: index === 0 ? known(0) : { state: 'unsupported' as const },
-    pbtInnerHz: index === 0 ? known(400) : { state: 'unsupported' as const },
-    pbtOuterHz: index === 0 ? known(-400) : { state: 'unsupported' as const },
-    spectrum: index === 0 ? 'waiting' as const : 'inactive' as const,
-    dsp: { agc: known('MID'), nb: indicator(), nr: indicator(index === 0 ? 'active' : 'inactive'), notch: known('off') },
-    front: {
-      preamp: known(index === 0 ? 1 : 0), attenuator: known(0), rfGain: known(0.7),
-      digiSel: { state: 'unsupported' as const }, ipPlus: indicator(),
-    },
-  })) as PeerSplitDisplayModel['receivers'],
+  receivers,
   activeReceiver: {
     receiver: 'MAIN', label: 'VFO A', activity: 'active', operational: true,
     frequency: known(14_250_000), mode: known('USB'), filter: known('FIL1'), band: known('20m'),
@@ -120,9 +125,10 @@ describe('PeerSplitDisplay', () => {
   });
 
   it('keeps truthful filter envelopes when AF-FFT is structurally unsupported', () => {
-    const receivers = model.receivers.map((receiver) => ({
-      ...receiver, spectrum: 'unsupported' as const,
-    })) as PeerSplitDisplayModel['receivers'];
+    const receivers: PeerSplitDisplayModel['receivers'] = [
+      { ...model.receivers[0], spectrum: 'unsupported' },
+      { ...model.receivers[1], spectrum: 'unsupported' },
+    ];
     const hardwareOnlyModel: PeerSplitDisplayModel = {
       ...model,
       receivers,
