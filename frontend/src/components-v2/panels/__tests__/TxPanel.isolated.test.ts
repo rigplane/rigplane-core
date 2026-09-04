@@ -87,8 +87,8 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
 // these tests exercise the production state machine instead of a double.
 const txHost = vi.hoisted(() => ({ current: undefined as unknown as TxHostFacade }));
 
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => txHost.current,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHost.current,
 }));
 
 // MOR-617: TxPanel mounts ModInputTxWarning, whose real adapter pulls in the
@@ -161,10 +161,13 @@ function createTxHarness() {
     timeoutMs: { 'audio-start': 60_000, 'on-confirmation': 60_000, 'off-confirmation': 60_000 },
   };
   const controller = new TxController(1, marker(0), dependencies);
+  const sourceId = 'managed-panel-test';
+  let lease = 0;
+  const snapshot = () => deepFreeze({ ...controller.snapshot(), fresh: true, remainingMs: null });
   const facade = {
-    snapshot: () => deepFreeze(controller.snapshot()),
+    snapshot,
     subscribe: (listener: (state: unknown) => void) =>
-      controller.subscribe((state) => listener(deepFreeze(state))),
+      controller.subscribe(() => listener(snapshot())),
     start: (sourceId: string, leaseId: string, intent: Intent) => controller.dispatch({
       type: 'start', sourceId, leaseId, intent,
       eligibility: eligibility.current, ptt: observe(false, ++seq),
@@ -175,6 +178,22 @@ function createTxHarness() {
       type: 'release', sourceId, guard: { ...guard }, commandId: dependencies.commandId('off'),
     }),
     resetFault: () => controller.dispatch({ type: 'reset-fault' }),
+    pttOn: () => controller.dispatch({
+      type: 'start', sourceId, leaseId: `${sourceId}-${++lease}`, intent: 'momentary',
+      eligibility: eligibility.current, ptt: observe(false, ++seq),
+    }),
+    pttOff: () => {
+      const guard = controller.snapshot().guard;
+      if (guard) controller.dispatch({ type: 'release', sourceId, guard, commandId: dependencies.commandId('off') });
+    },
+    transmitOn: () => {
+      const guard = controller.snapshot().guard;
+      if (guard) controller.dispatch({ type: 'intent', sourceId, guard, intent: 'latched' });
+    },
+    forceOff: () => {
+      const guard = controller.snapshot().guard;
+      if (guard) controller.dispatch({ type: 'release', sourceId, guard, commandId: dependencies.commandId('off') });
+    },
   };
   return {
     controller, dependencies, sends, facade, audio, eligibility,
@@ -460,10 +479,11 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     const t = mountPanel();
     down(t);
     expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(label(t)).toBe('MIC…');
-    expect(button(t).getAttribute('aria-disabled')).toBe('true');
+    expect(label(t)).toBe('PTT');
+    expect(button(t).getAttribute('aria-disabled')).toBe('false');
     await flushAudio();
     tx.confirm('on');
+    tx.authority(true);
     flushSync();
     expect(label(t)).toBe('TX');
     expect(button(t).classList.contains('ptt-held')).toBe(true);
@@ -488,6 +508,15 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     expect(offs()).toBe(1);
     expect(tx.controller.snapshot().phase).toBe('releasing');
     expect(label(t)).toBe('UNKEYING…');
+  });
+
+  it('routes keyboard hold/release through the same recognizer', async () => {
+    const t = mountPanel();
+    button(t).dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    await flushAudio();
+    button(t).dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
+    vi.advanceTimersByTime(300); flushSync();
+    expect(offs()).toBe(1);
   });
 
   it('latches on a double tap without starting a second lease', async () => {
@@ -516,7 +545,7 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     tx.audio.next = new Promise((resolve) => { resolveAudio = resolve; });
     const t = mountPanel();
     down(t);
-    expect(label(t)).toBe('MIC…');
+    expect(label(t)).toBe('PTT');
     up(t);
     vi.advanceTimersByTime(300);
     flushSync();
@@ -560,7 +589,7 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     });
   });
 
-  it('renders a controller fault and clears it on the next press', async () => {
+  it('renders a server-owned controller fault without locally clearing it', async () => {
     tx.eligibility.current = { ...allowed, permit: 'denied' };
     const t = mountPanel();
     down(t);
@@ -572,8 +601,8 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     tx.eligibility.current = allowed;
     down(t);
     await flushAudio();
-    expect(t.querySelector('[data-testid="tx-fault"]')).toBeNull();
-    expect(tx.controller.snapshot()).toMatchObject({ fault: null, phase: 'audio-start-pending' });
+    expect(t.querySelector('[data-testid="tx-fault"]')).not.toBeNull();
+    expect(tx.controller.snapshot()).toMatchObject({ fault: 'not-eligible', phase: 'failed' });
   });
 
   it('takes RF state from controller authority and falls back to panel props', async () => {
@@ -595,13 +624,8 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('on');
   });
 
-  // Both sidebars list a draggable "tx" panel, so two instances can be mounted
-  // at once against one controller. Every guarantee below rests on each
-  // instance owning a DISTINCT sourceId: the guard alone always matches (it is
-  // the single live lease), so sourceId is the only thing stopping the idle
-  // panel from releasing, latching or tearing down the busy panel's TX.
   describe('two mounted panels', () => {
-    it('gives each instance its own lease identity', async () => {
+    it('shares the single App-root managed intent owner', async () => {
       const a = mountPanel();
       const b = mountPanel();
       await hold(a);
@@ -612,49 +636,7 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
       flushSync();
       expect(tx.controller.snapshot().phase).toBe('idle');
       down(b);
-      expect(tx.controller.snapshot().sourceId).not.toBe(first);
-    });
-
-    it('does not let an idle panel release the other panel lease', async () => {
-      const a = mountPanel();
-      const b = mountPanel();
-      await hold(a);
-      const owner = tx.controller.snapshot().sourceId;
-      down(b);
-      up(b); // arms B's window against A's live guard
-      vi.advanceTimersByTime(1000);
-      flushSync();
-      expect(offs()).toBe(0);
-      expect(tx.controller.snapshot()).toMatchObject({
-        sourceId: owner, phase: 'key-confirm-pending',
-      });
-      expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-    });
-
-    it('does not let an idle panel unmount release the other panel lease', async () => {
-      const a = mountPanel();
-      mountPanel();
-      await hold(a);
-      const owner = tx.controller.snapshot().sourceId;
-      unmount(components.pop()!); // unmount B, which never owned anything
-      flushSync();
-      expect(offs()).toBe(0);
-      expect(tx.controller.snapshot()).toMatchObject({
-        sourceId: owner, phase: 'key-confirm-pending',
-      });
-    });
-
-    it('does not let an idle panel latch the other panel lease', async () => {
-      const a = mountPanel();
-      const b = mountPanel();
-      await hold(a);
-      down(b);
-      up(b);
-      vi.advanceTimersByTime(100);
-      down(b); // a double tap that would latch if the sourceId were shared
-      flushSync();
-      expect(tx.controller.snapshot().intent).toBe('momentary');
-      expect(offs()).toBe(0);
+      expect(tx.controller.snapshot().sourceId).toBe(first);
     });
   });
 
@@ -662,6 +644,6 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     expect(txPanelSource).not.toContain('tx-adapter');
     expect(txPanelSource).not.toContain('getTxAudioControl');
     expect(txPanelSource).not.toContain('onPtt');
-    expect(txPanelSource).toContain('getAppTxController');
+    expect(txPanelSource).toContain('getManagedAppTxController');
   });
 });

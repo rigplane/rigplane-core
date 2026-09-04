@@ -179,8 +179,8 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 // these tests exercise the production state machine instead of a double.
 const txHost = vi.hoisted(() => ({ current: undefined as unknown as TxHostFacade }));
 
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => txHost.current,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHost.current,
 }));
 
 // MOR-1409 A13a: the layout reads the canonical projections now. This fixture
@@ -274,10 +274,13 @@ function createTxHarness() {
     timeoutMs: { 'audio-start': 60_000, 'on-confirmation': 60_000, 'off-confirmation': 60_000 },
   };
   const controller = new TxController(1, marker(0), dependencies);
+  const sourceId = 'managed-mobile-test';
+  let lease = 0;
+  const snapshot = () => deepFreeze({ ...controller.snapshot(), fresh: true, remainingMs: null });
   const facade = {
-    snapshot: () => deepFreeze(controller.snapshot()),
+    snapshot,
     subscribe: (listener: (state: unknown) => void) =>
-      controller.subscribe((state) => listener(deepFreeze(state))),
+      controller.subscribe(() => listener(snapshot())),
     start: (sourceId: string, leaseId: string, intent: Intent) => controller.dispatch({
       type: 'start', sourceId, leaseId, intent,
       eligibility: eligibility.current, ptt: observe(false, ++seq),
@@ -288,6 +291,22 @@ function createTxHarness() {
       type: 'release', sourceId, guard: { ...guard }, commandId: dependencies.commandId('off'),
     }),
     resetFault: () => controller.dispatch({ type: 'reset-fault' }),
+    pttOn: () => controller.dispatch({
+      type: 'start', sourceId, leaseId: `${sourceId}-${++lease}`, intent: 'momentary',
+      eligibility: eligibility.current, ptt: observe(false, ++seq),
+    }),
+    pttOff: () => {
+      const guard = controller.snapshot().guard;
+      if (guard) controller.dispatch({ type: 'release', sourceId, guard, commandId: dependencies.commandId('off') });
+    },
+    transmitOn: () => {
+      const guard = controller.snapshot().guard;
+      if (guard) controller.dispatch({ type: 'intent', sourceId, guard, intent: 'latched' });
+    },
+    forceOff: () => {
+      const guard = controller.snapshot().guard;
+      if (guard) controller.dispatch({ type: 'release', sourceId, guard, commandId: dependencies.commandId('off') });
+    },
   };
   return {
     controller, dependencies, sends, facade, audio, eligibility,
@@ -774,6 +793,15 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(tx.controller.snapshot().phase).toBe('releasing');
   });
 
+  it('routes keyboard hold/release through the portrait recognizer', async () => {
+    const t = mountMobile();
+    fabEl(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flushAudio();
+    fabEl(t).dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+    vi.advanceTimersByTime(GESTURE_WINDOW_MS); flushSync();
+    expect(offs()).toBe(1);
+  });
+
   it('latches on a double tap without starting a second lease', async () => {
     const t = mountMobile();
     await latch(t);
@@ -813,20 +841,14 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(tx.sends.filter((item) => item.command === 'on')).toHaveLength(0);
   });
 
-  it('needs the documented two-step press when the UI TX permit is denied', () => {
+  it('leaves denied permit advisory and sends admission to the server path', () => {
     vi.mocked(getTxPermit).mockReturnValue('denied');
     const t = mountMobile();
     fabPress(t);
-    expect(tx.dependencies.startAudio).not.toHaveBeenCalled();
-    expect(fabEl(t).classList.contains('ptt-fab-armed')).toBe(true);
-    fabPress(t); // second press inside the 2 s arm window engages
     expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
   });
 
-  // A.6b — without resetFault() in the recognizer's start command, one denied
-  // press leaves the model in 'failed' and every later press is swallowed:
-  // mobile TX would be bricked for the rest of the session.
-  it('clears a stale controller fault on the next press instead of bricking TX', async () => {
+  it('does not locally clear a server-owned admission fault', async () => {
     tx.eligibility.current = { ...allowed, permit: 'denied' };
     const t = mountMobile();
     fabPress(t);
@@ -836,7 +858,7 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     tx.eligibility.current = allowed;
     fabPress(t);
     await flushAudio();
-    expect(tx.controller.snapshot()).toMatchObject({ fault: null, phase: 'audio-start-pending' });
+    expect(tx.controller.snapshot()).toMatchObject({ fault: 'not-eligible', phase: 'failed' });
   });
 
   // -- B: landscape strip ---------------------------------------------------
@@ -893,13 +915,13 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
 
   // C.11 — the direction and the state the old orientation guard did NOT cover.
   // Documented behaviour change: rotating while latched drops TX.
-  it('drops a LATCHED TX when the operator rotates back to portrait', async () => {
+  it('preserves canonical LATCHED TX across a presentation rotation', async () => {
     const t = mountLandscape();
     await latchStrip(t);
     expect(tx.controller.snapshot().intent).toBe('latched');
     rotate(false);
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
+    expect(offs()).toBe(0);
+    expect(tx.controller.snapshot().intent).toBe('latched');
   });
 
   it('releases TX when the radio stops reporting TX capability', async () => {
@@ -1058,10 +1080,10 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(mobileLayoutSource).not.toContain('lastPttDown');
     // Deliberately NOT asserting on 'ptt' as a bare substring — PttFab and the
     // landscape lsPtt* handlers legitimately keep it.
-    expect(mobileLayoutSource).toContain('getAppTxController');
+    expect(mobileLayoutSource).toContain('getManagedAppTxController');
     // MOR-1378: the recognizer wiring moved to wiring/mobile-ptt-surface.ts —
     // this layout now composes it instead of building the gesture inline.
-    expect(mobileLayoutSource).toContain('createMobilePttSurface');
+    expect(mobileLayoutSource).toContain('createManagedMobilePttSurface');
     expect(mobileLayoutSource).not.toContain('createPttGesture');
   });
 });

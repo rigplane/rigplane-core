@@ -160,7 +160,7 @@ describe('RX/TX status mirrors the App TX authority snapshot', () => {
     });
   });
 
-  it('never labels TX "external" while the browser may own the key', () => {
+  it('labels server-observed TX external when browser ownership is not projected', () => {
     // Kill-mutation: `origin = mayOwnKey ? 'local' : 'external'` narrowed to
     // `phase === 'idle' ? 'external' : 'local'` (or vice versa). Telling the
     // operator "not you" while a lease is live is the dangerous direction.
@@ -171,7 +171,7 @@ describe('RX/TX status mirrors the App TX authority snapshot', () => {
       snap({ phase: 'failed', fault: 'on-timeout' }),
     ]) {
       withSurface(topologyFixtures['1/single'], tx, (s) => {
-        expect(s.state().dataset.origin).toBe('local');
+        expect(s.state().dataset.origin).toBe(tx.mayOwnKey ? 'local' : 'external');
       });
     }
   });
@@ -282,18 +282,14 @@ describe('key intent gating', () => {
   it.each([
     ['1/ab', 'tx-permit-unknown'],
     ['2/ab_shared', 'tx-permit-denied'],
-  ] as const)('%s: a non-allowed permit disables keying and names the reason (%s)', (id, reason) => {
-    // Kill-mutation: `permit.status !== 'denied'` as the gate (treats the
-    // tri-state 'unknown' as permission). The contract validator already
-    // rejects permit='allowed' + unknown target; the surface must independently
-    // treat 'unknown' as NOT allowed.
+  ] as const)('%s: a non-allowed permit remains advisory and names the reason (%s)', (id, reason) => {
     const onRequestKey = vi.fn();
     withSurface(topologyFixtures[id], IDLE_RX, (s) => {
-      expect(s.key().disabled).toBe(true);
+      expect(s.key().disabled).toBe(false);
       expect(s.reasons()).toContain(reason);
       s.key().click();
       flushSync();
-      expect(onRequestKey).not.toHaveBeenCalled();
+      expect(onRequestKey).toHaveBeenCalledTimes(1);
     }, { onRequestKey });
   });
 
@@ -313,17 +309,14 @@ describe('key intent gating', () => {
     ['a key already owned', snap({ phase: 'active', mayOwnKey: true, txRisk: 'confirmed-on', radioTx: 'on' }), 'tx-busy'],
     ['a release in flight', snap({ phase: 'releasing', mayOwnKey: true, txRisk: 'uncertain' }), 'tx-busy'],
     ['an unresolved fault', snap({ phase: 'failed', fault: 'not-eligible' }), 'tx-fault'],
-  ] as const)('%s: the authority forbids keying even with an allowed permit', (_name, tx, reason) => {
-    // Kill-mutation: gate on `view.txPermit` alone. The permit says the
-    // FREQUENCY is legal; only the authority knows whether the transmitter is
-    // free. Both must agree before a key intent may leave this surface.
+  ] as const)('%s: the server projection reports the reason without browser admission', (_name, tx, reason) => {
     const onRequestKey = vi.fn();
     withSurface(topologyFixtures['1/single'], tx, (s) => {
-      expect(s.key().disabled).toBe(true);
+      expect(s.key().disabled).toBe(false);
       expect(s.reasons()).toContain(reason);
       s.key().click();
       flushSync();
-      expect(onRequestKey).not.toHaveBeenCalled();
+      expect(onRequestKey).toHaveBeenCalledTimes(1);
     }, { onRequestKey });
   });
 
@@ -374,7 +367,7 @@ describe('unkey intent is never gated (fail-safe direction)', () => {
     const onRequestKey = vi.fn();
     const onRequestUnkey = vi.fn();
     withSurface(topologyFixtures['2/ab_shared'], snap({ phase: 'active', mayOwnKey: true, radioTx: 'on' }), (s) => {
-      expect(s.key().disabled).toBe(true);
+      expect(s.key().disabled).toBe(false);
       s.unkey().click();
       flushSync();
       expect(onRequestUnkey).toHaveBeenCalledTimes(1);
@@ -386,14 +379,14 @@ describe('unkey intent is never gated (fail-safe direction)', () => {
 // ── 3. txTarget unknown ⇒ target-unknown state, never a guess ───────────────
 
 describe('unknown TX target', () => {
-  it('renders an explicit target-unknown state with its reason and disables keying', () => {
+  it('renders an explicit target-unknown state while leaving admission server-owned', () => {
     // Kill-mutation: fall back to the active VFO / vfos[0] as the target.
     // MOR-988 §3.2: missing observation never synthesizes a target.
     withSurface(topologyFixtures['1/ab'], IDLE_RX, (s) => {
       const t = target.querySelector('[data-testid="rx-tx-target"]') as HTMLElement;
       expect(t.dataset.target).toBe('unknown');
       expect(t.dataset.reason).toBe('not-observed');
-      expect(s.key().disabled).toBe(true);
+      expect(s.key().disabled).toBe(false);
       expect(s.reasons()).toContain('tx-target-unknown');
     });
   });

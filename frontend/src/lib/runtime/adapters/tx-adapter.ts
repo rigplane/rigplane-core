@@ -77,7 +77,7 @@ function canRestoreModAfterConfirmedOff({
   );
 }
 
-async function startTx(): Promise<string | null> {
+async function startTx(autoSwitchModInput = true): Promise<string | null> {
   if (activeLocalAudioAttempt?.lifecycle === 'starting') {
     return 'TX audio start already in progress';
   }
@@ -90,7 +90,9 @@ async function startTx(): Promise<string | null> {
   };
   activeLocalAudioAttempt = attempt;
 
-  autoSetLanModInputForTx();
+  // Managed TX snapshots do not yet carry the browser switch correlation
+  // needed for a safe restore, so that path deliberately leaves MOD untouched.
+  if (autoSwitchModInput) autoSetLanModInputForTx();
   armModInputTxGuard();
 
   let err: string | null;
@@ -144,7 +146,8 @@ function restoreModAfterConfirmedOff(input: ConfirmedOffRestoreInput): void {
 
 export function getTxAudioControl() {
   return {
-    startTx,
+    startTx: () => startTx(),
+    startManagedTx: () => startTx(false),
     stopLocalAudio,
     restoreModAfterConfirmedOff,
     onTxAudioDied: (callback: () => void) => runtime.onTxAudioDied(callback),

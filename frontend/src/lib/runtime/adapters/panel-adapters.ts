@@ -26,7 +26,9 @@ import {
   makeKeyboardHandlers, makeSystemHandlers,
 } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
-import { getAppTxController, type AppTxController } from '../tx-controller/app-host';
+import {
+  getManagedAppTxController, type ManagedAppTxController,
+} from '../tx-controller/managed-app-host';
 import {
   hasAudioFft, hasDualReceiver, hasCapability,
 } from '$lib/stores/capabilities.svelte';
@@ -787,14 +789,14 @@ const _vfoHandlers = makeVfoHandlers();
 export function getVfoHandlers() { return _vfoHandlers; }
 
 export type VfoTunerRead = Readonly<{
-  tx: ReturnType<AppTxController['snapshot']>;
+  tx: ReturnType<ManagedAppTxController['snapshot']>;
   view: ReturnType<typeof toRadioViewModel>;
 }>;
 export type VfoTunerContext = Readonly<{ read(): VfoTunerRead }>;
 
 /** Captures the App TX facade once, while read() projects only live read-only facts. */
 export function bindVfoTunerContext(): VfoTunerContext {
-  const tx = getAppTxController();
+  const tx = getManagedAppTxController();
   return Object.freeze({
     read: () => {
       const snapshot = tx.snapshot();

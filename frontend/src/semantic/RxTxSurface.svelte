@@ -129,7 +129,7 @@
     <button
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
-      disabled={blocked.length > 0} aria-pressed={pressed} aria-describedby={blockedId}
+      disabled={tx.fresh === false} aria-pressed={pressed} aria-describedby={blockedId}
       onclick={() => onRequestKey?.()}
     >Key transmitter</button>
     <!-- Never gated: no `disabled`, no `{#if}`, no guard in the handler. -->

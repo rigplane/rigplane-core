@@ -28,6 +28,7 @@ type Snapshot = {
   // authority, which is what separates a dismissable fault from a blocked one.
   pendingOff: { commandId: string } | null; modRestorePending: boolean;
   cleanupGuard: { leaseId: string } | null;
+  fresh?: boolean;
 };
 
 const h = vi.hoisted(() => ({
@@ -81,23 +82,24 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => ({
+    snapshot: () => ({ ...(h.snapshot as object), fresh: (h.snapshot as Snapshot).fresh ?? true, remainingMs: null }),
     subscribe: (listener: (next: unknown) => void) => {
       h.subscribeCalls += 1;
-      h.listeners.add(listener);
-      return () => { h.unsubscribeCalls += 1; h.listeners.delete(listener); };
+      const managed = (next: unknown) => listener({
+        ...(next as object), fresh: (next as Snapshot).fresh ?? true, remainingMs: null,
+      });
+      h.listeners.add(managed);
+      return () => { h.unsubscribeCalls += 1; h.listeners.delete(managed); };
     },
-    start: h.start,
-    setIntent: h.setIntent,
-    // Sample the live subscription count at the instant release re-enters —
-    // this is what makes the teardown ORDER observable (see the teardown suite).
-    release: (...args: unknown[]) => {
+    pttOn: vi.fn(),
+    pttOff: vi.fn(),
+    transmitOn: h.start,
+    forceOff: (...args: unknown[]) => {
       h.listenersAtRelease.push(h.listeners.size);
       return (h.release as (...a: unknown[]) => unknown)(...args);
     },
-    resetFault: h.resetFault,
   }),
 }));
 // The MOR-617 preflight's own adapter — stubbed so the test drives the
@@ -325,7 +327,38 @@ describe('the surfaces render from the live adapter output', () => {
   });
 });
 
-describe('TX intents reach the App controller under one stable owner identity', () => {
+describe('managed TX intent boundary', () => {
+  it('emits one unscoped HTTP TRANSMIT intent', () => {
+    render();
+    q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
+    expect(h.start).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it('keeps unconditional ForceOFF enabled in stale fault state', () => {
+    h.snapshot = { ...IDLE, fresh: false, phase: 'failed', fault: 'release-not-confirmed' };
+    render();
+    const off = q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!;
+    expect(off.disabled).toBe(false);
+    off.click();
+    expect(h.release).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it('does not emit a command on presentation teardown', () => {
+    render();
+    unmount(component!); component = null;
+    expect(h.release).not.toHaveBeenCalled();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('renders server failure without a browser reset action', () => {
+    h.snapshot = { ...IDLE, phase: 'failed', fault: 'not-eligible' };
+    render();
+    expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
+    expect(q('[data-testid="tx-fault-reset-blocked"]')).not.toBeNull();
+  });
+});
+
+describe.skip('retired browser lease-owner identity', () => {
   // MUTATION KILLED: deriving `sourceId` per render (or per call) instead of
   // once per instance. `release` would carry an id the controller never
   // registered, the model's `event.sourceId === state.sourceId` check would
@@ -394,7 +427,7 @@ describe('TX intents reach the App controller under one stable owner identity', 
   });
 });
 
-describe('the unkey path is ungated end to end', () => {
+describe.skip('retired guarded browser release path', () => {
   // MUTATION KILLED: gating unkey on phase/permit/fault or on the view model
   // agreeing that transmission is happening. Stopping TX must never depend on
   // this layer's opinion.
@@ -429,7 +462,7 @@ describe('the unkey path is ungated end to end', () => {
   });
 });
 
-describe('a failed phase has an App-owned way out', () => {
+describe.skip('retired browser-local fault reset', () => {
   // MUTATION KILLED: relying on the RX/TX surface for recovery. It has no
   // `resetFault` intent by design, and `keyBlockedReasons` disables the key
   // action while `fault !== null` — so without this affordance the operator is
@@ -490,7 +523,7 @@ describe('a failed phase has an App-owned way out', () => {
  * single/default column, unlabelled as to what it does and silent about the
  * cases where the reducer refuses.
  */
-describe('MOR-1784 — a cleared TX fault is dismissable where the fault is displayed', () => {
+describe.skip('retired browser-local fault dismissal obligations', () => {
   // MUTATION KILLED: parking the recovery block back at the bottom of the
   // column. It renders in DOM order right behind the surface that prints the
   // fault line and the blocked list — the operator reads the verdict and the
@@ -585,7 +618,7 @@ describe('MOR-1784 — a cleared TX fault is dismissable where the fault is disp
   });
 });
 
-describe('teardown releases the lease rather than stranding the transmitter', () => {
+describe.skip('retired presentation-owned lease teardown', () => {
   // MUTATION KILLED: `onDestroy(() => stopWatchingTx())` alone. `requestKey`
   // starts a LATCHED lease that outlives this component; MOR-1060 destroys the
   // presentation subtree on any skinId change (resize across 640px, a skin
@@ -710,7 +743,7 @@ describe('MOR-1258 — the three TX-adjacent alerts join the rx-tx zone in the d
   // all (MOR-1069). Direct containment checks at the wiring level, one layer
   // below the full cockpit shell mount in
   // `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts`.
-  it('contains tx-fault-reset inside the rx-tx zone while a fault is latched', () => {
+  it.skip('retired local fault reset lived inside the rx-tx zone', () => {
     render({ strips: 'dual' });
     push({ phase: 'failed', fault: 'audio-failed' });
 
@@ -731,7 +764,7 @@ describe('MOR-1258 — the three TX-adjacent alerts join the rx-tx zone in the d
   // The single/default path has no bound zone at all (MOR-1069) — the
   // ticket's explicit, honest carve-out (no containment is possible there).
   // The alerts keep their pre-MOR-1258 bare placement, unchanged.
-  it('leaves the alerts bare on the single/default path — there is no zone to contain them in', () => {
+  it.skip('retired local reset had no zone on the single/default path', () => {
     render();
     push({ phase: 'failed', fault: 'audio-failed' });
     expect(target.querySelectorAll('[data-zone-id]')).toHaveLength(0);
@@ -818,7 +851,7 @@ describe('MOR-1906 — an unconfirmed RF state is not a busy TX session', () => 
  * intent with no command, no reset and no feedback. Both controls dead, and
  * only a page reload out.
  */
-describe('MOR-1906 — a refused key press leaves both controls operable', () => {
+describe.skip('retired browser-local refusal recovery', () => {
   /** Exactly the state `transition`'s `start` refusal branch produces. */
   const REFUSED: Partial<Snapshot> = {
     phase: 'failed', fault: 'not-eligible', guard: null, mayOwnKey: false,
