@@ -14,6 +14,7 @@
  *   &theme=v2|none   load the components-v2 theme layer (default `v2`)
  *   &language=<id>   opt into a design language (MOR-1073; default: none)
  *   &mode=light      the language's light variant (explicit; dark is primary)
+ *   &display=<id>    peer|dominant|centerstage|panadapter for peer-split glass
  *
  * `theme=none` is not a styling preference — it is the honest reading of what
  * the cockpit gets today: `components-v2/theme/index` is imported by
@@ -52,6 +53,12 @@ const params = new URLSearchParams(window.location.search);
 const id = params.get('fixture') ?? 'topology-2-main-sub';
 const fixture = fixtureById(id);
 if (!fixture) throw new Error(`MOR-1070 harness: unknown fixture id "${id}"`);
+const displayParam = params.get('display') ?? 'peer';
+const displayVariants = ['peer', 'dominant', 'centerstage', 'panadapter'] as const;
+if (!displayVariants.includes(displayParam as typeof displayVariants[number])) {
+  throw new Error(`MOR-2309 harness: unknown display variant "${displayParam}"`);
+}
+const displayVariant = displayParam as typeof displayVariants[number];
 
 /**
  * MOR-1085 — which of the layouts this fixture mounts. The fixture ITSELF
@@ -200,6 +207,7 @@ if (fixture.layout === 'peer-split') {
       canvasW: peerSplitGlassGroup.canvas.w,
       canvasH: peerSplitGlassGroup.canvas.h,
       minScale: peerSplitGlassGroup.scaling.minScale,
+      displayVariant,
     },
   });
 } else {
