@@ -4068,6 +4068,8 @@ async def test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay
     None
 ):
     radio = _make_radio()
+    radio.connected = True
+    radio.radio_ready = True
     radio.set_freq.side_effect = ConnectionError("down")
     state = RadioState()
     store = StateStore()
@@ -4095,8 +4097,12 @@ async def test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay
 
     poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
     poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
-    with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
+    sleep = AsyncMock(
+        side_effect=(None, None, AssertionError("unexpected extra poller sleep"))
+    )
+    with patch("rigplane.web.radio_poller.asyncio.sleep", new=sleep):
         await poller._run()  # noqa: SLF001
+    assert sleep.await_count == 2
 
     events = [
         event for event in service.lifecycle_events() if event.command_id == "ws-fail"
