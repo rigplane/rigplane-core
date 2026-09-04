@@ -119,9 +119,9 @@
         <div class="column-head">
           <span class="vfo-tag">{receiver.label}{receiver.activity === 'active' ? ' ●' : ''}</span>
           <div class="vfo-pills">
-            <span class="lcd-pill">{stateText(receiver.mode)}</span>
-            <span class="lcd-pill">{stateText(receiver.filter)}</span>
-            <span class="lcd-pill">{stateText(receiver.band)}</span>
+            <span class="lcd-pill" data-state={receiver.mode.state}>{stateText(receiver.mode)}</span>
+            <span class="lcd-pill" data-state={receiver.filter.state}>{stateText(receiver.filter)}</span>
+            <span class="lcd-pill" data-state={receiver.band.state}>{stateText(receiver.band)}</span>
           </div>
         </div>
 
@@ -200,4 +200,6 @@
   }
   .vfo-tag { font-size: 18px; }
   .vfo-pills { display: flex; gap: 5px; min-width: 0; }
+  .lcd-pill[data-state='unknown'] { opacity: 0.34; }
+  .lcd-pill[data-state='unsupported'] { visibility: hidden; }
 </style>

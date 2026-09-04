@@ -44,9 +44,9 @@
         <div class="frequency-head">
           <span class="receiver-label">{receiver.label}{receiver.activity === 'active' ? ' ●' : ''}</span>
           <div class="receiver-facts">
-            <span>{stateText(receiver.mode)}</span>
-            <span>{stateText(receiver.filter)}</span>
-            <span>{stateText(receiver.band)}</span>
+            <span data-state={receiver.mode.state}>{stateText(receiver.mode)}</span>
+            <span data-state={receiver.filter.state}>{stateText(receiver.filter)}</span>
+            <span data-state={receiver.band.state}>{stateText(receiver.band)}</span>
           </div>
         </div>
         <LcdFrequencyReadout receiver={receiver.receiver} field={receiver.frequency} />
@@ -137,6 +137,8 @@
   }
   .receiver-label { font-size: 14px; }
   .receiver-facts { display: flex; gap: 4px; min-width: 0; }
+  .receiver-facts [data-state='unknown'] { opacity: 0.34; }
+  .receiver-facts [data-state='unsupported'] { visibility: hidden; }
 
   .work-area {
     display: grid;
