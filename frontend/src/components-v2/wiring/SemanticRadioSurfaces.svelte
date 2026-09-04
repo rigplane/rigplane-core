@@ -14,7 +14,8 @@
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
-  import { runtime } from '$lib/runtime';
+  import { presentationResources, runtime } from '$lib/runtime';
+  import { ScopeFrameHost } from '$lib/runtime/scope-frame-host';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import {
     EMPTY_PBT_PRESENTATION, projectPbtPresentation, type PbtField,
@@ -61,6 +62,9 @@
     forReceiver, receiversOf, isActiveStrip, isOperationalStrip,
   } from './dual-receiver-strips';
   import { guardRadioViewModel } from './radio-view-model-guard';
+  import type {
+    LcdSpectrumFrame, LcdSpectrumFrameResolution, LcdSpectrumSource,
+  } from '../../skins/segmentline/lcd-display-contract';
 
   /**
    * `'single'` (default) is the pre-MOR-1067 composition, wrapped per zone
@@ -82,7 +86,8 @@
     strips?: 'single' | 'dual';
     regions?: boolean;
     regionContent?: Snippet;
-    readonlyDisplay?: Snippet<[RadioViewModel]>;
+    displayFrameSource?: LcdSpectrumSource;
+    readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -104,7 +109,9 @@
    * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
    * `zoneOwning()` returns non-null on both faces.
    */
-  let { strips = 'single', regions = false, regionContent, readonlyDisplay }: Props = $props();
+  let {
+    strips = 'single', regions = false, regionContent, displayFrameSource, readonlyDisplay,
+  }: Props = $props();
 
   /**
    * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
@@ -474,6 +481,69 @@
       toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
     ),
   );
+  let selectedDisplayFrame = $state.raw<LcdSpectrumFrame | undefined>(undefined);
+  let scopeFrameHost: ScopeFrameHost | null = null;
+  let stopWatchingScopeFrameHost: (() => void) | null = null;
+
+  function acceptDisplayFrameResolution(resolution: LcdSpectrumFrameResolution): void {
+    selectedDisplayFrame = resolution.state === 'live' ? resolution.frame : undefined;
+  }
+
+  function ensureScopeFrameHost(): ScopeFrameHost {
+    if (scopeFrameHost !== null) return scopeFrameHost;
+    scopeFrameHost = new ScopeFrameHost(runtime.scope);
+    stopWatchingScopeFrameHost = scopeFrameHost.subscribe(acceptDisplayFrameResolution);
+    return scopeFrameHost;
+  }
+
+  $effect(() => {
+    const source = displayFrameSource;
+    if (source === undefined) {
+      scopeFrameHost?.updateAuthority(null);
+      selectedDisplayFrame = undefined;
+      return;
+    }
+
+    const host = ensureScopeFrameHost();
+    const stateGeneration = runtime.state?.providerGeneration;
+    const capsGeneration = runtime.caps?.providerGeneration;
+    const receiver = canonicalView?.activeReceiver;
+    const authority = receiver?.status === 'known'
+      && typeof stateGeneration === 'number'
+      && Number.isSafeInteger(stateGeneration)
+      && stateGeneration >= 0
+      && typeof capsGeneration === 'number'
+      && Number.isSafeInteger(capsGeneration)
+      && capsGeneration >= 0
+      && stateGeneration === capsGeneration
+      ? { source, receiver: receiver.receiver, providerGeneration: stateGeneration }
+      : null;
+    host.updateAuthority(authority);
+    acceptDisplayFrameResolution(host.snapshot());
+  });
+
+  $effect(() => {
+    const source = displayFrameSource;
+    if (source === undefined) return;
+    ensureScopeFrameHost();
+    const resource = source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
+    const lease = presentationResources.acquire(resource, 'SemanticRadioSurfaces.readonlyDisplay');
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      presentationResources.release(lease);
+    };
+  });
+
+  onDestroy(() => {
+    const stop = stopWatchingScopeFrameHost;
+    const host = scopeFrameHost;
+    stopWatchingScopeFrameHost = null;
+    scopeFrameHost = null;
+    try { stop?.(); } finally { host?.dispose(); }
+  });
+
   let pbtPresentation: PbtPresentationState = $state(EMPTY_PBT_PRESENTATION);
   // A disconnect makes every currently-held PBT observation prior-session
   // evidence. Floors are per provider/receiver/field: monotonic markers are
@@ -688,7 +758,7 @@
 
 <div class="semantic-surfaces" data-testid="semantic-radio-surfaces">
   {#if readonlyDisplay}
-    {#if view}{@render readonlyDisplay(view)}{/if}
+    {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
   {#if view}
     {#if strips === 'dual'}

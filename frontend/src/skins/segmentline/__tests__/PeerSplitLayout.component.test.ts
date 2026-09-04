@@ -32,10 +32,21 @@ const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
   noop: vi.fn(),
+  resourceEvents: [] as string[],
   modInputGuard: { visible: false, sourceLabel: null } as { visible: boolean; sourceLabel: string | null },
 }));
 
 vi.mock('$lib/runtime', () => ({
+  presentationResources: {
+    acquire: (resource: string) => {
+      h.resourceEvents.push(`acquire:${resource}`);
+      return Object.freeze({ resource, id: h.resourceEvents.length });
+    },
+    release: (lease: { resource: string }) => {
+      h.resourceEvents.push(`release:${lease.resource}`);
+      return true;
+    },
+  },
   runtime: {
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
@@ -49,7 +60,14 @@ vi.mock('$lib/runtime', () => ({
       };
     },
     get radioPowerOn() { return null; },
-    get scope() { return { hardwareScopeConnected: false }; },
+    get scope() {
+      return {
+        hardwareScopeConnected: false,
+        subscribeFrameEvidence: () => () => {},
+        setFrameAuthority: () => {},
+        snapshotFrameEvidence: () => ({ envelope: null, authority: null }),
+      };
+    },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -174,6 +192,7 @@ beforeEach(() => {
   h.state = abSharedState();
   h.caps = liveCaps();
   h.noop.mockReset();
+  h.resourceEvents.length = 0;
   h.modInputGuard = { visible: false, sourceLabel: null };
 });
 
@@ -224,6 +243,10 @@ describe('the peer-split chassis mounts', () => {
       '[data-testid="peer-split-display"], [data-testid="dominant-unified-display"], '
       + '[data-testid="centerstage-display"], [data-testid="panadapter-display"]',
     )).toHaveLength(1);
+    const expectedResource = displayVariant === 'panadapter'
+      ? 'hardware-scope'
+      : displayVariant === 'peer' ? null : 'audio-fft';
+    expect(h.resourceEvents).toEqual(expectedResource === null ? [] : [`acquire:${expectedResource}`]);
   });
 
   // NOT ASSERTED HERE: that `.semantic-surfaces` actually receives
@@ -333,5 +356,35 @@ describe('the glass forwards the shell-resolved scale floor to its stage (MOR-22
     const tag = markup.match(/<ScaledStage[^>]*>/)?.[0];
     expect(tag, 'no <ScaledStage ...> tag found in PeerSplitLayout.svelte markup').toBeDefined();
     expect(tag).toMatch(/\{minScale\}|minScale=/);
+  });
+});
+
+describe('the selected segmentline face owns exactly one LCD source declaration (MOR-2328)', () => {
+  const source = readFileSync('src/skins/segmentline/PeerSplitLayout.svelte', 'utf8');
+  const markup = source.replace(/<script[\s\S]*?<\/script>/, '').replace(/<style>[\s\S]*?<\/style>/, '');
+
+  it('maps the four display variants to the host-owned source contract', () => {
+    expect(source).toMatch(/displayVariant === 'dominant'\s*\|\|\s*displayVariant === 'centerstage'\s*\?\s*'audio-fft'/);
+    expect(source).toMatch(/displayVariant === 'panadapter'\s*\?\s*'hardware'/);
+    expect(source).toMatch(/:\s*undefined/);
+
+    const host = markup.match(/<SemanticRadioSurfaces[^>]*\/>/)?.[0];
+    expect(host, 'no SemanticRadioSurfaces host found').toBeDefined();
+    expect(host).toMatch(/\{displayFrameSource\}/);
+    expect(host).toMatch(/\{readonlyDisplay\}/);
+  });
+
+  it('keeps frame authority at the semantic host and forwards its one selected object unchanged', () => {
+    expect(source).toContain("import type { LcdSpectrumFrame, LcdSpectrumSource } from './lcd-display-contract';");
+    expect(source).toMatch(/\{#snippet readonlyDisplay\(view: RadioViewModel, selectedFrame\?: LcdSpectrumFrame\)\}/);
+    expect(source).toMatch(/<DominantUnifiedDisplay\s+\{model\}\s+spectrumFrame=\{selectedFrame\}\s*\/>/);
+    expect(source).toMatch(/<CenterstageDisplay\s+\{model\}\s+audioFftFrame=\{selectedFrame\}\s*\/>/);
+    expect(source).toMatch(/<PanadapterDisplay\s+\{model\}\s+rfFrame=\{selectedFrame\}\s*\/>/);
+    expect(source).toMatch(/\{#snippet peer\(\)\}<PeerSplitDisplay \{model\} \/>\{\/snippet\}/);
+
+    // This selector must never grow a second producer, frame resolver, or
+    // demand lease. Those are host lifecycle concerns, not face heuristics.
+    expect(source).not.toMatch(/from ['"](?:\$lib\/runtime|.*\/runtime)['"]/);
+    expect(source).not.toMatch(/resolveLcdSpectrumFrame|audioFftDemand|requestAudioFft/);
   });
 });
