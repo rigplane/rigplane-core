@@ -210,9 +210,9 @@ All scope commands require the `scope` capability.
 | `scan_set_df_span` | `span: int` | `scan` | Yes | `span` must be 0xA1–0xA7 (decimal 161–167). |
 | `scan_set_resume` | `mode: int` | `scan` | Yes | `mode` must be 0xD0–0xD3 (decimal 208–211). |
 | `set_repeater_tone` | `on?: bool=false`, `receiver?: int=0` | `repeater_tone` | Yes | |
-| `set_tone_freq` | `freq: int`, `receiver?: int=0` | `repeater_tone` | Yes | CTCSS tone frequency. |
+| `set_tone_freq` | `freq: int`, `receiver?: int=0` | `repeater_tone` | Yes | `freq` is an exact JSON/Python integer in centiHz (`8850` = 88.50 Hz), accepted only when present in the active profile's `RadioProfile.ctcss_tones_centihz` declared tuple. Provider indices and float Hz are not accepted public values; the table does not grant capability or command support. |
 | `set_repeater_tsql` | `on?: bool=false`, `receiver?: int=0` | `tsql` | Yes | |
-| `set_tsql_freq` | `freq: int`, `receiver?: int=0` | `tsql` | Yes | CTCSS squelch frequency. |
+| `set_tsql_freq` | `freq: int`, `receiver?: int=0` | `tsql` | Yes | `freq` is an exact JSON/Python integer in centiHz (`8850` = 88.50 Hz), accepted only when present in the active profile's `RadioProfile.ctcss_tones_centihz` declared tuple. Provider indices and float Hz are not accepted public values; the table does not grant capability or command support. |
 | `set_repeater_shift` | `direction: int`, `receiver?: int=0` | `repeater_shift` | Yes | Repeater shift direction; see `RepeaterShiftDirection` (0=Simplex, 1=Plus, 2=Minus, 3=ARS). |
 | `set_ref_adjust` | `value: int` | — | Yes | Reference frequency adjustment. |
 | `set_civ_transceive` | `on: bool` | — | Yes | CI-V transceive mode. `on` is required. |
