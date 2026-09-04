@@ -28,6 +28,7 @@ from ...core.state_pipeline_contracts import CommandIntent, CommandSource, Field
 from ...core.state_store import FreshnessState, StateStore
 from ...profiles import RadioProfile, resolve_radio_profile
 from ...runtime.tx_interlock import RfState, evaluate_tx_interlock
+from ...runtime.managed_tx_state import ManagedTxOutcome
 from ..protocol import (  # noqa: TID251
     decode_json,
     encode_json,
@@ -162,6 +163,7 @@ from ..websocket import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...radio_protocol import Radio
+    from ...runtime.managed_tx_authority import ManagedTxAuthority
 
 from ...capabilities import (
     CAP_AF_LEVEL,
@@ -483,6 +485,7 @@ class ControlHandler:
             "send_cw_text",
         }
     )
+    _MANAGED_PTT_COMMANDS: frozenset[str] = frozenset({"ptt", "ptt_on", "ptt_off"})
 
     # MOR-1499: SELECTOR commands — the param carries a discrete TARGET
     # (which filter/VFO/band), not a continuous magnitude — so the
@@ -510,6 +513,7 @@ class ControlHandler:
         server: Any = None,
         read_only: bool = False,
         session_id: str | None = None,
+        managed_tx_authority: "ManagedTxAuthority | None" = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -520,6 +524,7 @@ class ControlHandler:
         self._session_id = (
             session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
         )
+        self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
         # MOR-624: (command_name, previous_source) armed by the frontend auto-LAN
         # feature at TX start. MOR-993 forbids replaying it on teardown; MOR-1013
@@ -616,19 +621,44 @@ class ControlHandler:
             # socket ``await event_task`` re-raises the sender's error and
             # unregister broadcasts, so either would skip the unkey on exactly
             # the abrupt drops that need it most. The release needs neither.
-            self._release_ptt_on_teardown()
+            disconnect_task = self._start_managed_ptt_disconnect()
+            deferred_cancel: asyncio.CancelledError | None = None
+            if disconnect_task is not None:
+                try:
+                    await asyncio.shield(disconnect_task)
+                except asyncio.CancelledError as exc:
+                    # The retained authority operation must outlive this
+                    # handler, but cancellation must not skip the synchronous
+                    # session cleanup below. Re-raise it once cleanup is done.
+                    deferred_cancel = exc
+                except Exception:
+                    logger.warning(
+                        "control: managed PTT owner disconnect failed",
+                        exc_info=True,
+                    )
             self._publish_session_liveness(live=False)
             self._clear_mod_input_restore_on_teardown()
             self._cancel_pending_command_flushes()
             event_task.cancel()
+            teardown_error: Exception | None = None
+            if self._server is not None:
+                try:
+                    self._server.unregister_control_event_queue(
+                        self._event_queue, session_id=self._session_id
+                    )
+                except Exception as exc:
+                    teardown_error = exc
             try:
                 await event_task
             except asyncio.CancelledError:
                 pass
-            if self._server is not None:
-                self._server.unregister_control_event_queue(
-                    self._event_queue, session_id=self._session_id
-                )
+            except Exception as exc:
+                if teardown_error is None:
+                    teardown_error = exc
+            if deferred_cancel is not None:
+                raise deferred_cancel
+            if teardown_error is not None:
+                raise teardown_error
 
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""
@@ -1371,6 +1401,20 @@ class ControlHandler:
                 self._session_id,
             )
 
+    def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:
+        authority = self._managed_tx_authority
+        if authority is None:
+            return None
+        release = authority.owner_disconnect(self._session_id)
+        server = self._server
+        spawn = None if server is None else getattr(type(server), "_spawn", None)
+        if callable(spawn):
+            return cast(asyncio.Task[ManagedTxOutcome], spawn(server, release))
+        explicit_spawn = None if server is None else vars(server).get("_spawn")
+        if callable(explicit_spawn):
+            return cast(asyncio.Task[ManagedTxOutcome], explicit_spawn(release))
+        return asyncio.create_task(release)
+
     def _publish_session_liveness(self, *, live: bool) -> None:
         """Publish this session's liveness on the queue the poller drains.
 
@@ -1408,6 +1452,8 @@ class ControlHandler:
         command_id: str | None = None,
         source: CommandSource = "websocket",
     ) -> dict[str, Any]:
+        if name in self._MANAGED_PTT_COMMANDS:
+            return await self._enqueue_managed_ptt(name, params, source=source)
         intent_params = dict(params)
         if self._server is not None:
             intent_params["_control_server"] = self._server
@@ -1448,6 +1494,39 @@ class ControlHandler:
         )
         result = await self._command_service.execute(intent, executor=executor)
         return dict(result.executor_result.details or {})
+
+    async def _enqueue_managed_ptt(
+        self,
+        name: str,
+        params: dict[str, Any],
+        *,
+        source: CommandSource,
+    ) -> dict[str, Any]:
+        if self._read_only:
+            raise PermissionError(f"read-only mode: {name} rejected")
+        if source != "websocket":
+            raise CommandUnsupportedError(
+                "momentary PTT requires a stable WebSocket owner; "
+                "use managed force_off for unconditional release"
+            )
+        authority = self._managed_tx_authority
+        if authority is None:
+            raise CommandRejectedError("managed transmit authority unavailable")
+        if name == "ptt":
+            on = params.get("state")
+            if type(on) is not bool:
+                raise ValueError("PTT state must be a boolean")
+        else:
+            on = name == "ptt_on"
+        try:
+            submission = await authority.submit_ptt(on, self._session_id)
+        except RuntimeError as exc:
+            raise CommandRejectedError(
+                "managed transmit authority unavailable"
+            ) from exc
+        if submission.outcome is not ManagedTxOutcome.ACCEPTED:
+            raise CommandRejectedError("managed PTT admission rejected")
+        return {"state": on} if name == "ptt" else {}
 
     async def _execute_intent(
         self, intent: CommandIntent, *, wait_for_completion: bool = True

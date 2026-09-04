@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.protocol import decode_json
 from rigplane.web.radio_poller import PttOff, SetFilterWidth, SetFreq, SetMode
@@ -49,6 +50,7 @@ def _control_handler(
     radio: object | None = None,
     server: object | None = None,
     session_id: str | None = None,
+    managed_tx_authority: object | None = None,
 ) -> ControlHandler:
     if ws is None:
         ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
@@ -59,6 +61,7 @@ def _control_handler(
         "IC-7610",
         server=server,
         session_id=session_id,
+        managed_tx_authority=managed_tx_authority,  # type: ignore[arg-type]
     )
 
 
@@ -221,10 +224,16 @@ async def test_slower_than_window_commands_are_unaffected() -> None:
 async def test_ptt_off_bursts_are_never_rate_limited_or_coalesced() -> None:
     ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
+    authority = SimpleNamespace(
+        submit_ptt=AsyncMock(
+            return_value=SimpleNamespace(outcome=ManagedTxOutcome.ACCEPTED)
+        )
+    )
     handler = _control_handler(
         ws=ws,
         radio=SimpleNamespace(connected=True),
         server=SimpleNamespace(command_queue=queue),
+        managed_tx_authority=authority,
     )
 
     n = 5
@@ -233,10 +242,12 @@ async def test_ptt_off_bursts_are_never_rate_limited_or_coalesced() -> None:
             {"id": f"ptt-{i}", "name": "ptt_off", "params": {}}
         )
 
-    # Every single PTT OFF physically enqueues immediately — no coalescing,
-    # no pending state, regardless of how tightly they are spaced.
-    assert len(queue.items) == n
-    assert all(isinstance(item, PttOff) for item in queue.items)
+    assert authority.submit_ptt.await_count == n
+    assert all(
+        call.args == (False, handler._session_id)
+        for call in authority.submit_ptt.await_args_list
+    )
+    assert queue.items == []
     assert "ptt_off" not in handler._cmd_pending  # noqa: SLF001
     assert "ptt_off" not in handler._cmd_flush_tasks  # noqa: SLF001
 

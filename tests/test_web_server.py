@@ -923,9 +923,6 @@ class TestControlChannel:
             await _close_ws(writer)
 
     async def test_command_ptt(self, server: WebServer, mock_radio: MagicMock) -> None:
-        # MOR-1879: keying now passes the server RF gate, so the scenario's
-        # premise — a rig observed in RX — is stated explicitly.
-        _seed_fresh_rx(server.command_state_store)
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
@@ -939,10 +936,9 @@ class TestControlChannel:
             await _ws_send_text(writer, json.dumps(cmd))
             _, payload = await _ws_recv_frame(reader)
             resp = json.loads(payload)
-            assert resp["ok"] is True
-            # PTT goes through command queue; wait for poller to drain it
-            await asyncio.sleep(0.05)
-            mock_radio.set_ptt.assert_awaited_once_with(True)
+            assert resp["ok"] is False
+            assert resp["error"] == "radio_nak"
+            mock_radio.set_ptt.assert_not_awaited()
         finally:
             await _close_ws(writer)
 
@@ -2414,9 +2410,7 @@ class TestHalfOpenWsReaper:
         mock_radio: MagicMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A stale (pong-timed-out) control session must be reaped within
-        one zombie-reaper pass: task completes, PTT OFF teardown ran, and
-        the disconnect is logged -- without the peer ever sending a FIN."""
+        """A stale control session is reaped without inventing a legacy OFF."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         try:
@@ -2451,12 +2445,10 @@ class TestHalfOpenWsReaper:
 
             assert len(server._client_tasks) == before - 1  # noqa: SLF001
 
-            # The exact PTT-OFF teardown log line pinned by MOR-1013/MOR-1429:
-            # a session must not disconnect (by any path) without this.
-            assert any(
+            assert not any(
                 "requested PTT OFF on control session teardown" in r.message
                 for r in caplog.records
-            ), "reaped session must have run the unconditional PTT OFF teardown"
+            )
             assert any("ws disconnect" in r.message for r in caplog.records)
         finally:
             writer.close()
@@ -2469,8 +2461,7 @@ class TestHalfOpenWsReaper:
         mock_radio: MagicMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A normal client-initiated close must still run the exact same
-        teardown sequence -- the reaping fix must not disturb it."""
+        """A cooperative close also invents no legacy PTT OFF."""
         host, port = _addr(server)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
         await _ws_skip_handshake(reader)
@@ -2483,7 +2474,7 @@ class TestHalfOpenWsReaper:
             )
 
         assert len(server._client_tasks) == before - 1  # noqa: SLF001
-        assert any(
+        assert not any(
             "requested PTT OFF on control session teardown" in r.message
             for r in caplog.records
         )
