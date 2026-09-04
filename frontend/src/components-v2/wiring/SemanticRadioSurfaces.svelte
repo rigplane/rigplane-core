@@ -92,6 +92,7 @@
     strips?: 'single' | 'dual';
     regions?: boolean;
     regionContent?: Snippet;
+    readonlyDisplay?: Snippet<[RadioViewModel]>;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -113,7 +114,7 @@
    * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
    * `zoneOwning()` returns non-null on both faces.
    */
-  let { strips = 'single', regions = false, regionContent }: Props = $props();
+  let { strips = 'single', regions = false, regionContent, readonlyDisplay }: Props = $props();
 
   /**
    * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
@@ -768,6 +769,9 @@
 </script>
 
 <div class="semantic-surfaces" data-testid="semantic-radio-surfaces">
+  {#if readonlyDisplay}
+    {#if view}{@render readonlyDisplay(view)}{/if}
+  {:else}
   {#if view}
     {#if strips === 'dual'}
       <div class="channel-strips" data-testid="channel-strips">
@@ -1559,6 +1563,7 @@
     )}
     {@render txAdjacentAlerts()}
     {/if}
+  {/if}
   {/if}
 </div>
 
