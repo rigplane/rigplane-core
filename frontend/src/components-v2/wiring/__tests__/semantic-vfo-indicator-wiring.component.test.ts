@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 const h = vi.hoisted(() => ({
-  state: null as unknown, caps: null as unknown, noop: vi.fn(), listeners: new Set<() => void>(),
-  txSnapshot: { phase: 'idle', intent: null, guard: null, radioTx: 'off',
-    txRisk: 'none', mayOwnKey: false, fault: null } as unknown,
+  state: null as ServerState | null, caps: null as Capabilities | null, noop: vi.fn(),
+  txController: null as ManagedAppTxController | null,
   main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(), split: vi.fn(),
   dualWatch: vi.fn(), speak: vi.fn(),
 }));
@@ -27,12 +27,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.txSnapshot,
-    subscribe: (listener: () => void) => { h.listeners.add(listener); return () => h.listeners.delete(listener); },
-    start: h.noop, setIntent: h.noop, release: h.noop, resetFault: h.noop,
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => h.txController,
 }));
 vi.mock('$lib/runtime/tx-controller/model', () => ({ txFaultObligation: () => null }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
@@ -53,6 +49,9 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import {
+  ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
+} from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (frequency: number) => ({ freqHz: frequency, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -83,13 +82,13 @@ function caps(vfoScheme: Capabilities['vfoScheme'], receivers: number, dual = re
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 function render(
   capabilities: Capabilities,
   stateValue: ServerState = state(),
-  txSnapshot: unknown = { phase: 'idle', intent: null, guard: null, radioTx: 'off',
-    txRisk: 'none', mayOwnKey: false, fault: null },
+  txSnapshot: ManagedAppTxServerSnapshot = {},
 ): void {
-  h.state = stateValue; h.caps = capabilities; h.txSnapshot = txSnapshot;
+  h.state = stateValue; h.caps = capabilities; txHarness.emitServerSnapshot(txSnapshot);
   target = document.createElement('div'); document.body.appendChild(target);
   component = mount(SemanticRadioSurfaces, { target, props: { strips: 'dual' } }); flushSync();
 }
@@ -97,12 +96,19 @@ const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement
   .map((row) => row.dataset.indicatorReceiver);
 
 beforeEach(() => {
-  h.listeners.clear();
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   for (const mock of [
     h.noop, h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch, h.speak,
   ]) mock.mockReset();
 });
-afterEach(() => { if (component) unmount(component); component = null; document.body.innerHTML = ''; });
+afterEach(() => {
+  if (component) unmount(component);
+  component = null;
+  expect(txHarness.listenerCount()).toBe(0);
+  expect(txHarness.trace()).toEqual([]);
+  document.body.innerHTML = '';
+});
 
 describe('production receiver-indicator partitioning', () => {
   it.each([
@@ -173,10 +179,7 @@ describe('production receiver-indicator partitioning', () => {
     render(caps('main_sub', 2), state({
       ptt: true,
       txTarget: { status: 'known', receiver: 'SUB', slot: 'A', frequencyHz: 7_100_000 },
-    }), {
-      phase: 'idle', intent: null, guard: null, radioTx: 'off',
-      txRisk: 'none', mayOwnKey: false, fault: null,
-    });
+    }), { intent: 'rx', observedPtt: 'off' });
     expect(target.querySelector('[data-indicator-fact="rf-authority"]')
       ?.getAttribute('data-indicator-rf')).toBe('receiving');
   });
