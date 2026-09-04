@@ -405,7 +405,7 @@
   // forwarder that re-reads `ptt`. PttFab snapshots them when a press arms, so
   // a press stranded by a rotation completes against the (now destroyed)
   // binding it started on instead of spuriously keying whichever generation is
-  // live 50 ms later — see `mobile-ptt-surface.ts` for the full rationale.
+  // live 50 ms later; the destroyed generation must stay inert.
   const noPtt = () => {};
 
   // ── Landscape PTT guards (#843 parity with FAB) ──

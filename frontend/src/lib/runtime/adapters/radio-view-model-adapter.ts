@@ -1382,8 +1382,8 @@ export interface RxAudioSnapshot {
 }
 
 /**
- * Projects the active DATA group's MOD-input source exactly as the App TX
- * authority does (`tx-controller/app-authority.ts::projectInputs`): the same
+ * Projects the active DATA group's MOD-input source with the same observation
+ * gate consumed by managed TX: the same
  * three-part `seen()` gate and the same `Number.isSafeInteger` value check.
  * Agreement with the real projector is pinned in
  * `__tests__/rx-audio-adapter.test.ts` rather than assumed.

@@ -328,7 +328,7 @@ describe('the txAux surface mounts only when the view model carries the group', 
     + 'div span span span button div span span div span span span span span span span span span span span button '
     + 'div span span span button div section header strong div div div '
     + 'section header strong div div div section div span '
-    + 'div button button div button button p span span section p span span span span p div button button '
+    + 'div button button div button button p span span section p span span span p div button button '
     + 'ul section div button button button label span input output div button button button output '
     + 'div button button output';
 

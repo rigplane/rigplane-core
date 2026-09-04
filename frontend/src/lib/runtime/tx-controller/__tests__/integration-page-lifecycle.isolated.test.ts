@@ -25,10 +25,10 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 //
 // One departure from the app-lifecycle.component.test.ts pattern:
 // `RadioLayoutV2` is replaced not by a mute stub but by `TxControllerProbe.svelte`
-// (support/TxControllerProbe.svelte), which calls the real `getAppTxController()`
+// (support/TxControllerProbe.svelte), which calls the real `getManagedAppTxController()`
 // from inside the real component tree (Svelte context only resolves from a
 // live component) and stashes the real facade so this file can drive
-// `.start()`/`.release()` on it directly — the same object a real panel
+// managed intent methods on it directly — the same object a real panel
 // (TxPanel.svelte) would retrieve, not a hand-built substitute.
 //
 // Unlike U4/U5, this file does NOT `vi.resetModules()` between tests. U4/U5
@@ -44,7 +44,7 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // instance of `svelte`'s internal effect-scheduling state — verified
 // empirically while building this file: the first `it()` passes either way,
 // every subsequent one fails Svelte context resolution
-// (`getAppTxController()` throwing "App TxController host is not provided")
+// (`getManagedAppTxController()` throwing when the App-root host is absent)
 // once `vi.resetModules()` is in the loop. Every test here instead: (a) fully
 // unmounts its `App` instance (which runs `browser-dependencies.ts`'s own
 // `dispose()`, clearing every tracked real timer and listener), and (b)

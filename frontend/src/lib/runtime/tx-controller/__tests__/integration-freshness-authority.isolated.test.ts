@@ -126,9 +126,8 @@ function observeAuthority(
 
 /** Deliver `pttOn()` without changing the supplied server observation. */
 function dispatchStart(
-  controller: Controller, factory: Factory, session: ControlSessionTransition, leaseId: string,
+  controller: Controller,
 ) {
-  void factory; void session; void leaseId;
   controller.pttOn();
   return controller.snapshot();
 }
@@ -181,7 +180,7 @@ describe('tx-controller freshness-authority integration pin — real projector +
 
     // The operator presses the key control against that repeated-timestamp
     // reading.
-    dispatchStart(controller, factory, getSession(), 'lease-freshness-pin');
+    dispatchStart(controller);
     await flush();
 
     expect(countFrames('ptt_on', socket)).toBe(1);

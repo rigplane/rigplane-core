@@ -100,11 +100,10 @@ async function setup(): Promise<{
 }
 
 function dispatchStart(
-  controller: Controller, factory: Factory, session: ControlSessionTransition,
-  leaseId: string, intent: 'momentary' | 'latched', at: number,
+  controller: Controller, at: number,
 ) {
   h.radio = { ...h.radio, ptt: false, fieldStatus: { ...h.radio.fieldStatus, ptt: field(at) } };
-  void factory; void session; void leaseId; void intent; void at;
+  void at;
   controller.pttOn();
 }
 
@@ -154,7 +153,7 @@ describe('tx-controller integration reconnect/de-key matrix — real WsChannel +
   it('WS loss during active TX: the automatic release queues OFF, which is the first TX-relevant frame on the recovered socket, ahead of other recovered traffic', async () => {
     const { factory, controller, socket: socket0, getSession, wsClient } = await setup();
 
-    dispatchStart(controller, factory, getSession(), 'lease-reconnect-off-first', 'momentary', 2);
+    dispatchStart(controller, 2);
     await flush();
     confirmAuthority(controller, factory, getSession(), true, 3);
     expect(countFrames('ptt_on', socket0)).toBe(1);
@@ -192,7 +191,7 @@ describe('tx-controller integration reconnect/de-key matrix — real WsChannel +
   it('WS loss while a release is pending: the unconfirmed OFF obligation survives the reconnect intact, never duplicated or discarded', async () => {
     const { factory, controller, socket: socket0, getSession } = await setup();
 
-    dispatchStart(controller, factory, getSession(), 'lease-pending-release', 'momentary', 2);
+    dispatchStart(controller, 2);
     await flush();
     confirmAuthority(controller, factory, getSession(), true, 3);
     // Release issued by the user while the socket is still live: the OFF

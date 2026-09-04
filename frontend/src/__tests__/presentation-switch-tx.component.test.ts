@@ -241,8 +241,7 @@ async function mountConnectedApp(): Promise<{
 }
 
 /** Start one momentary PTT flow without inventing browser RF truth. */
-async function keyDown(controller: ManagedAppTxController, leaseId: string): Promise<void> {
-  void leaseId;
+async function keyDown(controller: ManagedAppTxController): Promise<void> {
   controller.pttOn();
   await settle();
 }
@@ -290,7 +289,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
   // `stopLocalAudio` called — purely because the operator changed skin.
   it('never de-keys and hands the incoming subtree the identical controller', async () => {
     const { controller, socket } = await mountConnectedApp();
-    await keyDown(controller, 'lease-swap');
+    await keyDown(controller);
     expect(countFrames('ptt_on', socket)).toBe(1);
 
     // The old subtree's capture is cleared, so a non-null capture afterwards
@@ -319,7 +318,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
   // newest request (two live probes would mean two subtrees owning TX UI).
   it('survives rapid A → B → A under a confirmed key with one live subtree', async () => {
     const { controller, socket } = await mountConnectedApp();
-    await keyDown(controller, 'lease-rapid');
+    await keyDown(controller);
     const probeBefore = document.querySelector('.tx-controller-probe');
 
     // ── Leg 1: superseded in flight ──
@@ -367,7 +366,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
   // subtree on top of a live TX session — a stale surface owning the key's UI.
   it('makes a stale resolution that lands after a switch-during-TX inert', async () => {
     const { controller, socket } = await mountConnectedApp();
-    await keyDown(controller, 'lease-stale');
+    await keyDown(controller);
     const snapshotBefore = controller.snapshot();
 
     requestSkin('mobile');       // request 2 — left in flight
@@ -397,7 +396,7 @@ describe('MOR-1086 — TX authority identity across a presentation switch', () =
   // at App teardown — the switches above would each add a `ptt_off`.
   it('releases exactly once at teardown after a run of switches under a key', async () => {
     const { component, controller, socket } = await mountConnectedApp();
-    await keyDown(controller, 'lease-teardown');
+    await keyDown(controller);
 
     for (const id of ['lcd-cockpit', 'mobile', 'desktop-v2'] as const) {
       await switchTo(id);

@@ -102,11 +102,10 @@ async function setup(): Promise<{
 }
 
 function dispatchStart(
-  controller: Controller, factory: Factory, session: ControlSessionTransition,
-  leaseId: string, intent: 'momentary' | 'latched', at: number,
+  controller: Controller, intent: 'momentary' | 'latched', at: number,
 ) {
   h.radio = { ...h.radio, ptt: false, fieldStatus: { ...h.radio.fieldStatus, ptt: field(at) } };
-  void factory; void session; void leaseId; void at;
+  void at;
   if (intent === 'momentary') controller.pttOn(); else controller.transmitOn();
 }
 
@@ -162,7 +161,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
   it('held: ON hits the wire exactly once, holds through an authoritative confirm, then a clean release/OFF/idle cycle', async () => {
     const { factory, controller, socket, getSession } = await setup();
 
-    dispatchStart(controller, factory, getSession(), 'lease-held', 'momentary', 2);
+    dispatchStart(controller, 'momentary', 2);
     await flush();
     expect(countFrames('ptt_on', socket)).toBe(1);
     expect(countFrames('ptt_off', socket)).toBe(0);
@@ -182,7 +181,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
   it('latched: ON hits the wire exactly once, holds through intent "latched", then a clean release/OFF/idle cycle', async () => {
     const { factory, controller, socket, getSession } = await setup();
 
-    dispatchStart(controller, factory, getSession(), 'lease-latched', 'latched', 2);
+    dispatchStart(controller, 'latched', 2);
     await flush();
     expect(countFrames('ptt_on', socket)).toBe(0);
     expect(h.submit).toHaveBeenCalledWith('transmit_on');
@@ -203,7 +202,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     let resolveAudio!: (error: string | null) => void;
     h.start.mockImplementationOnce(() => new Promise((resolve) => { resolveAudio = resolve; }));
 
-    dispatchStart(controller, factory, getSession(), 'lease-pending', 'momentary', 2);
+    dispatchStart(controller, 'momentary', 2);
     releaseNow(controller, factory);
     expect(h.stop).toHaveBeenCalledTimes(1);
 
@@ -218,7 +217,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
 
   it('duplicate release coalescing: two release dispatches produce exactly one ptt_off frame', async () => {
     const { factory, controller, socket, getSession } = await setup();
-    dispatchStart(controller, factory, getSession(), 'lease-dup', 'momentary', 2);
+    dispatchStart(controller, 'momentary', 2);
     await flush();
     confirmAuthority(controller, factory, getSession(), true, 3);
     releaseNow(controller, factory);
@@ -233,7 +232,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
 
   it('no-ON-replay: reconnecting with an active lease never re-sends ptt_on, and the queued OFF drains first', async () => {
     const { factory, controller, socket: socket0, getSession } = await setup();
-    dispatchStart(controller, factory, getSession(), 'lease-reconnect', 'momentary', 2);
+    dispatchStart(controller, 'momentary', 2);
     await flush();
     confirmAuthority(controller, factory, getSession(), true, 3);
     expect(countFrames('ptt_on', socket0)).toBe(1);
