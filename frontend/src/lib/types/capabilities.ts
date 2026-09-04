@@ -175,6 +175,8 @@ export interface Capabilities {
   preLabels?: Record<string, string>;  // Preamp labels (e.g. {"0":"OFF","1":"P1","2":"P2"})
   agcModes?: number[];    // AGC mode values (e.g. [1,2,3] = FAST/MID/SLOW)
   agcLabels?: Record<string, string>;  // AGC mode labels (e.g. {"1":"FAST","2":"MID","3":"SLOW"})
+  /** Ordered profile-backed legal CTCSS values in exact integer centiHz. */
+  readonly ctcssTonesCentihz?: readonly number[];
   /** RF/SQL control model (MOR-1447 leg 2): "separate" (default, two
    *  independent controls) or "combined" (Icom-style single RF/SQL knob).
    *  Absent on older servers — treat as "separate". */
@@ -223,6 +225,11 @@ function requireBoolean(value: unknown, path: string): void {
 function requireStringArray(value: unknown, path: string): void {
   if (!Array.isArray(value)) invalid(path, 'an array');
   value.forEach((item, index) => requireString(item, `${path}[${index}]`));
+}
+
+function requireSafeIntegerArray(value: unknown, path: string): void {
+  if (!Array.isArray(value)) invalid(path, 'an array');
+  value.forEach((item, index) => safeInteger(item, `${path}[${index}]`));
 }
 
 function requireInteger(value: unknown, path: string, positive = false): void {
@@ -448,6 +455,9 @@ export function validateCapabilities(value: unknown): Capabilities {
   requireBoolean(raw.tx, '$.tx');
   requireStringArray(raw.capabilities, '$.capabilities');
   requireInteger(raw.receivers, '$.receivers', true);
+  if (Object.prototype.hasOwnProperty.call(raw, 'ctcssTonesCentihz')) {
+    requireSafeIntegerArray(raw.ctcssTonesCentihz, '$.ctcssTonesCentihz');
+  }
   if (Object.prototype.hasOwnProperty.call(raw, 'hasRxAntenna')) {
     requireBoolean(raw.hasRxAntenna, '$.hasRxAntenna');
   }

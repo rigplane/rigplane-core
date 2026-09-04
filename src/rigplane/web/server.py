@@ -3013,6 +3013,9 @@ class WebServer:
                 if profile is not None
                 else (2 if has_dual_rx else 1)
             ),
+            "ctcssTonesCentihz": (
+                list(profile.ctcss_tones_centihz or ()) if profile is not None else []
+            ),
             "tags": sorted(caps),
         }
         if profile is not None:
@@ -3507,6 +3510,7 @@ class WebServer:
             "preLabels": profile.pre_labels if profile.pre_labels else {},
             "agcModes": list(profile.agc_modes) if profile.agc_modes else [],
             "agcLabels": profile.agc_labels if profile.agc_labels else {},
+            "ctcssTonesCentihz": list(profile.ctcss_tones_centihz or ()),
             "rfSqlControlModel": profile.rf_sql_control_model,
             "dataModeCount": profile.data_mode_count,
             "dataModeLabels": (
