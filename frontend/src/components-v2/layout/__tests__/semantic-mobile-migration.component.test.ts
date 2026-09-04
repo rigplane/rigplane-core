@@ -3,31 +3,24 @@
  * a v1 layout manifest, mirroring the MOR-1092 LCD slice.
  *
  * SAFETY-ADJACENT. The mobile shell carries the operator's press-and-hold PTT,
- * and this slice adds a SECOND TX source to it (the semantic RX/TX surface,
- * which keys LATCHED). So four things must hold at once:
+ * and this slice also renders the semantic RX/TX surface, which emits a
+ * latched TRANSMIT intent. Four things must hold at once:
  *   1. the semantic VFO / RX-TX surfaces are mounted in the portrait deck via
  *      the unchanged `SemanticRadioSurfaces` wiring — no new TX code path;
  *   2. the press-and-hold path is still the MOR-1011/1012 gesture recognizer
- *      feeding the App TX controller under its own per-surface `sourceId`,
- *      byte-identical to before — pinned by identity, not by shape;
- *   3. the two sources cannot disturb each other: the semantic surface's
- *      fail-closed teardown release (which fires on every rotation, because
- *      the portrait deck is destroyed) must be INERT against a lease the PTT
- *      gesture owns, and vice versa;
+ *      feeding the App-root managed controller — pinned by wire intent;
+ *   3. momentary WS PTT and latched HTTP TRANSMIT/ForceOFF remain distinct,
+ *      and rotation releases only an in-progress momentary press;
  *   4. the App-global Toast / power overlay / TX lamp stay singular and global
  *      (MOR-1059), and the skin wrapper owns no resolution or runtime.
- *
- * The controller behind `getAppTxController` is the REAL `TxController` over
- * stub dependencies, not a double: claim 3 is a property of the production
- * state machine's owner check, and a recording spy would pass it vacuously.
  *
  * Each test's doc line names the mutation it exists to kill.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
-import { TxController } from '$lib/runtime/tx-controller/controller';
-import type { TxControllerDependencies } from '$lib/runtime/tx-controller/controller';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { ManagedTxState } from '$lib/runtime/tx-controller/managed-state';
 
 // -- Child components the shell mounts that are irrelevant here -------------
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -135,9 +128,12 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 // panel-props would ACTIVATE previously inert stubs and change what this
 // suite actually exercises.
 
-const txHost = vi.hoisted(() => ({ current: undefined as unknown as TxHostFacade }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => txHost.current,
+const txHost = vi.hoisted(() => ({ current: undefined as ManagedAppTxController | undefined }));
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => {
+    if (!txHost.current) throw new Error('managed TX host missing in test');
+    return txHost.current;
+  },
 }));
 
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
@@ -145,97 +141,30 @@ import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import mobileSkinSource from '../../../skins/mobile/MobileSkin.svelte?raw';
 import { hasTx } from '$lib/stores/capabilities.svelte';
 
-// ---------------------------------------------------------------------------
-// Real-controller harness
-//
-// Copied from MobileRadioLayout.component.svelte.test.ts (itself copied from
-// TxPanel.isolated.test.ts). Duplicated rather than shared because the suites live in
-// different pools and a shared helper module would pin the controller in the
-// ``isolate: false`` cache for siblings that mock it — see vite.config.ts /
-// #771. Keep the copies in step.
-// ---------------------------------------------------------------------------
-type TxEvent = Parameters<TxController['dispatch']>[0];
-type StartEvent = Extract<TxEvent, { type: 'start' }>;
-type Eligibility = StartEvent['eligibility'];
-type Observation = StartEvent['ptt'];
-type Intent = StartEvent['intent'];
-type Guard = Extract<TxEvent, { type: 'intent' }>['guard'];
-type Command = Parameters<TxControllerDependencies['sendPtt']>[0];
-type Report = Parameters<TxControllerDependencies['sendPtt']>[3];
-type TxHostFacade = ReturnType<typeof createTxHarness>['facade'];
-
-const marker = (seq: number) => ({
-  authorityEpoch: 1, pttObservationSeq: seq, pttLastObservedMonotonic: seq,
+const RX: ManagedTxState = Object.freeze({
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
+  faultDetail: null, fresh: true, releaseRequired: false, remainingMs: null,
+  lastOperation: null,
 });
-const allowed: Eligibility = {
-  catPtt: true, browserTxAudio: true, controlLive: true, permit: 'allowed',
-  target: { receiver: 'MAIN', slot: 'A', frequencyHz: 14_074_000 },
-};
-const observe = (value: boolean, seq: number): Observation =>
-  ({ value, observed: true, fresh: true, source: 'radio-readback', marker: marker(seq) });
-
-function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== 'object') return value;
-  const copy = Object.fromEntries(Object.entries(value as Record<string, unknown>)
-    .map(([key, child]) => [key, deepFreeze(child)]));
-  return Object.freeze(copy) as unknown as T;
-}
 
 function createTxHarness() {
-  const sends: Array<{ command: Command; report: Report }> = [];
-  /** Every `start` the App controller is asked for, with its source identity. */
-  const starts: Array<{ sourceId: string; leaseId: string; intent: Intent }> = [];
-  /** Every `release` request, whether or not the model honours it. */
-  const releases: Array<{ sourceId: string }> = [];
-  const audio: { next: Promise<string | null> } = { next: Promise.resolve(null) };
-  const eligibility = { current: allowed };
-  let id = 0;
-  let seq = 0;
-  const dependencies: TxControllerDependencies = {
-    startAudio: vi.fn(() => audio.next),
-    sendPtt: vi.fn((command, _commandId, _correlation, report) => { sends.push({ command, report }); }),
-    stopLocalAudio: vi.fn(),
-    restoreMod: vi.fn(),
-    commandId: vi.fn((command) => `${command}-${++id}`),
-    schedule: vi.fn((callback, delay) => setTimeout(callback, delay)),
-    cancel: vi.fn((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)),
-    timeoutMs: { 'audio-start': 60_000, 'on-confirmation': 60_000, 'off-confirmation': 60_000 },
-  };
-  const controller = new TxController(1, marker(0), dependencies);
-  const facade = {
-    snapshot: () => deepFreeze(controller.snapshot()),
-    subscribe: (listener: (state: unknown) => void) =>
-      controller.subscribe((state) => listener(deepFreeze(state))),
-    start: (sourceId: string, leaseId: string, intent: Intent) => {
-      starts.push({ sourceId, leaseId, intent });
-      return controller.dispatch({
-        type: 'start', sourceId, leaseId, intent,
-        eligibility: eligibility.current, ptt: observe(false, ++seq),
-      });
-    },
-    setIntent: (sourceId: string, guard: Guard, intent: Intent) =>
-      controller.dispatch({ type: 'intent', sourceId, guard: { ...guard }, intent }),
-    release: (sourceId: string, guard: Guard) => {
-      releases.push({ sourceId });
-      return controller.dispatch({
-        type: 'release', sourceId, guard: { ...guard }, commandId: dependencies.commandId('off'),
-      });
-    },
-    resetFault: () => controller.dispatch({ type: 'reset-fault' }),
-  };
+  let state = RX;
+  const listeners = new Set<(next: Readonly<ManagedTxState>) => void>();
+  const pttOn = vi.fn();
+  const pttOff = vi.fn();
+  const transmitOn = vi.fn();
+  const forceOff = vi.fn();
+  const facade: ManagedAppTxController = Object.freeze({
+    snapshot: () => state,
+    subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    pttOn, pttOff, transmitOn, forceOff,
+  });
   return {
-    controller, dependencies, sends, starts, releases, facade, audio, eligibility,
-    /** Feed an authoritative PTT readback (what the App host does on session
-     *  updates). Without one the controller reports `radioTx: 'unknown'` and
-     *  the semantic surface correctly refuses to offer its key action. */
-    authority: (value: boolean) => controller.dispatch({
-      type: 'authority', epoch: 1, ptt: observe(value, ++seq),
-      eligibility: eligibility.current, offCommandId: dependencies.commandId('off'),
-    }),
-    confirm: (command: Command) => {
-      const send = [...sends].reverse().find((item) => item.command === command);
-      expect(send).toBeDefined();
-      send!.report({ outcome: 'sent', eventEpoch: 1, barrier: marker(++seq) });
+    facade, pttOn, pttOff, transmitOn, forceOff,
+    project: (next: ManagedTxState) => {
+      state = Object.freeze({ ...next });
+      for (const listener of listeners) listener(state);
+      flushSync();
     },
   };
 }
@@ -244,7 +173,6 @@ let tx: ReturnType<typeof createTxHarness>;
 let components: ReturnType<typeof mount>[] = [];
 
 const HOLD_MS = 50;
-const GESTURE_WINDOW_MS = 300;
 
 function setViewport(landscape: boolean) {
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: landscape ? 844 : 390 });
@@ -280,16 +208,11 @@ function fabPress(t: HTMLElement) {
   flushSync();
 }
 
-/** Press and hold the FAB until the radio has acknowledged the ON command. */
+/** Press and hold the FAB until the managed gesture emits PTT ON. */
 async function hold(t: HTMLElement) {
   fabPress(t);
   await flushAudio();
-  tx.confirm('on');
-  flushSync();
 }
-
-/** Count of `off` commands the controller has actually emitted. */
-const offs = () => tx.sends.filter((s) => s.command === 'off').length;
 
 /**
  * Key through the semantic RX/TX surface. An authoritative readback comes
@@ -298,8 +221,6 @@ const offs = () => tx.sends.filter((s) => s.command === 'off').length;
  * silently-disabled button from making these tests pass vacuously.
  */
 function semanticKey(t: HTMLElement) {
-  tx.authority(false);
-  flushSync();
   const key = t.querySelector<HTMLButtonElement>('[data-testid="rx-tx-key"]')!;
   expect(key.disabled).toBe(false);
   key.click();
@@ -367,47 +288,33 @@ describe('semantic VFO / RX-TX adoption in the mobile shell', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. The press-and-hold PTT path is UNCHANGED — identity, not shape
+// 2. Momentary PTT and latched TRANSMIT stay distinct
 // ---------------------------------------------------------------------------
-describe('mobile press-and-hold PTT identity (MOR-1011/1012, unchanged)', () => {
-  // THE pin. Kills: rewiring the FAB to anything other than the per-surface
-  // gesture recognizer — to the semantic surface's latched `requestKey`, to a
-  // shared sourceId, to a raw command, or to a re-derived id. All of those
-  // change the (sourceId, intent) pair the App controller is asked to start.
-  it('keys through the gesture recognizer under its own momentary mobile source', async () => {
+describe('mobile managed TX intent routing', () => {
+  it('emits one momentary PTT ON through the App-root facade', async () => {
     const t = mountMobile();
     await hold(t);
-
-    expect(tx.starts).toHaveLength(1);
-    expect(tx.starts[0].sourceId).toMatch(/^mobile-ptt-portrait-\d+$/);
-    expect(tx.starts[0].intent).toBe('momentary');
-    // The lease id is derived from that same source identity, per-lease.
-    expect(tx.starts[0].leaseId).toBe(`${tx.starts[0].sourceId}-1`);
-    // The App controller — not a local machine — owns the resulting key.
-    expect(tx.controller.snapshot().sourceId).toBe(tx.starts[0].sourceId);
-    expect(tx.controller.snapshot().phase).toBe('key-confirm-pending');
+    expect(tx.pttOn).toHaveBeenCalledTimes(1);
+    expect(tx.pttOff).not.toHaveBeenCalled();
+    expect(tx.transmitOn).not.toHaveBeenCalled();
+    expect(tx.forceOff).not.toHaveBeenCalled();
   });
 
-  // Kills: the semantic surface silently becoming the press-and-hold owner.
-  // It keys LATCHED under its own id; if the FAB were rewired through it, the
-  // press above would produce a `semantic-rx-tx-*` latched start instead.
-  it('gives the semantic RX/TX key a different source and a different intent', () => {
+  it('emits one HTTP TRANSMIT intent from the semantic key and no WS PTT', () => {
     const t = mountMobile();
     semanticKey(t);
-
-    expect(tx.starts).toHaveLength(1);
-    expect(tx.starts[0].sourceId).toMatch(/^semantic-rx-tx-\d+$/);
-    expect(tx.starts[0].intent).toBe('latched');
-    expect(tx.starts[0].sourceId).not.toMatch(/^mobile-ptt/);
+    expect(tx.transmitOn).toHaveBeenCalledTimes(1);
+    expect(tx.pttOn).not.toHaveBeenCalled();
+    expect(tx.pttOff).not.toHaveBeenCalled();
+    expect(tx.forceOff).not.toHaveBeenCalled();
   });
 
   // Kills: reintroducing a local TX machine, raw PTT commands or bespoke
   // timers alongside the App controller (the MOR-1012 acceptance evidence,
   // re-asserted here because this slice edits the same file).
   it('still routes every mobile TX path through the App controller alone', () => {
-    expect(mobileLayoutSource).toContain('getAppTxController');
-    // MOR-1378: the recognizer wiring lives in wiring/mobile-ptt-surface.ts now.
-    expect(mobileLayoutSource).toContain('createMobilePttSurface');
+    expect(mobileLayoutSource).toContain('getManagedAppTxController');
+    expect(mobileLayoutSource).toContain('createManagedMobilePttSurface');
     // Deliberately NOT asserting on 'ptt_on'/'ptt_off' as bare substrings —
     // the retirement note in the layout's own comments names them.
     for (const retired of [
@@ -421,48 +328,25 @@ describe('mobile press-and-hold PTT identity (MOR-1011/1012, unchanged)', () => 
 });
 
 // ---------------------------------------------------------------------------
-// 3. The two TX sources cannot disturb each other
+// 3. Lifecycle and explicit unlock preserve transport meaning
 // ---------------------------------------------------------------------------
-describe('two TX sources on one mobile shell', () => {
-  // THE new-risk pin for this slice. The semantic subtree is destroyed on
-  // every rotation, and its fail-closed teardown blind-releases the LIVE
-  // guard. Kills: giving it the gesture's sourceId (or dropping the sourceId
-  // argument), which would let a rotation-time teardown dekey — or double-off
-  // — a lease the operator is holding on the FAB.
-  it('the semantic teardown cannot dekey a lease the PTT gesture owns', async () => {
+describe('managed mobile lifecycle', () => {
+  it('rotation releases an in-progress momentary PTT exactly once', async () => {
     const t = mountMobile();
     await hold(t);
-    const owner = tx.controller.snapshot().sourceId;
-    expect(owner).toMatch(/^mobile-ptt-portrait-\d+$/);
-
-    rotate(true); // destroys BOTH the portrait recognizer and the semantic deck
-
-    // The semantic surface did ask to release — with its own identity.
-    const semanticReleases = tx.releases.filter((r) => /^semantic-rx-tx-/.test(r.sourceId));
-    expect(semanticReleases.length).toBeGreaterThan(0);
-    // ...and it was inert: the single ptt_off is the recognizer's own
-    // documented rotation release (docs/guide/web-ui.md — rotating while
-    // keyed or latched releases TX rather than stranding it), not a second.
-    expect(offs()).toBe(1);
-    expect(tx.releases.filter((r) => r.sourceId === owner)).toHaveLength(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
+    rotate(true);
+    expect(tx.pttOff).toHaveBeenCalledTimes(1);
+    expect(tx.forceOff).not.toHaveBeenCalled();
+    expect(tx.transmitOn).not.toHaveBeenCalled();
   });
 
-  // The mirror image. Kills: the gesture recognizer releasing on a guard it
-  // does not own — a latched semantic key must survive an unrelated FAB tap.
-  it('the PTT gesture cannot dekey a lease the semantic surface owns', () => {
+  it('a press while canonical TRANSMIT is latched emits unconditional ForceOFF only', () => {
     const t = mountMobile();
-    semanticKey(t);
-    const owner = tx.controller.snapshot().sourceId;
-    expect(owner).toMatch(/^semantic-rx-tx-\d+$/);
-
+    tx.project({ ...RX, phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on' });
     fabPress(t);
-    pointer(fabEl(t), 'pointerup');
-    vi.advanceTimersByTime(GESTURE_WINDOW_MS * 2);
-    flushSync();
-
-    expect(offs()).toBe(0);
-    expect(tx.controller.snapshot().sourceId).toBe(owner);
+    expect(tx.forceOff).toHaveBeenCalledTimes(1);
+    expect(tx.pttOn).not.toHaveBeenCalled();
+    expect(tx.pttOff).not.toHaveBeenCalled();
   });
 });
 
@@ -480,9 +364,9 @@ describe('orientation change preserves App authority (MOR-1086 doctrine)', () =>
     rotate(false);
     expect(txHost.current).toBe(before);
     expect(txHost.current).toBe(tx.facade);
-    // And the shell is still LIVE on it: a post-rotation key still lands.
+    // And the shell is still live on it: a post-rotation key still lands.
     semanticKey(t);
-    expect(tx.controller.snapshot().sourceId).toMatch(/^semantic-rx-tx-\d+$/);
+    expect(tx.transmitOn).toHaveBeenCalledTimes(1);
   });
 
   // Kills: the semantic subtree taking its own App resource demand. It is
@@ -500,18 +384,15 @@ describe('orientation change preserves App authority (MOR-1086 doctrine)', () =>
     expect(registrySource).toContain("'mobile': ['hardware-scope']");
   });
 
-  // Kills: silently flipping the recorded rotation behaviour. The guide says
-  // rotating while keyed or latched RELEASES TX rather than stranding it;
-  // this asserts the direction the code actually implements, both ways.
-  it('still releases TX on rotation, in the direction the guide records', async () => {
-    const guide = readFileSync('../docs/guide/web-ui.md', 'utf8');
-    expect(guide).toContain('rotating the device while keyed or latched releases TX');
-
+  it('presentation rotation preserves canonical latched TRANSMIT without commands', () => {
     const t = mountMobile();
-    await hold(t);
+    tx.project({ ...RX, phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on' });
     rotate(true);
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
+    rotate(false);
+    expect(tx.pttOn).not.toHaveBeenCalled();
+    expect(tx.pttOff).not.toHaveBeenCalled();
+    expect(tx.transmitOn).not.toHaveBeenCalled();
+    expect(tx.forceOff).not.toHaveBeenCalled();
   });
 });
 
@@ -567,7 +448,7 @@ describe('the mobile skin wrapper is a pure delegator', () => {
   it('owns no runtime: no transport, command, capability or TX-authority import', () => {
     for (const forbidden of [
       '$lib/transport', 'audio-manager', '$lib/stores/capabilities',
-      'tx-controller/app-host', 'sendCommand', 'wiring/command-bus',
+      'tx-controller/managed-app-host', 'sendCommand', 'wiring/command-bus',
     ]) {
       expect(mobileSkinSource).not.toContain(forbidden);
     }

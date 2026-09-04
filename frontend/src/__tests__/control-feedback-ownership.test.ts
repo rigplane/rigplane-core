@@ -19,7 +19,7 @@ async function messages(code: string, filePath: string): Promise<readonly string
 }
 
 const FORBIDDEN = [
-  [`import value from '$lib/runtime/tx-controller/model';`, 'static import'],
+  [`import value from '$lib/runtime/tx-controller/managed-controller';`, 'static import'],
   [`import value from '$lib//runtime/frontend-runtime';`, 'repeated-separator import'],
   [`export { value } from '$lib//runtime/frontend-runtime';`, 'repeated-separator named export'],
   [`export * from '$lib//runtime/frontend-runtime';`, 'repeated-separator export star'],
@@ -44,11 +44,11 @@ const FORBIDDEN = [
   [`import type { ControlFeedback } from '$lib/types/../runtime/adapters/panel-adapters';`, 'type import alias traversal'],
   [`export { runtime } from '$lib/runtime/frontend-runtime';`, 'named export'],
   [`export * from '$lib/runtime/commands/radio-intents';`, 'export star'],
-  [`void import('$lib/runtime/tx-controller/model');`, 'literal dynamic import'],
+  [`void import('$lib/runtime/tx-controller/managed-controller');`, 'literal dynamic import'],
   ['void import(`$lib/runtime/frontend-runtime`);', 'literal template dynamic import'],
   [`void import(\`$lib/runtime/${'${owner}'}\`);`, 'template dynamic import'],
   [`void import(owner);`, 'non-literal dynamic import'],
-  [`import value from '../../lib/runtime/tx-controller/model';`, 'relative traversal'],
+  [`import value from '../../lib/runtime/tx-controller/managed-controller';`, 'relative traversal'],
 ] as const;
 
 describe('normalized ControlFeedback ownership boundary (MOR-1712)', () => {
