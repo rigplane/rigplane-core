@@ -20,6 +20,10 @@
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import { projectPeerSplitDisplay } from '../../semantic/radio-display-model';
+  import CenterstageDisplay from './CenterstageDisplay.svelte';
+  import DominantUnifiedDisplay from './DominantUnifiedDisplay.svelte';
+  import LcdDisplayVariant, { type LcdDisplayVariantId } from './LcdDisplayVariant.svelte';
+  import PanadapterDisplay from './PanadapterDisplay.svelte';
   import PeerSplitDisplay from './PeerSplitDisplay.svelte';
 
   /**
@@ -37,12 +41,24 @@
     /** The group's own `scaling.minScale`, resolved by the same shell and
      *  handed to `ScaledStage` as its scale floor (MOR-2259). */
     minScale: number;
+    displayVariant?: LcdDisplayVariantId;
   }
-  let { canvasW, canvasH, minScale }: Props = $props();
+  let { canvasW, canvasH, minScale, displayVariant = 'peer' }: Props = $props();
 </script>
 
 {#snippet readonlyDisplay(view: RadioViewModel)}
-  <PeerSplitDisplay model={projectPeerSplitDisplay(view)} />
+  {@const model = projectPeerSplitDisplay(view)}
+  {#snippet peer()}<PeerSplitDisplay {model} />{/snippet}
+  {#snippet dominant()}<DominantUnifiedDisplay {model} />{/snippet}
+  {#snippet centerstage()}<CenterstageDisplay {model} />{/snippet}
+  {#snippet panadapter()}<PanadapterDisplay {model} />{/snippet}
+  <LcdDisplayVariant
+    variant={displayVariant}
+    {peer}
+    {dominant}
+    {centerstage}
+    {panadapter}
+  />
 {/snippet}
 
 <div class="peer-split-holder">

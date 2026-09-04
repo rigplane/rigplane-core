@@ -193,10 +193,13 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 // its own, unrelated fixture reasons (a `__tests__` file, excluded from the
 // production "declared once" scan in `presentation/groups/__tests__/
 // contract.test.ts`).
-function render(): void {
+function render(displayVariant: 'peer' | 'dominant' | 'centerstage' | 'panadapter' = 'peer'): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(PeerSplitLayout, { target, props: { canvasW: 1280, canvasH: 540, minScale: 0.5 } });
+  component = mount(PeerSplitLayout, {
+    target,
+    props: { canvasW: 1280, canvasH: 540, minScale: 0.5, displayVariant },
+  });
   flushSync();
 }
 
@@ -245,6 +248,21 @@ describe('the peer-split chassis mounts', () => {
     expect(glass!.querySelector('[data-testid="peer-split-display"]')).not.toBeNull();
     expect(glass!.querySelectorAll('[data-testid="lcd-peer-column"]')).toHaveLength(2);
     expect(glass!.querySelector('[data-testid="peer-split-clock"]')).toBeNull();
+  });
+
+  it.each([
+    ['peer', 'peer-split-display'],
+    ['dominant', 'dominant-unified-display'],
+    ['centerstage', 'centerstage-display'],
+    ['panadapter', 'panadapter-display'],
+  ] as const)('routes the %s display through the same passive glass host', (displayVariant, testId) => {
+    render(displayVariant);
+    const glass = q('[data-testid="peer-split-glass"]');
+    expect(glass!.querySelector(`[data-testid="${testId}"]`)).not.toBeNull();
+    expect(glass!.querySelectorAll(
+      '[data-testid="peer-split-display"], [data-testid="dominant-unified-display"], '
+      + '[data-testid="centerstage-display"], [data-testid="panadapter-display"]',
+    )).toHaveLength(1);
   });
 
   // NOT ASSERTED HERE: that `.semantic-surfaces` actually receives
