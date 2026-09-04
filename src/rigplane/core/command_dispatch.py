@@ -249,6 +249,13 @@ def _bind_boolean(field: str, params: Mapping[str, Any]) -> dict[str, Any]:
     return {"on": value, field: value}
 
 
+def _bind_tuner_status(params: Mapping[str, Any]) -> dict[str, Any]:
+    value = params["value"]
+    if type(value) is not int or value not in (0, 1, 2):
+        raise ValueError(f"tuner value must be 0, 1, or 2; got {value!r}")
+    return {"value": value}
+
+
 def _bind_rx_antenna(params: Mapping[str, Any]) -> dict[str, Any]:
     antenna = params["antenna"]
     if isinstance(antenna, bool) or not isinstance(antenna, int):
@@ -260,6 +267,12 @@ def _bind_rx_antenna(params: Mapping[str, Any]) -> dict[str, Any]:
 
 def _global_slow_state_target(field: str, _params: Mapping[str, Any]) -> FieldPath:
     return FieldPath.global_("slow_state", field)
+
+
+def _global_operator_controls_target(
+    field: str, _params: Mapping[str, Any]
+) -> FieldPath:
+    return FieldPath.global_("operator_controls", field)
 
 
 def _rx_antenna_target(params: Mapping[str, Any]) -> FieldPath:
@@ -325,6 +338,15 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             queue_policy="coalesced",
             receiver_aware=True,
             project_expectation=_project_attenuator_expectation,
+        ),
+        "set_tuner_status": CommandDescriptor(
+            name="set_tuner_status",
+            method_name="set_tuner_status",
+            bind=_bind_tuner_status,
+            target=partial(_global_operator_controls_target, "tuner_status"),
+            argument_names=("value",),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_tuner_status",),
         ),
         "set_antenna_1": CommandDescriptor(
             name="set_antenna_1",

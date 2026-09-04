@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TypeAlias
 
-from rigplane.core.command_service import command_intent_from_request
+from rigplane.core.command_dispatch import bind_command_intent
 from rigplane.core.state_pipeline_contracts import CommandIntent, CommandSource
 from rigplane.runtime._poller_types import (
     SetAntenna1,
@@ -64,10 +64,11 @@ def managed_write_intent(
                 f"unsupported managed write command: {type(command).__name__}"
             )
 
-    return command_intent_from_request(
+    return bind_command_intent(
         name,
         params,
         source=source,
         command_id=command_id,
         session_id=session_id,
+        timeout=2.0,
     )

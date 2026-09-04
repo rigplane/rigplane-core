@@ -22,9 +22,24 @@ from rigplane.runtime.managed_write_intent_bridge import (
 @pytest.mark.parametrize(
     ("command", "name", "params", "target"),
     [
-        (SetTunerStatus(0), "set_tuner_status", {"value": 0}, None),
-        (SetTunerStatus(1), "set_tuner_status", {"value": 1}, None),
-        (SetTunerStatus(2), "set_tuner_status", {"value": 2}, None),
+        (
+            SetTunerStatus(0),
+            "set_tuner_status",
+            {"value": 0},
+            "global.operator_controls.tuner_status",
+        ),
+        (
+            SetTunerStatus(1),
+            "set_tuner_status",
+            {"value": 1},
+            "global.operator_controls.tuner_status",
+        ),
+        (
+            SetTunerStatus(2),
+            "set_tuner_status",
+            {"value": 2},
+            "global.operator_controls.tuner_status",
+        ),
         (
             SetAntenna1(True),
             "set_antenna_1",
