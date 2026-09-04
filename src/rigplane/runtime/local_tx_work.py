@@ -25,7 +25,10 @@ class GuardedTunerCapable(Protocol):
 
 
 async def _drain(task: asyncio.Task[object]) -> None:
-    await asyncio.gather(task, return_exceptions=True)
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 class LocalTxWorkRunner:
@@ -47,7 +50,10 @@ class LocalTxWorkRunner:
 
         self._fence.register(token, cancel_and_drain, scope=None)
         try:
-            return await task
+            result = await task
+            if not self._fence.is_current(token):
+                raise asyncio.CancelledError
+            return result
         except asyncio.CancelledError:
             if not task.done():
                 task.cancel()
