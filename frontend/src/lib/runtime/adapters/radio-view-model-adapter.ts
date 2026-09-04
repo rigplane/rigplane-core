@@ -246,16 +246,13 @@ function deriveTxAux(state: ServerState | null, caps: Capabilities | null): TxAu
 }
 
 /**
- * The subset of the App TX authority the meter facts read (MOR-1262 slice 2A).
- * `Pick<>` of the RX/TX surface's own snapshot type — one authority vocabulary
- * for the whole v3 contract layer, already parity-pinned against the real
- * reducer in `semantic/__tests__/rx-tx-authority-parity.test.ts`, so the
- * controller's deep-readonly `snapshot()` is assignable with no adaptation.
+ * The subset of the managed server TX snapshot the meter facts read
+ * (MOR-1262 slice 2A). Its deep-readonly shape is assignable without adaptation.
  */
 export type MetersTxAuthority = Pick<TxAuthoritySnapshot, 'radioTx' | 'txRisk'>;
 
 /**
- * SAFETY INVARIANT R9. TX truth comes from the App TX authority and from
+ * SAFETY INVARIANT R9. TX truth comes from the managed server snapshot and from
  * nowhere else — never from `state.ptt`, which is a command/readback echo
  * that can read RX while the key is still down (the AppGlobalHost lamp's own
  * reasoning, MOR-1059) and whose use for meter chrome is the open MOR-1235

@@ -552,17 +552,16 @@ const manifest = {
     config: 'frontend/vite.fixtures.config.ts (additive; vite.config.ts untouched)',
     stubbedSeams: [
       '$lib/runtime',
-      '$lib/runtime/tx-controller/app-host',
+      '$lib/runtime/tx-controller/managed-app-host',
       '$lib/runtime/adapters/mod-input-tx-guard.svelte',
       '$lib/runtime/adapters/panel-adapters',
-      'components-v2/wiring/command-bus',
     ],
     productionFilesChanged: 0,
   },
   intentionalDifferences: [
     'The cockpit is mounted DIRECTLY (fixtures/main.ts) — resolveSkinId() has no '
     + 'cockpit branch on this commit, so no navigation path can produce these views.',
-    'Five live seams are stubbed (see harness.stubbedSeams); every other module in the '
+    'Four managed-app-host/server-state seams are stubbed (see harness.stubbedSeams); every other module in the '
     + 'render path — adapter, capability derivation, semantic surfaces, i18n, CSS — is shipped code.',
     'Screenshots are taken with Playwright `animations: "disabled"` and `caret: "hide"` for '
     + 'determinism. The cockpit declares no animation of its own; the only transition in the '

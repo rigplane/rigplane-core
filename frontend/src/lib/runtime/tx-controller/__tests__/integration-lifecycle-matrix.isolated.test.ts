@@ -3,35 +3,12 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ControlSessionTransition } from '$lib/transport/ws-client';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 
-// ─── Integration-lifecycle matrix — held/latched/pending-release/no-ON-replay
-// through the REAL stack (MOR-1089 U4) ───────────────────────────────────────
-//
-// Every other tx-controller test proves ONE layer against a hand-built fake of
-// its neighbor (model.ts against fake dependencies in controller-contract, or
-// browser-dependencies.ts against a fake ws-client in
-// browser-dependencies(-fault-injection).test.ts). This file is the one place
-// that wires all three for real: the REAL WsChannel singleton in
-// `$lib/transport/ws-client` (driven only at the socket boundary by the
-// shared `MockWebSocket` fake — U0), the REAL
-// `createManagedBrowserDependencies()` factory, and a REAL
-// `ManagedTxController`. Only its transport/media seams
-// are mocked (radio.svelte, capabilities.svelte, tx-adapter) — the same seam
-// U2 (browser-dependencies-fault-injection.isolated.test.ts) mocks.
-// `$lib/stores/connection.svelte` is left REAL: it is the real ws-client's
-// own dependency for `isLiveRadioAvailable()`/connection flags, plain
-// `$state` setters that are harmless under jsdom.
-//
-// The "session → controller" glue in `setup()` below (dispatch `epoch` then
-// `authority` on every session transition) is a deliberately small, direct
-// reproduction of `app-host.ts`'s `applyAuthority` —
-// `provideAppTxControllerHost` itself can't run here because it calls
-// Svelte's `getContext`/`setContext`, which require a live component
-// lifecycle.
-//
-// Like `ws-client-store.integration.test.ts`, ws-client holds module-level
-// singletons (`_ctrl`, `_fullState`, ...) that persist across `it()` blocks
-// sharing a module cache, so every test resets the module graph
-// (`vi.resetModules()`) and dynamically imports the stack fresh.
+// Managed delivery lifecycle matrix (MOR-1089 U4): held, latched,
+// pending-release, duplicate-release, and reconnect/no-ON-replay behavior.
+// It joins the real WsChannel, managed browser dependencies, and
+// ManagedTxController; only server-state/media inputs and the socket boundary
+// are controlled. Every case resets the module graph because WsChannel keeps
+// module-level session state.
 
 const h = vi.hoisted(() => ({
   radio: null as any,
@@ -103,7 +80,7 @@ async function loadStack() {
 }
 
 /** Boot the real control channel, factory, and controller — wired the same
- * way `app-host.ts`'s `provideAppTxControllerHost` wires them, minus the
+ * way `managed-app-host.ts`'s `provideManagedAppTxHost` wires them, minus the
  * Svelte context (which needs a live component to call into). */
 async function setup(): Promise<{
   factory: Factory; controller: Controller; socket: MockWebSocket;

@@ -4,11 +4,12 @@
   This is the ONLY place the two pure surfaces meet live state: it derives the
   MOR-1062 view model from the real runtime through
   `lib/runtime/adapters/radio-view-model-adapter`, hands the RX/TX surface a
-  snapshot of the App-owned TX authority (v3 ADR invariant 11 — the controller
-  in `lib/runtime/tx-controller/app-host`, provided once by App.svelte), and
+  server-shaped TX snapshot from
+  `lib/runtime/tx-controller/managed-app-host`, and
   turns the surfaces' callback intents into commands. The surfaces themselves
-  stay presentation-only; the authoritative global TX lamp stays in
+  stay presentation-only; the global TX lamp stays in
   AppGlobalHost (MOR-1059) and is not duplicated here.
+  Both render the same server snapshot.
 -->
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
@@ -463,7 +464,7 @@
   // true, so a value that type-checks but breaks a structural or cross-field
   // invariant still throws here instead of reaching the surfaces below
   // silently. Dead code in a production build; see `radio-view-model-guard.ts`.
-  // MOR-1262 slice 2A: the live authority snapshot is the THIRD argument — the
+  // MOR-1262 slice 2A: the managed server snapshot is the THIRD argument — the
   // meter facts read their TX relevance from it and never from `state.ptt`
   // (invariant R9). Without it the adapter emits no `meters` group at all.
   // MOR-1279 slice 3B: the RX-audio snapshot is the FOURTH.
