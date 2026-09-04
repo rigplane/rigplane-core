@@ -142,6 +142,19 @@ def _mock_radio_ctx() -> tuple[MagicMock, _CapableRadio]:
     return radio_cls, radio
 
 
+def _add_managed_tx_surface(radio: _CapableRadio) -> None:
+    async def actuate(_token, _operation, *, is_current):
+        from rigplane.runtime.managed_tx_state import ActuationResult
+
+        return ActuationResult.ACCEPTED if is_current() else ActuationResult.REJECTED
+
+    async def set_ptt(_on: bool) -> None:
+        pass
+
+    radio.actuate = actuate
+    radio.set_ptt = set_ptt
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("command", "handler_name"),
@@ -193,6 +206,8 @@ async def test_run_dispatches_non_audio_commands(
         args.rate_limit = None
 
     _, radio = _mock_radio_ctx()
+    if command == "web":
+        _add_managed_tx_surface(radio)
     with (
         patch("rigplane.cli.create_radio", return_value=radio),
         patch("rigplane.cli.check_ports_available"),
@@ -202,7 +217,14 @@ async def test_run_dispatches_non_audio_commands(
         rc = await _run(args)
 
     assert rc == 7
-    handler.assert_awaited_once_with(radio, args)
+    if command == "web":
+        handler.assert_awaited_once_with(
+            radio,
+            args,
+            managed_tx_composition=radio._managed_tx_composition,
+        )
+    else:
+        handler.assert_awaited_once_with(radio, args)
 
 
 @pytest.mark.asyncio
@@ -226,6 +248,7 @@ async def test_run_web_uses_serial_backend_factory_config() -> None:
         callsign=None,
     )
     _, radio = _mock_radio_ctx()
+    _add_managed_tx_surface(radio)
     with (
         patch("rigplane.cli.create_radio", return_value=radio) as create_radio,
         patch("rigplane.cli.check_ports_available"),
@@ -245,7 +268,11 @@ async def test_run_web_uses_serial_backend_factory_config() -> None:
             ptt_mode="civ",
         )
     )
-    cmd_web.assert_awaited_once_with(radio, args)
+    cmd_web.assert_awaited_once_with(
+        radio,
+        args,
+        managed_tx_composition=radio._managed_tx_composition,
+    )
 
 
 @pytest.mark.asyncio

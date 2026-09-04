@@ -17,15 +17,16 @@ import logging
 import os
 import socket as _socket
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
-    from typing import Any, Awaitable, Callable
+    from typing import Any
 
     from rigplane._runtime_protocols import ControlPhaseHost
     from rigplane.core.acquisition_scheduler import RadioStateModelService
-    from rigplane.core.radio_protocol import ManagedTxSupervisor
-    from rigplane.core.tx_safety import ProviderPttObservation, TxSafetySnapshot
+    from rigplane.core.tx_safety import ProviderPttObservation
+    from rigplane.runtime.managed_tx_composition import ManagedTxCompositionPort
 
     def _managed_tx_runtime_satisfies_supervisor(
         runtime: ManagedRadioRuntime,
@@ -173,13 +174,17 @@ from rigplane.commands import get_repeater_tone as _get_repeater_tone_cmd
 from rigplane.commands import get_repeater_tsql as _get_repeater_tsql_cmd
 from rigplane.core.env_config import get_managed_tx_enabled
 from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core.radio_protocol import ManagedTxSupervisor
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
     RADIO_READBACK_SOURCES,
     TX_READ_DEADLINE_SECONDS,
     TxStateReading,
 )
-from rigplane.core.tx_safety import TxOutcome
+from rigplane.core.tx_safety import (
+    TxOutcome,
+    TxSafetySnapshot,
+)
 from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
@@ -218,6 +223,7 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
+
 
 _AUDIO_CAPABILITIES = get_audio_capabilities()
 _DEFAULT_AUDIO_CODEC = _AUDIO_CAPABILITIES.default_codec
@@ -666,6 +672,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # non-None for the life of the radio: a failed arm degrades it to
         # NOT_READY, never back to ``None`` (see ``_arm_managed_tx``).
         self._managed_tx_runtime: ManagedRadioRuntime | None = None
+        self._managed_tx_composition: ManagedTxCompositionPort | None = None
         # CI-V epoch the last arming attempt was made against; ``None`` until
         # the first attempt.  Bounds arming to one attempt per epoch.
         self._managed_tx_armed_epoch: int | None = None
@@ -819,7 +826,25 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         a rig whose provider never came ready refuses keys with ``NOT_READY``
         rather than reverting to an unsupervised write (MOR-1193).
         """
-        return self._managed_tx_runtime
+        composition = self._managed_tx_composition
+        return (
+            composition.legacy_supervisor
+            if composition is not None
+            else self._managed_tx_runtime
+        )
+
+    def install_managed_tx_composition(
+        self, composition: ManagedTxCompositionPort
+    ) -> None:
+        if self._managed_tx_composition is not None:
+            raise RuntimeError("managed TX composition is already installed")
+        if self._managed_tx_runtime is not None or self._conn_state is not (
+            RadioConnectionState.DISCONNECTED
+        ):
+            raise RuntimeError(
+                "managed TX composition must be installed before connect"
+            )
+        self._managed_tx_composition = composition
 
     @property
     def tx_snapshot(self) -> "TxSafetySnapshot | None":
@@ -945,6 +970,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         worse answer than the honest ``None``. Only ``connect()`` brings a
         runtime back.
         """
+        composition = self._managed_tx_composition
+        if composition is not None:
+            async with self._managed_tx_arm_lock:
+                transport = self._civ_transport
+                if transport is not None:
+                    await composition.transport_ready(transport)
+            return
         if self._civ_transport is None or self._managed_tx_binding_is_live():
             return
         async with self._managed_tx_arm_lock:
@@ -975,6 +1007,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         to do with managed TX. ``RIGPLANE_MANAGED_TX`` is the only managed-TX
         switch; neither reads the other.
         """
+        composition = self._managed_tx_composition
+        if composition is not None:
+            async with self._managed_tx_arm_lock:
+                transport = self._civ_transport
+                if transport is not None:
+                    await composition.transport_ready(transport)
+            return
         async with self._managed_tx_arm_lock:
             if self._managed_tx_armed_epoch != self._civ_epoch:
                 await self._run_managed_tx_arm()
@@ -1120,6 +1159,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Ordered inside the ``finally`` with the members it belongs to, so a
         shutdown that timed out or raised still leaves a connectable radio.
         """
+        composition = self._managed_tx_composition
+        if composition is not None:
+            async with self._managed_tx_arm_lock:
+                transport = self._civ_transport
+                if transport is not None:
+                    await composition.transport_unavailable(transport)
+            return
         runtime = self._managed_tx_runtime
         if runtime is None:
             return
@@ -1164,6 +1210,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Bounded and fail-soft: a gate that will not shut is not a reason to
         refuse to tear down the path it guards.
         """
+        composition = self._managed_tx_composition
+        if composition is not None:
+            async with self._managed_tx_arm_lock:
+                transport = self._civ_transport
+                if transport is not None:
+                    await composition.transport_unavailable(transport)
+            return
         runtime = self._managed_tx_runtime
         if runtime is None:
             return
