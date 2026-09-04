@@ -1,73 +1,166 @@
 <script module lang="ts">
-  import type { PeerSplitReceiverDisplay } from '../../semantic/radio-display-model';
+  import type { LcdSpectrumFrame } from './lcd-display-contract';
 
-  export interface LcdRfPanadapterFrame {
-    readonly receiver: PeerSplitReceiverDisplay['receiver'];
-    readonly freshness: 'fresh' | 'stale';
-    readonly normalizedBins: readonly number[];
+  export type LcdRfPanadapterFrame = LcdSpectrumFrame;
+
+  export interface LcdRfPanadapterPassband {
+    readonly mode: string;
+    readonly widthHz: number;
+    readonly shiftHz: number;
   }
 </script>
 
 <script lang="ts">
+  import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
+  import type { PeerSplitReceiverDisplay } from '../../semantic/radio-display-model';
+  import { resolveLcdSpectrumFrame } from './lcd-display-contract';
+
   interface Props {
     receiver: PeerSplitReceiverDisplay['receiver'] | null;
-    frame?: LcdRfPanadapterFrame;
+    frame?: unknown;
+    carrierHz?: number;
+    passband?: LcdRfPanadapterPassband;
   }
 
-  let { receiver, frame }: Props = $props();
+  interface AxisTick {
+    readonly frequencyHz: number;
+    readonly x: number;
+    readonly label: string;
+  }
 
-  type FrameReason = 'live' | 'missing' | 'stale' | 'receiver-unknown'
-    | 'receiver-mismatch' | 'invalid';
+  const PLOT_WIDTH = 600;
+  const PLOT_TOP = 18;
+  const PLOT_BOTTOM = 116;
+  const PLOT_HEIGHT = PLOT_BOTTOM - PLOT_TOP;
 
-  const frameReason: FrameReason = $derived.by(() => {
-    if (receiver === null) return 'receiver-unknown';
-    if (frame === undefined) return 'missing';
-    if (frame.freshness !== 'fresh') return 'stale';
-    if (frame.receiver !== receiver) return 'receiver-mismatch';
-    if (frame.normalizedBins.length < 2
-      || !frame.normalizedBins.every((sample) => (
-        Number.isFinite(sample) && sample >= 0 && sample <= 1
-      ))) return 'invalid';
-    return 'live';
+  let { receiver, frame, carrierHz, passband }: Props = $props();
+
+  function formatFrequency(hz: number): string {
+    const mhz = hz / 1_000_000;
+    return mhz >= 1 ? mhz.toFixed(3) : `${Math.round(hz / 1_000)}k`;
+  }
+
+  const resolution = $derived(resolveLcdSpectrumFrame(frame, {
+    source: 'hardware',
+    receiver,
+  }));
+  const liveFrame = $derived(resolution.state === 'live' ? resolution.frame : null);
+  const frameReason = $derived(resolution.state === 'live' ? 'live' : resolution.reason);
+  const spanHz = $derived(liveFrame === null ? 0 : liveFrame.endHz - liveFrame.startHz);
+  const renderBins = $derived(liveFrame?.normalizedBins ?? []);
+  const axisTicks: readonly AxisTick[] = $derived.by(() => {
+    if (liveFrame === null) return [];
+    return [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+      const frequencyHz = liveFrame.startHz + spanHz * ratio;
+      return { frequencyHz, x: PLOT_WIDTH * ratio, label: formatFrequency(frequencyHz) };
+    });
   });
-
-  const renderBins = $derived(frameReason === 'live' ? frame!.normalizedBins : []);
+  const carrierX = $derived.by(() => {
+    if (liveFrame === null || carrierHz === undefined || !Number.isFinite(carrierHz)
+      || carrierHz < liveFrame.startHz || carrierHz > liveFrame.endHz) return null;
+    return ((carrierHz - liveFrame.startHz) / spanHz) * PLOT_WIDTH;
+  });
+  const passbandGeometry = $derived.by(() => {
+    if (carrierX === null || passband === undefined
+      || !Number.isFinite(passband.widthHz) || passband.widthHz <= 0
+      || !Number.isFinite(passband.shiftHz)) return null;
+    return getPassbandGeometry(
+      passband.mode,
+      passband.widthHz,
+      passband.shiftHz,
+      spanHz,
+      PLOT_WIDTH,
+      carrierX,
+    );
+  });
 </script>
 
 <svg
   data-testid="lcd-rf-panadapter"
-  data-rf-mode={frameReason === 'live' ? 'live' : 'ghost'}
+  data-rf-mode={liveFrame === null ? 'ghost' : 'live'}
   data-frame-reason={frameReason}
-  viewBox="0 0 600 120"
+  data-start-hz={liveFrame?.startHz}
+  data-end-hz={liveFrame?.endHz}
+  viewBox="0 0 600 132"
   preserveAspectRatio="none"
   aria-hidden="true"
 >
-  <rect class="rf-frame" x="0.5" y="0.5" width="599" height="119" />
-  {#each [20, 40, 60, 80, 100] as y}
-    <line class="rf-grid" x1="0" x2="600" y1={y} y2={y} />
-  {/each}
-  {#each [60, 120, 180, 240, 300, 360, 420, 480, 540] as x}
-    <line class="rf-grid" x1={x} x2={x} y1="0" y2="120" />
-  {/each}
-  {#each renderBins as sample, index}
-    {@const binWidth = 600 / renderBins.length}
-    {@const binHeight = sample * 108}
-    <rect
-      class="rf-bin"
-      data-rf-bin={index}
-      data-rf-sample={sample}
-      x={index * binWidth}
-      y={116 - binHeight}
-      width={Math.max(0.5, binWidth - 0.5)}
-      height={binHeight}
-    />
-  {/each}
+  <rect class="rf-frame" x="0.5" y="0.5" width="599" height="131" />
+  {#if liveFrame !== null}
+    {#each axisTicks as tick}
+      <g class="rf-axis" data-axis-frequency={tick.frequencyHz}>
+        <line class="rf-grid" x1={tick.x} x2={tick.x} y1={PLOT_TOP} y2={PLOT_BOTTOM} />
+        <text
+          class="rf-axis-label"
+          x={tick.x}
+          y="12"
+          text-anchor={tick.x === 0 ? 'start' : tick.x === PLOT_WIDTH ? 'end' : 'middle'}
+        >{tick.label}</text>
+      </g>
+    {/each}
+    {#each [0.25, 0.5, 0.75] as ratio}
+      <line
+        class="rf-grid"
+        x1="0"
+        x2={PLOT_WIDTH}
+        y1={PLOT_TOP + PLOT_HEIGHT * ratio}
+        y2={PLOT_TOP + PLOT_HEIGHT * ratio}
+      />
+    {/each}
+    {#if passbandGeometry !== null && passbandGeometry.widthPx > 0}
+      <rect
+        class="rf-passband"
+        data-passband-mode={passband?.mode}
+        data-passband-width-hz={passband?.widthHz}
+        data-passband-shift-hz={passband?.shiftHz}
+        x={passbandGeometry.leftPx}
+        y={PLOT_TOP}
+        width={passbandGeometry.widthPx}
+        height={PLOT_HEIGHT}
+      />
+    {/if}
+    {#each renderBins as sample, index}
+      {@const binWidth = PLOT_WIDTH / renderBins.length}
+      {@const binHeight = sample * (PLOT_HEIGHT - 4)}
+      <rect
+        class="rf-bin"
+        data-rf-bin={index}
+        data-rf-sample={sample}
+        x={index * binWidth}
+        y={PLOT_BOTTOM - binHeight}
+        width={Math.max(0.5, binWidth - 0.5)}
+        height={binHeight}
+      />
+    {/each}
+    {#if carrierX !== null}
+      <line
+        class="rf-carrier"
+        data-carrier-hz={carrierHz}
+        x1={carrierX}
+        x2={carrierX}
+        y1={PLOT_TOP}
+        y2={PLOT_BOTTOM}
+      />
+    {/if}
+  {/if}
 </svg>
 
 <style>
   svg { display: block; width: 100%; height: 100%; min-height: 0; }
   .rf-frame { fill: none; stroke: var(--ink-soft); stroke-width: 1; }
   .rf-grid { stroke: var(--ink-ghost); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+  .rf-axis-label {
+    fill: var(--ink-mid);
+    font-family: 'Share Tech Mono', ui-monospace, monospace;
+    font-size: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  .rf-passband { fill: var(--ink-soft); opacity: 0.22; }
   .rf-bin { fill: var(--ink-mid); opacity: 0.86; }
-  svg[data-rf-mode='ghost'] .rf-grid { stroke: var(--ink-ghost); opacity: 0.55; }
+  .rf-carrier {
+    stroke: var(--ink-strong);
+    stroke-width: 1.25;
+    vector-effect: non-scaling-stroke;
+  }
+  svg[data-rf-mode='ghost'] .rf-frame { stroke: var(--ink-ghost); opacity: 0.55; }
 </style>
