@@ -586,6 +586,7 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
 
   const fabEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.ptt-fab')!;
   const stripEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.m-ls-ptt')!;
+  const landscapeUnkeyEl = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.m-ls-unkey')!;
   function pointer(el: Element, type: string, init: PointerEventInit = {}) {
     el.dispatchEvent(new PointerEvent(type, {
       bubbles: true, pointerId: 1, clientX: 0, clientY: 0, ...init,
@@ -654,6 +655,33 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     const t = mountMobile();
     pointer(fabEl(t), 'pointerdown');
     expect(tx.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
+  });
+
+  it.each([
+    ['RX', { intent: 'rx', observedPtt: 'off', releaseRequired: false }],
+    ['PTT', { intent: 'ptt', observedPtt: 'on', releaseRequired: true }],
+    ['TRANSMIT', { intent: 'transmit', observedPtt: 'on', releaseRequired: true }],
+    ['failed', { intent: 'rx', observedPtt: 'unknown', releaseRequired: true, lastError: 'release failed' }],
+    ['stale', { intent: 'rx', observedPtt: 'unknown', releaseRequired: true, stale: true }],
+  ] as const)('landscape exposes unconditional HTTP ForceOFF while canonical state is %s', (_name, snapshot) => {
+    tx.emitServerSnapshot(snapshot);
+    const t = mountLandscape();
+    const unkey = landscapeUnkeyEl(t);
+
+    expect(unkey).not.toBeNull();
+    expect(unkey.disabled).toBe(false);
+    expect(unkey.tabIndex).toBe(0);
+    unkey.focus();
+    expect(document.activeElement).toBe(unkey);
+
+    unkey.click();
+    expect(tx.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
+  });
+
+  it('keeps the landscape-only Unkey control out of portrait presentation', () => {
+    const t = mountMobile();
+    expect(t.querySelector('.m-ls-unkey')).toBeNull();
+    expect(t.querySelector('.m-semantic-deck')).not.toBeNull();
   });
 
   it('unavailable double tap emits no transmit_on and releases the WS PTT', () => {

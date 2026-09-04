@@ -561,6 +561,13 @@
       <span class="m-ls-filter">{mainVfo.filter}</span>
       {#if txCapable}
         <button
+          type="button"
+          class="m-ls-unkey"
+          aria-label="Unkey transmitter"
+          title="Unkey transmitter"
+          onclick={() => txCtl.forceOff()}
+        >UNKEY</button>
+        <button
           class="m-ls-ptt"
           class:m-ptt-held={owned && !latched}
           class:m-ptt-latched={latched}
@@ -1140,6 +1147,26 @@
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     transition: background 0.15s, color 0.15s;
+  }
+
+  .m-ls-unkey {
+    font-family: 'Roboto Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    min-width: 58px;
+    min-height: 44px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 2px solid #facc15;
+    background: rgba(250, 204, 21, 0.14);
+    color: #facc15;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .m-ls-unkey:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
   }
 
   .m-ls-ptt.m-ptt-held {
