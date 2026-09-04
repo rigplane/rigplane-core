@@ -154,6 +154,7 @@ class ManagedTxAuthority:
         self._terminated = False
         self._shutdown_termination: asyncio.Event | None = None
         self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
+        self._provider_unavailable_task: asyncio.Task[None] | None = None
         self._closing = False
         self._closed = False
         self._scheduler_task = asyncio.create_task(self._scheduler())
@@ -446,20 +447,34 @@ class ManagedTxAuthority:
                 self._provider_generation,
             )
 
+    def start_provider_unavailable(self) -> asyncio.Task[None]:
+        """Invalidate provider authority before returning and own cleanup."""
+        self._require_open_locked()
+        self._require_provider_change_locked()
+        task = self._provider_unavailable_task
+        if self._provider_generation is None and task is not None:
+            return task
+
+        self._provider_generation = None
+        self._retry_due = None
+        self._pending_abort_cleanup.append(self._abort_fence.force_off())
+        if self._state.release_required:
+            self._reduce_locked(ForceOff(None, self._attempt_id_locked()))
+        self._wakeup.wake()
+        self._start_abort_cleanup()
+
+        task = asyncio.create_task(self._finish_abort_cleanup())
+        self._provider_unavailable_task = task
+
+        def harvest(completion: asyncio.Task[None]) -> None:
+            if not completion.cancelled():
+                completion.exception()
+
+        task.add_done_callback(harvest)
+        return task
+
     async def provider_unavailable(self) -> None:
-        transition = None
-        async with self._lock:
-            self._require_open_locked()
-            self._require_provider_change_locked()
-            if self._provider_generation is None:
-                return
-            self._provider_generation = None
-            self._retry_due = None
-            if self._state.release_required:
-                transition = self._force_off_locked()
-            self._wakeup.wake()
-        if transition is not None:
-            await self._execute(transition.effects, full_force=True)
+        await asyncio.shield(self.start_provider_unavailable())
 
     async def provider_available(self, generation: int) -> None:
         transition = None

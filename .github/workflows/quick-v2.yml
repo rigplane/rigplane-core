@@ -1,251 +1,158 @@
-name: Tests (quick v2 observation)
+name: Tests (quick v2 metadata observation)
 
 on:
   pull_request_target:
     branches: [main]
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
+  workflow_run:
+    workflows: ["Tests (quick)"]
+    types: [completed]
+
+permissions: {}
 
 concurrency:
-  group: quick-v2-${{ github.event.pull_request.number }}
+  group: >-
+    quick-v2-observe-${{ github.event.pull_request.number ||
+    github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt || 'lifecycle' }}
   cancel-in-progress: true
 
 jobs:
-  admit:
-    name: Trusted quick observation admission
+  observe:
+    name: Read-only legacy quick metadata observer
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     permissions:
+      actions: read
+      checks: read
       contents: read
       pull-requests: read
-      statuses: write
     outputs:
-      pull_number: ${{ steps.admit.outputs.pull_number }}
-      head_sha: ${{ steps.admit.outputs.head_sha }}
-      base_sha: ${{ steps.admit.outputs.base_sha }}
-      core: ${{ steps.admit.outputs.core }}
-      frontend: ${{ steps.admit.outputs.frontend }}
-      ci: ${{ steps.admit.outputs.ci }}
-      docs: ${{ steps.admit.outputs.docs }}
-      ready: ${{ steps.admit.outputs.ready }}
-      same_repo: ${{ steps.admit.outputs.same_repo }}
+      assessment: ${{ steps.observe.outputs.assessment }}
     steps:
-      - name: Capture exact PR state with trusted base policy
-        id: admit
-        uses: actions/github-script@v7
+      - name: Bind trusted policy and observe API metadata
+        id: observe
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
-            const {owner, repo} = context.repo;
-            const pullNumber = context.payload.pull_request.number;
-            let headSha = context.payload.pull_request.head.sha;
-            const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const publish = async (state, description) => {
-              if (/^[0-9a-f]{40}$/u.test(headSha)) {
-                await github.rest.repos.createCommitStatus({
-                  owner, repo, sha: headSha, state, context: 'quick-v2-observe',
-                  description, target_url: targetUrl,
-                });
+            const owner = 'rigplane';
+            const repo = 'rigplane-core';
+            const repositoryId = 1166377435;
+            const observerPath = '.github/scripts/quick-v2-metadata-policy-v1.js';
+            const exactSha = (value, label) => { if (typeof value !== 'string' || !/^[0-9a-f]{40}$/u.test(value)) { throw new Error(`${label} is not an exact commit SHA`);
               }
+              return value;
             };
-            try {
-              const {data: initialPull} = await github.rest.pulls.get({
-                owner, repo, pull_number: pullNumber,
-              });
-              headSha = initialPull.head.sha;
-              const baseSha = initialPull.base.sha;
-              if (initialPull.base.ref !== 'main') {
-                throw new Error('observation controller only accepts the main base branch');
+            const loadObserver = async () => { const {data: repository} = await github.request( 'GET /repos/{owner}/{repo}', {owner, repo}, );
+              if (repository.id !== repositoryId || repository.full_name !== `${owner}/${repo}`) { throw new Error('repository identity is not canonical');
               }
-              const {data: baseBranch} = await github.rest.repos.getBranch({
-                owner, repo, branch: initialPull.base.ref,
-              });
-              if (baseBranch.commit.sha !== baseSha) {
-                throw new Error('pull request base is not the current main head');
+              const {data: branch} = await github.request( 'GET /repos/{owner}/{repo}/branches/{branch}', {owner, repo, branch: 'main'}, );
+              const liveBaseSha = exactSha(branch.commit.sha, 'live main');
+              const {data: commit} = await github.request( 'GET /repos/{owner}/{repo}/git/commits/{commit_sha}', {owner, repo, commit_sha: liveBaseSha}, );
+              let treeSha = exactSha(commit.tree?.sha, 'root tree');
+              const parts = observerPath.split('/');
+              for (const [index, part] of parts.entries()) { const {data: tree} = await github.request( 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}', {owner, repo, tree_sha: treeSha}, );
+                if (tree.truncated === true || !Array.isArray(tree.tree)) { throw new Error('observer tree metadata is incomplete');
+                }
+                const matches = tree.tree.filter((entry) => entry.path === part);
+                if (matches.length !== 1) { throw new Error('observer path is ambiguous');
+                }
+                const entry = matches[0];
+                const final = index === parts.length - 1;
+                if (!final) { if (entry.mode !== '040000' || entry.type !== 'tree') { throw new Error('observer parent is not a tree');
+                  }
+                  treeSha = exactSha(entry.sha, 'observer tree');
+                  continue;
+                }
+                if (entry.mode !== '100644' || entry.type !== 'blob') { throw new Error('observer is not a regular non-executable file');
+                }
+                const {data: blob} = await github.request( 'GET /repos/{owner}/{repo}/git/blobs/{file_sha}', {owner, repo, file_sha: exactSha(entry.sha, 'observer blob')}, );
+                if ( blob.encoding !== 'base64' || typeof blob.content !== 'string' || !Number.isSafeInteger(blob.size) || blob.size <= 0 || blob.size > 250000 ) { throw new Error('observer blob is invalid');
+                }
+                const loaded = {exports: {}};
+                new Function( 'module', 'exports', Buffer.from(blob.content, 'base64').toString('utf8'), )(loaded, loaded.exports);
+                return {observer: loaded.exports, liveBaseSha};
               }
-              const sameRepo = initialPull.head.repo?.full_name === `${owner}/${repo}`;
-              await publish('pending', initialPull.draft
-                ? 'Waiting for the pull request to become ready.'
-                : sameRepo
-                  ? 'Trusted base observation admitted this exact PR state.'
-                  : 'Fork observation is metadata-only; worker execution is withheld.');
-
-              const files = await github.paginate(github.rest.pulls.listFiles, {
-                owner, repo, pull_number: pullNumber, per_page: 100,
-              });
-              const {data: policyFile} = await github.rest.repos.getContent({
-                owner, repo,
-                path: '.github/scripts/base-gate-policy-v1.js',
-                ref: baseSha,
-              });
-              if (
-                Array.isArray(policyFile) ||
-                policyFile.type !== 'file' ||
-                policyFile.encoding !== 'base64' ||
-                typeof policyFile.content !== 'string'
-              ) {
-                throw new Error('trusted base gate policy content is invalid');
-              }
-              const policyModule = {exports: {}};
-              new Function(
-                'module', 'exports',
-                Buffer.from(policyFile.content, 'base64').toString('utf8'),
-              )(policyModule, policyModule.exports);
-              const {assertSha, classifyPullFiles} = policyModule.exports;
-              if (typeof assertSha !== 'function' || typeof classifyPullFiles !== 'function') {
-                throw new Error('trusted base gate policy exports are invalid');
-              }
-              assertSha(headSha, 'head');
-              assertSha(baseSha, 'base');
-              const routes = classifyPullFiles(files, initialPull.changed_files);
-
-              const [{data: currentPull}, {data: currentBase}] = await Promise.all([
-                github.rest.pulls.get({owner, repo, pull_number: pullNumber}),
-                github.rest.repos.getBranch({owner, repo, branch: 'main'}),
-              ]);
-              if (
-                currentPull.head.sha !== headSha ||
-                currentPull.base.sha !== baseSha ||
-                currentBase.commit.sha !== baseSha
-              ) {
-                throw new Error('pull request head or base changed during admission');
-              }
-              const outputs = {
-                pull_number: String(pullNumber),
-                head_sha: headSha,
-                base_sha: baseSha,
-                core: String(routes.core),
-                frontend: String(routes.frontend),
-                ci: String(routes.ci),
-                docs: String(routes.docs),
-                ready: String(!initialPull.draft),
-                same_repo: String(sameRepo),
-              };
-              for (const [name, value] of Object.entries(outputs)) {
-                core.setOutput(name, value);
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              await publish('failure', 'Trusted quick admission failed closed.');
-              core.setFailed(`Trusted quick admission failed closed: ${message}`);
+              throw new Error('observer path did not resolve');
+            };
+            const {observer, liveBaseSha} = await loadObserver();
+            if (typeof observer.assess !== 'function' || typeof observer.rebindForPublication !== 'function' || typeof observer.stableAssessment !== 'function') { throw new Error('observer exports are invalid');
             }
-
-  worker:
-    name: Read-only quick v2 worker
-    needs: admit
-    if: >-
-      needs.admit.result == 'success' &&
-      needs.admit.outputs.ready == 'true' &&
-      needs.admit.outputs.docs != 'true' &&
-      needs.admit.outputs.same_repo == 'true'
-    runs-on: [self-hosted, linux, build]
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - name: Check out exact trusted base controls
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.admit.outputs.base_sha }}
-          path: control
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Check out candidate merge without credentials
-        uses: actions/checkout@v6
-        with:
-          ref: refs/pull/${{ needs.admit.outputs.pull_number }}/merge
-          path: target
-          persist-credentials: false
-          fetch-depth: 2
-
-      - name: Bind candidate merge to exact admitted head and base
-        env:
-          EXPECTED_HEAD: ${{ needs.admit.outputs.head_sha }}
-          EXPECTED_BASE: ${{ needs.admit.outputs.base_sha }}
-        run: |
-          read -r merge_sha first_parent second_parent extra < <(git -C target rev-list --parents -n 1 HEAD)
-          test -n "$merge_sha"
-          test "$first_parent" = "$EXPECTED_BASE"
-          test "$second_parent" = "$EXPECTED_HEAD"
-          test -z "${extra:-}"
-
-      - name: Run immutable base-controlled quick carrier
-        run: >-
-          control/.github/scripts/quick-v2-worker-v1.sh
-          control target
-          ${{ needs.admit.outputs.core }}
-          ${{ needs.admit.outputs.frontend }}
-          ${{ needs.admit.outputs.ci }}
-
-      - name: Upload frontend failure diagnostics
-        if: always() && needs.admit.outputs.frontend == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: quick-v2-observe-frontend-${{ needs.admit.outputs.head_sha }}
-          path: |
-            target/frontend/tests/e2e/i18n/.output/
-            target/frontend/playwright-report/
-            target/frontend/fixtures-baselines/
-          if-no-files-found: ignore
-          retention-days: 14
-
+            const result = await observer.assess({github, context, liveBaseSha});
+            core.setOutput('assessment', observer.stableAssessment(result));
+            core.info(`observation_metrics=${JSON.stringify(result.metrics)}`);
+            if (result.state === 'failure') { core.setFailed(result.description);
+            }
   publish:
-    name: Trusted quick observation publisher
-    needs: [admit, worker]
-    if: always() && needs.admit.result == 'success'
+    name: Exact-head metadata observation publisher
+    needs: observe
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     permissions:
+      actions: read
+      checks: read
       contents: read
       pull-requests: read
       statuses: write
     steps:
-      - name: Publish exact-head quick-v2-observe status
-        uses: actions/github-script@v7
+      - name: Rebind independently and publish observation
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          PULL_NUMBER: ${{ needs.admit.outputs.pull_number }}
-          ADMITTED_HEAD: ${{ needs.admit.outputs.head_sha }}
-          ADMITTED_BASE: ${{ needs.admit.outputs.base_sha }}
-          READY: ${{ needs.admit.outputs.ready }}
-          DOCS: ${{ needs.admit.outputs.docs }}
-          SAME_REPO: ${{ needs.admit.outputs.same_repo }}
-          WORKER_RESULT: ${{ needs.worker.result }}
+          PRODUCER_ASSESSMENT: ${{ needs.observe.outputs.assessment }}
         with:
           script: |
-            const {owner, repo} = context.repo;
-            const pullNumber = Number(process.env.PULL_NUMBER);
-            const headSha = process.env.ADMITTED_HEAD;
-            const baseSha = process.env.ADMITTED_BASE;
-            const targetUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const [{data: currentPull}, {data: currentBase}] = await Promise.all([
-              github.rest.pulls.get({owner, repo, pull_number: pullNumber}),
-              github.rest.repos.getBranch({owner, repo, branch: 'main'}),
-            ]);
-            let state = 'failure';
-            let description = 'Quick v2 observation failed closed.';
-            if (
-              currentPull.head.sha !== headSha ||
-              currentPull.base.sha !== baseSha ||
-              currentBase.commit.sha !== baseSha
-            ) {
-              description = 'PR head or current main changed after quick-v2 observation admission.';
-            } else if (process.env.READY !== 'true') {
-              state = 'pending';
-              description = 'Waiting for the pull request to become ready.';
-            } else if (process.env.SAME_REPO !== 'true') {
-              description = 'Fork code was not executed on the shared self-hosted worker.';
-            } else if (process.env.DOCS === 'true') {
-              state = 'success';
-              description = 'Trusted base policy selected documentation-only review.';
-            } else if (process.env.WORKER_RESULT === 'success') {
-              state = 'success';
-              description = 'Base-controlled quick carrier passed for exact head and base.';
-            } else {
-              description = `Base-controlled quick carrier ended ${process.env.WORKER_RESULT}.`;
+            const owner = 'rigplane';
+            const repo = 'rigplane-core';
+            const repositoryId = 1166377435;
+            const observerPath = '.github/scripts/quick-v2-metadata-policy-v1.js';
+            const exactSha = (value, label) => { if (typeof value !== 'string' || !/^[0-9a-f]{40}$/u.test(value)) { throw new Error(`${label} is not an exact commit SHA`);
+              }
+              return value;
+            };
+            const loadObserver = async () => { const {data: repository} = await github.request( 'GET /repos/{owner}/{repo}', {owner, repo}, );
+              if (repository.id !== repositoryId || repository.full_name !== `${owner}/${repo}`) { throw new Error('repository identity is not canonical');
+              }
+              const {data: branch} = await github.request( 'GET /repos/{owner}/{repo}/branches/{branch}', {owner, repo, branch: 'main'}, );
+              const liveBaseSha = exactSha(branch.commit.sha, 'live main');
+              const {data: commit} = await github.request( 'GET /repos/{owner}/{repo}/git/commits/{commit_sha}', {owner, repo, commit_sha: liveBaseSha}, );
+              let treeSha = exactSha(commit.tree?.sha, 'root tree');
+              const parts = observerPath.split('/');
+              for (const [index, part] of parts.entries()) { const {data: tree} = await github.request( 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}', {owner, repo, tree_sha: treeSha}, );
+                if (tree.truncated === true || !Array.isArray(tree.tree)) { throw new Error('observer tree metadata is incomplete');
+                }
+                const matches = tree.tree.filter((entry) => entry.path === part);
+                if (matches.length !== 1) { throw new Error('observer path is ambiguous');
+                }
+                const entry = matches[0];
+                const final = index === parts.length - 1;
+                if (!final) { if (entry.mode !== '040000' || entry.type !== 'tree') { throw new Error('observer parent is not a tree');
+                  }
+                  treeSha = exactSha(entry.sha, 'observer tree');
+                  continue;
+                }
+                if (entry.mode !== '100644' || entry.type !== 'blob') { throw new Error('observer is not a regular non-executable file');
+                }
+                const {data: blob} = await github.request( 'GET /repos/{owner}/{repo}/git/blobs/{file_sha}', {owner, repo, file_sha: exactSha(entry.sha, 'observer blob')}, );
+                if ( blob.encoding !== 'base64' || typeof blob.content !== 'string' || !Number.isSafeInteger(blob.size) || blob.size <= 0 || blob.size > 250000 ) { throw new Error('observer blob is invalid');
+                }
+                const loaded = {exports: {}};
+                new Function( 'module', 'exports', Buffer.from(blob.content, 'base64').toString('utf8'), )(loaded, loaded.exports);
+                return {observer: loaded.exports, liveBaseSha};
+              }
+              throw new Error('observer path did not resolve');
+            };
+            const {observer, liveBaseSha} = await loadObserver();
+            if (typeof observer.assess !== 'function' || typeof observer.stableAssessment !== 'function') { throw new Error('observer exports are invalid');
             }
-            await github.rest.repos.createCommitStatus({
-              owner, repo, sha: headSha, state, context: 'quick-v2-observe',
-              description, target_url: targetUrl,
-            });
-            if (state === 'failure') {
-              core.setFailed(description);
+            let result = await observer.assess({github, context, liveBaseSha});
+            const encoded = observer.stableAssessment(result);
+            if (process.env.PRODUCER_ASSESSMENT !== encoded && result.publish) { result = { ...result, code: 'invalid_binding', state: 'failure', description: 'Unknown: producer and publisher metadata bindings disagree.', metrics: {...result.metrics, false_success_publications: 0}, };
+            }
+            result = await observer.rebindForPublication({github, result});
+            core.info(`observation_metrics=${JSON.stringify(result.metrics)}`);
+            if (result.publish) { if (result.targetSha !== result.headSha || !/^[0-9a-f]{40}$/u.test(result.targetSha)) { throw new Error('publisher refused a non-exact observation target');
+              }
+              await github.request( 'POST /repos/{owner}/{repo}/statuses/{sha}', { owner, repo, sha: result.targetSha, state: result.state, context: observer.OBSERVATION_CONTEXT, description: result.description, target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`, }, );
+            }
+            if (result.state === 'failure') { core.setFailed(result.description);
             }

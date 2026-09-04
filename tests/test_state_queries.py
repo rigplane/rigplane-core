@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
-from rigplane.commands._frame import build_civ_frame, decode_wire_tuple
+from rigplane.commands._frame import build_civ_frame, decode_wire_tuple, parse_civ_frame
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.commands.commander import Priority
@@ -20,6 +20,7 @@ from rigplane.commands.scope import (
     SCOPE_SELECTOR_MAIN,
 )
 from rigplane.core.acquisition_scheduler import IcomCivAcquisitionExecutor
+from rigplane.core.civ import request_key_from_frame
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
@@ -514,6 +515,27 @@ class TestBuildStateQueries:
         assert len(queries) > 0
         for query in queries:
             civ_frame_parts(query)
+
+    @pytest.mark.parametrize("model", _shipped_civ_models())
+    def test_every_state_query_has_a_unique_response_key(self, model: str) -> None:
+        profile = resolve_radio_profile(model=model)
+        queries = build_state_queries(profile)
+        keys = []
+        for query in queries:
+            command, sub, data = wire_parts_for_query(query, SCOPE_SELECTOR_MAIN)
+            frame = parse_civ_frame(
+                build_civ_frame(
+                    profile.civ_addr,
+                    0xE0,
+                    command,
+                    sub=sub,
+                    data=data,
+                )
+            )
+            keys.append(request_key_from_frame(frame))
+
+        collisions = {key: count for key, count in Counter(keys).items() if count > 1}
+        assert len(set(keys)) == len(queries), f"{model}: {collisions}"
 
     def test_ic7610_includes_dual_receiver_queries(self) -> None:
         """IC-7610 has 2 receivers — freq/mode must appear for rx 0 and rx 1."""

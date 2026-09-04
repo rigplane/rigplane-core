@@ -111,10 +111,8 @@ _ACTIVE_INDEX_TO_STR = {0: "MAIN", 1: "SUB"}
 # controls (CAT ``CF000``/``CF001``): ``rit_on``/``rit_tx`` are global tx_state
 # bools (RX/TX clarifier flags), ``rit_freq`` is the global operator-control
 # signed Hz offset. Emitted in the global TX-control lane alongside split/VOX,
-# gated on the ``rit`` runtime capability, mirroring the legacy poller's
-# ``"rit" in caps`` gate and its single ``get_clarifier``/``get_clarifier_freq``
-# read pair. The signed Hz offset is emitted on the device scale (cross-vendor
-# calibration is MOR-453).
+# gated independently on the ``rit`` and ``xit`` runtime capabilities. The
+# signed Hz offset is shared and emitted when either capability is declared.
 _RIT_ON = FieldPath.global_("tx_state", "rit_on")
 _RIT_TX = FieldPath.global_("tx_state", "rit_tx")
 _RIT_FREQ = FieldPath.global_("operator_controls", "rit_freq")
@@ -1071,18 +1069,16 @@ class YaesuObservationAdapter:
                     adapter.observation(_SPLIT, value, native_id="read_split")
                 )
         # Clarifier RIT/XIT (MOR-454) — GLOBAL slow-changing operator/TX
-        # controls (CAT ``CF000``/``CF001``), gated on the ``rit`` runtime
-        # capability, mirroring the legacy poller's ``"rit" in caps`` gate. The
-        # ``rit_on``/``rit_tx`` flags come from a single ``read_clarifier`` read
-        # (rx,tx), and ``rit_freq`` from a single ``read_clarifier_freq`` read —
-        # exactly the poller's read pair, never an extra query. The signed Hz
-        # offset is emitted on the device scale (cross-vendor calibration is
-        # MOR-453); each emission is gated independently by per-field policy.
-        if self._has_runtime_capability("rit"):
+        # controls (CAT ``CF000``/``CF001``). The status read is shared when
+        # either capability is declared; each flag is emitted only for its
+        # declared capability. The frequency is shared too.
+        has_rit = self._has_runtime_capability("rit")
+        has_xit = self._has_runtime_capability("xit")
+        if has_rit or has_xit:
             ok, clar = await self._safe_read("clarifier", self.radio.read_clarifier(0))
             if ok and clar is not None:
                 rx_clar, tx_clar = clar
-                if self._can_poll(_RIT_ON):
+                if has_rit and self._can_poll(_RIT_ON):
                     observations.append(
                         adapter.observation(
                             _RIT_ON,
@@ -1090,7 +1086,7 @@ class YaesuObservationAdapter:
                             native_id="read_clarifier",
                         )
                     )
-                if self._can_poll(_RIT_TX):
+                if has_xit and self._can_poll(_RIT_TX):
                     observations.append(
                         adapter.observation(
                             _RIT_TX,
