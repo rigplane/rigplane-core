@@ -4089,6 +4089,17 @@ class WebServer:
                 {"error": "invalid_request", "message": str(exc)},
             )
             return
+        except OSError:
+            await self._send_json(
+                writer,
+                500,
+                "Internal Server Error",
+                {
+                    "error": "managed_tx_config_error",
+                    "message": "Managed transmit TOT configuration could not be saved",
+                },
+            )
+            return
         except RuntimeError:
             await self._managed_tx_unavailable(writer)
             return
