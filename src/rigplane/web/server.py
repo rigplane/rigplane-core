@@ -35,6 +35,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Collection, Coroutine
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from inspect import getattr_static
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO
 
@@ -67,6 +68,7 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import StateSnapshot, StateStore
+from ..core.tx_observation import project_observed_ptt
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
@@ -91,6 +93,7 @@ from .handlers import (  # noqa: TID251
     ScopeHandler,
 )
 from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
+from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
 from .radio_poller import (  # noqa: TID251
     CommandQueue,
@@ -3970,6 +3973,126 @@ class WebServer:
             )
             return None
         return payload
+
+    def _managed_tx_authority(self) -> Any | None:
+        port = self._production_managed_tx_port
+        return None if port is None else getattr(port, "authority", None)
+
+    async def _managed_tx_document(self) -> dict[str, object]:
+        authority = self._managed_tx_authority()
+        projection = None if authority is None else await authority.snapshot()
+        observed_ptt = project_observed_ptt(self.command_state_store.snapshot())
+        return build_managed_tx_view(
+            projection,
+            observed_ptt,
+            sampled_at=datetime.now(UTC),
+        )
+
+    async def _managed_tx_unavailable(self, writer: asyncio.StreamWriter) -> None:
+        await self._send_json(
+            writer,
+            503,
+            "Service Unavailable",
+            {
+                "error": "managed_tx_unavailable",
+                "message": "Managed transmit authority unavailable",
+            },
+        )
+
+    async def _handle_http_managed_tx(
+        self,
+        path: str,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None = None,
+        reader: asyncio.StreamReader | None = None,
+    ) -> None:
+        if path == "/api/v1/managed-transmit":
+            await self._send_json(writer, 200, "OK", await self._managed_tx_document())
+            return
+
+        authority = self._managed_tx_authority()
+        if authority is None:
+            await self._managed_tx_unavailable(writer)
+            return
+        payload = await self._read_json_object(writer, headers, reader)
+        if payload is None:
+            return
+
+        if path == "/api/v1/managed-transmit/command":
+            operation = payload.get("operation")
+            if (
+                set(payload) != {"operation"}
+                or type(operation) is not str
+                or operation not in {"transmit_on", "force_off"}
+            ):
+                await self._send_json(
+                    writer,
+                    400,
+                    "Bad Request",
+                    {
+                        "error": "invalid_request",
+                        "message": "operation must be transmit_on or force_off",
+                    },
+                )
+                return
+            if operation == "transmit_on" and self._config.read_only:
+                await self._send_json(
+                    writer,
+                    403,
+                    "Forbidden",
+                    {
+                        "error": "read_only",
+                        "message": "Server is in read-only mode",
+                    },
+                )
+                return
+            try:
+                submission = (
+                    await authority.submit_transmit_on()
+                    if operation == "transmit_on"
+                    else await authority.submit_force_off()
+                )
+            except RuntimeError:
+                await self._managed_tx_unavailable(writer)
+                return
+            accepted = submission.outcome.value == "accepted"
+            await self._send_json(
+                writer,
+                202 if accepted else 409,
+                "Accepted" if accepted else "Conflict",
+                {
+                    "ok": accepted,
+                    "operation": operation,
+                    "result": "accepted" if accepted else "rejected",
+                },
+            )
+            return
+
+        if set(payload) != {"configuredSeconds"}:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {
+                    "error": "invalid_request",
+                    "message": "configuredSeconds is required",
+                },
+            )
+            return
+        try:
+            await authority.set_tot_seconds(payload["configuredSeconds"])
+        except ValueError as exc:
+            await self._send_json(
+                writer,
+                400,
+                "Bad Request",
+                {"error": "invalid_request", "message": str(exc)},
+            )
+            return
+        except RuntimeError:
+            await self._managed_tx_unavailable(writer)
+            return
+        await self._send_json(writer, 200, "OK", await self._managed_tx_document())
 
     def _control_handler_for(self, *, server: Any | None = None) -> ControlHandler:
         return ControlHandler(

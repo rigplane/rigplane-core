@@ -82,6 +82,22 @@ async def dispatch_http_request(
         return
 
     # Routes that accept POST/DELETE
+    if path in (
+        "/api/v1/managed-transmit",
+        "/api/v1/managed-transmit/command",
+        "/api/v1/managed-transmit/tot",
+    ):
+        expected_methods = {
+            "/api/v1/managed-transmit": ("GET", "HEAD"),
+            "/api/v1/managed-transmit/command": ("POST",),
+            "/api/v1/managed-transmit/tot": ("PUT",),
+        }[path]
+        if method not in expected_methods:
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await server._handle_http_managed_tx(path, writer, headers, reader)
+        return
+
     if path == "/api/v1/bridge":
         if method not in ("GET", "HEAD", "POST", "DELETE"):
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
