@@ -27,17 +27,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
+  txController: null as ManagedAppTxController | null,
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
@@ -88,15 +83,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime', async () => ({
   runtime: (await import('$lib/runtime/frontend-runtime')).runtime,
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: vi.fn(), setIntent: vi.fn(), release: vi.fn(), resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => {
+    if (!h.txController) throw new Error('managed TX harness is not installed');
+    return h.txController;
+  },
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: 'MIC' }),
@@ -105,11 +96,8 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { sendCommand } from '$lib/transport/ws-client';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 
 /** The BAND PLAN this file's fixtures declare — `freqRanges` is the band
@@ -187,6 +175,7 @@ const dualRxCaps = (freqRanges: unknown[]): Capabilities => ({
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(): void {
   target = document.createElement('div');
@@ -207,14 +196,15 @@ function typeFrequency(value: string): void {
 }
 
 beforeEach(() => {
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   vi.mocked(sendCommand).mockClear();
 });
 
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });
 

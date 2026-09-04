@@ -12,7 +12,7 @@
  *       commands of the key/unkey class (`ptt`, `set_tuner_status`). The
  *       RX-assisted frequency correction is intentionally distinct: it
  *       delegates to the existing fail-closed `cw_auto_tune` intent and never
- *       asks the App TX authority for a lease. Exactly one `<RxTxSurface>` remains the key/unkey
+ *       emits a managed TX intent. Exactly one `<RxTxSurface>` remains the key/unkey
  *       authority (MOR-1262 decomposition R9), and it is untouched here.
  *   (b) The break-in gate survives the real adapter: a radio whose TX target is
  *       unobserved (permit `unknown`) reaches the surface with the control
@@ -37,22 +37,15 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
-
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
   audio: { muted: false, rxEnabled: true, volume: 42 },
   audioConnected: true,
   rxEnabled: true,
-  listeners: new Set<(next: unknown) => void>(),
-  txStart: vi.fn(),
-  txRelease: vi.fn(),
+  txController: null as ManagedAppTxController | null,
   session: { state: 'connected' as ControlSessionTransition['state'], epoch: 1 },
   delivery: undefined as ((event: CommandDeliveryEvent) => void) | undefined,
   transition: undefined as ((event: ControlSessionTransition) => void) | undefined,
@@ -100,15 +93,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 vi.mock('$lib/runtime', async () => ({
   runtime: (await import('$lib/runtime/frontend-runtime')).runtime,
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: h.txStart, setIntent: vi.fn(), release: h.txRelease, resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => {
+    if (!h.txController) throw new Error('managed TX harness is not installed');
+    return h.txController;
+  },
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: 'LAN' }),
@@ -120,6 +109,7 @@ import { getCommandLifecycle, resetCommandLifecycle } from '$lib/stores/commands
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 /**
  * The command names that KEY or cause a carrier. Not one of these may leave
@@ -128,10 +118,6 @@ import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
  */
 const KEY_CLASS_COMMANDS = ['ptt', 'set_tuner_status'] as const;
 
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 const fresh = {
   storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
   lastObservedMonotonic: 10,
@@ -201,6 +187,7 @@ const NO_CW_TAGS = ['tx'] as const;
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let txHarness: ManagedAppTxHarness;
 
 function render(props: { strips?: 'single' | 'dual' } = {}): void {
   target = document.createElement('div');
@@ -273,16 +260,14 @@ function deliver(commandId: string, kind: CommandDeliveryEvent['kind'], error?: 
 }
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   setCapabilities(liveCaps(CW_TAGS));
   useState(liveState());
   h.caps = liveCaps(CW_TAGS);
-  h.snapshot = { ...IDLE };
   h.session = { state: 'connected', epoch: 1 };
-  h.listeners.clear();
   vi.mocked(sendCommand).mockClear();
   resetCommandLifecycle();
-  h.txStart.mockClear();
-  h.txRelease.mockClear();
 });
 
 afterEach(() => {
@@ -302,7 +287,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(el('surface')).not.toBeNull();
     expect(el('break-in-full')!.hasAttribute('disabled')).toBe(false);
     expect(sendCommand).not.toHaveBeenCalled();
-    expect(h.txStart).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 
   /**
@@ -350,10 +335,9 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
       'set_dash_ratio', ...filterCommands,
     ]);
     for (const forbidden of KEY_CLASS_COMMANDS) expect(commands()).not.toContain(forbidden);
-    // The App TX authority is never asked for a lease either — the ONE
+    // The App TX facade receives no intent either — the ONE
     // `<RxTxSurface>` above is untouched by everything this surface does.
-    expect(h.txStart).not.toHaveBeenCalled();
-    expect(h.txRelease).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 
   it('commits one IC-7300-shaped Break-in Delay intent only on release', () => {
@@ -388,8 +372,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(input.getAttribute('aria-busy')).toBe('true');
     expect(input.getAttribute('aria-valuetext')).toBe('Requested 111; last confirmed 64');
     expect(el('breakInDelay-value')!.textContent).toContain('111 submitted');
-    expect(h.txStart).not.toHaveBeenCalled();
-    expect(h.txRelease).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 
   it('projects acknowledgement and only newer matching radio truth as confirmed', () => {
@@ -508,8 +491,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
   it('never changes with the App TX authority or the raw transmit bit', () => {
     render();
     const before = el('surface')!.outerHTML;
-    h.snapshot = { ...IDLE, phase: 'active', radioTx: 'on', mayOwnKey: true };
-    for (const listener of h.listeners) listener(h.snapshot);
+    txHarness.emitServerSnapshot({ intent: 'ptt', observedPtt: 'on' });
     h.state = liveState({ ptt: true } as Partial<ServerState>);
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
@@ -538,8 +520,7 @@ describe('RX-assisted frequency correction wires only the existing safe capabili
     flushSync();
 
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('cw_auto_tune', {}, expect.any(String));
-    expect(h.txStart).not.toHaveBeenCalled();
-    expect(h.txRelease).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 
   it.each([
@@ -554,8 +535,7 @@ describe('RX-assisted frequency correction wires only the existing safe capabili
 
     expect(el('auto-tune')).toBeNull();
     expect(sendCommand).not.toHaveBeenCalled();
-    expect(h.txStart).not.toHaveBeenCalled();
-    expect(h.txRelease).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 });
 

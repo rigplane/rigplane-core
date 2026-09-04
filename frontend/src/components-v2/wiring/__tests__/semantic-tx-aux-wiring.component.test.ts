@@ -16,19 +16,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
-  start: vi.fn(),
-  release: vi.fn(),
+  txController: null as ManagedAppTxController | null,
   atuToggle: vi.fn(),
   atuTune: vi.fn(),
   voxToggle: vi.fn(),
@@ -69,18 +62,11 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => { h.listeners.delete(listener); };
-    },
-    start: h.start,
-    setIntent: vi.fn(),
-    release: h.release,
-    resetFault: vi.fn(),
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => {
+    if (!h.txController) throw new Error('managed TX harness is not installed');
+    return h.txController;
+  },
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
@@ -173,11 +159,9 @@ import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
-
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
+import {
+  ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
+} from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -247,19 +231,19 @@ function render(
   flushSync();
 }
 
-function push(next: Partial<Snapshot>): void {
-  h.snapshot = { ...(h.snapshot as Snapshot), ...next };
-  for (const listener of h.listeners) listener(h.snapshot);
+function push(next: ManagedAppTxServerSnapshot): void {
+  txHarness.emitServerSnapshot(next);
   flushSync();
 }
 
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+let txHarness: ManagedAppTxHarness;
 
 beforeEach(() => {
+  txHarness = new ManagedAppTxHarness();
+  h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -405,14 +389,13 @@ describe('the txAux surface does not become a second key path', () => {
     expect(target.querySelectorAll('[data-testid="rx-tx-unkey"]')).toHaveLength(1);
   });
 
-  it('never starts or releases a TX lease from a txAux intent', () => {
+  it('emits no TX intent from a txAux setting', () => {
     render();
     q<HTMLButtonElement>('[data-testid="tx-aux-atu-tune"]')!.click();
     q<HTMLButtonElement>('[data-testid="tx-aux-vox"]')!.click();
     flushSync();
     expect(h.atuTune).toHaveBeenCalledOnce();
-    expect(h.start).not.toHaveBeenCalled();
-    expect(h.release).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 
   // MOR-1336 (S4) restated (R9): the invariant above holds vacuously once
@@ -437,13 +420,12 @@ describe('the txAux surface does not become a second key path', () => {
 
 // ── 3. ATU TUNE routes through the App-owned TX authority ──────────────────
 
-const BLOCKING: readonly (readonly [string, Partial<Snapshot>])[] = [
-  ['a fault is latched', { fault: 'on-timeout' }],
-  ['a lease is in progress', { phase: 'key-confirm-pending' }],
-  ['this browser may own the key', { mayOwnKey: true }],
-  ['the radio is already transmitting', { radioTx: 'on' }],
-  ['the RF state is unknown', { radioTx: 'unknown' }],
-  ['TX risk is uncertain', { txRisk: 'uncertain' }],
+const BLOCKING: readonly (readonly [string, ManagedAppTxServerSnapshot])[] = [
+  ['a fault is reported', { intent: 'rx', observedPtt: 'off', lastError: 'on-timeout' }],
+  ['PTT is active', { intent: 'ptt', observedPtt: 'on' }],
+  ['TRANSMIT is active', { intent: 'transmit', observedPtt: 'on' }],
+  ['the RF state is unknown', { intent: 'rx', observedPtt: 'unknown' }],
+  ['TRANSMIT is pending', { intent: 'transmit', observedPtt: 'off' }],
 ];
 
 describe('ATU TUNE is gated by the live App TX authority', () => {
@@ -454,6 +436,7 @@ describe('ATU TUNE is gated by the live App TX authority', () => {
     tune.click();
     flushSync();
     expect(h.atuTune).toHaveBeenCalledOnce();
+    expect(txHarness.trace()).toEqual([]);
   });
 
   it.each(BLOCKING)('disables and refuses TUNE while %s', (_label, over) => {
@@ -465,21 +448,23 @@ describe('ATU TUNE is gated by the live App TX authority', () => {
     tune.click();
     flushSync();
     expect(h.atuTune).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
   });
 
-  // MUTATION KILLED: guarding on the snapshot captured at render time instead
-  // of reading the authority NOW. The transmitter can start between the last
-  // render and the click; a stale snapshot would let TUNE fire into it. Same
-  // discipline as `requestUnkey` reading the live guard.
-  it('refuses a tune against an authority state the render never saw', () => {
+  it('changes TUNE gating only after a server snapshot, never from a command intent', () => {
     render();
     const tune = q<HTMLButtonElement>('[data-testid="tx-aux-atu-tune"]')!;
-    // Mutate the authority WITHOUT notifying subscribers: no re-render runs.
-    h.snapshot = { ...(h.snapshot as Snapshot), radioTx: 'on' };
+    const before = txHarness.controller.snapshot();
+    txHarness.controller.transmitOn();
+    expect(txHarness.controller.snapshot()).toBe(before);
     expect(tune.disabled).toBe(false);
+    push({ intent: 'transmit', observedPtt: 'on' });
+    expect(tune.disabled).toBe(true);
+    tune.disabled = false;
     tune.click();
     flushSync();
     expect(h.atuTune).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'transmit_on' }]);
   });
 
   // MUTATION KILLED: gating the ordinary (non-transmitting) ATU on/off toggle
@@ -487,13 +472,14 @@ describe('ATU TUNE is gated by the live App TX authority', () => {
   // over-gating would strand the operator with an ATU they cannot turn off.
   it('leaves the non-transmitting ATU toggle usable while TUNE is blocked', () => {
     render();
-    push({ radioTx: 'on' });
+    push({ intent: 'transmit', observedPtt: 'on' });
     expect(q<HTMLButtonElement>('[data-testid="tx-aux-atu-tune"]')!.disabled).toBe(true);
     const atu = q<HTMLButtonElement>('[data-testid="tx-aux-atu"]')!;
     expect(atu.disabled).toBe(false);
     atu.click();
     flushSync();
     expect(h.atuToggle).toHaveBeenCalledOnce();
+    expect(txHarness.trace()).toEqual([]);
   });
 });
 
