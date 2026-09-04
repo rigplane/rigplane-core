@@ -783,6 +783,7 @@ export function getManualNotchArmed(): ArmedFact<boolean> {
   return armedFact<boolean>('set_manual_notch', 'on', receiver, 'manualNotch');
 }
 
+export function deriveAudioRoutingConfig() { return runtime.audioRouting; }
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
 const _vfoHandlers = makeVfoHandlers();

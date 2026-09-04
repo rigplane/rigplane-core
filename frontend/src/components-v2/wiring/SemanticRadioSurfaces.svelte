@@ -417,28 +417,15 @@
     // Presentation replacement does not alter canonical server TX intent.
   });
 
-  /**
-   * MOR-1279. The App-owned RX-audio snapshot the `rxAudio` facts are read
-   * against (MOR-1274's FOURTH adapter argument). Every member is state this
-   * layer ALREADY holds — nothing here opens, starts or probes the audio path
-   * (MOR-972 P0); audio lifetime stays App-owned (MOR-1058).
-   *
-   * `routing: null` is deliberate and load-bearing. The browser routing prefs
-   * live in `localStorage` and are applied by `AudioRoutingControl`'s
-   * `onMount` via `audioManager.setAudioConfig` — a transport-touching call
-   * this layer must not make — while `audioManager.getAudioConfig()` would
-   * report the RxPlayer's CONSTRUCTION-TIME defaults ('both' / false) as
-   * though they had been observed: the exact fabrication slice 3A degraded
-   * away from. So the routing facts read `unknown` until whoever owns the
-   * restore hands it in, and the surface says so honestly rather than
-   * guessing. Ownership of that restore is an App concern, out of scope here.
-   */
   let rxAudioSnapshot = $derived({
     muted: runtime.audio.muted,
     rxEnabled: runtime.audio.rxEnabled,
     volume: runtime.audio.volume,
     connected: runtime.connectionAudio,
-    routing: null,
+    routing: runtime.audioRouting == null ? null : {
+      focus: runtime.audioRouting.focus,
+      splitStereo: runtime.audioRouting.split_stereo,
+    },
   });
 
   /**

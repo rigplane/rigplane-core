@@ -2,17 +2,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { readFileSync } from 'node:fs';
 
-// Mock audio-manager so we can spy on setAudioConfig calls.
-const setAudioConfigSpy = vi.fn();
+const applied = vi.hoisted(() => ({
+  config: null as Partial<import('$lib/audio/audio-manager').AudioRoutingConfig> | null,
+  listeners: new Set<() => void>(),
+}));
+const setAudioConfigSpy = vi.fn((config) => {
+  applied.config = { ...applied.config, ...config };
+  for (const listener of applied.listeners) listener();
+});
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
-    setAudioConfig: (...args: unknown[]) => setAudioConfigSpy(...args),
-    getAudioConfig: () => ({
-      focus: 'both',
-      split_stereo: false,
-      main_gain_db: 0,
-      sub_gain_db: 0,
-    }),
+    setAudioConfig: (...args: [unknown]) => setAudioConfigSpy(...args),
+    getAppliedAudioConfig: () => applied.config,
+    onChange: (listener: () => void) => {
+      applied.listeners.add(listener);
+      return () => applied.listeners.delete(listener);
+    },
   },
 }));
 
@@ -65,6 +70,7 @@ function installLocalStorage(): Map<string, string> {
 }
 
 beforeEach(() => {
+  applied.config = null;
   setAudioConfigSpy.mockClear();
   audioBinding.get.mockClear();
   audioBinding.handlers.onFocusChange.mockClear();
@@ -94,7 +100,7 @@ function mountControl() {
 describe('AudioRoutingControl', () => {
   it('uses only the stable local-audio adapter binding, with no panel authority escape', () => {
     const source = readFileSync('src/components-v2/panels/AudioRoutingControl.svelte', 'utf8');
-    expect(source).toMatch(/import\s*\{\s*getAudioRoutingHandlers\s*\}\s*from\s*'\$lib\/runtime\/adapters\/panel-adapters'/);
+    expect(source).toMatch(/import\s*\{\s*getAudioRoutingHandlers,\s*deriveAudioRoutingConfig\s*\}\s*from\s*'\$lib\/runtime\/adapters\/panel-adapters'/);
     for (const forbidden of [
       'command-bus', 'panel-commands', 'radio-intents', "from '$lib/runtime'", '$lib/transport',
       'audio-manager', '$lib/stores', 'dispatchRadioIntent', 'sendCommand', 'runtime.send',
@@ -126,7 +132,7 @@ describe('AudioRoutingControl', () => {
   it('split toggle flips aria-pressed and fires setAudioConfig', () => {
     mountControl();
     const toggle = target.querySelector('.split-toggle') as HTMLButtonElement;
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.getAttribute('aria-pressed')).toBeNull();
     toggle.click();
     flushSync();
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
@@ -157,15 +163,16 @@ describe('AudioRoutingControl', () => {
     expect(setAudioConfigSpy).toHaveBeenCalledWith({ sub_gain_db: -3 });
   });
 
-  it('rehydrates from localStorage on mount', () => {
+  it('reads previously applied routing without restoring it on mount', () => {
     localStorage.setItem('icom.audio.focus', 'sub');
     localStorage.setItem('icom.audio.split_stereo', '1');
     localStorage.setItem('icom.audio.main_gain_db', '-6');
     localStorage.setItem('icom.audio.sub_gain_db', '2');
+    audioBinding.handlers.restoreFromStorage();
 
     mountControl();
+    expect(setAudioConfigSpy).toHaveBeenCalledTimes(1);
 
-    // setAudioConfig called once by restoreFromStorage with the stored values.
     const restoreCall = setAudioConfigSpy.mock.calls.find((c) =>
       c[0] && typeof c[0] === 'object'
       && 'focus' in c[0] && 'split_stereo' in c[0]

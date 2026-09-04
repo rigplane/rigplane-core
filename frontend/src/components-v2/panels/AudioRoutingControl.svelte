@@ -1,38 +1,26 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { getAudioRoutingHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { getAudioRoutingHandlers, deriveAudioRoutingConfig } from '$lib/runtime/adapters/panel-adapters';
   import { getReceiverLabel } from '$lib/runtime/adapters/capabilities-adapter';
 
   type AudioFocus = 'main' | 'sub' | 'both';
 
   const handlers = getAudioRoutingHandlers();
 
-  let focus: AudioFocus = $state('both');
-  let splitStereo = $state(false);
-  let mainGainDb = $state(0);
-  let subGainDb = $state(0);
-
-  onMount(() => {
-    const restored = handlers.restoreFromStorage();
-    focus = restored.focus;
-    splitStereo = restored.split_stereo;
-    mainGainDb = restored.main_gain_db;
-    subGainDb = restored.sub_gain_db;
-  });
+  const routing = $derived(deriveAudioRoutingConfig());
+  const focus = $derived(routing?.focus);
+  const splitStereo = $derived(routing?.split_stereo);
+  const mainGainDb = $derived(routing?.main_gain_db ?? 0);
+  const subGainDb = $derived(routing?.sub_gain_db ?? 0);
 
   function setFocus(next: AudioFocus) {
-    focus = next;
     handlers.onFocusChange(next);
   }
 
   function toggleSplit() {
-    splitStereo = !splitStereo;
-    handlers.onSplitStereoChange(splitStereo);
+    handlers.onSplitStereoChange(!splitStereo);
   }
 
   function updateGain(channel: 'main' | 'sub', value: number) {
-    if (channel === 'main') mainGainDb = value;
-    else subGainDb = value;
     handlers.onChannelGainChange(channel, value);
   }
 
@@ -80,7 +68,7 @@
       value={mainGainDb}
       oninput={(e) => updateGain('main', Number((e.target as HTMLInputElement).value))}
     />
-    <span class="gain-value">{mainGainDb} dB</span>
+    <span class="gain-value">{routing?.main_gain_db === undefined ? '—' : `${mainGainDb} dB`}</span>
   </label>
 
   <label class="gain-row">
@@ -94,7 +82,7 @@
       value={subGainDb}
       oninput={(e) => updateGain('sub', Number((e.target as HTMLInputElement).value))}
     />
-    <span class="gain-value">{subGainDb} dB</span>
+    <span class="gain-value">{routing?.sub_gain_db === undefined ? '—' : `${subGainDb} dB`}</span>
   </label>
 </div>
 
