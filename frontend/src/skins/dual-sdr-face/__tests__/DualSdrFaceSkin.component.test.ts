@@ -1,10 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { mount, tick, unmount } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CANONICAL_LAYOUT_MODES, type CanonicalLayoutMode } from '../../../presentation/layout-mode';
 
 const lifecycle = vi.hoisted(() => ({
   acquire: vi.fn(() => ({ resource: 'hardware-scope', token: Symbol('lease') })),
   release: vi.fn(() => true),
+}));
+
+const navigation = vi.hoisted(() => ({
+  selections: [] as CanonicalLayoutMode[],
+  mount(anchor: Node) {
+    const select = document.createElement('select');
+    select.dataset.testid = 'skin-navigation-probe';
+    for (const mode of CANONICAL_LAYOUT_MODES) {
+      const option = document.createElement('option');
+      option.value = mode;
+      select.append(option);
+    }
+    select.addEventListener('change', () => {
+      navigation.selections.push(select.value as CanonicalLayoutMode);
+    });
+    anchor.parentNode?.insertBefore(select, anchor);
+  },
 }));
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
@@ -20,15 +38,23 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
 
 vi.mock('../../../components-v2/wiring/SemanticRadioSurfaces.svelte', () => ({ default: () => {} }));
 vi.mock('../DualSdrFace.svelte', () => ({ default: () => {} }));
+vi.mock('../../../components-v2/layout/StatusBar.svelte', () => ({ default: navigation.mount }));
+vi.mock('../../../components-v2/layout/RadioLayout.svelte', () => ({ default: navigation.mount }));
+vi.mock('../../../components-v2/layout/LcdLayout.svelte', () => ({ default: navigation.mount }));
 
 import DualSdrFaceSkin from '../DualSdrFaceSkin.svelte';
+import { loadSkin, resolveSkinId } from '../../registry';
 
 describe('DualSdrFaceSkin production entrypoint', () => {
   const source = readFileSync('src/skins/dual-sdr-face/DualSdrFaceSkin.svelte', 'utf8');
+  const statusBarSource = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+  const pickerModes = [...statusBarSource.matchAll(/\{ value: '([^']+)', label:/g)]
+    .map((match) => match[1] as CanonicalLayoutMode);
 
   beforeEach(() => {
     lifecycle.acquire.mockClear();
     lifecycle.release.mockClear();
+    navigation.selections.length = 0;
   });
 
   it('mounts the exact face through the canonical read-only semantic view', () => {
@@ -37,6 +63,38 @@ describe('DualSdrFaceSkin production entrypoint', () => {
     expect(source).toMatch(/<SemanticRadioSurfaces\s+\{readonlyDisplay\}\s*\/>/);
     expect(source).toMatch(/<DualSdrFace\s+\{view\}\s+scopeSource=\{hardwareScope\}\s*\/>/);
   });
+
+  it('keeps the picker options synchronized with the canonical layout vocabulary', () => {
+    expect(new Set(pickerModes)).toEqual(CANONICAL_LAYOUT_MODES);
+  });
+
+  it.each(pickerModes)(
+    'keeps a mounted selector path from picker-selectable mode %s',
+    async (layoutPreference) => {
+      const skinId = resolveSkinId({
+        capabilities: null,
+        layoutPreference,
+        isMobile: false,
+        hasAnyScope: true,
+      });
+      const Component = await loadSkin(skinId);
+      const target = document.createElement('div');
+      const mounted = mount(Component, { target });
+
+      const selector = target.querySelector<HTMLSelectElement>(
+        'select[data-testid="skin-navigation-probe"]',
+      );
+      expect(selector, `${layoutPreference} resolved to ${skinId} without navigation`).not.toBeNull();
+
+      const returnMode = layoutPreference === 'standard' ? 'lcd-cockpit' : 'standard';
+      selector!.value = returnMode;
+      selector!.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(navigation.selections).toEqual([returnMode]);
+
+      unmount(mounted);
+      target.remove();
+    },
+  );
 
   it('uses the canonical hardware scope and grants no command callback', () => {
     expect(source).toContain('runtime.scope.subscribeHardware(listener)');
