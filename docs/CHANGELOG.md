@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **Tone-capable rig profiles must now declare a named CTCSS table (MOR-2129).**
+  Any profile with `repeater_tone`, `tsql`, or `sql_type` must include
+  `[ctcss] table = "<name>"`, resolving through the versioned sibling catalog
+  `rigs/_ctcss_tables_v1.toml`. Missing, unknown, or malformed references now
+  fail profile loading. The resolved `RigConfig.ctcss_tones_centihz` and
+  `RadioProfile.ctcss_tones_centihz` values are immutable ordered integer
+  centiHz tuples (`8850` = 88.5 Hz); order defines provider index mapping, but
+  a reference does not add capabilities or grant a setter. The four shipped
+  tone profiles (IC-705, IC-7300, IC-9700, FTX-1) reference `standard_50`;
+  IC-7610 remains deliberately unreferenced.
 - **The shared state-cache poll helpers are deleted.** Removed:
   `rigplane.runtime._shared_state_runtime` (the whole module — its
   `DEFAULT_STATE_CACHE_TTL`, `is_cache_fresh`, `poll_frequency`,

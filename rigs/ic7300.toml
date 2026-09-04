@@ -836,6 +836,9 @@ width_max = 255
 [power]
 max_watts = 100
 
+[ctcss]
+table = "standard_50"
+
 [modes]
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"]
 

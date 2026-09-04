@@ -278,6 +278,9 @@ width_max = 255
 [power]
 max_watts = 10
 
+[ctcss]
+table = "standard_50"
+
 [modes]
 # wfview Modes: LSB, USB, AM, CW, RTTY, FM, CW-R, RTTY-R, DV, WFM
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "WFM", "RTTY", "RTTY-R", "DV"]

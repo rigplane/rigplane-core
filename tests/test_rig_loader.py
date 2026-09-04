@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+import tomllib
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -32,6 +33,58 @@ from rigplane.rig_loader import RigConfig, RigLoadError, discover_rigs, load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 TEMPLATE_PATH = RIGS_DIR / "ic7610.toml"
+_STANDARD_CTCSS_50_CENTIHZ = (
+    6700,
+    6930,
+    7190,
+    7440,
+    7700,
+    7970,
+    8250,
+    8540,
+    8850,
+    9150,
+    9480,
+    9740,
+    10000,
+    10350,
+    10720,
+    11090,
+    11480,
+    11880,
+    12300,
+    12730,
+    13180,
+    13650,
+    14130,
+    14620,
+    15140,
+    15670,
+    15980,
+    16220,
+    16550,
+    16790,
+    17130,
+    17380,
+    17730,
+    17990,
+    18350,
+    18620,
+    18990,
+    19280,
+    19660,
+    19950,
+    20350,
+    20650,
+    21070,
+    21810,
+    22570,
+    22910,
+    23360,
+    24180,
+    25030,
+    25410,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -42,6 +95,14 @@ def _write_toml(tmp_path: Path, content: str, name: str = "test.toml") -> Path:
     p = tmp_path / name
     p.write_text(textwrap.dedent(content))
     return p
+
+
+def _write_ctcss_catalog(tmp_path: Path, tables: str) -> Path:
+    return _write_toml(
+        tmp_path,
+        f"schema_version = 1\n\n[tables]\n{tables}",
+        "_ctcss_tables_v1.toml",
+    )
 
 
 _MINIMAL_TOML = """\
@@ -101,6 +162,136 @@ class TestLoadRig:
         p = _write_toml(tmp_path, _MINIMAL_TOML)
         rig = load_rig(p)
         assert rig.model == "IC-7300"
+
+    def test_shipped_ctcss_profiles_resolve_standard_table(self):
+        for name in ("ic705.toml", "ic7300.toml", "ic9700.toml", "ftx1.toml"):
+            rig = load_rig(RIGS_DIR / name)
+            assert rig.ctcss_tones_centihz == _STANDARD_CTCSS_50_CENTIHZ
+            assert rig.to_profile().ctcss_tones_centihz == rig.ctcss_tones_centihz
+
+    def test_ic7610_does_not_reference_ctcss_table(self):
+        source = tomllib.loads((RIGS_DIR / "ic7610.toml").read_text())
+
+        assert "ctcss" not in source
+        assert load_rig(RIGS_DIR / "ic7610.toml").ctcss_tones_centihz is None
+
+    def test_ctcss_capability_requires_table_reference(self, tmp_path):
+        toml = _MINIMAL_TOML.replace(
+            'features = ["audio", "scope", "meters", "tx"]',
+            'features = ["audio", "scope", "meters", "tx", "repeater_tone"]',
+        )
+
+        with pytest.raises(RigLoadError, match=r"missing required \[ctcss\]\.table"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_ctcss_reference_requires_catalog_file(self, tmp_path):
+        toml = _MINIMAL_TOML.replace(
+            "[modes]", '[ctcss]\ntable = "standard_50"\n\n[modes]'
+        )
+
+        with pytest.raises(RigLoadError, match="CTCSS table catalog file not found"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_ctcss_reference_rejects_unknown_table(self, tmp_path):
+        toml = _MINIMAL_TOML.replace("[modes]", '[ctcss]\ntable = "unknown"\n\n[modes]')
+        _write_ctcss_catalog(
+            tmp_path,
+            "standard_50 = { values_centihz = [6700, 6930] }\n",
+        )
+
+        with pytest.raises(RigLoadError, match="unknown CTCSS table 'unknown'"):
+            load_rig(_write_toml(tmp_path, toml))
+
+    @pytest.mark.parametrize(
+        ("section", "message"),
+        [
+            ("ctcss = []", r"\[ctcss\] must be a table"),
+            ("[ctcss]\ntable = 1", r"\[ctcss\]\.table must be a non-empty string"),
+            ('[ctcss]\ntable = ""', r"\[ctcss\]\.table must be a non-empty string"),
+            (
+                '[ctcss]\ntable = "standard_50"\nextra = true',
+                r"\[ctcss\] must contain exactly table",
+            ),
+        ],
+    )
+    def test_ctcss_reference_rejects_malformed_section(
+        self, tmp_path, section, message
+    ):
+        toml = f"{section}\n\n{_MINIMAL_TOML}"
+
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(_write_toml(tmp_path, toml))
+
+    @pytest.mark.parametrize(
+        ("catalog", "message"),
+        [
+            (
+                "schema_version = 2\n[tables.standard_50]\nvalues_centihz = [6700]",
+                "schema_version must be 1",
+            ),
+            (
+                "schema_version = 1.0\n[tables.standard_50]\nvalues_centihz = [6700]",
+                "schema_version must be 1",
+            ),
+            (
+                "schema_version = 1\ntables = []",
+                r"\[tables\] must be a non-empty table",
+            ),
+            (
+                "schema_version = 1\n[tables.standard_50]\nvalues_centihz = []",
+                "must be a non-empty integer array",
+            ),
+            (
+                "schema_version = 1\n[tables.standard_50]\nvalues_centihz = [6700, true]",
+                "must be a non-empty integer array",
+            ),
+            (
+                "schema_version = 1\n[tables.standard_50]\nvalues_centihz = [6700, 6700]",
+                "must not contain duplicates",
+            ),
+            (
+                "schema_version = 1\n[tables.standard_50]\nvalues_centihz = [6930, 6700]",
+                "must be strictly ascending",
+            ),
+            (
+                "schema_version = 1\n[tables.standard_50]\nvalues_centihz = [6600]",
+                "must be within 6700..25410 centiHz",
+            ),
+            (
+                "schema_version = 1\n[tables.standard_50]\nvalues_centihz = [6701]",
+                "must use exact 0.1 Hz steps",
+            ),
+        ],
+    )
+    def test_ctcss_catalog_rejects_malformed_tables(self, tmp_path, catalog, message):
+        toml = _MINIMAL_TOML.replace(
+            "[modes]", '[ctcss]\ntable = "standard_50"\n\n[modes]'
+        )
+        _write_toml(tmp_path, catalog, "_ctcss_tables_v1.toml")
+
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(_write_toml(tmp_path, toml))
+
+    def test_synthetic_ctcss_table_resolves_without_model_branch(self, tmp_path):
+        toml = _MINIMAL_TOML.replace(
+            "[modes]", '[ctcss]\ntable = "regional"\n\n[modes]'
+        )
+        _write_ctcss_catalog(
+            tmp_path,
+            "\n".join(
+                (
+                    "standard_50 = { values_centihz = [6700, 6930] }",
+                    "regional = { values_centihz = [8850, 10000] }",
+                )
+            ),
+        )
+
+        rig = load_rig(_write_toml(tmp_path, toml))
+
+        assert rig.ctcss_tones_centihz == (8850, 10000)
+        assert rig.to_profile().ctcss_tones_centihz == (8850, 10000)
+        assert rig.capabilities == ("audio", "scope", "meters", "tx")
+        assert "set_tone_freq" not in rig.commands
 
     def test_command_override_reuses_value_variant_parser(self, tmp_path):
         toml = _MINIMAL_TOML.replace(
@@ -2292,7 +2483,7 @@ class TestFixedValueChecks:
 # in the ambiguous middle this test forbids.
 
 _SHIPPED_RIG_TOMLS = sorted(
-    p for p in RIGS_DIR.glob("*.toml") if p.name != "_keyboard-default.toml"
+    p for p in RIGS_DIR.glob("*.toml") if not p.name.startswith("_")
 )
 
 

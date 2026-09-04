@@ -402,6 +402,9 @@ freshness_ttl_seconds = 120.0
 cadence_seconds = 30.0
 freshness_ttl_seconds = 120.0
 
+[ctcss]
+table = "standard_50"
+
 [modes]
 list = [
     "LSB", "USB", "CW-U", "FM", "AM",
