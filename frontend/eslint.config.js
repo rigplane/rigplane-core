@@ -57,7 +57,7 @@ const FORBIDDEN_RUNTIME_IMPORTS = {
 /**
  * Runtime-internals lockdown (MOR-1061 review cycles 1-2, F1/C1-A/C1-B).
  * The barrel, frontend-runtime, system-controller, scope-controller, and
- * tx-controller/app-host (the sole TX authority — v3 ADR invariant 11) all
+ * tx-controller/managed-app-host (the sole TX facade — v3 ADR invariant 11) all
  * aggregate transport/audioManager/stores or own exclusive state behind one
  * import, so banning only the individual specifiers (transport, stores,
  * audioManager) is bypassable through them. NOT applied to lib/runtime/**
@@ -73,7 +73,7 @@ const FORBIDDEN_RUNTIME_IMPORTS = {
  */
 const RUNTIME_INTERNALS_MSG =
   'Must not import runtime internals directly (barrel, frontend-runtime, controllers, or the ' +
-  'TX-authority app-host) — alias or relative. Consume adapters/view models instead. ' +
+  'managed TX app-host) — alias or relative. Consume adapters/view models instead. ' +
   'See v3 ADR invariants 5, 6, 11.';
 const FORBIDDEN_RUNTIME_BARREL = {
   paths: [
@@ -82,13 +82,13 @@ const FORBIDDEN_RUNTIME_BARREL = {
     { name: '$lib/runtime/frontend-runtime', message: RUNTIME_INTERNALS_MSG },
     { name: '$lib/runtime/system-controller', message: RUNTIME_INTERNALS_MSG },
     { name: '$lib/runtime/scope-controller.svelte', message: RUNTIME_INTERNALS_MSG },
-    { name: '$lib/runtime/tx-controller/app-host', message: RUNTIME_INTERNALS_MSG },
+    { name: '$lib/runtime/tx-controller/managed-app-host', message: RUNTIME_INTERNALS_MSG },
   ],
   patterns: [
     {
       regex:
         '(^|/)lib/runtime(/index|/frontend-runtime|/system-controller|' +
-        '/scope-controller\\.svelte|/tx-controller/app-host)?$',
+        '/scope-controller\\.svelte|/tx-controller/managed-app-host)?$',
       message: RUNTIME_INTERNALS_MSG,
     },
   ],

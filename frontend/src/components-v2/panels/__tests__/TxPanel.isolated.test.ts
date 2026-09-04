@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { txStatusColor } from '../tx-utils';
-import { TxController } from '$lib/runtime/tx-controller/controller';
-import type { TxControllerDependencies } from '$lib/runtime/tx-controller/controller';
+import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 // ---------------------------------------------------------------------------
 // txStatusColor
@@ -81,11 +81,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getTxHandlers: () => mockHandlers,
 }));
 
-// MOR-1011: the panel owns no PTT state any more — it renders the App TX
-// controller and feeds it gesture intent. Only the *host* (the context lookup)
-// is mocked; behind it sits a REAL TxController over stub dependencies, so
-// these tests exercise the production state machine instead of a double.
-const txHost = vi.hoisted(() => ({ current: undefined as unknown as TxHostFacade }));
+const txHost = vi.hoisted(() => ({ current: undefined as unknown as ManagedAppTxController }));
 
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => txHost.current,
@@ -111,113 +107,7 @@ vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
 import TxPanel from '../TxPanel.svelte';
 import txPanelSource from '../TxPanel.svelte?raw';
 
-// ---------------------------------------------------------------------------
-// Real-controller harness (pattern: tx-controller/__tests__/controller-contract)
-// ---------------------------------------------------------------------------
-
-type TxEvent = Parameters<TxController['dispatch']>[0];
-type StartEvent = Extract<TxEvent, { type: 'start' }>;
-type Eligibility = StartEvent['eligibility'];
-type Observation = StartEvent['ptt'];
-type Intent = StartEvent['intent'];
-type Guard = Extract<TxEvent, { type: 'intent' }>['guard'];
-type Command = Parameters<TxControllerDependencies['sendPtt']>[0];
-type Report = Parameters<TxControllerDependencies['sendPtt']>[3];
-type TxHostFacade = ReturnType<typeof createTxHarness>['facade'];
-
-const marker = (seq: number) => ({
-  authorityEpoch: 1, pttObservationSeq: seq, pttLastObservedMonotonic: seq,
-});
-const allowed: Eligibility = {
-  catPtt: true, browserTxAudio: true, controlLive: true, permit: 'allowed',
-  target: { receiver: 'MAIN', slot: 'A', frequencyHz: 14_074_000 },
-};
-const observe = (value: boolean, seq: number): Observation =>
-  ({ value, observed: true, fresh: true, source: 'radio-readback', marker: marker(seq) });
-
-/** Mirrors the deep-frozen snapshot/subscribe payloads app-host hands out. */
-function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== 'object') return value;
-  const copy = Object.fromEntries(Object.entries(value as Record<string, unknown>)
-    .map(([key, child]) => [key, deepFreeze(child)]));
-  return Object.freeze(copy) as unknown as T;
-}
-
-function createTxHarness() {
-  const sends: Array<{ command: Command; report: Report }> = [];
-  const audio: { next: Promise<string | null> } = { next: Promise.resolve(null) };
-  const eligibility = { current: allowed };
-  let id = 0;
-  let seq = 0;
-  const dependencies: TxControllerDependencies = {
-    startAudio: vi.fn(() => audio.next),
-    sendPtt: vi.fn((command, _commandId, _correlation, report) => { sends.push({ command, report }); }),
-    stopLocalAudio: vi.fn(),
-    restoreMod: vi.fn(),
-    commandId: vi.fn((command) => `${command}-${++id}`),
-    schedule: vi.fn((callback, delay) => setTimeout(callback, delay)),
-    cancel: vi.fn((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>)),
-    // Far beyond the 300 ms gesture window so controller deadlines never race it.
-    timeoutMs: { 'audio-start': 60_000, 'on-confirmation': 60_000, 'off-confirmation': 60_000 },
-  };
-  const controller = new TxController(1, marker(0), dependencies);
-  const sourceId = 'managed-panel-test';
-  const freshness = { current: true };
-  let lease = 0;
-  const snapshot = () => deepFreeze({ ...controller.snapshot(), fresh: freshness.current, remainingMs: null });
-  const facade = {
-    snapshot,
-    subscribe: (listener: (state: unknown) => void) =>
-      controller.subscribe(() => listener(snapshot())),
-    start: (sourceId: string, leaseId: string, intent: Intent) => controller.dispatch({
-      type: 'start', sourceId, leaseId, intent,
-      eligibility: eligibility.current, ptt: observe(false, ++seq),
-    }),
-    setIntent: (sourceId: string, guard: Guard, intent: Intent) =>
-      controller.dispatch({ type: 'intent', sourceId, guard: { ...guard }, intent }),
-    release: (sourceId: string, guard: Guard) => controller.dispatch({
-      type: 'release', sourceId, guard: { ...guard }, commandId: dependencies.commandId('off'),
-    }),
-    resetFault: () => controller.dispatch({ type: 'reset-fault' }),
-    pttOn: () => controller.dispatch({
-      type: 'start', sourceId, leaseId: `${sourceId}-${++lease}`, intent: 'momentary',
-      eligibility: eligibility.current, ptt: observe(false, ++seq),
-    }),
-    pttOff: () => {
-      const guard = controller.snapshot().guard;
-      if (guard) controller.dispatch({ type: 'release', sourceId, guard, commandId: dependencies.commandId('off') });
-    },
-    transmitOn: () => {
-      const guard = controller.snapshot().guard;
-      if (guard) controller.dispatch({ type: 'intent', sourceId, guard, intent: 'latched' });
-    },
-    forceOff: () => {
-      const guard = controller.snapshot().guard;
-      if (guard) controller.dispatch({ type: 'release', sourceId, guard, commandId: dependencies.commandId('off') });
-    },
-  };
-  return {
-    controller, dependencies, sends, facade, audio, eligibility, freshness,
-    /** Feed an authoritative PTT readback (what the App host does on session updates). */
-    authority: (value: boolean) => controller.dispatch({
-      type: 'authority', epoch: 1, ptt: observe(value, ++seq),
-      eligibility: eligibility.current, offCommandId: dependencies.commandId('off'),
-    }),
-    /** Report the most recent command of `command` as delivered. */
-    confirm: (command: Command) => {
-      const send = [...sends].reverse().find((item) => item.command === command);
-      expect(send).toBeDefined();
-      send!.report({ outcome: 'sent', eventEpoch: 1, barrier: marker(++seq) });
-    },
-    /** A competing lease source (e.g. the mobile layout or a second panel). */
-    startOther: (leaseId: string) => controller.dispatch({
-      type: 'start', sourceId: 'other-panel', leaseId, intent: 'momentary',
-      eligibility: eligibility.current, ptt: observe(false, ++seq),
-    }),
-  };
-}
-
-let tx: ReturnType<typeof createTxHarness>;
+let tx: ManagedAppTxHarness;
 let components: ReturnType<typeof mount>[] = [];
 
 function mountPanel(overrides?: Partial<typeof mockProps>) {
@@ -239,8 +129,8 @@ function openTxSettings(container: HTMLElement) {
 
 beforeEach(() => {
   components = [];
-  tx = createTxHarness();
-  txHost.current = tx.facade;
+  tx = new ManagedAppTxHarness();
+  txHost.current = tx.controller;
   Object.assign(mockProps, {
     txActive: false, txActiveAvailable: true, rfPower: 0.5, micGain: 128, atuActive: false,
     atuTuning: false, voxActive: false, compActive: false, compLevel: 64,
@@ -264,17 +154,20 @@ beforeEach(() => {
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
+  expect(tx.listenerCount()).toBe(0);
   document.body.innerHTML = '';
 });
 
 describe('panel structure', () => {
   it('renders managed TX unknown instead of legacy RX', () => {
+    tx.emitStale();
     const t = mountPanel();
     const strip = t.querySelector('.tx-strip');
     expect(strip?.textContent?.trim()).toBe('○ ---');
   });
 
   it('does not source TX ACTIVE from legacy txActive', () => {
+    tx.emitStale();
     const t = mountPanel({ txActive: true });
     const strip = t.querySelector('.tx-strip');
     expect(strip?.textContent?.trim()).toBe('○ ---');
@@ -456,160 +349,74 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     button(t).dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
     flushSync();
   };
-  const offs = () => tx.sends.filter((item) => item.command === 'off').length;
-  const flushAudio = async () => { await Promise.resolve(); await Promise.resolve(); flushSync(); };
-
-  /** Press and hold until the radio has acknowledged the ON command. */
-  async function hold(t: HTMLElement) {
-    down(t);
-    await flushAudio();
-    tx.confirm('on');
-    flushSync();
-  }
-
-  /** Hold, then double-tap into the latched lock. */
-  async function latch(t: HTMLElement) {
-    await hold(t);
-    up(t);
-    vi.advanceTimersByTime(100);
-    down(t);
-    flushSync();
-  }
-
-  it('keys a hold through audio → ON and stays keyed', async () => {
+  it('emits the exact WS pair for an ordinary press/release', () => {
     const t = mountPanel();
     down(t);
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(label(t)).toBe('PTT');
-    expect(button(t).getAttribute('aria-disabled')).toBe('false');
-    await flushAudio();
-    tx.confirm('on');
-    tx.authority(true);
-    flushSync();
-    expect(label(t)).toBe('TX');
-    expect(button(t).classList.contains('ptt-held')).toBe(true);
-    expect(button(t).getAttribute('aria-disabled')).toBe('false');
-    tx.authority(true);
-    flushSync();
-    expect(tx.controller.snapshot().phase).toBe('active');
-    vi.advanceTimersByTime(1000);
-    expect(offs()).toBe(0);
-  });
-
-  it('holds the lease for 299 ms after release and drops it at 300 ms', async () => {
-    const t = mountPanel();
-    await hold(t);
+    expect(tx.trace()).toEqual([{ transport: 'ws', operation: 'ptt_on' }]);
     up(t);
     vi.advanceTimersByTime(299);
-    flushSync();
-    expect(offs()).toBe(0);
-    expect(tx.controller.snapshot().phase).toBe('key-confirm-pending');
+    expect(tx.trace()).toHaveLength(1);
     vi.advanceTimersByTime(1);
-    flushSync();
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-    expect(label(t)).toBe('UNKEYING…');
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
   });
 
-  it('routes keyboard hold/release through the same recognizer', async () => {
+  it('routes keyboard hold/release through the same WS recognizer', () => {
     const t = mountPanel();
     button(t).dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
-    await flushAudio();
     button(t).dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
-    vi.advanceTimersByTime(300); flushSync();
-    expect(offs()).toBe(1);
+    vi.advanceTimersByTime(300);
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
   });
 
-  it('latches on a double tap without starting a second lease', async () => {
+  it('double tap emits one HTTP transmit_on without a second WS lease', () => {
     const t = mountPanel();
-    await latch(t);
-    expect(tx.controller.snapshot().intent).toBe('latched');
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-    expect(label(t)).toBe('TX 🔒');
-    expect(button(t).classList.contains('ptt-latched')).toBe(true);
-    vi.advanceTimersByTime(1000);
-    expect(offs()).toBe(0);
-  });
-
-  it('keeps Force Off reachable while stale instead of starting a new lease', async () => {
-    const t = mountPanel();
-    await latch(t);
-    up(t);
-    tx.freshness.current = false;
-    down(t);
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-    expect(tx.dependencies.startAudio).toHaveBeenCalledOnce();
-  });
-
-  it('drops a quick tap taken while audio is still pending, and never keys late', async () => {
-    let resolveAudio!: (value: string | null) => void;
-    tx.audio.next = new Promise((resolve) => { resolveAudio = resolve; });
-    const t = mountPanel();
-    down(t);
+    down(t); up(t); vi.advanceTimersByTime(100); down(t);
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'http', operation: 'transmit_on' },
+    ]);
     expect(label(t)).toBe('PTT');
-    up(t);
-    vi.advanceTimersByTime(300);
-    flushSync();
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-    resolveAudio(null);
-    await flushAudio();
-    expect(tx.sends.filter((item) => item.command === 'on')).toHaveLength(0);
   });
 
-  it('releases the lease when the panel unmounts', async () => {
-    const t = mountPanel();
-    await hold(t);
-    expect(tx.controller.snapshot().phase).toBe('key-confirm-pending');
-    unmount(components.pop()!);
-    expect(offs()).toBe(1);
-    expect(tx.controller.snapshot().phase).toBe('releasing');
-  });
-
-  it('cannot disturb a newer owner when its stale release window fires', async () => {
-    const t = mountPanel();
-    await hold(t);
-    tx.authority(true);
-    flushSync();
-    up(t); // arms a 300 ms window against the guard live RIGHT NOW
-    // Meanwhile the lease is torn down and re-taken by a different source.
-    tx.controller.dispatch({
-      type: 'release', guard: tx.controller.snapshot().guard!, commandId: 'off-external',
-    });
-    tx.confirm('off');
-    tx.authority(false);
-    flushSync();
-    expect(tx.controller.snapshot().phase).toBe('idle');
-    tx.startOther('other-lease');
-    flushSync();
-    const before = offs();
-    vi.advanceTimersByTime(300);
-    flushSync();
-    expect(offs()).toBe(before);
-    expect(tx.controller.snapshot()).toMatchObject({
-      sourceId: 'other-panel', phase: 'audio-start-pending',
-    });
-  });
-
-  it('renders a server-owned controller fault without locally clearing it', async () => {
-    tx.eligibility.current = { ...allowed, permit: 'denied' };
+  it('canonical latched tap emits HTTP force_off', () => {
+    tx.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on', releaseRequired: true });
     const t = mountPanel();
     down(t);
+    expect(tx.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
+  });
+
+  it('releases pending momentary exactly once when the panel unmounts', () => {
+    const t = mountPanel();
+    down(t); up(t);
+    unmount(components.pop()!);
+    vi.advanceTimersByTime(600);
+    expect(tx.trace()).toEqual([
+      { transport: 'ws', operation: 'ptt_on' },
+      { transport: 'ws', operation: 'ptt_off' },
+    ]);
+  });
+
+  it('renders server fault and clears it only after a fresh canonical snapshot', () => {
+    tx.emitServerSnapshot({ lastError: 'not-eligible' });
+    const t = mountPanel();
     const fault = t.querySelector('[data-testid="tx-fault"]');
     expect(fault).not.toBeNull();
     expect(fault!.getAttribute('data-fault')).toBe('not-eligible');
-    expect(label(t)).toBe('PTT');
-    up(t);
-    tx.eligibility.current = allowed;
     down(t);
-    await flushAudio();
     expect(t.querySelector('[data-testid="tx-fault"]')).not.toBeNull();
-    expect(tx.controller.snapshot()).toMatchObject({ fault: 'not-eligible', phase: 'failed' });
+    tx.emitServerSnapshot({ intent: 'rx', observedPtt: 'off', lastError: null });
+    flushSync();
+    expect(t.querySelector('[data-testid="tx-fault"]')).toBeNull();
   });
 
-  it('takes RF state only from fresh controller authority', async () => {
-    tx.authority(false);
-    tx.freshness.current = false;
+  it('takes RF state only from fresh canonical authority', () => {
+    tx.emitStale();
     let t = mountPanel({ txActive: false, txActiveAvailable: true });
     expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('unknown');
     unmount(components.pop()!);
@@ -618,29 +425,26 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('unknown');
     unmount(components.pop()!);
 
-    tx.freshness.current = true;
-    tx.authority(false);
+    tx.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' });
     t = mountPanel({ txActive: true, txActiveAvailable: true });
     expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('off');
-    await hold(t);
-    tx.authority(true);
+    tx.emitServerSnapshot({ intent: 'ptt', observedPtt: 'on', releaseRequired: true });
     flushSync();
     expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('on');
   });
 
   describe('two mounted panels', () => {
-    it('shares the single App-root managed intent owner', async () => {
+    it('shares one App-root managed facade and keeps state server-owned', () => {
       const a = mountPanel();
       const b = mountPanel();
-      await hold(a);
-      const first = tx.controller.snapshot().sourceId;
-      unmount(components.shift()!); // A releases its own lease, then drains
-      tx.confirm('off');
-      tx.authority(false);
+      down(a);
+      expect(tx.trace()).toEqual([{ transport: 'ws', operation: 'ptt_on' }]);
+      expect(label(a)).toBe('PTT');
+      expect(label(b)).toBe('PTT');
+      tx.emitServerSnapshot({ intent: 'ptt', observedPtt: 'on', releaseRequired: true });
       flushSync();
-      expect(tx.controller.snapshot().phase).toBe('idle');
-      down(b);
-      expect(tx.controller.snapshot().sourceId).toBe(first);
+      expect(label(a)).toBe('TX');
+      expect(label(b)).toBe('TX');
     });
   });
 

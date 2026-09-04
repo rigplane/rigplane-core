@@ -329,12 +329,31 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBeGreaterThan(0);
   });
 
+  it('rejects semantic importing the managed App-root TX facade', async () => {
+    const hits = await restrictedImportHits(
+      `import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';`,
+      'src/semantic/VfoDisplay.ts',
+    );
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('allows runtime tests to consume the managed TX facade read-only', async () => {
+    const hits = await restrictedImportHits(
+      `import type { ManagedAppTxController } from '../managed-app-host';`,
+      'src/lib/runtime/tx-controller/__tests__/support/managed-app-probe.ts',
+    );
+    expect(hits).toBe(0);
+  });
+
   it('keeps every retired browser TX authority module absent', () => {
     for (const retired of [
       'src/lib/runtime/tx-controller/app-host.ts',
       'src/lib/runtime/tx-controller/controller.ts',
       'src/lib/runtime/tx-controller/model.ts',
       'src/lib/runtime/tx-controller/app-authority.ts',
+      'src/components-v2/wiring/tx-ptt-gesture.ts',
+      'src/components-v2/wiring/mobile-ptt-surface.ts',
+      'src/components-v2/wiring/__tests__/tx-ptt-gesture.test.ts',
     ]) expect(existsSync(path.join(FRONTEND_ROOT, retired)), retired).toBe(false);
   });
 

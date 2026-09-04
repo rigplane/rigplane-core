@@ -30,7 +30,6 @@ vi.mock('$lib/runtime', () => ({
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => h.txController,
 }));
-vi.mock('$lib/runtime/tx-controller/model', () => ({ txFaultObligation: () => null }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
   getModInputTxGuardHandlers: () => ({ onSetLan: h.noop, onDismiss: h.noop }),

@@ -48,6 +48,7 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
   h.notifyRuntime = () => update();
   return {
     runtime: {
+      onTxAudioDied: () => () => {},
       get state() { subscribe(); return h.radio; },
       get caps() { subscribe(); return h.caps; },
       bootstrap: h.bootstrap,
@@ -62,7 +63,7 @@ vi.mock('../../../../lib/runtime/frontend-runtime', async () => {
 });
 vi.mock('$lib/runtime/system-controller', () => ({ systemController: { registerPreDisconnectBarrier: h.registerBarrier } }));
 vi.mock('$lib/i18n', () => ({ t: (key: string) => key }));
-vi.mock('../app-host', () => ({ provideAppTxControllerHost: h.provide }));
+vi.mock('../managed-app-host', () => ({ provideManagedAppTxHost: h.provide }));
 // The App-global status host (MOR-1059) is stubbed here: these tests own the
 // TX controller lifecycle, and the host has its own focused suite.
 vi.mock('../../../../AppGlobalHost.svelte', async () => {
