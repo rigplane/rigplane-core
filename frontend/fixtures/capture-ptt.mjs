@@ -4,8 +4,9 @@
  * Verification-only. Drives real `PointerEvent`s (not `.click()`) against
  * `fixtures/ptt-harness.html` over the fixtures vite server, one fresh
  * `page.goto()` per scenario for full isolation, and asserts on the harness's
- * `window.__ptt` readback of the REAL `TxController`/`createPttGesture`
- * state — never a wall-clock value in a recorded detail (MOR-1087 F-A).
+ * `window.__ptt` delivery trace from the real managed gesture. Each stateful
+ * scenario checks delivery first, then emits a server-shaped snapshot before
+ * checking the rendered state.
  *
  *   node fixtures/capture-ptt.mjs [--port <n>] [--only <substring>]
  */
@@ -69,9 +70,16 @@ const fresh = async (page) => {
   await page.goto(URL, { waitUntil: 'load' });
   await page.waitForSelector('body[data-harness-ready="true"]', { timeout: 10_000 });
 };
-const snap = (page) => page.evaluate(() => ({
-  guardId: window.__ptt.guardId(), intent: window.__ptt.intent(), calls: window.__ptt.callCount(),
-}));
+const SERVER = {
+  rx: { phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null, faultDetail: null, fresh: true, releaseRequired: false, remainingMs: null, lastOperation: 'force_receive' },
+  held: { phase: 'key-confirm-pending', intent: 'momentary', radioTx: 'unknown', txRisk: 'uncertain', fault: null, faultDetail: null, fresh: true, releaseRequired: true, remainingMs: null, lastOperation: 'ptt_on' },
+  latched: { phase: 'active', intent: 'latched', radioTx: 'on', txRisk: 'confirmed-on', fault: null, faultDetail: null, fresh: true, releaseRequired: true, remainingMs: null, lastOperation: 'transmit_on' },
+  stale: { phase: 'idle', intent: null, radioTx: 'unknown', txRisk: 'none', fault: null, faultDetail: null, fresh: false, releaseRequired: false, remainingMs: null, lastOperation: null },
+};
+const trace = (page) => page.evaluate(() => window.__ptt.deliveryTrace());
+const emit = (page, snapshot) => page.evaluate((next) => window.__ptt.emitServerSnapshot(next), snapshot);
+const snap = (page) => page.evaluate(() => window.__ptt.snapshot());
+const matches = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
 
 const SCENARIOS = [
   {
@@ -79,15 +87,18 @@ const SCENARIOS = [
     async run(page) {
       await pointer(page, '[data-testid="ptt-fab"], .ptt-fab', 'pointerdown');
       await wait(page, 70);
+      const heldTrace = await trace(page);
+      await emit(page, SERVER.held);
       const held = await snap(page);
       await pointer(page, '.ptt-fab', 'pointerup');
       await wait(page, 320);
+      const releaseTrace = await trace(page);
+      await emit(page, SERVER.rx);
       const released = await snap(page);
       return {
-        ok: held.guardId !== null && held.intent === 'momentary'
-          && released.guardId === null,
-        detail: `held guard=${held.guardId !== null} intent=${held.intent} · `
-          + `after release guard=${released.guardId !== null}`,
+        ok: matches(heldTrace, ['ws.ptt_on']) && held.intent === 'momentary'
+          && matches(releaseTrace, ['ws.ptt_on', 'ws.ptt_off']) && released.intent === null,
+        detail: `delivery=${releaseTrace.join(' -> ')} · server intent ${held.intent} -> ${released.intent}`,
       };
     },
   },
@@ -100,15 +111,18 @@ const SCENARIOS = [
       await wait(page, 100);
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
+      const delivery = await trace(page);
+      await emit(page, SERVER.latched);
       const latched = await snap(page);
       await pointer(page, '.ptt-fab', 'pointerup');
       await wait(page, 320);
+      const afterTrace = await trace(page);
+      await emit(page, SERVER.latched);
       const after = await snap(page);
       return {
-        ok: latched.intent === 'latched' && latched.guardId !== null
-          && after.intent === 'latched' && after.guardId !== null,
-        detail: `after double-tap intent=${latched.intent} guard=${latched.guardId !== null} · `
-          + `unrelated up() 320ms later still intent=${after.intent} guard=${after.guardId !== null}`,
+        ok: matches(delivery, ['ws.ptt_on', 'http.transmit_on']) && latched.intent === 'latched'
+          && matches(afterTrace, delivery) && after.intent === 'latched',
+        detail: `delivery=${afterTrace.join(' -> ')} · server intent=${after.intent}`,
       };
     },
   },
@@ -122,12 +136,17 @@ const SCENARIOS = [
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
       await pointer(page, '.ptt-fab', 'pointerup');
+      const latchTrace = await trace(page);
+      await emit(page, SERVER.latched);
       const before = await snap(page);
       await pointer(page, '.ptt-fab', 'pointerdown'); // tap while latched — releases immediately, no delay
+      const releaseTrace = await trace(page);
+      await emit(page, SERVER.rx);
       const after = await snap(page);
       return {
-        ok: before.intent === 'latched' && after.guardId === null && after.intent === null,
-        detail: `before tap intent=${before.intent} · after single tap guard=${after.guardId !== null} intent=${after.intent}`,
+        ok: matches(latchTrace, ['ws.ptt_on', 'http.transmit_on']) && before.intent === 'latched'
+          && matches(releaseTrace, [...latchTrace, 'http.force_off']) && after.intent === null,
+        detail: `delivery=${releaseTrace.join(' -> ')} · server intent ${before.intent} -> ${after.intent}`,
       };
     },
   },
@@ -138,9 +157,11 @@ const SCENARIOS = [
       await wait(page, 20); // inside the 50ms hold-delay
       await pointer(page, '.ptt-fab', 'pointercancel');
       await wait(page, 80); // past where the delayed engage would have fired
+      const delivery = await trace(page);
+      await emit(page, SERVER.rx);
       const after = await snap(page);
-      return { ok: after.guardId === null && after.calls === 0,
-        detail: `guard=${after.guardId !== null} calls=${after.calls} · expected never keyed` };
+      return { ok: matches(delivery, []) && after.intent === null,
+        detail: `delivery=${delivery.join(' -> ') || '(none)'} · server intent=${after.intent}` };
     },
   },
   {
@@ -148,12 +169,17 @@ const SCENARIOS = [
     async run(page) {
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
+      const heldTrace = await trace(page);
+      await emit(page, SERVER.held);
       const held = await snap(page);
       await pointer(page, '.ptt-fab', 'pointercancel');
       await wait(page, 320);
+      const releaseTrace = await trace(page);
+      await emit(page, SERVER.rx);
       const after = await snap(page);
-      return { ok: held.guardId !== null && after.guardId === null,
-        detail: `held guard=${held.guardId !== null} · after cancel+320ms guard=${after.guardId !== null}` };
+      return { ok: matches(heldTrace, ['ws.ptt_on']) && held.intent === 'momentary'
+          && matches(releaseTrace, ['ws.ptt_on', 'ws.ptt_off']) && after.intent === null,
+        detail: `delivery=${releaseTrace.join(' -> ')} · server intent ${held.intent} -> ${after.intent}` };
     },
   },
   {
@@ -166,14 +192,19 @@ const SCENARIOS = [
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
       await pointer(page, '.ptt-fab', 'pointerup');
+      const latchTrace = await trace(page);
+      await emit(page, SERVER.latched);
       const latched = await snap(page);
       // No matching pointerdown session on this component — a bare stray cancel.
       await pointer(page, '.ptt-fab', 'pointercancel');
       await wait(page, 320);
+      const afterTrace = await trace(page);
+      await emit(page, SERVER.latched);
       const after = await snap(page);
       return {
-        ok: latched.intent === 'latched' && after.intent === 'latched' && after.guardId !== null,
-        detail: `latched intent=${latched.intent} · after spurious cancel+320ms intent=${after.intent} guard=${after.guardId !== null}`,
+        ok: matches(latchTrace, ['ws.ptt_on', 'http.transmit_on']) && latched.intent === 'latched'
+          && matches(afterTrace, latchTrace) && after.intent === 'latched',
+        detail: `delivery=${afterTrace.join(' -> ')} · server intent=${after.intent}`,
       };
     },
   },
@@ -184,9 +215,11 @@ const SCENARIOS = [
       await wait(page, 20); // still inside the 50ms hold-delay
       await pointer(page, '.ptt-fab', 'pointermove', { x: 30, y: 10 }); // 20px, past the 8px guard
       await wait(page, 80);
+      const delivery = await trace(page);
+      await emit(page, SERVER.rx);
       const after = await snap(page);
-      return { ok: after.guardId === null && after.calls === 0,
-        detail: `guard=${after.guardId !== null} calls=${after.calls} · a scroll-sized move must cancel, not key` };
+      return { ok: matches(delivery, []) && after.intent === null,
+        detail: `delivery=${delivery.join(' -> ') || '(none)'} · server intent=${after.intent}` };
     },
   },
   {
@@ -195,11 +228,13 @@ const SCENARIOS = [
       const before = await page.evaluate(() => window.__ptt.generation());
       await page.evaluate(() => window.__ptt.setSurface('landscape'));
       const after = await page.evaluate(() => ({
-        generation: window.__ptt.generation(), calls: window.__ptt.callCount(),
+        generation: window.__ptt.generation(), delivery: window.__ptt.deliveryTrace(),
       }));
+      await emit(page, SERVER.rx);
+      const server = await snap(page);
       return {
-        ok: after.generation === before + 1 && after.calls === 0,
-        detail: `generation ${before} -> ${after.generation} · calls=${after.calls} (idle rotation must not touch the authority path)`,
+        ok: after.generation === before + 1 && matches(after.delivery, []) && server.intent === null,
+        detail: `generation ${before} -> ${after.generation} · delivery=${after.delivery.join(' -> ') || '(none)'}`,
       };
     },
   },
@@ -208,15 +243,17 @@ const SCENARIOS = [
     async run(page) {
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
+      const heldTrace = await trace(page);
+      await emit(page, SERVER.held);
       const held = await snap(page);
       await page.evaluate(() => window.__ptt.setSurface('landscape'));
+      const releaseTrace = await trace(page);
+      await emit(page, SERVER.rx);
       const after = await snap(page);
-      const calls = await page.evaluate(() => window.__ptt.callsSince(0));
       return {
-        ok: held.guardId !== null && after.guardId === null
-          && calls.filter((c) => c === 'ws.ptt_off').length === 1,
-        detail: `held=${held.guardId !== null} · after rotation guard=${after.guardId !== null} · `
-          + `release calls=${calls.filter((c) => c === 'ws.ptt_off').length} (must be exactly 1: no strand, no double-release)`,
+        ok: matches(heldTrace, ['ws.ptt_on']) && held.intent === 'momentary'
+          && matches(releaseTrace, ['ws.ptt_on', 'ws.ptt_off']) && after.intent === null,
+        detail: `delivery=${releaseTrace.join(' -> ')} · server intent ${held.intent} -> ${after.intent}`,
       };
     },
   },
@@ -225,69 +262,54 @@ const SCENARIOS = [
     async run(page) {
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
+      const heldTrace = await trace(page);
+      await emit(page, SERVER.held);
       await pointer(page, '.ptt-fab', 'pointerup'); // arms the 300ms deferred-release window
       await wait(page, 50); // still pending
       await page.evaluate(() => window.__ptt.setSurface('landscape')); // destroy() must cancel it, not just abandon it
       await wait(page, 320); // past where the abandoned timer would have fired a SECOND release
-      const calls = await page.evaluate(() => window.__ptt.callsSince(0));
+      const releaseTrace = await trace(page);
+      await emit(page, SERVER.rx);
+      const after = await snap(page);
       return {
-        ok: calls.filter((c) => c === 'ws.ptt_off').length === 1,
-        detail: `release calls=${calls.filter((c) => c === 'ws.ptt_off').length} (a surviving pending-release timer would double-fire)`,
+        ok: matches(heldTrace, ['ws.ptt_on'])
+          && matches(releaseTrace, ['ws.ptt_on', 'ws.ptt_off']) && after.intent === null,
+        detail: `delivery=${releaseTrace.join(' -> ')} · server intent=${after.intent}`,
       };
     },
   },
   {
-    // MOR-1376 (was the MOR-1088 flagship FINDING, now FIXED and pinned SAFE).
-    // A double orientation flip within the 50ms hold-delay window used to let
-    // an ABANDONED older-surface press spuriously key a BRAND NEW recognizer
-    // generation the operator never pressed: `fabDown`/`fabUp`'s liveness guard
-    // checked only the coarse surface label ('portrait' vs 'landscape'), not
-    // which SPECIFIC recognizer generation armed the timer — the ResourceDemand
-    // handle-identity trap class (a stale async callback acting on whatever a
-    // shared mutable slot currently points to, without checking it is still ITS
-    // OWN handle). MOR-1376 moved the identity into the binding: each
-    // generation hands out its own fabDown/fabUp, PttFab snapshots them when a
-    // press arms, and a destroyed generation is inert.
-    //
-    // This assertion now pins the SAFE property in BOTH directions: the ghost
-    // must NOT key (a regression that reinstates the shared forwarder fails on
-    // `guard`/`calls`), and the surviving surface must still be usable (an
-    // over-broad guard that bricks the live FAB fails on the deliberate press
-    // at the end).
+    // MOR-1376: a destroyed surface generation must not deliver its delayed
+    // intent, while the surviving generation must remain usable.
     name: 'orientation-double-flip-newer-owner-survives',
     async run(page) {
-      // Abandoned press on the FIRST portrait surface — never released, still
-      // inside its 50ms hold-delay when we rotate away from it twice.
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 15);
       await page.evaluate(() => window.__ptt.setSurface('landscape')); // generation 2
       await wait(page, 5);
       await page.evaluate(() => window.__ptt.setSurface('portrait')); // generation 3 — a NEW, unrelated recognizer
-      const g3guardBeforeGhost = await page.evaluate(() => window.__ptt.guardId());
-      // The FIRST press's 50ms timer (armed at t=0) fires around now (~t=50),
-      // long after generation 3 replaced generation 1. It resolves to
-      // generation 1's own (destroyed, inert) handler, so nothing keys.
       await wait(page, 60);
+      const ghostTrace = await trace(page);
+      await emit(page, SERVER.rx);
       const afterGhostWindow = await snap(page);
-      // Direction 2: generation 3 is untouched, not collaterally disarmed.
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
+      const realTrace = await trace(page);
+      await emit(page, SERVER.held);
       const afterRealPress = await snap(page);
       return {
-        ok: g3guardBeforeGhost === null // generation 3 starts clean, as expected
-          && afterGhostWindow.guardId === null && afterGhostWindow.calls === 0 // SAFE: no ghost key
-          && afterRealPress.guardId !== null && afterRealPress.calls === 1,    // and a real press still keys
-        detail: `generation-3 guard before ghost=${g3guardBeforeGhost !== null} (expected false) · `
-          + `after the abandoned generation-1 press's delayed timer fires: `
-          + `guard=${afterGhostWindow.guardId !== null} calls=${afterGhostWindow.calls} (expected false/0) · `
-          + `after a deliberate press on the surviving surface: `
-          + `guard=${afterRealPress.guardId !== null} calls=${afterRealPress.calls} (expected true/1)`,
+        ok: matches(ghostTrace, []) && afterGhostWindow.intent === null
+          && matches(realTrace, ['ws.ptt_on']) && afterRealPress.intent === 'momentary',
+        detail: `ghost delivery=${ghostTrace.join(' -> ') || '(none)'} · `
+          + `surviving delivery=${realTrace.join(' -> ')} · server intent=${afterRealPress.intent}`,
       };
     },
   },
   {
     name: 'touch-targets-44px-both-surfaces',
     async run(page) {
+      const delivery = await trace(page);
+      await emit(page, SERVER.rx);
       const portrait = await page.evaluate(() => {
         const r = document.querySelector('.ptt-fab').getBoundingClientRect();
         return { w: r.width, h: r.height };
@@ -297,20 +319,26 @@ const SCENARIOS = [
         const r = document.querySelector('[data-testid="ls-ptt"]').getBoundingClientRect();
         return { w: r.width, h: r.height };
       });
-      const ok = portrait.w >= 44 && portrait.h >= 44 && landscape.w >= 44 && landscape.h >= 44;
-      return { ok, detail: `portrait ${portrait.w}x${portrait.h} · landscape ${landscape.w}x${landscape.h} · expected >=44x44` };
+      const ok = matches(delivery, []) && portrait.w >= 44 && portrait.h >= 44
+        && landscape.w >= 44 && landscape.h >= 44;
+      return { ok, detail: `delivery=${delivery.join(' -> ') || '(none)'} · portrait ${portrait.w}x${portrait.h} · landscape ${landscape.w}x${landscape.h} · expected >=44x44` };
     },
   },
   {
-    name: 'connection-loss-epoch-bump-releases-held-tx',
+    name: 'connection-loss-emits-stale-server-snapshot',
     async run(page) {
       await pointer(page, '.ptt-fab', 'pointerdown');
       await wait(page, 70);
+      const delivery = await trace(page);
+      await emit(page, SERVER.held);
       const held = await snap(page);
-      await page.evaluate(() => window.__ptt.epochBump());
+      const beforeLossTrace = await trace(page);
+      await emit(page, SERVER.stale);
       const after = await snap(page);
-      return { ok: held.guardId !== null && after.guardId === null,
-        detail: `held guard=${held.guardId !== null} · after an authority-epoch bump (session reconnect) guard=${after.guardId !== null}` };
+      return { ok: matches(delivery, ['ws.ptt_on']) && matches(beforeLossTrace, delivery)
+          && held.intent === 'momentary' && after.intent === null && after.fresh === false
+          && after.radioTx === 'unknown',
+        detail: `delivery=${delivery.join(' -> ')} · stale server intent=${after.intent} fresh=${after.fresh} radioTx=${after.radioTx}` };
     },
   },
 ];
@@ -345,8 +373,8 @@ const manifest = {
       'src/components-v2/controls/PttFab.svelte (unmodified)',
     ],
     intentionalDifferences: [
-      'Eligibility/PttObservation come from a fixed fake authority, not '
-      + 'tx-controller/browser-dependencies.ts\'s WS-session projector — there is no live radio.',
+      'The harness records managed WS/HTTP delivery and renders only explicitly emitted '
+      + 'server-shaped snapshots; there is no live radio.',
       'The orientation-swap effect (one recognizer per surface, shared live-reading fabDown/fabUp) '
       + 'is a hand-mirror of MobileRadioLayout.svelte\'s own $effect, not an import of it — that '
       + 'component pulls in $lib/runtime/stores singletons this harness does not construct. Scenarios '

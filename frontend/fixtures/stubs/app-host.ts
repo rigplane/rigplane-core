@@ -1,8 +1,8 @@
 /**
- * MOR-1070 stub for the canonical managed App TX facade.
+ * MOR-1070 stub for the managed-app-host TX facade.
  *
- * It exposes no browser lease or reducer controls: fixture views consume only
- * the server-shaped snapshot and the four managed intents.
+ * Fixture views consume the server-shaped snapshot; the four managed intent
+ * methods only record delivery calls.
  */
 import { harness, record, type TxSnapshot } from '../harness-state';
 

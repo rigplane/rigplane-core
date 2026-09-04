@@ -3,28 +3,11 @@ import { mount, unmount, flushSync } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 
-// ─── Page-lifecycle release matrix — pagehide/visibilitychange TX release
-// through the REAL stack (MOR-1089 U6) ───────────────────────────────────────
-//
-// U4/U5 wire the real `WsChannel` + real `createManagedBrowserDependencies`
-// + real `TxController` by hand, in a `setup()` helper, explicitly BECAUSE
-// `provideAppTxControllerHost` cannot run outside a live Svelte component (it
-// calls `getContext`/`setContext`). This file is the one place that pays that
-// cost: it mounts the REAL `App.svelte`, whose script body is the ONLY
-// production call site of `provideAppTxControllerHost` — and, critically, the
-// ONLY place `window.addEventListener('pagehide', ...)` /
-// `document.addEventListener('visibilitychange', ...)` are ever registered
-// (see `lifecycleReleaseSource` in `src/App.svelte`). That wiring is not
-// extracted anywhere reusable, so proving it end-to-end means mounting the
-// real component that contains it — a hand-rolled stand-in would test our
-// own reproduction of the wiring, not the production code path.
-//
-// Real: `App.svelte`, `app-host.ts` (`provideAppTxControllerHost` — NOT
-// mocked), `browser-dependencies.ts`, `controller.ts`/`model.ts`
-// (`TxController`), the real `WsChannel` singleton in `$lib/transport/ws-client`
-// (driven only at the socket boundary by the shared `MockWebSocket` fake —
-// U0), and `$lib/stores/connection.svelte` (harmless real `$state` setters
-// under jsdom, same as U4/U5).
+// Managed page-lifecycle delivery matrix (MOR-1089 U6).
+// It mounts the real App.svelte so the production pagehide and
+// visibilitychange listeners call the managed-app-host facade. WsChannel and
+// managed delivery are real; server-state/media inputs, presentation, and the
+// socket boundary are controlled for jsdom.
 //
 // Mocked: the same facts seam U2/U4/U5 mock (`radio.svelte`, `capabilities.svelte`,
 // `tx-adapter`) so the test controls what `browser-dependencies.ts` reads: PLUS

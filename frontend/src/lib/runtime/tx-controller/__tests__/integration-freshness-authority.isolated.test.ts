@@ -3,24 +3,11 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ControlSessionTransition } from '$lib/transport/ws-client';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 
-// ─── Freshness-contract integration pin (MOR-1880) — the REAL
-// `createAppAuthorityProjector` joined to the REAL `TxController` through the
-// REAL stack ─────────────────────────────────────────────────────────────────
-//
-// Every other app-authority test (`app-authority.test.ts`) drives the
-// projector alone. The sibling integration files
-// (`integration-lifecycle-matrix.isolated.test.ts`,
-// `integration-reconnect-dekey-matrix.isolated.test.ts`) already join the
-// real projector to the real reducer the same way this file does. Neither
-// ever dispatches `start` against a REPEATED,
-// non-advancing timestamp — the exact shape MOR-1880 fixes and closed PR
-// #2921 broke (it set `pttObservationSeq: null` unconditionally, and 8163
-// other tests in this suite stayed green while keying was impossible end to
-// end). This file is the one that exercises that shape: `setup()` below is a
-// deliberately small, direct reproduction of `app-host.ts`'s
-// `applyAuthority` — `provideAppTxControllerHost` itself can't run here
-// because it needs a live Svelte component for `getContext`/`setContext`,
-// the same reason the sibling integration files give.
+// Managed freshness delivery integration pin (MOR-1880).
+// The real WsChannel, managed browser dependencies, and ManagedTxController
+// are joined below; only server-state/media inputs and the socket boundary are
+// controlled. The scenario repeats one server observation timestamp and
+// verifies that the managed `pttOn()` delivery still reaches the wire.
 //
 // Real: the REAL `WsChannel` singleton in `$lib/transport/ws-client` (driven
 // only at the socket boundary by the shared `MockWebSocket` fake), the REAL
@@ -34,19 +21,8 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // because `ws-client` holds module-level singletons that would otherwise leak
 // session/epoch state across tests sharing a module cache.
 //
-// The scenario: a normal page-load session sequence (`connecting`/epoch 0 —
-// emitted by `wsClient.connect()` itself — then `connected`/epoch 1 once the
-// socket opens), one genuinely newer PTT observation to move `radioTx` off
-// `'unknown'`, then a SECOND observation repeating the same
-// `lastObservedMonotonic` — the shape a delta that omits `fieldStatus.ptt`
-// produces in production (MOR-1880's actual bug). The key control is then
-// pressed (`start`) against that repeated-timestamp reading. Before MOR-1880,
-// `app-authority.ts` reported that reading `fresh: false` (decayed), so
-// `authoritative()` failed and `start` refused with `fault: 'not-eligible'` /
-// `'ptt-not-authoritative'` — the operator's bench symptom. After MOR-1880 the
-// reading is `fresh: true`, and `model.ts`'s existing `currentConfirmedOff`
-// leg (untouched by this fix) recognizes the repeated reading as "unchanged
-// because nothing changed" and lets `start` proceed.
+// This remains a delivery integration scenario, not a browser-local source of
+// radio truth: the test supplies the server-shaped observation explicitly.
 
 const h = vi.hoisted(() => ({
   radio: null as any,
@@ -118,12 +94,7 @@ async function loadStack() {
   return { wsClient, connection, browserDeps, controllerModule };
 }
 
-/** Boot the real control channel, factory, and controller — wired the same
- * way `app-host.ts`'s `provideAppTxControllerHost` wires them (`applyAuthority`
- * below mirrors its `epoch`-then-`authority` dispatch exactly), minus the
- * Svelte context. `wsClient.connect()` fires the real `'connecting'`/epoch 0
- * session transition synchronously (already observed by `subscribeSession`
- * below); `socket.simulateOpen()` fires the real `'connected'`/epoch 1 one. */
+/** Boot the real control channel and managed controller without Svelte context. */
 async function setup(): Promise<{
   factory: Factory; controller: Controller; socket: MockWebSocket;
   getSession: () => ControlSessionTransition;
@@ -143,9 +114,7 @@ async function setup(): Promise<{
   return { factory, controller, socket, getSession: () => session };
 }
 
-/** Push a new `fieldStatus.ptt` reading and replay it through the real
- * projector as a real `authority` event — the same shape `refreshAuthority()`
- * produces in production on every backend push. */
+/** Push a server observation and refresh the managed snapshot. */
 function observeAuthority(
   controller: Controller, factory: Factory, session: ControlSessionTransition, at: number,
 ) {
@@ -155,9 +124,7 @@ function observeAuthority(
   return controller.snapshot();
 }
 
-/** Re-project the CURRENT `fieldStatus.ptt` (no new reading pushed) and
- * dispatch `start` against it — the operator pressing the key control against
- * whatever the projector reports right now. */
+/** Deliver `pttOn()` without changing the supplied server observation. */
 function dispatchStart(
   controller: Controller, factory: Factory, session: ControlSessionTransition, leaseId: string,
 ) {

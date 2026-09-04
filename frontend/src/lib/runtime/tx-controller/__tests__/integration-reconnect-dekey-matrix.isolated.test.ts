@@ -3,45 +3,13 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ControlSessionTransition } from '$lib/transport/ws-client';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 
-// ─── Integration reconnect/de-key matrix — WS-loss recovery ordering and
-// backend-driven de-key/re-key through the REAL stack (MOR-1089 U5) ─────────
-//
-// Sibling of `integration-lifecycle-matrix.isolated.test.ts` (U4): same wiring, same
-// seam choices, same rationale for why `vi.resetModules()` runs per-`it()`
-// and why this file lives in the isolated pool. See that file's header for
-// the full explanation of the real-WsChannel + real-browser-dependencies +
-// real-TxController wiring and the inlined `applyAuthority` glue below (a
-// deliberately small, direct reproduction of `app-host.ts`'s
-// `provideAppTxControllerHost`, which can't run here because it needs a live
-// Svelte component lifecycle for `getContext`/`setContext`).
-//
-// U4 covers the steady-state lifecycle (held/latched/pending-release/no-ON-
-// replay). This file covers what happens when the WS session itself misbehaves
-// mid-lease:
-//   1. WS loss while ACTIVE and KEYED — the model's own automatic release
-//      (controlLive drops → `!ready(eligibility)` → `release()`) queues an
-//      OFF that hasn't reached any socket yet. The focus here is proving
-//      that queued OFF is the very first TX-relevant frame the recovered
-//      socket ever sees — ahead of any other recovered/queued traffic.
-//   2. A backend-observed de-key (authoritative ptt:false while the
-//      controller believes it owns the key) — the model's
-//      `fault: 'backend-dekeyed'` branch, not a self-initiated release.
-//   3. An external re-key observed *after* a backend de-key — proving the
-//      lease is never reconstructed from an external PTT observation alone.
-//   4. WS loss while a *self-issued* release is already in flight but
-//      unconfirmed — proving the pending release obligation is neither
-//      duplicated nor silently discarded by the reconnect's epoch bump, and
-//      that it can still converge afterwards.
-//
-// Case 4's boundary half was hand-verified against the real code before being
-// written down: once the OFF has already reached the (since-dropped) socket,
-// the reconnect must neither invent a duplicate OFF nor drop the still-owed
-// one. Its convergence half is MOR-1205: the bound delivery barrier and the
-// armed off-confirmation timeout are both epoch-stamped at the old epoch, so
-// neither could fire against the new one and the controller used to sit in
-// "releasing" forever. The stale timeout still cannot fire (asserted below);
-// discharge now comes from a fresh authoritative ptt:false observed on the
-// new epoch — evidence, not a timer, and never another command.
+// Managed reconnect/de-key delivery matrix (MOR-1089 U5).
+// It joins the real WsChannel, managed browser dependencies, and
+// ManagedTxController while controlling only server-state/media inputs and
+// the socket boundary. The cases pin OFF-first recovery ordering, backend
+// de-key/re-key observations, and convergence of a pending OFF across a
+// session change. Server observations are supplied explicitly; they do not
+// reconstruct browser-local TX ownership.
 
 const h = vi.hoisted(() => ({
   radio: null as any,
@@ -111,11 +79,7 @@ async function loadStack() {
   return { wsClient, connection, browserDeps, controllerModule };
 }
 
-/** Boot the real control channel, factory, and controller — wired the same
- * way `app-host.ts`'s `provideAppTxControllerHost` wires them, minus the
- * Svelte context (which needs a live component to call into). Identical to
- * U4's `setup()`, plus a `wsClient` handle so tests can drive extra wire
- * traffic (e.g. queueing a benign command while offline) directly. */
+/** Boot the real control channel and managed controller without Svelte context. */
 async function setup(): Promise<{
   factory: Factory; controller: Controller; socket: MockWebSocket;
   getSession: () => ControlSessionTransition; wsClient: WsClientModule;
@@ -152,8 +116,7 @@ function confirmAuthority(
   void controller; void factory; void session; void pttValue; void at;
 }
 
-/** Re-reads `controller.snapshot().guard` fresh on every call — see U4's
- * identical helper for why this matters for duplicate-release coalescing. */
+/** Deliver the current managed `pttOff()` request. */
 function releaseNow(controller: Controller, factory: Factory) {
   void factory; void controller.pttOff();
 }
