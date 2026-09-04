@@ -66,8 +66,10 @@ def _make_radio_with_state() -> IcomRadio:
     return r
 
 
-def _make_poller(*, with_state: bool = True) -> tuple[RadioPoller, RadioState]:
-    profile = resolve_radio_profile(model="IC-7610")
+def _make_poller(
+    *, with_state: bool = True, model: str = "IC-7610"
+) -> tuple[RadioPoller, RadioState]:
+    profile = resolve_radio_profile(model=model)
     radio = MagicMock()
     radio.profile = profile
     radio.model = profile.model
@@ -429,28 +431,28 @@ async def test_execute_set_repeater_tsql_updates_sub_state() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_set_tone_freq_updates_main_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(SetToneFreq(freq_hz=8850, receiver=0))  # noqa: SLF001
     assert state.main.tone_freq == 8850
 
 
 @pytest.mark.asyncio
 async def test_execute_set_tone_freq_updates_sub_state() -> None:
-    poller, state = _make_poller()
-    await poller._execute(SetToneFreq(freq_hz=9700, receiver=1))  # noqa: SLF001
-    assert state.sub.tone_freq == 9700
+    poller, state = _make_poller(model="IC-9700")
+    await poller._execute(SetToneFreq(freq_hz=9740, receiver=1))  # noqa: SLF001
+    assert state.sub.tone_freq == 9740
 
 
 @pytest.mark.asyncio
 async def test_execute_set_tsql_freq_updates_main_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(SetTsqlFreq(freq_hz=10000, receiver=0))  # noqa: SLF001
     assert state.main.tsql_freq == 10000
 
 
 @pytest.mark.asyncio
 async def test_execute_set_tsql_freq_updates_sub_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(SetTsqlFreq(freq_hz=8850, receiver=1))  # noqa: SLF001
     assert state.sub.tsql_freq == 8850
 
