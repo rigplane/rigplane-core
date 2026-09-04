@@ -162,8 +162,9 @@ function createTxHarness() {
   };
   const controller = new TxController(1, marker(0), dependencies);
   const sourceId = 'managed-panel-test';
+  const freshness = { current: true };
   let lease = 0;
-  const snapshot = () => deepFreeze({ ...controller.snapshot(), fresh: true, remainingMs: null });
+  const snapshot = () => deepFreeze({ ...controller.snapshot(), fresh: freshness.current, remainingMs: null });
   const facade = {
     snapshot,
     subscribe: (listener: (state: unknown) => void) =>
@@ -196,7 +197,7 @@ function createTxHarness() {
     },
   };
   return {
-    controller, dependencies, sends, facade, audio, eligibility,
+    controller, dependencies, sends, facade, audio, eligibility, freshness,
     /** Feed an authoritative PTT readback (what the App host does on session updates). */
     authority: (value: boolean) => controller.dispatch({
       type: 'authority', epoch: 1, ptt: observe(value, ++seq),
@@ -267,16 +268,16 @@ afterEach(() => {
 });
 
 describe('panel structure', () => {
-  it('renders TX IDLE badge when txActive is false', () => {
+  it('renders managed TX unknown instead of legacy RX', () => {
     const t = mountPanel();
     const strip = t.querySelector('.tx-strip');
-    expect(strip?.textContent?.trim()).toBe('○ RX');
+    expect(strip?.textContent?.trim()).toBe('○ ---');
   });
 
-  it('renders TX ACTIVE badge when txActive is true', () => {
+  it('does not source TX ACTIVE from legacy txActive', () => {
     const t = mountPanel({ txActive: true });
     const strip = t.querySelector('.tx-strip');
-    expect(strip?.textContent?.trim()).toBe('● TX');
+    expect(strip?.textContent?.trim()).toBe('○ ---');
   });
 
   it('renders Mic Gain slider', () => {
@@ -530,10 +531,11 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     expect(offs()).toBe(0);
   });
 
-  it('unlatches on the next press instead of starting a new lease', async () => {
+  it('keeps Force Off reachable while stale instead of starting a new lease', async () => {
     const t = mountPanel();
     await latch(t);
     up(t);
+    tx.freshness.current = false;
     down(t);
     expect(offs()).toBe(1);
     expect(tx.controller.snapshot().phase).toBe('releasing');
@@ -605,18 +607,20 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
     expect(tx.controller.snapshot()).toMatchObject({ fault: 'not-eligible', phase: 'failed' });
   });
 
-  it('takes RF state from controller authority and falls back to panel props', async () => {
-    let t = mountPanel({ txActive: false, txActiveAvailable: false });
+  it('takes RF state only from fresh controller authority', async () => {
+    tx.authority(false);
+    tx.freshness.current = false;
+    let t = mountPanel({ txActive: false, txActiveAvailable: true });
     expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('unknown');
     unmount(components.pop()!);
 
     t = mountPanel({ txActive: true, txActiveAvailable: true });
-    expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('on');
-    expect(t.querySelector('[data-testid="tx-strip"]')!.textContent?.trim()).toBe('● TX');
+    expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('unknown');
     unmount(components.pop()!);
 
-    // Controller authority wins over a props snapshot that still says RX.
-    t = mountPanel({ txActive: false, txActiveAvailable: true });
+    tx.freshness.current = true;
+    tx.authority(false);
+    t = mountPanel({ txActive: true, txActiveAvailable: true });
     expect(t.querySelector('.tx-strip')!.getAttribute('data-rf')).toBe('off');
     await hold(t);
     tx.authority(true);

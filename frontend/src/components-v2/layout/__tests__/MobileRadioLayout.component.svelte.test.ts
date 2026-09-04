@@ -275,8 +275,9 @@ function createTxHarness() {
   };
   const controller = new TxController(1, marker(0), dependencies);
   const sourceId = 'managed-mobile-test';
+  const freshness = { current: true };
   let lease = 0;
-  const snapshot = () => deepFreeze({ ...controller.snapshot(), fresh: true, remainingMs: null });
+  const snapshot = () => deepFreeze({ ...controller.snapshot(), fresh: freshness.current, remainingMs: null });
   const facade = {
     snapshot,
     subscribe: (listener: (state: unknown) => void) =>
@@ -309,7 +310,7 @@ function createTxHarness() {
     },
   };
   return {
-    controller, dependencies, sends, facade, audio, eligibility,
+    controller, dependencies, sends, facade, audio, eligibility, freshness,
     /** Feed an authoritative PTT readback (what the App host does on session updates). */
     authority: (value: boolean) => controller.dispatch({
       type: 'authority', epoch: 1, ptt: observe(value, ++seq),
@@ -419,6 +420,14 @@ describe('MobileRadioLayout structure', () => {
 
   it('renders TX indicator', () => {
     expect(mountMobile().querySelector('.m-tx-indicator')).not.toBeNull();
+  });
+
+  it('keeps stale managed authority unknown despite legacy txActive false', () => {
+    tx.authority(false);
+    tx.freshness.current = false;
+    const indicator = mountMobile().querySelector<HTMLElement>('.m-tx-indicator')!;
+    expect(indicator.dataset.rf).toBe('unknown');
+    expect(indicator.style.background).toContain('#facc15');
   });
 
   it('renders settings button', () => {
@@ -816,10 +825,11 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(offs()).toBe(0);
   });
 
-  it('unlatches on the next tap instead of starting a new lease', async () => {
+  it('keeps Force Off reachable while stale instead of starting a new lease', async () => {
     const t = mountMobile();
     await latch(t);
     fabRelease(t);
+    tx.freshness.current = false;
     pointer(fabEl(t), 'pointerdown'); // latched → PttFab delegates immediately
     expect(offs()).toBe(1);
     expect(tx.controller.snapshot().phase).toBe('releasing');

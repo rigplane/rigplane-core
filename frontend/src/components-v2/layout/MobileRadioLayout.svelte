@@ -352,19 +352,25 @@
 
   let owned = $derived(txState.intent === 'momentary');
   let latched = $derived(txState.intent === 'latched');
-  // The server projection is the only displayed key/latch truth.
-  let txKeyed = $derived(owned || txState.radioTx === 'on');
+  // The server projection is the only displayed RF truth; stale never means RX.
+  let managedTxRf: 'on' | 'off' | 'unknown' = $derived(
+    txState.radioTx === 'on' || txState.txRisk === 'confirmed-on'
+      ? 'on'
+      : txState.fresh && txState.radioTx === 'off' && txState.txRisk === 'none'
+        ? 'off'
+        : 'unknown'
+  );
   // PttFab's visual contract is unchanged — it still takes idle/held/latched.
   let pttMode: 'idle' | 'held' | 'latched' = $derived(
     latched ? 'latched' : owned ? 'held' : 'idle'
   );
 
-  // ── TX color (depends on mainVfo, tx, txKeyed — declared above) ──
+  // ── TX color (depends only on canonical managed RF state) ──
   let txPermit = $derived(getTxPermit(mainVfo.freq, caps?.txBands));
   let txIndicatorColor = $derived(
-    (tx.txActive || txKeyed) ? 'var(--v2-accent-red, #ef4444)' :
-    txPermit === 'allowed' ? 'var(--v2-accent-green, #4ade80)' :
-    'var(--v2-text-dim, #555)'
+    managedTxRf === 'on' ? 'var(--v2-accent-red, #ef4444)' :
+    managedTxRf === 'unknown' ? 'var(--v2-accent-yellow, #facc15)' :
+    txPermit === 'allowed' ? 'var(--v2-accent-green, #4ade80)' : 'var(--v2-text-dim, #555)'
   );
 
   // One recognizer per input surface — the orchestration itself lives in
@@ -526,7 +532,7 @@
   {/if}
   <div class="m-ls-overlay">
     <div class="m-ls-vfo">
-      <span class="m-tx-indicator" style="background: {txIndicatorColor}"></span>
+      <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}"></span>
       <FrequencyDisplay freq={mainVfo.freq} compact active />
     </div>
     <div class="m-ls-quick-modes">
@@ -625,7 +631,7 @@
       </div>
     {/if}
     <div class="m-vfo-row">
-      <span class="m-tx-indicator" style="background: {txIndicatorColor}" title={txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
+      <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? 'TX status unknown' : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
         <FrequencyDisplay freq={mainVfo.freq} compact active />
       </div>
@@ -745,7 +751,7 @@
             <!-- Power readout (tap → power modal) -->
             <button type="button" class="m-tx-info" disabled={!tx.rfPowerAvailable} onclick={() => (powerModalOpen = true)}>
               <span class="m-tx-power-value">{tx.rfPowerAvailable ? formatPower(tx.rfPower) : '—'}</span>
-              {#if tx.txActive || txKeyed}
+              {#if managedTxRf === 'on'}
                 <span class="m-tx-swr-value">SWR {meter.swr > 0 ? (meter.swr / 10).toFixed(1) : '—'}</span>
               {/if}
             </button>
@@ -773,7 +779,7 @@
             <!-- Inline PTT button removed (#840) — PttFab at bottom-right
                  is the persistent, guarded TX affordance. -->
           </div>
-          {#if (tx.txActive || txKeyed) && txMetersObserved}
+          {#if managedTxRf === 'on' && txMetersObserved}
             <div class="m-tx-meter">
               <DockMeterPanel
                 sValue={mainVfo.sValue}

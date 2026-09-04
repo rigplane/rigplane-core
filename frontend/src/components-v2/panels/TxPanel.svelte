@@ -84,13 +84,12 @@
   let latched = $derived(txState.intent === 'latched');
   let busy = $derived(txState.phase === 'releasing');
   let fault = $derived(txState.fault);
-  // Controller authority wins; the props snapshot is only a fallback for the
-  // idle case, where the controller never observes PTT at all.
+  // Only the managed projection may name RX/TX. Stale or uncertain stays unknown.
   let rf = $derived(
-    txState.radioTx !== 'unknown'
-      ? txState.radioTx
-      : (p.txActiveAvailable ?? true)
-        ? (p.txActive ? 'on' : 'off')
+    txState.radioTx === 'on' || txState.txRisk === 'confirmed-on'
+      ? 'on'
+      : txState.fresh && txState.radioTx === 'off' && txState.txRisk === 'none'
+        ? 'off'
         : 'unknown',
   );
 
