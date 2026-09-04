@@ -37,7 +37,10 @@ def _normalized_power(raw_watts: int, *, max_watts: int = 100) -> float:
 
 def _make_radio() -> MagicMock:
     radio = MagicMock()
-    radio.profile = get_radio_profile("FTX-1")
+    profile = get_radio_profile("FTX-1")
+    ctcss_tones_centihz = get_radio_profile("IC-7300").ctcss_tones_centihz
+    assert ctcss_tones_centihz is not None
+    radio.profile = replace(profile, ctcss_tones_centihz=ctcss_tones_centihz)
     radio.capabilities = {
         "dual_rx",
         "af_level",

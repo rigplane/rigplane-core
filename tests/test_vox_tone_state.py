@@ -54,11 +54,11 @@ def _make_frame(
     )
 
 
-def _make_radio_with_state() -> IcomRadio:
+def _make_radio_with_state(*, model: str = "IC-7610") -> IcomRadio:
     """IcomRadio with RadioState wired up for _update_radio_state_from_frame tests."""
     from test_civ_rx_coverage import MockTransport  # type: ignore[import]
 
-    r = IcomRadio("192.168.1.100", model="IC-7610")
+    r = IcomRadio("192.168.1.100", model=model)
     r._civ_transport = MockTransport()
     r._ctrl_transport = r._civ_transport
     r._connected = True
@@ -66,8 +66,10 @@ def _make_radio_with_state() -> IcomRadio:
     return r
 
 
-def _make_poller(*, with_state: bool = True) -> tuple[RadioPoller, RadioState]:
-    profile = resolve_radio_profile(model="IC-7610")
+def _make_poller(
+    *, model: str = "IC-7610", with_state: bool = True
+) -> tuple[RadioPoller, RadioState]:
+    profile = resolve_radio_profile(model=model)
     radio = MagicMock()
     radio.profile = profile
     radio.model = profile.model
@@ -221,7 +223,7 @@ def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
     The legacy RadioState mirror was removed; the StateStore is the source of
     truth and the ReceiverState mirror stays at its default 0.
     """
-    r = _make_radio_with_state()
+    r = _make_radio_with_state(model="IC-7300")
     rs = r._radio_state
     # 88.5 Hz → [0x00, 0x08, 0x85]
     data = _bcd_tone_freq(0, 88, 5)
@@ -234,7 +236,7 @@ def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
 
 def test_civ_rx_0x1b_0x01_sets_tsql_freq_sub(tmp_path: object) -> None:
     """0x1B 0x01 with receiver=1 observes sub tsql_freq in centihz (MOR-451)."""
-    r = _make_radio_with_state()
+    r = _make_radio_with_state(model="IC-7300")
     rs = r._radio_state
     # 100.0 Hz → [0x00, 0x10, 0x00]
     data = _bcd_tone_freq(1, 0, 0)
@@ -429,7 +431,7 @@ async def test_execute_set_repeater_tsql_updates_sub_state() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_set_tone_freq_updates_main_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(  # noqa: SLF001
         SetToneFreq(freq_centihz=8850, receiver=0)
     )
@@ -441,7 +443,7 @@ async def test_execute_set_tone_freq_updates_main_state() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_set_tone_freq_updates_sub_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(  # noqa: SLF001
         SetToneFreq(freq_centihz=9700, receiver=1)
     )
@@ -453,7 +455,7 @@ async def test_execute_set_tone_freq_updates_sub_state() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_set_tsql_freq_updates_main_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(  # noqa: SLF001
         SetTsqlFreq(freq_centihz=10000, receiver=0)
     )
@@ -465,7 +467,7 @@ async def test_execute_set_tsql_freq_updates_main_state() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_set_tsql_freq_updates_sub_state() -> None:
-    poller, state = _make_poller()
+    poller, state = _make_poller(model="IC-9700")
     await poller._execute(  # noqa: SLF001
         SetTsqlFreq(freq_centihz=8850, receiver=1)
     )
