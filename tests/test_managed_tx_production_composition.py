@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,8 +16,10 @@ from rigplane.runtime.managed_tx_state import (
 from rigplane.runtime.radio import (
     ManagedTxComposition,
     ManagedTxCompositionPort,
+    ManagedTxProviderEvent,
     install_managed_tx_composition,
 )
+from rigplane.web.web_startup import attach_managed_tx_composition
 
 
 class FakeActuator:
@@ -43,6 +46,10 @@ async def test_builds_one_authority_fence_lane_and_tot_store(tmp_path) -> None:
     assert composition.authority._abort_fence is composition.abort_fence
     assert composition.authority._config_store is composition._config_store
     assert composition._lane._actuator is actuator
+    assert composition.local_tx_work_runner._fence is composition.abort_fence
+    server = SimpleNamespace()
+    attach_managed_tx_composition(server, composition, ManagedTxProviderEvent(1, 1))
+    assert server._production_managed_tx_port is composition
 
     await composition.shutdown(asyncio.Event())
 

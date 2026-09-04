@@ -77,6 +77,7 @@ from rigplane.runtime.managed_tx_effect_lane import (
 )
 from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
 from rigplane.runtime.managed_tx_fence import TxAbortFence
+from rigplane.runtime.local_tx_work import LocalTxWorkRunner
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
@@ -260,6 +261,9 @@ class ManagedTxCompositionPort(Protocol):
     def abort_fence(self) -> TxAbortFence: ...
 
     @property
+    def local_tx_work_runner(self) -> LocalTxWorkRunner: ...
+
+    @property
     def active_provider(self) -> ManagedTxProviderEvent | None: ...
 
     async def activate_provider(self, event: ManagedTxProviderEvent) -> None: ...
@@ -295,6 +299,7 @@ class ManagedTxComposition:
         self._prepare_provider = prepare_provider
         self._retire_provider = retire_provider
         self._abort_fence = TxAbortFence()
+        self._local_tx_work_runner = LocalTxWorkRunner(self._abort_fence)
         self._config_store = ManagedTxTotConfigStore(config_path)
         self._active_provider: ManagedTxProviderEvent | None = None
         self._events: dict[int, ManagedTxProviderEvent] = {}
@@ -326,6 +331,10 @@ class ManagedTxComposition:
     @property
     def abort_fence(self) -> TxAbortFence:
         return self._abort_fence
+
+    @property
+    def local_tx_work_runner(self) -> LocalTxWorkRunner:
+        return self._local_tx_work_runner
 
     @property
     def active_provider(self) -> ManagedTxProviderEvent | None:
