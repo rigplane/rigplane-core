@@ -1768,6 +1768,22 @@ class ControlHandler:
             label = {1: "ON", 2: "TUNING"}[value]
             return {"value": value, "label": label}
 
+        port = self._managed_tx_port
+        if port is not None:
+            if radio is None or CAP_TUNER not in radio.capabilities:
+                raise RuntimeError("radio does not support this command")
+            runner = port.local_tx_work_runner
+            if runner is None:
+                raise RuntimeError("managed local TX runner is unavailable")
+            outcome = await runner.run(
+                lambda is_current: radio.set_tuner_status(
+                    value, is_current=is_current
+                )
+            )
+            if outcome is False:
+                raise CommandError("tuner command was rejected by the backend")
+            return {"value": 0, "label": "OFF"}
+
         rf_state = self._observed_rf_state()
 
         command = SetTunerStatus(value)
