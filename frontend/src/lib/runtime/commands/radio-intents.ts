@@ -115,6 +115,16 @@ export function currentControlSessionEpoch(): number {
 }
 
 export function dispatchRadioIntent(intent: RadioIntent): CommandLifecycle {
+  return dispatchRadioIntentWithResult(intent).lifecycle;
+}
+
+export interface RadioIntentDispatchResult {
+  readonly lifecycle: CommandLifecycle;
+  /** Result of sendCommand; offline queueing can return false without failing the lifecycle. */
+  readonly transportAccepted: boolean;
+}
+
+export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentDispatchResult {
   if (typeof intent !== 'object' || intent === null || Array.isArray(intent)) throw new TypeError('Invalid radio intent envelope');
   const candidate = intent as unknown as Record<PropertyKey, unknown>;
   if (Reflect.ownKeys(candidate).some((key) => typeof key !== 'string' || (key !== 'name' && key !== 'params' && key !== 'id'))) {
@@ -131,6 +141,6 @@ export function dispatchRadioIntent(intent: RadioIntent): CommandLifecycle {
   const id = (candidate.id as string | undefined) ?? makeCommandId();
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name, params: params as Record<string, unknown>, originalEpoch });
-  sendCommand(name, params as Record<string, unknown>, id);
-  return lifecycle;
+  const transportAccepted = sendCommand(name, params as Record<string, unknown>, id);
+  return { lifecycle, transportAccepted };
 }

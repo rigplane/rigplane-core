@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { connect, disconnect } from '$lib/transport/ws-client';
+import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
+import { setRadioHealth, setRadioReady } from '$lib/stores/connection.svelte';
 import {
   getCommandLifecycles,
   resetCommandLifecycle,
@@ -11,7 +14,7 @@ import {
   createLocalExtensionHostApi,
   installLocalExtensionHostApi,
   LOCAL_EXTENSION_HOST_API_VERSION,
-  type LocalExtensionHostApiV1,
+  type LocalExtensionHostApiV2,
   type LocalExtensionHostWindow,
   type RadioStateSubscriber,
 } from '../host-api';
@@ -39,6 +42,7 @@ describe('createLocalExtensionHostApi', () => {
     });
 
     expect(api.version).toBe(LOCAL_EXTENSION_HOST_API_VERSION);
+    expect(api.version).toBe(2);
     expect(api.getState()).toBe(state);
     expect(api.getCapabilities()).toBe(capabilities);
   });
@@ -148,7 +152,7 @@ describe('createLocalExtensionHostApi', () => {
 });
 
 describe('installLocalExtensionHostApi', () => {
-  function makeApi(): LocalExtensionHostApiV1 {
+  function makeApi(): LocalExtensionHostApiV2 {
     return createLocalExtensionHostApi({
       getState: () => null,
       getCapabilities: () => null,
@@ -167,9 +171,8 @@ describe('installLocalExtensionHostApi', () => {
 
     expect(fakeWindow.rigplaneExtensionHost).toBe(api);
     expect(fakeWindow.icomLanExtensionHost).toBe(api);
-    // Same instance under both names — Pro extensions written against v1.x
-    // see exactly the same object as new code reading the v2.x global.
     expect(fakeWindow.rigplaneExtensionHost).toBe(fakeWindow.icomLanExtensionHost);
+    expect(fakeWindow.icomLanExtensionHost?.version).toBe(2);
 
     uninstall();
   });
@@ -204,30 +207,75 @@ describe('installLocalExtensionHostApi', () => {
 
 // MOR-1409 A08: the default extension dispatch is catalog-validated facade
 // delegation. This block runs against the real intent facade and command
-// lifecycle store (no module mocks — this file lives in the `fast` project):
+// lifecycle store (no module mocks):
 // a facade dispatch is observable as a lifecycle record, while a raw
 // transport bypass would leave no record.
 describe('createDefaultLocalExtensionHostApi (MOR-1409 A08)', () => {
-  afterEach(() => {
-    resetCommandLifecycle();
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal('WebSocket', MockWebSocket);
+    instances.length = 0;
+    setRadioHealth(null);
+    setRadioReady(false);
   });
 
-  it('routes known catalog commands through the typed facade with a lifecycle record', () => {
+  afterEach(() => {
+    disconnect();
+    resetCommandLifecycle();
+    setRadioReady(false);
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('reports offline non-idempotent refusal with a lifecycle record', () => {
     const api = createDefaultLocalExtensionHostApi();
     const before = getCommandLifecycles().length;
 
-    expect(api.dispatchCommand('vfo_swap')).toBe(true);
+    expect(api.dispatchCommand('vfo_swap')).toBe(false);
 
     const records = getCommandLifecycles();
     expect(records).toHaveLength(before + 1);
-    expect(records.at(-1)).toMatchObject({ name: 'vfo_swap', params: {} });
+    expect(records.at(-1)).toMatchObject({ name: 'vfo_swap', params: {}, status: 'failed' });
+  });
+
+  it('returns false with pending lifecycle for a queued offline command that drains on connection', () => {
+    const api = createDefaultLocalExtensionHostApi();
+    expect(api.sendCommand('set_freq', { freq: 14_074_000, receiver: 0 })).toBe(false);
+    expect(getCommandLifecycles().at(-1)).toMatchObject({
+      name: 'set_freq', params: { freq: 14_074_000, receiver: 0 }, status: 'pending',
+    });
+    const queued = getCommandLifecycles().at(-1)!;
+    connect();
+    const socket = instances[0];
+    expect(socket.sent).toHaveLength(0);
+    socket.simulateOpen();
+    const commands = socket.sent.map((value) => JSON.parse(value)).filter((value) => value.type === 'cmd');
+    expect(commands).toEqual([{
+      type: 'cmd', name: 'set_freq', params: { freq: 14_074_000, receiver: 0 }, id: queued.id,
+    }]);
+    expect(getCommandLifecycles().at(-1)?.status).toBe('pending');
+  });
+
+  it.each(['sendCommand', 'dispatchCommand'] as const)('returns true for %s socket submission without admission or completion', (method) => {
+    const api = createDefaultLocalExtensionHostApi();
+    connect();
+    const socket = instances[0];
+    socket.simulateOpen();
+    setRadioReady(true);
+    socket.sent.length = 0;
+    expect(api[method]('set_mode', { mode: 'CW', receiver: 1 })).toBe(true);
+    const record = getCommandLifecycles().at(-1)!;
+    expect(socket.sent.map((value) => JSON.parse(value))).toEqual([{
+      type: 'cmd', name: 'set_mode', params: { mode: 'CW', receiver: 1 }, id: record.id,
+    }]);
+    expect(record.status).toBe('pending');
   });
 
   it('clones params so later caller mutation cannot alter the dispatched intent', () => {
     const api = createDefaultLocalExtensionHostApi();
     const params: Record<string, unknown> = { band: 20 };
 
-    expect(api.sendCommand('set_band', params)).toBe(true);
+    expect(api.sendCommand('set_band', params)).toBe(false);
     params.band = 40;
 
     expect(getCommandLifecycles().at(-1)).toMatchObject({
