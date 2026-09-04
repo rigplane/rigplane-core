@@ -1498,14 +1498,76 @@ async def test_read_ctcss_tone_index_is_a_pure_read(connected_radio):
     assert connected_radio.radio_state.main.tsql_freq == 54321
 
 
+@pytest.mark.parametrize(
+    ("index", "expected_centihz"), [(0, 6700), (8, 8850), (49, 25410)]
+)
 @pytest.mark.asyncio
-async def test_get_ctcss_tone_returns_centihz(connected_radio):
-    """``get_ctcss_tone`` delegates to the index read and maps to centiHz.
+async def test_get_ctcss_tone_uses_profile_domain(
+    connected_radio, index: int, expected_centihz: int
+):
+    """Native CN indices resolve through the profile's ordered domain."""
+    connected_radio.radio_state.main.tone_freq = 12345
+    connected_radio.radio_state.main.tsql_freq = 54321
+    state_before = connected_radio.radio_state
+    connected_radio._transport.query = AsyncMock(return_value=f"CN00{index:03d}")
+    connected_radio._transport.write = AsyncMock()
 
-    Index 8 -> 88.5 Hz -> 8850 centiHz (Icom MOR-451 convention).
-    """
+    assert await connected_radio.get_ctcss_tone() == expected_centihz
+    connected_radio._transport.query.assert_called_once_with("CN00;")
+    connected_radio._transport.write.assert_not_called()
+    assert connected_radio.radio_state is state_before
+    assert connected_radio.radio_state.main.tone_freq == 12345
+    assert connected_radio.radio_state.main.tsql_freq == 54321
+
+
+@pytest.mark.asyncio
+async def test_get_ctcss_tone_uses_synthetic_profile_domain(connected_radio):
+    """The provider has no hidden fallback to the standard 50-tone chart."""
+    domain = connected_radio.profile.ctcss_tones_centihz
+    assert domain is not None
+    synthetic_domain = domain[:8] + (8860,) + domain[9:]
+    connected_radio._profile_cache = replace(
+        connected_radio.profile, ctcss_tones_centihz=synthetic_domain
+    )
     connected_radio._transport.query = AsyncMock(return_value="CN00008")
-    assert await connected_radio.get_ctcss_tone() == 8850
+
+    assert await connected_radio.get_ctcss_tone() == 8860
+    connected_radio._transport.query.assert_called_once_with("CN00;")
+
+
+@pytest.mark.parametrize("domain", [None, (), (6700, True), (6700, 88.5)])
+@pytest.mark.asyncio
+async def test_get_ctcss_tone_rejects_invalid_profile_domain_before_query(
+    connected_radio, domain
+):
+    connected_radio._profile_cache = replace(
+        connected_radio.profile, ctcss_tones_centihz=domain
+    )
+    connected_radio._transport.query = AsyncMock(return_value="CN00000")
+
+    with pytest.raises(CommandError, match="exact-centiHz CTCSS domain"):
+        await connected_radio.get_ctcss_tone()
+
+    connected_radio._transport.query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_ctcss_tone_rejects_out_of_range_profile_index(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="CN00999")
+
+    with pytest.raises(CommandError, match="index 999.*outside"):
+        await connected_radio.get_ctcss_tone()
+
+    connected_radio._transport.query.assert_called_once_with("CN00;")
+
+
+@pytest.mark.parametrize("index", [True, 8.0, "8"])
+@pytest.mark.asyncio
+async def test_get_ctcss_tone_rejects_non_integer_profile_index(connected_radio, index):
+    connected_radio.read_ctcss_tone_index = AsyncMock(return_value=index)
+
+    with pytest.raises(CommandError, match="non-integer.*index"):
+        await connected_radio.get_ctcss_tone()
 
 
 # -- Repeater shift (OS command, MOR-2111) ----------------------------------
@@ -1595,37 +1657,6 @@ async def test_read_repeater_shift_rejects_invalid_answer_direction(
     connected_radio._transport.query = AsyncMock(return_value=answer)
     with pytest.raises(CommandError, match="direction in answer"):
         await connected_radio.read_repeater_shift(0)
-
-
-@pytest.mark.parametrize(
-    ("index", "expected_centihz"),
-    [
-        (0, 6700),  # 67.0 Hz
-        (8, 8850),  # 88.5 Hz (default CTCSS tone)
-        (12, 10000),  # 100.0 Hz
-        (15, 11090),  # 110.9 Hz
-        (25, 15670),  # 156.7 Hz
-        (49, 25410),  # 254.1 Hz (highest standard EIA tone)
-    ],
-)
-def test_ctcss_index_to_centihz_matches_chart(index, expected_centihz):
-    """Spot-check the index -> Hz -> centiHz mapping against the tone chart.
-
-    The 50-tone EIA CTCSS chart is verbatim from FTX-1_CAT_OM_ENG_2507; the
-    centiHz emission matches the Icom convention (round(Hz * 100)).
-    """
-    from rigplane.backends.yaesu_cat.radio import _ctcss_index_to_centihz
-
-    assert _ctcss_index_to_centihz(index) == expected_centihz
-
-
-def test_ctcss_table_has_50_standard_tones():
-    """The FTX-1 CTCSS chart is the standard 50-tone EIA set (indices 0-49)."""
-    from rigplane.backends.yaesu_cat.radio import _CTCSS_TONE_CENTIHZ
-
-    assert len(_CTCSS_TONE_CENTIHZ) == 50
-    assert _CTCSS_TONE_CENTIHZ[0] == 6700
-    assert _CTCSS_TONE_CENTIHZ[49] == 25410
 
 
 # ---------------------------------------------------------------------------
