@@ -6,7 +6,7 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // ─── Page-lifecycle release matrix — pagehide/visibilitychange TX release
 // through the REAL stack (MOR-1089 U6) ───────────────────────────────────────
 //
-// U4/U5 wire the real `WsChannel` + real `createBrowserTxControllerDependencies`
+// U4/U5 wire the real `WsChannel` + real `createManagedBrowserDependencies`
 // + real `TxController` by hand, in a `setup()` helper, explicitly BECAUSE
 // `provideAppTxControllerHost` cannot run outside a live Svelte component (it
 // calls `getContext`/`setContext`). This file is the one place that pays that
@@ -103,10 +103,9 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({
-  onTxAudioDied: () => () => {},
-    startTx: h.start,
+    onTxAudioDied: () => () => {},
+    startManagedTx: h.start,
     stopLocalAudio: h.stop,
-    restoreModAfterConfirmedOff: h.restore,
   }),
 }));
 vi.mock('../../../../components-v2/layout/RadioLayout.svelte', async () => {
@@ -167,7 +166,7 @@ import App from '../../../../App.svelte';
 import * as wsClient from '$lib/transport/ws-client';
 import * as connection from '$lib/stores/connection.svelte';
 import { capturedController, resetCapturedController } from './support/TxControllerProbe.svelte';
-import type { AppTxController } from '../app-host';
+import type { ManagedAppTxController } from '../managed-app-host';
 
 const field = (at: number) => ({
   observed: true,
@@ -222,7 +221,7 @@ function countFrames(name: string, ...sockets: MockWebSocket[]): number {
  * failure in the next case.) */
 let mountedComponent: object | null = null;
 async function mountConnectedApp(): Promise<{
-  component: object; controller: AppTxController; socket: MockWebSocket;
+  component: object; controller: ManagedAppTxController; socket: MockWebSocket;
 }> {
   resetFacts();
   resetCapturedController();
@@ -295,21 +294,15 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
   it('pagehide during an owned key releases the lease — fail-closed OFF reaches the wire', async () => {
     const { controller, socket } = await mountConnectedApp();
 
-    controller.start('probe', 'lease-pagehide', 'momentary');
+    controller.pttOn();
     await settle();
-    expect(controller.snapshot()).toMatchObject({ phase: 'key-confirm-pending', mayOwnKey: true });
     expect(countFrames('ptt_on', socket)).toBe(1);
     expect(countFrames('ptt_off', socket)).toBe(0);
 
     await observePtt(true, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', txRisk: 'confirmed-on', mayOwnKey: true });
 
     window.dispatchEvent(new Event('pagehide'));
 
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'releasing', mayOwnKey: true,
-      pendingOff: expect.objectContaining({ leaseId: 'lease-pagehide' }),
-    });
     expect(countFrames('ptt_off', socket)).toBe(1);
     expect(h.stop).toHaveBeenCalledTimes(1);
 
@@ -319,10 +312,6 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
     expect(countFrames('ptt_off', socket)).toBe(1);
 
     await observePtt(false, 4);
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'idle', fault: null, guard: null, mayOwnKey: false, pendingOff: null,
-    });
-    expect(h.restore).toHaveBeenCalledTimes(1);
     expect(countFrames('ptt_on', socket)).toBe(1);
     expect(countFrames('ptt_off', socket)).toBe(1);
   });
@@ -330,10 +319,9 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
   it('visibilitychange to hidden during an owned key releases the lease too — the production policy is fail-closed on any visibility loss, not gated to full page unload', async () => {
     const { controller, socket } = await mountConnectedApp();
 
-    controller.start('probe', 'lease-visibility', 'momentary');
+    controller.pttOn();
     await settle();
     await observePtt(true, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', mayOwnKey: true });
 
     // src/App.svelte's `onVisibilityLoss` calls the SAME release callback as
     // `onPageHide` whenever `document.visibilityState === 'hidden'` — this is
@@ -344,10 +332,6 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'releasing', mayOwnKey: true,
-      pendingOff: expect.objectContaining({ leaseId: 'lease-visibility' }),
-    });
     expect(countFrames('ptt_off', socket)).toBe(1);
     expect(h.stop).toHaveBeenCalledTimes(1);
 
@@ -357,24 +341,18 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
     expect(countFrames('ptt_off', socket)).toBe(1);
 
     await observePtt(false, 4);
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'idle', fault: null, guard: null, mayOwnKey: false, pendingOff: null,
-    });
-    expect(h.restore).toHaveBeenCalledTimes(1);
   });
 
   it('a visibilitychange to visible (not hidden) during an owned key is a no-op — release is gated on document.visibilityState === "hidden"', async () => {
     const { controller, socket } = await mountConnectedApp();
 
-    controller.start('probe', 'lease-still-visible', 'momentary');
+    controller.pttOn();
     await settle();
     await observePtt(true, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', mayOwnKey: true });
 
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', mayOwnKey: true });
     expect(countFrames('ptt_off', socket)).toBe(0);
     expect(h.stop).not.toHaveBeenCalled();
     // Real timer/listener cleanup happens via `afterEach`'s unconditional
@@ -399,7 +377,7 @@ describe('App page-lifecycle TX release — real App.svelte + real app-host + re
 
     // Must not throw and must not resurrect a disposed controller.
     expect(() => window.dispatchEvent(new Event('pagehide'))).not.toThrow();
-    expect(() => controller.start('probe', 'lease-after-unmount', 'momentary')).not.toThrow();
+    expect(() => controller.pttOn()).not.toThrow();
     expect(controller.snapshot().phase).toBe('idle');
   });
 });

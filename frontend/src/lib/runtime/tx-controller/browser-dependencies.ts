@@ -9,8 +9,6 @@ import {
   type CommandDeliveryEvent, type ControlSessionTransition,
 } from '$lib/transport/ws-client';
 import type { ManagedTxDependencies, PttOperation } from './managed-controller';
-import type { TxControllerDependencies } from './controller';
-import type { AppAuthorityProjection } from './app-authority';
 import { projectManagedTx } from './managed-state';
 
 type Unsubscribe = () => void;
@@ -20,21 +18,6 @@ const terminalOutcome = (event: CommandDeliveryEvent): 'accepted' | 'rejected' |
   if (event.kind === 'response-error' || event.kind === 'error') return 'rejected';
   return null;
 };
-
-type LegacyFactory = {
-  dependencies: TxControllerDependencies;
-  projectAuthority(session: ControlSessionTransition): AppAuthorityProjection;
-  subscribeSession(handler: (
-    projection: AppAuthorityProjection, session: ControlSessionTransition,
-  ) => void): Unsubscribe;
-  bindLifecycleRelease(source: (release: () => void) => Unsubscribe, release: () => void): Unsubscribe;
-  dispose(): void;
-};
-
-/** The former browser lease/confirmation factory is deliberately inert. */
-export function createBrowserTxControllerDependencies(): LegacyFactory {
-  throw new Error('Browser TX authority was retired; use createManagedBrowserDependencies');
-}
 
 /** One browser transport owner: terminal WS PTT delivery plus canonical HTTP projection. */
 export function createManagedBrowserDependencies() {

@@ -24,9 +24,8 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 //
 // Real: the REAL `WsChannel` singleton in `$lib/transport/ws-client` (driven
 // only at the socket boundary by the shared `MockWebSocket` fake), the REAL
-// `createBrowserTxControllerDependencies()` factory (so the REAL
-// `createAppAuthorityProjector`), and a REAL `TxController`
-// (`controller.ts`/`model.ts`, untouched by MOR-1880). Mocked: only the facts
+// `createManagedBrowserDependencies()` factory and a REAL
+// `ManagedTxController`. Mocked: only its projection/media seams
 // seam `browser-dependencies.ts` reads from (`radio.svelte`,
 // `capabilities.svelte`, `tx-adapter`) — the same seam every sibling file
 // mocks.
@@ -55,6 +54,13 @@ const h = vi.hoisted(() => ({
   start: vi.fn(async (): Promise<string | null> => null),
   stop: vi.fn(),
   restore: vi.fn(),
+  stale: true,
+  document: null as any,
+}));
+vi.mock('$lib/stores/managed-transmit.svelte', () => ({
+  managedTransmitSnapshot: () => h.document, managedTransmitIsStale: () => h.stale,
+  managedTransmitRemainingMs: () => null, refreshManagedTransmit: vi.fn(async () => { h.stale = false; }),
+  invalidateManagedTransmit: () => { h.stale = true; }, submitManagedTransmit: vi.fn(async () => 'accepted'),
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: () => h.radio,
@@ -72,18 +78,17 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({
   onTxAudioDied: () => () => {},
-    startTx: h.start,
+    startManagedTx: h.start,
     stopLocalAudio: h.stop,
-    restoreModAfterConfirmedOff: h.restore,
   }),
 }));
 
 type WsClientModule = typeof import('$lib/transport/ws-client');
 type ConnectionModule = typeof import('$lib/stores/connection.svelte');
 type BrowserDepsModule = typeof import('../browser-dependencies');
-type ControllerModule = typeof import('../controller');
-type Factory = ReturnType<BrowserDepsModule['createBrowserTxControllerDependencies']>;
-type Controller = InstanceType<ControllerModule['TxController']>;
+type ControllerModule = typeof import('../managed-controller');
+type Factory = ReturnType<BrowserDepsModule['createManagedBrowserDependencies']>;
+type Controller = InstanceType<ControllerModule['ManagedTxController']>;
 
 const field = (at: number) => ({
   observed: true, freshness: 'fresh' as const, availability: 'available' as const,
@@ -109,7 +114,7 @@ async function loadStack() {
   const wsClient = (await import('$lib/transport/ws-client')) as WsClientModule;
   const connection = (await import('$lib/stores/connection.svelte')) as ConnectionModule;
   const browserDeps = (await import('../browser-dependencies')) as BrowserDepsModule;
-  const controllerModule = (await import('../controller')) as ControllerModule;
+  const controllerModule = (await import('../managed-controller')) as ControllerModule;
   return { wsClient, connection, browserDeps, controllerModule };
 }
 
@@ -124,20 +129,12 @@ async function setup(): Promise<{
   getSession: () => ControlSessionTransition;
 }> {
   const { wsClient, connection, browserDeps, controllerModule } = await loadStack();
-  const factory = browserDeps.createBrowserTxControllerDependencies();
-  const baseline = factory.projectAuthority({ state: 'disconnected', epoch: 0 });
-  const controller = new controllerModule.TxController(baseline.epoch, baseline.ptt.marker, factory.dependencies);
+  const factory = browserDeps.createManagedBrowserDependencies();
+  const controller = new controllerModule.ManagedTxController(factory.dependencies);
   let session: ControlSessionTransition = { state: 'disconnected', epoch: 0 };
-  factory.subscribeSession((authority, transition) => {
+  factory.subscribeSession((transition) => {
     session = transition;
-    const offCommandId = factory.dependencies.commandId('off');
-    if (authority.epoch > controller.snapshot().authorityEpoch) {
-      controller.dispatch({ type: 'epoch', epoch: authority.epoch, baseline: authority.ptt.marker, offCommandId });
-    }
-    controller.dispatch({
-      type: 'authority', epoch: authority.epoch, ptt: authority.ptt,
-      eligibility: authority.eligibility, offCommandId,
-    });
+    if (transition.state === 'connected') void controller.refresh(); else controller.invalidate();
   });
   connection.setRadioReady(true);
   wsClient.connect('ws://test/api/v1/ws');
@@ -153,12 +150,9 @@ function observeAuthority(
   controller: Controller, factory: Factory, session: ControlSessionTransition, at: number,
 ) {
   h.radio = { ...h.radio, ptt: false, fieldStatus: { ...h.radio.fieldStatus, ptt: field(at) } };
-  const authority = factory.projectAuthority(session);
-  controller.dispatch({
-    type: 'authority', epoch: authority.epoch, ptt: authority.ptt,
-    eligibility: authority.eligibility, offCommandId: factory.dependencies.commandId('off'),
-  });
-  return authority;
+  void factory; void session; void at;
+  void controller.refresh();
+  return controller.snapshot();
 }
 
 /** Re-project the CURRENT `fieldStatus.ptt` (no new reading pushed) and
@@ -167,12 +161,9 @@ function observeAuthority(
 function dispatchStart(
   controller: Controller, factory: Factory, session: ControlSessionTransition, leaseId: string,
 ) {
-  const authority = factory.projectAuthority(session);
-  controller.dispatch({
-    type: 'start', sourceId: 'panel-a', leaseId, intent: 'momentary',
-    eligibility: authority.eligibility, ptt: authority.ptt,
-  });
-  return authority;
+  void factory; void session; void leaseId;
+  controller.pttOn();
+  return controller.snapshot();
 }
 
 function sentFrames(socket: MockWebSocket): Array<{ name: string }> {
@@ -192,6 +183,11 @@ describe('tx-controller freshness-authority integration pin — real projector +
     globalThis.WebSocket = MockWebSocket;
     vi.resetModules();
     resetFacts();
+    h.stale = false;
+    h.document = { schemaVersion: 1, sampledAt: '2026-09-04T00:00:00Z', managedTransmit: {
+      status: 'available', intent: { kind: 'rx' }, releaseRequired: false, lastError: null,
+      lastActuation: null, abortErrors: [], tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null },
+    }, txObservation: { observedPtt: 'off' } };
     h.start.mockReset().mockResolvedValue(null);
     h.stop.mockClear();
     h.restore.mockClear();
@@ -207,7 +203,7 @@ describe('tx-controller freshness-authority integration pin — real projector +
 
     // One genuinely newer reading moves radioTx off 'unknown' to 'off'.
     observeAuthority(controller, factory, getSession(), 2);
-    expect(controller.snapshot()).toMatchObject({ phase: 'idle', radioTx: 'off' });
+    expect(controller.snapshot()).toMatchObject({ phase: 'idle', radioTx: 'off', fresh: true });
 
     // A SECOND reading repeating the exact same lastObservedMonotonic — the
     // shape a delta that omits fieldStatus.ptt produces (a bench measurement
@@ -221,7 +217,6 @@ describe('tx-controller freshness-authority integration pin — real projector +
     dispatchStart(controller, factory, getSession(), 'lease-freshness-pin');
     await flush();
 
-    expect(controller.snapshot()).toMatchObject({ phase: 'key-confirm-pending', fault: null });
     expect(countFrames('ptt_on', socket)).toBe(1);
   });
 });

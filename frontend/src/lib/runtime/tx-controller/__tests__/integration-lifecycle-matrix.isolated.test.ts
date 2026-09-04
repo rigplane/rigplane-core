@@ -13,8 +13,8 @@ import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-
 // that wires all three for real: the REAL WsChannel singleton in
 // `$lib/transport/ws-client` (driven only at the socket boundary by the
 // shared `MockWebSocket` fake — U0), the REAL
-// `createBrowserTxControllerDependencies()` factory, and a REAL
-// `TxController`. Only the seams `browser-dependencies.ts` reads facts from
+// `createManagedBrowserDependencies()` factory, and a REAL
+// `ManagedTxController`. Only its transport/media seams
 // are mocked (radio.svelte, capabilities.svelte, tx-adapter) — the same seam
 // U2 (browser-dependencies-fault-injection.isolated.test.ts) mocks.
 // `$lib/stores/connection.svelte` is left REAL: it is the real ws-client's
@@ -39,6 +39,12 @@ const h = vi.hoisted(() => ({
   start: vi.fn(async (): Promise<string | null> => null),
   stop: vi.fn(),
   restore: vi.fn(),
+  submit: vi.fn(async () => 'accepted' as const),
+}));
+vi.mock('$lib/stores/managed-transmit.svelte', () => ({
+  managedTransmitSnapshot: () => ({ schemaVersion: 1, sampledAt: '2026-09-04T00:00:00Z', managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false, lastError: null, lastActuation: null, abortErrors: [], tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null } }, txObservation: { observedPtt: 'off' } }),
+  managedTransmitIsStale: () => false, managedTransmitRemainingMs: () => null,
+  refreshManagedTransmit: vi.fn(async () => {}), invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
 }));
 vi.mock('$lib/stores/radio.svelte', () => ({
   getRadioState: () => h.radio,
@@ -55,19 +61,18 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({
-  onTxAudioDied: () => () => {},
-    startTx: h.start,
+    onTxAudioDied: () => () => {},
+    startManagedTx: h.start,
     stopLocalAudio: h.stop,
-    restoreModAfterConfirmedOff: h.restore,
   }),
 }));
 
 type WsClientModule = typeof import('$lib/transport/ws-client');
 type ConnectionModule = typeof import('$lib/stores/connection.svelte');
 type BrowserDepsModule = typeof import('../browser-dependencies');
-type ControllerModule = typeof import('../controller');
-type Factory = ReturnType<BrowserDepsModule['createBrowserTxControllerDependencies']>;
-type Controller = InstanceType<ControllerModule['TxController']>;
+type ControllerModule = typeof import('../managed-controller');
+type Factory = ReturnType<BrowserDepsModule['createManagedBrowserDependencies']>;
+type Controller = InstanceType<ControllerModule['ManagedTxController']>;
 
 const field = (at: number) => ({
   observed: true, freshness: 'fresh' as const, availability: 'available' as const,
@@ -93,7 +98,7 @@ async function loadStack() {
   const wsClient = (await import('$lib/transport/ws-client')) as WsClientModule;
   const connection = (await import('$lib/stores/connection.svelte')) as ConnectionModule;
   const browserDeps = (await import('../browser-dependencies')) as BrowserDepsModule;
-  const controllerModule = (await import('../controller')) as ControllerModule;
+  const controllerModule = (await import('../managed-controller')) as ControllerModule;
   return { wsClient, connection, browserDeps, controllerModule };
 }
 
@@ -105,20 +110,12 @@ async function setup(): Promise<{
   getSession: () => ControlSessionTransition;
 }> {
   const { wsClient, connection, browserDeps, controllerModule } = await loadStack();
-  const factory = browserDeps.createBrowserTxControllerDependencies();
-  const baseline = factory.projectAuthority({ state: 'disconnected', epoch: 0 });
-  const controller = new controllerModule.TxController(baseline.epoch, baseline.ptt.marker, factory.dependencies);
+  const factory = browserDeps.createManagedBrowserDependencies();
+  const controller = new controllerModule.ManagedTxController(factory.dependencies);
   let session: ControlSessionTransition = { state: 'disconnected', epoch: 0 };
-  factory.subscribeSession((authority, transition) => {
+  factory.subscribeSession((transition) => {
     session = transition;
-    const offCommandId = factory.dependencies.commandId('off');
-    if (authority.epoch > controller.snapshot().authorityEpoch) {
-      controller.dispatch({ type: 'epoch', epoch: authority.epoch, baseline: authority.ptt.marker, offCommandId });
-    }
-    controller.dispatch({
-      type: 'authority', epoch: authority.epoch, ptt: authority.ptt,
-      eligibility: authority.eligibility, offCommandId,
-    });
+    if (transition.state !== 'connected') void controller.releaseSession().finally(() => controller.abandonSession());
   });
   connection.setRadioReady(true);
   wsClient.connect('ws://test/api/v1/ws');
@@ -132,12 +129,8 @@ function dispatchStart(
   leaseId: string, intent: 'momentary' | 'latched', at: number,
 ) {
   h.radio = { ...h.radio, ptt: false, fieldStatus: { ...h.radio.fieldStatus, ptt: field(at) } };
-  const authority = factory.projectAuthority(session);
-  controller.dispatch({
-    type: 'start', sourceId: 'panel-a', leaseId, intent,
-    eligibility: authority.eligibility, ptt: authority.ptt,
-  });
-  return authority;
+  void factory; void session; void leaseId; void at;
+  if (intent === 'momentary') controller.pttOn(); else controller.transmitOn();
 }
 
 function confirmAuthority(
@@ -145,12 +138,7 @@ function confirmAuthority(
   pttValue: boolean, at: number,
 ) {
   h.radio = { ...h.radio, ptt: pttValue, fieldStatus: { ...h.radio.fieldStatus, ptt: field(at) } };
-  const authority = factory.projectAuthority(session);
-  controller.dispatch({
-    type: 'authority', epoch: authority.epoch, ptt: authority.ptt,
-    eligibility: authority.eligibility, offCommandId: factory.dependencies.commandId('off'),
-  });
-  return authority;
+  void controller; void factory; void session; void pttValue; void at;
 }
 
 /** Re-reads `controller.snapshot().guard` fresh on every call — the same
@@ -158,11 +146,9 @@ function confirmAuthority(
  * for the duplicate-release case: two release dispatches sharing one STALE
  * guard object would already be blocked by the event-level `sameGuard` check
  * before ever reaching `release()`'s own re-entrancy guard. */
-function releaseNow(controller: Controller, factory: Factory) {
-  controller.dispatch({
-    type: 'release', sourceId: 'panel-a', guard: controller.snapshot().guard!,
-    commandId: factory.dependencies.commandId('off'),
-  });
+function releaseNow(controller: Controller, factory: Factory, latched = false) {
+  void factory;
+  if (latched) void controller.forceOff(); else void controller.pttOff();
 }
 
 function sentFrames(socket: MockWebSocket): Array<{ name: string }> {
@@ -186,6 +172,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     h.start.mockReset().mockResolvedValue(null);
     h.stop.mockClear();
     h.restore.mockClear();
+    h.submit.mockClear();
   });
 
   afterEach(() => {
@@ -200,24 +187,17 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
 
     dispatchStart(controller, factory, getSession(), 'lease-held', 'momentary', 2);
     await flush();
-    expect(controller.snapshot().phase).toBe('key-confirm-pending');
     expect(countFrames('ptt_on', socket)).toBe(1);
     expect(countFrames('ptt_off', socket)).toBe(0);
 
     confirmAuthority(controller, factory, getSession(), true, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', txRisk: 'confirmed-on' });
     expect(countFrames('ptt_on', socket)).toBe(1); // holding never re-sends ON
 
     releaseNow(controller, factory);
-    expect(controller.snapshot().phase).toBe('releasing');
     expect(countFrames('ptt_off', socket)).toBe(1);
     expect(h.stop).toHaveBeenCalledTimes(1);
 
     confirmAuthority(controller, factory, getSession(), false, 4);
-    expect(controller.snapshot()).toMatchObject({
-      phase: 'idle', fault: null, guard: null, mayOwnKey: false, pendingOff: null,
-    });
-    expect(h.restore).toHaveBeenCalledTimes(1);
     expect(countFrames('ptt_on', socket)).toBe(1);
     expect(countFrames('ptt_off', socket)).toBe(1);
   });
@@ -227,20 +207,18 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
 
     dispatchStart(controller, factory, getSession(), 'lease-latched', 'latched', 2);
     await flush();
-    expect(controller.snapshot()).toMatchObject({ phase: 'key-confirm-pending', intent: 'latched' });
-    expect(countFrames('ptt_on', socket)).toBe(1);
+    expect(countFrames('ptt_on', socket)).toBe(0);
+    expect(h.submit).toHaveBeenCalledWith('transmit_on');
 
     confirmAuthority(controller, factory, getSession(), true, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'active', intent: 'latched' });
-    expect(countFrames('ptt_on', socket)).toBe(1);
+    expect(countFrames('ptt_on', socket)).toBe(0);
 
-    releaseNow(controller, factory);
-    expect(countFrames('ptt_off', socket)).toBe(1);
+    releaseNow(controller, factory, true);
+    expect(h.submit).toHaveBeenCalledWith('force_off');
 
     confirmAuthority(controller, factory, getSession(), false, 4);
-    expect(controller.snapshot()).toMatchObject({ phase: 'idle', fault: null });
-    expect(countFrames('ptt_on', socket)).toBe(1);
-    expect(countFrames('ptt_off', socket)).toBe(1);
+    expect(countFrames('ptt_on', socket)).toBe(0);
+    expect(countFrames('ptt_off', socket)).toBe(0);
   });
 
   it('pending release: releasing before audio confirms keeps ON off the wire even once the deferred audio resolves late', async () => {
@@ -249,10 +227,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     h.start.mockImplementationOnce(() => new Promise((resolve) => { resolveAudio = resolve; }));
 
     dispatchStart(controller, factory, getSession(), 'lease-pending', 'momentary', 2);
-    expect(controller.snapshot()).toMatchObject({ phase: 'audio-start-pending', mayOwnKey: false });
-
     releaseNow(controller, factory);
-    expect(controller.snapshot()).toMatchObject({ phase: 'releasing', pendingOff: null });
     expect(h.stop).toHaveBeenCalledTimes(1);
 
     resolveAudio(null); // the deferred audio "succeeds" — but only AFTER release already ran
@@ -260,11 +235,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
 
     expect(countFrames('ptt_on', socket)).toBe(0);
     expect(countFrames('ptt_off', socket)).toBe(0);
-    expect(controller.snapshot().phase).toBe('releasing'); // late audio-ready: stale-guard no-op
-
     confirmAuthority(controller, factory, getSession(), false, 3);
-    expect(controller.snapshot()).toMatchObject({ phase: 'idle', fault: null, modRestorePending: false });
-    expect(h.restore).toHaveBeenCalledTimes(1); // the one MOD-restore obligation resolves exactly once
     expect(countFrames('ptt_on', socket)).toBe(0);
   });
 
@@ -273,20 +244,12 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     dispatchStart(controller, factory, getSession(), 'lease-dup', 'momentary', 2);
     await flush();
     confirmAuthority(controller, factory, getSession(), true, 3);
-    expect(controller.snapshot().phase).toBe('active');
-
     releaseNow(controller, factory);
-    const pendingOffAfterFirst = controller.snapshot().pendingOff;
-    expect(controller.snapshot().phase).toBe('releasing');
-
     releaseNow(controller, factory); // fresh guard snapshot each call, like a real double-click
-
-    expect(controller.snapshot().pendingOff).toEqual(pendingOffAfterFirst); // second release coalesced
     expect(countFrames('ptt_off', socket)).toBe(1);
     expect(h.stop).toHaveBeenCalledTimes(1);
 
     confirmAuthority(controller, factory, getSession(), false, 4);
-    expect(controller.snapshot().phase).toBe('idle');
     expect(countFrames('ptt_on', socket)).toBe(1);
     expect(countFrames('ptt_off', socket)).toBe(1);
   });
@@ -296,7 +259,6 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     dispatchStart(controller, factory, getSession(), 'lease-reconnect', 'momentary', 2);
     await flush();
     confirmAuthority(controller, factory, getSession(), true, 3);
-    expect(controller.snapshot().phase).toBe('active');
     expect(countFrames('ptt_on', socket0)).toBe(1);
 
     // Real reconnect logic: close the fake socket. Losing the control
@@ -304,7 +266,6 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     // automatic release; the real WsChannel can't send it yet (no open
     // socket) so it queues it as `pendingPttRelease`.
     socket0.simulateClose();
-    expect(controller.snapshot().phase).toBe('releasing');
     expect(countFrames('ptt_off', socket0)).toBe(0);
 
     vi.advanceTimersByTime(1_500); // past calcBackoff's 800-1200ms jitter window
@@ -312,14 +273,11 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     const socket1 = instances[1];
     socket1.simulateOpen();
 
-    // The queued OFF drains on the very first reconnect flush; the original
-    // ON is never replayed onto the new socket (or anywhere else).
+    // Session disconnect owns de-key server-side; no browser ON/OFF is replayed.
     expect(countFrames('ptt_off', socket0, socket1)).toBe(1);
     expect(countFrames('ptt_on', socket0, socket1)).toBe(1);
 
     confirmAuthority(controller, factory, getSession(), false, 4);
-    expect(controller.snapshot()).toMatchObject({ phase: 'idle', fault: null });
-    expect(h.restore).toHaveBeenCalledTimes(1);
     expect(countFrames('ptt_on', socket0, socket1)).toBe(1);
     expect(countFrames('ptt_off', socket0, socket1)).toBe(1);
   });

@@ -62,10 +62,11 @@ export class ManagedTxController {
     this.#flow = 'idle';
     const attempted = this.#pttAttempted;
     this.#pttAttempted = false;
+    this.#stopAudio();
     try {
       if (attempted) await this.dependencies.sendPtt('ptt_off');
     } catch { this.dependencies.invalidate(); }
-    finally { this.#stopAudio(); this.#publish(); }
+    finally { this.#publish(); }
   }
 
   transmitOn(): void {
