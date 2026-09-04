@@ -309,7 +309,13 @@ async def test_serial_writer_rechecks_managed_currency(
     link, _, writer = await _make_link(writer=_FakeWriter(drain_gate=gate))
     radio, commander = _managed_radio(SerialCivTransport(link), monkeypatch)
     current = {"value": True}
+    entered = asyncio.Event()
     on = None
+
+    def is_current() -> bool:
+        entered.set()
+        return current["value"]
+
     try:
         await link.send(b"\x98\xe0\x03")
         await asyncio.wait_for(writer.drain_started.wait(), 1)
@@ -317,14 +323,11 @@ async def test_serial_writer_rechecks_managed_currency(
             radio.actuate(
                 _token(),
                 ActuationOperation.PTT_ON,
-                is_current=lambda: current["value"],
+                is_current=is_current,
             )
         )
-        for _ in range(10):
-            if link._write_queue.qsize() == 1:
-                break
-            await asyncio.sleep(0)
-        assert link._write_queue.qsize() == 1
+        await asyncio.wait_for(entered.wait(), 1)
+        assert not on.done()
         current["value"] = remains_current
         gate.set()
         if remains_current:
