@@ -36,6 +36,7 @@ from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.runtime._poller_types import (
+    PttOn,
     canonicalize_level_command,
     execute_command_queue_entry,
     execute_positive_tx_queue_entry,
@@ -707,26 +708,27 @@ class YaesuCatPoller:
         if self._command_queue is None:
             return
 
-        boundary = self._deferred_generation_change()
-        if boundary is not None:
-            self._cancel_deferred_entry(boundary)
-        now = time.monotonic()
-        transition = self._deferred_tx_lane.observe(
-            rf_state=self._current_rf_state(), now=now
-        )
         released: list[CommandQueueEntry] = []
-        if (
-            transition is not None
-            and transition.outcome is not TxInterlockDeferredOutcome.HELD
-        ):
-            entry, self._deferred_tx_entry = self._deferred_tx_entry, None
-            self._deferred_tx_generation = None
-            if entry is not None:
-                if transition.outcome is TxInterlockDeferredOutcome.RELEASED:
-                    if self._deferred_release_is_live(entry):
-                        released.append(entry)
-                else:
-                    self._finish_deferred_entry(entry, superseded=False)
+        if self._managed_tx_authority is None:
+            boundary = self._deferred_generation_change()
+            if boundary is not None:
+                self._cancel_deferred_entry(boundary)
+            now = time.monotonic()
+            transition = self._deferred_tx_lane.observe(
+                rf_state=self._current_rf_state(), now=now
+            )
+            if (
+                transition is not None
+                and transition.outcome is not TxInterlockDeferredOutcome.HELD
+            ):
+                entry, self._deferred_tx_entry = self._deferred_tx_entry, None
+                self._deferred_tx_generation = None
+                if entry is not None:
+                    if transition.outcome is TxInterlockDeferredOutcome.RELEASED:
+                        if self._deferred_release_is_live(entry):
+                            released.append(entry)
+                    else:
+                        self._finish_deferred_entry(entry, superseded=False)
 
         pending_count = self._command_queue.pending_count
 
@@ -783,13 +785,13 @@ class YaesuCatPoller:
 
         async def finish_entry(
             entry: CommandQueueEntry,
-            decision: TxInterlockDecision | Exception,
+            decision: TxInterlockDecision | Exception | None,
         ) -> None:
             cmd = entry.command
             try:
                 if isinstance(decision, BaseException):
                     raise decision
-                if (
+                if decision is not None and (
                     decision.disposition is TxInterlockDisposition.DEFER
                     and not decision.allowed
                 ):
@@ -839,8 +841,9 @@ class YaesuCatPoller:
                     exc_info=True,
                 )
                 return
-            decision = stage_entry(entry)
-            if decision is None:
+            bypass_legacy_policy = self._managed_tx_authority is not None
+            decision = None if bypass_legacy_policy else stage_entry(entry)
+            if decision is None and not bypass_legacy_policy:
                 return
             policy_error = isinstance(decision, BaseException)
             try:
@@ -1044,6 +1047,8 @@ class YaesuCatPoller:
         all command types; unsupported commands fail truthfully.
         """
         cmd = canonicalize_level_command(cmd, self._radio)
+        if self._managed_tx_authority is not None and isinstance(cmd, PttOn):
+            raise CommandError("managed PTT ON requires a positive TX queue submission")
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(
                 self._radio,
@@ -1052,20 +1057,20 @@ class YaesuCatPoller:
                 validate_currency=validate_currency,
             )
             return
-        decision = evaluate_tx_interlock(
-            cmd,
-            rf_state=self._current_rf_state(),
-            disposition_overrides=self._tx_interlock_disposition_overrides(),
-        )
-        if not decision.allowed and (
-            decision.disposition is TxInterlockDisposition.BLOCK
-            or classify_tx_interlock(cmd) is TxInterlockDisposition.TX_SAFE
-        ):
-            raise CommandError(decision.reason)
+        if self._managed_tx_authority is None:
+            decision = evaluate_tx_interlock(
+                cmd,
+                rf_state=self._current_rf_state(),
+                disposition_overrides=self._tx_interlock_disposition_overrides(),
+            )
+            if not decision.allowed and (
+                decision.disposition is TxInterlockDisposition.BLOCK
+                or classify_tx_interlock(cmd) is TxInterlockDisposition.TX_SAFE
+            ):
+                raise CommandError(decision.reason)
 
         from ..._poller_types import (
             PttOff,
-            PttOn,
             SelectVfo,
             SetAgc,
             SetApf,

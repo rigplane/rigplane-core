@@ -730,6 +730,10 @@ class RadioPoller:
         return RfState.TX if field.value else RfState.RX
 
     def _enforce_tx_interlock(self, cmd: Command) -> None:
+        if self._managed_tx_authority is not None and not isinstance(
+            cmd, (PttOn, PttOff)
+        ):
+            return
         metadata = get_tx_interlock_command_family_metadata(cmd)
         if metadata is None or (
             metadata.family not in _WEB_IMMEDIATE_BLOCK_FAMILIES
@@ -809,6 +813,8 @@ class RadioPoller:
         self, entries: list[CommandQueueEntry], *, advance_held: bool = True
     ) -> list[CommandQueueEntry]:
         """Stage DEFER entries before advancing the existing held slot."""
+        if self._managed_tx_authority is not None:
+            return entries
         has_defer = self._deferred_tx_lane.pending is not None or any(
             (metadata := get_tx_interlock_command_family_metadata(entry.command))
             is not None
@@ -2186,6 +2192,8 @@ class RadioPoller:
             source=source,
             session_id=session_id,
         )
+        if self._managed_tx_authority is not None and isinstance(cmd, PttOn):
+            raise CommandError("managed PTT ON requires a positive TX queue submission")
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(
                 self._radio,

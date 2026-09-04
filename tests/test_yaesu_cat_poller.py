@@ -1701,6 +1701,48 @@ async def test_yaesu_authority_approved_commands_dispatch_during_observed_tx(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("active", (True, None), ids=("tx", "unknown"))
+async def test_yaesu_managed_queue_bypasses_legacy_deferred_policy(
+    active: bool | None,
+) -> None:
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_split = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    poller.bind_managed_tx_authority(authority)
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetSplit(True), future=future)
+    if active is not None:
+        _set_fresh_ptt_observation(poller, active=active)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert future.result() is None
+    radio.set_split.assert_awaited_once_with(True)
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_managed_non_ptt_execute_does_not_inspect_legacy_rf() -> None:
+    from rigplane.runtime._poller_types import SetPowerstat
+
+    radio = make_radio()
+    radio.set_powerstat = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+    poller._current_rf_state = MagicMock(  # type: ignore[method-assign] # noqa: SLF001
+        side_effect=AssertionError("managed non-PTT dispatch inspected legacy RF state")
+    )
+
+    await poller._execute_command(SetPowerstat(on=True))  # noqa: SLF001
+
+    radio.set_powerstat.assert_awaited_once_with(True)
+
+
+@pytest.mark.asyncio
 async def test_yaesu_descriptor_intent_uses_bound_authority_once() -> None:
     radio = make_radio()
     radio.set_civ_output_ant = AsyncMock()
@@ -1717,6 +1759,59 @@ async def test_yaesu_descriptor_intent_uses_bound_authority_once() -> None:
     radio.set_civ_output_ant.assert_awaited_once_with(on=True)
     with pytest.raises(RuntimeError, match="already bound"):
         poller.bind_managed_tx_authority(authority)
+
+
+@pytest.mark.asyncio
+async def test_yaesu_descriptor_refusal_occurs_once_at_bound_authority() -> None:
+    radio = make_radio()
+    radio.set_antenna_1 = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=False)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+    intent = bind_command_intent("set_antenna_1", {"on": True}, source="websocket")
+
+    with pytest.raises(CommandError, match="transmit authority"):
+        await poller._execute_command(intent)  # noqa: SLF001
+
+    authority.admit_managed_write.assert_awaited_once_with(intent)
+    radio.set_antenna_1.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_managed_typed_ptt_on_fails_before_raw_write() -> None:
+    from rigplane.runtime._poller_types import PttOn
+
+    radio = make_radio()
+    radio.set_ptt = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+    _set_fresh_ptt_observation(poller, active=False)
+
+    with pytest.raises(CommandError, match="positive TX queue submission"):
+        await poller._execute_command(PttOn())  # noqa: SLF001
+
+    radio.set_ptt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_managed_typed_ptt_off_remains_unconditionally_attemptable() -> (
+    None
+):
+    from rigplane.runtime._poller_types import PttOff
+
+    radio = make_radio()
+    radio.set_ptt = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+
+    await poller._execute_command(PttOff())  # noqa: SLF001
+
+    radio.set_ptt.assert_awaited_once_with(False)
 
 
 @pytest.mark.asyncio
