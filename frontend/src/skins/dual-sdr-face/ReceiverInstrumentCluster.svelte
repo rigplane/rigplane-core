@@ -7,12 +7,14 @@
   let { view, receiver, frame }: Props = $props();
   let receiverId = $derived(receiver === 0 ? 'MAIN' : 'SUB');
   let vfo = $derived(view.vfos.find((item) => item.receiver === receiverId));
-  let meter = $derived(view.meters?.signal.reading.status === 'known' && receiver === 0 ? view.meters.signal.reading.value : null);
+  let indicator = $derived(view.receiverIndicators?.find((item) => item.receiver === receiverId));
+  let meter = $derived(indicator?.sMeter.reading.status === 'known' ? indicator.sMeter.reading.value : null);
+  let bandwidth = $derived(indicator?.bandwidthHz.reading.status === 'known' ? indicator.bandwidthHz.reading.value : null);
   let frequency = $derived(vfo?.frequencyHz === null || vfo?.frequencyHz === undefined ? '—' : vfo.frequencyHz.toLocaleString('en-US'));
 </script>
 
 <section class="cluster" data-receiver-cluster={receiver} aria-label={`${receiverId} receiver`}>
-  <header><b>{receiverId}</b><span>VFO</span><span>{vfo?.mode ?? '—'}</span><span>{vfo?.filter ?? '—'}</span><span>BW —</span><span>SFT —</span></header>
+  <header><b>{receiverId}</b><span>VFO</span><span>{vfo?.mode ?? '—'}</span><span>{vfo?.filter ?? '—'}</span><span data-bandwidth>BW {bandwidth ?? '—'}</span><span>SFT —</span></header>
   <ReceiverNeedleSMeter value={meter} />
   <output class="frequency" data-frequency>{frequency}</output>
   <div class="secondary">{vfo?.label ?? '—'} · {vfo?.mode ?? '—'} · {vfo?.filter ?? '—'}</div>
