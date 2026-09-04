@@ -7,7 +7,18 @@
   const hardwareScope = {
     subscribe: (listener: Parameters<typeof runtime.scope.subscribeHardware>[0]) =>
       runtime.scope.subscribeHardware(listener),
+    subscribeHealth: (listener: (live: boolean) => void) =>
+      runtime.scope.subscribeHealth((source, health) => {
+        if (source === 'hardware') {
+          listener(health.transport === 'connected' && health.frameSeen);
+        }
+      }),
   };
+
+  $effect(() => {
+    const lease = runtime.acquireHardwareScope('DualSdrFace');
+    return () => runtime.releaseHardwareScope(lease);
+  });
 </script>
 
 {#snippet readonlyDisplay(view: RadioViewModel)}

@@ -93,6 +93,37 @@ describe('DualSdrFace', () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
+  it('clears both receiver frames when hardware scope health stops being live', async () => {
+    let frameListener: ((frame: ScopeFrame) => void) | undefined;
+    let healthListener: ((live: boolean) => void) | undefined;
+    const unsubscribeFrames = vi.fn();
+    const unsubscribeHealth = vi.fn();
+    const source = {
+      subscribe: vi.fn((next: (frame: ScopeFrame) => void) => {
+        frameListener = next;
+        return unsubscribeFrames;
+      }),
+      subscribeHealth: vi.fn((next: (live: boolean) => void) => {
+        healthListener = next;
+        return unsubscribeHealth;
+      }),
+    };
+    const target = document.createElement('div');
+    const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
+    await tick();
+    frameListener?.({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels: new Uint8Array([1]) });
+    frameListener?.({ receiver: 1, mode: 0, startFreq: 3, endFreq: 4, pixels: new Uint8Array([2]) });
+    await tick();
+    expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(2);
+    healthListener?.(false);
+    await tick();
+    expect(target.querySelectorAll('[data-scope-state="unknown"]')).toHaveLength(2);
+    expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(0);
+    unmount(component);
+    expect(unsubscribeFrames).toHaveBeenCalledOnce();
+    expect(unsubscribeHealth).toHaveBeenCalledOnce();
+  });
+
   it('keeps receiver-addressed meter and bandwidth facts with their own cluster', async () => {
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, receiverIndicators(11, 2_400, 22, 3_100)), scopeSource: { subscribe: () => () => {} } } });

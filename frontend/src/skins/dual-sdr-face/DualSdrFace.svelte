@@ -2,17 +2,26 @@
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
   import ReceiverInstrumentCluster from './ReceiverInstrumentCluster.svelte';
-  export interface ScopeFrameSource { subscribe(listener: (frame: ScopeFrame) => void): () => void; }
+  export interface ScopeFrameSource {
+    subscribe(listener: (frame: ScopeFrame) => void): () => void;
+    subscribeHealth?(listener: (live: boolean) => void): () => void;
+  }
   interface Props { view: RadioViewModel; scopeSource: ScopeFrameSource; onPreChange?: (level: number) => void; }
   let { view, scopeSource, onPreChange }: Props = $props();
   let frames: [ScopeFrame | null, ScopeFrame | null] = $state([null, null]);
   $effect(() => {
-    const unsubscribe = scopeSource.subscribe((incoming) => {
+    const unsubscribeFrames = scopeSource.subscribe((incoming) => {
       if (incoming.receiver !== 0 && incoming.receiver !== 1) return;
       const frame = Object.freeze({ ...incoming, pixels: new Uint8Array(incoming.pixels) }) as ScopeFrame;
       frames = incoming.receiver === 0 ? [frame, frames[1]] : [frames[0], frame];
     });
-    return () => unsubscribe();
+    const unsubscribeHealth = scopeSource.subscribeHealth?.((live) => {
+      if (!live) frames = [null, null];
+    });
+    return () => {
+      unsubscribeFrames();
+      unsubscribeHealth?.();
+    };
   });
   let pre = $derived(view.rfFrontEnd?.preamp);
   let preBlocked = $derived(view.disabledReasons.some((reason) => reason.field === 'rfFrontEnd.preamp'));
