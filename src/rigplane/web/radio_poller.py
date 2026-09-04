@@ -79,7 +79,7 @@ from ..core.command_service import (
     CommandService,
 )
 from ..core.acquisition_drain import AcquisitionDrain
-from ..core.command_dispatch import execute_command_intent
+from ..core.command_dispatch import command_descriptor, execute_command_intent
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionPriority,
@@ -116,6 +116,7 @@ from ..runtime._state_queries import (
     wire_parts_for_query,
 )
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
+from ..runtime.managed_write_intent_bridge import managed_write_intent
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,
     RfState,
@@ -131,6 +132,7 @@ from ..types import AudioCodec
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
     from ..radio_state import RadioState
+    from ..runtime.radio import ManagedTxCompositionPort
 
 __all__ = [
     "RadioPoller",
@@ -468,6 +470,16 @@ from .._poller_types import (  # noqa: E402
 )
 
 
+_MANAGED_TYPED_WRITE_TYPES = (
+    SetTunerStatus,
+    SetAntenna1,
+    SetAntenna2,
+    SetRxAntennaAnt1,
+    SetRxAntennaAnt2,
+    SetCivOutputAnt,
+)
+
+
 # ------------------------------------------------------------------
 # MOR-1484: post-write readback jump-queue
 # ------------------------------------------------------------------
@@ -595,12 +607,17 @@ class RadioPoller:
         diagnostics: StateDiagnosticsRecorder | None = None,
         state_store: StateStore | None = None,
         acquisition_executor: AcquisitionExecutor | None = None,
+        managed_tx_port: "ManagedTxCompositionPort | None" = None,
+        managed_tx_required: bool = False,
     ) -> None:
+        if managed_tx_required and managed_tx_port is None:
+            raise CommandError("managed transmit authority unavailable")
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
+        self._managed_tx_port = managed_tx_port
         raw_scheduler = getattr(radio, "_acquisition_scheduler", None)
         self._acquisition_scheduler = (
             raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
@@ -728,6 +745,22 @@ class RadioPoller:
                     else "rf_state_unknown"
                 ),
             )
+
+    async def _admit_managed_write(self, intent: CommandIntent) -> None:
+        port = self._managed_tx_port
+        if port is None:
+            raise CommandError("managed transmit authority unavailable")
+        if not await port.authority.admit_managed_write(intent):
+            raise CommandError("managed transmit authority refused write")
+
+    def _stage_entry_for_turn(
+        self, entry: CommandQueueEntry
+    ) -> list[CommandQueueEntry]:
+        if self._managed_tx_port is not None and isinstance(
+            entry.command, (CommandIntent, *_MANAGED_TYPED_WRITE_TYPES)
+        ):
+            return [entry]
+        return self._stage_tx_interlocked_entries([entry], advance_held=False)
 
     @staticmethod
     def _deferred_intent(entry: CommandQueueEntry) -> CommandIntent | None:
@@ -1713,9 +1746,7 @@ class RadioPoller:
                 entry = self._queue.take_entry()
                 if entry is None:
                     break
-                yield from self._stage_tx_interlocked_entries(
-                    [entry], advance_held=False
-                )
+                yield from self._stage_entry_for_turn(entry)
             yield from self._stage_tx_interlocked_entries([])
 
         async def execute_entry(entry: CommandQueueEntry) -> None:
@@ -2098,16 +2129,41 @@ class RadioPoller:
             source=source,
             session_id=session_id,
         )
+        port = self._managed_tx_port
+        if port is not None and isinstance(cmd, (PttOn, PttOff)):
+            raise CommandError(
+                "composed managed PTT must be submitted through authority"
+            )
         if isinstance(cmd, CommandIntent):
+            if port is not None:
+                if command_descriptor(cmd.name) is None:
+                    raise CommandError(
+                        f"no canonical command descriptor for {cmd.name!r}"
+                    )
+                await self._admit_managed_write(cmd)
             await execute_command_intent(self._radio, cmd)
             self._request_post_write_readback(cmd)
             return
+        managed_admitted = False
+        if port is not None and isinstance(cmd, _MANAGED_TYPED_WRITE_TYPES):
+            if command_id is None:
+                raise CommandError("managed write requires a command id")
+            await self._admit_managed_write(
+                managed_write_intent(
+                    cmd,
+                    command_id=command_id,
+                    source=source,
+                    session_id=session_id,
+                )
+            )
+            managed_admitted = True
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
         # emits alike. Emergency commands need no exemption —
         # ``_enforce_tx_interlock`` is structurally incapable of blocking them
         # before any table is consulted.
-        self._enforce_tx_interlock(cmd)
+        if not managed_admitted:
+            self._enforce_tx_interlock(cmd)
         radio = self._radio
         provider_generation = self._provider_generation()
         _r: Any = radio  # cast for capability methods not on base Radio protocol
