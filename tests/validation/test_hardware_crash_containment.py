@@ -14,12 +14,13 @@ These tests pin the four containment layers:
 * ``execute_hardware_checks`` has a per-entry backstop so one raising check
   can never abort the matrix or lose the artifact;
 * ``tone_freq.set``/``tsql_freq.set`` SKIP without mutating when the current
-  value is outside the settable band (non-destructive harness).
+  value is outside the profile's declared domain (non-destructive harness).
 """
 
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -44,13 +45,11 @@ from rigplane.validation.schema import (
     RadioTarget,
 )
 
-# Settable band of commands/tone.py::_encode_tone_freq (shared by
-# set_tone_freq and set_tsql_freq).
-_TONE_BAND_MIN = 67.0
-_TONE_BAND_MAX = 254.1
+# Exact profile domain used by the target public/provider centiHz contract.
+_CTCSS_DOMAIN = (8850, 10000, 12300)
 
-# The IC-7610's readback when no repeater tone is configured: un-encodable.
-_UNENCODABLE_TONE = 16.5
+# A readback that is not a legal member of the active profile domain.
+_UNENCODABLE_TONE = 1650
 
 
 def _flatten(levels):
@@ -81,13 +80,15 @@ def _template_for(*check_ids: str) -> MatrixTemplate:
 
 
 def _encoder_guarded_setter(store: dict):
-    """A setter that raises like commands/tone.py::_encode_tone_freq."""
+    """A target-contract setter accepting exact integer centiHz values."""
 
-    async def _set(freq_hz: float, receiver: int = 0) -> None:
-        if not _TONE_BAND_MIN <= freq_hz <= _TONE_BAND_MAX:
-            raise ValueError(f"Tone frequency must be 67.0-254.1 Hz, got {freq_hz}")
-        store["value"] = freq_hz
-        store["writes"].append(freq_hz)
+    async def _set(freq_centihz: int, receiver: int = 0) -> None:
+        if freq_centihz not in _CTCSS_DOMAIN:
+            raise ValueError(
+                f"Tone frequency must be in {_CTCSS_DOMAIN}, got {freq_centihz}"
+            )
+        store["value"] = freq_centihz
+        store["writes"].append(freq_centihz)
 
     return _set
 
@@ -98,13 +99,14 @@ def _unconfigured_tone_radio():
     radio.connected = True
     radio.model = "IC-7610"
     radio.capabilities = {"repeater_tone", "tsql"}
+    radio.profile = SimpleNamespace(ctcss_tones_centihz=_CTCSS_DOMAIN)
     tone_store: dict = {"value": _UNENCODABLE_TONE, "writes": []}
     tsql_store: dict = {"value": _UNENCODABLE_TONE, "writes": []}
 
-    async def _get_tone(receiver: int = 0) -> float:
+    async def _get_tone(receiver: int = 0) -> int:
         return tone_store["value"]
 
-    async def _get_tsql(receiver: int = 0) -> float:
+    async def _get_tsql(receiver: int = 0) -> int:
         return tsql_store["value"]
 
     radio.get_tone_freq = AsyncMock(side_effect=_get_tone)
@@ -169,10 +171,10 @@ async def test_unencodable_tone_freq_never_crashes_the_run():
     assert results["repeater_tone.set"].status is CheckStatus.PASS
 
 
-async def test_encodable_tone_freq_still_runs_rmvr():
-    """The restorable gate must not affect in-band values."""
+async def test_declared_tone_freq_still_runs_rmvr():
+    """The restorable gate permits exact profile-domain values."""
     radio, tone_store, _ = _unconfigured_tone_radio()
-    tone_store["value"] = 88.5
+    tone_store["value"] = 8850
     levels = await execute_hardware_checks(
         radio,
         _template_for("tone_freq.set"),
@@ -181,8 +183,8 @@ async def test_encodable_tone_freq_still_runs_rmvr():
     )
     result = _flatten(levels)["tone_freq.set"]
     assert result.status is CheckStatus.PASS
-    assert tone_store["value"] == 88.5  # restored
-    assert 100.0 in tone_store["writes"]
+    assert tone_store["value"] == 8850  # restored exactly
+    assert tone_store["writes"] == [10000, 8850]
 
 
 # ---------------------------------------------------------------------------

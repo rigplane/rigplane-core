@@ -12,7 +12,10 @@ soup), asserting:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from rigplane.core.radio_protocol import Radio
 from rigplane.validation.hardware import execute_hardware_checks
@@ -67,10 +70,18 @@ def _bare_radio(capabilities: set[str]):
 
 
 def _stateful_value_radio(
-    *, capability: str, get_op: str, set_op: str, start, receiver_kw: bool = True
+    *,
+    capability: str,
+    get_op: str,
+    set_op: str,
+    start,
+    receiver_kw: bool = True,
+    ctcss_domain: object | None = None,
 ):
     """A fake radio whose ``get_op``/``set_op`` round-trip via a closure."""
     radio = _bare_radio({capability} if capability else set())
+    if ctcss_domain is not None:
+        radio.profile = SimpleNamespace(ctcss_tones_centihz=ctcss_domain)
     store = {"value": start, "writes": []}
 
     if receiver_kw:
@@ -145,33 +156,161 @@ async def test_tsql_set_rmvr_roundtrip():
     assert False in store["writes"]
 
 
-async def test_tone_freq_set_cycles_standard_ctcss_tone():
+async def test_tone_freq_set_cycles_profile_ctcss_domain():
+    domain = (7000, 11100, 25000)
+    radio, store = _stateful_value_radio(
+        capability="repeater_tone",
+        get_op="get_tone_freq",
+        set_op="set_tone_freq",
+        start=11100,
+        ctcss_domain=domain,
+    )
+    result = await _run(radio, "tone_freq.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 11100  # exact original restored
+    # The nonstandard synthetic domain proves selection is profile-derived,
+    # with no radio-model branch or private standard-tone table.
+    assert store["writes"] == [25000, 11100]
+    assert result.evidence["ctcss_tones_centihz"] == list(domain)
+
+
+async def test_tsql_freq_set_cycles_profile_ctcss_domain():
+    domain = (8850, 12300, 13180)
+    radio, store = _stateful_value_radio(
+        capability="tsql",
+        get_op="get_tsql_freq",
+        set_op="set_tsql_freq",
+        start=12300,
+        ctcss_domain=domain,
+    )
+    result = await _run(radio, "tsql_freq.set")
+    assert result.status is CheckStatus.PASS
+    assert store["value"] == 12300
+    assert store["writes"] == [13180, 12300]
+
+
+async def test_tone_freq_set_skips_without_usable_profile_domain():
+    radio, store = _stateful_value_radio(
+        capability="repeater_tone",
+        get_op="get_tone_freq",
+        set_op="set_tone_freq",
+        start=8850,
+        ctcss_domain=(8850,),
+    )
+
+    result = await _run(radio, "tone_freq.set")
+
+    assert result.status is CheckStatus.SKIP
+    assert "no usable ordered CTCSS" in str(result.evidence["reason"])
+    assert store["writes"] == []
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        pytest.param((8850, 10000, 10000), id="partial-duplicate"),
+        pytest.param((8850, 12300, 10000), id="nonascending"),
+        pytest.param((6600, 8850), id="out-of-range"),
+        pytest.param((8850, 10001), id="not-tenth-hz"),
+        pytest.param((8850, 100.0), id="non-int"),
+        pytest.param(None, id="missing-profile-domain"),
+        pytest.param([8850, 10000], id="wrong-container-list"),
+        pytest.param((8850, True), id="bool-element"),
+        pytest.param((8850, 25420), id="high-out-of-range"),
+    ],
+)
+async def test_tone_freq_set_never_writes_for_malformed_profile_domain(
+    domain: object | None,
+):
+    radio, store = _stateful_value_radio(
+        capability="repeater_tone",
+        get_op="get_tone_freq",
+        set_op="set_tone_freq",
+        start=8850,
+        ctcss_domain=domain,
+    )
+
+    result = await _run(radio, "tone_freq.set")
+
+    assert result.status is CheckStatus.SKIP
+    assert "no usable ordered CTCSS" in str(result.evidence["reason"])
+    assert store["writes"] == []
+
+
+async def test_tone_freq_set_never_writes_value_outside_profile_domain():
+    radio, store = _stateful_value_radio(
+        capability="repeater_tone",
+        get_op="get_tone_freq",
+        set_op="set_tone_freq",
+        start=10000,
+        ctcss_domain=(8850, 12300),
+    )
+
+    result = await _run(radio, "tone_freq.set")
+
+    assert result.status is CheckStatus.SKIP
+    assert result.evidence["original"] == 10000
+    assert "outside declared settable domain" in str(result.evidence["reason"])
+    assert store["writes"] == []
+
+
+async def test_tone_freq_set_rejects_legacy_float_without_unit_shim():
     radio, store = _stateful_value_radio(
         capability="repeater_tone",
         get_op="get_tone_freq",
         set_op="set_tone_freq",
         start=88.5,
+        ctcss_domain=(8850, 12300),
     )
+
     result = await _run(radio, "tone_freq.set")
-    assert result.status is CheckStatus.PASS
-    assert store["value"] == 88.5  # restored
-    # The mutated value must be a DIFFERENT standard CTCSS tone.
-    changed = [v for v in store["writes"] if v != 88.5]
-    assert changed and changed[0] == 100.0
+
+    assert result.status is CheckStatus.SKIP
+    assert result.evidence["original"] == 88.5
+    assert store["writes"] == []
 
 
-async def test_tsql_freq_set_cycles_standard_ctcss_tone():
+def _ctcss_readback_offset_radio(*, changed_offset: int, restored_offset: int):
     radio, store = _stateful_value_radio(
-        capability="tsql",
-        get_op="get_tsql_freq",
-        set_op="set_tsql_freq",
-        start=123.0,
+        capability="repeater_tone",
+        get_op="get_tone_freq",
+        set_op="set_tone_freq",
+        start=8850,
+        ctcss_domain=(8850, 10000),
     )
-    result = await _run(radio, "tsql_freq.set")
-    assert result.status is CheckStatus.PASS
-    assert store["value"] == 123.0
-    changed = [v for v in store["writes"] if v != 123.0]
-    assert changed and changed[0] == 88.5
+
+    async def _get(receiver: int = 0) -> int:
+        if len(store["writes"]) == 1:
+            return store["value"] + changed_offset
+        if len(store["writes"]) >= 2:
+            return store["value"] + restored_offset
+        return store["value"]
+
+    radio.get_tone_freq = AsyncMock(side_effect=_get)
+    return radio, store
+
+
+async def test_tone_freq_changed_readback_one_centihz_off_fails_exact_comparison():
+    radio, store = _ctcss_readback_offset_radio(changed_offset=1, restored_offset=0)
+
+    result = await _run(radio, "tone_freq.set")
+
+    assert result.status is CheckStatus.FAIL
+    assert result.evidence["readback"] == 10001
+    assert result.evidence["restored"] is True
+    assert store["value"] == 8850
+
+
+async def test_tone_freq_restore_readback_one_centihz_off_fails_exact_comparison():
+    radio, store = _ctcss_readback_offset_radio(changed_offset=0, restored_offset=1)
+
+    result = await _run(radio, "tone_freq.set")
+
+    assert result.status is CheckStatus.FAIL
+    assert result.evidence["readback"] == 10000
+    assert result.evidence["restore_readback"] == 8851
+    assert result.evidence["restored"] is False
+    assert store["value"] == 8850
 
 
 async def test_tone_check_unsupported_when_radio_lacks_op():

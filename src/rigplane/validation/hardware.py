@@ -1328,7 +1328,7 @@ async def _read_modify_verify_restore(
     raises. The original is restored even if the write or readback failed.
 
     When ``restorable`` is given and rejects the original value (it is outside
-    the control's settable band, so it could never be written back), the check
+    the control's settable domain, so it could never be written back), the check
     SKIPs BEFORE any write — a non-destructive harness must never mutate the
     radio to a state it cannot restore from (MOR-659).
     """
@@ -1345,8 +1345,8 @@ async def _read_modify_verify_restore(
             evidence={
                 "original": original,
                 "reason": (
-                    "current value outside settable range; not mutated to "
-                    "keep the run non-destructive"
+                    "current value outside declared settable domain; not "
+                    "mutated to keep the run non-destructive"
                 ),
             },
         )
@@ -2232,7 +2232,6 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     # fallback happens to equal this same constant — a coincidence of the
     # chosen value, not a shared code path.
     ValueRule.AGC_FLIP: int(AgcMode.FAST),
-    ValueRule.TONE_FREQ_CYCLE: 88.5,
     ValueRule.VFO_AB_FLIP: "A",
     ValueRule.KEY_SPEED_WPM: 20,
     # T11 / MOR-646 — scope controls: index 1 and edge 1 are valid for every
@@ -2277,9 +2276,6 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
         int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
     ),
     ValueRule.BUMP_HZ: lambda v: v + 100,
-    # MOR-642..645 command-coverage families.
-    # Flip between two standard CTCSS tones (Hz).
-    ValueRule.TONE_FREQ_CYCLE: lambda f: 100.0 if float(f) == 88.5 else 88.5,
     # VFO slot select: "A" <-> "B".
     ValueRule.VFO_AB_FLIP: lambda s: "B" if str(s).upper() == "A" else "A",
     # CW keyer speed in WPM (real range 6-48): pick a DIFFERENT in-range value.
@@ -2310,17 +2306,64 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
 }
 
 # Restore-safety predicates (MOR-659): when the CURRENT value of an RMVR
-# control is outside the encoder's settable band, the check must SKIP without
-# writing — a test value could never be restored from. Bounds mirror the real
-# encoder: ``commands/tone.py::_encode_tone_freq`` (67.0-254.1 Hz, shared by
-# ``set_tone_freq`` and ``set_tsql_freq``). The live IC-7610 read back 16.5 Hz
-# (tone not configured), which aborted an entire validation run.
+# control is outside its settable domain, the check must SKIP without writing
+# — a test value could never be restored from.
 _VALUE_RULE_RESTORABLE: dict[str, Callable[[Any], bool]] = {
-    ValueRule.TONE_FREQ_CYCLE: lambda v: 67.0 <= float(v) <= 254.1,
     # MOR-672 — only the valid ``CT`` SQL-type codes (0=off / 1=TONE / 2=TSQL)
     # are restorable; an out-of-range read must SKIP rather than write.
     ValueRule.SQL_TYPE_CYCLE: lambda v: 0 <= int(v) <= 2,
 }
+
+_CTCSS_TONE_MIN_CENTIHZ = 6700
+_CTCSS_TONE_MAX_CENTIHZ = 25410
+
+
+def _declared_ctcss_tones_centihz(radio: Radio) -> tuple[int, ...] | None:
+    """Return the active profile's exact ordered CTCSS domain, if usable.
+
+    The profile tuple is the sole legal-value authority. The validation
+    harness deliberately does not fall back to an encoder range, model name,
+    or a private copy of the standard tone table: without at least two exact
+    integer centiHz values it cannot perform a safe cycle.
+    """
+    profile = getattr(radio, "profile", None)
+    domain = getattr(profile, "ctcss_tones_centihz", None)
+    if (
+        not isinstance(domain, tuple)
+        or len(domain) < 2
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) for value in domain
+        )
+    ):
+        return None
+    typed_domain = cast(tuple[int, ...], domain)
+    if (
+        len(set(typed_domain)) != len(typed_domain)
+        or any(left >= right for left, right in zip(typed_domain, typed_domain[1:]))
+        or any(
+            value < _CTCSS_TONE_MIN_CENTIHZ
+            or value > _CTCSS_TONE_MAX_CENTIHZ
+            or value % 10 != 0
+            for value in typed_domain
+        )
+    ):
+        return None
+    return typed_domain
+
+
+def _next_ctcss_tone_centihz(domain: tuple[int, ...], current: int) -> int:
+    """Select the next ordered profile value after *current*.
+
+    Callers first prove that *current* is an exact member of *domain*. Cycling
+    by profile order is deterministic and preserves any provider-index
+    semantics carried by that order without exposing the index here.
+    """
+    start = domain.index(current)
+    for offset in range(1, len(domain) + 1):
+        candidate = domain[(start + offset) % len(domain)]
+        if candidate != current:
+            return candidate
+    raise ValueError("CTCSS domain has no value different from the current tone")
 
 
 async def _set_and_observe(
@@ -2466,21 +2509,47 @@ async def _check_from_spec(
                     "reason": f"radio is missing get/set op for {entry.check_id}"
                 },
             )
-        make_changed = _VALUE_RULE_FNS.get(spec.value_rule)
-        if make_changed is None:
-            return _base_result(
-                entry,
-                CheckStatus.UNSUPPORTED,
-                evidence={
-                    "reason": f"value_rule {spec.value_rule!r} not supported by generic handler"
-                },
-            )
         restorable = _VALUE_RULE_RESTORABLE.get(spec.value_rule)
         extra_evidence: dict[str, object] = {
             "handler": "generic",
             "value_rule": str(spec.value_rule),
             "kind": str(spec.kind),
         }
+        if spec.value_rule == ValueRule.TONE_FREQ_CYCLE:
+            domain = _declared_ctcss_tones_centihz(radio)
+            if domain is None:
+                return _base_result(
+                    entry,
+                    CheckStatus.SKIP,
+                    evidence={
+                        "reason": (
+                            "active radio profile has no usable ordered CTCSS "
+                            "centiHz domain; refusing to guess a probe value"
+                        )
+                    },
+                )
+            make_changed = lambda current: _next_ctcss_tone_centihz(  # noqa: E731
+                domain, current
+            )
+            restorable = lambda current: (  # noqa: E731
+                isinstance(current, int)
+                and not isinstance(current, bool)
+                and current in domain
+            )
+            extra_evidence["ctcss_tones_centihz"] = list(domain)
+        else:
+            make_changed = _VALUE_RULE_FNS.get(spec.value_rule)
+            if make_changed is None:
+                return _base_result(
+                    entry,
+                    CheckStatus.UNSUPPORTED,
+                    evidence={
+                        "reason": (
+                            f"value_rule {spec.value_rule!r} not supported by "
+                            "generic handler"
+                        )
+                    },
+                )
         # MOR-1547 — AGC_FLIP must derive from the connected radio's own
         # declared ``[agc] modes`` domain instead of the hardcoded IC-7610
         # SLOW/FAST fallback in ``_VALUE_RULE_FNS`` above. Unreachable for
@@ -2498,6 +2567,11 @@ async def _check_from_spec(
         equal: Callable[[Any, Any], bool] = (
             _tolerant_equal(spec.tolerance) if spec.tolerance else _default_equal
         )
+        if spec.value_rule == ValueRule.TONE_FREQ_CYCLE:
+            # Exact integer centiHz is the public/provider contract. A 1
+            # centiHz discrepancy is not quantization noise and must fail both
+            # changed-value verification and exact-original restoration.
+            equal = _default_equal
         if spec.value_rule == ValueRule.STEP_LEVEL_255:
             lo, hi = _resolve_level_range(radio, entry.check_id)
             make_changed = _range_aware_level_nudge(lo, hi)
