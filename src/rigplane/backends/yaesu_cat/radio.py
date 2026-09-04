@@ -2737,9 +2737,7 @@ class YaesuCatRadio:
             return
         chunk_size = 24
         for i in range(0, len(text), chunk_size):
-            await self.send_cw(
-                " ", text[i : i + chunk_size], is_current=is_current
-            )
+            await self.send_cw(" ", text[i : i + chunk_size], is_current=is_current)
 
     async def stop_cw_text(self) -> None:
         """Stop CW sending by clearing the keyer buffer."""
