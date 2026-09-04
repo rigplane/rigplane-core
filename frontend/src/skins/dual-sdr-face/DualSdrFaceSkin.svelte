@@ -1,5 +1,6 @@
 <script lang="ts">
   import { runtime } from '$lib/runtime/frontend-runtime';
+  import StatusBar from '../../components-v2/layout/StatusBar.svelte';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import DualSdrFace from './DualSdrFace.svelte';
@@ -26,4 +27,5 @@
   <DualSdrFace {view} scopeSource={hardwareScope} />
 {/snippet}
 
+<StatusBar />
 <SemanticRadioSurfaces {readonlyDisplay} />
