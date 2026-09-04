@@ -57,7 +57,7 @@ const h = vi.hoisted(() => ({
 vi.mock('$lib/stores/managed-transmit.svelte', () => ({
   managedTransmitSnapshot: () => null, managedTransmitIsStale: () => true,
   managedTransmitRemainingMs: () => null, refreshManagedTransmit: vi.fn(async () => {}),
-  invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
+  invalidateManagedTransmit: vi.fn(), setManagedTransmitTot: vi.fn(async () => {}), submitManagedTransmit: h.submit,
 }));
 vi.mock('$lib/runtime/adapters/tx-adapter', () => ({
   getTxAudioControl: () => ({

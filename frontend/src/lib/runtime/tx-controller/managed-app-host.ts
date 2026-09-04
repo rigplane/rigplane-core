@@ -11,6 +11,7 @@ export type ManagedAppTxController = Readonly<{
   pttOff(): void;
   transmitOn(): void;
   forceOff(): void;
+  setTot(configuredSeconds: number | null): Promise<void>;
 }>;
 export type ManagedAppTxHost = Readonly<{
   refreshAuthority(): void;
@@ -47,6 +48,9 @@ export function provideManagedAppTxHost(bindings: ManagedAppTxHostBindings): Man
     pttOff: () => { if (!disposed) void controller.pttOff(); },
     transmitOn: () => { if (!disposed) controller.transmitOn(); },
     forceOff: () => { if (!disposed) void controller.forceOff(); },
+    setTot: (configuredSeconds) => disposed
+      ? Promise.resolve()
+      : controller.setTot(configuredSeconds),
   });
   let offSession = noop;
   let offBarrier = noop;

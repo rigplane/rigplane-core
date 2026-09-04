@@ -13,6 +13,7 @@ describe('ManagedAppTxHarness', () => {
     harness.controller.pttOff();
     harness.controller.transmitOn();
     harness.controller.forceOff();
+    void harness.controller.setTot(240);
 
     expect(JSON.stringify(harness.controller.snapshot())).toBe(before);
     expect(harness.controller.snapshot()).toBe(snapshot);
@@ -22,6 +23,7 @@ describe('ManagedAppTxHarness', () => {
       { transport: 'ws', operation: 'ptt_off' },
       { transport: 'http', operation: 'transmit_on' },
       { transport: 'http', operation: 'force_off' },
+      { transport: 'http', operation: 'set_tot', configuredSeconds: 240 },
     ]);
     off();
   });
@@ -30,7 +32,7 @@ describe('ManagedAppTxHarness', () => {
     const harness = new ManagedAppTxHarness();
 
     expect(harness.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' })).toMatchObject({
-      phase: 'idle', intent: null, radioTx: 'off', fresh: true,
+      phase: 'idle', intent: null, radioTx: 'off', fresh: true, configuredSeconds: null,
     });
     expect(harness.emitServerSnapshot({ intent: 'ptt', observedPtt: 'on', remainingMs: 2500 })).toMatchObject({
       phase: 'active', intent: 'momentary', radioTx: 'on', remainingMs: 2500,
@@ -68,7 +70,7 @@ describe('ManagedAppTxHarness', () => {
     expect(Object.isFrozen(harness.controller)).toBe(true);
 
     expect(Object.keys(harness.controller).sort()).toEqual([
-      'forceOff', 'pttOff', 'pttOn', 'snapshot', 'subscribe', 'transmitOn',
+      'forceOff', 'pttOff', 'pttOn', 'setTot', 'snapshot', 'subscribe', 'transmitOn',
     ]);
   });
 });

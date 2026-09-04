@@ -12,6 +12,9 @@
   } from '$lib/runtime/adapters/mod-input-auto.svelte';
   import { t } from '$lib/i18n';
   import ModInputTxWarning from './ModInputTxWarning.svelte';
+  import ManagedTotControl from '../controls/ManagedTotControl.svelte';
+
+  let { showManagedTotControl = false }: { showManagedTotControl?: boolean } = $props();
 
   const handlers = getTxHandlers();
   let p = $derived(deriveTxProps());
@@ -154,12 +157,9 @@
     {#if fault}
       <div class="tx-error" data-testid="tx-fault" data-fault={fault}>TX FAULT: {fault}</div>
     {/if}
-    {#if txState.remainingMs !== null}
-      <div class="tx-countdown" data-testid="tx-countdown">
-        TOT {Math.ceil(txState.remainingMs / 1000)}s
-      </div>
+    {#if showManagedTotControl}
+      <ManagedTotControl />
     {/if}
-
     <!-- MOR-617: warn when TX was keyed with a non-LAN MOD input -->
     <ModInputTxWarning />
 

@@ -6,6 +6,10 @@ type Listener = (state: Readonly<ManagedTxState>) => void;
 type TraceEvent = Readonly<{
   transport: 'ws' | 'http';
   operation: 'ptt_on' | 'ptt_off' | 'transmit_on' | 'force_off';
+}> | Readonly<{
+  transport: 'http';
+  operation: 'set_tot';
+  configuredSeconds: number | null;
 }>;
 
 export type ManagedAppTxServerSnapshot = Readonly<{
@@ -19,12 +23,14 @@ export type ManagedAppTxServerSnapshot = Readonly<{
     attemptId: string;
   }> | null;
   remainingMs?: number | null;
+  configuredSeconds?: number | null;
   stale?: boolean;
 }>;
 
 const RX: ManagedAppTxServerSnapshot = Object.freeze({
   intent: 'rx', observedPtt: 'off', releaseRequired: false,
-  lastError: null, lastActuation: null, remainingMs: null, stale: false,
+  lastError: null, lastActuation: null, remainingMs: null,
+  configuredSeconds: null, stale: false,
 });
 
 const copyInput = (input: ManagedAppTxServerSnapshot): ManagedAppTxServerSnapshot => Object.freeze({
@@ -34,6 +40,7 @@ const copyInput = (input: ManagedAppTxServerSnapshot): ManagedAppTxServerSnapsho
   lastError: input.lastError ?? null,
   lastActuation: input.lastActuation ?? null,
   remainingMs: input.remainingMs ?? null,
+  configuredSeconds: input.configuredSeconds ?? null,
   stale: input.stale ?? false,
 });
 
@@ -52,7 +59,7 @@ const documentFrom = (input: ManagedAppTxServerSnapshot): ManagedTransmitDocumen
       lastActuation: input.lastActuation ? { ...input.lastActuation } : null,
       abortErrors: [],
       tot: {
-        configuredSeconds: null,
+        configuredSeconds: input.configuredSeconds ?? null,
         active: input.remainingMs !== null && input.remainingMs !== undefined,
         remainingMs: input.remainingMs ?? null,
         expiresAt: null,
@@ -80,6 +87,12 @@ export class ManagedAppTxHarness {
       pttOff: () => this.record('ws', 'ptt_off'),
       transmitOn: () => this.record('http', 'transmit_on'),
       forceOff: () => this.record('http', 'force_off'),
+      setTot: (configuredSeconds) => {
+        this.events.push(Object.freeze({
+          transport: 'http', operation: 'set_tot', configuredSeconds,
+        }));
+        return Promise.resolve();
+      },
     });
   }
 
@@ -131,7 +144,10 @@ export class ManagedAppTxHarness {
     };
   }
 
-  private record(transport: TraceEvent['transport'], operation: TraceEvent['operation']): void {
+  private record(
+    transport: 'ws' | 'http',
+    operation: 'ptt_on' | 'ptt_off' | 'transmit_on' | 'force_off',
+  ): void {
     this.events.push(Object.freeze({ transport, operation }));
   }
 }

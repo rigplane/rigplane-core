@@ -1,7 +1,8 @@
 import { getTxAudioControl } from '$lib/runtime/adapters/tx-adapter';
 import {
   invalidateManagedTransmit, managedTransmitIsStale, managedTransmitSnapshot,
-  managedTransmitRemainingMs, refreshManagedTransmit, submitManagedTransmit,
+  managedTransmitRemainingMs, refreshManagedTransmit, setManagedTransmitTot,
+  submitManagedTransmit,
 } from '$lib/stores/managed-transmit.svelte';
 import { makeCommandId } from '$lib/types/protocol';
 import {
@@ -72,6 +73,7 @@ export function createManagedBrowserDependencies() {
     invalidate: invalidateManagedTransmit,
     sendPtt,
     submit: submitManagedTransmit,
+    setTot: setManagedTransmitTot,
     startAudio: () => disposed
       ? Promise.resolve('TX browser dependencies disposed')
       : audio.startManagedTx(),

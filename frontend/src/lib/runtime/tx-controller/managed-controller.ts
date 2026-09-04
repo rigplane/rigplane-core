@@ -10,6 +10,7 @@ export interface ManagedTxDependencies {
   invalidate(): void;
   sendPtt(operation: PttOperation): Promise<Outcome>;
   submit(operation: ManagedOperation): Promise<Outcome>;
+  setTot(configuredSeconds: number | null): Promise<void>;
   startAudio(): Promise<string | null>;
   stopLocalAudio(): void;
   onAudioDied(handler: () => void): () => void;
@@ -81,6 +82,21 @@ export class ManagedTxController {
     this.#forceOffInFlight = this.#forceOff();
     try { await this.#forceOffInFlight; }
     finally { this.#forceOffInFlight = null; }
+  }
+
+  async setTot(configuredSeconds: number | null): Promise<void> {
+    if (configuredSeconds !== null
+      && (!Number.isInteger(configuredSeconds) || configuredSeconds <= 0)) {
+      throw new RangeError('Managed TOT must be a positive integer or null');
+    }
+    try {
+      await this.dependencies.setTot(configuredSeconds);
+    } catch (error) {
+      this.dependencies.invalidate();
+      this.#publish();
+      throw error;
+    }
+    this.#publish();
   }
 
   async #forceOff(): Promise<void> {

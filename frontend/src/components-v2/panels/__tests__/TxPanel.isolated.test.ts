@@ -110,11 +110,11 @@ import txPanelSource from '../TxPanel.svelte?raw';
 let tx: ManagedAppTxHarness;
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(overrides?: Partial<typeof mockProps>) {
+function mountPanel(overrides?: Partial<typeof mockProps>, showManagedTotControl = false) {
   if (overrides) Object.assign(mockProps, overrides);
   const t = document.createElement('div');
   document.body.appendChild(t);
-  const component = mount(TxPanel, { target: t });
+  const component = mount(TxPanel, { target: t, props: { showManagedTotControl } });
   flushSync();
   components.push(component);
   return t;
@@ -159,6 +159,15 @@ afterEach(() => {
 });
 
 describe('panel structure', () => {
+  it('mounts the managed TOT fallback only when explicitly requested', () => {
+    let t = mountPanel();
+    expect(t.querySelector('[data-testid="managed-tot-control"]')).toBeNull();
+    unmount(components.pop()!);
+
+    t = mountPanel(undefined, true);
+    expect(t.querySelector('[data-testid="managed-tot-control"]')).not.toBeNull();
+  });
+
   it('renders managed TX unknown instead of legacy RX', () => {
     tx.emitStale();
     const t = mountPanel();
