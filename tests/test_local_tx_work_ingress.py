@@ -135,7 +135,9 @@ async def test_positive_tuner_rejection_never_calls_runner_radio_or_queue() -> N
 
 
 @pytest.mark.asyncio
-async def test_positive_tuner_without_runner_fails_closed_without_queue_fallback() -> None:
+async def test_positive_tuner_without_runner_fails_closed_without_queue_fallback() -> (
+    None
+):
     radio = _radio(CAP_TUNER)
     authority = _Authority()
     handler = _handler(radio, authority=authority)

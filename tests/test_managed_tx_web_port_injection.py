@@ -56,6 +56,15 @@ class _WebSocket:
         await asyncio.Event().wait()
 
 
+class _DataChannel:
+    def __init__(self) -> None:
+        self.label = "control"
+        self.handlers: dict[str, object] = {}
+
+    def on(self, event: str, callback: object) -> None:
+        self.handlers[event] = callback
+
+
 async def _cw_request(server: WebServer, path: str, body: bytes) -> None:
     reader = asyncio.StreamReader()
     reader.feed_data(body)
@@ -103,7 +112,7 @@ async def test_control_seats_receive_the_composed_port_identity(
     manager = server._webrtc_session_manager()  # noqa: SLF001
     assert manager._managed_tx_port is port  # noqa: SLF001
     session = SimpleNamespace(pc=object(), tasks=[])
-    manager._dispatch_channel(session, SimpleNamespace(label="control"))  # noqa: SLF001
+    manager._dispatch_channel(session, _DataChannel())  # noqa: SLF001
     await asyncio.gather(*session.tasks)
 
     assert _ControlHandlerCapture.ports == [port, port, port, port, port]

@@ -1767,7 +1767,7 @@ class ControlHandler:
             intent = command_intent_from_request(
                 "set_tuner_status",
                 {"value": value},
-                source="web",
+                source="websocket",
                 session_id=self._session_id,
             )
             if not await port.authority.admit_managed_write(intent):
@@ -1778,9 +1778,7 @@ class ControlHandler:
             if runner is None:
                 raise RuntimeError("managed local TX runner is unavailable")
             outcome = await runner.run(
-                lambda is_current: radio.set_tuner_status(
-                    value, is_current=is_current
-                )
+                lambda is_current: radio.set_tuner_status(value, is_current=is_current)
             )
             if outcome is False:
                 raise CommandError("tuner command was rejected by the backend")
@@ -1795,9 +1793,7 @@ class ControlHandler:
             if runner is None:
                 raise RuntimeError("managed local TX runner is unavailable")
             outcome = await runner.run(
-                lambda is_current: radio.set_tuner_status(
-                    value, is_current=is_current
-                )
+                lambda is_current: radio.set_tuner_status(value, is_current=is_current)
             )
             if outcome is False:
                 raise CommandError("tuner command was rejected by the backend")
