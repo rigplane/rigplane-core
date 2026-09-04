@@ -2259,14 +2259,20 @@ class YaesuCatRadio:
         """Set CW spot tone state."""
         await self._write("set_cw_spot", state="1" if state else "0")
 
-    async def send_cw(self, msg_type: str, mem: str) -> None:
+    async def send_cw(
+        self,
+        msg_type: str,
+        mem: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> None:
         """Send a CW message (KY command).
 
         Args:
             msg_type: Message type character.
             mem: CW message text to send.
         """
-        await self._write("send_cw", type=msg_type, mem=mem)
+        await self._write("send_cw", type=msg_type, mem=mem, is_current=is_current)
 
     async def read_break_in_delay(self) -> int:
         """Read CW break-in delay in ms (30–3000) without mutating legacy state."""
@@ -2537,9 +2543,22 @@ class YaesuCatRadio:
         """
         return await self.read_tuner()
 
-    async def set_tuner(self, state: int, src: int = 0, typ: int = 0) -> None:
+    async def set_tuner(
+        self,
+        state: int,
+        src: int = 0,
+        typ: int = 0,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> None:
         """Set antenna tuner (AC). state: 0=OFF, 1=ON, 2=tune."""
-        await self._write("set_tuner", src=str(src), type=str(typ), state=str(state))
+        await self._write(
+            "set_tuner",
+            src=str(src),
+            type=str(typ),
+            state=str(state),
+            is_current=is_current,
+        )
 
     # -- Contour / S-DX (CO) -----------------------------------------------
 
@@ -2696,11 +2715,15 @@ class YaesuCatRadio:
         """AdvancedControlCapable alias. Returns tuner state (0=OFF, 1=ON, 2=tuning)."""
         return await self.get_tuner()
 
-    async def set_tuner_status(self, value: int) -> None:
+    async def set_tuner_status(
+        self, value: int, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         """AdvancedControlCapable alias."""
-        await self.set_tuner(value)
+        await self.set_tuner(value, is_current=is_current)
 
-    async def send_cw_text(self, text: str) -> None:
+    async def send_cw_text(
+        self, text: str, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         """Send CW text via keyer (KY command), split into 24-character chunks.
 
         Uses ``send_cw(" ", text)`` — the space is the P1 type parameter
@@ -2710,11 +2733,13 @@ class YaesuCatRadio:
             text: CW text to send (A-Z, 0-9, punctuation).
         """
         if not text:
-            await self.send_cw(" ", "")
+            await self.send_cw(" ", "", is_current=is_current)
             return
         chunk_size = 24
         for i in range(0, len(text), chunk_size):
-            await self.send_cw(" ", text[i : i + chunk_size])
+            await self.send_cw(
+                " ", text[i : i + chunk_size], is_current=is_current
+            )
 
     async def stop_cw_text(self) -> None:
         """Stop CW sending by clearing the keyer buffer."""
