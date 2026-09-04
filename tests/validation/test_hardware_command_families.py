@@ -12,6 +12,7 @@ soup), asserting:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from rigplane.core.radio_protocol import Radio
@@ -117,6 +118,12 @@ async def _run(
 # T7 / MOR-642 — tone / TSQL
 # ---------------------------------------------------------------------------
 
+_SYNTHETIC_CTCSS_DOMAIN = (7310, 9470, 16620)
+
+
+def _attach_ctcss_profile(radio, domain=_SYNTHETIC_CTCSS_DOMAIN) -> None:
+    radio.profile = SimpleNamespace(ctcss_tones_centihz=domain)
+
 
 async def test_repeater_tone_set_rmvr_roundtrip():
     radio, store = _stateful_value_radio(
@@ -145,33 +152,60 @@ async def test_tsql_set_rmvr_roundtrip():
     assert False in store["writes"]
 
 
-async def test_tone_freq_set_cycles_standard_ctcss_tone():
+async def test_tone_freq_set_cycles_active_profile_domain():
     radio, store = _stateful_value_radio(
         capability="repeater_tone",
         get_op="get_tone_freq",
         set_op="set_tone_freq",
-        start=88.5,
+        start=7310,
     )
+    radio.model = "SYNTHETIC-NONSTANDARD"
+    _attach_ctcss_profile(radio)
     result = await _run(radio, "tone_freq.set")
     assert result.status is CheckStatus.PASS
-    assert store["value"] == 88.5  # restored
-    # The mutated value must be a DIFFERENT standard CTCSS tone.
-    changed = [v for v in store["writes"] if v != 88.5]
-    assert changed and changed[0] == 100.0
+    assert store["value"] == 7310  # restored
+    assert store["writes"] == [9470, 7310]
 
 
-async def test_tsql_freq_set_cycles_standard_ctcss_tone():
+async def test_tsql_freq_set_cycles_active_profile_domain():
     radio, store = _stateful_value_radio(
         capability="tsql",
         get_op="get_tsql_freq",
         set_op="set_tsql_freq",
-        start=123.0,
+        start=9470,
     )
+    radio.model = "A-DIFFERENT-SYNTHETIC-MODEL"
+    _attach_ctcss_profile(radio)
     result = await _run(radio, "tsql_freq.set")
     assert result.status is CheckStatus.PASS
-    assert store["value"] == 123.0
-    changed = [v for v in store["writes"] if v != 123.0]
-    assert changed and changed[0] == 88.5
+    assert store["value"] == 9470
+    assert store["writes"] == [7310, 9470]
+
+
+async def test_tone_freq_set_rejects_nonmember_before_write():
+    radio, store = _stateful_value_radio(
+        capability="repeater_tone",
+        get_op="get_tone_freq",
+        set_op="set_tone_freq",
+        start=8850,
+    )
+    _attach_ctcss_profile(radio)
+    result = await _run(radio, "tone_freq.set")
+    assert result.status is CheckStatus.SKIP
+    assert store["writes"] == []
+
+
+async def test_tsql_freq_set_rejects_malformed_domain_before_write():
+    radio, store = _stateful_value_radio(
+        capability="tsql",
+        get_op="get_tsql_freq",
+        set_op="set_tsql_freq",
+        start=7310,
+    )
+    _attach_ctcss_profile(radio, (7310, True))
+    result = await _run(radio, "tsql_freq.set")
+    assert result.status is CheckStatus.SKIP
+    assert store["writes"] == []
 
 
 async def test_tone_check_unsupported_when_radio_lacks_op():

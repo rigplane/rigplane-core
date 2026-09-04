@@ -54,11 +54,11 @@ def _make_frame(
     )
 
 
-def _make_radio_with_state() -> IcomRadio:
+def _make_radio_with_state(*, model: str = "IC-7610") -> IcomRadio:
     """IcomRadio with RadioState wired up for _update_radio_state_from_frame tests."""
     from test_civ_rx_coverage import MockTransport  # type: ignore[import]
 
-    r = IcomRadio("192.168.1.100", model="IC-7610")
+    r = IcomRadio("192.168.1.100", model=model)
     r._civ_transport = MockTransport()
     r._ctrl_transport = r._civ_transport
     r._connected = True
@@ -223,7 +223,7 @@ def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
     The legacy RadioState mirror was removed; the StateStore is the source of
     truth and the ReceiverState mirror stays at its default 0.
     """
-    r = _make_radio_with_state()
+    r = _make_radio_with_state(model="IC-9700")
     rs = r._radio_state
     # 88.5 Hz → [0x00, 0x08, 0x85]
     data = _bcd_tone_freq(0, 88, 5)
@@ -236,7 +236,7 @@ def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
 
 def test_civ_rx_0x1b_0x01_sets_tsql_freq_sub(tmp_path: object) -> None:
     """0x1B 0x01 with receiver=1 observes sub tsql_freq in centihz (MOR-451)."""
-    r = _make_radio_with_state()
+    r = _make_radio_with_state(model="IC-9700")
     rs = r._radio_state
     # 100.0 Hz → [0x00, 0x10, 0x00]
     data = _bcd_tone_freq(1, 0, 0)

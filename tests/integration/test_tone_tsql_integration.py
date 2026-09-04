@@ -59,13 +59,13 @@ _SUB_REPEATER_TSQL = 0x43
 
 _SETTLE = 0.05  # seconds: wait after fire-and-forget SET before GET
 
-# Standard CTCSS test frequencies (Hz)
-_FREQ_MIN = 67.0
-_FREQ_DEFAULT = 88.5
-_FREQ_MID_LO = 110.9
-_FREQ_MID_HI = 136.5
-_FREQ_MID_2 = 167.9
-_FREQ_MAX = 254.1
+# Standard CTCSS test frequencies (exact centiHz)
+_FREQ_MIN = 6700
+_FREQ_DEFAULT = 8850
+_FREQ_MID_LO = 11090
+_FREQ_MID_HI = 13650
+_FREQ_MID_2 = 16790
+_FREQ_MAX = 25410
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +83,8 @@ def _bcd_byte_decode(b: int) -> int:
     return ((b >> 4) & 0x0F) * 10 + (b & 0x0F)
 
 
-def _encode_tone_freq(freq_hz: float) -> bytes:
-    """Encode a CTCSS tone frequency to 3-byte BCD.
+def _encode_tone_freq(freq_centihz: int) -> bytes:
+    """Encode an exact-centiHz CTCSS tone frequency to 3-byte BCD.
 
     MOR-2091: the radio packs six BCD digits as
     [0][0][100Hz digit][10Hz digit][1Hz digit][0.1Hz digit] -- not
@@ -94,15 +94,15 @@ def _encode_tone_freq(freq_hz: float) -> bytes:
     tenths=1109 -> byte[0]=0x00, byte[1]=_bcd_byte(11)=0x11,
     byte[2]=_bcd_byte(9)=0x09.
     """
-    total_tenths = int(round(freq_hz * 10))
+    total_tenths = freq_centihz // 10
     return bytes([0x00, _bcd_byte(total_tenths // 100), _bcd_byte(total_tenths % 100)])
 
 
-def _decode_tone_freq(data: bytes) -> float:
-    """Decode 3-byte BCD to a CTCSS tone frequency in Hz. Inverse of
+def _decode_tone_freq(data: bytes) -> int:
+    """Decode 3-byte BCD to exact centiHz. Inverse of
     `_encode_tone_freq` above."""
     total_tenths = _bcd_byte_decode(data[1]) * 100 + _bcd_byte_decode(data[2])
-    return round(total_tenths / 10.0, 1)
+    return total_tenths * 10
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +145,8 @@ class ToneMockRadio(MockIcomRadio):
         super().__init__(**kwargs)
         self._repeater_tone: int = 0  # 0 = off, 1 = on
         self._repeater_tsql: int = 0  # 0 = off, 1 = on
-        self._tone_freq_hz: float = _FREQ_DEFAULT
-        self._tsql_freq_hz: float = _FREQ_DEFAULT
+        self._tone_freq_centihz: int = _FREQ_DEFAULT
+        self._tsql_freq_centihz: int = _FREQ_DEFAULT
 
     # ------------------------------------------------------------------
     # CI-V dispatch override
@@ -242,14 +242,14 @@ class ToneMockRadio(MockIcomRadio):
         to = from_addr
         frm = self._radio_addr
         if len(rest) >= 3:  # SET (3-byte BCD payload)
-            self._tone_freq_hz = _decode_tone_freq(rest[:3])
+            self._tone_freq_centihz = _decode_tone_freq(rest[:3])
             return self._civ_ack(to, frm)
         return self._civ_frame(
             to,
             frm,
             _CMD_TONE,
             sub=_SUB_TONE_FREQ,
-            data=_encode_tone_freq(self._tone_freq_hz),
+            data=_encode_tone_freq(self._tone_freq_centihz),
         )
 
     def _handle_tsql_freq(self, rest: bytes, from_addr: int) -> bytes:
@@ -257,14 +257,14 @@ class ToneMockRadio(MockIcomRadio):
         to = from_addr
         frm = self._radio_addr
         if len(rest) >= 3:  # SET (3-byte BCD payload)
-            self._tsql_freq_hz = _decode_tone_freq(rest[:3])
+            self._tsql_freq_centihz = _decode_tone_freq(rest[:3])
             return self._civ_ack(to, frm)
         return self._civ_frame(
             to,
             frm,
             _CMD_TONE,
             sub=_SUB_TSQL_FREQ,
-            data=_encode_tone_freq(self._tsql_freq_hz),
+            data=_encode_tone_freq(self._tsql_freq_centihz),
         )
 
 
@@ -449,7 +449,7 @@ class TestToneFrequency:
 
         result = await tone_radio.get_tone_freq()
         assert result == _FREQ_MIN
-        assert tone_mock._tone_freq_hz == _FREQ_MIN
+        assert tone_mock._tone_freq_centihz == _FREQ_MIN
 
     async def test_set_110_9_hz(self, tone_radio: IcomRadio) -> None:
         """Set tone frequency to 110.9 Hz."""
@@ -468,7 +468,7 @@ class TestToneFrequency:
 
         result = await tone_radio.get_tone_freq()
         assert result == _FREQ_MAX
-        assert tone_mock._tone_freq_hz == _FREQ_MAX
+        assert tone_mock._tone_freq_centihz == _FREQ_MAX
 
     async def test_multiple_freq_changes(self, tone_radio: IcomRadio) -> None:
         """Change tone frequency through all standard test values."""
@@ -483,11 +483,11 @@ class TestToneFrequency:
             await tone_radio.set_tone_freq(freq)
             await asyncio.sleep(_SETTLE)
             result = await tone_radio.get_tone_freq()
-            assert result == freq, f"Expected {freq} Hz, got {result} Hz"
+            assert result == freq, f"Expected {freq} centiHz, got {result} centiHz"
 
     async def test_freq_roundtrip_precision(self, tone_radio: IcomRadio) -> None:
         """BCD encoding/decoding preserves single-decimal precision."""
-        for freq in (67.0, 77.0, 88.5, 100.0, 110.9, 127.3, 167.9, 203.5, 254.1):
+        for freq in (6700, 7700, 8850, 10000, 11090, 12730, 16790, 20350, 25410):
             await tone_radio.set_tone_freq(freq)
             await asyncio.sleep(_SETTLE)
             result = await tone_radio.get_tone_freq()
@@ -516,7 +516,7 @@ class TestTSQLFrequency:
 
         result = await tone_radio.get_tsql_freq()
         assert result == _FREQ_MIN
-        assert tone_mock._tsql_freq_hz == _FREQ_MIN
+        assert tone_mock._tsql_freq_centihz == _FREQ_MIN
 
     async def test_set_110_9_hz(self, tone_radio: IcomRadio) -> None:
         """Set TSQL frequency to 110.9 Hz."""
@@ -535,7 +535,7 @@ class TestTSQLFrequency:
 
         result = await tone_radio.get_tsql_freq()
         assert result == _FREQ_MAX
-        assert tone_mock._tsql_freq_hz == _FREQ_MAX
+        assert tone_mock._tsql_freq_centihz == _FREQ_MAX
 
     async def test_multiple_freq_changes(self, tone_radio: IcomRadio) -> None:
         """Change TSQL frequency through all standard test values."""
@@ -550,7 +550,7 @@ class TestTSQLFrequency:
             await tone_radio.set_tsql_freq(freq)
             await asyncio.sleep(_SETTLE)
             result = await tone_radio.get_tsql_freq()
-            assert result == freq, f"Expected {freq} Hz, got {result} Hz"
+            assert result == freq, f"Expected {freq} centiHz, got {result} centiHz"
 
     async def test_tone_and_tsql_freq_independent(self, tone_radio: IcomRadio) -> None:
         """Tone and TSQL frequencies are stored independently."""
@@ -565,7 +565,7 @@ class TestTSQLFrequency:
 
     async def test_freq_roundtrip_precision(self, tone_radio: IcomRadio) -> None:
         """BCD encoding/decoding preserves single-decimal precision for TSQL."""
-        for freq in (67.0, 77.0, 88.5, 100.0, 110.9, 127.3, 167.9, 203.5, 254.1):
+        for freq in (6700, 7700, 8850, 10000, 11090, 12730, 16790, 20350, 25410):
             await tone_radio.set_tsql_freq(freq)
             await asyncio.sleep(_SETTLE)
             result = await tone_radio.get_tsql_freq()
@@ -583,21 +583,21 @@ class TestBcdCodec:
     @pytest.mark.parametrize(
         "freq",
         [
-            67.0,
-            77.0,
-            88.5,
-            100.0,
-            110.9,
-            127.3,
-            136.5,
-            167.9,
-            203.5,
-            254.1,
+            6700,
+            7700,
+            8850,
+            10000,
+            11090,
+            12730,
+            13650,
+            16790,
+            20350,
+            25410,
         ],
     )
-    def test_encode_decode_roundtrip(self, freq: float) -> None:
+    def test_encode_decode_roundtrip(self, freq: int) -> None:
         """encode → decode must recover the original frequency."""
         encoded = _encode_tone_freq(freq)
         assert len(encoded) == 3
         decoded = _decode_tone_freq(encoded)
-        assert decoded == freq, f"Roundtrip failed for {freq} Hz: got {decoded}"
+        assert decoded == freq, f"Roundtrip failed for {freq} centiHz: got {decoded}"
