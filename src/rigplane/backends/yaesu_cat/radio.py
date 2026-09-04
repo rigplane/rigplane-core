@@ -15,6 +15,8 @@ from ...audio import AudioPacket
 from ...audio.lan_stream import SYNTHETIC_RX_IDENT
 from ...command_spec import CatCommandSpec
 from ...runtime.callable_support import supports_callable
+from ...runtime.local_tx_work import LocalTxWorkRunner
+from ...runtime.managed_tx_fence import TxAbortFence
 from ...runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
@@ -201,6 +203,7 @@ class YaesuCatRadio:
         tx_device: str | None = None,
         audio_sample_rate: int = 48000,
         audio_driver: UsbAudioDriver | None = None,
+        tx_abort_fence: TxAbortFence | None = None,
     ) -> None:
         """Create a YaesuCatRadio instance.
 
@@ -212,6 +215,8 @@ class YaesuCatRadio:
             tx_device: USB audio output device name for TX audio playback.
             audio_sample_rate: Audio sample rate in Hz (default 48000).
             audio_driver: Optional pre-constructed UsbAudioDriver (for testing).
+            tx_abort_fence: Runtime-owned fence for local CW/tuner work. Calls
+                remain unmanaged when omitted.
         """
         self._config: RigConfig = _load_config(profile)
         self._profile_cache: RadioProfile | None = None
@@ -223,6 +228,9 @@ class YaesuCatRadio:
         self._opus_rx_user_callback: Callable[[AudioPacket | None], None] | None = None
         self._pcm_rx_user_callback: Callable[[bytes | None], None] | None = None
         self._audio_sample_rate = audio_sample_rate
+        self._local_tx_work = (
+            LocalTxWorkRunner(tx_abort_fence) if tx_abort_fence is not None else None
+        )
         if audio_driver is None:
             # Lazy import: avoids pulling rigplane.audio.backend (PortAudio,
             # numpy DSP) into top-level package import. PR #1200 / #1194.
@@ -2266,7 +2274,14 @@ class YaesuCatRadio:
             msg_type: Message type character.
             mem: CW message text to send.
         """
-        await self._write("send_cw", type=msg_type, mem=mem)
+        if not mem or self._local_tx_work is None:
+            await self._write("send_cw", type=msg_type, mem=mem)
+            return
+
+        async def write(is_current: Callable[[], bool]) -> None:
+            await self._write("send_cw", type=msg_type, mem=mem, is_current=is_current)
+
+        await self._local_tx_work.run(write)
 
     async def read_break_in_delay(self) -> int:
         """Read CW break-in delay in ms (30–3000) without mutating legacy state."""
@@ -2539,7 +2554,15 @@ class YaesuCatRadio:
 
     async def set_tuner(self, state: int, src: int = 0, typ: int = 0) -> None:
         """Set antenna tuner (AC). state: 0=OFF, 1=ON, 2=tune."""
-        await self._write("set_tuner", src=str(src), type=str(typ), state=str(state))
+        params = {"src": str(src), "type": str(typ), "state": str(state)}
+        if state == 0 or self._local_tx_work is None:
+            await self._write("set_tuner", **params)
+            return
+
+        async def write(is_current: Callable[[], bool]) -> None:
+            await self._write("set_tuner", is_current=is_current, **params)
+
+        await self._local_tx_work.run(write)
 
     # -- Contour / S-DX (CO) -----------------------------------------------
 
@@ -2713,8 +2736,21 @@ class YaesuCatRadio:
             await self.send_cw(" ", "")
             return
         chunk_size = 24
-        for i in range(0, len(text), chunk_size):
-            await self.send_cw(" ", text[i : i + chunk_size])
+        if self._local_tx_work is None:
+            for i in range(0, len(text), chunk_size):
+                await self.send_cw(" ", text[i : i + chunk_size])
+            return
+
+        async def write_chunks(is_current: Callable[[], bool]) -> None:
+            for i in range(0, len(text), chunk_size):
+                await self._write(
+                    "send_cw",
+                    type=" ",
+                    mem=text[i : i + chunk_size],
+                    is_current=is_current,
+                )
+
+        await self._local_tx_work.run(write_chunks)
 
     async def stop_cw_text(self) -> None:
         """Stop CW sending by clearing the keyer buffer."""
