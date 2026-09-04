@@ -14,12 +14,24 @@ __all__ = ["build_managed_tx_view"]
 
 
 def build_managed_tx_view(
-    projection: ManagedTxProjection,
+    projection: ManagedTxProjection | None,
     observed_ptt: ObservedPtt,
     *,
     sampled_at: datetime,
 ) -> dict[str, object]:
     """Serialize one authority snapshot and independent observed PTT evidence."""
+
+    sampled_at_text = _utc_milliseconds(sampled_at)
+    if projection is None:
+        return {
+            "schemaVersion": 1,
+            "sampledAt": sampled_at_text,
+            "managedTransmit": {
+                "status": "unavailable",
+                "reason": "authority_not_composed",
+            },
+            "txObservation": {"observedPtt": observed_ptt.value},
+        }
 
     state = projection.state
     has_deadline = state.tot_deadline_monotonic is not None
@@ -30,7 +42,6 @@ def build_managed_tx_view(
     remaining_ms = (
         None if not active else max(0, floor(projection.remaining_tot_seconds * 1000))
     )
-    sampled_at_text = _utc_milliseconds(sampled_at)
     return {
         "schemaVersion": 1,
         "sampledAt": sampled_at_text,

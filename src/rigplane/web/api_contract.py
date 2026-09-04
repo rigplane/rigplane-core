@@ -76,6 +76,24 @@ STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
     },
     {
         "method": "GET",
+        "path": "/api/v1/managed-transmit",
+        "purpose": "managed transmit authority snapshot",
+        "auth": "bearer",
+    },
+    {
+        "method": "POST",
+        "path": "/api/v1/managed-transmit/command",
+        "purpose": "submit latched transmit or force-off intent",
+        "auth": "bearer",
+    },
+    {
+        "method": "PUT",
+        "path": "/api/v1/managed-transmit/tot",
+        "purpose": "update managed transmit time-out",
+        "auth": "bearer",
+    },
+    {
+        "method": "GET",
         "path": "/api/v1/bridge",
         "purpose": "audio bridge status",
         "auth": "bearer",
@@ -188,6 +206,25 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "filters",
             "audioConfig",
             "webrtc",
+        )
+    },
+    "/api/v1/managed-transmit": {
+        "required": (
+            "schemaVersion",
+            "sampledAt",
+            "managedTransmit",
+            "txObservation",
+        )
+    },
+    "/api/v1/managed-transmit/command": {
+        "required": ("ok", "operation", "result")
+    },
+    "/api/v1/managed-transmit/tot": {
+        "required": (
+            "schemaVersion",
+            "sampledAt",
+            "managedTransmit",
+            "txObservation",
         )
     },
     "/api/v1/commands": {"required": ("ok", "name", "result")},
