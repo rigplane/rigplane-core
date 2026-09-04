@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
@@ -463,6 +464,7 @@ from .._poller_types import (  # noqa: E402
     VfoEqualize,
     VfoSwap,
     canonicalize_level_command,
+    execute_command_queue_entry,
 )
 
 
@@ -785,7 +787,7 @@ class RadioPoller:
             )
 
     def _stage_tx_interlocked_entries(
-        self, entries: list[CommandQueueEntry]
+        self, entries: list[CommandQueueEntry], *, advance_held: bool = True
     ) -> list[CommandQueueEntry]:
         """Stage DEFER entries before advancing the existing held slot."""
         has_defer = self._deferred_tx_lane.pending is not None or any(
@@ -822,6 +824,8 @@ class RadioPoller:
                 self._terminate_deferred_entry(previous, defer_result.outcome)
             self._emit_deferred_entry_held(entry, expires_at=defer_result.expires_at)
 
+        if not advance_held:
+            return ready
         observe_result = self._deferred_tx_lane.observe(rf_state=rf_state, now=now)
         if (
             observe_result is None
@@ -839,6 +843,9 @@ class RadioPoller:
         return ready
 
     async def _execute_queued_entry(self, entry: CommandQueueEntry) -> None:
+        await execute_command_queue_entry(entry, self._execute_queued_entry_action)
+
+    async def _execute_queued_entry_action(self, entry: CommandQueueEntry) -> None:
         # MOR-1884: the interlock seat lives at the head of ``_execute`` now,
         # so queued commands and uncommanded internal emits share one seat.
         await self._execute(
@@ -848,8 +855,6 @@ class RadioPoller:
             session_id=entry.session_id,
             command_service=entry.command_service,
         )
-        if entry.future is not None and not entry.future.done():
-            entry.future.set_result(None)
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
         """Derive a finite tuple window from this provider's expected cadence."""
@@ -1161,9 +1166,9 @@ class RadioPoller:
                 return resolve_radio_profile(model=raw_model)
         except KeyError:
             pass
-        if "dual_rx" in self._caps:
-            return resolve_radio_profile(model="IC-7610")
-        return resolve_radio_profile(model="IC-7300")
+        raise NotImplementedError(
+            "radio-poller unsupported: unknown profile-less radio"
+        )
 
     def _vfo_command_profile(self, command: str) -> RadioProfile:
         """Resolve the exact profile allowed to declare a VFO primitive."""
@@ -1703,6 +1708,27 @@ class RadioPoller:
         _backoff = 0.0
         _MAX_BACKOFF = 5.0  # max pause when radio is disconnected
 
+        def entries_for_turn() -> Iterator[CommandQueueEntry]:
+            for _ in range(self._queue.pending_count):
+                entry = self._queue.take_entry()
+                if entry is None:
+                    break
+                yield from self._stage_tx_interlocked_entries(
+                    [entry], advance_held=False
+                )
+            yield from self._stage_tx_interlocked_entries([])
+
+        async def execute_entry(entry: CommandQueueEntry) -> None:
+            try:
+                await self._execute_queued_entry_action(entry)
+            except Exception as exc:
+                self._mark_queued_command_failed(
+                    entry,
+                    exc,
+                    timed_out=isinstance(exc, (TimeoutError, RigplaneTimeoutError)),
+                )
+                raise
+
         # Initial state is now fetched by CoreRadio._fetch_initial_state()
         # during connect(). Just signal readiness immediately.
         self._scope_enable_deferred = False
@@ -1747,49 +1773,33 @@ class RadioPoller:
                     await asyncio.sleep(self._adaptive_gap())
                     continue
 
-                # 1. Drain command queue (fire-and-forget writes)
-                queued = self._queue.drain_entries() if self._queue.has_commands else []
-                ready = self._stage_tx_interlocked_entries(queued)
-                if ready:
-                    for entry in ready:
-                        cmd = entry.command
-                        if entry.future is not None and entry.future.cancelled():
-                            logger.debug(
-                                "radio-poller: skipping cancelled queued cmd: %s",
-                                type(cmd).__name__,
-                            )
-                            continue
-                        try:
-                            await self._execute_queued_entry(entry)
-                            _backoff = 0.0
-                        except (TimeoutError, RigplaneTimeoutError) as exc:
-                            self._mark_queued_command_failed(
-                                entry,
-                                exc,
-                                timed_out=True,
-                            )
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            logger.warning(
-                                "radio-poller: cmd timeout: %s",
-                                type(cmd).__name__,
-                                exc_info=True,
-                            )
-                        except (ConnectionError, RadioConnectionError) as exc:
-                            self._mark_queued_command_failed(entry, exc)
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
-                        except Exception as exc:
-                            self._mark_queued_command_failed(entry, exc)
-                            if entry.future is not None and not entry.future.done():
-                                entry.future.set_exception(exc)
-                            logger.warning(
-                                "radio-poller: cmd error: %s",
-                                type(cmd).__name__,
-                                exc_info=True,
-                            )
-                        await asyncio.sleep(self._adaptive_gap())
+                # 1. Claim a finite live-pending turn, then release held work.
+                for entry in entries_for_turn():
+                    cmd = entry.command
+                    if entry.future is not None and entry.future.cancelled():
+                        logger.debug(
+                            "radio-poller: skipping cancelled queued cmd: %s",
+                            type(cmd).__name__,
+                        )
+                        continue
+                    try:
+                        await execute_command_queue_entry(entry, execute_entry)
+                        _backoff = 0.0
+                    except (TimeoutError, RigplaneTimeoutError):
+                        logger.warning(
+                            "radio-poller: cmd timeout: %s",
+                            type(cmd).__name__,
+                            exc_info=True,
+                        )
+                    except (ConnectionError, RadioConnectionError):
+                        _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                    except Exception:
+                        logger.warning(
+                            "radio-poller: cmd error: %s",
+                            type(cmd).__name__,
+                            exc_info=True,
+                        )
+                    await asyncio.sleep(self._adaptive_gap())
 
                 # If disconnected, back off to avoid log spam
                 if _backoff > 0:
@@ -3686,6 +3696,7 @@ class RadioPoller:
                 report_sent=self._report_acquisition_sent,
                 report_expiry=self._report_acquisition_expiry,
                 on_forget=self._forget_acquisition_grace,
+                claimant=self,
             )
             self._acquisition_drain = drain
         return drain

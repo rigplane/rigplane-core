@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
 from types import MappingProxyType
@@ -69,11 +69,12 @@ class DispatchQueue(Protocol):
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
-    ) -> None: ...
+    ) -> object: ...
 
 
 Binder = Callable[[Mapping[str, Any]], dict[str, Any]]
 TargetBuilder = Callable[[Mapping[str, Any]], FieldPath]
+ExpectationProjector = Callable[[Any, Mapping[str, Any]], dict[str, Any]]
 
 
 class DescriptorTxPolicy(StrEnum):
@@ -93,9 +94,11 @@ class CommandDescriptor:
     target: TargetBuilder
     argument_names: tuple[str, ...]
     tx_policy: DescriptorTxPolicy
+    public_names: tuple[str, ...]
     timeout: float = 10.0
     queue_policy: Literal["ordered", "coalesced"] = "ordered"
     receiver_aware: bool = False
+    project_expectation: ExpectationProjector | None = None
 
     def result(self, intent: CommandIntent) -> dict[str, Any]:
         return {name: intent.params[name] for name in self.argument_names}
@@ -192,6 +195,36 @@ def _level_target(field: str, params: Mapping[str, Any]) -> FieldPath:
     return FieldPath.receiver(str(params["receiver"]), "operator_controls", field)
 
 
+def _bind_attenuator(params: Mapping[str, Any]) -> dict[str, Any]:
+    raw_db = params["level"] if "level" in params else params.get("db", 0)
+    db = int(raw_db)
+    return {
+        "db": db,
+        "att": db,
+        "receiver": int(params.get("receiver", 0)),
+    }
+
+
+def _attenuator_target(params: Mapping[str, Any]) -> FieldPath:
+    return FieldPath.receiver(str(params["receiver"]), "operator_controls", "att")
+
+
+def _project_attenuator_expectation(
+    radio: Any, params: Mapping[str, Any]
+) -> dict[str, Any]:
+    projector = getattr(radio, "project_attenuator_observation_value", None)
+    if not callable(projector):
+        raise CommandError(
+            "active radio does not provide attenuator observation projection"
+        )
+    projected = projector(params["db"])
+    if type(projected) is not int:
+        raise CommandError("attenuator observation projection must return an exact int")
+    normalized = dict(params)
+    normalized["att"] = projected
+    return normalized
+
+
 _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
     {
         "set_repeater_shift": CommandDescriptor(
@@ -201,6 +234,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             target=_repeater_shift_target,
             argument_names=("direction", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_repeater_shift",),
         ),
         "set_af_level": CommandDescriptor(
             name="set_af_level",
@@ -209,6 +243,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             target=partial(_level_target, "af_level"),
             argument_names=("level", "receiver"),
             tx_policy=DescriptorTxPolicy.ALWAYS_PASS,
+            public_names=("set_af_level",),
             queue_policy="coalesced",
             receiver_aware=True,
         ),
@@ -219,6 +254,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             target=partial(_level_target, "rf_gain"),
             argument_names=("level", "receiver"),
             tx_policy=DescriptorTxPolicy.ALWAYS_PASS,
+            public_names=("set_rf_gain",),
             queue_policy="coalesced",
             receiver_aware=True,
         ),
@@ -229,8 +265,21 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             target=partial(_level_target, "squelch"),
             argument_names=("level", "receiver"),
             tx_policy=DescriptorTxPolicy.ALWAYS_PASS,
+            public_names=("set_sql", "set_squelch"),
             queue_policy="coalesced",
             receiver_aware=True,
+        ),
+        "set_att": CommandDescriptor(
+            name="set_att",
+            method_name="set_attenuator_level",
+            bind=_bind_attenuator,
+            target=_attenuator_target,
+            argument_names=("db", "receiver"),
+            tx_policy=DescriptorTxPolicy.ALWAYS_PASS,
+            public_names=("set_att", "set_attenuator"),
+            queue_policy="coalesced",
+            receiver_aware=True,
+            project_expectation=_project_attenuator_expectation,
         ),
     }
 )
@@ -261,7 +310,17 @@ def command_descriptors() -> Mapping[str, CommandDescriptor]:
 
 
 def command_descriptor(name: str) -> CommandDescriptor | None:
-    return _COMMAND_DESCRIPTORS.get("set_squelch" if name == "set_sql" else name)
+    descriptor = _COMMAND_DESCRIPTORS.get(name)
+    if descriptor is not None:
+        return descriptor
+    return next(
+        (
+            descriptor
+            for descriptor in _COMMAND_DESCRIPTORS.values()
+            if name in descriptor.public_names or name == descriptor.method_name
+        ),
+        None,
+    )
 
 
 def enqueue_command_intent(
@@ -337,7 +396,7 @@ def bind_command_intent(
     target = descriptor.target(normalized)
     return CommandIntent(
         id=command_id or f"{source}-{time.monotonic_ns()}",
-        name=descriptor.name,
+        name=descriptor.method_name,
         params=normalized,
         source=source,
         target=target,
@@ -369,13 +428,20 @@ def prepare_command_intent(
         timeout=descriptor.timeout,
     )
     supported = (
-        radio.supports_command(descriptor.name, receiver=intent.params["receiver"])
+        radio.supports_command(
+            descriptor.method_name, receiver=intent.params["receiver"]
+        )
         if descriptor.receiver_aware
-        else radio.supports_command(descriptor.name)
+        else radio.supports_command(descriptor.method_name)
     )
     if not supported:
         raise CommandUnsupportedError(
-            f"command {descriptor.name!r} is not supported by active profile"
+            f"command {descriptor.method_name!r} is not supported by active profile"
+        )
+    if descriptor.project_expectation is not None:
+        intent = replace(
+            intent,
+            params=descriptor.project_expectation(radio, intent.params),
         )
     return intent
 

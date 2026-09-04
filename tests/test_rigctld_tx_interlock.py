@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from rigplane.capabilities import CAP_RIT
-from rigplane.core.command_service import CommandServiceResult
+from rigplane.core.command_service import CommandExecutor, CommandServiceResult
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     CommandLifecycleEvent,
@@ -499,8 +499,12 @@ class _TerminalStateService:
     def __getattr__(self, name: str) -> object:
         return getattr(self._inner, name)
 
-    async def execute(self, intent: CommandIntent) -> CommandServiceResult:
-        result = await self._inner.execute(intent)  # type: ignore[attr-defined]
+    async def execute(
+        self, intent: CommandIntent, *, executor: CommandExecutor | None = None
+    ) -> CommandServiceResult:
+        result = await self._inner.execute(  # type: ignore[attr-defined]
+            intent, executor=executor
+        )
         return replace(
             result,
             lifecycle_events=result.lifecycle_events

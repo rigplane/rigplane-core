@@ -28,6 +28,39 @@ describe('validateRadioViewModel', () => {
     expect(validateRadioViewModel(model)).toEqual(model);
   });
 
+  const receiverIndicator = () => ({
+    receiver: 'MAIN' as const,
+    availability: { structural: true, operational: true },
+    rfState: 'receiving' as const,
+    sMeter: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    bandwidthHz: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    agcMode: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    nbActive: { reading: { status: 'known' as const, value: false }, availability: { structural: true, operational: true } },
+    nrActive: { reading: { status: 'known' as const, value: false }, availability: { structural: true, operational: true } },
+    notchMode: { reading: { status: 'known' as const, value: 'off' as const }, availability: { structural: true, operational: true } },
+    attenuator: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    preamp: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    rfGain: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
+    digiSel: { reading: { status: 'known' as const, value: false }, availability: { structural: true, operational: true } },
+    ipPlus: { reading: { status: 'known' as const, value: false }, availability: { structural: true, operational: true } },
+  });
+
+  it('round-trips receiver indicators without collapsing known numeric zero or boolean false', () => {
+    const model = validateRadioViewModel({ ...valid(), receiverIndicators: [receiverIndicator()] });
+    expect(model.receiverIndicators?.[0].sMeter.reading).toEqual({ status: 'known', value: 0 });
+    expect(model.receiverIndicators?.[0].nbActive.reading).toEqual({ status: 'known', value: false });
+    expect(model.receiverIndicators?.[0].digiSel.reading).toEqual({ status: 'known', value: false });
+  });
+
+  it('rejects duplicate receiver-indicator entries and extra raw keys', () => {
+    expect(() => validateRadioViewModel({
+      ...valid(), receiverIndicators: [receiverIndicator(), receiverIndicator()],
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(), receiverIndicators: [{ ...receiverIndicator(), rawState: { ptt: false } }],
+    })).toThrow(TypeError);
+  });
+
   it('accepts an unknown txTarget with its reason preserved', () => {
     const model = {
       ...valid(),

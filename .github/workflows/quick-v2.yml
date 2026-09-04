@@ -1,0 +1,158 @@
+name: Tests (quick v2 metadata observation)
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
+  workflow_run:
+    workflows: ["Tests (quick)"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: >-
+    quick-v2-observe-${{ github.event.pull_request.number ||
+    github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt || 'lifecycle' }}
+  cancel-in-progress: true
+
+jobs:
+  observe:
+    name: Read-only legacy quick metadata observer
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    outputs:
+      assessment: ${{ steps.observe.outputs.assessment }}
+    steps:
+      - name: Bind trusted policy and observe API metadata
+        id: observe
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = 'rigplane';
+            const repo = 'rigplane-core';
+            const repositoryId = 1166377435;
+            const observerPath = '.github/scripts/quick-v2-metadata-policy-v1.js';
+            const exactSha = (value, label) => { if (typeof value !== 'string' || !/^[0-9a-f]{40}$/u.test(value)) { throw new Error(`${label} is not an exact commit SHA`);
+              }
+              return value;
+            };
+            const loadObserver = async () => { const {data: repository} = await github.request( 'GET /repos/{owner}/{repo}', {owner, repo}, );
+              if (repository.id !== repositoryId || repository.full_name !== `${owner}/${repo}`) { throw new Error('repository identity is not canonical');
+              }
+              const {data: branch} = await github.request( 'GET /repos/{owner}/{repo}/branches/{branch}', {owner, repo, branch: 'main'}, );
+              const liveBaseSha = exactSha(branch.commit.sha, 'live main');
+              const {data: commit} = await github.request( 'GET /repos/{owner}/{repo}/git/commits/{commit_sha}', {owner, repo, commit_sha: liveBaseSha}, );
+              let treeSha = exactSha(commit.tree?.sha, 'root tree');
+              const parts = observerPath.split('/');
+              for (const [index, part] of parts.entries()) { const {data: tree} = await github.request( 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}', {owner, repo, tree_sha: treeSha}, );
+                if (tree.truncated === true || !Array.isArray(tree.tree)) { throw new Error('observer tree metadata is incomplete');
+                }
+                const matches = tree.tree.filter((entry) => entry.path === part);
+                if (matches.length !== 1) { throw new Error('observer path is ambiguous');
+                }
+                const entry = matches[0];
+                const final = index === parts.length - 1;
+                if (!final) { if (entry.mode !== '040000' || entry.type !== 'tree') { throw new Error('observer parent is not a tree');
+                  }
+                  treeSha = exactSha(entry.sha, 'observer tree');
+                  continue;
+                }
+                if (entry.mode !== '100644' || entry.type !== 'blob') { throw new Error('observer is not a regular non-executable file');
+                }
+                const {data: blob} = await github.request( 'GET /repos/{owner}/{repo}/git/blobs/{file_sha}', {owner, repo, file_sha: exactSha(entry.sha, 'observer blob')}, );
+                if ( blob.encoding !== 'base64' || typeof blob.content !== 'string' || !Number.isSafeInteger(blob.size) || blob.size <= 0 || blob.size > 250000 ) { throw new Error('observer blob is invalid');
+                }
+                const loaded = {exports: {}};
+                new Function( 'module', 'exports', Buffer.from(blob.content, 'base64').toString('utf8'), )(loaded, loaded.exports);
+                return {observer: loaded.exports, liveBaseSha};
+              }
+              throw new Error('observer path did not resolve');
+            };
+            const {observer, liveBaseSha} = await loadObserver();
+            if (typeof observer.assess !== 'function' || typeof observer.rebindForPublication !== 'function' || typeof observer.stableAssessment !== 'function') { throw new Error('observer exports are invalid');
+            }
+            const result = await observer.assess({github, context, liveBaseSha});
+            core.setOutput('assessment', observer.stableAssessment(result));
+            core.info(`observation_metrics=${JSON.stringify(result.metrics)}`);
+            if (result.state === 'failure') { core.setFailed(result.description);
+            }
+  publish:
+    name: Exact-head metadata observation publisher
+    needs: observe
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Rebind independently and publish observation
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PRODUCER_ASSESSMENT: ${{ needs.observe.outputs.assessment }}
+        with:
+          script: |
+            const owner = 'rigplane';
+            const repo = 'rigplane-core';
+            const repositoryId = 1166377435;
+            const observerPath = '.github/scripts/quick-v2-metadata-policy-v1.js';
+            const exactSha = (value, label) => { if (typeof value !== 'string' || !/^[0-9a-f]{40}$/u.test(value)) { throw new Error(`${label} is not an exact commit SHA`);
+              }
+              return value;
+            };
+            const loadObserver = async () => { const {data: repository} = await github.request( 'GET /repos/{owner}/{repo}', {owner, repo}, );
+              if (repository.id !== repositoryId || repository.full_name !== `${owner}/${repo}`) { throw new Error('repository identity is not canonical');
+              }
+              const {data: branch} = await github.request( 'GET /repos/{owner}/{repo}/branches/{branch}', {owner, repo, branch: 'main'}, );
+              const liveBaseSha = exactSha(branch.commit.sha, 'live main');
+              const {data: commit} = await github.request( 'GET /repos/{owner}/{repo}/git/commits/{commit_sha}', {owner, repo, commit_sha: liveBaseSha}, );
+              let treeSha = exactSha(commit.tree?.sha, 'root tree');
+              const parts = observerPath.split('/');
+              for (const [index, part] of parts.entries()) { const {data: tree} = await github.request( 'GET /repos/{owner}/{repo}/git/trees/{tree_sha}', {owner, repo, tree_sha: treeSha}, );
+                if (tree.truncated === true || !Array.isArray(tree.tree)) { throw new Error('observer tree metadata is incomplete');
+                }
+                const matches = tree.tree.filter((entry) => entry.path === part);
+                if (matches.length !== 1) { throw new Error('observer path is ambiguous');
+                }
+                const entry = matches[0];
+                const final = index === parts.length - 1;
+                if (!final) { if (entry.mode !== '040000' || entry.type !== 'tree') { throw new Error('observer parent is not a tree');
+                  }
+                  treeSha = exactSha(entry.sha, 'observer tree');
+                  continue;
+                }
+                if (entry.mode !== '100644' || entry.type !== 'blob') { throw new Error('observer is not a regular non-executable file');
+                }
+                const {data: blob} = await github.request( 'GET /repos/{owner}/{repo}/git/blobs/{file_sha}', {owner, repo, file_sha: exactSha(entry.sha, 'observer blob')}, );
+                if ( blob.encoding !== 'base64' || typeof blob.content !== 'string' || !Number.isSafeInteger(blob.size) || blob.size <= 0 || blob.size > 250000 ) { throw new Error('observer blob is invalid');
+                }
+                const loaded = {exports: {}};
+                new Function( 'module', 'exports', Buffer.from(blob.content, 'base64').toString('utf8'), )(loaded, loaded.exports);
+                return {observer: loaded.exports, liveBaseSha};
+              }
+              throw new Error('observer path did not resolve');
+            };
+            const {observer, liveBaseSha} = await loadObserver();
+            if (typeof observer.assess !== 'function' || typeof observer.stableAssessment !== 'function') { throw new Error('observer exports are invalid');
+            }
+            let result = await observer.assess({github, context, liveBaseSha});
+            const encoded = observer.stableAssessment(result);
+            if (process.env.PRODUCER_ASSESSMENT !== encoded && result.publish) { result = { ...result, code: 'invalid_binding', state: 'failure', description: 'Unknown: producer and publisher metadata bindings disagree.', metrics: {...result.metrics, false_success_publications: 0}, };
+            }
+            result = await observer.rebindForPublication({github, result});
+            core.info(`observation_metrics=${JSON.stringify(result.metrics)}`);
+            if (result.publish) { if (result.targetSha !== result.headSha || !/^[0-9a-f]{40}$/u.test(result.targetSha)) { throw new Error('publisher refused a non-exact observation target');
+              }
+              await github.request( 'POST /repos/{owner}/{repo}/statuses/{sha}', { owner, repo, sha: result.targetSha, state: result.state, context: observer.OBSERVATION_CONTEXT, description: result.description, target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`, }, );
+            }
+            if (result.state === 'failure') { core.setFailed(result.description);
+            }

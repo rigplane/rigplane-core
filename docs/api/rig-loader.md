@@ -98,7 +98,7 @@ class RigConfig:
     vfo_sub_select: tuple[int, ...] | None
     vfo_swap: tuple[int, ...] | None
     freq_ranges: tuple[dict, ...]
-    commands: dict[str, tuple[int, ...]]     # may be empty for non-CI-V
+    commands: dict[str, CommandSpec]         # may be empty for non-CI-V
     cmd29_routes: tuple[tuple[int, int | None], ...]
     spectrum: dict[str, int] | None
     att_values: tuple[int, ...] | None
@@ -133,6 +133,18 @@ profile.supports_capability("digisel")  # False — IC-7300 lacks DIGI-SEL
 #### `.to_command_map()` → `CommandMap`
 
 Build a `CommandMap` from this config's commands (base commands + overrides merged).
+CI-V entries may also carry value-specific complete wire tuples while retaining
+one command name:
+
+```toml
+[commands]
+set_data_mode = { bytes = [0x1A, 0x06], value_variants = { "0" = [0x1A, 0x06, 0x00, 0x00], "1" = [0x1A, 0x06, 0x01, 0x01] } }
+```
+
+The loader requires the exact two-key descriptor, canonical decimal integer
+variant keys, unique valid byte arrays, and variants that strictly extend the
+base prefix. Existing CI-V arrays, CAT specifications, declared-absent entries,
+and command overrides remain compatible.
 
 ```python
 cfg = load_rig(Path("rigs/ic7610.toml"))
@@ -149,10 +161,18 @@ len(cmd_map)                 # ~150 commands
 
 ```python
 class CommandMap:
-    def __init__(self, commands: dict[str, tuple[int, ...]]) -> None: ...
+    def __init__(
+        self,
+        commands: dict[str, tuple[int, ...]],
+        *,
+        value_variants: dict[str, dict[int, tuple[int, ...]]] | None = None,
+    ) -> None: ...
 ```
 
 Immutable lookup mapping command names to CI-V wire byte tuples.
+Value variants are immutable private per-name data: `.get()`, `.has()`,
+iteration, length, and representation continue to describe only base entries.
+Equality and hashing include both base entries and value variants.
 See [`docs/api/commands.md`](commands.md) for usage with command builder functions.
 
 #### `.get(name)` → `tuple[int, ...]`

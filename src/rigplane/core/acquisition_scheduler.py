@@ -220,6 +220,12 @@ class _CadenceState:
 
 
 @dataclass(frozen=True, slots=True)
+class _AcquisitionClaim:
+    claimant: object
+    provider_generation: int
+
+
+@dataclass(frozen=True, slots=True)
 class _PendingCadenceUpdate:
     request_id: str
     semantic_changed: bool
@@ -342,6 +348,7 @@ class AcquisitionScheduler:
     __slots__ = (
         "_clock",
         "_cadence_by_key",
+        "_claims_by_request_id",
         "_deferred",
         "_external_cat_owner",
         "_external_cat_paused",
@@ -367,6 +374,7 @@ class AcquisitionScheduler:
         self._requests_by_key: dict[_AcquisitionRequestKey, AcquisitionRequest] = {}
         self._deferred: dict[_AcquisitionRequestKey, _PendingEnsureFresh] = {}
         self._cadence_by_key: dict[_AcquisitionRequestKey, _CadenceState] = {}
+        self._claims_by_request_id: dict[str, _AcquisitionClaim] = {}
         self._pending_cadence_by_key: dict[
             _AcquisitionRequestKey,
             _PendingCadenceUpdate,
@@ -399,6 +407,59 @@ class AcquisitionScheduler:
 
         provider: str = self._profile.provider
         return provider
+
+    def try_claim(
+        self,
+        request: AcquisitionRequest,
+        *,
+        claimant: object,
+        provider_generation: int,
+    ) -> bool:
+        """Atomically bind one pending request flight to its dispatch seat."""
+
+        existing = self._claims_by_request_id.get(request.id)
+        if existing is None or provider_generation > existing.provider_generation:
+            self._claims_by_request_id[request.id] = _AcquisitionClaim(
+                claimant=claimant,
+                provider_generation=provider_generation,
+            )
+            return True
+        if provider_generation < existing.provider_generation:
+            return False
+        return existing.claimant is claimant
+
+    def claim_is_current(
+        self,
+        request: AcquisitionRequest,
+        *,
+        claimant: object,
+        provider_generation: int,
+    ) -> bool:
+        """Return whether this seat still owns the request flight."""
+
+        existing = self._claims_by_request_id.get(request.id)
+        return (
+            existing is not None
+            and existing.claimant is claimant
+            and existing.provider_generation == provider_generation
+        )
+
+    def release_claim(
+        self,
+        request_id: str,
+        *,
+        claimant: object,
+        provider_generation: int,
+    ) -> None:
+        """Release a request flight only when ``claimant`` still owns it."""
+
+        existing = self._claims_by_request_id.get(request_id)
+        if (
+            existing is not None
+            and existing.claimant is claimant
+            and existing.provider_generation == provider_generation
+        ):
+            del self._claims_by_request_id[request_id]
 
     def ensure_fresh(
         self,
@@ -846,6 +907,7 @@ class AcquisitionScheduler:
                     )
             else:
                 del self._requests_by_key[key]
+                self._claims_by_request_id.pop(request.id, None)
 
         base_cadence = request.policy.cadence_seconds
         if base_cadence is None:
@@ -945,6 +1007,7 @@ class AcquisitionScheduler:
                 )
             else:
                 del self._requests_by_key[key]
+                self._claims_by_request_id.pop(request.id, None)
                 self._pending_cadence_by_key.pop(key, None)
 
         if request.policy.cadence_seconds is None:
@@ -986,6 +1049,7 @@ class AcquisitionScheduler:
 
         return {
             "queuedRequestCount": len(self._requests_by_key),
+            "claimedRequestCount": len(self._claims_by_request_id),
             # MOR-1533 (3): the subset of queuedRequestCount currently
             # withheld by the MOR-1531 tx_only/tx_active gate -- see
             # dispatchable_requests() -- distinguished from "backlog".
@@ -1013,6 +1077,7 @@ class AcquisitionScheduler:
             if not self._must_defer_for_external_cat(request.paths):
                 continue
             del self._requests_by_key[key]
+            self._claims_by_request_id.pop(request.id, None)
             self._defer(
                 key,
                 _PendingEnsureFresh(

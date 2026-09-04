@@ -34,6 +34,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.scope import ScopeFrame
@@ -320,6 +321,10 @@ def _add_scope_capable_attrs(radio: MagicMock) -> MagicMock:
     radio.capabilities = (
         {*raw_capabilities, "scope"} if isinstance(raw_capabilities, set) else {"scope"}
     )
+    raw_model = radio.__dict__.get("model")
+    model = raw_model if isinstance(raw_model, str) else "IC-7300"
+    radio.profile = resolve_radio_profile(model=model)
+    radio.model = radio.profile.model
     radio.on_scope_data = MagicMock()
     radio.scope_stream = MagicMock()
     radio.enable_scope = AsyncMock()
@@ -3840,9 +3845,12 @@ class TestSwitchScopeReceiver:
         poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
         poller.start()
-        queue.put(SetCwPitch(600))
-        await asyncio.sleep(0.03)
-        poller.stop()
+        reply = asyncio.get_running_loop().create_future()
+        queue.put_ordered(SetCwPitch(600), future=reply)
+        try:
+            await asyncio.wait_for(reply, timeout=2.0)
+        finally:
+            poller.stop()
 
         radio.set_cw_pitch.assert_awaited_once_with(600)
         assert poller._radio_state is not None

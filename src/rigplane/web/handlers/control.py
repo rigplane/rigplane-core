@@ -48,7 +48,6 @@ from ..radio_poller import (  # noqa: TID251
     SetAntenna1,
     SetAntenna2,
     SetApf,
-    SetAttenuator,
     SetAutoNotch,
     SetBand,
     SetCompressor,
@@ -2555,13 +2554,6 @@ class ControlHandler:
         radio: "Radio | None",
     ) -> dict[str, Any] | None:
         match name:
-            case "set_att" | "set_attenuator":
-                db = int(params.get("level", params.get("db", 0)))
-                rx = int(params.get("receiver", 0))
-                self._ensure_capability("attenuator", name)
-                self._ensure_receiver_supported(rx)
-                q.put(SetAttenuator(db, receiver=rx))
-                return {"db": db, "receiver": rx}
             case "set_preamp":
                 level = int(params["level"])
                 rx = int(params.get("receiver", 0))

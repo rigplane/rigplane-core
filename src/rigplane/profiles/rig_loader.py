@@ -779,6 +779,7 @@ class RigConfig:
             rules=self.rules,
             keyboard=self.keyboard,
             antenna_tx_count=self.antenna_tx_count,
+            antenna_has_rx_ant=self.antenna_has_rx_ant,
             transceiver_count=self.transceiver_count,
             scope_ref_min_db=self.scope_ref_min_db,
             scope_ref_max_db=self.scope_ref_max_db,
@@ -807,10 +808,13 @@ class RigConfig:
         .test_absent_name_excluded_from_command_map`).
         """
         civ_commands: dict[str, tuple[int, ...]] = {}
+        value_variants: dict[str, dict[int, tuple[int, ...]]] = {}
         for name, spec in self.commands.items():
             if isinstance(spec, CivCommandSpec):
                 civ_commands[name] = spec.bytes
-        return CommandMap(civ_commands)
+                if spec.value_variants:
+                    value_variants[name] = dict(spec.value_variants)
+        return CommandMap(civ_commands, value_variants=value_variants)
 
 
 def _parse_keyboard_binding(
@@ -978,6 +982,63 @@ def _parse_command_value(
                 f"got {value!r}"
             )
         return CivCommandSpec(bytes=tuple(value))
+
+    # Additive CI-V descriptor: one public command name with complete wire
+    # tuples selected by an integer semantic value.
+    if isinstance(value, dict) and ({"bytes", "value_variants"} & set(value)):
+        prefix = f"{filename}: [commands].{command_name}"
+        if set(value) != {"bytes", "value_variants"}:
+            raise RigLoadError(
+                f"{prefix} value-variant descriptor must contain exactly "
+                "bytes and value_variants"
+            )
+
+        base_raw = value["bytes"]
+        if not isinstance(base_raw, list) or not base_raw:
+            raise RigLoadError(f"{prefix}.bytes must be a non-empty byte array")
+        if any(
+            isinstance(byte, bool) or not isinstance(byte, int) for byte in base_raw
+        ):
+            raise RigLoadError(f"{prefix}.bytes must contain only integers")
+        if any(not 0 <= byte <= 0xFF for byte in base_raw):
+            raise RigLoadError(f"{prefix}.bytes must contain only values 0..255")
+        base = tuple(base_raw)
+
+        variants_raw = value["value_variants"]
+        if not isinstance(variants_raw, dict) or not variants_raw:
+            raise RigLoadError(f"{prefix}.value_variants must be a non-empty table")
+
+        variants: dict[int, tuple[int, ...]] = {}
+        seen_wires: set[tuple[int, ...]] = set()
+        for raw_key, wire_raw in variants_raw.items():
+            variant_path = f"{prefix}.value_variants.{raw_key}"
+            try:
+                semantic_value = int(raw_key)
+            except (TypeError, ValueError):
+                semantic_value = 0
+            if not isinstance(raw_key, str) or str(semantic_value) != raw_key:
+                raise RigLoadError(
+                    f"{variant_path} key must be a canonical decimal integer"
+                )
+            if not isinstance(wire_raw, list) or not wire_raw:
+                raise RigLoadError(f"{variant_path} must be a non-empty byte array")
+            if any(
+                isinstance(byte, bool) or not isinstance(byte, int) for byte in wire_raw
+            ):
+                raise RigLoadError(f"{variant_path} must contain only integers")
+            if any(not 0 <= byte <= 0xFF for byte in wire_raw):
+                raise RigLoadError(f"{variant_path} must contain only values 0..255")
+            wire = tuple(wire_raw)
+            if len(wire) <= len(base) or wire[: len(base)] != base:
+                raise RigLoadError(
+                    f"{variant_path} must strictly extend and prefix-match "
+                    f"{prefix}.bytes"
+                )
+            if wire in seen_wires:
+                raise RigLoadError(f"{variant_path} duplicates another variant value")
+            variants[semantic_value] = wire
+            seen_wires.add(wire)
+        return CivCommandSpec(bytes=base, value_variants=variants)
 
     # Format 3: declared-absent (dict with 'absent' key, MOR-2005 step 4a)
     if isinstance(value, dict) and "absent" in value:

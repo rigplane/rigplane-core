@@ -2943,7 +2943,9 @@ async def test_ensure_scope_enabled_skips_when_scope_capability_absent() -> None
 
 
 @pytest.mark.asyncio
-async def test_scope_health_monitor_disconnected_and_reenable() -> None:
+async def test_scope_health_monitor_disconnected_and_reenable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     radio = _scope_radio(ready=False, connected=False)
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
@@ -2952,20 +2954,55 @@ async def test_scope_health_monitor_disconnected_and_reenable() -> None:
     srv._scope_last_nonzero = 0.0
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
-    await asyncio.sleep(0.03)
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
+    try:
+        await asyncio.sleep(0.03)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     assert srv._scope_last_nonzero > 0
 
     radio.connected = True
     radio.radio_ready = True
     srv._scope_last_nonzero = time.monotonic() - 1.0
+    enqueued = asyncio.Event()
+    captured = []
+    put_ordered = srv.command_queue.put_ordered
+
+    def observe_put_ordered(command, **kwargs):
+        entry = put_ordered(command, **kwargs)
+        if isinstance(command, EnableScope):
+            captured.append((entry, kwargs["future"]))
+            enqueued.set()
+        return entry
+
+    def is_pending(entry):
+        return any(
+            pending is entry
+            for segment in srv.command_queue._segments
+            for pending in segment.entries()
+        )
+
+    monkeypatch.setattr(srv.command_queue, "put_ordered", observe_put_ordered)
+    waiter = asyncio.create_task(enqueued.wait())
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
-    await asyncio.sleep(0.03)
-    task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
-    cmds = srv.command_queue.drain()
-    assert any(isinstance(c, EnableScope) for c in cmds)
+    try:
+        done, _ = await asyncio.wait(
+            (waiter, task), timeout=5, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert done, "scope re-enable enqueue failure guard expired"
+        assert not task.done(), "scope monitor exited before re-enable enqueue"
+        entry, future = captured[0]
+        assert isinstance(entry.command, EnableScope)
+        assert isinstance(future, asyncio.Future)
+        assert entry.future is future and not future.done()
+        assert is_pending(entry), "re-enable entry must remain unclaimed"
+    finally:
+        task.cancel()
+        waiter.cancel()
+        await asyncio.gather(task, waiter, return_exceptions=True)
+    await asyncio.sleep(0)  # Dispatch the ordered reply's cancellation callback.
+    assert future.cancelled()
+    assert not is_pending(entry), "cancelled re-enable entry must leave the queue"
 
 
 @pytest.mark.asyncio

@@ -90,6 +90,7 @@
   interface Props {
     strips?: 'single' | 'dual';
     regions?: boolean;
+    regionContent?: Snippet;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -111,7 +112,7 @@
    * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
    * `zoneOwning()` returns non-null on both faces.
    */
-  let { strips = 'single', regions = false }: Props = $props();
+  let { strips = 'single', regions = false, regionContent }: Props = $props();
 
   /**
    * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
@@ -135,6 +136,21 @@
     return zoneShowsSurface(surfacePlan(), zoneId, surface);
   }
   /**
+   * MOR-2231 (step 1, batch 5) — whether the single composition's OPTIONAL
+   * surfaces may still render outside a zone. See their render sites below.
+   *
+   * `regions` means the caller lays the zone boxes out as grid items, so a
+   * surface reaching that path with no zone would be an unplaced item. The
+   * reachable way for `zoneOwning()` to answer null there is a workspace
+   * SUBTRACTION that emptied the zone (an imported or persisted document;
+   * `resolveSurfacePlan` force-restores anything in `requiredSemanticSurfaces`).
+   *
+   * A mount with NO plan at all is excluded deliberately: no zone element
+   * exists then for ANY surface, so there is no arrangement to be unplaced
+   * beside — withholding the body would cost a readout and prevent nothing.
+   */
+  let allowBareSurfaces = $derived(!regions || surfacePlan() === null);
+  /**
    * MOR-1336 (v3-rework S4) — the DECLARED zone that mounts `surface`, or
    * `null` when no zone does.
    *
@@ -148,17 +164,9 @@
    * by `manifest.zones`, so the plan's KEY SET is exactly the active layout's
    * declared-zone set. App already computes it; this only consults it.
    *
-   * `null` → the caller renders BARE, byte-identical to the pre-S4 DOM. That is
-   * MOR-1069 enforced by construction: a zone element exists only where a
-   * layout actually declared one, never as an empty promise.
-   *
-   * LIMITATION, recorded rather than hidden: the plan is POST-subtraction, so
-   * "no zone declares this" and "a zone declared it and the workspace hid it"
-   * are indistinguishable here, and both render bare. That matches today
-   * exactly (these surfaces consult no plan at all before this slice), so no
-   * force-show is introduced and nothing regresses — but the workspace still
-   * cannot hide a zoned optional surface. Fixing that needs `SurfacePlan` to
-   * carry declaration and visibility separately (own ticket).
+   * A `null` result renders bare only when the caller permits that fallback.
+   * The ordered SDR caller below rejects it for a resolved plan, so workspace
+   * subtraction removes both zone and body; a no-plan mount keeps the body.
    */
   function zoneOwning(surface: SemanticSurfaceName): string | null {
     const plan = surfacePlan();
@@ -802,6 +810,7 @@
               onSelectVfo={selectVfo}
               onTuneFrequency={tuneFrequency}
               disabled={!isOperationalStrip(view, receiverId)}
+              indicatorReceiver={receiverId}
               {pendingFrequencyHz}
             />
           </div>
@@ -968,22 +977,10 @@
     declined renders the pre-1265 element shape exactly (pinned in
     `__tests__/semantic-tx-aux-wiring.component.test.ts`).
 
-    CORRECTION: the sentences that stood here described a bare, unzoned mount
-    in BOTH compositions because `'txAux'` was merely DECLARABLE. That held
-    only until MOR-1336 (S4), which routed this surface through the generic
-    `zoned()` path below AND declared the zone on both sides of the
-    composition split — `desktop-declarations.ts` (single, the flagship skin)
-    and `dual-receiver-cockpit.ts` (dual) each carry
-    `{ id: 'tx-aux', surfaces: ['txAux'] }`. It renders bare wherever
-    `zoneOwning()` finds no zone carrying it: under a layout that declares no
-    `tx-aux` zone, on a standalone mount that resolves no plan, OR when a
-    workspace subtraction has emptied the zone — see `zoneOwning`'s own
-    LIMITATION note above, which records that the plan is POST-subtraction and
-    that this last case is indistinguishable from the first two here.
-    `view?.txAux` (rather than the caller
-    nesting this under `{#if view}`) keeps the same "never renders while
-    view is null" behavior now that the surrounding structure changed
-    around it (MOR-1258).
+    The generic `zoned()` path owns placement. In the ordered SDR branch, a
+    resolved plan can subtract both the `tx-aux` host and body; a no-plan mount
+    keeps the available surface bare. `view?.txAux` keeps the surface absent
+    while the view is null.
   -->
   <!--
     MOR-1336 — the ONE zone-aware mount path, applied uniformly to every
@@ -1390,8 +1387,8 @@
     `skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component
     .test.ts`'s MOR-2150 describe block. No longer bare under `desktop-v2`,
     which declared this zone in MOR-1370 (S6b-2) as the last surface in the
-    vocabulary to graduate; still bare under the single-composition layouts
-    that declare none (`sdr-test`/`mobile`/`lcd-*`).
+    vocabulary to graduate. `sdr-test` also declares this zone; the remaining
+    single-composition layouts (`mobile`/`lcd-*`) keep their existing bare path.
   -->
   {#snippet scopeControlsSurface()}
     {#if view?.scopeControls}
@@ -1461,6 +1458,38 @@
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
     {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, false)}
   {:else}
+    {#if regions}
+      {#if singleOrder.includes('vfo')}
+        {@render zoned('vfo', view !== null, vfoSurface)}
+      {/if}
+      {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
+      {@render zoned(
+        'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
+        allowBareSurfaces,
+      )}
+      {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
+      {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
+      {@render zoned(
+        'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+        allowBareSurfaces,
+      )}
+      {@render zoned(
+        'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
+        allowBareSurfaces,
+      )}
+      {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
+      {#if regionContent}{@render regionContent()}{/if}
+      {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
+      {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
+      {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
+      {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface, allowBareSurfaces)}
+      {#if singleOrder.includes('rxTx')}
+        {@render zoned('rxTx', view !== null, rxTxSurface)}
+      {/if}
+      {@render txFaultRecovery()}
+      {@render txAdjacentAlerts()}
+      {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
+    {:else}
     <!--
       Single/default path (sdr-test / LCD / mobile). No zone CONTAINS the
       alerts here (MOR-1069 — the dual composition's `.rx-tx-zone` has no twin
@@ -1475,17 +1504,17 @@
       mounts both (LCD `control-column`, mobile `portrait-deck`) it is what
       reorders within it.
 
-      MOR-2231: `regions` decides whether each of the two gets the zone element
-      its plan names. Unset — every mount that predates that ticket — renders
-      them exactly as before: no wrapper, no `data-zone-id`.
+      This branch keeps the pre-MOR-2231 single/default sequence with bare
+      required surfaces when `regions` is unset.
     -->
     {#each singleOrder as surface (surface)}
       {#if surface === 'vfo'}
-        {#if regions}{@render zoned('vfo', view !== null, vfoSurface)}
-        {:else}{@render vfoSurface()}{/if}
+        {@render vfoSurface()}
       {:else if surface === 'rxTx'}
-        {#if regions}{@render zoned('rxTx', view !== null, rxTxSurface)}
-        {:else}{@render rxTxSurface()}{/if}
+        <!-- Preserve the pre-region compiled anchor topology on this literal path. -->
+        {#if !regions}
+          {@render rxTxSurface()}
+        {/if}
       {/if}
     {/each}
     <!-- MOR-1784: `singleOrder` ends in `rxTx` in every shipped layout
@@ -1494,21 +1523,34 @@
          the column — while still rendering unconditionally, so a fault raised
          by any lease source keeps a way out even if `rxTx` is absent. -->
     {@render txFaultRecovery()}
-    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
-    {@render zoned('meters', view?.meters !== undefined, metersSurface)}
-    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface)}
-    {@render zoned('filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface)}
-    {@render zoned('dsp', view?.dsp !== undefined, dspSurface)}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface)}
-    {@render zoned('band', view?.band !== undefined, bandSurface)}
-    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface)}
+    <!-- MOR-2231 (step 1, batch 5): the twelve OPTIONAL surfaces take
+         `allowBareSurfaces` (see its declaration above) instead of the bare
+         default. `vfo`/`rxTx` above keep the default: they are in
+         `requiredSemanticSurfaces`, which `resolveSurfacePlan` force-restores,
+         so no plan can leave either without a zone. -->
+    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface, allowBareSurfaces)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
+    {@render zoned(
+      'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
+      allowBareSurfaces,
+    )}
+    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
+    {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
+    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
     {@render zoned(
       'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
+      allowBareSurfaces,
     )}
-    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface)}
-    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface)}
-    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface)}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
+    {@render zoned(
+      'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
+      allowBareSurfaces,
+    )}
     {@render txAdjacentAlerts()}
+    {/if}
   {/if}
 </div>
 

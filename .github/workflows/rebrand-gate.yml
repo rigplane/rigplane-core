@@ -5,15 +5,77 @@ name: Rebrand grep gate
 # allow-list. See .github/scripts/check-rebrand-allowlist.sh for the
 # rationale and the allow-list.
 #
-# Runs on EVERY push and PR (no path filter) so doc-only / rig-only / script-
-# only changes still trigger it. The job is sub-second (single git grep +
-# bash filter), so this is cheap.
+# Documentation and unrelated CI-control-only diffs are reviewed independently
+# and skip this repository-wide grep. Ordered negative patterns keep mixed
+# product changes selected, then re-include this gate's own checker/workflow.
 
 on:
   push:
     branches: [main]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!*.md"
+      - "!*.rst"
+      - "!**/*.md"
+      - "!**/*.mD"
+      - "!**/*.Md"
+      - "!**/*.MD"
+      - "!**/*.rst"
+      - "!**/*.rsT"
+      - "!**/*.rSt"
+      - "!**/*.rST"
+      - "!**/*.RsT"
+      - "!**/*.Rst"
+      - "!**/*.RSt"
+      - "!**/*.RST"
+      - "!.claude/**"
+      - "!.github/**"
+      - "!tests/test_ci_path_filters.py"
+      - "!mkdocs.yml"
+      - "!AUTHORS"
+      - "!COPYING"
+      - "!LICENSE"
+      - "!LICENSE.txt"
+      - "!NOTICE"
+      - "!.github/scripts/doc-citation-baseline.txt"
+      - "!.github/scripts/doc-citation-dangling-baseline.txt"
+      - "!.github/scripts/doc-link-baseline.txt"
+      - ".github/scripts/check-rebrand-allowlist.sh"
+      - ".github/workflows/rebrand-gate.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!*.md"
+      - "!*.rst"
+      - "!**/*.md"
+      - "!**/*.mD"
+      - "!**/*.Md"
+      - "!**/*.MD"
+      - "!**/*.rst"
+      - "!**/*.rsT"
+      - "!**/*.rSt"
+      - "!**/*.rST"
+      - "!**/*.RsT"
+      - "!**/*.Rst"
+      - "!**/*.RSt"
+      - "!**/*.RST"
+      - "!.claude/**"
+      - "!.github/**"
+      - "!tests/test_ci_path_filters.py"
+      - "!mkdocs.yml"
+      - "!AUTHORS"
+      - "!COPYING"
+      - "!LICENSE"
+      - "!LICENSE.txt"
+      - "!NOTICE"
+      - "!.github/scripts/doc-citation-baseline.txt"
+      - "!.github/scripts/doc-citation-dangling-baseline.txt"
+      - "!.github/scripts/doc-link-baseline.txt"
+      - ".github/scripts/check-rebrand-allowlist.sh"
+      - ".github/workflows/rebrand-gate.yml"
 
 concurrency:
   group: rebrand-gate-${{ github.workflow }}-${{ github.ref }}

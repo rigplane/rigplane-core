@@ -388,6 +388,7 @@ def _build_from_map(
     data: bytes | None = None,
     receiver: int = RECEIVER_MAIN,
     command29: bool = False,
+    value: int | None = None,
 ) -> bytes:
     """Build a CI-V frame using wire bytes from a CommandMap.
 
@@ -395,7 +396,16 @@ def _build_from_map(
     it returns are prepended to *data*, and only what the caller passes as
     *data* is appended after them.
     """
-    wire = cmd_map.get(name)
+    if cmd_map._has_value_variants(name):
+        if data is not None:
+            raise ValueError(
+                f"Command {name!r} cannot combine a value variant with appended data"
+            )
+        if value is None:
+            raise ValueError(f"Command {name!r} requires a declared value")
+        wire = cmd_map._get_value_variant(name, value)
+    else:
+        wire = cmd_map.get(name)
     command, sub, prefix = decode_wire_tuple(wire)
     if prefix:
         data = prefix + data if data else prefix

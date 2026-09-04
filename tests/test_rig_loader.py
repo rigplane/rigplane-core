@@ -102,6 +102,20 @@ class TestLoadRig:
         rig = load_rig(p)
         assert rig.model == "IC-7300"
 
+    def test_command_override_reuses_value_variant_parser(self, tmp_path):
+        toml = _MINIMAL_TOML.replace(
+            "[commands.overrides]\n",
+            '[commands.overrides]\nset_freq = { bytes = [0x05], value_variants = { "7" = [0x05, 0x07] } }\n',
+        )
+
+        rig = load_rig(_write_toml(tmp_path, toml, "override.toml"))
+        command_map = rig.to_command_map()
+
+        assert command_map.get("set_freq") == (0x05,)
+        assert command_map._get_value_variant("set_freq", 7) == (0x05, 0x07)
+        assert set(command_map) == {"get_freq", "set_freq"}
+        assert len(command_map) == 2
+
     def test_tx_interlock_tightening_defaults_empty(self, tmp_path):
         rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
 
@@ -1377,6 +1391,23 @@ class TestToProfile:
         assert rig.antenna_has_rx_ant is False
         assert profile.supports_command("get_antenna") is False
         assert profile.supports_command("set_antenna") is False
+
+    @pytest.mark.parametrize(
+        ("filename", "tx_count", "has_rx_antenna"),
+        [
+            ("ic705.toml", 1, True),
+            ("ic7610.toml", 2, True),
+            ("ic7300.toml", 1, False),
+            ("ic9700.toml", 1, False),
+        ],
+    )
+    def test_antenna_topology_propagates_to_profile(
+        self, filename: str, tx_count: int, has_rx_antenna: bool
+    ):
+        profile = load_rig(RIGS_DIR / filename).to_profile()
+
+        assert profile.antenna_tx_count == tx_count
+        assert profile.antenna_has_rx_ant is has_rx_antenna
 
     def test_capabilities_frozenset(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()

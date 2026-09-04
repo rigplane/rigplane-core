@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
@@ -10,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt, TxStateReading
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.types import BreakInMode
 from rigplane.profiles import get_radio_profile
@@ -18,7 +20,7 @@ from rigplane.radio_state import RadioState
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.radio import RadioConnectionError, YaesuCatRadio
-from rigplane.backends.yaesu_cat.transport import CatCommandRejected
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected, CatTransportError
 
 
 def _clock() -> float:
@@ -54,6 +56,7 @@ def _make_radio() -> MagicMock:
         "notch",
         "split",
         "rit",
+        "xit",
         "tuner",
         "dial_lock",
         "cw",
@@ -73,6 +76,9 @@ def _make_radio() -> MagicMock:
     )
     radio.get_ptt = AsyncMock(return_value=False)
     radio.read_ptt = AsyncMock(return_value=False)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
+    )
     radio.get_af_level = AsyncMock(
         side_effect=lambda receiver=0: 128 if receiver == 0 else 64
     )
@@ -209,6 +215,7 @@ class _SideEffectingYaesuRadio:
         "vox",
         "compressor",
         "rit",
+        "xit",
         "tuner",
         "dial_lock",
         "cw",
@@ -285,6 +292,11 @@ class _SideEffectingYaesuRadio:
 
     async def read_ptt(self) -> bool:
         return True
+
+    async def read_transmit_state(self) -> TxStateReading:
+        return TxStateReading(
+            await self.read_ptt(), "tx_cat", "yaesu_poll_response", True
+        )
 
     async def get_ptt(self) -> bool:
         value = await self.read_ptt()
@@ -587,6 +599,7 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
             KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000),
         ),
         ("global.tx_state.ptt", False),
+        ("global.tx_state.observed_ptt", ObservedPtt.OFF),
         ("receiver.main.active.freq_mode.filter_width", 500),
     ]
     radio.read_filter_width.assert_awaited_once()
@@ -604,6 +617,53 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
     assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 8.0
     assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 120.0
     assert all(item.source.capability_id == str(item.path) for item in observations)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_callback", [False, True])
+async def test_medium_canonical_ptt_has_exactly_one_publication(
+    with_callback: bool,
+) -> None:
+    radio = _make_radio()
+    adapter = YaesuObservationAdapter.from_radio(radio, clock=_clock)
+    emitted = []
+    observations = await adapter.poll_medium(
+        ptt_callback=emitted.append if with_callback else None
+    )
+    canonical = [item for item in observations if item.path == OBSERVED_PTT_PATH]
+    assert len(emitted) == int(with_callback)
+    assert len(canonical) == int(not with_callback)
+    assert (emitted + canonical)[0].value is ObservedPtt.OFF
+    legacy = [item for item in observations if str(item.path) == "global.tx_state.ptt"]
+    assert len(legacy) == 1
+    radio.read_transmit_state.assert_awaited_once_with()
+    radio.read_ptt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage", ["frequency", "ptt", "ptt-sink-error", "ptt-sink-cancel"]
+)
+async def test_medium_ptt_error_publication_is_local_and_preserves_exception(
+    stage: str,
+) -> None:
+    radio = _make_radio()
+    error = CatTransportError("original")
+    reader = "read_freq" if stage == "frequency" else "read_transmit_state"
+    setattr(radio, reader, AsyncMock(side_effect=error))
+    sink = MagicMock(
+        side_effect={
+            "ptt-sink-error": RuntimeError("sink"),
+            "ptt-sink-cancel": asyncio.CancelledError(),
+        }.get(stage)
+    )
+    with pytest.raises(CatTransportError) as caught:
+        await YaesuObservationAdapter.from_radio(radio).poll_medium(ptt_callback=sink)
+    assert caught.value is error
+    assert sink.call_count == int(stage != "frequency")
+    if stage != "frequency":
+        assert sink.call_args.args[0].value is ObservedPtt.UNKNOWN
+    radio.read_filter_width.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1050,11 +1110,8 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
         # split (MOR-446) is a global tx_state bool, gated on the ``split``
         # capability — mirroring the legacy poller's ``"split" in caps`` gate.
         ("global.tx_state.split", True),
-        # Clarifier RIT/XIT (MOR-454): global tx_state bools + global
-        # operator-control signed Hz offset, gated on the ``rit`` capability —
-        # mirroring the legacy poller's ``"rit" in caps`` gate. A single
-        # ``read_clarifier`` read feeds both flags; ``read_clarifier_freq``
-        # feeds the signed offset on the device scale.
+        # Clarifier RIT/XIT (MOR-454): independently declared global tx_state
+        # flags plus the shared global operator-control signed offset.
         ("global.tx_state.rit_on", True),
         ("global.tx_state.rit_tx", False),
         ("global.operator_controls.rit_freq", -250),
@@ -1168,7 +1225,7 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_vox.assert_not_awaited()
     # split is dropped: the ``split`` runtime cap is absent here.
     radio.read_split.assert_not_awaited()
-    # RIT/XIT is dropped: the ``rit`` runtime cap is absent here (MOR-454).
+    # RIT/XIT is dropped: neither runtime capability is present (MOR-454).
     radio.read_clarifier.assert_not_awaited()
     radio.read_clarifier_freq.assert_not_awaited()
     # Tuner + dial-lock are dropped: ``tuner``/``dial_lock`` caps absent (MOR-455).
@@ -1179,6 +1236,63 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_cw_pitch.assert_not_awaited()
     radio.read_break_in.assert_not_awaited()
     radio.read_break_in_delay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capabilities", "expected_paths"),
+    [
+        (
+            {"rit"},
+            {
+                "global.tx_state.rit_on",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (
+            {"xit"},
+            {
+                "global.tx_state.rit_tx",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (
+            {"rit", "xit"},
+            {
+                "global.tx_state.rit_on",
+                "global.tx_state.rit_tx",
+                "global.operator_controls.rit_freq",
+            },
+        ),
+        (set(), set()),
+    ],
+)
+async def test_tx_controls_poll_scopes_clarifier_state_to_declared_capabilities(
+    capabilities: set[str], expected_paths: set[str]
+) -> None:
+    radio = _make_radio()
+    radio.capabilities = capabilities
+    adapter = YaesuObservationAdapter(
+        radio,
+        profile=_profile_state_acquisition(),
+        clock=_clock,
+    )
+
+    observations = await adapter.poll_tx_controls()
+
+    clarifier_observations = {
+        str(item.path): item.value
+        for item in observations
+        if str(item.path).startswith("global.tx_state.rit_")
+        or str(item.path) == "global.operator_controls.rit_freq"
+    }
+    assert set(clarifier_observations) == expected_paths
+    if capabilities:
+        radio.read_clarifier.assert_awaited_once()
+        radio.read_clarifier_freq.assert_awaited_once()
+    else:
+        radio.read_clarifier.assert_not_awaited()
+        radio.read_clarifier_freq.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1208,6 +1322,7 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
             KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000),
         ),
         ("global.tx_state.ptt", True),
+        ("global.tx_state.observed_ptt", ObservedPtt.ON),
         ("receiver.main.meters.s_meter", 150),
         ("receiver.sub.meters.s_meter", 75),
         ("global.meters.alc", 200),
@@ -1271,9 +1386,8 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.operator_controls.compressor_level", 25),
         ("global.tx_state.vox_on", True),
         # split is skipped: this radio lacks the ``split`` runtime cap.
-        # Clarifier RIT/XIT (MOR-454): gated on the ``rit`` cap (present here);
-        # a single ``read_clarifier`` feeds both flags, ``read_clarifier_freq``
-        # the signed Hz offset — none of which mutate legacy state.
+        # Clarifier RIT/XIT (MOR-454): both capabilities are present; shared
+        # clarifier reads do not mutate legacy state.
         ("global.tx_state.rit_on", True),
         ("global.tx_state.rit_tx", False),
         ("global.operator_controls.rit_freq", -250),

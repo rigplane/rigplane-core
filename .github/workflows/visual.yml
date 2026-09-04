@@ -19,9 +19,33 @@ name: Visual regression (pixel-diff)
 on:
   pull_request:
     branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "frontend/**"
-      - ".github/workflows/visual.yml"
+      - "!frontend/*.md"
+      - "!frontend/*.mD"
+      - "!frontend/*.Md"
+      - "!frontend/*.MD"
+      - "!frontend/*.rst"
+      - "!frontend/*.rsT"
+      - "!frontend/*.rSt"
+      - "!frontend/*.rST"
+      - "!frontend/*.RsT"
+      - "!frontend/*.Rst"
+      - "!frontend/*.RSt"
+      - "!frontend/*.RST"
+      - "!frontend/**/*.md"
+      - "!frontend/**/*.mD"
+      - "!frontend/**/*.Md"
+      - "!frontend/**/*.MD"
+      - "!frontend/**/*.rst"
+      - "!frontend/**/*.rsT"
+      - "!frontend/**/*.rSt"
+      - "!frontend/**/*.rST"
+      - "!frontend/**/*.RsT"
+      - "!frontend/**/*.Rst"
+      - "!frontend/**/*.RSt"
+      - "!frontend/**/*.RST"
   workflow_dispatch:
     inputs:
       regenerate:
@@ -33,8 +57,51 @@ concurrency:
   group: visual-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend || steps.manual.outputs.frontend }}
+    steps:
+      - name: Select product frontend changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - '!frontend/**/*.md'
+              - '!frontend/**/*.mD'
+              - '!frontend/**/*.Md'
+              - '!frontend/**/*.MD'
+              - '!frontend/**/*.rst'
+              - '!frontend/**/*.rsT'
+              - '!frontend/**/*.rSt'
+              - '!frontend/**/*.rST'
+              - '!frontend/**/*.RsT'
+              - '!frontend/**/*.Rst'
+              - '!frontend/**/*.RSt'
+              - '!frontend/**/*.RST'
+
+      - name: Select manual visual run
+        id: manual
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "frontend=true" >> "$GITHUB_OUTPUT"
+
   visual:
+    needs: changes
+    # Draft pushes do not consume the shared Mac mini. ready_for_review starts
+    # the blocking visual run for the final candidate; manual regeneration is
+    # still available through workflow_dispatch.
+    if: >-
+      needs.changes.outputs.frontend == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.draft == false)
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
     steps:
