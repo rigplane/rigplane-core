@@ -76,7 +76,7 @@ jobs:
               throw new Error('observer path did not resolve');
             };
             const {observer, liveBaseSha} = await loadObserver();
-            if (typeof observer.assess !== 'function' || typeof observer.stableAssessment !== 'function') { throw new Error('observer exports are invalid');
+            if (typeof observer.assess !== 'function' || typeof observer.rebindForPublication !== 'function' || typeof observer.stableAssessment !== 'function') { throw new Error('observer exports are invalid');
             }
             const result = await observer.assess({github, context, liveBaseSha});
             core.setOutput('assessment', observer.stableAssessment(result));
@@ -149,6 +149,7 @@ jobs:
             const encoded = observer.stableAssessment(result);
             if (process.env.PRODUCER_ASSESSMENT !== encoded && result.publish) { result = { ...result, code: 'invalid_binding', state: 'failure', description: 'Unknown: producer and publisher metadata bindings disagree.', metrics: {...result.metrics, false_success_publications: 0}, };
             }
+            result = await observer.rebindForPublication({github, result});
             core.info(`observation_metrics=${JSON.stringify(result.metrics)}`);
             if (result.publish) { if (result.targetSha !== result.headSha || !/^[0-9a-f]{40}$/u.test(result.targetSha)) { throw new Error('publisher refused a non-exact observation target');
               }

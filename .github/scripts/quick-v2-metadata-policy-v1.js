@@ -37,7 +37,7 @@ function stableAssessment(value) { const ordered = (item) => { if (Array.isArray
 function statusDescription(code) { const descriptions = { admitted: 'Metadata/policy observation: waiting for canonical legacy quick.', draft: 'Metadata/policy observation: draft; substantive quick is not expected.', terminal_match: 'Metadata/policy observation: canonical legacy quick matched.', fork: 'Unknown: fork execution is outside this metadata observation.', stale_base: 'Unknown: pull request base is not the live main head.', stale_head: 'Unknown: legacy quick belongs to a stale pull request head.', stale_run: 'Unknown: legacy quick is not the latest run and attempt.', ambiguous_pull: 'Unknown: legacy quick has no unique current pull request.', control_diff: 'Unknown: candidate changes trusted quick observation controls.', route_mismatch: 'Unknown: trusted route and observed legacy jobs disagree.', skipped_substantive: 'Unknown: legacy quick succeeded while its worker was skipped.', terminal_failure: 'Metadata observation: canonical legacy quick did not succeed.', invalid_binding: 'Unknown: canonical legacy quick metadata did not bind.', };
   return descriptions[code] ?? descriptions.invalid_binding;
 }
-function assessment({kind, code, state = null, publish = false, targetSha = null, pullNumber = null, baseSha = null, headSha = null, runId = null, runAttempt = null, routes = null, metrics = null}) { return { kind, code, state, publish, targetSha, pullNumber, baseSha, headSha, runId, runAttempt, routes, description: statusDescription(code), metrics: metrics ?? { route_job_concordance: null, terminal_binding_coverage: false, v2_self_hosted_minutes: 0, false_success_publications: 0, stale_head_publications: 0, }, };
+function assessment({kind, code, state = null, publish = false, targetSha = null, pullNumber = null, baseSha = null, headSha = null, runId = null, runAttempt = null, runConclusion = null, routes = null, jobTopology = null, metrics = null}) { return { kind, code, state, publish, targetSha, pullNumber, baseSha, headSha, runId, runAttempt, runConclusion, routes, jobTopology, description: statusDescription(code), metrics: metrics ?? { route_job_concordance: null, terminal_binding_coverage: false, v2_self_hosted_minutes: 0, false_success_publications: 0, stale_head_publications: 0, }, };
 }
 async function getTreeEntry(github, owner, repo, commitSha, repositoryPath) { assertSha(commitSha, 'tree commit');
   const parts = repositoryPath.split('/');
@@ -103,43 +103,47 @@ async function classifyPull(github, owner, repo, baseSha, pull) { try { const po
     throw new ObservationError('invalid_binding', 'trusted route classification failed', { publish: true, targetSha: pull.head?.sha ?? null, });
   }
 }
-function assertRepository(context, repository) { if ( context.repo.owner !== REPOSITORY.owner || context.repo.repo !== REPOSITORY.repo || repository?.id !== REPOSITORY.id || repository?.full_name !== REPOSITORY.fullName ) { throw new ObservationError('invalid_binding', 'event repository is not canonical');
-  }
-}
-async function getPull(github, owner, repo, pullNumber) { if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) { throw new ObservationError('ambiguous_pull', 'pull request number is invalid');
-  }
+function assertRepository(context, repository) { if ( context.repo.owner !== REPOSITORY.owner || context.repo.repo !== REPOSITORY.repo || repository?.id !== REPOSITORY.id || repository?.full_name !== REPOSITORY.fullName ) { throw new ObservationError('invalid_binding', 'event repository is not canonical'); } }
+async function getPull(github, owner, repo, pullNumber) { if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) { throw new ObservationError('ambiguous_pull', 'pull request number is invalid'); }
   const response = await github.request( 'GET /repos/{owner}/{repo}/pulls/{pull_number}', {owner, repo, pull_number: pullNumber}, );
   return response.data;
 }
+function canonicalRunRepository(repository) { return repository?.id === REPOSITORY.id && repository?.name === REPOSITORY.repo && repository?.url === `https://api.github.com/repos/${REPOSITORY.fullName}`; }
+function bindRunPullRequest(run, liveBaseSha) { const liveMain = assertSha(liveBaseSha, 'live main');
+  const headSha = assertSha(run.head_sha, 'workflow run head');
+  if (!Array.isArray(run.pull_requests) || run.pull_requests.length !== 1) { throw new ObservationError('ambiguous_pull', 'run does not record exactly one pull request association', {publish: false, targetSha: headSha}); }
+  const associated = run.pull_requests[0]; const pullNumber = associated?.number;
+  const associatedHead = assertSha(associated?.head?.sha, 'workflow run associated head'); const associatedBase = assertSha(associated?.base?.sha, 'workflow run associated base');
+  if ( !Number.isSafeInteger(pullNumber) || pullNumber <= 0 || associatedHead !== headSha || associated?.base?.ref !== 'main' || !canonicalRunRepository(associated?.head?.repo) || !canonicalRunRepository(associated?.base?.repo) ) { throw new ObservationError('invalid_binding', 'workflow run pull request association is not canonical', {publish: false, targetSha: headSha}); }
+  if (associatedBase !== liveMain) { throw new ObservationError('stale_base', 'workflow run recorded base is not live main', {publish: false, targetSha: headSha}); }
+  return {pullNumber, headSha, baseSha: associatedBase};
+}
 function bindPull(pull, liveBaseSha, expectedHeadSha = null) { const headSha = assertSha(pull.head?.sha, 'pull request head');
   const baseSha = assertSha(pull.base?.sha, 'pull request base');
-  if (expectedHeadSha !== null && headSha !== expectedHeadSha) { throw new ObservationError('stale_head', 'run head is no longer current', { publish: false, targetSha: headSha, });
-  }
-  if ( pull.state !== 'open' || pull.base?.ref !== 'main' || pull.base?.repo?.id !== REPOSITORY.id || pull.base?.repo?.full_name !== REPOSITORY.fullName ) { throw new ObservationError('invalid_binding', 'pull request target is not canonical main', { publish: true, targetSha: headSha, });
-  }
-  if (baseSha !== liveBaseSha) { throw new ObservationError('stale_base', 'pull request base is not live main', { publish: true, targetSha: headSha, });
-  }
+  if (expectedHeadSha !== null && headSha !== expectedHeadSha) { throw new ObservationError('stale_head', 'run head is no longer current', { publish: false, targetSha: headSha, }); }
+  if ( pull.state !== 'open' || pull.base?.ref !== 'main' || pull.base?.repo?.id !== REPOSITORY.id || pull.base?.repo?.full_name !== REPOSITORY.fullName ) { throw new ObservationError('invalid_binding', 'pull request target is not canonical main', { publish: true, targetSha: headSha, }); }
+  if (baseSha !== liveBaseSha) { throw new ObservationError('stale_base', 'pull request base is not live main', { publish: true, targetSha: headSha, }); }
   return { headSha, baseSha, sameRepository: pull.head?.repo?.id === REPOSITORY.id && pull.head?.repo?.full_name === REPOSITORY.fullName, };
 }
-async function assertMergeParents(github, owner, repo, pull, baseSha, headSha) { if (pull.merge_commit_sha === null || pull.merge_commit_sha === headSha) { return false;
-  }
+function bindPullToRun(pull, liveBaseSha, runBinding) { if (pull.number !== runBinding.pullNumber) { throw new ObservationError('ambiguous_pull', 'live pull request number does not match the run association', {publish: true, targetSha: runBinding.headSha}); }
+  const binding = bindPull(pull, liveBaseSha, runBinding.headSha); if (binding.baseSha !== runBinding.baseSha) { throw new ObservationError('stale_base', 'live pull request base does not match the run association', {publish: true, targetSha: runBinding.headSha}); }
+  return binding;
+}
+async function assertMergeParents(github, owner, repo, pull, baseSha, headSha) { if (pull.merge_commit_sha === null || pull.merge_commit_sha === headSha) { return false; }
   const mergeSha = assertSha(pull.merge_commit_sha, 'pull request merge commit');
   const response = await github.request( 'GET /repos/{owner}/{repo}/git/commits/{commit_sha}', {owner, repo, commit_sha: mergeSha}, );
   const parents = response.data.parents;
-  if ( !Array.isArray(parents) || parents.length !== 2 || parents[0]?.sha !== baseSha || parents[1]?.sha !== headSha ) { throw new ObservationError('invalid_binding', 'pull request merge parents do not bind base and head', { publish: true, targetSha: headSha, });
-  }
+  if ( !Array.isArray(parents) || parents.length !== 2 || parents[0]?.sha !== baseSha || parents[1]?.sha !== headSha ) { throw new ObservationError('invalid_binding', 'pull request merge parents do not bind base and head', { publish: true, targetSha: headSha, }); }
   return true;
 }
 async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const jobs = [];
   let totalCount = null;
   const iterator = github.paginate.iterator( 'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs', {owner, repo, run_id: runId, attempt_number: runAttempt, per_page: 100}, );
-  for await (const response of iterator) { if (!Number.isSafeInteger(response.data.total_count) || !Array.isArray(response.data.jobs)) { throw new ObservationError('invalid_binding', 'legacy quick job metadata is invalid');
-    }
+  for await (const response of iterator) { if (!Number.isSafeInteger(response.data.total_count) || !Array.isArray(response.data.jobs)) { throw new ObservationError('invalid_binding', 'legacy quick job metadata is invalid'); }
     totalCount ??= response.data.total_count;
     jobs.push(...response.data.jobs);
   }
-  if (totalCount === null || jobs.length !== totalCount) { throw new ObservationError('invalid_binding', 'legacy quick job topology is incomplete');
-  }
+  if (totalCount === null || jobs.length !== totalCount) { throw new ObservationError('invalid_binding', 'legacy quick job topology is incomplete'); }
   return jobs;
 }
 function evaluateJobTopology(run, jobs, routes, draft) { const names = jobs.map((job) => job.name);
@@ -177,60 +181,70 @@ async function assessLifecycle({github, context, liveBaseSha}) { if (!relevantLi
     throw error;
   }
 }
-async function uniqueCurrentPullForHead(github, owner, repo, headSha) { const associated = await github.paginate( 'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls', {owner, repo, commit_sha: headSha, per_page: 100}, );
-  const matches = associated.filter((pull) => pull.state === 'open' && pull.head?.sha === headSha && pull.base?.ref === 'main' && pull.base?.repo?.id === REPOSITORY.id && pull.base?.repo?.full_name === REPOSITORY.fullName, );
-  if (matches.length !== 1) { throw new ObservationError('ambiguous_pull', 'run has no unique current pull request', { publish: false, targetSha: headSha, });
-  }
-  return matches[0].number;
+async function assertUniqueCurrentPullMatchesRun(github, owner, repo, runBinding) { const associated = await github.paginate( 'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls', {owner, repo, commit_sha: runBinding.headSha, per_page: 100}, );
+  const matches = associated.filter((pull) => pull.state === 'open' && pull.head?.sha === runBinding.headSha && pull.base?.ref === 'main' && pull.base?.repo?.id === REPOSITORY.id && pull.base?.repo?.full_name === REPOSITORY.fullName, );
+  if (matches.length !== 1) { throw new ObservationError('ambiguous_pull', 'run has no unique current pull request', { publish: true, targetSha: runBinding.headSha, }); } if (matches[0].number !== runBinding.pullNumber || matches[0].base?.sha !== runBinding.baseSha) { throw new ObservationError('ambiguous_pull', 'unique current pull request does not match the run association', { publish: true, targetSha: runBinding.headSha, }); }
 }
-async function assertCanonicalRun(github, context, run, payloadRun) { assertRepository(context, run.repository);
-  if ( run.workflow_id !== LEGACY_WORKFLOW.id || run.path !== LEGACY_WORKFLOW.path || run.name !== LEGACY_WORKFLOW.name || run.event !== 'pull_request' || run.status !== 'completed' ) { throw new ObservationError('invalid_binding', 'workflow run identity is not canonical');
-  }
-  const headSha = assertSha(run.head_sha, 'workflow run head');
-  if (payloadRun.id !== run.id || payloadRun.run_attempt !== run.run_attempt) { throw new ObservationError('stale_run', 'workflow run attempt is no longer current', { publish: true, targetSha: headSha, });
-  }
+async function assertCanonicalRun(github, context, run, payloadRun, liveBaseSha) { assertRepository(context, run.repository);
+  if ( run.workflow_id !== LEGACY_WORKFLOW.id || run.path !== LEGACY_WORKFLOW.path || run.name !== LEGACY_WORKFLOW.name || run.event !== 'pull_request' || run.status !== 'completed' ) { throw new ObservationError('invalid_binding', 'workflow run identity is not canonical'); }
+  const runBinding = bindRunPullRequest(run, liveBaseSha); const headSha = runBinding.headSha;
+  if (payloadRun.id !== run.id || payloadRun.run_attempt !== run.run_attempt) { throw new ObservationError('stale_run', 'workflow run attempt is no longer current', { publish: true, targetSha: headSha, }); }
   const [workflowResponse, suiteResponse] = await Promise.all([ github.request('GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}', { owner: REPOSITORY.owner, repo: REPOSITORY.repo, workflow_id: LEGACY_WORKFLOW.id, }), github.request('GET /repos/{owner}/{repo}/check-suites/{check_suite_id}', { owner: REPOSITORY.owner, repo: REPOSITORY.repo, check_suite_id: run.check_suite_id, }), ]);
-  const workflow = workflowResponse.data;
-  const suite = suiteResponse.data;
-  if ( workflow.id !== LEGACY_WORKFLOW.id || workflow.path !== LEGACY_WORKFLOW.path || workflow.name !== LEGACY_WORKFLOW.name || workflow.state !== 'active' || suite.head_sha !== headSha || suite.app?.id !== LEGACY_WORKFLOW.actionsAppId ) { throw new ObservationError('invalid_binding', 'workflow or check-suite identity did not bind', { publish: true, targetSha: headSha, });
-  }
-  return headSha;
+  const workflow = workflowResponse.data; const suite = suiteResponse.data;
+  if ( workflow.id !== LEGACY_WORKFLOW.id || workflow.path !== LEGACY_WORKFLOW.path || workflow.name !== LEGACY_WORKFLOW.name || workflow.state !== 'active' || suite.head_sha !== headSha || suite.app?.id !== LEGACY_WORKFLOW.actionsAppId ) { throw new ObservationError('invalid_binding', 'workflow or check-suite identity did not bind', { publish: true, targetSha: headSha, }); }
+  return runBinding;
 }
 async function assertLatestRun(github, owner, repo, run) { const runs = await github.paginate( 'GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs', { owner, repo, workflow_id: LEGACY_WORKFLOW.id, event: 'pull_request', head_sha: run.head_sha, per_page: 100, }, );
   const canonical = runs.filter((candidate) => candidate.workflow_id === LEGACY_WORKFLOW.id && candidate.path === LEGACY_WORKFLOW.path && candidate.event === 'pull_request' && candidate.head_sha === run.head_sha, );
   canonical.sort((left, right) => (right.run_number - left.run_number) || (right.id - left.id), );
-  if (canonical.length === 0 || canonical[0].id !== run.id || canonical[0].run_attempt !== run.run_attempt) { throw new ObservationError('stale_run', 'workflow run is not the latest for this head', { publish: true, targetSha: run.head_sha, });
-  }
+  if (canonical.length === 0 || canonical[0].id !== run.id || canonical[0].run_attempt !== run.run_attempt) { throw new ObservationError('stale_run', 'workflow run is not the latest for this head', { publish: true, targetSha: run.head_sha, }); }
 }
+function jobTopologySnapshot(jobs) { return stableAssessment(jobs.map((job) => ({ id: job.id ?? null, name: job.name, status: job.status, conclusion: job.conclusion, run_attempt: job.run_attempt, runner_id: job.runner_id ?? null, runner_name: job.runner_name ?? null, labels: Array.isArray(job.labels) ? [...job.labels].sort() : null, })).sort((left, right) => (left.id ?? 0) - (right.id ?? 0))); }
+function assertRunPublicationSnapshot(run, result, expectedBinding) { const reboundRun = bindRunPullRequest(run, result.baseSha);
+  if ( run.id !== result.runId || run.run_attempt !== result.runAttempt || run.status !== 'completed' || run.conclusion !== result.runConclusion || stableAssessment(reboundRun) !== stableAssessment(expectedBinding) ) { throw new ObservationError('stale_run', 'workflow run attempt or association changed', {publish: true, targetSha: result.headSha}); }
+  return reboundRun;
+}
+function assertJobTopologyUnchanged(jobs, expectedTopology, headSha) { if (jobTopologySnapshot(jobs) !== expectedTopology) { throw new ObservationError('stale_run', 'workflow run job topology changed', {publish: true, targetSha: headSha}); } }
 async function assessWorkflowRun({github, context, liveBaseSha}) { const payloadRun = context.payload.workflow_run;
-  if (payloadRun?.event !== 'pull_request') { return assessment({kind: 'workflow_run', code: 'ignored_non_pr'});
-  }
-  const response = await github.request( 'GET /repos/{owner}/{repo}/actions/runs/{run_id}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, run_id: payloadRun.id}, );
-  const run = response.data;
-  let headSha = assertSha(run.head_sha, 'workflow run head');
-  try { headSha = await assertCanonicalRun(github, context, run, payloadRun);
-    const pullNumber = await uniqueCurrentPullForHead( github, REPOSITORY.owner, REPOSITORY.repo, headSha, );
-    const pull = await getPull(github, REPOSITORY.owner, REPOSITORY.repo, pullNumber);
-    const binding = bindPull(pull, liveBaseSha, headSha);
-    if (!binding.sameRepository || run.head_repository?.id !== REPOSITORY.id || run.head_repository?.full_name !== REPOSITORY.fullName) { return assessment({ kind: 'workflow_run', code: 'fork', state: 'failure', publish: true, targetSha: headSha, pullNumber, baseSha: binding.baseSha, headSha, runId: run.id, runAttempt: run.run_attempt, });
-    }
+  if (payloadRun?.event !== 'pull_request') { return assessment({kind: 'workflow_run', code: 'ignored_non_pr'}); }
+  const response = await github.request( 'GET /repos/{owner}/{repo}/actions/runs/{run_id}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, run_id: payloadRun.id}, ); const run = response.data;
+  let headSha = assertSha(run.head_sha, 'workflow run head'); let runBinding = null;
+  try { runBinding = await assertCanonicalRun(github, context, run, payloadRun, liveBaseSha);
+    headSha = runBinding.headSha;
+    await assertUniqueCurrentPullMatchesRun( github, REPOSITORY.owner, REPOSITORY.repo, runBinding, );
+    const pull = await getPull(github, REPOSITORY.owner, REPOSITORY.repo, runBinding.pullNumber);
+    const binding = bindPullToRun(pull, liveBaseSha, runBinding);
+    if (!binding.sameRepository || run.head_repository?.id !== REPOSITORY.id || run.head_repository?.full_name !== REPOSITORY.fullName) { return assessment({ kind: 'workflow_run', code: 'fork', state: 'failure', publish: true, targetSha: headSha, pullNumber: runBinding.pullNumber, baseSha: binding.baseSha, headSha, runId: run.id, runAttempt: run.run_attempt, }); }
     await assertLatestRun(github, REPOSITORY.owner, REPOSITORY.repo, run);
     await assertControlsUnchanged( github, REPOSITORY.owner, REPOSITORY.repo, binding.baseSha, headSha, );
     const routes = await classifyPull( github, REPOSITORY.owner, REPOSITORY.repo, binding.baseSha, pull, );
     await assertMergeParents( github, REPOSITORY.owner, REPOSITORY.repo, pull, binding.baseSha, headSha, );
     const jobs = await listAttemptJobs( github, REPOSITORY.owner, REPOSITORY.repo, run.id, run.run_attempt, );
     const result = evaluateJobTopology(run, jobs, routes, pull.draft);
-    return assessment({ kind: 'workflow_run', code: result.code, state: result.ok ? 'success' : 'failure', publish: true, targetSha: headSha, pullNumber, baseSha: binding.baseSha, headSha, runId: run.id, runAttempt: run.run_attempt, routes, metrics: { route_job_concordance: result.routeConcordance, terminal_binding_coverage: true, v2_self_hosted_minutes: 0, false_success_publications: result.ok ? 0 : 0, stale_head_publications: 0, }, });
-  } catch (error) { if (error instanceof ObservationError) { return assessment({ kind: 'workflow_run', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, headSha, runId: run.id, runAttempt: run.run_attempt, });
-    }
+    return assessment({ kind: 'workflow_run', code: result.code, state: result.ok ? 'success' : 'failure', publish: true, targetSha: headSha, pullNumber: runBinding.pullNumber, baseSha: binding.baseSha, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, routes, jobTopology: jobTopologySnapshot(jobs), metrics: { route_job_concordance: result.routeConcordance, terminal_binding_coverage: true, v2_self_hosted_minutes: 0, false_success_publications: result.ok ? 0 : 0, stale_head_publications: 0, }, });
+  } catch (error) { if (error instanceof ObservationError) { return assessment({ kind: 'workflow_run', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
     throw error;
   }
 }
+function publicationFailure(result, code, publish = true) { return { ...result, code, state: 'failure', publish, description: statusDescription(code), metrics: {...result.metrics, false_success_publications: 0}, }; }
+async function rebindForPublication({github, result}) { if (!result.publish) { return result; }
+  try { if ( typeof result.headSha !== 'string' || !SHA_PATTERN.test(result.headSha) || typeof result.baseSha !== 'string' || !SHA_PATTERN.test(result.baseSha) || result.targetSha !== result.headSha || !Number.isSafeInteger(result.pullNumber) || result.pullNumber <= 0 ) { return publicationFailure(result, 'invalid_binding', false); }
+    const headSha = result.headSha; const runBinding = {pullNumber: result.pullNumber, headSha, baseSha: result.baseSha};
+    if (result.kind === 'workflow_run') { if (!Number.isSafeInteger(result.runId) || result.runId <= 0 || !Number.isSafeInteger(result.runAttempt) || result.runAttempt <= 0 || typeof result.jobTopology !== 'string') { return publicationFailure(result, 'invalid_binding', false); }
+      const {data: run} = await github.request( 'GET /repos/{owner}/{repo}/actions/runs/{run_id}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, run_id: result.runId}, ); assertRunPublicationSnapshot(run, result, runBinding);
+      await assertLatestRun(github, REPOSITORY.owner, REPOSITORY.repo, run); await assertUniqueCurrentPullMatchesRun(github, REPOSITORY.owner, REPOSITORY.repo, runBinding);
+      const jobs = await listAttemptJobs(github, REPOSITORY.owner, REPOSITORY.repo, result.runId, result.runAttempt); assertJobTopologyUnchanged(jobs, result.jobTopology, headSha);
+    }
+    const [branchResponse, pullResponse] = await Promise.all([ github.request('GET /repos/{owner}/{repo}/branches/{branch}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, branch: 'main'}), github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, pull_number: result.pullNumber}), ]);
+    const liveBaseSha = assertSha(branchResponse.data.commit?.sha, 'final live main'); if (liveBaseSha !== result.baseSha) { throw new ObservationError('stale_base', 'live main moved before publication', {publish: true, targetSha: headSha}); } bindPullToRun(pullResponse.data, liveBaseSha, runBinding);
+    return result;
+  } catch (error) { if (error instanceof ObservationError) { return publicationFailure(result, error.code, true); }
+    return publicationFailure(result, 'invalid_binding', true);
+  }
+}
 async function assess({github, context, liveBaseSha}) { assertSha(liveBaseSha, 'live main');
-  if (context.eventName === 'pull_request_target') { return assessLifecycle({github, context, liveBaseSha});
-  }
-  if (context.eventName === 'workflow_run') { return assessWorkflowRun({github, context, liveBaseSha});
-  }
+  if (context.eventName === 'pull_request_target') { return assessLifecycle({github, context, liveBaseSha}); }
+  if (context.eventName === 'workflow_run') { return assessWorkflowRun({github, context, liveBaseSha}); }
   return assessment({kind: 'unknown', code: 'ignored_event'});
 }
-module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, bindPull, evaluateJobTopology, getTreeEntry, relevantLifecycle, stableAssessment, };
+module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, rebindForPublication, relevantLifecycle, stableAssessment, };

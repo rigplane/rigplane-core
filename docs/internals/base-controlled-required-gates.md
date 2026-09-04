@@ -27,9 +27,18 @@ or fork code and never reads a candidate artifact, log, or cache. Its `pull_requ
 reopened, synchronized, ready, draft, and base-edited pull requests; title- and body-only edits are no-ops. Its
 `workflow_run` path consumes completed runs from the canonical legacy `Tests (quick)` workflow and ignores main pushes.
 
-The read-only producer and status publisher independently run `quick-v2-metadata-policy-v1.js: assess`. Each rereads
-live `main`, the pull request, canonical workflow and check-suite identity, latest run/attempt, and complete paginated
-job topology. Publication requires identical assessments and the still-current exact head.
+The read-only producer and status publisher independently run `.github/scripts/quick-v2-metadata-policy-v1.js: assess`.
+For a completed legacy run, `.github/scripts/quick-v2-metadata-policy-v1.js: bindRunPullRequest` requires exactly one
+recorded `run.pull_requests` entry and binds its PR number, head, base, and repository identity. The current open PR
+association must be unique and match that tuple; a shared head cannot remap an old run to another PR, and the recorded
+base must equal live `main`.
+
+After the assessments match, `.github/scripts/quick-v2-metadata-policy-v1.js: rebindForPublication` rereads the run
+attempt and job topology, verifies the recorded PR association again, and makes the PR plus live `main` its final API
+reads immediately before the status POST. A changed attempt, topology, head, base, or `main` becomes unknown/failure,
+or an incompletely bound result is withheld. The final API reads and the status POST are not atomic because GitHub has
+no transaction spanning them; keeping those reads last reduces the remaining observation-only race but cannot make
+this context safe for promotion.
 
 `quick-v2-metadata-policy-v1.js: getTreeEntry` walks trusted base controls: parents must be `040000` trees and files
 must be `100644` blobs. Missing, duplicate, truncated, executable, symlink, and gitlink entries fail closed. Candidate
