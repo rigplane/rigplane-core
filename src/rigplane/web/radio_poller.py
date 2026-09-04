@@ -1888,6 +1888,12 @@ class RadioPoller:
                     # Still try one query to detect reconnection
                     try:
                         await self._send_query()
+                        if (
+                            getattr(self._radio, "connected", False) is not True
+                            or getattr(self._radio, "radio_ready", False) is not True
+                        ):
+                            _backoff = min(_backoff + 0.5, _MAX_BACKOFF)
+                            continue
                         _backoff = 0.0
                         logger.info("radio-poller: connection restored")
                     except (ConnectionError, RadioConnectionError):
