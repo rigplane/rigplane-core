@@ -598,6 +598,13 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
         "set_rf_gain",
         "set_squelch",
         "set_att",
+        "set_tuner_status",
+        "set_antenna_1",
+        "set_antenna_2",
+        "set_rx_antenna",
+        "set_rx_antenna_ant1",
+        "set_rx_antenna_ant2",
+        "set_civ_output_ant",
     }
     descriptor = command_descriptors()["set_repeater_shift"]
     assert descriptor.tx_policy is DescriptorTxPolicy.TX_SAFE
@@ -683,6 +690,29 @@ def test_civ_output_ant_is_descriptor_tx_safe() -> None:
     assert command.name == "set_civ_output_ant"
     assert command.params["on"] is False
     assert command.params["enabled"] is False
+
+
+def test_tuner_descriptor_preserves_tristate_target_and_admission_policy() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        command_descriptor,
+    )
+
+    descriptor = command_descriptor("set_tuner_status")
+    assert descriptor is not None
+    assert descriptor.tx_policy is DescriptorTxPolicy.TX_SAFE
+    command = bind_command_intent("set_tuner_status", {"value": 2}, source="test")
+    assert command.name == "set_tuner_status"
+    assert command.params == {"value": 2}
+    assert str(command.target) == "global.operator_controls.tuner_status"
+
+
+@pytest.mark.parametrize("value", [True, 1.0, -1, 3])
+def test_tuner_descriptor_rejects_noncanonical_tristate_values(value: object) -> None:
+    from rigplane.core.command_dispatch import bind_command_intent
+
+    with pytest.raises(ValueError, match="tuner value must be 0, 1, or 2"):
+        bind_command_intent("set_tuner_status", {"value": value}, source="test")
 
 
 def test_descriptor_lookup_rejects_unrepresentable_policy(

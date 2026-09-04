@@ -98,12 +98,12 @@ def test_composed_mapped_write_bypasses_legacy_deferred_staging() -> None:
     admit.assert_not_awaited()
 
 
-def test_unmanaged_mapped_write_retains_legacy_deferred_staging() -> None:
+def test_unmanaged_tuner_engage_is_not_deferred() -> None:
     poller, _radio, admit, store = _poller(composed=False)
     _observe_tx(store)
     entry = CommandQueueEntry(SetTunerStatus(1), command_id="cmd-tuner")
 
-    assert poller._stage_entry_for_turn(entry) == []  # noqa: SLF001
+    assert poller._stage_entry_for_turn(entry) == [entry]  # noqa: SLF001
 
     admit.assert_not_awaited()
 
