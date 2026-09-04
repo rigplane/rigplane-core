@@ -4613,15 +4613,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         _, freq = parse_tone_freq_response(resp, ctcss_tones_centihz=domain)
         return freq
 
-    async def set_tone_freq(self, freq_centihz: int, receiver: int = 0) -> None:
+    async def set_tone_freq(
+        self,
+        freq_hz: int | None = None,
+        receiver: int = 0,
+        *,
+        freq_centihz: int | None = None,
+    ) -> None:
         """Set CTCSS tone frequency in exact centiHz (0x1B 0x00)."""
+        if freq_hz is not None and freq_centihz is not None:
+            raise TypeError("set_tone_freq received both freq_hz and freq_centihz")
+        if freq_hz is None:
+            if freq_centihz is None:
+                raise TypeError("set_tone_freq missing required frequency")
+            freq_hz = freq_centihz
+
         self._check_connected()
         self._require_receiver(receiver, operation="set_tone_freq")
         domain = self._profile.ctcss_tones_centihz
 
         if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x00):
             civ = self._commands.set_tone_freq(
-                freq_centihz,
+                freq_hz,
                 to_addr=self._radio_addr,
                 receiver=RECEIVER_MAIN,
                 command29=False,
@@ -4644,7 +4657,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         cmd29 = self._profile.supports_cmd29(0x1B, 0x00)
         await self._send_fire_and_forget(
             self._commands.set_tone_freq(
-                freq_centihz,
+                freq_hz,
                 to_addr=self._radio_addr,
                 receiver=receiver,
                 command29=cmd29,
@@ -4691,15 +4704,28 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         _, freq = parse_tsql_freq_response(resp, ctcss_tones_centihz=domain)
         return freq
 
-    async def set_tsql_freq(self, freq_centihz: int, receiver: int = 0) -> None:
+    async def set_tsql_freq(
+        self,
+        freq_hz: int | None = None,
+        receiver: int = 0,
+        *,
+        freq_centihz: int | None = None,
+    ) -> None:
         """Set TSQL frequency in exact centiHz (0x1B 0x01)."""
+        if freq_hz is not None and freq_centihz is not None:
+            raise TypeError("set_tsql_freq received both freq_hz and freq_centihz")
+        if freq_hz is None:
+            if freq_centihz is None:
+                raise TypeError("set_tsql_freq missing required frequency")
+            freq_hz = freq_centihz
+
         self._check_connected()
         self._require_receiver(receiver, operation="set_tsql_freq")
         domain = self._profile.ctcss_tones_centihz
 
         if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x01):
             civ = self._commands.set_tsql_freq(
-                freq_centihz,
+                freq_hz,
                 to_addr=self._radio_addr,
                 receiver=RECEIVER_MAIN,
                 command29=False,
@@ -4722,7 +4748,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         cmd29 = self._profile.supports_cmd29(0x1B, 0x01)
         await self._send_fire_and_forget(
             self._commands.set_tsql_freq(
-                freq_centihz,
+                freq_hz,
                 to_addr=self._radio_addr,
                 receiver=receiver,
                 command29=cmd29,
