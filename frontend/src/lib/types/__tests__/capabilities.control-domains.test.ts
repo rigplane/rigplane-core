@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ExactDecimal } from '../exact-decimal';
-import type { ControlDomain, LookupControlDomain, ScalarControlDomain } from '../capabilities';
+import type {
+  Capabilities, ControlDomain, LookupControlDomain, ScalarControlDomain,
+} from '../capabilities';
 import { validateCapabilities } from '../capabilities';
 import goldenControls from '../../../../../tests/fixtures/control-domain-controls.json';
 
@@ -57,6 +59,10 @@ const linearDomain = {
   quantization: 'nearest_ties_down',
   restoration: 'exact',
 };
+const ctcssTypeContract: Pick<Capabilities, 'ctcssTonesCentihz'> = {
+  ctcssTonesCentihz: [6700, 8850],
+};
+void ctcssTypeContract;
 function parse(control: Record<string, unknown>): ControlDomain {
   const result = validateCapabilities({
     ...baseCapabilities,
@@ -249,5 +255,24 @@ describe('normalized control capability domains', () => {
       restoration: 'unavailable',
       lookup: [{ raw: 0, display: 1_000_000_000_000.05 }],
     })).toThrow(/lattice/);
+  });
+});
+
+describe('profile CTCSS capability domain', () => {
+  it('accepts and preserves an additive exact-centiHz domain', () => {
+    const payload = { ...baseCapabilities, ctcssTonesCentihz: [6700, 8850, 25410] };
+    expect(validateCapabilities(payload)).toBe(payload);
+    expect(validateCapabilities(payload).ctcssTonesCentihz).toBe(payload.ctcssTonesCentihz);
+  });
+
+  it.each([
+    '8850',
+    [6700, 88.5],
+    [6700, true],
+    [6700, Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects malformed domain value %j', (ctcssTonesCentihz) => {
+    expect(() => validateCapabilities({ ...baseCapabilities, ctcssTonesCentihz })).toThrow(
+      /\$\.ctcssTonesCentihz/,
+    );
   });
 });

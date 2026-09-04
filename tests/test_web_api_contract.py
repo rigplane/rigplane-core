@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from rigplane.profiles import resolve_radio_profile
 from rigplane.web.api_contract import (
     RESPONSE_FIELD_CONTRACTS,
     STABLE_HTTP_ENDPOINTS,
@@ -197,6 +198,36 @@ async def test_capability_endpoints_omit_controls_for_legacy_profiles(
             payload["capabilities"] if path == "/api/v1/info" else payload
         )
         assert "controls" not in capability_payload
+
+
+@pytest.mark.asyncio
+async def test_ctcss_profile_domain_round_trips_through_capability_endpoints() -> None:
+    profile = resolve_radio_profile(model="IC-7300")
+    assert profile.ctcss_tones_centihz
+
+    for active_profile, expected in (
+        (profile, list(profile.ctcss_tones_centihz)),
+        (replace(profile, ctcss_tones_centihz=None), []),
+    ):
+        radio = SimpleNamespace(
+            model=active_profile.model,
+            profile=active_profile,
+            capabilities=set(active_profile.capabilities),
+            connected=False,
+            control_connected=False,
+            radio_ready=False,
+        )
+        server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+        for path in ("/api/v1/info", "/api/v1/capabilities"):
+            writer = _Writer()
+            await server._handle_http(writer, "GET", path)  # noqa: SLF001
+            status, payload = _json_response(writer)
+            assert status == 200
+            capability_payload = (
+                payload["capabilities"] if path == "/api/v1/info" else payload
+            )
+            assert capability_payload["ctcssTonesCentihz"] == expected
 
 
 def test_pro_web_api_contract_lists_stable_surface() -> None:
