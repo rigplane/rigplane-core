@@ -53,10 +53,60 @@ async def test_work_currency_tracks_the_externally_owned_fence() -> None:
     await started.wait()
     cleanup = fence.force_off()
     release.set()
-    await task
+    with pytest.raises(asyncio.CancelledError):
+        await task
     await cleanup
 
     assert observed == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_poisoned_operation_cannot_return_stale_success_before_cleanup() -> None:
+    fence = TxAbortFence()
+    runner = LocalTxWorkRunner(fence)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def work(is_current: Callable[[], bool]) -> str:
+        assert is_current()
+        started.set()
+        await release.wait()
+        return "stale success"
+
+    task = asyncio.create_task(runner.run(work))
+    await started.wait()
+    cleanup = fence.force_off()
+    try:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        result = await cleanup
+
+    assert result.failures == ()
+
+
+@pytest.mark.asyncio
+async def test_force_off_reports_provider_cancellation_cleanup_failure() -> None:
+    fence = TxAbortFence()
+    runner = LocalTxWorkRunner(fence)
+    started = asyncio.Event()
+
+    async def work(_is_current: Callable[[], bool]) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("provider cancellation cleanup failed")
+
+    task = asyncio.create_task(runner.run(work))
+    await started.wait()
+    result = await fence.force_off()
+
+    assert len(result.failures) == 1
+    assert result.failures[0].error.args == ("provider cancellation cleanup failed",)
+    with pytest.raises(RuntimeError, match="provider cancellation cleanup failed"):
+        await task
 
 
 @pytest.mark.asyncio
