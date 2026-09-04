@@ -188,13 +188,24 @@ async def test_ws_ptt_aliases_submit_exact_owner_without_queue_or_raw_fallback(
 ) -> None:
     authority = _Authority()
     handler, server, radio = _handler(authority)
-
     assert await handler._enqueue_command(name, params) == result
-
     assert authority.calls == [(on, "websocket-test")]
+    assert authority.force_off_calls == 0
     assert authority.submissions[0].settlement_waits == 0
     server.command_queue.put.assert_not_called()
     server.command_queue.put_ordered.assert_not_called()
+    radio.set_ptt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", (1, "false", {}), ids=("integer", "string", "object"))
+async def test_ws_ptt_rejects_non_boolean_state_before_authority(state: object) -> None:
+    authority = _Authority()
+    handler, server, radio = _handler(authority)
+    with pytest.raises(ValueError, match="state must be a boolean"):
+        await handler._enqueue_command("ptt", {"state": state})
+    assert authority.calls == []
+    server.command_queue.put.assert_not_called()
     radio.set_ptt.assert_not_awaited()
 
 
@@ -204,9 +215,7 @@ async def test_rejected_admission_is_a_terminal_ws_error() -> None:
     authority.next_outcome = ManagedTxOutcome.REJECTED
     ws = SimpleNamespace(send_text=AsyncMock())
     handler, _, _ = _handler(authority, ws=ws)
-
     await handler._dispatch_command("command-1", "ptt_on", {})
-
     response = decode_json(ws.send_text.await_args.args[0])
     assert response["ok"] is False
     assert response["id"] == "command-1"
@@ -224,9 +233,7 @@ async def test_observed_rf_never_changes_ptt_admission(
 ) -> None:
     authority = _Authority()
     handler, server, _ = _handler(authority, observed=observed, stale=stale)
-
     await handler._enqueue_command("ptt_on", {})
-
     assert authority.calls == [(True, "websocket-test")]
     server.command_queue.put.assert_not_called()
 
@@ -234,12 +241,10 @@ async def test_observed_rf_never_changes_ptt_admission(
 @pytest.mark.asyncio
 async def test_missing_authority_and_ownerless_http_ptt_fail_closed() -> None:
     handler, server, radio = _handler(None)
-
     with pytest.raises(CommandRejectedError, match="authority unavailable"):
         await handler._enqueue_command("ptt_on", {})
     with pytest.raises(CommandUnsupportedError, match="WebSocket owner"):
         await handler._enqueue_command("ptt_off", {}, source="http")
-
     server.command_queue.put.assert_not_called()
     radio.set_ptt.assert_not_awaited()
 
@@ -266,10 +271,8 @@ async def test_read_only_and_provider_rejection_fail_before_wire() -> None:
 async def test_repeat_ptt_on_does_not_mutate_tot_or_wait_for_settlement() -> None:
     authority = _Authority()
     handler, _, _ = _handler(authority)
-
     await handler._enqueue_command("ptt_on", {})
     await handler._enqueue_command("ptt_on", {})
-
     assert authority.calls == [
         (True, "websocket-test"),
         (True, "websocket-test"),
@@ -301,9 +304,7 @@ async def test_disconnect_is_owner_scoped_and_preserves_transmit(
     authority = _Authority()
     authority.intent = intent
     handler, server, _ = _handler(authority, ws=_eof_ws())
-
     await handler.run()
-
     assert authority.disconnect_calls == ["websocket-test"]
     assert authority.intent == expected
     assert authority.force_off_calls == 0
@@ -354,7 +355,6 @@ async def test_cancelled_handler_finishes_cleanup_and_retains_disconnect_release
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-
         assert not queue.session_is_live("websocket-test")
         server.unregister_control_event_queue.assert_called_once_with(
             handler._event_queue,  # noqa: SLF001
