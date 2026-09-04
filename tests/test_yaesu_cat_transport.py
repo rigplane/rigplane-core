@@ -15,6 +15,7 @@ from rigplane.backends.yaesu_cat import (
     YaesuCatTransport,
 )
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected
+from rigplane.core.priority_exchange import ExchangeTier
 
 
 class FakeStreamReader:
@@ -55,6 +56,25 @@ class FakeStreamWriter:
     async def wait_closed(self) -> None:
         """No-op wait."""
         pass
+
+
+class BlockingFirstDrainWriter(FakeStreamWriter):
+    """Hold the first frame on the wire while later exchanges queue."""
+
+    def __init__(self, *, fail_first: bool = False) -> None:
+        super().__init__()
+        self._fail_first = fail_first
+        self.first_drain_entered = asyncio.Event()
+        self.release_first_drain = asyncio.Event()
+        self._drain_count = 0
+
+    async def drain(self) -> None:
+        self._drain_count += 1
+        if self._drain_count == 1:
+            self.first_drain_entered.set()
+            await self.release_first_drain.wait()
+            if self._fail_first:
+                raise OSError("first provider write failed")
 
 
 @pytest.fixture
@@ -214,6 +234,155 @@ class TestYaesuCatTransport:
         assert transport.stats.consecutive_errors == 1
         assert transport.stats.timeouts == 0
         assert transport.stats.writes == (0 if failure_stage == "writer-drain" else 1)
+
+    async def test_urgent_write_waits_for_active_frame_then_overtakes_ordinary_fifo(
+        self,
+        mock_serial_connection: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        reader = FakeStreamReader([])
+        writer = BlockingFirstDrainWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+        monkeypatch.setattr(transport, "_drain_responses", AsyncMock(return_value=0))
+        monkeypatch.setattr(transport, "readline", AsyncMock(return_value="MD02"))
+
+        active = asyncio.create_task(transport.write("FA000000001;"))
+        await asyncio.wait_for(writer.first_drain_entered.wait(), 1)
+        ordinary_query = asyncio.create_task(transport.query("MD0;"))
+        ordinary_write = asyncio.create_task(transport.write("FB000000002;"))
+        await asyncio.sleep(0)
+        urgent_off = asyncio.create_task(
+            transport.write("TX0;", tier=ExchangeTier.URGENT)
+        )
+        urgent_on = asyncio.create_task(
+            transport.write("TX1;", tier=ExchangeTier.URGENT)
+        )
+        await asyncio.sleep(0)
+
+        assert writer.written == [b"FA000000001;"]
+        writer.release_first_drain.set()
+        await asyncio.wait_for(
+            asyncio.gather(
+                active, ordinary_query, ordinary_write, urgent_off, urgent_on
+            ),
+            1,
+        )
+
+        assert writer.written == [
+            b"FA000000001;",
+            b"TX0;",
+            b"TX1;",
+            b"MD0;",
+            b"FB000000002;",
+        ]
+
+    async def test_cancelled_urgent_waiter_releases_ordinary_exchange(
+        self,
+        mock_serial_connection: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        reader = FakeStreamReader([])
+        writer = BlockingFirstDrainWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+        monkeypatch.setattr(transport, "_drain_responses", AsyncMock(return_value=0))
+
+        active = asyncio.create_task(transport.write("FA000000001;"))
+        await asyncio.wait_for(writer.first_drain_entered.wait(), 1)
+        cancelled = asyncio.create_task(
+            transport.write("TX0;", tier=ExchangeTier.FORCE_RELEASE)
+        )
+        abort = asyncio.create_task(transport.write("KY;", tier=ExchangeTier.ABORT))
+        ordinary = asyncio.create_task(transport.write("FB000000002;"))
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        await asyncio.sleep(0)
+
+        # Cancelling a queued higher-tier waiter must not release the active
+        # exchange or let any later waiter interleave with its wire frame.
+        assert writer.written == [b"FA000000001;"]
+
+        writer.release_first_drain.set()
+        await asyncio.wait_for(asyncio.gather(active, abort, ordinary), 1)
+        await asyncio.wait_for(transport.write("FC000000003;"), 1)
+
+        assert writer.written == [
+            b"FA000000001;",
+            b"KY;",
+            b"FB000000002;",
+            b"FC000000003;",
+        ]
+
+    async def test_force_release_overtakes_queued_aborts_after_provider_failure(
+        self,
+        mock_serial_connection: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        reader = FakeStreamReader([])
+        writer = BlockingFirstDrainWriter(fail_first=True)
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+        monkeypatch.setattr(transport, "_drain_responses", AsyncMock(return_value=0))
+
+        active = asyncio.create_task(transport.write("FA000000001;"))
+        await asyncio.wait_for(writer.first_drain_entered.wait(), 1)
+        stop_cw = asyncio.create_task(transport.write("KY;", tier=ExchangeTier.ABORT))
+        stop_tune = asyncio.create_task(
+            transport.write("AC000;", tier=ExchangeTier.ABORT)
+        )
+        late_on = asyncio.create_task(transport.write("TX1;"))
+        await asyncio.sleep(0)
+        force_off = asyncio.create_task(
+            transport.write("TX0;", tier=ExchangeTier.FORCE_RELEASE)
+        )
+        await asyncio.sleep(0)
+
+        assert writer.written == [b"FA000000001;"]
+        writer.release_first_drain.set()
+        with pytest.raises(CatTransportError, match="first provider write failed"):
+            await active
+        await asyncio.wait_for(
+            asyncio.gather(force_off, stop_cw, stop_tune, late_on),
+            1,
+        )
+
+        assert writer.written == [
+            b"FA000000001;",
+            b"TX0;",
+            b"KY;",
+            b"AC000;",
+            b"TX1;",
+        ]
+
+    async def test_final_currency_check_suppresses_stale_write(
+        self,
+        mock_serial_connection: Any,
+    ) -> None:
+        reader = FakeStreamReader([])
+        writer = FakeStreamWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+        checks = iter((True, False))
+
+        with pytest.raises(CatTransportError, match="no longer current"):
+            await transport.write("TX0;", is_current=lambda: next(checks))
+
+        assert writer.written == []
 
     async def test_readline_returns_response_without_terminator(
         self, mock_serial_connection: Any

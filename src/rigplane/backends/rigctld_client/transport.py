@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
+from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
@@ -44,9 +44,7 @@ class RigctldTransport:
         self.timeout = timeout
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._exchange_active = False
-        self._urgent_waiters: deque[asyncio.Future[None]] = deque()
-        self._ordinary_waiters: deque[asyncio.Future[None]] = deque()
+        self._exchange_gate = PriorityExchangeGate()
         self._lifecycle_lock = asyncio.Lock()
         self._provider_generation_advance: Callable[[], int] | None = None
         self._connection_retired = True
@@ -138,47 +136,19 @@ class RigctldTransport:
             if self._reader is reader and self._writer is writer:
                 await self._close_locked()
 
-    async def _admit_exchange(self, urgent: bool) -> None:
-        if not self._exchange_active:
-            self._exchange_active = True
-            return
-        queue = self._urgent_waiters if urgent else self._ordinary_waiters
-        waiter = asyncio.get_running_loop().create_future()
-        queue.append(waiter)
-        try:
-            await waiter
-        except asyncio.CancelledError:
-            if not waiter.cancelled():
-                # Already granted, but no connection has been captured yet.
-                self._release_exchange()
-            elif waiter in queue:
-                queue.remove(waiter)
-            raise
-
-    def _release_exchange(self) -> None:
-        for queue in (self._urgent_waiters, self._ordinary_waiters):
-            while queue:
-                waiter = queue.popleft()
-                if not waiter.done():
-                    # Reserve ownership until this waiter resumes or cancels.
-                    waiter.set_result(None)
-                    return
-        self._exchange_active = False
-
     @asynccontextmanager
     async def _exchange(
         self, *, urgent: bool = False
     ) -> AsyncIterator[tuple[asyncio.StreamReader | None, asyncio.StreamWriter | None]]:
-        await self._admit_exchange(urgent)
-        reader, writer = self._reader, self._writer
-        try:
-            yield reader, writer
-        except asyncio.CancelledError:
-            # No await: quarantine precedes release of transaction ownership.
-            self._retire_connection(reader, writer)
-            raise
-        finally:
-            self._release_exchange()
+        tier = ExchangeTier.FORCE_RELEASE if urgent else ExchangeTier.ORDINARY
+        async with self._exchange_gate.exchange(tier=tier):
+            reader, writer = self._reader, self._writer
+            try:
+                yield reader, writer
+            except asyncio.CancelledError:
+                # No await: quarantine precedes release of transaction ownership.
+                self._retire_connection(reader, writer)
+                raise
 
     async def _drain_stale(
         self,
