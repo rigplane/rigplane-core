@@ -67,6 +67,7 @@ class _Authority:
         self.submissions: list[_Submission] = []
         self.configured_tot_seconds: float | None = 180.0
         self.next_outcome = ManagedTxOutcome.ACCEPTED
+        self.tot_error: OSError | None = None
 
     async def snapshot(self) -> ManagedTxProjection:
         self.calls.append("snapshot")
@@ -96,6 +97,8 @@ class _Authority:
 
     async def set_tot_seconds(self, value: object) -> ManagedTxTotConfig:
         self.calls.append(("set_tot_seconds", value))
+        if self.tot_error is not None:
+            raise self.tot_error
         if value == "invalid":
             raise ValueError("invalid TOT")
         self.configured_tot_seconds = None if value in (None, 0) else float(value)
@@ -285,6 +288,47 @@ async def test_tot_update_round_trips_through_the_authority_snapshot() -> None:
     assert isinstance(tot, dict)
     assert tot["configuredSeconds"] == 45.0
     assert authority.calls == [("set_tot_seconds", 45), "snapshot"]
+
+
+@pytest.mark.asyncio
+async def test_tot_persistence_failure_returns_stable_json_error() -> None:
+    authority = _Authority()
+    authority.tot_error = OSError("disk full")
+    server = _server(authority)
+    reader, headers = _reader({"configuredSeconds": 45})
+    writer = _Writer()
+
+    await server._handle_http(  # noqa: SLF001
+        writer,  # type: ignore[arg-type]
+        "PUT",
+        "/api/v1/managed-transmit/tot",
+        headers=headers,
+        reader=reader,
+    )
+
+    assert writer.status == 500
+    assert writer.payload == {
+        "error": "managed_tx_config_error",
+        "message": "Managed transmit TOT configuration could not be saved",
+    }
+    assert authority.calls == [("set_tot_seconds", 45)]
+
+
+@pytest.mark.asyncio
+async def test_managed_transmit_snapshot_rejects_head_instead_of_sending_json() -> None:
+    authority = _Authority()
+    server = _server(authority)
+    writer = _Writer()
+
+    await server._handle_http(  # noqa: SLF001
+        writer,  # type: ignore[arg-type]
+        "HEAD",
+        "/api/v1/managed-transmit",
+    )
+
+    assert writer.status == 405
+    assert writer.payload == {}
+    assert authority.calls == []
 
 
 @pytest.mark.asyncio

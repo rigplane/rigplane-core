@@ -88,7 +88,7 @@ async def dispatch_http_request(
         "/api/v1/managed-transmit/tot",
     ):
         expected_methods = {
-            "/api/v1/managed-transmit": ("GET", "HEAD"),
+            "/api/v1/managed-transmit": ("GET",),
             "/api/v1/managed-transmit/command": ("POST",),
             "/api/v1/managed-transmit/tot": ("PUT",),
         }[path]
