@@ -28,6 +28,7 @@ import { readWorkspace } from '../src/presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../src/presentation/workspace/resolution';
 import DualReceiverCockpit from '../src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte';
 import PeerSplitLayout from '../src/skins/segmentline/PeerSplitLayout.svelte';
+import IcomTouchscreenFaceFixture from './IcomTouchscreenFaceFixture.svelte';
 // MOR-2253 slice 1 F1 (verifier BLOCKED): this is the harness's own mount of
 // the peer-split glass, the one other production/harness call site besides
 // `components-v2/layout/LcdLayout.svelte` — that file passes canvasW/canvasH
@@ -70,6 +71,7 @@ if (!fixture) throw new Error(`MOR-1070 harness: unknown fixture id "${id}"`);
  */
 const ROOT_TEST_ID = fixture.layout === 'reference' ? 'reference-layout'
   : fixture.layout === 'peer-split' ? 'peer-split-glass'
+    : fixture.layout === 'icom-touchscreen' ? 'icom-touchscreen-fixture'
     : 'dual-receiver-cockpit';
 
 if ((params.get('theme') ?? 'v2') === 'v2') {
@@ -202,6 +204,8 @@ if (fixture.layout === 'peer-split') {
       minScale: peerSplitGlassGroup.scaling.minScale,
     },
   });
+} else if (fixture.layout === 'icom-touchscreen') {
+  mount(IcomTouchscreenFaceFixture, { target });
 } else {
   mount(fixture.layout === 'reference' ? ReferenceLayout : DualReceiverCockpit, { target, context });
 }
@@ -239,9 +243,9 @@ window.__harness = {
   assert: (options: AssertionOptions = {}) => (fixture.expect
     ? runAssertions(fixture.expect, { ...options, rootTestId: ROOT_TEST_ID })
     : [{
-      name: 'peer-split-no-assertion-pipeline', ok: true,
-      detail: 'peer-split fixtures carry no behavior-assertion pipeline yet (MOR-2153) — this '
-        + 'confirms the harness mounted, not that the composition is correct.',
+      name: 'fixture-no-assertion-pipeline', ok: true,
+      detail: `${fixture.layout ?? 'cockpit'} fixtures carry no shared behavior-assertion pipeline; `
+        + 'this confirms the harness mounted, not that the composition is correct.',
     }]),
   tokens: tokenSnapshot,
   // `styleProbe` takes its root explicitly (it cannot infer one) and

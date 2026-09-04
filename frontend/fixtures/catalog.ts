@@ -401,11 +401,12 @@ export interface Fixture {
    * `ReferenceLayout.svelte` (`SemanticRadioSurfaces strips="single"` — the
    * same wiring `desktop-v2`/`sdr-test` compose today), or — MOR-2153 —
    * `PeerSplitLayout.svelte` (`skins/segmentline/`), the segmentline
-   * `peer-split` glass chassis. One fixture id is one grid cell;
+   * `peer-split` glass chassis, or the fixture-only passive Icom touchscreen
+   * face. One fixture id is one grid cell;
    * `toReferenceFixture()` below derives every `--reference` id from its
    * cockpit sibling; `peer-split` fixtures have no such derivation.
    */
-  layout?: 'cockpit' | 'reference' | 'peer-split';
+  layout?: 'cockpit' | 'reference' | 'peer-split' | 'icom-touchscreen';
   /**
    * MOR-1355. `true` ⇒ `fixtures/main.ts` mounts this fixture with a REAL
    * resolved `SurfacePlan` (`resolveSurfacePlan(dualReceiverCockpitLayout,
@@ -971,6 +972,18 @@ const PEER_SPLIT_FIXTURES: readonly Fixture[] = [
   },
 ];
 
+const ICOM_TOUCHSCREEN_FIXTURES: readonly Fixture[] = [
+  {
+    id: 'icom-touchscreen-face',
+    what: 'Fixture-only passive Icom touchscreen face slice: two independent receiver clusters, '
+      + 'App-supplied scope frames, and explicitly unwired controls.',
+    state: () => null,
+    caps: () => null,
+    tx: tx({}),
+    layout: 'icom-touchscreen',
+  },
+];
+
 /**
  * The full MOR-1085 grid: every `CORE_FIXTURES` (dual-receiver-cockpit)
  * entry, plus its reference-layout twin — except `tx-adjacent-alerts`, whose
@@ -988,6 +1001,7 @@ export const FIXTURES: readonly Fixture[] = [
   ...PLANNED_FIXTURES,
   ...AUDIO_RUNTIME_FIXTURES,
   ...PEER_SPLIT_FIXTURES,
+  ...ICOM_TOUCHSCREEN_FIXTURES,
 ];
 
 export const fixtureById = (id: string): Fixture | undefined =>
