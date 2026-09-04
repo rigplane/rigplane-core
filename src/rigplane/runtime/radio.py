@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from rigplane._runtime_protocols import ControlPhaseHost
     from rigplane.core.acquisition_scheduler import RadioStateModelService
     from rigplane.core.tx_safety import ProviderPttObservation
+    from rigplane.runtime.local_tx_work import LocalTxWorkRunner
     from rigplane.runtime.managed_tx_composition import ManagedTxCompositionPort
 
     def _managed_tx_runtime_satisfies_supervisor(
@@ -673,6 +674,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # NOT_READY, never back to ``None`` (see ``_arm_managed_tx``).
         self._managed_tx_runtime: ManagedRadioRuntime | None = None
         self._managed_tx_composition: ManagedTxCompositionPort | None = None
+        self._local_tx_work: LocalTxWorkRunner | None = None
         # CI-V epoch the last arming attempt was made against; ``None`` until
         # the first attempt.  Bounds arming to one attempt per epoch.
         self._managed_tx_armed_epoch: int | None = None
@@ -1626,6 +1628,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         key: str | None = None,
         dedupe: bool = False,
         timeout: float | None = None,
+        is_current: "Callable[[], bool] | None" = None,
     ) -> CivFrame:
         """Send a CIV frame and raise CommandError if no response."""
         resp = await self._send_civ_raw(
@@ -1634,6 +1637,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             key=key,
             dedupe=dedupe,
             timeout=timeout,
+            is_current=is_current,
         )
         if resp is None:
             raise CommandError(f"No response for {label}")
@@ -3755,7 +3759,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         civ = self._commands.set_tuner_status(value, to_addr=self._radio_addr)
-        await self._send_civ_raw(civ, wait_response=False)
+        if value == 0 or self._local_tx_work is None:
+            await self._send_civ_raw(civ, wait_response=False)
+            return
+
+        async def send(is_current: Callable[[], bool]) -> None:
+            await self._send_civ_raw(
+                civ,
+                wait_response=False,
+                is_current=is_current,
+            )
+
+        await self._local_tx_work.run(send)
 
     async def get_xfc_status(self) -> bool:
         """Read XFC (transmit frequency correction) status."""
@@ -5069,11 +5084,30 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         frames = self._commands.send_cw(text, to_addr=self._radio_addr)
-        for frame in frames:
-            resp = await self._send_civ_expect(frame, label="send_cw_text")
-            ack = parse_ack_nak(resp)
-            if ack is False:
-                raise CommandError("Radio rejected CW text")
+
+        async def send_frames(
+            is_current: Callable[[], bool] | None = None,
+        ) -> None:
+            for frame in frames:
+                if is_current is None:
+                    resp = await self._send_civ_expect(
+                        frame,
+                        label="send_cw_text",
+                    )
+                else:
+                    resp = await self._send_civ_expect(
+                        frame,
+                        label="send_cw_text",
+                        is_current=is_current,
+                    )
+                ack = parse_ack_nak(resp)
+                if ack is False:
+                    raise CommandError("Radio rejected CW text")
+
+        if not frames or self._local_tx_work is None:
+            await send_frames()
+            return
+        await self._local_tx_work.run(send_frames)
 
     async def stop_cw_text(self) -> None:
         """Stop CW sending."""

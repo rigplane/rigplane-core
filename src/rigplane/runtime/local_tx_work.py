@@ -16,35 +16,48 @@ CurrencyCheck = Callable[[], bool]
 LocalTxWork = Callable[[CurrencyCheck], Awaitable[_T]]
 
 
+async def _drain(task: asyncio.Task[object]) -> None:
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 class LocalTxWorkRunner:
     """Register one caller-owned operation with an injected abort fence.
 
-    The runner owns no fence, queue, authority, task, or lifecycle.  It only
-    lends the operation a fence token and passes its live currency check down
-    to the provider's transport write.
+    The runner owns no fence, queue, authority, or lifecycle.  It owns and
+    drains the provider task for one call while lending it a fence token and
+    live currency check.
     """
 
     def __init__(self, abort_fence: TxAbortFence) -> None:
         self._abort_fence = abort_fence
 
     async def run(self, work: LocalTxWork[_T]) -> _T:
-        task = asyncio.current_task()
-        if task is None:  # pragma: no cover - an async call always has a task
-            raise RuntimeError("local TX work requires an asyncio task")
-
         token = self._abort_fence.issue()
 
-        def cancel() -> None:
-            task.cancel()
+        async def invoke() -> _T:
+            return await work(lambda: self._abort_fence.is_current(token))
 
-        self._abort_fence.register(token, cancel)
+        task = asyncio.create_task(invoke())
 
-        def is_current() -> bool:
-            return self._abort_fence.is_current(token)
+        def cancel_and_drain() -> Awaitable[None]:
+            if not task.done():
+                task.cancel()
+            return _drain(task)
+
+        self._abort_fence.register(token, cancel_and_drain)
 
         try:
-            if not is_current():
+            result = await task
+            if not self._abort_fence.is_current(token):
                 raise asyncio.CancelledError
-            return await work(is_current)
+            return result
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+            await _drain(task)
+            raise
         finally:
             self._abort_fence.remove(token)
