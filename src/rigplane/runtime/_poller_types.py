@@ -621,14 +621,22 @@ class SetCompressor:
 
 @dataclass(frozen=True, slots=True)
 class SetToneFreq:
-    freq_hz: int
+    freq_centihz: int
     receiver: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.freq_centihz) is not int:
+            raise TypeError("freq_centihz must be an int")
 
 
 @dataclass(frozen=True, slots=True)
 class SetTsqlFreq:
-    freq_hz: int
+    freq_centihz: int
     receiver: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.freq_centihz) is not int:
+            raise TypeError("freq_centihz must be an int")
 
 
 @dataclass(frozen=True, slots=True)

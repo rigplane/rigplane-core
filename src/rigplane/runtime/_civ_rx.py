@@ -2444,19 +2444,36 @@ class CivRuntime:
                 )
             )
         elif frame.command == 0x1B and len(frame.data) >= 3:
-            # Tone/TSQL freq: BCD freq → centiHz, reusing the exact decode of
-            # ``_handle_1b`` (``round(_decode_tone_freq(...) * 100)``) (MOR-451).
+            # Tone/TSQL freq: publish only exact centiHz values admitted by the
+            # active profile's canonical CTCSS domain. Missing or off-domain
+            # data cannot overwrite confirmed StateStore truth (MOR-2129).
             mapping = _OBSERVABLE_CMD1B_FIELDS.get(frame.sub or 0)
             if mapping is not None:
-                from rigplane.commands import _decode_tone_freq
-
-                observations.append(
-                    self._observation(
-                        self._field_path(mapping, receiver_id=receiver_id),
-                        round(_decode_tone_freq(frame.data) * 100),
-                        frame=frame,
+                profile = getattr(self._host, "_profile", None)
+                domain = getattr(profile, "ctcss_tones_centihz", None)
+                if domain:
+                    from rigplane.commands import (
+                        parse_tone_freq_response,
+                        parse_tsql_freq_response,
                     )
-                )
+
+                    parser = (
+                        parse_tone_freq_response
+                        if frame.sub == 0x00
+                        else parse_tsql_freq_response
+                    )
+                    try:
+                        _, freq_centihz = parser(frame, ctcss_tones_centihz=domain)
+                    except (TypeError, ValueError):
+                        pass
+                    else:
+                        observations.append(
+                            self._observation(
+                                self._field_path(mapping, receiver_id=receiver_id),
+                                freq_centihz,
+                                frame=frame,
+                            )
+                        )
         elif frame.command == 0x18 and len(frame.data) == 1:
             observations.append(
                 self._observation(

@@ -1865,20 +1865,20 @@ class RepeaterControlCapable(Protocol):
         """Get tone squelch (TSQL) RX on/off state."""
         ...
 
-    async def set_tone_freq(self, freq_hz: int, receiver: int = 0) -> None:
-        """Set CTCSS tone TX frequency in hundredths of Hz (e.g. 8800 = 88.0 Hz)."""
+    async def set_tone_freq(self, freq_centihz: int, receiver: int = 0) -> None:
+        """Set CTCSS tone TX frequency in centiHz (e.g. 8850 = 88.5 Hz)."""
         ...
 
     async def get_tone_freq(self, receiver: int = 0) -> int:
-        """Get CTCSS tone TX frequency in hundredths of Hz."""
+        """Get CTCSS tone TX frequency in centiHz."""
         ...
 
-    async def set_tsql_freq(self, freq_hz: int, receiver: int = 0) -> None:
-        """Set TSQL (tone squelch) RX frequency in hundredths of Hz."""
+    async def set_tsql_freq(self, freq_centihz: int, receiver: int = 0) -> None:
+        """Set TSQL (tone squelch) RX frequency in centiHz."""
         ...
 
     async def get_tsql_freq(self, receiver: int = 0) -> int:
-        """Get TSQL (tone squelch) RX frequency in hundredths of Hz."""
+        """Get TSQL (tone squelch) RX frequency in centiHz."""
         ...
 
 

@@ -2223,14 +2223,14 @@ _VALUE_CONTROL_CASES = (
     ),
     # 0x1B 0x00 tone_freq: BCD freq-encoded 88.5 Hz → 8850 centiHz (MOR-451).
     (
-        _make_frame(cmd=0x1B, sub=0x00, data=_encode_tone_freq(88.5), receiver=0x00),
+        _make_frame(cmd=0x1B, sub=0x00, data=_encode_tone_freq(8850), receiver=0x00),
         "receiver.0.operator_controls.tone_freq",
         "main.toneFreq",
         8850,
     ),
     # 0x1B 0x01 tsql_freq: BCD freq-encoded 88.5 Hz → 8850 centiHz (MOR-451).
     (
-        _make_frame(cmd=0x1B, sub=0x01, data=_encode_tone_freq(88.5), receiver=0x00),
+        _make_frame(cmd=0x1B, sub=0x01, data=_encode_tone_freq(8850), receiver=0x00),
         "receiver.0.operator_controls.tsql_freq",
         "main.tsqlFreq",
         8850,
@@ -2320,6 +2320,12 @@ def _expected_value_control_max_age(store_path: str) -> float | None:
     return None
 
 
+def _use_ctcss_fixture_profile(radio: IcomRadio, store_path: str) -> None:
+    """Give only CTCSS cases the local profile that declares their domain."""
+    if store_path.endswith((".tone_freq", ".tsql_freq")):
+        radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
+
+
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
     ("frame", "store_path", "public_path", "expected"),
     _VALUE_CONTROL_CASES,
@@ -2333,6 +2339,7 @@ def test_value_control_observation_value(
     expected: object,
 ) -> None:
     """MOR-437 (BE-2): level/value CI-V families emit the exact decoded value."""
+    _use_ctcss_fixture_profile(radio_with_state, store_path)
     # A real mode is required so the profile-dependent filter_width decode runs.
     radio_with_state._radio_state.main.mode = "USB"
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
@@ -2356,6 +2363,7 @@ def test_value_control_survives_unrelated_poll_cycle(
     expected: object,
 ) -> None:
     """The observed value must not snap back when an unrelated frame arrives."""
+    _use_ctcss_fixture_profile(radio_with_state, store_path)
     radio_with_state._radio_state.main.mode = "USB"
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
     # An unrelated S-meter poll on the next cycle must not disturb the value.
@@ -2385,6 +2393,7 @@ def test_value_control_projects_available(
         build_public_state_payload_from_snapshot,
     )
 
+    _use_ctcss_fixture_profile(radio_with_state, store_path)
     radio_with_state._radio_state.main.mode = "USB"
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
     payload = build_public_state_payload_from_snapshot(
@@ -2915,6 +2924,7 @@ def test_tone_and_tsql_freq_observations_can_go_stale(
     still ``FRESH`` past the TTL ``rigs/ic7300.toml`` declares for it.
     """
 
+    radio._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
     stored = FieldPath.receiver("0", "operator_controls", name)
     # The TTL is not a literal here: it is read from the IC-7300 profile,
     # which is what declared this path observable (e0558fea).
@@ -2929,7 +2939,7 @@ def test_tone_and_tsql_freq_observations_can_go_stale(
     observed_at = 500.0
     with patch("rigplane.runtime._civ_rx.time.monotonic", return_value=observed_at):
         radio._civ_runtime._apply_state_store_observations(
-            _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(88.5), receiver=0x00)
+            _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(8850), receiver=0x00)
         )
     assert radio._state_store.snapshot().field(str(stored)).value == 8850
 
@@ -3819,8 +3829,9 @@ def test_update_radio_state_cmd1b_tone_freq_observation_backed(
     field: str,
 ) -> None:
     """MOR-451: cmd 0x1B/0x00-0x01 mirror removed; StateStore is source of truth."""
+    radio_with_state._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
     rs = radio_with_state._radio_state
-    frame = _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(88.5), receiver=0x01)
+    frame = _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(8850), receiver=0x01)
     radio_with_state._civ_runtime._update_state_cache_from_frame(frame)
     # Legacy ReceiverState mirror stays at its default 0; the store carries truth.
     assert getattr(rs.sub, field) == 0
@@ -3828,6 +3839,39 @@ def test_update_radio_state_cmd1b_tone_freq_observation_backed(
         f"receiver.1.operator_controls.{field}"
     )
     assert store_field.value == 8850
+
+
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]
+    ("sub", "field"),
+    [(0x00, "tone_freq"), (0x01, "tsql_freq")],
+)
+@pytest.mark.parametrize("domain", [None, (6700,)])
+def test_cmd1b_tone_freq_without_admitted_profile_value_preserves_truth(
+    radio_with_state: IcomRadio,
+    sub: int,
+    field: str,
+    domain: tuple[int, ...] | None,
+) -> None:
+    """MOR-2129: missing/off-domain reads cannot replace confirmed truth."""
+    radio_with_state._profile = resolve_radio_profile(model="IC-7300")  # noqa: SLF001
+    path = f"receiver.1.operator_controls.{field}"
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(8850), receiver=0x01)
+    )
+    before = radio_with_state._state_store.snapshot()
+    assert before.field(path).value == 8850
+
+    radio_with_state._profile = dataclasses.replace(  # noqa: SLF001
+        radio_with_state._profile,
+        ctcss_tones_centihz=domain,
+    )
+    radio_with_state._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x1B, sub=sub, data=_encode_tone_freq(10000), receiver=0x01)
+    )
+
+    after = radio_with_state._state_store.snapshot()
+    assert after.observation_seq == before.observation_seq
+    assert after.field(path) == before.field(path)
 
 
 def test_update_radio_state_cmd1a_agc_time_constant_observation_backed(
