@@ -244,7 +244,7 @@ async def test_web_sessions_and_latched_commands_share_one_authority_to_final_wi
         assert actuator.wire == [True]
         assert (
             await composition.authority.snapshot()
-        ).state.intent.owner == "session-a"
+        ).state.intent.owner_token == "session-a"
 
         await _http_tx_command(server, "force_off")
         await actuator.wait_for_wire([True, False])
