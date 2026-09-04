@@ -103,6 +103,7 @@ const h = vi.hoisted(() => {
             source: null, available: false, resourceSelected: false, demand: 0,
             lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
           },
+          onTxAudioDied: () => () => {},
           bootstrap: async () => () => {},
         };
       })();

@@ -50,6 +50,7 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 });
 vi.mock('$lib/runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
     get audio() { return h.audio; },

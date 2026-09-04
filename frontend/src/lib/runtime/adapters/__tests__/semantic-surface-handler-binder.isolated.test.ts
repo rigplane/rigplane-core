@@ -22,6 +22,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => ({
 }));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    onTxAudioDied: () => () => {},
     get state() { return tuner.state; },
     get caps() { return tuner.caps; },
   },

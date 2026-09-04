@@ -81,6 +81,7 @@ vi.mock('$lib/transport/ws-client', () => ({
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
+    onTxAudioDied: () => () => {},
     rxEnabled: false,
     startRx: vi.fn(),
     stopRx: vi.fn(),
