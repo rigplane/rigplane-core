@@ -17,13 +17,18 @@ from rigplane.core.state_store import StateStore
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime._poller_types import (
-    PttOff,
-    PttOn,
+    SelectVfo,
     SendCiv,
     SetAntenna1,
+    SetBand,
+    SetFreq,
+    SetMode,
     SetTunerStatus,
 )
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+from rigplane.runtime.managed_queue_boundary import ManagedQueuedWriteBoundary
 from rigplane.web.radio_poller import CommandQueue, CommandQueueEntry, RadioPoller
+from test_managed_tx_authority import authority
 
 
 _PTT = FieldPath.global_("tx_state", "ptt")
@@ -37,6 +42,7 @@ def _radio() -> SimpleNamespace:
         send_civ=AsyncMock(),
         set_antenna_1=AsyncMock(),
         set_ptt=AsyncMock(),
+        set_tuner_status=AsyncMock(),
     )
 
 
@@ -53,32 +59,53 @@ def _observe_tx(store: StateStore) -> None:
     )
 
 
+class _Runner:
+    async def run(self, operation):
+        return await operation(lambda: True)
+
+
+def _boundary_for_test() -> tuple[ManagedQueuedWriteBoundary, SimpleNamespace, _Runner]:
+    runner = _Runner()
+    managed = SimpleNamespace(admit_managed_write=AsyncMock(return_value=True))
+    boundary = ManagedQueuedWriteBoundary(
+        SimpleNamespace(authority=managed, local_tx_work_runner=runner),
+        session_is_live=lambda _session: True,
+    )
+    return boundary, managed, runner
+
+
 def _poller(
     *, admitted: bool = True, composed: bool = True
 ) -> tuple[RadioPoller, SimpleNamespace, AsyncMock, StateStore]:
     radio = _radio()
     store = StateStore()
     store.begin_provider_generation()
-    authority = SimpleNamespace(admit_managed_write=AsyncMock(return_value=admitted))
-    port = SimpleNamespace(authority=authority) if composed else None
+    managed = SimpleNamespace(admit_managed_write=AsyncMock(return_value=admitted))
     poller = RadioPoller(
         radio,
         CommandQueue(),
         state_store=store,
-        managed_tx_port=port,
     )
-    return poller, radio, authority.admit_managed_write, store
+    if composed:
+        port = SimpleNamespace(authority=managed, local_tx_work_runner=_Runner())
+        poller.attach_managed_queue_boundary(
+            ManagedQueuedWriteBoundary(port, session_is_live=lambda _session: True),
+            required=True,
+        )
+    return poller, radio, managed.admit_managed_write, store
 
 
 async def test_composed_mapped_write_bypasses_observed_rf_after_admission() -> None:
     poller, radio, admit, store = _poller()
     _observe_tx(store)
 
-    await poller._execute(  # noqa: SLF001
-        SetAntenna1(True),
-        command_id="cmd-1",
-        source="websocket",
-        session_id="ws-1",
+    await poller._execute_queued_entry_action(  # noqa: SLF001
+        CommandQueueEntry(
+            SetAntenna1(True),
+            command_id="cmd-1",
+            source="websocket",
+            session_id="ws-1",
+        )
     )
 
     admitted = admit.await_args.args[0]
@@ -108,6 +135,33 @@ def test_unmanaged_tuner_engage_is_not_deferred() -> None:
     admit.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "command",
+    [SetFreq(7_100_000), SetMode("USB"), SetBand(5), SelectVfo("A")],
+)
+async def test_managed_ordinary_writes_bypass_legacy_staging_and_rf_policy(
+    command: object,
+) -> None:
+    poller, _radio, admit, store = _poller()
+    _observe_tx(store)
+    execute = AsyncMock()
+    poller._execute = execute  # type: ignore[method-assign]  # noqa: SLF001
+    entry = CommandQueueEntry(command)
+
+    assert poller._stage_entry_for_turn(entry) == [entry]  # noqa: SLF001
+    await poller._execute_queued_entry_action(entry)  # noqa: SLF001
+
+    execute.assert_awaited_once_with(
+        command,
+        command_id=None,
+        source="websocket",
+        session_id=None,
+        command_service=None,
+        _managed_boundary_applied=True,
+    )
+    admit.assert_not_awaited()
+
+
 async def test_composed_descriptor_write_is_admitted_exactly_once() -> None:
     poller, radio, admit, store = _poller()
     _observe_tx(store)
@@ -120,7 +174,7 @@ async def test_composed_descriptor_write_is_admitted_exactly_once() -> None:
         timeout=3.0,
     )
 
-    await poller._execute(intent)  # noqa: SLF001
+    await poller._execute_queued_entry_action(CommandQueueEntry(intent))  # noqa: SLF001
 
     admit.assert_awaited_once_with(intent)
     radio.set_antenna_1.assert_awaited_once_with(on=False)
@@ -138,7 +192,9 @@ async def test_noncanonical_intent_fails_before_admission_or_radio_io() -> None:
     )
 
     with pytest.raises(CommandError, match="no canonical command descriptor"):
-        await poller._execute(intent)  # noqa: SLF001
+        await poller._execute_queued_entry_action(  # noqa: SLF001
+            CommandQueueEntry(intent)
+        )
 
     admit.assert_not_awaited()
     radio.set_antenna_1.assert_not_awaited()
@@ -148,26 +204,70 @@ async def test_rejected_mapped_write_fails_before_radio_io() -> None:
     poller, radio, admit, _store = _poller(admitted=False)
 
     with pytest.raises(CommandError, match="authority refused write"):
-        await poller._execute(  # noqa: SLF001
-            SetAntenna1(True),
-            command_id="cmd-rejected",
+        await poller._execute_queued_entry_action(  # noqa: SLF001
+            CommandQueueEntry(SetAntenna1(True), command_id="cmd-rejected")
         )
 
     admit.assert_awaited_once()
     radio.set_antenna_1.assert_not_awaited()
 
 
-def test_required_managed_construction_without_port_fails_closed() -> None:
+@pytest.mark.parametrize(("value", "admitted"), [(0, True), (1, False), (2, False)])
+async def test_real_authority_applies_tuner_value_policy_before_typed_radio_io(
+    value: int, admitted: bool
+) -> None:
+    managed, _, _, _, _, _ = authority()
     radio = _radio()
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        state_store=store,
+    )
+    poller.attach_managed_queue_boundary(
+        ManagedQueuedWriteBoundary(
+            SimpleNamespace(authority=managed, local_tx_work_runner=_Runner()),
+            session_is_live=lambda _session: True,
+        ),
+        required=True,
+    )
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        if admitted:
+            await poller._execute_queued_entry_action(  # noqa: SLF001
+                CommandQueueEntry(
+                    SetTunerStatus(value),
+                    command_id=f"cmd-tuner-{value}",
+                    source="websocket",
+                )
+            )
+            radio.set_tuner_status.assert_awaited_once_with(value)
+        else:
+            with pytest.raises(CommandError, match="authority refused write"):
+                await poller._execute_queued_entry_action(  # noqa: SLF001
+                    CommandQueueEntry(
+                        SetTunerStatus(value),
+                        command_id=f"cmd-tuner-{value}",
+                        source="websocket",
+                    )
+                )
+            radio.set_tuner_status.assert_not_awaited()
+    finally:
+        await managed.force_off()
+        await managed.close()
 
-    with pytest.raises(CommandError, match="managed transmit authority unavailable"):
-        RadioPoller(
-            radio,
-            CommandQueue(),
-            managed_tx_required=True,
-        )
 
-    radio.set_antenna_1.assert_not_awaited()
+def test_managed_boundary_attachment_preserves_exact_identity() -> None:
+    poller, _radio, _admit, _store = _poller(composed=False)
+    first, _authority, _runner = _boundary_for_test()
+    second, _authority2, _runner2 = _boundary_for_test()
+
+    poller.attach_managed_queue_boundary(first, required=True)
+
+    assert poller.managed_queue_boundary is first
+    with pytest.raises(RuntimeError, match="already attached"):
+        poller.attach_managed_queue_boundary(second, required=True)
 
 
 async def test_explicit_unmanaged_construction_retains_legacy_interlock() -> None:
@@ -189,28 +289,9 @@ async def test_raw_command_keeps_legacy_interlock_when_port_is_composed() -> Non
     _observe_tx(store)
 
     with pytest.raises(CommandError, match="RF state is TX"):
-        await poller._execute(  # noqa: SLF001
-            SendCiv(command=0x1A, data=b"\x01"),
-            command_id="cmd-raw",
+        await poller._execute_queued_entry_action(  # noqa: SLF001
+            CommandQueueEntry(SendCiv(command=0x1A, data=b"\x01"), command_id="cmd-raw")
         )
 
     admit.assert_not_awaited()
     radio.send_civ.assert_not_awaited()
-
-
-@pytest.mark.parametrize("command", [PttOn(), PttOff()])
-async def test_composed_ptt_never_falls_through_non_ptt_admission_or_raw_io(
-    command: PttOn | PttOff,
-) -> None:
-    poller, radio, admit, _store = _poller()
-
-    with pytest.raises(CommandError, match="PTT must be submitted through authority"):
-        await poller._execute(  # noqa: SLF001
-            command,
-            command_id="cmd-ptt",
-            source="websocket",
-            session_id="ws-1",
-        )
-
-    admit.assert_not_awaited()
-    radio.set_ptt.assert_not_awaited()

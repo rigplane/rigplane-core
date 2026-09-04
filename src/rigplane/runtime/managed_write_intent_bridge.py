@@ -40,8 +40,6 @@ def managed_write_intent(
     params: dict[str, object]
     match command:
         case SetTunerStatus(value=value):
-            if type(value) is not int or value not in (0, 1, 2):
-                raise ValueError(f"tuner value must be 0, 1, or 2; got {value!r}")
             name = "set_tuner_status"
             params = {"value": value}
         case SetAntenna1(on=on):

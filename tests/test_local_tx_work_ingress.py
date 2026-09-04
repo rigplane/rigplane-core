@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from rigplane.capabilities import CAP_CW, CAP_TUNER
+from rigplane.core.command_dispatch import bind_command_intent
 from rigplane.core.exceptions import CommandError
 from rigplane.web.handlers.control import ControlHandler
 
@@ -146,6 +147,30 @@ async def test_positive_tuner_without_runner_fails_closed_without_queue_fallback
         await handler._enqueue_command("set_tuner_status", {"value": 2})
 
     assert len(authority.intents) == 1
+    radio.set_tuner_status.assert_not_awaited()
+    handler._server.command_queue.put_ordered.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [-1, 3, True, 1.0, "1"])
+async def test_tuner_domain_validation_is_owned_by_canonical_binder(
+    value: Any,
+) -> None:
+    radio = _radio(CAP_TUNER)
+    authority = _Authority()
+    runner = _Runner()
+    handler = _handler(radio, authority=authority, runner=runner)
+
+    with patch(
+        "rigplane.core.command_service.bind_command_intent",
+        wraps=bind_command_intent,
+    ) as binder:
+        with pytest.raises(ValueError, match="tuner value must be 0, 1, or 2"):
+            await handler._enqueue_command("set_tuner_status", {"value": value})
+
+    binder.assert_called_once()
+    assert authority.intents == []
+    assert runner.operations == []
     radio.set_tuner_status.assert_not_awaited()
     handler._server.command_queue.put_ordered.assert_not_called()
 

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from ..core.radio_protocol import ObservationPollable, StatePollable, StateStoreCapable
 from ..core.state_pipeline_contracts import Observation
 from ..radio_state import RadioState
+from ..runtime.managed_queue_boundary import ManagedQueuedWriteBoundary
 from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
 from .dx_cluster import DXClusterClient  # noqa: TID251
@@ -47,6 +48,7 @@ _MANAGED_TX_PORT_ATTR = "_production_managed_tx_port"
 _MANAGED_TX_EVENT_ATTR = "_production_managed_tx_event"
 _MANAGED_TX_UNSUBSCRIBE_ATTR = "_production_managed_tx_unsubscribe"
 _MANAGED_TX_FALLBACK_ADVANCED_ATTR = "_production_managed_tx_fallback_advanced"
+_MANAGED_QUEUE_BOUNDARY_ATTR = "_production_managed_queue_boundary"
 
 
 def prepare_managed_tx_observation_generation(server: WebServer) -> int:
@@ -73,8 +75,20 @@ def attach_managed_tx_composition(
 
     if getattr(server, _MANAGED_TX_PORT_ATTR, None) is not None:
         raise RuntimeError("managed TX composition is already attached")
+    queue = getattr(server, "_command_queue", None)
+    session_is_live = getattr(queue, "session_is_live", None)
+    if not callable(session_is_live):
+
+        def session_is_live(_session_id: str) -> bool:
+            return False
+
     setattr(server, _MANAGED_TX_PORT_ATTR, port)
     setattr(server, _MANAGED_TX_EVENT_ATTR, event)
+    setattr(
+        server,
+        _MANAGED_QUEUE_BOUNDARY_ATTR,
+        ManagedQueuedWriteBoundary(port, session_is_live=session_is_live),
+    )
 
 
 def _managed_tx_attachment(
@@ -98,7 +112,33 @@ def preflight_managed_tx_start(
         provider_event is None or managed_tx.active_provider is not provider_event
     ):
         raise RuntimeError("managed TX provider must be active before the Web listener")
+    boundary = getattr(server, _MANAGED_QUEUE_BOUNDARY_ATTR, None)
+    if managed_tx is not None and (
+        not isinstance(boundary, ManagedQueuedWriteBoundary)
+        or boundary.port is not managed_tx
+    ):
+        raise RuntimeError(
+            "managed queue boundary must attach the production composition"
+        )
     return managed_tx, provider_event
+
+
+def _attach_managed_queue_boundary(
+    poller: object,
+    boundary: ManagedQueuedWriteBoundary | None,
+    *,
+    required: bool,
+) -> None:
+    if boundary is None:
+        if required:
+            raise RuntimeError("managed queue boundary is required before Web startup")
+        return
+    attach = getattr(poller, "attach_managed_queue_boundary", None)
+    if not callable(attach):
+        raise RuntimeError("managed poller does not accept the queue boundary")
+    attach(boundary, required=required)
+    if getattr(poller, "managed_queue_boundary", None) is not boundary:
+        raise RuntimeError("managed poller did not retain the exact queue boundary")
 
 
 def _supports_scope_local(server: WebServer) -> bool:
@@ -112,6 +152,7 @@ async def start_web_server(server: WebServer) -> None:
     now delegates here so the public API is preserved.
     """
     managed_tx, _provider_event = preflight_managed_tx_start(server)
+    managed_queue_boundary = getattr(server, _MANAGED_QUEUE_BOUNDARY_ATTR, None)
     if managed_tx is not None:
 
         def provider_generation_changed(observation_generation: int) -> None:
@@ -172,30 +213,6 @@ async def start_web_server(server: WebServer) -> None:
 
     assert_radio_startup_ready(server._radio, component="web startup")
 
-    server._server = await asyncio.start_server(
-        server._accept_client,
-        host=server._config.host,
-        port=server._config.port,
-        ssl=ssl_ctx,
-        reuse_address=True,
-        # MOR-1572: deliberately NOT reuse_port. This is an exclusive TCP
-        # listener guarding a single radio session (same rationale as
-        # rigctld's listener, see rigctld/server.py) — SO_REUSEPORT let a
-        # second rigplane instance silently bind the same web port on
-        # macOS/BSD, so two instances raced for the same radio with no
-        # error and the operator saw a half-dead UI. It also undermined the
-        # check_ports_available() preflight (MOR-1437): an orphan holding
-        # the port with SO_REUSEPORT set could let the preflight probe bind
-        # successfully right alongside it. Contrast with the UDP discovery
-        # responder (web/discovery.py), which legitimately opts into
-        # SO_REUSEPORT so multiple co-located instances can each announce
-        # their own radio on the shared discovery port — that is a
-        # best-effort broadcast responder, not an exclusive session guard.
-    )
-    server._server_was_running = True
-    addr = server._server.sockets[0].getsockname()
-    scheme = "https" if ssl_ctx else "http"
-    logger.info("web server listening on %s://%s:%d", scheme, addr[0], addr[1])
     if server._radio is not None:
         from ..radio_protocol import StateNotifyCapable
 
@@ -224,14 +241,15 @@ async def start_web_server(server: WebServer) -> None:
                 callback=_observation_cb,
                 command_queue=server._command_queue,
             )
+            _attach_managed_queue_boundary(
+                server._state_poller,
+                managed_queue_boundary,
+                required=server._config.managed_tx_required,
+            )
             bind_generation = getattr(
                 server._state_poller, "bind_provider_generation", None
             )
             if fallback_store and not callable(bind_generation):
-                server._server.close()
-                await server._server.wait_closed()
-                server._server = None
-                server._server_was_running = False
                 raise RuntimeError(
                     "fallback observation poller must bind provider generation"
                 )
@@ -253,8 +271,6 @@ async def start_web_server(server: WebServer) -> None:
                 server, _MANAGED_TX_FALLBACK_ADVANCED_ATTR, False
             ):
                 server.command_state_store.begin_provider_generation()
-            server._spawn(server._state_poller.start())
-            logger.info("observation poller started")
         # --- Legacy request-response state poller compatibility path ---
         elif isinstance(server._radio, StatePollable):
 
@@ -272,8 +288,11 @@ async def start_web_server(server: WebServer) -> None:
                 callback=_state_cb,
                 command_queue=server._command_queue,
             )
-            server._spawn(server._state_poller.start())
-            logger.info("state poller started")
+            _attach_managed_queue_boundary(
+                server._state_poller,
+                managed_queue_boundary,
+                required=server._config.managed_tx_required,
+            )
         else:
             # --- Icom CI-V backend: fire-and-forget RadioPoller ---
             if isinstance(server._radio, StateNotifyCapable):
@@ -289,6 +308,42 @@ async def start_web_server(server: WebServer) -> None:
                 diagnostics=server.state_diagnostics,
                 state_store=server.command_state_store,
             )
+            _attach_managed_queue_boundary(
+                server._radio_poller,
+                managed_queue_boundary,
+                required=server._config.managed_tx_required,
+            )
+
+    server._server = await asyncio.start_server(
+        server._accept_client,
+        host=server._config.host,
+        port=server._config.port,
+        ssl=ssl_ctx,
+        reuse_address=True,
+        # MOR-1572: deliberately NOT reuse_port. This is an exclusive TCP
+        # listener guarding a single radio session (same rationale as
+        # rigctld's listener, see rigctld/server.py) — SO_REUSEPORT let a
+        # second rigplane instance silently bind the same web port on
+        # macOS/BSD, so two instances raced for the same radio with no
+        # error and the operator saw a half-dead UI. It also undermined the
+        # check_ports_available() preflight (MOR-1437): an orphan holding
+        # the port with SO_REUSEPORT set could let the preflight probe bind
+        # successfully right alongside it. Contrast with the UDP discovery
+        # responder (web/discovery.py), which legitimately opts into
+        # SO_REUSEPORT so multiple co-located instances can each announce
+        # their own radio on the shared discovery port — that is a
+        # best-effort broadcast responder, not an exclusive session guard.
+    )
+    server._server_was_running = True
+    addr = server._server.sockets[0].getsockname()
+    scheme = "https" if ssl_ctx else "http"
+    logger.info("web server listening on %s://%s:%d", scheme, addr[0], addr[1])
+
+    if server._radio is not None:
+        if server._state_poller is not None:
+            server._spawn(server._state_poller.start())
+            logger.info("request-response poller started")
+        elif server._radio_poller is not None:
             server._radio_poller.start()
         if _supports_scope_local(server):
             server._scope_health_task = asyncio.get_running_loop().create_task(

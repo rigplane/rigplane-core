@@ -378,12 +378,12 @@ class ManagedTxAuthority:
             managed_tx = self._state.intent.kind is not ManagedTxIntentKind.RX
             if not managed_tx:
                 return True
-            if descriptor is not None:
-                return descriptor.tx_policy is not DescriptorTxPolicy.ANTENNA_SWITCH
             if intent.name == "set_tuner_status":
                 return intent.params.get("value") == 0
             if intent.name == "set_func" and intent.params.get("func") == "TUNER":
                 return intent.params.get("on") is False
+            if descriptor is not None:
+                return descriptor.tx_policy is not DescriptorTxPolicy.ANTENNA_SWITCH
             return True
 
     def is_effect_current(

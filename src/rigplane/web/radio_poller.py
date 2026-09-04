@@ -79,7 +79,7 @@ from ..core.command_service import (
     CommandService,
 )
 from ..core.acquisition_drain import AcquisitionDrain
-from ..core.command_dispatch import command_descriptor, execute_command_intent
+from ..core.command_dispatch import execute_command_intent
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionPriority,
@@ -115,8 +115,8 @@ from ..runtime._state_queries import (
     tx_target_max_age,
     wire_parts_for_query,
 )
+from ..runtime.managed_queue_boundary import ManagedQueuedWriteBoundary
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
-from ..runtime.managed_write_intent_bridge import managed_write_intent
 from ..runtime.tx_interlock import (
     DeferredTxCommandLane,
     RfState,
@@ -132,7 +132,6 @@ from ..types import AudioCodec
 if TYPE_CHECKING:
     from ..radio_protocol import Radio
     from ..radio_state import RadioState
-    from ..runtime.radio import ManagedTxCompositionPort
 
 __all__ = [
     "RadioPoller",
@@ -470,16 +469,6 @@ from .._poller_types import (  # noqa: E402
 )
 
 
-_MANAGED_TYPED_WRITE_TYPES = (
-    SetTunerStatus,
-    SetAntenna1,
-    SetAntenna2,
-    SetRxAntennaAnt1,
-    SetRxAntennaAnt2,
-    SetCivOutputAnt,
-)
-
-
 # ------------------------------------------------------------------
 # MOR-1484: post-write readback jump-queue
 # ------------------------------------------------------------------
@@ -607,17 +596,13 @@ class RadioPoller:
         diagnostics: StateDiagnosticsRecorder | None = None,
         state_store: StateStore | None = None,
         acquisition_executor: AcquisitionExecutor | None = None,
-        managed_tx_port: "ManagedTxCompositionPort | None" = None,
-        managed_tx_required: bool = False,
     ) -> None:
-        if managed_tx_required and managed_tx_port is None:
-            raise CommandError("managed transmit authority unavailable")
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
-        self._managed_tx_port = managed_tx_port
+        self._managed_queue_boundary: ManagedQueuedWriteBoundary | None = None
         raw_scheduler = getattr(radio, "_acquisition_scheduler", None)
         self._acquisition_scheduler = (
             raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
@@ -746,19 +731,31 @@ class RadioPoller:
                 ),
             )
 
-    async def _admit_managed_write(self, intent: CommandIntent) -> None:
-        port = self._managed_tx_port
-        if port is None:
-            raise CommandError("managed transmit authority unavailable")
-        if not await port.authority.admit_managed_write(intent):
-            raise CommandError("managed transmit authority refused write")
+    @property
+    def managed_queue_boundary(self) -> ManagedQueuedWriteBoundary | None:
+        return self._managed_queue_boundary
+
+    def attach_managed_queue_boundary(
+        self,
+        boundary: ManagedQueuedWriteBoundary,
+        *,
+        required: bool,
+    ) -> None:
+        """Attach the one startup-composed queue boundary by exact identity."""
+        if not isinstance(boundary, ManagedQueuedWriteBoundary):
+            raise TypeError("managed queue boundary has the wrong type")
+        existing = self._managed_queue_boundary
+        if existing is not None and existing is not boundary:
+            raise RuntimeError("managed queue boundary is already attached")
+        self._managed_queue_boundary = boundary
+        if required and self._managed_queue_boundary is not boundary:
+            raise RuntimeError("managed queue boundary attachment failed")
 
     def _stage_entry_for_turn(
         self, entry: CommandQueueEntry
     ) -> list[CommandQueueEntry]:
-        if self._managed_tx_port is not None and isinstance(
-            entry.command, (CommandIntent, *_MANAGED_TYPED_WRITE_TYPES)
-        ):
+        boundary = self._managed_queue_boundary
+        if boundary is not None and boundary.handles(entry.command):
             return [entry]
         return self._stage_tx_interlocked_entries([entry], advance_held=False)
 
@@ -881,12 +878,60 @@ class RadioPoller:
     async def _execute_queued_entry_action(self, entry: CommandQueueEntry) -> None:
         # MOR-1884: the interlock seat lives at the head of ``_execute`` now,
         # so queued commands and uncommanded internal emits share one seat.
+        boundary = self._managed_queue_boundary
+        if boundary is not None and boundary.handles(entry.command):
+            if isinstance(entry.command, PttOn):
+                self._refuse_key_from_gone_session(
+                    entry.source or "websocket", entry.session_id
+                )
+                await self._start_tx_audio_leg()
+                try:
+                    await boundary.dispatch(
+                        entry,
+                        lambda command: self._execute_boundary_command(command, entry),
+                    )
+                except BaseException:
+                    await self._stop_tx_audio_leg()
+                    raise
+                return
+            if isinstance(entry.command, PttOff):
+                try:
+                    await boundary.dispatch(
+                        entry,
+                        lambda command: self._execute_boundary_command(command, entry),
+                    )
+                finally:
+                    self._last_keyer = None
+                    await self._stop_tx_audio_leg()
+                return
+            await boundary.dispatch(
+                entry,
+                lambda command: self._execute_boundary_command(command, entry),
+            )
+            return
         await self._execute(
             entry.command,
             command_id=entry.command_id,
             source=entry.source or "websocket",
             session_id=entry.session_id,
             command_service=entry.command_service,
+        )
+
+    async def _execute_boundary_command(
+        self, command: object, entry: CommandQueueEntry
+    ) -> None:
+        if not isinstance(command, (CommandIntent, Command)):
+            raise TypeError(f"unsupported provider command: {type(command).__name__}")
+        boundary = self._managed_queue_boundary
+        if boundary is None:
+            raise RuntimeError("managed queue boundary detached during dispatch")
+        await self._execute(
+            command,
+            command_id=entry.command_id,
+            source=entry.source or "websocket",
+            session_id=entry.session_id,
+            command_service=entry.command_service,
+            _managed_boundary_applied=boundary.bypasses_legacy_interlock(command),
         )
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
@@ -1139,13 +1184,7 @@ class RadioPoller:
         while pending:
             entry = pending[0]
             try:
-                await self._execute(
-                    entry.command,
-                    command_id=entry.command_id,
-                    source=entry.source or "websocket",
-                    session_id=entry.session_id,
-                    command_service=entry.command_service,
-                )
+                await self._execute_queued_entry_action(entry)
             except Exception as exc:
                 logger.error(
                     "radio-poller: shutdown unkey failed: %s", exc, exc_info=True
@@ -2113,6 +2152,34 @@ class RadioPoller:
         except Exception as e:
             logger.debug("poller: audio stream transition failed: %s", e)
 
+    async def _start_tx_audio_leg(self) -> None:
+        """Arm the TX audio stream before managed or unmanaged keying."""
+        if CAP_AUDIO not in self._caps:
+            return
+        radio = self._radio
+        try:
+            start_tx = getattr(radio, "start_tx", None)
+            if start_tx is not None:
+                await start_tx()
+                logger.info("poller: TX audio stream started (neutral start_tx)")
+                return
+            tx_codec, tx_sr = _audio_tx_codec_and_rate(radio)
+            if tx_codec == AudioCodec.PCM_1CH_16BIT:
+                await radio.start_audio_tx_pcm(sample_rate=tx_sr)
+            else:
+                await radio.start_audio_tx_opus()
+            logger.info(
+                "poller: TX audio stream started (tx_codec=%s, sr=%d)",
+                tx_codec,
+                tx_sr,
+            )
+        except Exception as exc:
+            logger.warning("poller: refusing PTT ON: start TX audio failed: %s", exc)
+            await self._stop_tx_audio_leg()
+            raise CommandError(
+                f"TX audio failed to arm, refusing PTT ON: {exc}"
+            ) from exc
+
     async def _execute(
         self,
         cmd: Command,
@@ -2121,6 +2188,7 @@ class RadioPoller:
         source: CommandSource = "websocket",
         session_id: str | None = None,
         command_service: CommandService | None = None,
+        _managed_boundary_applied: bool = False,
     ) -> None:
         cmd = canonicalize_level_command(
             cmd,
@@ -2129,40 +2197,16 @@ class RadioPoller:
             source=source,
             session_id=session_id,
         )
-        port = self._managed_tx_port
-        if port is not None and isinstance(cmd, (PttOn, PttOff)):
-            raise CommandError(
-                "composed managed PTT must be submitted through authority"
-            )
         if isinstance(cmd, CommandIntent):
-            if port is not None:
-                if command_descriptor(cmd.name) is None:
-                    raise CommandError(
-                        f"no canonical command descriptor for {cmd.name!r}"
-                    )
-                await self._admit_managed_write(cmd)
             await execute_command_intent(self._radio, cmd)
             self._request_post_write_readback(cmd)
             return
-        managed_admitted = False
-        if port is not None and isinstance(cmd, _MANAGED_TYPED_WRITE_TYPES):
-            if command_id is None:
-                raise CommandError("managed write requires a command id")
-            await self._admit_managed_write(
-                managed_write_intent(
-                    cmd,
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                )
-            )
-            managed_admitted = True
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY
         # write this poller issues — queued commands and uncommanded internal
         # emits alike. Emergency commands need no exemption —
         # ``_enforce_tx_interlock`` is structurally incapable of blocking them
         # before any table is consulted.
-        if not managed_admitted:
+        if not _managed_boundary_applied:
             self._enforce_tx_interlock(cmd)
         radio = self._radio
         provider_generation = self._provider_generation()
@@ -2326,47 +2370,7 @@ class RadioPoller:
                 logger.info("poller: PTT ON")
                 managed = self._managed_tx(command_source, session_id)
                 # Start TX audio stream before PTT (LAN audio requires this)
-                if CAP_AUDIO in self._caps:
-                    try:
-                        start_tx = getattr(radio, "start_tx", None)
-                        if start_tx is not None:
-                            # Neutral AudioTransport surface (MOR-543): the
-                            # backend resolves the TX format from its
-                            # negotiated contract.
-                            await start_tx()
-                            logger.info(
-                                "poller: TX audio stream started (neutral start_tx)"
-                            )
-                        else:
-                            # Legacy per-codec fallback for radios without
-                            # the neutral surface.
-                            tx_codec, tx_sr = _audio_tx_codec_and_rate(radio)
-                            if tx_codec == AudioCodec.PCM_1CH_16BIT:
-                                await radio.start_audio_tx_pcm(sample_rate=tx_sr)
-                            else:
-                                await radio.start_audio_tx_opus()
-                            logger.info(
-                                "poller: TX audio stream started (tx_codec=%s, sr=%d)",
-                                tx_codec,
-                                tx_sr,
-                            )
-                    except Exception as e:
-                        # MOR-1178: a failed arm refuses the key. Swallowed, it
-                        # fell through to the write below and keyed a rig whose
-                        # modulation path is dead — an unmodulated carrier the
-                        # operator believes is a transmission — and did so
-                        # before any lease existed to record it. So disarm the
-                        # half-armed leg and refuse, exactly as the two
-                        # refusals below: a refused key leaves no trace on the
-                        # air, and costs one reported, recoverable transmission
-                        # where a silent carrier costs airtime nobody can see.
-                        logger.warning(
-                            "poller: refusing PTT ON: start TX audio failed: %s", e
-                        )
-                        await self._stop_tx_audio_leg()
-                        raise CommandError(
-                            f"TX audio failed to arm, refusing PTT ON: {e}"
-                        ) from e
+                await self._start_tx_audio_leg()
                 if managed is None:
                     # Binding nothing is two findings, and only one may reach
                     # the raw write: an unmanaged rig (every shipped

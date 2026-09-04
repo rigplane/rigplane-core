@@ -33,7 +33,12 @@ from rigplane.core.radio_protocol import (
 from rigplane.core.state_pipeline_contracts import CommandSource
 from rigplane.core.tx_safety import TxOwner, TxSource
 
-__all__ = ["bind_managed_tx", "refuse_key_without_owner", "resolve_supervisor"]
+__all__ = [
+    "bind_managed_tx",
+    "refuse_key_without_owner",
+    "resolve_supervisor",
+    "stable_managed_tx_owner",
+]
 
 
 def resolve_supervisor(radio: object) -> ManagedTxSupervisor | None:
@@ -67,7 +72,9 @@ _STABLE_OWNER_SOURCES: dict[CommandSource, TxSource] = {
 }
 
 
-def _stable_owner(source: CommandSource, session_id: str | None) -> TxOwner | None:
+def stable_managed_tx_owner(
+    source: CommandSource, session_id: str | None
+) -> TxOwner | None:
     """The ingress identity a lease can be held against, or ``None``.
 
     Two ingresses qualify, and for one reason: the id names a *connection* that
@@ -102,7 +109,7 @@ def bind_managed_tx(
     through to the raw ``set_ptt`` write there would key a managed rig with no
     lease, no owner and no watchdog.
     """
-    owner = _stable_owner(source, session_id)
+    owner = stable_managed_tx_owner(source, session_id)
     if owner is None:
         return None
     return ManagedTxApi.bind(radio, owner)
@@ -131,6 +138,6 @@ def refuse_key_without_owner(
     owner strands a keyed transmitter, which is strictly worse than the
     unsupervised de-key it would be preventing.
     """
-    if _stable_owner(source, session_id) is not None:
+    if stable_managed_tx_owner(source, session_id) is not None:
         return False
     return resolve_supervisor(radio) is not None

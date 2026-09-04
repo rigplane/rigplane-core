@@ -41,6 +41,7 @@ from .transport import RigctldTransport
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue, CommandQueueEntry
     from ...core.command_service import CommandService
+    from ...runtime.managed_queue_boundary import ManagedQueuedWriteBoundary
     from .observations import RigctldClientObservationAdapter
 
 logger = logging.getLogger(__name__)
@@ -98,12 +99,36 @@ class RigctldClientObservationPoller:
         self._radio = radio
         self._callback = callback
         self._command_queue = command_queue
+        self._managed_queued_write_boundary: ManagedQueuedWriteBoundary | None = None
+        self._managed_tx_required = False
         self._medium_interval = medium_interval
         self._slow_interval = slow_interval
         self._tasks: list[asyncio.Task[None]] = []
         self._pending_readback_entries: list[_ReadbackCorrelation] = []
         self._capture_provider_generation: Callable[[], int] | None = None
         self._clock = clock
+
+    @property
+    def managed_queue_boundary(self) -> "ManagedQueuedWriteBoundary | None":
+        """The exact shared boundary attached by production composition."""
+        return self._managed_queued_write_boundary
+
+    def attach_managed_queue_boundary(
+        self,
+        boundary: "ManagedQueuedWriteBoundary | None",
+        *,
+        required: bool = True,
+    ) -> None:
+        """Attach the one composition-owned boundary before the poller starts."""
+        if boundary is None:
+            if required:
+                raise CommandError("managed queued write boundary unavailable")
+            return
+        current = self._managed_queued_write_boundary
+        if current is not None and current is not boundary:
+            raise RuntimeError("managed queued write boundary is already attached")
+        self._managed_queued_write_boundary = boundary
+        self._managed_tx_required = required
 
     def bind_provider_generation(
         self,
@@ -247,7 +272,7 @@ class RigctldClientObservationPoller:
                 provider_generation=None if capture is None else capture(),
             )
             try:
-                await self._execute_command(cmd)
+                await self._execute_command(cmd, entry=entry)
             except Exception as exc:
                 if correlation is not None:
                     self._finish_readbacks((correlation,), "rejected")
@@ -358,7 +383,20 @@ class RigctldClientObservationPoller:
                 self._finish_readbacks((entry,), "mismatched", mismatch)
         return tuple(annotated)
 
-    async def _execute_command(self, cmd: Any) -> None:
+    async def _execute_command(
+        self, cmd: Any, *, entry: "CommandQueueEntry | None" = None
+    ) -> None:
+        boundary = self._managed_queued_write_boundary
+        if self._managed_tx_required and boundary is None:
+            raise CommandError("managed queued write boundary unavailable")
+        if boundary is not None and boundary.handles(cmd):
+            if entry is None:
+                raise CommandError("managed queue entry metadata is unavailable")
+            await boundary.dispatch(entry, self._execute_provider_command)
+            return
+        await self._execute_provider_command(cmd)
+
+    async def _execute_provider_command(self, cmd: Any) -> None:
         cmd = canonicalize_level_command(cmd, self._radio)
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)

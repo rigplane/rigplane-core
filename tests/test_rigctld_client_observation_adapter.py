@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -54,6 +55,7 @@ from rigplane.core.tx_observation import (
     project_observed_ptt,
 )
 from rigplane.exceptions import CommandError
+from rigplane.runtime.managed_queue_boundary import ManagedQueuedWriteBoundary
 
 
 _MEDIUM_INTERVAL, _SLOW_INTERVAL = resolve_external_rigctld_poll_intervals(
@@ -69,6 +71,21 @@ class _NoopCommandExecutor:
     async def execute(self, intent: object) -> CommandExecutionResult:
         del intent
         return CommandExecutionResult(details={"queued": True})
+
+
+class _ManagedQueuedWriteBoundary:
+    def __init__(self, *, handles: bool) -> None:
+        self._handles = handles
+        self.entries = []
+        self.provider_callbacks = []
+
+    def handles(self, command: object) -> bool:
+        del command
+        return self._handles
+
+    async def dispatch(self, entry, execute_provider) -> None:
+        self.entries.append(entry)
+        self.provider_callbacks.append(execute_provider)
 
 
 @pytest.mark.asyncio
@@ -99,6 +116,136 @@ async def test_rigctld_drain_claims_live_pending_finite_turn(mode, monkeypatch):
         mode=mode,
         install_readback=install_readback,
     )
+
+
+def test_rigctld_managed_drain_requires_the_shared_boundary() -> None:
+    radio = RigctldClientRadio(host="127.0.0.1", port=4532)
+    poller = radio.create_observation_poller(callback=lambda _: None)
+
+    with pytest.raises(CommandError, match="managed queued write boundary unavailable"):
+        poller.attach_managed_queue_boundary(None)
+
+
+def test_rigctld_managed_drain_keeps_the_exact_attached_boundary() -> None:
+    radio = RigctldClientRadio(host="127.0.0.1", port=4532)
+    poller = radio.create_observation_poller(callback=lambda _: None)
+    boundary = _ManagedQueuedWriteBoundary(handles=True)
+
+    poller.attach_managed_queue_boundary(boundary)
+
+    assert poller.managed_queue_boundary is boundary
+    with pytest.raises(RuntimeError, match="already attached"):
+        poller.attach_managed_queue_boundary(_ManagedQueuedWriteBoundary(handles=True))
+
+
+@pytest.mark.asyncio
+async def test_rigctld_managed_queue_ptt_delegates_to_shared_boundary_only() -> None:
+    radio = RigctldClientRadio(host="127.0.0.1", port=4532)
+    provider_write = AsyncMock()
+    radio.set_ptt = provider_write
+    boundary = _ManagedQueuedWriteBoundary(handles=True)
+    queue = CommandQueue()
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(future=future, cmd=PttOn(), session_id="web-17")
+    poller = radio.create_observation_poller(
+        callback=lambda _: None,
+        command_queue=queue,
+    )
+    poller.attach_managed_queue_boundary(boundary)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert len(boundary.entries) == 1
+    assert boundary.entries[0].session_id == "web-17"
+    provider_write.assert_not_awaited()
+    assert future.result() is None
+
+
+@pytest.mark.asyncio
+async def test_rigctld_managed_queue_delegates_exact_entry_to_shared_boundary() -> None:
+    radio = RigctldClientRadio(host="127.0.0.1", port=4532)
+    boundary = _ManagedQueuedWriteBoundary(handles=True)
+    queue = CommandQueue()
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(
+        future=future,
+        cmd=SetFreq(7_100_000),
+        command_id="freq-1",
+        source="websocket",
+        session_id="web-17",
+    )
+    poller = radio.create_observation_poller(
+        callback=lambda _: None,
+        command_queue=queue,
+    )
+    poller.attach_managed_queue_boundary(boundary)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    entry = boundary.entries[0]
+    assert entry.command == SetFreq(7_100_000)
+    assert entry.command_id == "freq-1"
+    assert entry.source == "websocket"
+    assert entry.session_id == "web-17"
+    assert len(boundary.provider_callbacks) == 1
+    assert future.result() is None
+
+
+@pytest.mark.asyncio
+async def test_rigctld_managed_ordinary_write_reaches_provider_through_boundary() -> (
+    None
+):
+    radio = RigctldClientRadio(host="127.0.0.1", port=4532)
+    radio.set_freq = AsyncMock()
+    authority = SimpleNamespace(admit_managed_write=AsyncMock())
+    boundary = ManagedQueuedWriteBoundary(
+        SimpleNamespace(authority=authority, local_tx_work_runner=SimpleNamespace()),
+        session_is_live=lambda _session: True,
+    )
+    queue = CommandQueue()
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(
+        future=future,
+        cmd=SetFreq(7_100_000),
+        command_id="freq-provider",
+        source="websocket",
+        session_id="web-17",
+    )
+    poller = radio.create_observation_poller(
+        callback=lambda _: None,
+        command_queue=queue,
+    )
+    poller.attach_managed_queue_boundary(boundary)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    radio.set_freq.assert_awaited_once_with(7_100_000, receiver=0)
+    authority.admit_managed_write.assert_not_awaited()
+    assert future.result() is None
+
+
+@pytest.mark.asyncio
+async def test_rigctld_queue_preserves_provider_execution_when_boundary_declines() -> (
+    None
+):
+    radio = RigctldClientRadio(host="127.0.0.1", port=4532)
+    provider_write = AsyncMock()
+    radio.set_ptt = provider_write
+    boundary = _ManagedQueuedWriteBoundary(handles=False)
+    queue = CommandQueue()
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(future=future, cmd=PttOn())
+    poller = radio.create_observation_poller(
+        callback=lambda _: None,
+        command_queue=queue,
+    )
+    poller.attach_managed_queue_boundary(boundary, required=False)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert boundary.entries == []
+    provider_write.assert_awaited_once_with(True)
+    assert future.result() is None
 
 
 @pytest.mark.asyncio
