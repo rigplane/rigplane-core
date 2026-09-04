@@ -4554,21 +4554,23 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             )
         )
 
-    async def get_tone_freq(self, receiver: int = 0) -> float:
-        """Read CTCSS tone frequency in Hz (0x1B 0x00)."""
+    async def get_tone_freq(self, receiver: int = 0) -> int:
+        """Read CTCSS tone frequency in exact centiHz (0x1B 0x00)."""
         self._check_connected()
         self._require_receiver(receiver, operation="get_tone_freq")
+        domain = self._profile.ctcss_tones_centihz
 
         if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x00):
+            civ = self._commands.get_tone_freq(
+                to_addr=self._radio_addr,
+                receiver=RECEIVER_MAIN,
+                command29=False,
+                ctcss_tones_centihz=domain,
+            )
 
-            async def _action() -> float:
-                civ = self._commands.get_tone_freq(
-                    to_addr=self._radio_addr,
-                    receiver=RECEIVER_MAIN,
-                    command29=False,
-                )
+            async def _action() -> int:
                 resp = await self._send_civ_expect(civ, label="get_tone_freq")
-                _, freq = parse_tone_freq_response(resp)
+                _, freq = parse_tone_freq_response(resp, ctcss_tones_centihz=domain)
                 return freq
 
             return await self._run_with_receiver_vfo_fallback(
@@ -4582,28 +4584,32 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x1B, 0x00)
         civ = self._commands.get_tone_freq(
-            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            to_addr=self._radio_addr,
+            receiver=receiver,
+            command29=cmd29,
+            ctcss_tones_centihz=domain,
         )
         resp = await self._send_civ_expect(civ, label="get_tone_freq")
-        _, freq = parse_tone_freq_response(resp)
+        _, freq = parse_tone_freq_response(resp, ctcss_tones_centihz=domain)
         return freq
 
-    async def set_tone_freq(self, freq_hz: float, receiver: int = 0) -> None:
-        """Set CTCSS tone frequency in Hz (0x1B 0x00)."""
+    async def set_tone_freq(self, freq_centihz: int, receiver: int = 0) -> None:
+        """Set CTCSS tone frequency in exact centiHz (0x1B 0x00)."""
         self._check_connected()
         self._require_receiver(receiver, operation="set_tone_freq")
+        domain = self._profile.ctcss_tones_centihz
 
         if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x00):
+            civ = self._commands.set_tone_freq(
+                freq_centihz,
+                to_addr=self._radio_addr,
+                receiver=RECEIVER_MAIN,
+                command29=False,
+                ctcss_tones_centihz=domain,
+            )
 
             async def _action() -> None:
-                await self._send_fire_and_forget(
-                    self._commands.set_tone_freq(
-                        freq_hz,
-                        to_addr=self._radio_addr,
-                        receiver=RECEIVER_MAIN,
-                        command29=False,
-                    )
-                )
+                await self._send_fire_and_forget(civ)
 
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,
@@ -4618,25 +4624,31 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         cmd29 = self._profile.supports_cmd29(0x1B, 0x00)
         await self._send_fire_and_forget(
             self._commands.set_tone_freq(
-                freq_hz, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+                freq_centihz,
+                to_addr=self._radio_addr,
+                receiver=receiver,
+                command29=cmd29,
+                ctcss_tones_centihz=domain,
             )
         )
 
-    async def get_tsql_freq(self, receiver: int = 0) -> float:
-        """Read TSQL frequency in Hz (0x1B 0x01)."""
+    async def get_tsql_freq(self, receiver: int = 0) -> int:
+        """Read TSQL frequency in exact centiHz (0x1B 0x01)."""
         self._check_connected()
         self._require_receiver(receiver, operation="get_tsql_freq")
+        domain = self._profile.ctcss_tones_centihz
 
         if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x01):
+            civ = self._commands.get_tsql_freq(
+                to_addr=self._radio_addr,
+                receiver=RECEIVER_MAIN,
+                command29=False,
+                ctcss_tones_centihz=domain,
+            )
 
-            async def _action() -> float:
-                civ = self._commands.get_tsql_freq(
-                    to_addr=self._radio_addr,
-                    receiver=RECEIVER_MAIN,
-                    command29=False,
-                )
+            async def _action() -> int:
                 resp = await self._send_civ_expect(civ, label="get_tsql_freq")
-                _, freq = parse_tsql_freq_response(resp)
+                _, freq = parse_tsql_freq_response(resp, ctcss_tones_centihz=domain)
                 return freq
 
             return await self._run_with_receiver_vfo_fallback(
@@ -4650,28 +4662,32 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         cmd29 = self._profile.supports_cmd29(0x1B, 0x01)
         civ = self._commands.get_tsql_freq(
-            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            to_addr=self._radio_addr,
+            receiver=receiver,
+            command29=cmd29,
+            ctcss_tones_centihz=domain,
         )
         resp = await self._send_civ_expect(civ, label="get_tsql_freq")
-        _, freq = parse_tsql_freq_response(resp)
+        _, freq = parse_tsql_freq_response(resp, ctcss_tones_centihz=domain)
         return freq
 
-    async def set_tsql_freq(self, freq_hz: float, receiver: int = 0) -> None:
-        """Set TSQL frequency in Hz (0x1B 0x01)."""
+    async def set_tsql_freq(self, freq_centihz: int, receiver: int = 0) -> None:
+        """Set TSQL frequency in exact centiHz (0x1B 0x01)."""
         self._check_connected()
         self._require_receiver(receiver, operation="set_tsql_freq")
+        domain = self._profile.ctcss_tones_centihz
 
         if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x01):
+            civ = self._commands.set_tsql_freq(
+                freq_centihz,
+                to_addr=self._radio_addr,
+                receiver=RECEIVER_MAIN,
+                command29=False,
+                ctcss_tones_centihz=domain,
+            )
 
             async def _action() -> None:
-                await self._send_fire_and_forget(
-                    self._commands.set_tsql_freq(
-                        freq_hz,
-                        to_addr=self._radio_addr,
-                        receiver=RECEIVER_MAIN,
-                        command29=False,
-                    )
-                )
+                await self._send_fire_and_forget(civ)
 
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,
@@ -4686,7 +4702,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         cmd29 = self._profile.supports_cmd29(0x1B, 0x01)
         await self._send_fire_and_forget(
             self._commands.set_tsql_freq(
-                freq_hz, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+                freq_centihz,
+                to_addr=self._radio_addr,
+                receiver=receiver,
+                command29=cmd29,
+                ctcss_tones_centihz=domain,
             )
         )
 

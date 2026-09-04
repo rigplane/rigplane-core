@@ -81,7 +81,10 @@ _IC705_ADDR = 0xA4
 # address, no divergence row for any of them), so the expected bytes below
 # are unchanged.
 RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
-_IC7300_CMD_MAP = load_rig(RIG_DIR / "ic7300.toml").to_command_map()
+_IC7300_RIG = load_rig(RIG_DIR / "ic7300.toml")
+_IC7300_CMD_MAP = _IC7300_RIG.to_command_map()
+_IC7300_CTCSS_DOMAIN = _IC7300_RIG.ctcss_tones_centihz
+assert _IC7300_CTCSS_DOMAIN is not None
 _IC7610_CMD_MAP = load_rig(RIG_DIR / "ic7610.toml").to_command_map()
 _IC705_CMD_MAP = load_rig(RIG_DIR / "ic705.toml").to_command_map()
 
@@ -758,13 +761,14 @@ class TestToneFreqGating:
     async def test_set_tone_freq_unwrapped_on_ic7300(self) -> None:
         radio = _connected_icom(model="IC-7300")
         mock = _mock_raw(radio)
-        await radio.set_tone_freq(100.0, receiver=0)
+        await radio.set_tone_freq(10000, receiver=0)
         expected = set_tone_freq(
-            100.0,
+            10000,
             to_addr=_IC7300_ADDR,
             receiver=0,
             command29=False,
             cmd_map=_IC7300_CMD_MAP,
+            ctcss_tones_centihz=_IC7300_CTCSS_DOMAIN,
         )
         assert _sent_civ(mock) == expected
 
@@ -779,7 +783,7 @@ class TestToneFreqGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         with pytest.raises(CommandError, match="not supported by this radio"):
-            await radio.set_tone_freq(100.0, receiver=0)
+            await radio.set_tone_freq(10000, receiver=0)
         mock.assert_not_called()
 
     @pytest.mark.asyncio
@@ -795,10 +799,14 @@ class TestToneFreqGating:
         mock = _mock_expect(radio, response)
         value = await radio.get_tone_freq(receiver=0)
         expected = get_tone_freq(
-            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+            ctcss_tones_centihz=_IC7300_CTCSS_DOMAIN,
         )
         assert _sent_civ(mock) == expected
-        assert value == 100.0
+        assert value == 10000
 
     @pytest.mark.asyncio
     async def test_get_tone_freq_refused_on_ic7610(self) -> None:
@@ -822,13 +830,14 @@ class TestTsqlFreqGating:
     async def test_set_tsql_freq_unwrapped_on_ic7300(self) -> None:
         radio = _connected_icom(model="IC-7300")
         mock = _mock_raw(radio)
-        await radio.set_tsql_freq(100.0, receiver=0)
+        await radio.set_tsql_freq(10000, receiver=0)
         expected = set_tsql_freq(
-            100.0,
+            10000,
             to_addr=_IC7300_ADDR,
             receiver=0,
             command29=False,
             cmd_map=_IC7300_CMD_MAP,
+            ctcss_tones_centihz=_IC7300_CTCSS_DOMAIN,
         )
         assert _sent_civ(mock) == expected
 
@@ -839,7 +848,7 @@ class TestTsqlFreqGating:
         radio = _connected_icom(model="IC-7610")
         mock = _mock_raw(radio)
         with pytest.raises(CommandError, match="not supported by this radio"):
-            await radio.set_tsql_freq(100.0, receiver=0)
+            await radio.set_tsql_freq(10000, receiver=0)
         mock.assert_not_called()
 
     @pytest.mark.asyncio
@@ -855,10 +864,14 @@ class TestTsqlFreqGating:
         mock = _mock_expect(radio, response)
         value = await radio.get_tsql_freq(receiver=0)
         expected = get_tsql_freq(
-            to_addr=_IC7300_ADDR, receiver=0, command29=False, cmd_map=_IC7300_CMD_MAP
+            to_addr=_IC7300_ADDR,
+            receiver=0,
+            command29=False,
+            cmd_map=_IC7300_CMD_MAP,
+            ctcss_tones_centihz=_IC7300_CTCSS_DOMAIN,
         )
         assert _sent_civ(mock) == expected
-        assert value == 100.0
+        assert value == 10000
 
     @pytest.mark.asyncio
     async def test_get_tsql_freq_refused_on_ic7610(self) -> None:

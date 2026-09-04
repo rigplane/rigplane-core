@@ -1,10 +1,8 @@
 """Per-check crash containment for the hardware runner (MOR-659).
 
-The first live IC-7610 validation run crashed and discarded ALL results: the
-radio's repeater tone read back as 16.5 Hz (tone not configured), which is
-below the encoder's settable band (67.0-254.1 Hz, ``commands/tone.py``
-``_encode_tone_freq``), so the RMVR restore raised a bare ``ValueError`` that
-escaped ``_guard``, the restore ``finally`` and ``execute_hardware_checks``.
+The first live IC-7610 validation run crashed and discarded ALL results when
+the radio returned an unset tone value that could not be restored. The active
+profile domain is now the sole restore-safety authority for this path.
 
 These tests pin the four containment layers:
 
@@ -14,12 +12,13 @@ These tests pin the four containment layers:
 * ``execute_hardware_checks`` has a per-entry backstop so one raising check
   can never abort the matrix or lose the artifact;
 * ``tone_freq.set``/``tsql_freq.set`` SKIP without mutating when the current
-  value is outside the settable band (non-destructive harness).
+  exact centiHz value is outside the active profile domain.
 """
 
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -44,13 +43,8 @@ from rigplane.validation.schema import (
     RadioTarget,
 )
 
-# Settable band of commands/tone.py::_encode_tone_freq (shared by
-# set_tone_freq and set_tsql_freq).
-_TONE_BAND_MIN = 67.0
-_TONE_BAND_MAX = 254.1
-
-# The IC-7610's readback when no repeater tone is configured: un-encodable.
-_UNENCODABLE_TONE = 16.5
+_SYNTHETIC_CTCSS_DOMAIN = (7310, 9470, 16620)
+_UNDECLARED_TONE = 1650
 
 
 def _flatten(levels):
@@ -80,37 +74,40 @@ def _template_for(*check_ids: str) -> MatrixTemplate:
     )
 
 
-def _encoder_guarded_setter(store: dict):
-    """A setter that raises like commands/tone.py::_encode_tone_freq."""
+def _profile_guarded_setter(store: dict):
+    """A setter that enforces the active profile's exact centiHz domain."""
 
-    async def _set(freq_hz: float, receiver: int = 0) -> None:
-        if not _TONE_BAND_MIN <= freq_hz <= _TONE_BAND_MAX:
-            raise ValueError(f"Tone frequency must be 67.0-254.1 Hz, got {freq_hz}")
-        store["value"] = freq_hz
-        store["writes"].append(freq_hz)
+    async def _set(freq_centihz: int, receiver: int = 0) -> None:
+        if type(freq_centihz) is not int or freq_centihz not in _SYNTHETIC_CTCSS_DOMAIN:
+            raise ValueError(
+                f"Tone frequency is not in the active profile: {freq_centihz}"
+            )
+        store["value"] = freq_centihz
+        store["writes"].append(freq_centihz)
 
     return _set
 
 
 def _unconfigured_tone_radio():
-    """A fake IC-7610 whose tone/TSQL frequencies read back un-encodable."""
+    """A fake radio whose tone/TSQL readbacks are outside its profile domain."""
     radio = MagicMock(spec=Radio)
     radio.connected = True
     radio.model = "IC-7610"
     radio.capabilities = {"repeater_tone", "tsql"}
-    tone_store: dict = {"value": _UNENCODABLE_TONE, "writes": []}
-    tsql_store: dict = {"value": _UNENCODABLE_TONE, "writes": []}
+    radio.profile = SimpleNamespace(ctcss_tones_centihz=_SYNTHETIC_CTCSS_DOMAIN)
+    tone_store: dict = {"value": _UNDECLARED_TONE, "writes": []}
+    tsql_store: dict = {"value": _UNDECLARED_TONE, "writes": []}
 
-    async def _get_tone(receiver: int = 0) -> float:
+    async def _get_tone(receiver: int = 0) -> int:
         return tone_store["value"]
 
-    async def _get_tsql(receiver: int = 0) -> float:
+    async def _get_tsql(receiver: int = 0) -> int:
         return tsql_store["value"]
 
     radio.get_tone_freq = AsyncMock(side_effect=_get_tone)
-    radio.set_tone_freq = AsyncMock(side_effect=_encoder_guarded_setter(tone_store))
+    radio.set_tone_freq = AsyncMock(side_effect=_profile_guarded_setter(tone_store))
     radio.get_tsql_freq = AsyncMock(side_effect=_get_tsql)
-    radio.set_tsql_freq = AsyncMock(side_effect=_encoder_guarded_setter(tsql_store))
+    radio.set_tsql_freq = AsyncMock(side_effect=_profile_guarded_setter(tsql_store))
 
     repeater_store: dict = {"value": False, "writes": []}
 
@@ -159,7 +156,7 @@ async def test_unencodable_tone_freq_never_crashes_the_run():
     for check_id in ("tone_freq.set", "tsql_freq.set"):
         result = results[check_id]
         assert result.status is CheckStatus.SKIP, check_id
-        assert result.evidence["original"] == _UNENCODABLE_TONE
+        assert result.evidence["original"] == _UNDECLARED_TONE
         assert "non-destructive" in str(result.evidence["reason"])
     # (d) the radio was NEVER mutated: no write reached either setter.
     assert tone_store["writes"] == []
@@ -170,9 +167,10 @@ async def test_unencodable_tone_freq_never_crashes_the_run():
 
 
 async def test_encodable_tone_freq_still_runs_rmvr():
-    """The restorable gate must not affect in-band values."""
+    """The restore gate admits members of a synthetic nonstandard domain."""
     radio, tone_store, _ = _unconfigured_tone_radio()
-    tone_store["value"] = 88.5
+    radio.model = "SYNTHETIC-NONSTANDARD"
+    tone_store["value"] = 7310
     levels = await execute_hardware_checks(
         radio,
         _template_for("tone_freq.set"),
@@ -181,8 +179,8 @@ async def test_encodable_tone_freq_still_runs_rmvr():
     )
     result = _flatten(levels)["tone_freq.set"]
     assert result.status is CheckStatus.PASS
-    assert tone_store["value"] == 88.5  # restored
-    assert 100.0 in tone_store["writes"]
+    assert tone_store["value"] == 7310  # restored
+    assert tone_store["writes"] == [9470, 7310]
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +191,7 @@ async def test_encodable_tone_freq_still_runs_rmvr():
 @pytest.mark.parametrize("exc_type", [ValueError, TypeError])
 async def test_guard_maps_bare_value_and_type_errors_to_fail(exc_type):
     async def _raises():
-        raise exc_type("Tone frequency must be 67.0-254.1 Hz, got 16.5")
+        raise exc_type("Tone frequency 1650 is not declared by the active profile")
 
     entry = _entry_for("tone_freq.set")
     value, failure = await _guard(_raises(), entry, per_check_timeout=1.0)
@@ -201,7 +199,7 @@ async def test_guard_maps_bare_value_and_type_errors_to_fail(exc_type):
     assert failure is not None
     assert failure.status is CheckStatus.FAIL
     assert failure.failure_domain is FailureDomain.COMMAND_EXECUTION
-    assert "16.5" in (failure.error or "")
+    assert "1650" in (failure.error or "")
 
 
 # ---------------------------------------------------------------------------

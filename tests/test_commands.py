@@ -43,6 +43,8 @@ from rigplane.types import (
 from _command_test_helpers import bind_default_addr_globals, bind_default_addr_module
 
 RIG_DIR = Path(__file__).resolve().parents[1] / "rigs"
+_CTCSS_DOMAIN = load_rig(RIG_DIR / "ic7300.toml").ctcss_tones_centihz
+assert _CTCSS_DOMAIN is not None
 
 # The eight Icom CI-V scope span presets (span code 0-7 -> Hz), copied
 # verbatim from the module constant `commands/scope.py` held at c23d8cbd
@@ -1884,59 +1886,61 @@ class TestToneTsqlCommands:
     def test_encode_tone_freq_88_5(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(88.5) == bytes([0x00, 0x08, 0x85])
+        assert _encode_tone_freq(8850) == bytes([0x00, 0x08, 0x85])
 
     def test_encode_tone_freq_110_9(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(110.9) == bytes([0x00, 0x11, 0x09])
+        assert _encode_tone_freq(11090) == bytes([0x00, 0x11, 0x09])
 
     def test_encode_tone_freq_100_0(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(100.0) == bytes([0x00, 0x10, 0x00])
+        assert _encode_tone_freq(10000) == bytes([0x00, 0x10, 0x00])
 
     def test_encode_tone_freq_67_0(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(67.0) == bytes([0x00, 0x06, 0x70])
+        assert _encode_tone_freq(6700) == bytes([0x00, 0x06, 0x70])
 
     def test_encode_tone_freq_254_1(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        assert _encode_tone_freq(254.1) == bytes([0x00, 0x25, 0x41])
+        assert _encode_tone_freq(25410) == bytes([0x00, 0x25, 0x41])
 
     def test_encode_tone_freq_rejects_out_of_range(self) -> None:
         from rigplane.commands import _encode_tone_freq
 
-        with pytest.raises(ValueError, match="67.0-254.1"):
-            _encode_tone_freq(60.0)
-        with pytest.raises(ValueError, match="67.0-254.1"):
-            _encode_tone_freq(300.0)
+        with pytest.raises(ValueError, match="0.1 Hz"):
+            _encode_tone_freq(8851)
 
     def test_decode_tone_freq_88_5(self) -> None:
         from rigplane.commands import _decode_tone_freq
 
-        assert _decode_tone_freq(bytes([0x00, 0x08, 0x85])) == pytest.approx(88.5)
+        assert _decode_tone_freq(bytes([0x00, 0x08, 0x85])) == 8850
 
     def test_decode_tone_freq_110_9(self) -> None:
         from rigplane.commands import _decode_tone_freq
 
-        assert _decode_tone_freq(bytes([0x00, 0x11, 0x09])) == pytest.approx(110.9)
+        assert _decode_tone_freq(bytes([0x00, 0x11, 0x09])) == 11090
 
     def test_decode_tone_freq_roundtrip(self) -> None:
         from rigplane.commands import _decode_tone_freq, _encode_tone_freq
 
-        for freq in [67.0, 88.5, 100.0, 110.9, 127.3, 203.5, 254.1]:
+        for freq in [6700, 8850, 10000, 11090, 12730, 20350, 25410]:
             encoded = _encode_tone_freq(freq)
-            assert _decode_tone_freq(encoded) == pytest.approx(freq, abs=0.05)
+            assert _decode_tone_freq(encoded) == freq
 
     # --- Tone Frequency command (0x1B 0x00) ---
 
     def test_get_tone_freq_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, get_tone_freq
 
-        frame = get_tone_freq(receiver=RECEIVER_MAIN, cmd_map=cmd_map)
+        frame = get_tone_freq(
+            receiver=RECEIVER_MAIN,
+            cmd_map=cmd_map,
+            ctcss_tones_centihz=_CTCSS_DOMAIN,
+        )
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_MAIN
         assert frame[6] == 0x1B
@@ -1945,7 +1949,12 @@ class TestToneTsqlCommands:
     def test_set_tone_freq_encodes_bcd(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_tone_freq
 
-        frame = set_tone_freq(88.5, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
+        frame = set_tone_freq(
+            8850,
+            receiver=RECEIVER_MAIN,
+            cmd_map=cmd_map,
+            ctcss_tones_centihz=_CTCSS_DOMAIN,
+        )
         assert frame[4] == 0x29
         assert frame[6] == 0x1B
         assert frame[7] == 0x00
@@ -1954,15 +1963,19 @@ class TestToneTsqlCommands:
     def test_set_tone_freq_rejects_out_of_range(self, cmd_map) -> None:
         from rigplane.commands import set_tone_freq
 
-        with pytest.raises(ValueError, match="67.0-254.1"):
-            set_tone_freq(50.0, cmd_map=cmd_map)
+        with pytest.raises(ValueError, match="not declared"):
+            set_tone_freq(5000, cmd_map=cmd_map, ctcss_tones_centihz=_CTCSS_DOMAIN)
 
     # --- TSQL Frequency command (0x1B 0x01) ---
 
     def test_get_tsql_freq_uses_cmd29(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_SUB, get_tsql_freq
 
-        frame = get_tsql_freq(receiver=RECEIVER_SUB, cmd_map=cmd_map)
+        frame = get_tsql_freq(
+            receiver=RECEIVER_SUB,
+            cmd_map=cmd_map,
+            ctcss_tones_centihz=_CTCSS_DOMAIN,
+        )
         assert frame[4] == 0x29
         assert frame[5] == RECEIVER_SUB
         assert frame[6] == 0x1B
@@ -1971,7 +1984,12 @@ class TestToneTsqlCommands:
     def test_set_tsql_freq_encodes_bcd(self, cmd_map) -> None:
         from rigplane.commands import RECEIVER_MAIN, set_tsql_freq
 
-        frame = set_tsql_freq(110.9, receiver=RECEIVER_MAIN, cmd_map=cmd_map)
+        frame = set_tsql_freq(
+            11090,
+            receiver=RECEIVER_MAIN,
+            cmd_map=cmd_map,
+            ctcss_tones_centihz=_CTCSS_DOMAIN,
+        )
         assert frame[4] == 0x29
         assert frame[6] == 0x1B
         assert frame[7] == 0x01
@@ -1998,9 +2016,11 @@ class TestToneTsqlCommands:
             receiver=RECEIVER_MAIN,
         )
         frame = parse_civ_frame(civ)
-        receiver, freq = parse_tone_freq_response(frame)
+        receiver, freq = parse_tone_freq_response(
+            frame, ctcss_tones_centihz=_CTCSS_DOMAIN
+        )
         assert receiver == RECEIVER_MAIN
-        assert freq == pytest.approx(88.5)
+        assert freq == 8850
 
     def test_parse_tsql_freq_response(self) -> None:
         from rigplane import IC_7610_ADDR
@@ -2021,9 +2041,11 @@ class TestToneTsqlCommands:
             receiver=RECEIVER_SUB,
         )
         frame = parse_civ_frame(civ)
-        receiver, freq = parse_tsql_freq_response(frame)
+        receiver, freq = parse_tsql_freq_response(
+            frame, ctcss_tones_centihz=_CTCSS_DOMAIN
+        )
         assert receiver == RECEIVER_SUB
-        assert freq == pytest.approx(110.9)
+        assert freq == 11090
 
     def test_build_memory_mode_get(self) -> None:
         """get_memory_mode is PROVENANCE OPEN on every shipped Icom profile

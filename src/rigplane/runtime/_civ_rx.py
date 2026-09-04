@@ -32,6 +32,8 @@ from rigplane.commands import (
     parse_level_response,
     parse_mode_response,
     parse_rit_frequency_response,
+    parse_tone_freq_response,
+    parse_tsql_freq_response,
     parse_scope_center_type_response,
     parse_scope_during_tx_response,
     parse_scope_edge_response,
@@ -2449,16 +2451,24 @@ class CivRuntime:
                 )
             )
         elif frame.command == 0x1B and len(frame.data) >= 3:
-            # Tone/TSQL freq: BCD freq → centiHz, reusing the exact decode of
-            # ``_handle_1b`` (``round(_decode_tone_freq(...) * 100)``) (MOR-451).
+            # Tone/TSQL freq: publish only exact centiHz values admitted by the
+            # active profile. Parser failures abort this frame before StateStore.
             mapping = _OBSERVABLE_CMD1B_FIELDS.get(frame.sub or 0)
             if mapping is not None:
-                from rigplane.commands import _decode_tone_freq
+                parser = (
+                    parse_tone_freq_response
+                    if frame.sub == 0x00
+                    else parse_tsql_freq_response
+                )
+                _, freq_centihz = parser(
+                    frame,
+                    ctcss_tones_centihz=self._host._profile.ctcss_tones_centihz,
+                )
 
                 observations.append(
                     self._observation(
                         self._field_path(mapping, receiver_id=receiver_id),
-                        round(_decode_tone_freq(frame.data) * 100),
+                        freq_centihz,
                         frame=frame,
                     )
                 )

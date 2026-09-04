@@ -1345,7 +1345,7 @@ async def _read_modify_verify_restore(
             evidence={
                 "original": original,
                 "reason": (
-                    "current value outside settable range; not mutated to "
+                    "current value outside active settable domain; not mutated to "
                     "keep the run non-destructive"
                 ),
             },
@@ -2214,6 +2214,34 @@ async def _check_xit_set(
 # Generic dispatch: value-rule map + _check_from_spec
 # ---------------------------------------------------------------------------
 
+
+def _declared_ctcss_tones_centihz(radio: Radio) -> tuple[int, ...]:
+    """Return the active profile's exact CTCSS domain, or fail closed."""
+    profile = getattr(radio, "profile", None)
+    tones = getattr(profile, "ctcss_tones_centihz", None)
+    if not isinstance(tones, tuple) or not tones:
+        return ()
+    if any(type(tone) is not int for tone in tones):
+        return ()
+    return tones
+
+
+def _ctcss_probe_value(radio: Radio, *, avoid: int) -> int:
+    """Choose a different tone from the active profile's exact domain."""
+    for tone in _declared_ctcss_tones_centihz(radio):
+        if tone != avoid:
+            return tone
+    raise ValueError("active profile has no alternate CTCSS tone")
+
+
+def _ctcss_original_is_restorable(radio: Radio, value: object) -> bool:
+    """Admit RMVR only when the original and an alternate are profile members."""
+    if type(value) is not int:
+        return False
+    domain = _declared_ctcss_tones_centihz(radio)
+    return value in domain and any(tone != value for tone in domain)
+
+
 # Standalone test value to SET for a write-only control (no original is readable).
 _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     ValueRule.TOGGLE_BOOL: True,
@@ -2232,7 +2260,6 @@ _WRITE_ONLY_TEST_VALUES: dict[str, Any] = {
     # fallback happens to equal this same constant — a coincidence of the
     # chosen value, not a shared code path.
     ValueRule.AGC_FLIP: int(AgcMode.FAST),
-    ValueRule.TONE_FREQ_CYCLE: 88.5,
     ValueRule.VFO_AB_FLIP: "A",
     ValueRule.KEY_SPEED_WPM: 20,
     # T11 / MOR-646 — scope controls: index 1 and edge 1 are valid for every
@@ -2277,9 +2304,6 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
         int(AgcMode.SLOW) if m != AgcMode.SLOW else int(AgcMode.FAST)
     ),
     ValueRule.BUMP_HZ: lambda v: v + 100,
-    # MOR-642..645 command-coverage families.
-    # Flip between two standard CTCSS tones (Hz).
-    ValueRule.TONE_FREQ_CYCLE: lambda f: 100.0 if float(f) == 88.5 else 88.5,
     # VFO slot select: "A" <-> "B".
     ValueRule.VFO_AB_FLIP: lambda s: "B" if str(s).upper() == "A" else "A",
     # CW keyer speed in WPM (real range 6-48): pick a DIFFERENT in-range value.
@@ -2310,13 +2334,9 @@ _VALUE_RULE_FNS: dict[str, Callable[[Any], Any]] = {
 }
 
 # Restore-safety predicates (MOR-659): when the CURRENT value of an RMVR
-# control is outside the encoder's settable band, the check must SKIP without
-# writing — a test value could never be restored from. Bounds mirror the real
-# encoder: ``commands/tone.py::_encode_tone_freq`` (67.0-254.1 Hz, shared by
-# ``set_tone_freq`` and ``set_tsql_freq``). The live IC-7610 read back 16.5 Hz
-# (tone not configured), which aborted an entire validation run.
+# control is outside its settable domain, the check must SKIP without writing
+# because a test value could never be restored from.
 _VALUE_RULE_RESTORABLE: dict[str, Callable[[Any], bool]] = {
-    ValueRule.TONE_FREQ_CYCLE: lambda v: 67.0 <= float(v) <= 254.1,
     # MOR-672 — only the valid ``CT`` SQL-type codes (0=off / 1=TONE / 2=TSQL)
     # are restorable; an out-of-range read must SKIP rather than write.
     ValueRule.SQL_TYPE_CYCLE: lambda v: 0 <= int(v) <= 2,
@@ -2355,6 +2375,9 @@ async def _set_and_observe(
         # classification does not inherit the same hazard MOR-1529 fixed for
         # the named RMVR handler.
         test_value = _agc_probe_value(radio, avoid=None)
+    elif spec.value_rule == ValueRule.TONE_FREQ_CYCLE:
+        domain = _declared_ctcss_tones_centihz(radio)
+        test_value = domain[0] if domain else None
     if test_value is None:
         return _base_result(
             entry,
@@ -2467,7 +2490,15 @@ async def _check_from_spec(
                 },
             )
         make_changed = _VALUE_RULE_FNS.get(spec.value_rule)
-        if make_changed is None:
+        restorable = _VALUE_RULE_RESTORABLE.get(spec.value_rule)
+        if spec.value_rule == ValueRule.TONE_FREQ_CYCLE:
+            make_changed = lambda current: _ctcss_probe_value(  # noqa: E731
+                radio, avoid=current
+            )
+            restorable = lambda value: _ctcss_original_is_restorable(  # noqa: E731
+                radio, value
+            )
+        elif make_changed is None:
             return _base_result(
                 entry,
                 CheckStatus.UNSUPPORTED,
@@ -2475,7 +2506,6 @@ async def _check_from_spec(
                     "reason": f"value_rule {spec.value_rule!r} not supported by generic handler"
                 },
             )
-        restorable = _VALUE_RULE_RESTORABLE.get(spec.value_rule)
         extra_evidence: dict[str, object] = {
             "handler": "generic",
             "value_rule": str(spec.value_rule),
