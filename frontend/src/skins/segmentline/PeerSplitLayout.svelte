@@ -18,16 +18,22 @@
   import '../../components-v2/theme/index';
   import ScaledStage from '../../primitives/stage/ScaledStage.svelte';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
+  import type { RadioViewModel } from '../../semantic/radio-view-model';
+  import { projectPeerSplitDisplay } from '../../semantic/radio-display-model';
+  import CenterstageDisplay from './CenterstageDisplay.svelte';
+  import DominantUnifiedDisplay from './DominantUnifiedDisplay.svelte';
+  import LcdDisplayVariant, { type LcdDisplayVariantId } from './LcdDisplayVariant.svelte';
+  import PanadapterDisplay from './PanadapterDisplay.svelte';
+  import PeerSplitDisplay from './PeerSplitDisplay.svelte';
 
   /**
    * Canvas size and scale floor come from the shell (`components-v2/layout/
    * LcdLayout.svelte`), which resolves them from the `peer-split-glass`
    * instrument group through the `peer-split` manifest's zone reference
    * (MOR-2253 slice 1, MOR-2259). This
-   * replaces this component's own former `NATIVE_W`/`NATIVE_H` constants,
-   * which duplicated `SEGMENTLINE_GLASS_STAGE` in `presentation/layouts/
-   * segmentline-declarations.ts` as a second, independent literal
-   * (instrument-group ADR §4, F2).
+   * replaces this component's former local canvas-size constants, which
+   * duplicated the layout declaration's derived stage as a second,
+   * independent literal (instrument-group ADR §4, F2).
    */
   interface Props {
     canvasW: number;
@@ -35,34 +41,30 @@
     /** The group's own `scaling.minScale`, resolved by the same shell and
      *  handed to `ScaledStage` as its scale floor (MOR-2259). */
     minScale: number;
+    displayVariant?: LcdDisplayVariantId;
   }
-  let { canvasW, canvasH, minScale }: Props = $props();
-
-  /** Wall-clock only — see the file header. `Date`, not radio state. */
-  function clockLabel(date: Date): { utc: string; local: string } {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return {
-      utc: `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}Z`,
-      local: `${pad(date.getHours())}:${pad(date.getMinutes())}`,
-    };
-  }
-
-  let now = $state(new Date());
-  $effect(() => {
-    const id = setInterval(() => { now = new Date(); }, 30_000);
-    return () => clearInterval(id);
-  });
-  let clock = $derived(clockLabel(now));
+  let { canvasW, canvasH, minScale, displayVariant = 'peer' }: Props = $props();
 </script>
+
+{#snippet readonlyDisplay(view: RadioViewModel)}
+  {@const model = projectPeerSplitDisplay(view)}
+  {#snippet peer()}<PeerSplitDisplay {model} />{/snippet}
+  {#snippet dominant()}<DominantUnifiedDisplay {model} />{/snippet}
+  {#snippet centerstage()}<CenterstageDisplay {model} />{/snippet}
+  {#snippet panadapter()}<PanadapterDisplay {model} />{/snippet}
+  <LcdDisplayVariant
+    variant={displayVariant}
+    {peer}
+    {dominant}
+    {centerstage}
+    {panadapter}
+  />
+{/snippet}
 
 <div class="peer-split-holder">
   <ScaledStage nativeW={canvasW} nativeH={canvasH} {minScale}>
     <div class="peer-split-glass" data-testid="peer-split-glass">
-      <div class="peer-split-clock" data-testid="peer-split-clock" aria-label="Clock">
-        <span data-testid="peer-split-clock-utc">{clock.utc}</span>
-        <span data-testid="peer-split-clock-local">{clock.local}</span>
-      </div>
-      <SemanticRadioSurfaces strips="dual" />
+      <SemanticRadioSurfaces strips="dual" {readonlyDisplay} />
     </div>
   </ScaledStage>
 </div>
@@ -93,133 +95,27 @@
     position: relative;
     overflow: hidden;
     box-sizing: border-box;
-    padding: 14px;
     border: 2px solid var(--dl-segmentline-bezel-edge, #8a7020);
     border-radius: 10px;
     background: var(--dl-segmentline-glass, #c8a030);
     color: var(--dl-segmentline-ink-strong, rgba(26, 16, 0, 1));
+    box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.06), 0 0 8px rgba(0, 0, 0, 0.5);
   }
-
-  /* Lesson 3: the clock is instrument face, inside the scaled stage, never
-     app chrome. Positioned absolute against `.peer-split-glass` itself,
-     which sets `position: relative` above. No `!important` needed: the
-     specificity tie a previous draft of this rule fought (MOR-2153 review)
-     existed only because this element wore the `dl-glass` class, so
-     segmentline.css's `.dl-glass > *` / `.rx-tx-surface > *` promotion rule
-     could reach it — it no longer wears that class (see the glass rule
-     above and the markup below), so that rule cannot match this element at
-     all and there is nothing left to out-rank. */
-  .peer-split-glass > .peer-split-clock {
-    position: absolute;
-    top: 14px;
-    right: 14px;
-    height: 34px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    pointer-events: none;
-  }
-
-  /* Lesson 1 + 2: the grid host is the WIRING'S OWN root, reached by
-     descendant combinator, not the stage. Compiled, this rule is
-     `.peer-split-glass.s-xxx :global(.semantic-surfaces.semantic-surfaces)`
-     — 4 classes (0,4,0), doubling `.semantic-surfaces` deliberately —
-     against the wiring's own base rule, compiled to `.semantic-surfaces
-     .s-yyy` (2 classes, 0,2,0). (0,4,0) outranks (0,2,0) regardless of
-     which component's <style> the bundler places first — CONFIRMED live
-     (`getComputedStyle(surfaces).display === 'grid'`), unlike the clock
-     rule below, which needed the same measurement to find it does NOT win
-     this way. Every other override below only adds grid-row/grid-column,
-     properties nothing else sets on these elements — except the
-     `.channel-strips` override further down, which is doubled for a
-     different, same-file reason (see its own comment). */
-  .peer-split-glass :global(.semantic-surfaces.semantic-surfaces) {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: auto 1px auto auto minmax(72px, 1fr) 40px 34px;
-    column-gap: 8px;
-    /* The wiring's own base rule sets `gap: 8px` (a flex gap in its
-       unmodified form), which — MEASURED, real browser — survives as an
-       inherited `row-gap: 8px` here: overriding `display`/`grid-template-
-       *`/`column-gap` above does not touch that longhand, since cascade
-       resolution runs per property, not per rule. Six row gaps at 8px was
-       48px of the total overflow past the native 540px height (`.semantic-
-       surfaces` `scrollHeight` measured taller than `clientHeight` before
-       this line existed). Zeroed explicitly rather than left inherited. */
-    row-gap: 0;
-  }
-  /* The 1px ink rule between status rail and body. No real DOM element for
-     it — `.semantic-surfaces` is the wiring's own root, not this file's
-     markup — so it is drawn as a pseudo-element on the grid host itself,
-     occupying row 2 like any other grid item. */
-  .peer-split-glass :global(.semantic-surfaces.semantic-surfaces)::before {
+  .peer-split-glass::before {
     content: '';
-    grid-row: 2;
-    grid-column: 1 / -1;
-    background: var(--dl-segmentline-ink-soft, rgba(26, 16, 0, 0.34));
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      to bottom, transparent 0 3px, rgba(0, 0, 0, 0.04) 3px 6px
+    );
   }
-  /* Row 1 is `auto`, not the archived geometry's fixed 34px: MEASURED (real
-     browser) that `RxTxSurface`/`TxAuxSurface` render normal-density
-     buttons and sliders (13 controls for txAux alone), not the compact
-     icon-sized flag cells the mockup's 34px status rail assumed. A fixed
-     34px + `overflow: hidden` was tried first and clipped ~90% of both
-     surfaces invisibly — real content hidden behind a band that LOOKED
-     complete, exactly the "screenshot that hides which half is real"
-     shape to avoid. `auto` shows what is actually there. */
-  .peer-split-glass :global(.rx-tx-zone) {
-    grid-row: 1;
-    grid-column: 1;
+
+  .peer-split-glass :global(.semantic-surfaces.semantic-surfaces) {
+    position: relative;
+    z-index: 2;
+    gap: 0;
+    overflow: hidden;
   }
-  .peer-split-glass :global(.tx-aux-surface) {
-    grid-row: 1;
-    grid-column: 2;
-  }
-  .peer-split-glass :global(.cockpit-global-row) {
-    grid-row: 3;
-    grid-column: 1 / -1;
-  }
-  .peer-split-glass :global(.channel-strips) {
-    grid-row: 4;
-    grid-column: 1 / -1;
-  }
-  /* The wiring's own `.channel-strips` rule (SemanticRadioSurfaces
-     .svelte) sets `grid-template-columns: repeat(auto-fit, minmax(0, 1fr))`
-     — a nested grid computed independently of this chassis's own two
-     columns. `subgrid` makes the receiver strips occupy THIS grid's column 1
-     / column 2 tracks directly, the same tracks `.rx-tx-zone`/`.tx-aux-
-     surface` and `.meters-surface`/`.scope-display-surface` already place
-     into, rather than a separate track list an unrelated content change
-     could throw out of alignment. Doubled class, same technique as the
-     `.semantic-surfaces.semantic-surfaces` rule above, but a different
-     reason: compiled (`svelte.compile(src, { css: 'external' })`), a
-     single-class `.peer-split-glass.s-xxx :global(.channel-strips)`
-     selector here is text-identical to the grid-row/grid-column rule
-     above — both 3 classes (0,3,0), already ahead of the wiring's base
-     rule (2 classes, 0,2,0) with no tie either way. The doubling isn't
-     about winning specificity; it keeps this rule's selector text distinct
-     from the grid-row/grid-column rule's, which this file's own test
-     depends on: `declarationsFor` reads the raw, uncompiled <style> block
-     and returns the FIRST rule matching a given selector string, so a
-     text-identical selector here would make it keep reading the other
-     rule's declarations and never see `grid-template-columns`. */
-  .peer-split-glass :global(.channel-strips.channel-strips) {
-    grid-template-columns: subgrid;
-  }
-  .peer-split-glass :global(.meters-surface) {
-    grid-row: 5;
-    grid-column: 1;
-    overflow: auto;
-  }
-  .peer-split-glass :global(.scope-display-surface) {
-    grid-row: 5;
-    grid-column: 2;
-    overflow: auto;
-  }
-  /* Rows 6 (dsp-rail) and 7 (memory-rail) intentionally have no selector
-     below: nothing currently mounts into them (see the file header), and
-     an empty grid row with no assigned item is simply empty space at the
-     declared height — not a placeholder to build. */
 </style>

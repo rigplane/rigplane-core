@@ -7,10 +7,9 @@
  *
  * Also carries the TEXTUAL half of the "declared once" guard the
  * instrument-group ADR (`docs/plans/2026-09-02-instrument-group-adr.md` §4)
- * requires: the native canvas a `fixed-native` group declares must be the
- * ONE place `1280`/`540`/`0.5` are written as literals in production source
- * (scanning the derived contour of files that could still smuggle a
- * duplicate literal in). The STRUCTURAL half — every manifest zone that
+ * requires: a `fixed-native` group's native-canvas property literals must
+ * appear only in its declaration (scanning the derived contour of files
+ * that could still duplicate a native canvas binding). The STRUCTURAL half — every manifest zone that
  * references a group agrees with that group's own canvas/minScale — lives
  * in `../../layouts/__tests__/segmentline-registration.test.ts` instead (see
  * the comment above that file's own describe block for why).
@@ -187,7 +186,9 @@ describe('the native canvas is declared exactly once in production source (ADR �
     path.join(SRC_ROOT, 'presentation', 'layouts', 'lcd-declarations.ts'),
     path.join(SRC_ROOT, 'presentation', 'groups', 'declarations.ts'),
   ]);
-  const NATIVE_CANVAS_LITERAL = /\b1280\b|\b540\b|\b0\.5\b/;
+  // Restrict this to native-canvas declarations and bindings: ordinary CSS
+  // alpha values are not alternate stage declarations.
+  const NATIVE_CANVAS_LITERAL = /\b(?:nativeW|nativeH|minScale)\s*(?::|=)\s*\{?\s*(?:1280|540|0\.5)\b/;
 
   function collectSourceFiles(dir: string): string[] {
     const out: string[] = [];
@@ -242,10 +243,10 @@ describe('the native canvas is declared exactly once in production source (ADR �
     expect(derivedContour()).toEqual(HAND_WRITTEN_CONTOUR);
   });
 
-  // Kills: PeerSplitLayout.svelte or segmentline-declarations.ts reverting to
-  // a literal 1280/540/0.5 instead of reading the group by reference —
+  // Kills: PeerSplitLayout.svelte or segmentline-declarations.ts reverting a
+  // native-canvas binding to a literal instead of reading the group by reference —
   // MUTATION TARGET (see the PR body for the observed red/green cycle).
-  it.each(HAND_WRITTEN_CONTOUR)('%s declares no native-canvas literal', (file) => {
+  it.each(HAND_WRITTEN_CONTOUR)('%s declares no duplicate native-canvas literal', (file) => {
     expect(readFileSync(file, 'utf8')).not.toMatch(NATIVE_CANVAS_LITERAL);
   });
 });

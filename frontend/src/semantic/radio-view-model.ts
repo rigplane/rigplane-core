@@ -1003,7 +1003,12 @@ export type ReceiverIndicatorField<T> = TxAuxField<T>;
 export interface ReceiverIndicatorViewModel {
   receiver: ReceiverId;
   availability: Availability;
-  rfState: MeterRfState;
+  /**
+   * @deprecated Pre-MOR-2309 payload compatibility only. Live adapters no
+   * longer emit receiver-scoped RF authority; consumers must use the one
+   * radio-wide `radioWideIndicators.rfState` fact.
+   */
+  rfState?: MeterRfState;
   sMeter: ReceiverIndicatorField<number>;
   bandwidthHz: ReceiverIndicatorField<number>;
   /** Capability label when declared for the ordinal; raw ordinal otherwise. */
@@ -1016,6 +1021,45 @@ export interface ReceiverIndicatorViewModel {
   rfGain: ReceiverIndicatorField<number>;
   digiSel: ReceiverIndicatorField<boolean>;
   ipPlus: ReceiverIndicatorField<boolean>;
+}
+
+/**
+ * One radio-wide action in the VFO deck's DUAL block (MOR-2309). Structural
+ * answers whether the loaded radio contract supports the action at all;
+ * operational answers whether the existing command handler can accept it
+ * from the current observed topology/state. The callback remains wiring-owned
+ * and is deliberately absent from this serializable semantic contract.
+ */
+export type RadioWideActionAvailability = Availability;
+
+export interface DualActionBlockViewModel {
+  main: RadioWideActionAvailability;
+  sub: RadioWideActionAvailability;
+  equalize: RadioWideActionAvailability;
+  swap: RadioWideActionAvailability;
+  /** Composite quick intents, distinct from the ordinary split/DW facts. */
+  quickSplit: RadioWideActionAvailability;
+  quickDualWatch: RadioWideActionAvailability;
+  speak: RadioWideActionAvailability;
+}
+
+/**
+ * Singleton radio-wide facts mounted beside the receiver-addressed indicator
+ * rows (MOR-2309). These are references to the same semantic readings already
+ * owned by `antenna`, `txAux.atu`, and `ritXit`; this group does not introduce
+ * a second state reader or command owner. A single-antenna radio still has an
+ * ANT fact even though it has no antenna-selection surface.
+ */
+export interface RadioWideIndicatorsViewModel {
+  /** One live RF fact from the existing App authority; never `ptt` or assignment. */
+  rfState: MeterRfState;
+  antenna: AntennaField<number>;
+  atu: TxAuxField<AtuStatus>;
+  ritActive: RitXitField<boolean>;
+  ritOffset: RitXitField<number>;
+  xitActive: RitXitField<boolean>;
+  xitOffset: RitXitField<number>;
+  actions: DualActionBlockViewModel;
 }
 
 export interface RadioViewModel {
@@ -1036,6 +1080,9 @@ export interface RadioViewModel {
    * adapter always emits the complete structural receiver collection.
    */
   readonly receiverIndicators?: readonly ReceiverIndicatorViewModel[];
+  /** Absent only for payload compatibility with pre-MOR-2309 fixtures. The
+   *  live adapter emits exactly one singleton radio-wide projection. */
+  readonly radioWideIndicators?: RadioWideIndicatorsViewModel;
   /** Absent (MOR-1264 optional group) ⇒ structurally unavailable: this radio
    *  model has no TX-adjacent controls at all. Never emitted as a placeholder
    *  of all-unknowns — see `radio-view-model-adapter.ts`'s evidence gate. */
@@ -1382,7 +1429,9 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
   return {
     receiver: oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`),
     availability: validateAvailability(v.availability, `${path}.availability`),
-    rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
+    ...(v.rfState !== undefined
+      ? { rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`) }
+      : {}),
     sMeter: validateTxAuxField(v.sMeter, `${path}.sMeter`, num),
     bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
     agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
@@ -1399,6 +1448,40 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     rfGain: validateTxAuxField(v.rfGain, `${path}.rfGain`, num),
     digiSel: validateTxAuxField(v.digiSel, `${path}.digiSel`, bool),
     ipPlus: validateTxAuxField(v.ipPlus, `${path}.ipPlus`, bool),
+  };
+}
+
+function validateDualActionBlock(value: unknown, path: string): DualActionBlockViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'main', 'sub', 'equalize', 'swap', 'quickSplit', 'quickDualWatch', 'speak',
+  ], path);
+  return {
+    main: validateAvailability(v.main, `${path}.main`),
+    sub: validateAvailability(v.sub, `${path}.sub`),
+    equalize: validateAvailability(v.equalize, `${path}.equalize`),
+    swap: validateAvailability(v.swap, `${path}.swap`),
+    quickSplit: validateAvailability(v.quickSplit, `${path}.quickSplit`),
+    quickDualWatch: validateAvailability(v.quickDualWatch, `${path}.quickDualWatch`),
+    speak: validateAvailability(v.speak, `${path}.speak`),
+  };
+}
+
+function validateRadioWideIndicators(value: unknown, path: string): RadioWideIndicatorsViewModel {
+  const v = record(value, path);
+  exactKeys(v, [
+    'rfState', 'antenna', 'atu', 'ritActive', 'ritOffset', 'xitActive', 'xitOffset', 'actions',
+  ], path);
+  return {
+    rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
+    antenna: validateTxAuxField(v.antenna, `${path}.antenna`, num),
+    atu: validateTxAuxField(v.atu, `${path}.atu`, (candidate, candidatePath) =>
+      oneOf(candidate, ATU_STATUSES, candidatePath)),
+    ritActive: validateTxAuxField(v.ritActive, `${path}.ritActive`, bool),
+    ritOffset: validateTxAuxField(v.ritOffset, `${path}.ritOffset`, num),
+    xitActive: validateTxAuxField(v.xitActive, `${path}.xitActive`, bool),
+    xitOffset: validateTxAuxField(v.xitOffset, `${path}.xitOffset`, num),
+    actions: validateDualActionBlock(v.actions, `${path}.actions`),
   };
 }
 
@@ -1766,7 +1849,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     'topologyId', 'vfoScheme', 'activeReceiver', 'vfos', 'split', 'dualWatch',
     'txTarget', 'txPermit', 'scope', 'disabledReasons', 'txAux', 'meters', 'rxAudio', 'modeFilter',
     'filterPassband', 'dsp', 'rfFrontEnd', 'band', 'ritXit', 'antenna', 'scan', 'cwKeyer',
-    'scopeControls', 'scopeDisplay', 'receiverIndicators',
+    'scopeControls', 'scopeDisplay', 'receiverIndicators', 'radioWideIndicators',
   ], '$');
   if (!Array.isArray(v.vfos)) invalid('$.vfos', 'an array');
   if (!Array.isArray(v.disabledReasons)) invalid('$.disabledReasons', 'an array');
@@ -1828,6 +1911,9 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   const cwKeyer = optionalGroup(v.cwKeyer, '$.cwKeyer', validateCwKeyer);
   const scopeControls = optionalGroup(v.scopeControls, '$.scopeControls', validateScopeControls);
   const scopeDisplay = optionalGroup(v.scopeDisplay, '$.scopeDisplay', validateScopeDisplay);
+  const radioWideIndicators = optionalGroup(
+    v.radioWideIndicators, '$.radioWideIndicators', validateRadioWideIndicators,
+  );
   let receiverIndicators: readonly ReceiverIndicatorViewModel[] | undefined;
   if (v.receiverIndicators !== undefined) {
     if (!Array.isArray(v.receiverIndicators)) invalid('$.receiverIndicators', 'an array');
@@ -1868,6 +1954,7 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
     },
     disabledReasons,
     ...(receiverIndicators !== undefined ? { receiverIndicators } : {}),
+    ...(radioWideIndicators !== undefined ? { radioWideIndicators } : {}),
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),

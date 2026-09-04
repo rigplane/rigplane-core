@@ -212,7 +212,9 @@ describe('the antenna surface never mounts in the dual composition (MOR-1304 can
 
     render({ strips: 'dual' });
     expect(el('surface')).toBeNull();
-    expect(target.innerHTML).not.toContain('antenna');
+    const sharedAntenna = target.querySelectorAll('[data-indicator-fact="antenna"]');
+    expect(sharedAntenna).toHaveLength(1);
+    expect(sharedAntenna[0]?.textContent).toContain('ANT 1');
   });
 
   /**

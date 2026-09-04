@@ -40,4 +40,11 @@ describe('StatusBar skinOptions (MOR-1257 F1)', () => {
     expect(match, 'expected to find the skinOptions array literal').not.toBeNull();
     expect(match![1]).toMatch(/\{\s*value:\s*'peer-split',\s*label:\s*'LCD Peer Split'\s*\}/);
   });
+
+  it('lists the production dual SDR face', () => {
+    const source = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
+    const match = source.match(/const skinOptions[^=]*=\s*\[([\s\S]*?)\n\s*\];/);
+    expect(match, 'expected to find the skinOptions array literal').not.toBeNull();
+    expect(match![1]).toMatch(/\{\s*value:\s*'dual-sdr-face',\s*label:\s*'Dual SDR Face'\s*\}/);
+  });
 });

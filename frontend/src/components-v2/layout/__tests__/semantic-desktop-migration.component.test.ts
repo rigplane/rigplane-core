@@ -1516,20 +1516,30 @@ describe('exactly one key authority on a partially declaring manifest (R9)', () 
  * MOR-1321 (S3a) — receiver-deck parity for the VFO ops.
  *
  * MOR-1313 put desktop-v2 on the v3 path and, with it, retired the legacy
- * `VfoOps` bridge from the deck: A=B, A↔B and the two composite quick triggers
- * left the flagship skin (A=B/A↔B survived only in the settings modal, which
- * the owner declined as parity). These assert the semantic deck carries them
- * again — end-to-end through the real RadioLayout mount, not just in the
- * surface's own unit tests.
+ * `VfoOps` bridge from the deck. These tests explicitly admit equalize/swap
+ * and prove that pair reaches the semantic deck end-to-end through the real
+ * RadioLayout mount. They separately prove both composite Quick actions stay
+ * absent without dedicated production reachability.
  */
 describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () => {
-  const OPS = ['equalize', 'swap', 'quick-split', 'quick-dual-watch'] as const;
+  const ADMITTED_OPS = ['equalize', 'swap'] as const;
+  const QUICK_OPS = ['quick-split', 'quick-dual-watch'] as const;
 
   // MUTATION KILLED: the ops landing in the surface but never being wired at
   // the desktop mount site — every VfoSurface unit test would still pass.
-  it.each(['desktop-v2', 'sdr-test'] as const)('%s renders all four ops inside the deck', (skinId) => {
+  it.each(['desktop-v2', 'sdr-test'] as const)('%s renders only the explicitly admitted ops inside the deck', (skinId) => {
+    const caps = capsFor('2/main_sub');
+    h.caps = {
+      ...caps,
+      capabilities: [...caps.capabilities, 'vfo_equalize', 'vfo_swap'],
+    };
     const deck = render(skinId).querySelector('.receiver-deck')!;
-    for (const op of OPS) expect(deck.querySelector(`[data-vfo-${op}]`), op).not.toBeNull();
+    for (const op of ADMITTED_OPS) {
+      expect(deck.querySelector(`[data-vfo-${op}]`), op).not.toBeNull();
+    }
+    for (const op of QUICK_OPS) {
+      expect(deck.querySelector(`[data-vfo-${op}]`), op).toBeNull();
+    }
     expect(deck.querySelector('[data-testid="vfo-split-digest"]')).not.toBeNull();
   });
 
@@ -1539,11 +1549,13 @@ describe('the semantic receiver deck carries the VFO ops again (MOR-1321)', () =
   it('a single-VFO topology renders no ops in the deck', () => {
     h.caps = capsFor('1/single');
     const deck = render('desktop-v2').querySelector('.receiver-deck')!;
-    for (const op of OPS) expect(deck.querySelector(`[data-vfo-${op}]`), op).toBeNull();
+    for (const op of [...ADMITTED_OPS, ...QUICK_OPS]) {
+      expect(deck.querySelector(`[data-vfo-${op}]`), op).toBeNull();
+    }
     expect(deck.querySelector('[data-testid="vfo-split-digest"]')).toBeNull();
   });
 
-  // R9 restated at the deck level: adding four buttons to the deck must not
+  // R9 restated at the deck level: adding admitted ops to the deck must not
   // add a second key authority. Same probe shape as the MOR-1313 matrix.
   it('adds no key authority to the deck', () => {
     const t = render('desktop-v2');

@@ -288,6 +288,7 @@ describe('the txAux surface mounts only when the view model carries the group', 
     'vfo-receiver-indicators',
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-shared-indicators',
     // MOR-1321 (S3a): the VFO ops row and the split RX/TX digest are part of
     // the vfo surface's radio-wide half now, so they belong to the default
     // path's element shape. This fixture's radio is dual-receiver, so the
@@ -340,9 +341,9 @@ describe('the txAux surface mounts only when the view model carries the group', 
    */
   const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span '
     + 'div span span span button div span span div span span span span span span span span span span span button '
-    + 'div span span span button div section header strong span div div div '
-    + 'section header strong span div div div div button button '
-    + 'div button button button button p span span section p span span span span p div button button '
+    + 'div span span span button div section header strong div div div '
+    + 'section header strong div div div section div span '
+    + 'div button button div button button p span span section p span span span span p div button button '
     + 'ul section div button button button label span input output div button button button output '
     + 'div button button output';
 

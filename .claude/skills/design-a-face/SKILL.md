@@ -1,13 +1,15 @@
 ---
 name: design-a-face
 description: >
-  Propose a new operator interface — a skin, a design language, a layout — that
-  is constrained by the data the radio actually reports rather than by a picture.
-  Use when asked to design a new face, propose a UI, redesign a screen, adapt a
-  reference design or a vendor's conventions, or judge whether a mockup is
-  buildable. Produces a proposal in which every element names the field backing
-  it and every field's full state set has a treatment. Read-only up to the
-  proposal; it does not implement.
+  Propose or implement radio instruments and radio-face compositions — meters,
+  readouts, indicators, traces, filter envelopes, tuning controls, switches,
+  skins, and radio display/control layouts — constrained by the state, intents,
+  and feedback the radio interface actually exposes. Use when asked to adapt a
+  radio-face reference, judge whether a radio instrument is buildable, or
+  generate radio-specific components from the repository's semantic contracts.
+  Do not use for general application UI, navigation, forms, settings, or CRUD.
+  Proposal work remains read-only; implementation starts only when the user asks
+  to build.
 ---
 
 # Design a face
@@ -418,17 +420,38 @@ states. Stale, unsupported, contradictory and disconnected are usually drawn
 nowhere in it — which means everything proposed for them is new work rather than
 adaptation, and must be labelled that way when it lands.
 
+## Phase 6 — build components only after the owner asks
+
+Proposal mode stops after the buildability checks below. If the user explicitly
+asks to generate, build, or implement the selected face, instrument, or radio
+control, read
+[references/component-generation.md](references/component-generation.md) in
+full and follow its build workflow.
+
+That workflow turns the Phase 3 field map and Phase 4 ownership tiers into code:
+it searches for the nearest existing radio primitive, chooses composition,
+parameterisation, or a justified fork, writes a component against the semantic
+and intent contracts, and proves the full state matrix with focused tests and a
+rendered fixture. It does not treat a screenshot as data, read raw stores from a
+skin, add controls to a display-only face, or invent production readings or
+command paths.
+
 ## Ask, and here is exactly when
 
 The failure mode of this work is not confusion, it is **confident
 plausibility**. A misread element gets a sensible name, the name gets a
 rationale, the rationale becomes a constraint, and nothing downstream can tell
 it was invented. So "ask if unsure" is too weak to act on. These are the
-triggers, and at any of them stop and ask rather than pick the likely reading:
+triggers: stop classifying the affected element rather than pick the likely
+reading, but do not discard its measured geometry or block the rest of the face.
+Record it as unidentified, continue with independent elements, and batch owner
+questions at the end. Stop the whole task only when the ambiguity changes the
+classification or geometry of the complete face.
 
-- **You cannot say what an element is.** Ask the owner. Name it as unidentified
-  in the meantime; do not give it a plausible name — a wrong name is inherited
-  silently by everything after it.
+- **You cannot say what an element is.** Preserve its normalized bounds,
+  orientation, transcribed label, group and neighbours; ask the owner. Name it
+  as unidentified in the meantime; do not give it a plausible name — a wrong
+  name is inherited silently by everything after it.
 - **The measurement is ambiguous.** Ask the owner. Two elements with no gutter
   read as one run; ask which it is rather than splitting it by eye.
 - **You cannot tell established from inferred.** Ask the owner. They know their
@@ -494,12 +517,13 @@ taken.
 
 ## Rules
 
-**The model proposes, the contract constrains, the owner decides.** Do not close
-the loop. A process that both measures distance from a reference and edits to
-reduce it will optimise that distance — and the reference shows one state, so it
-will happily degrade the others at no cost to the score. This is the same defect
-class as a test that cannot fail: a measurement everyone trusts, measuring
-something adjacent to what matters.
+**The model proposes, the contract constrains, the owner decides.** In proposal
+mode, do not close the loop. A process that both measures distance from a
+reference and edits to reduce it will optimise that distance — and the reference
+shows one state, so it will happily degrade the others at no cost to the score.
+Build mode begins only after the owner asks for implementation; even then, keep
+the reference comparison, semantic tests, and independent review as separate
+checks so one agent cannot make its own score pass by degrading unseen states.
 
 **A design language annotates; it does not draw the markup.** It may supply
 tokens, renderers and a stylesheet. The markup comes from shared semantic

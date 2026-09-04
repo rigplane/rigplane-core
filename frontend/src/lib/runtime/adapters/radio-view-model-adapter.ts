@@ -34,6 +34,7 @@ import type {
   BreakInMode, CwKeyerViewModel, ScopeControlsViewModel,
   ScopeDisplayViewModel, ScopeSourceKind, ScopeHealthState,
   ReceiverIndicatorViewModel, TxTargetViewModel,
+  RadioWideIndicatorsViewModel, DualActionBlockViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { isFieldAvailable } from '$lib/state/field-status';
@@ -170,6 +171,14 @@ function topFieldAvailable(state: ServerState | null, field: string): boolean {
   return isFieldAvailable(state, field);
 }
 
+/** MOR-2309 singleton-indicator admission: the leaf must itself be observed,
+ * fresh and available, and the existing ancestor-aware gate may still veto
+ * it. This is the same narrow rule MOR-2299 slice 1 uses; global absent-key
+ * semantics remain unchanged. */
+function strictFieldAvailable(state: ServerState | null, field: string): boolean {
+  return seen(state, field) && topFieldAvailable(state, field);
+}
+
 /** `fieldFresh` is the raw `topFieldAvailable` read; a structurally-absent
  *  control must never report a "known" reading even if the (irrelevant)
  *  field happens to look fresh — so the reading gates on BOTH, same as
@@ -219,7 +228,7 @@ function deriveTxAux(state: ServerState | null, caps: Capabilities | null): TxAu
     || rawValues.some((v) => v !== undefined);
   if (!hasEvidence) return undefined;
   return {
-    atu: txAuxField(hasTuner, topFieldAvailable(state, 'tunerStatus'), atuStatus(state?.tunerStatus)),
+    atu: txAuxField(hasTuner, strictFieldAvailable(state, 'tunerStatus'), atuStatus(state?.tunerStatus)),
     vox: txAuxField(hasVox, topFieldAvailable(state, 'voxOn'), boolOrUndef(state?.voxOn)),
     voxGain: txAuxField(hasVox, topFieldAvailable(state, 'voxGain'), numOrUndef(state?.voxGain)),
     antiVoxGain: txAuxField(hasVox, topFieldAvailable(state, 'antiVoxGain'), numOrUndef(state?.antiVoxGain)),
@@ -722,8 +731,6 @@ function deriveReceiverIndicators(
   caps: Capabilities,
   structuralReceivers: readonly ReceiverId[],
   operationalReceivers: readonly ReceiverId[],
-  tx: MetersTxAuthority | null | undefined,
-  txTarget: TxTargetViewModel,
 ): readonly ReceiverIndicatorViewModel[] {
   const hasFilters = (caps.filters?.length ?? 0) > 0;
   const hasAgc = hasCap(caps, 'agc');
@@ -764,15 +771,9 @@ function deriveReceiverIndicators(
       ? undefined
       : (caps.agcLabels?.[String(agcOrdinal)] ?? agcOrdinal);
 
-    const rfState = receiverOperational && tx !== null && tx !== undefined
-      && txTarget.status === 'known' && txTarget.receiver === receiver
-      ? meterRfState(tx)
-      : 'unknown';
-
     return {
       receiver,
       availability: { structural: true, operational: receiverOperational },
-      rfState,
       // Every structural receiver owns one S-meter shell. The reading stays
       // unknown until its own leaf passes the strict gate; numeric zero is a
       // valid calibrated S9 reading and is preserved by numOrUndef.
@@ -789,6 +790,70 @@ function deriveReceiverIndicators(
       ipPlus: strictField(hasIpPlus, 'ipplus', boolOrUndef(rx?.ipplus)),
     };
   });
+}
+
+/**
+ * MOR-2309: one radio-wide indicator/action projection. Existing optional
+ * groups remain the owners of ATU, multi-port antenna, and RIT/XIT readings;
+ * this singleton points at those exact field objects. The only additional
+ * reading is ANT on a one-port radio, where the selection surface is
+ * structurally absent but the observed antenna fact still belongs in the
+ * deck. No default ANT 1 is synthesized.
+ */
+function deriveRadioWideIndicators(
+  state: ServerState | null,
+  caps: Capabilities,
+  structuralReceivers: readonly ReceiverId[],
+  operationalReceivers: readonly ReceiverId[],
+  tx: MetersTxAuthority | null | undefined,
+  txAux: TxAuxViewModel | undefined,
+  ritXit: RitXitViewModel | undefined,
+  antenna: AntennaViewModel | undefined,
+): RadioWideIndicatorsViewModel {
+  const availability = (structural: boolean, operational: boolean) => ({
+    structural, operational: structural && operational,
+  });
+  const absentBoolean = txAuxField<boolean>(false, false, undefined);
+  const absentNumber = txAuxField<number>(false, false, undefined);
+  const absentAtu = txAuxField<AtuStatus>(false, false, undefined);
+  const antennaStructural = (caps.antennas ?? 0) >= 1;
+  const antennaFact = antenna?.txAntenna ?? txAuxField(
+    antennaStructural,
+    strictFieldAvailable(state, 'txAntenna'),
+    numOrUndef(state?.txAntenna),
+  );
+
+  const dualReceiver = structuralReceivers.includes('SUB');
+  const mainOperational = dualReceiver && operationalReceivers.includes('MAIN') && state?.main != null;
+  const subOperational = dualReceiver && operationalReceivers.includes('SUB') && state?.sub != null;
+  const hasVfoPair = caps.vfoScheme !== 'single';
+  const equalizeStructural = hasVfoPair && hasCap(caps, 'vfo_equalize');
+  const swapStructural = hasVfoPair && hasCap(caps, 'vfo_swap');
+  // A primitive split/DW capability does not prove that a provider consumes
+  // the composite quick intent. No backend-neutral declaration exists yet,
+  // so production must fail closed even though the existing frontend handler
+  // facade remains available for explicitly admitted synthetic models/tests.
+  const compositeUnavailable = availability(false, false);
+  const actions: DualActionBlockViewModel = {
+    main: availability(dualReceiver, mainOperational),
+    sub: availability(dualReceiver, subOperational),
+    equalize: availability(equalizeStructural, state !== null),
+    swap: availability(swapStructural, state !== null),
+    quickSplit: compositeUnavailable,
+    quickDualWatch: compositeUnavailable,
+    speak: availability(hasCap(caps, 'speech'), true),
+  };
+
+  return {
+    rfState: tx ? meterRfState(tx) : 'unknown',
+    antenna: antennaFact,
+    atu: txAux?.atu ?? absentAtu,
+    ritActive: ritXit?.ritActive ?? absentBoolean,
+    ritOffset: ritXit?.ritOffset ?? absentNumber,
+    xitActive: ritXit?.xitActive ?? absentBoolean,
+    xitOffset: ritXit?.xitOffset ?? absentNumber,
+    actions,
+  };
 }
 
 /**
@@ -967,12 +1032,12 @@ function deriveRitXit(state: ServerState | null, caps: Capabilities | null): Rit
   const hasRitCap = hasCap(caps, 'rit');
   const hasXitCap = hasCap(caps, 'xit');
   if (!hasRitCap && !hasXitCap) return undefined;
-  const offsetObserved = topFieldAvailable(state, 'ritFreq');
+  const offsetObserved = strictFieldAvailable(state, 'ritFreq');
   const offsetRaw = numOrUndef(state?.ritFreq);
   return {
-    ritActive: txAuxField(hasRitCap, topFieldAvailable(state, 'ritOn'), boolOrUndef(state?.ritOn)),
+    ritActive: txAuxField(hasRitCap, strictFieldAvailable(state, 'ritOn'), boolOrUndef(state?.ritOn)),
     ritOffset: txAuxField(hasRitCap, offsetObserved, offsetRaw),
-    xitActive: txAuxField(hasXitCap, topFieldAvailable(state, 'ritTx'), boolOrUndef(state?.ritTx)),
+    xitActive: txAuxField(hasXitCap, strictFieldAvailable(state, 'ritTx'), boolOrUndef(state?.ritTx)),
     xitOffset: txAuxField(hasXitCap, offsetObserved, offsetRaw),
   };
 }
@@ -994,11 +1059,11 @@ function deriveAntenna(state: ServerState | null, caps: Capabilities | null): An
   const antennaCount = caps?.antennas ?? 0;
   if (antennaCount <= 1) return undefined;
   const hasRxAntennaCap = hasCap(caps, 'rx_antenna');
-  const txAntennaObserved = topFieldAvailable(state, 'txAntenna');
+  const txAntennaObserved = strictFieldAvailable(state, 'txAntenna');
   const txAntennaRaw = numOrUndef(state?.txAntenna);
   const rxAntennaRaw = txAntennaRaw === 2 ? state?.rxAntenna2 : state?.rxAntenna1;
   const rxAntennaObserved = txAntennaObserved && txAntennaRaw !== undefined
-    && topFieldAvailable(state, txAntennaRaw === 2 ? 'rxAntenna2' : 'rxAntenna1');
+    && strictFieldAvailable(state, txAntennaRaw === 2 ? 'rxAntenna2' : 'rxAntenna1');
   return {
     txAntenna: txAuxField(true, txAntennaObserved, txAntennaRaw),
     rxAnt: txAuxField(hasRxAntennaCap, rxAntennaObserved, boolOrUndef(rxAntennaRaw)),
@@ -1566,7 +1631,11 @@ export function toRadioViewModel(
   const scopeDisplay = deriveScopeDisplay(caps, scopeDisplaySnapshot);
   const rfFrontEndMutex = deriveRfFrontEndMutex(rfFrontEnd);
   const receiverIndicators = deriveReceiverIndicators(
-    state, caps, topology.structuralReceivers, topology.operationalReceivers, tx, txTarget,
+    state, caps, topology.structuralReceivers, topology.operationalReceivers,
+  );
+  const radioWideIndicators = deriveRadioWideIndicators(
+    state, caps, topology.structuralReceivers, topology.operationalReceivers,
+    tx, txAux, ritXit, antenna,
   );
   if (rfFrontEndMutex) disabledReasons.push(rfFrontEndMutex);
   disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
@@ -1583,6 +1652,7 @@ export function toRadioViewModel(
     scope: { hardwareScope, audioFftScope },
     disabledReasons,
     receiverIndicators,
+    radioWideIndicators,
     ...(txAux !== undefined ? { txAux } : {}),
     ...(meters !== undefined ? { meters } : {}),
     ...(rxAudio !== undefined ? { rxAudio } : {}),

@@ -34,6 +34,7 @@
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
+    getSystemHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
@@ -91,6 +92,7 @@
     strips?: 'single' | 'dual';
     regions?: boolean;
     regionContent?: Snippet;
+    readonlyDisplay?: Snippet<[RadioViewModel]>;
   }
   /**
    * MOR-2231 — `regions` routes `vfo`/`rxTx` through the generic `zoned()`
@@ -112,7 +114,7 @@
    * question: `desktop-v2` and `sdr-test` declare the same two zone ids, so
    * `zoneOwning()` returns non-null on both faces.
    */
-  let { strips = 'single', regions = false, regionContent }: Props = $props();
+  let { strips = 'single', regions = false, regionContent, readonlyDisplay }: Props = $props();
 
   /**
    * MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
@@ -187,6 +189,7 @@
 
   const semanticHandlers = bindSemanticSurfaceHandlers();
   const vfo = semanticHandlers.vfo;
+  const systemIntents = getSystemHandlers();
   /** MOR-1307: the shipped band vocabulary, composed rather than forked. */
   const band = semanticHandlers.band;
   /**
@@ -766,6 +769,9 @@
 </script>
 
 <div class="semantic-surfaces" data-testid="semantic-radio-surfaces">
+  {#if readonlyDisplay}
+    {#if view}{@render readonlyDisplay(view)}{/if}
+  {:else}
   {#if view}
     {#if strips === 'dual'}
       <div class="channel-strips" data-testid="channel-strips">
@@ -845,6 +851,9 @@
             onSwapVfos={vfo.onSwap}
             onQuickSplit={vfo.onQuickSplit}
             onQuickDualWatch={vfo.onQuickDw}
+            onSelectMainReceiver={vfo.onMainVfoClick}
+            onSelectSubReceiver={vfo.onSubVfoClick}
+            onSpeak={systemIntents.onSpeak}
           />
         </div>
       {/if}
@@ -872,6 +881,9 @@
         onSwapVfos={vfo.onSwap}
         onQuickSplit={vfo.onQuickSplit}
         onQuickDualWatch={vfo.onQuickDw}
+        onSelectMainReceiver={vfo.onMainVfoClick}
+        onSelectSubReceiver={vfo.onSubVfoClick}
+        onSpeak={systemIntents.onSpeak}
         {pendingFrequencyHz}
       />
     {/if}
@@ -1551,6 +1563,7 @@
     )}
     {@render txAdjacentAlerts()}
     {/if}
+  {/if}
   {/if}
 </div>
 

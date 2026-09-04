@@ -18,6 +18,7 @@
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
   import AmberCockpit from '../panels/lcd/AmberCockpit.svelte';
   import AmberScope from '../panels/lcd/AmberScope.svelte';
+  import type { LcdDisplayVariantId } from '../../skins/segmentline/LcdDisplayVariant.svelte';
   import PeerSplitLayout from '../../skins/segmentline/PeerSplitLayout.svelte';
   import LcdContrastControl from '../panels/lcd/LcdContrastControl.svelte';
   import LcdDisplayModeControl from '../panels/lcd/LcdDisplayModeControl.svelte';
@@ -36,7 +37,13 @@
   // Twin-skin variant selector (#887), widened to three by MOR-2153 PR-1.
   // Default preserves today's behavior. `scope` currently falls through to
   // cockpit until C-PR1 (#895) delivers a dedicated AmberScope component.
-  let { variant = 'cockpit' }: { variant?: 'cockpit' | 'scope' | 'peer-split' } = $props();
+  let {
+    variant = 'cockpit',
+    peerSplitDisplay = 'peer',
+  }: {
+    variant?: 'cockpit' | 'scope' | 'peer-split';
+    peerSplitDisplay?: LcdDisplayVariantId;
+  } = $props();
 
   // MOR-2253 slice 1: the peer-split glass's canvas comes from the
   // `peer-split-glass` instrument group, resolved through the `peer-split`
@@ -126,6 +133,7 @@
               canvasW={peerSplitStage.canvas.w}
               canvasH={peerSplitStage.canvas.h}
               minScale={peerSplitStage.minScale}
+              displayVariant={peerSplitDisplay}
             />
           {:else}
             <AmberCockpit />
