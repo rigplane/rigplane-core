@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
-import type { LcdRfPanadapterFrame } from '../LcdRfPanadapter.svelte';
+import type { LcdSpectrumFrame } from '../lcd-display-contract';
 import PanadapterDisplay from '../PanadapterDisplay.svelte';
 
 const known = <T>(value: T) => ({ state: 'known' as const, value });
@@ -59,6 +59,18 @@ const model: PeerSplitDisplayModel = {
   },
 };
 
+function hardwareFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFrame {
+  return {
+    source: 'hardware',
+    receiver: 'MAIN',
+    freshness: 'fresh',
+    startHz: 14_200_000,
+    endHz: 14_300_000,
+    normalizedBins: [0.1, 0.6, 0.25, 0.8],
+    ...overrides,
+  };
+}
+
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(() => {
@@ -70,7 +82,7 @@ afterEach(() => {
 function render(
   displayModel: PeerSplitDisplayModel = model,
   normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>,
-  rfFrame?: LcdRfPanadapterFrame,
+  rfFrame?: unknown,
 ): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
@@ -81,6 +93,11 @@ function render(
 }
 
 describe('PanadapterDisplay', () => {
+  it('declares Direction D native instrument geometry', () => {
+    expect(render().querySelector('[data-testid="panadapter-display"]')
+      ?.getAttribute('data-native-stage')).toBe('1280x594');
+  });
+
   it('keeps two equal frequency columns truthful', () => {
     const target = render();
     const columns = target.querySelectorAll('[data-testid="panadapter-frequency-column"]');
@@ -132,28 +149,63 @@ describe('PanadapterDisplay', () => {
     expect(target.querySelector('[data-testid="lcd-rf-panadapter"]')
       ?.getAttribute('data-rf-mode')).toBe('ghost');
     expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(0);
+    expect(target.querySelectorAll('.rf-axis,.rf-carrier,.rf-passband')).toHaveLength(0);
     expect(target.querySelectorAll('[data-rf-peak],.rf-history,.band-edge')).toHaveLength(0);
   });
 
-  it('passes a valid matching RF frame through without adding samples', () => {
-    const bins = [0.1, 0.6, 0.25, 0.8];
-    const target = render(model, undefined, {
-      receiver: 'MAIN', freshness: 'fresh', normalizedBins: bins,
-    });
+  it('passes a source-qualified matching hardware frame through without adding samples', () => {
+    const frame = hardwareFrame();
+    const target = render(model, undefined, frame);
 
-    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(bins.length);
+    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(frame.normalizedBins.length);
     expect([...target.querySelectorAll('[data-rf-bin]')]
-      .map((node) => Number(node.getAttribute('data-rf-sample')))).toEqual(bins);
+      .map((node) => Number(node.getAttribute('data-rf-sample'))))
+      .toEqual(frame.normalizedBins);
+    expect(target.querySelector('.rf-carrier')?.getAttribute('data-carrier-hz'))
+      .toBe('14250000');
+    expect(target.querySelector('.rf-passband')?.getAttribute('data-passband-mode'))
+      .toBe('USB');
   });
 
   it('fails RF receiver mismatch closed at the active-receiver boundary', () => {
-    const target = render(model, undefined, {
-      receiver: 'SUB', freshness: 'fresh', normalizedBins: [0.2, 0.9],
-    });
+    const target = render(model, undefined, hardwareFrame({ receiver: 'SUB' }));
 
     expect(target.querySelector('[data-testid="lcd-rf-panadapter"]')
       ?.getAttribute('data-frame-reason')).toBe('receiver-mismatch');
     expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(0);
+    expect(target.querySelectorAll('.rf-axis,.rf-carrier,.rf-passband')).toHaveLength(0);
+  });
+
+  it('fails a non-hardware frame closed instead of borrowing AF samples', () => {
+    const target = render(model, undefined, hardwareFrame({ source: 'audio-fft' }));
+
+    expect(target.querySelector('[data-testid="lcd-rf-panadapter"]')
+      ?.getAttribute('data-frame-reason')).toBe('source-mismatch');
+    expect(target.querySelectorAll('[data-rf-bin],.rf-axis,.rf-carrier,.rf-passband'))
+      .toHaveLength(0);
+  });
+
+  it('requires known frequency, mode, width, and shift before showing overlays', () => {
+    const guardedReceivers: PeerSplitDisplayModel['receivers'] = [
+      {
+        ...model.receivers[0],
+        frequency: { state: 'unknown' },
+        mode: { state: 'unknown' },
+        bandwidthHz: { state: 'unknown' },
+        ifShiftHz: { state: 'unsupported' },
+      },
+      model.receivers[1],
+    ];
+    const target = render({
+      ...model,
+      receivers: guardedReceivers,
+      activeReceiver: guardedReceivers[0],
+    }, undefined, hardwareFrame());
+
+    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(4);
+    expect(target.querySelectorAll('.rf-axis')).toHaveLength(5);
+    expect(target.querySelector('.rf-carrier')).toBeNull();
+    expect(target.querySelector('.rf-passband')).toBeNull();
   });
 
   it('preserves LcdAfFft safe-empty semantics in the active-receiver inset', () => {

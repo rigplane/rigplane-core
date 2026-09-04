@@ -5,14 +5,14 @@
   import LcdFrequencyReadout from './LcdFrequencyReadout.svelte';
   import LcdLinearSMeter from './LcdLinearSMeter.svelte';
   import LcdRfPanadapter, {
-    type LcdRfPanadapterFrame,
+    type LcdRfPanadapterPassband,
   } from './LcdRfPanadapter.svelte';
   import { stateText, telemetryText } from './lcd-display-helpers';
 
   interface Props {
     model: PeerSplitDisplayModel;
     normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>;
-    rfFrame?: LcdRfPanadapterFrame;
+    rfFrame?: unknown;
   }
 
   let { model, normalizedFftBins = {}, rfFrame }: Props = $props();
@@ -21,6 +21,19 @@
   const activeAfBins = $derived(
     activeReceiver === null ? undefined : normalizedFftBins[activeReceiver.receiver],
   );
+  const activeCarrierHz = $derived(
+    activeReceiver?.frequency.state === 'known' ? activeReceiver.frequency.value : undefined,
+  );
+  const activePassband: LcdRfPanadapterPassband | undefined = $derived.by(() => {
+    if (activeReceiver?.mode.state !== 'known'
+      || activeReceiver.bandwidthHz.state !== 'known'
+      || activeReceiver.ifShiftHz.state !== 'known') return undefined;
+    return {
+      mode: activeReceiver.mode.value,
+      widthHz: activeReceiver.bandwidthHz.value,
+      shiftHz: activeReceiver.ifShiftHz.value,
+    };
+  });
   const telemetryItems = $derived([
     { label: 'VD', field: model.telemetry.drainVoltage },
     { label: 'ID', field: model.telemetry.drainCurrent },
@@ -31,7 +44,12 @@
   ]);
 </script>
 
-<div class="panadapter-display" data-testid="panadapter-display" data-rf-state={model.rfState}>
+<div
+  class="panadapter-display"
+  data-testid="panadapter-display"
+  data-native-stage="1280x594"
+  data-rf-state={model.rfState}
+>
   <div class="frequency-deck">
     {#each model.receivers as receiver (receiver.receiver)}
       <section
@@ -62,7 +80,12 @@
         {#if activeReceiver !== null}<small>{activeReceiver.label}</small>{/if}
       </div>
       <div class="rf-plot">
-        <LcdRfPanadapter receiver={activeReceiver?.receiver ?? null} frame={rfFrame} />
+        <LcdRfPanadapter
+          receiver={activeReceiver?.receiver ?? null}
+          frame={rfFrame}
+          carrierHz={activeCarrierHz}
+          passband={activePassband}
+        />
       </div>
     </section>
 
