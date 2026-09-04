@@ -336,30 +336,20 @@
     };
   });
 
-  // ── PTT — App TX controller (MOR-1012) ──
-  // This layout owns no TX state. Audio start, key confirmation, safety
-  // deadlines and fail-closed release all live in the App TX controller; the
-  // mobile surfaces only render that state and feed it gesture intent, exactly
-  // as TxPanel does (MOR-1011). What used to live here — a local held/latched
-  // machine, a 3-minute safety timer and raw ptt_on/ptt_off commands — could
-  // dekey a lease owned by another source, so it is gone rather than adapted.
+  // PTT surfaces translate gestures into managed-transmit intents and render
+  // the server document. No browser-local admission or confirmation lives here.
   const txCtl = getAppTxController();
   let txState = $state.raw(txCtl.snapshot());
   const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
-  // Registered BEFORE the recognizer effect below on purpose: Svelte tears
-  // effects down in creation order, so the subscription is dropped first and
-  // the teardown release runs to completion inside the controller instead of
-  // bouncing back into a component that is already being destroyed.
   onDestroy(stopWatchingTx);
 
-  let owned = $derived(txState.guard !== null);
   let latched = $derived(txState.intent === 'latched');
-  // "The rig is keyed" for display purposes: our own lease, or an observed
-  // radio-side TX that may well belong to a different source.
-  let txKeyed = $derived(owned || txState.radioTx === 'on');
+  let momentary = $derived(txState.intent === 'momentary');
+  // Radio-side observation is the only keyed display source.
+  let txKeyed = $derived(txState.radioTx === 'on');
   // PttFab's visual contract is unchanged — it still takes idle/held/latched.
   let pttMode: 'idle' | 'held' | 'latched' = $derived(
-    latched ? 'latched' : owned ? 'held' : 'idle'
+    latched ? 'latched' : momentary ? 'held' : 'idle'
   );
 
   // ── TX color (depends on mainVfo, tx, txKeyed — declared above) ──
@@ -373,9 +363,7 @@
   // One recognizer per input surface — the orchestration itself lives in
   // `wiring/mobile-ptt-surface.ts` (MOR-1378) so it is testable and mountable
   // without this component's runtime-store dependencies. Re-keying the effect
-  // on the surface destroys the old binding, which releases a live lease
-  // exactly once: rotating away while keyed or latched drops TX rather than
-  // stranding it.
+  // on the surface destroys the old binding and clears gesture-local state.
   let pttSurface: 'none' | 'portrait' | 'landscape' = $derived(
     !txCapable ? 'none' : isLandscape ? 'landscape' : 'portrait'
   );
@@ -411,7 +399,7 @@
 
   function lsPttPointerDown(event: PointerEvent) {
     if (pttMode === 'latched') {
-      // Tap-to-unlatch — the recognizer releases the live lease on a down().
+      // Tap-to-unlatch forwards force-off on pointer down.
       ptt?.down();
       return;
     }
@@ -554,7 +542,7 @@
       {#if txCapable}
         <button
           class="m-ls-ptt"
-          class:m-ptt-held={owned && !latched}
+          class:m-ptt-held={momentary}
           class:m-ptt-latched={latched}
           class:m-ls-ptt-dim={txPermit === 'denied' && pttMode === 'idle'}
           onpointerdown={lsPttPointerDown}
@@ -669,10 +657,7 @@
     <!-- MOR-1094: the portrait deck's VFO facts and RX/TX status/action are
          owned by the semantic surfaces (MOR-1063/1064), wired exactly once by
          the shared SemanticRadioSurfaces — no new TX path, and no change to
-         the press-and-hold PTT below, which keeps its own gesture recognizer
-         and its own per-surface sourceId on the App TX controller. Mounted
-         outside the chip panels on purpose: a chip tap destroys and recreates
-         its panel, and this subtree is a TX lease source. -->
+         the press-and-hold PTT below, which keeps its own gesture recognizer. -->
     <section class="m-semantic-deck">
       <SemanticRadioSurfaces />
     </section>
@@ -948,8 +933,8 @@
        Landscape has its own guarded `.m-ls-ptt` button (#843); mounting
        FAB there would give two simultaneous TX controls (codex P1 on
        PR #928). Layered guards (50 ms hold, 8 px move-cancel, haptics,
-       TX-permit two-step) live in the FAB component; the TX state machine
-       lives in the App TX controller (MOR-1012). -->
+       TX-permit two-step) live in the FAB component; managed TX state comes
+       from the server document. -->
   <PttFab
     mode={pttMode}
     txPermit={txPermit}

@@ -1,133 +1,179 @@
-import { initialTxState, transition, type PttMarker, type PttObservation, type TxEffect, type TxEvent, type TxGuard, type TxState, type TxTarget } from './model';
-type Command = 'on' | 'off';
-type Timer = 'audio-start' | 'on-confirmation' | 'off-confirmation';
-type CommandReport = { outcome: 'sent' | 'ack' | 'response-ok' | 'response-error' | 'transport-error'; eventEpoch: number; barrier: PttMarker | null };
-type CommandCorrelation = { leaseId: string; generation: number; originalEpoch: number; target: Exclude<TxTarget, null> };
-type TimerRecord = { handle: unknown; guard: TxGuard; cancelGuard: TxGuard };
+import type { TxState } from './model';
+
+export type PttIntentOperation = 'ptt_on' | 'ptt_off';
+export type ManagedTransmitOperation = 'transmit_on' | 'force_off';
+
 export interface TxControllerDependencies {
+  snapshot(): TxState;
+  refresh(): Promise<void>;
+  invalidate(): void;
+  sendPtt(operation: PttIntentOperation): Promise<'accepted' | 'rejected'>;
+  submit(operation: ManagedTransmitOperation): Promise<'accepted' | 'rejected'>;
   startAudio(): Promise<string | null>;
-  sendPtt(command: Command, commandId: string, correlation: CommandCorrelation, report: (result: CommandReport) => void): void;
   stopLocalAudio(): void;
-  restoreMod(barrier: PttMarker, observation: PttObservation): void;
-  commandId(command: Command): string;
-  schedule(callback: () => void, delayMs: number): unknown;
-  cancel(handle: unknown): void;
-  timeoutMs: Record<Timer, number>;
-  /** MOR-1796: mid-lease local capture death. Optional so pure harnesses need
-   *  no timer plumbing; production wiring subscribes the real audio manager. */
-  onAudioDied?(callback: () => void): () => void;
+  onAudioDied(handler: () => void): () => void;
 }
-const sameGuard = (a: TxGuard, b: TxGuard) =>
-  a.leaseId === b.leaseId && a.generation === b.generation && a.authorityEpoch === b.authorityEpoch;
+
+/** Browser thin client for server-owned ManagedTxAuthority. */
 export class TxController {
   #state: TxState;
-  #leaseTarget: Exclude<TxTarget, null> | null = null;
-  #timers = new Set<TimerRecord>();
   #listeners = new Set<(state: TxState) => void>();
-  #events: TxEvent[] = [];
-  #processing = false;
-  constructor(authorityEpoch: number, baseline: PttMarker, private readonly dependencies: TxControllerDependencies) {
-    this.#state = initialTxState(authorityEpoch, baseline);
-    // MOR-1796: a death without a lease is not this controller's to act on;
-    // with one, the reducer decides (and its guard check keeps foreign leases
-    // untouchable). Unsubscription rides the dependencies' own disposal.
-    dependencies.onAudioDied?.(() => {
-      const guard = this.#state.guard;
-      if (!guard) return;
-      this.dispatch({ type: 'audio-died', guard, offCommandId: this.dependencies.commandId('off') });
-    });
+  #inputGeneration = 0;
+  #flow: 'idle' | 'ptt' | 'transmit' = 'idle';
+  #pttOnAttempted = false;
+  #audioPreparation: Promise<boolean> | null = null;
+  #audioNeedsCleanup = false;
+  #offAudioDied: () => void;
+
+  constructor(private readonly dependencies: TxControllerDependencies) {
+    this.#state = dependencies.snapshot();
+    this.#offAudioDied = dependencies.onAudioDied(() => { void this.forceOff(); });
   }
+
   snapshot(): TxState { return this.#state; }
+
   subscribe(listener: (state: TxState) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
-  dispatch(event: TxEvent): void {
-    const queued: TxEvent = event.type === 'start' && event.eligibility.target !== null
-      ? { ...event, eligibility: { ...event.eligibility, target: { ...event.eligibility.target } } }
-      : event;
-    this.#events.push(queued);
-    if (this.#processing) return;
-    this.#processing = true;
-    try {
-      while (this.#events.length) {
-        const current = this.#events.shift()!;
-        const result = transition(this.#state, current);
-        if (current.type === 'start' && current.eligibility.target !== null
-          && result.effects.some((effect) => effect.type === 'start-audio')) {
-          this.#leaseTarget = { ...current.eligibility.target };
-        }
-        const retainLeaseTarget = result.state.guard !== null || result.state.pendingOff !== null || result.state.mayOwnKey;
-        this.#state = result.state;
-        for (const listener of this.#listeners) try { listener(this.#state); } catch { /* observers cannot block safety effects */ }
-        this.#run(result.effects, current);
-        if (!retainLeaseTarget) this.#leaseTarget = null;
-      }
-    } finally { this.#processing = false; }
+
+  async refresh(): Promise<void> {
+    try { await this.dependencies.refresh(); } catch { this.dependencies.invalidate(); }
+    this.#publish(this.dependencies.snapshot());
   }
-  #run(effects: TxEffect[], cause: TxEvent): void {
-    const failures: Array<{ effect: TxEffect; command: Command; offCommandId: string; eventEpoch: number }> = [];
-    let stopped = false;
+
+  invalidate(): void {
+    this.dependencies.invalidate();
+    this.#publish(this.dependencies.snapshot());
+  }
+
+  /** Momentary, session-owned PTT intent over the control WebSocket. */
+  requestPtt(): void {
+    const generation = ++this.#inputGeneration;
+    this.#flow = 'ptt';
+    this.#pttOnAttempted = false;
+    void this.#submitPttOn(generation);
+  }
+
+  /** Ordinary release of this browser session's momentary PTT intent. */
+  async releasePtt(): Promise<void> {
+    ++this.#inputGeneration;
+    this.#flow = 'idle';
+    const attempted = this.#pttOnAttempted;
+    this.#pttOnAttempted = false;
     try {
-      for (const effect of effects) {
-        if (effect.type === 'stop-local-audio') stopped = true;
-        if (effect.type === 'dispatch-on' || effect.type === 'dispatch-off') {
-          const command = effect.type === 'dispatch-on' ? 'on' : 'off';
-          const offCommandId = command === 'off' ? effect.commandId! : this.dependencies.commandId('off');
-          try { this.#send(effect, command, offCommandId); }
-          catch { failures.push({ effect, command, offCommandId, eventEpoch: this.#state.authorityEpoch }); }
-        } else {
-          this.#effect(effect, cause);
-        }
-      }
-    } finally {
-      if (!stopped && effects.some((effect) => effect.type === 'stop-local-audio')) this.dependencies.stopLocalAudio();
+      if (attempted) await this.dependencies.sendPtt('ptt_off');
+    } catch { this.dependencies.invalidate(); }
+    finally {
+      this.#stopLocalAudio();
+      this.#publish(this.dependencies.snapshot());
     }
-    for (const failure of failures) this.#commandResult(failure.effect, failure.command, failure.offCommandId, {
-      outcome: 'transport-error', eventEpoch: failure.eventEpoch, barrier: null,
-    });
   }
-  #send(effect: TxEffect, command: Command, offCommandId: string): void {
-    const guard = effect.guard!;
-    const leaseTarget = this.#leaseTarget;
-    if (leaseTarget === null) throw new Error('TX command effect missing lease target');
-    const correlation = { leaseId: guard.leaseId, generation: guard.generation, originalEpoch: guard.authorityEpoch, target: { ...leaseTarget } };
-    this.dependencies.sendPtt(command, effect.commandId!, correlation,
-      (report) => this.#commandResult(effect, command, offCommandId, report));
+
+  /** Latched TRANSMIT intent through the canonical managed-transmit client. */
+  requestTransmit(): void {
+    const generation = ++this.#inputGeneration;
+    this.#flow = 'transmit';
+    this.#pttOnAttempted = false;
+    void this.#submitTransmitOn(generation);
   }
-  #commandResult(effect: TxEffect, command: Command, offCommandId: string, report: CommandReport): void {
-    const guard = effect.guard!;
-    this.dispatch({ type: 'command-result', command, commandId: effect.commandId!, offCommandId,
-      leaseId: guard.leaseId, generation: guard.generation, originalEpoch: guard.authorityEpoch,
-      eventEpoch: report.eventEpoch, outcome: report.outcome, barrier: report.barrier });
+
+  /** Unconditional server ForceOFF intent, distinct from ordinary PTT release. */
+  async forceOff(): Promise<void> {
+    ++this.#inputGeneration;
+    this.#flow = 'idle';
+    this.#pttOnAttempted = false;
+    try { await this.dependencies.submit('force_off'); }
+    catch { this.dependencies.invalidate(); }
+    finally {
+      this.#stopLocalAudio();
+      this.#publish(this.dependencies.snapshot());
+    }
   }
-  #effect(effect: TxEffect, cause: TxEvent): void {
-    const guard = effect.guard!;
-    if (effect.type === 'start-audio') {
-      let pending: Promise<string | null>;
-      try { pending = this.dependencies.startAudio(); }
-      catch { this.dispatch({ type: 'fail', guard, fault: 'audio-failed', offCommandId: this.dependencies.commandId('off') }); return; }
-      void pending.then((error) => this.dispatch(error
-        ? { type: 'fail', guard, fault: 'audio-failed', offCommandId: this.dependencies.commandId('off') }
-        : { type: 'audio-ready', guard, commandId: this.dependencies.commandId('on') }),
-      () => this.dispatch({ type: 'fail', guard, fault: 'audio-failed', offCommandId: this.dependencies.commandId('off') }));
-    } else if (effect.type.startsWith('arm-')) {
-      const timer = effect.type === 'arm-audio-timeout' ? 'audio-start' : effect.type === 'arm-on-timeout' ? 'on-confirmation' : 'off-confirmation';
-      const eventEpoch = this.#state.authorityEpoch;
-      const offCommandId = timer === 'off-confirmation' ? effect.commandId! : this.dependencies.commandId('off');
-      const record: TimerRecord = { handle: null, guard, cancelGuard: this.#state.cleanupGuard ?? guard };
-      let fired = false; const fire = () => { if (fired) return; fired = true; this.#timers.delete(record); this.dispatch({
-          type: 'timer-fired', timer, commandId: effect.commandId ?? null, armRevision: effect.armRevision!,
-          leaseId: guard.leaseId, generation: guard.generation, originalEpoch: guard.authorityEpoch, eventEpoch, offCommandId });
-      };
-      this.#timers.add(record); try { record.handle = this.dependencies.schedule(fire, this.dependencies.timeoutMs[timer]); }
-      catch { fire(); }
-    } else if (effect.type === 'cancel-timers') {
-      for (const timer of this.#timers) if (sameGuard(timer.guard, guard) || sameGuard(timer.cancelGuard, guard)) {
-        this.#timers.delete(timer);
-        try { this.dependencies.cancel(timer.handle); } catch { /* deadline invalidation remains authoritative */ }
+
+  async releaseSession(): Promise<void> {
+    if (this.#flow === 'ptt' || this.#pttOnAttempted) await this.releasePtt();
+    else {
+      ++this.#inputGeneration;
+      this.#flow = 'idle';
+      this.#stopLocalAudio();
+    }
+  }
+
+  abandonSession(): void {
+    ++this.#inputGeneration;
+    this.#flow = 'idle';
+    this.#pttOnAttempted = false;
+    this.#stopLocalAudio();
+    this.invalidate();
+  }
+
+  dispose(): void {
+    ++this.#inputGeneration;
+    this.#offAudioDied();
+    this.#listeners.clear();
+    this.#flow = 'idle';
+    this.#pttOnAttempted = false;
+    this.#stopLocalAudio();
+  }
+
+  async #submitPttOn(generation: number): Promise<void> {
+    if (!await this.#prepareAudio()) return;
+    if (generation !== this.#inputGeneration || this.#flow !== 'ptt') return;
+    this.#pttOnAttempted = true;
+    let outcome: 'accepted' | 'rejected';
+    try { outcome = await this.dependencies.sendPtt('ptt_on'); }
+    catch { outcome = 'rejected'; }
+    if (generation !== this.#inputGeneration || this.#flow !== 'ptt') return;
+    if (outcome === 'rejected') {
+      this.#pttOnAttempted = false;
+      this.#flow = 'idle';
+      this.#stopLocalAudio();
+    }
+    this.#publish(this.dependencies.snapshot());
+  }
+
+  async #submitTransmitOn(generation: number): Promise<void> {
+    if (!await this.#prepareAudio()) return;
+    if (generation !== this.#inputGeneration || this.#flow !== 'transmit') return;
+    try {
+      const outcome = await this.dependencies.submit('transmit_on');
+      if (outcome === 'rejected' && generation === this.#inputGeneration) {
+        this.#flow = 'idle';
+        this.#stopLocalAudio();
       }
-    } else if (effect.type === 'stop-local-audio') this.dependencies.stopLocalAudio();
-    else if (effect.type === 'restore-mod' && cause.type === 'authority') this.dependencies.restoreMod(effect.barrier!, cause.ptt);
+    } catch {
+      if (generation === this.#inputGeneration) {
+        this.#flow = 'idle';
+        this.#stopLocalAudio();
+      }
+      this.dependencies.invalidate();
+    }
+    this.#publish(this.dependencies.snapshot());
+  }
+
+  #prepareAudio(): Promise<boolean> {
+    if (this.#audioPreparation !== null) return this.#audioPreparation;
+    this.#audioNeedsCleanup = true;
+    this.#audioPreparation = (async () => {
+      try {
+        if (await this.dependencies.startAudio() === null) return true;
+      } catch { /* local media refusal */ }
+      this.#stopLocalAudio();
+      return false;
+    })();
+    return this.#audioPreparation;
+  }
+
+  #stopLocalAudio(): void {
+    this.#audioPreparation = null;
+    if (!this.#audioNeedsCleanup) return;
+    this.#audioNeedsCleanup = false;
+    this.dependencies.stopLocalAudio();
+  }
+
+  #publish(next: TxState): void {
+    this.#state = next;
+    for (const listener of this.#listeners) listener(next);
   }
 }

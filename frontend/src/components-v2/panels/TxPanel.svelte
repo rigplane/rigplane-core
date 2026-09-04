@@ -1,13 +1,3 @@
-<script module lang="ts">
-  /**
-   * Per-instance TX lease identity. Both sidebars list a draggable "tx" panel,
-   * so two TxPanel instances can be mounted at once; the App TX controller keys
-   * lease ownership by sourceId, and a shared id would let one instance release
-   * the other's lease.
-   */
-  let panelSeq = 0;
-</script>
-
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { HardwareButton } from '$lib/Button';
@@ -62,27 +52,16 @@
   let driveGainAvailable = $derived(p.driveGainAvailable ?? true);
 
   // ── PTT (hold-to-talk + double-tap latch) ──
-  // MOR-1011: this panel owns no TX state. It is one lease source among several
-  // (mobile layout, keyboard, future hardware key), so audio start, key
-  // confirmation, safety deadlines and fail-closed release all live in the App
-  // TX controller; the panel only renders that state and feeds it gesture intent.
+  // This panel translates gestures into managed-transmit intents and renders
+  // the server document. The browser owns neither TX admission nor completion.
   const tx = getAppTxController();
-  const sourceId = `tx-panel-${++panelSeq}`;
-  let leaseSeq = 0;
   let txState = $state.raw(tx.snapshot());
   const stopWatchingTx = tx.subscribe((next) => { txState = next; });
 
   const ptt = createPttGesture(
-    { guard: () => txState.guard, latched: () => txState.intent === 'latched' },
     {
-      start: () => {
-        // A stale fault would swallow the start (the model only leaves 'failed'
-        // on an explicit reset), so clear it as part of the same press.
-        if (txState.phase === 'failed') tx.resetFault();
-        tx.start(sourceId, `${sourceId}-${++leaseSeq}`, 'momentary');
-      },
-      latch: (guard) => tx.setIntent(sourceId, guard, 'latched'),
-      release: (guard) => tx.release(sourceId, guard),
+      pttOn: tx.pttOn,
+      pttOff: tx.pttOff,
     },
     {
       schedule: (callback, ms) => setTimeout(callback, ms),
@@ -90,19 +69,15 @@
     },
   );
 
-  // Unsubscribe BEFORE the teardown release: the release is fail-closed and must
-  // run to completion inside the controller, not bounce back into a component
-  // that is already being destroyed.
   onDestroy(() => { stopWatchingTx(); ptt.destroy(); });
 
-  let owned = $derived(txState.guard !== null);
-  let starting = $derived(txState.phase === 'audio-start-pending');
+  let momentary = $derived(txState.intent === 'momentary');
+  let starting = $derived(txState.phase === 'key-confirm-pending');
   let keyed = $derived(txState.phase === 'key-confirm-pending' || txState.phase === 'active');
   let latched = $derived(txState.intent === 'latched');
   let busy = $derived(txState.phase === 'releasing');
   let fault = $derived(txState.fault);
-  // Controller authority wins; the props snapshot is only a fallback for the
-  // idle case, where the controller never observes PTT at all.
+  // Prefer the managed-transmit observation when available.
   let rf = $derived(
     txState.radioTx !== 'unknown'
       ? txState.radioTx
@@ -155,7 +130,7 @@
 
     <button
       class="ptt-button"
-      class:ptt-held={owned && !latched}
+      class:ptt-held={momentary}
       class:ptt-latched={latched}
       aria-disabled={starting || busy}
       onpointerdown={(e) => { e.preventDefault(); ptt.down(); }}

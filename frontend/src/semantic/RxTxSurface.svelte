@@ -55,7 +55,7 @@
   let session = $derived(txSessionState(tx));
   let blocked = $derived(keyBlockedReasons(view, tx));
   let viewBlocked = $derived(txDisabledReasons(view));
-  let pressed = $derived(tx.mayOwnKey || (tx.phase !== 'idle' && tx.phase !== 'failed'));
+  let pressed = $derived(tx.phase !== 'idle' && tx.phase !== 'failed');
   let known = $derived(view.txTarget.status === 'known');
   let receiver = $derived(view.txTarget.status === 'known' ? view.txTarget.receiver : undefined);
   let slot = $derived(view.txTarget.status === 'known'
@@ -129,7 +129,7 @@
     <button
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
-      disabled={blocked.length > 0} aria-pressed={pressed} aria-describedby={blockedId}
+      aria-pressed={pressed} aria-describedby={blockedId}
       onclick={() => onRequestKey?.()}
     >Key transmitter</button>
     <!-- Never gated: no `disabled`, no `{#if}`, no guard in the handler. -->

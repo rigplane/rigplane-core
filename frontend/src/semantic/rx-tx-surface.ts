@@ -31,7 +31,8 @@ export interface TxAuthoritySnapshot {
   intent: 'momentary' | 'latched' | null;
   radioTx: 'off' | 'on' | 'unknown';
   txRisk: 'none' | 'uncertain' | 'confirmed-on';
-  mayOwnKey: boolean;
+  /** Legacy presentation input; server requester relation is not yet projected. */
+  mayOwnKey?: boolean;
   fault: string | null;
   faultDetail?: readonly string[] | null;
 }
@@ -190,9 +191,8 @@ export function rfState(tx: TxAuthoritySnapshot): RfState {
 export const txSessionState = (tx: TxAuthoritySnapshot): TxSessionState =>
   SESSION_BY_PHASE[tx.phase] ?? 'pending';
 
-/** 'external' only when the authority is provably uninvolved — "not you" is the dangerous claim. */
-export const txOrigin = (tx: TxAuthoritySnapshot): TxOrigin =>
-  tx.mayOwnKey || tx.phase !== 'idle' ? 'local' : 'external';
+/** The current projection cannot claim a local browser requester relation. */
+export const txOrigin = (_tx: TxAuthoritySnapshot): TxOrigin => 'external';
 
 /**
  * Both halves must agree before a key intent may leave this surface: the
@@ -216,7 +216,7 @@ export function keyBlockedReasons(
   // phase itself, not on `fault` being non-null, so the verdict cannot go
   // missing should a future state ever reach 'failed' without a code.
   if (tx.fault !== null || tx.phase === 'failed') add('tx-fault');
-  if (tx.mayOwnKey || (tx.phase !== 'idle' && tx.phase !== 'failed')) add('tx-busy');
+  if (tx.phase !== 'idle' && tx.phase !== 'failed') add('tx-busy');
   /**
    * MOR-1906. `txRisk` used to collapse into `tx-busy`, which renders as "a TX
    * session is already in progress" — told to an operator on a demonstrably

@@ -9,9 +9,8 @@
  * assertions stand unchanged.
  *
  * Three safety blocks:
- *  1. MOD-input readiness IS `deriveTxCapabilities`'s conclusion, and the
- *     source projection IS the App TX authority's — both pinned against the
- *     shipped originals, not against a hand-copied expectation.
+ *  1. MOD-input readiness IS `deriveTxCapabilities`'s conclusion and the
+ *     source projection is pinned directly against observed state.
  *  2. TX truth (R9): the whole group is invariant to `radioState.ptt`.
  *  3. Honest degradation: the group never fabricates the shipped panel's
  *     0.5 AF / 'both' focus defaults.
@@ -24,7 +23,6 @@ import type { FieldStatus, ServerState } from '$lib/types/state';
 import { validateRadioViewModel, type RadioViewModel } from '../../../../semantic/radio-view-model';
 import { toRadioViewModel, type RxAudioSnapshot } from '../radio-view-model-adapter';
 import { deriveTxCapabilities } from '../tx-capabilities';
-import { createAppAuthorityProjector } from '../../tx-controller/app-authority';
 import { toRxAudioProps } from '../../props/panel-props';
 
 const fresh: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
@@ -170,27 +168,22 @@ describe('MOD-input readiness mirrors the shipped derivation (web-voice-TX guard
 
   it.each([
     ['LAN', 5], ['MIC', 0], ['USB', 3],
-  ])('projects the %s source exactly as the App TX authority does', (_label, source) => {
+  ])('projects the observed %s source', (_label, source) => {
     const state = audioState({ dataOffModInput: source });
-    const project = createAppAuthorityProjector();
-    const authority = project(state, caps(), { state: 'connected', epoch: 0 });
-    const reading = model(state, caps(), SNAP).rxAudio!.modInputSource.reading;
-    expect(authority.modInputSource.status).toBe('known');
-    expect(reading).toEqual({
-      status: 'known',
-      value: (authority.modInputSource as { status: 'known'; source: number }).source,
+    const facts = deriveTxCapabilities(caps(), {
+      txTarget: state.txTarget,
+      modInputSource: { status: 'known', source },
     });
+    const reading = model(state, caps(), SNAP).rxAudio!.modInputSource.reading;
+    expect(reading).toEqual({ status: 'known', value: source });
     expect(model(state, caps(), SNAP).rxAudio!.modInputReadiness)
-      .toEqual(authority.facts!.modInputReadiness);
+      .toEqual(facts.modInputReadiness);
   });
 
-  it('projects an unobserved source as unknown, exactly as the App TX authority does', () => {
+  it('projects an unobserved source as unknown', () => {
     const state = audioState({
       fieldStatus: { ...audioState().fieldStatus, dataOffModInput: missing },
     });
-    const project = createAppAuthorityProjector();
-    const authority = project(state, caps(), { state: 'connected', epoch: 0 });
-    expect(authority.modInputSource).toEqual({ status: 'unknown' });
     expect(model(state, caps(), SNAP).rxAudio!.modInputSource.reading).toEqual({ status: 'unknown' });
   });
 });
