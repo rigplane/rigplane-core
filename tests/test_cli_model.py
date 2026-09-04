@@ -31,7 +31,11 @@ def test_packaged_profiles_support_non_filesystem_resources(
 ) -> None:
     archive_path = tmp_path / "rigplane.zip"
     with ZipFile(archive_path, "w") as archive:
-        for name in ("ftx1.toml", "_keyboard-default.toml"):
+        for name in (
+            "ftx1.toml",
+            "_keyboard-default.toml",
+            "_ctcss_tables_v1.toml",
+        ):
             archive.writestr(f"rigplane/rigs/{name}", (RIGS_DIR / name).read_bytes())
 
     with ZipFile(archive_path) as archive:
@@ -163,6 +167,9 @@ class TestSerialBackend:
         package_rigs = package_root / "rigs"
         package_rigs.mkdir(parents=True)
         (package_rigs / "ftx1.toml").write_bytes((RIGS_DIR / "ftx1.toml").read_bytes())
+        (package_rigs / "_ctcss_tables_v1.toml").write_bytes(
+            (RIGS_DIR / "_ctcss_tables_v1.toml").read_bytes()
+        )
         monkeypatch.setattr(cli, "_rigs_dir", lambda: tmp_path / "missing-rigs")
         monkeypatch.setattr(resources, "files", lambda package: package_root)
 
