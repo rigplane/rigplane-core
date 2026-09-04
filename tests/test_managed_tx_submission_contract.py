@@ -2,7 +2,7 @@ import asyncio
 import gc
 import inspect
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -394,13 +394,16 @@ async def test_civ_output_executes_unchanged_during_managed_transmit() -> None:
     )
 
     managed, _, _, _, _, _ = authority()
-    radio = MagicMock()
-    radio.set_civ_output_ant = AsyncMock()
+
+    class CivOutputRadio:
+        async def set_civ_output_ant(self, on: bool) -> None: ...
+
+    radio = create_autospec(CivOutputRadio, instance=True)
     command = bind_command_intent("set_civ_output_ant", {"on": True}, source="test")
     try:
         assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
         await execute_command_intent(radio, command, managed_tx_authority=managed)
-        radio.set_civ_output_ant.assert_awaited_once_with(enabled=True)
+        radio.set_civ_output_ant.assert_awaited_once_with(on=True)
     finally:
         await finish(managed)
 
@@ -416,10 +419,10 @@ async def test_civ_output_executes_unchanged_during_managed_transmit() -> None:
         (intent("set_split_vfo", on=True, tx_vfo="VFOB"), True),
         (intent("set_antenna_1", on=True), False),
         (intent("set_antenna_2", on=False), False),
-        (intent("set_rx_antenna", enabled=True), False),
-        (intent("set_rx_antenna_ant1", enabled=True), False),
-        (intent("set_rx_antenna_ant2", enabled=False), False),
-        (intent("set_civ_output_ant", enabled=True), True),
+        (intent("set_rx_antenna", antenna=2, on=True), False),
+        (intent("set_rx_antenna_ant1", on=True), False),
+        (intent("set_rx_antenna_ant2", on=False), False),
+        (intent("set_civ_output_ant", on=True), True),
         (intent("set_tuner_status", value=1), False),
         (intent("set_tuner_status", value=2), False),
         (intent("set_tuner_status", value=0), True),
