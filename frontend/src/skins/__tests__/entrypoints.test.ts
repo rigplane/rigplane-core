@@ -125,6 +125,11 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
   },
   mobile: { kind: 'mobile-layout' },
   'peer-split': { kind: 'lcd-layout', variant: 'peer-split' },
+  'dual-sdr-face': {
+    kind: 'covered-elsewhere',
+    testFile: 'src/skins/dual-sdr-face/__tests__/DualSdrFaceSkin.component.test.ts',
+    entryComponentFile: 'DualSdrFaceSkin.svelte',
+  },
 };
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
