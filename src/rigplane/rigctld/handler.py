@@ -515,13 +515,15 @@ class _RigctldCommandExecutor:
         if managed and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
 
-        classification = _classify_rigctld_tx_intent(intent)
-        if (
-            classification.disposition is TxInterlockDisposition.BLOCK
-            and self.handler._has_canonical_state_store
-            and self.handler._resolve_rigctld_rf_state() is not tx_interlock.RfState.RX
-        ):
-            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if not managed:
+            classification = _classify_rigctld_tx_intent(intent)
+            if (
+                classification.disposition is TxInterlockDisposition.BLOCK
+                and self.handler._has_canonical_state_store
+                and self.handler._resolve_rigctld_rf_state()
+                is not tx_interlock.RfState.RX
+            ):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
         await self._wait_predecessor()
         params = intent.params
         if intent.name == "set_freq":
@@ -940,6 +942,10 @@ class RigctldHandler:
         routing rigctld writes through the correlated queue without holding
         the socket — post-beta work, tracked separately.
         """
+        authority = self._managed_tx_authority
+        if authority is not None and intent.name != "set_ptt":
+            if not await authority.admit_managed_write(intent):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
         try:
             result = await self._command_service.execute(
                 intent,
