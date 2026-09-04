@@ -30,6 +30,7 @@ __all__ = [
     "CommandDescriptor",
     "CommandUnsupportedError",
     "DescriptorTxPolicy",
+    "ManagedWriteAdmission",
     "bind_command_intent",
     "command_descriptor",
     "command_descriptors",
@@ -72,6 +73,10 @@ class DispatchQueue(Protocol):
     ) -> object: ...
 
 
+class ManagedWriteAdmission(Protocol):
+    async def admit_managed_write(self, intent: CommandIntent) -> bool: ...
+
+
 Binder = Callable[[Mapping[str, Any]], dict[str, Any]]
 TargetBuilder = Callable[[Mapping[str, Any]], FieldPath]
 ExpectationProjector = Callable[[Any, Mapping[str, Any]], dict[str, Any]]
@@ -82,6 +87,7 @@ class DescriptorTxPolicy(StrEnum):
 
     ALWAYS_PASS = "always_pass"
     TX_SAFE = "tx_safe"
+    ANTENNA_SWITCH = "antenna_switch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +231,17 @@ def _project_attenuator_expectation(
     return normalized
 
 
+def _bind_boolean(field: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    value = params["on"] if "on" in params else params["enabled"]
+    if type(value) is not bool:
+        raise ValueError(f"{field} must be a bool")
+    return {"enabled": value, "on": value, field: value}
+
+
+def _global_slow_state_target(field: str, _params: Mapping[str, Any]) -> FieldPath:
+    return FieldPath.global_("slow_state", field)
+
+
 _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
     {
         "set_repeater_shift": CommandDescriptor(
@@ -281,6 +298,51 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             receiver_aware=True,
             project_expectation=_project_attenuator_expectation,
         ),
+        "set_antenna_1": CommandDescriptor(
+            name="set_antenna_1",
+            method_name="set_antenna_1",
+            bind=partial(_bind_boolean, "rx_antenna_1"),
+            target=partial(_global_slow_state_target, "rx_antenna_1"),
+            argument_names=("enabled",),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_antenna", "set_antenna_1"),
+        ),
+        "set_antenna_2": CommandDescriptor(
+            name="set_antenna_2",
+            method_name="set_antenna_2",
+            bind=partial(_bind_boolean, "rx_antenna_2"),
+            target=partial(_global_slow_state_target, "rx_antenna_2"),
+            argument_names=("enabled",),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_antenna_2",),
+        ),
+        "set_rx_antenna_ant1": CommandDescriptor(
+            name="set_rx_antenna_ant1",
+            method_name="set_rx_antenna_ant1",
+            bind=partial(_bind_boolean, "rx_antenna_1"),
+            target=partial(_global_slow_state_target, "rx_antenna_1"),
+            argument_names=("enabled",),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_rx_antenna", "set_rx_antenna_ant1"),
+        ),
+        "set_rx_antenna_ant2": CommandDescriptor(
+            name="set_rx_antenna_ant2",
+            method_name="set_rx_antenna_ant2",
+            bind=partial(_bind_boolean, "rx_antenna_2"),
+            target=partial(_global_slow_state_target, "rx_antenna_2"),
+            argument_names=("enabled",),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_rx_antenna_ant2",),
+        ),
+        "set_civ_output_ant": CommandDescriptor(
+            name="set_civ_output_ant",
+            method_name="set_civ_output_ant",
+            bind=partial(_bind_boolean, "civ_output_ant"),
+            target=partial(_global_slow_state_target, "civ_output_ant"),
+            argument_names=("enabled",),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_civ_output_ant",),
+        ),
     }
 )
 
@@ -289,6 +351,7 @@ _ADMITTED_DESCRIPTOR_TX_POLICIES = frozenset(
     {
         DescriptorTxPolicy.ALWAYS_PASS,
         DescriptorTxPolicy.TX_SAFE,
+        DescriptorTxPolicy.ANTENNA_SWITCH,
     }
 )
 
@@ -305,22 +368,33 @@ def _require_descriptor_policy_seat(descriptor: CommandDescriptor) -> None:
         )
 
 
+def _validate_descriptor_table() -> None:
+    for descriptor in _COMMAND_DESCRIPTORS.values():
+        _require_descriptor_policy_seat(descriptor)
+
+
+_validate_descriptor_table()
+
+
 def command_descriptors() -> Mapping[str, CommandDescriptor]:
+    _validate_descriptor_table()
     return _COMMAND_DESCRIPTORS
 
 
 def command_descriptor(name: str) -> CommandDescriptor | None:
     descriptor = _COMMAND_DESCRIPTORS.get(name)
+    if descriptor is None:
+        descriptor = next(
+            (
+                descriptor
+                for descriptor in _COMMAND_DESCRIPTORS.values()
+                if name in descriptor.public_names or name == descriptor.method_name
+            ),
+            None,
+        )
     if descriptor is not None:
-        return descriptor
-    return next(
-        (
-            descriptor
-            for descriptor in _COMMAND_DESCRIPTORS.values()
-            if name in descriptor.public_names or name == descriptor.method_name
-        ),
-        None,
-    )
+        _require_descriptor_policy_seat(descriptor)
+    return descriptor
 
 
 def enqueue_command_intent(
@@ -446,7 +520,12 @@ def prepare_command_intent(
     return intent
 
 
-async def execute_command_intent(radio: Any, intent: CommandIntent) -> None:
+async def execute_command_intent(
+    radio: Any,
+    intent: CommandIntent,
+    *,
+    managed_tx_authority: ManagedWriteAdmission | None = None,
+) -> None:
     """Invoke the reviewed Radio method for a descriptor-built intent."""
 
     descriptor = command_descriptor(intent.name)
@@ -454,4 +533,11 @@ async def execute_command_intent(radio: Any, intent: CommandIntent) -> None:
         raise CommandError(f"no command descriptor for {intent.name!r}")
     _require_descriptor_policy_seat(descriptor)
     method = getattr(radio, descriptor.method_name)
+    if (
+        managed_tx_authority is not None
+        and not await managed_tx_authority.admit_managed_write(intent)
+    ):
+        raise CommandError(
+            f"managed transmit authority refused command {descriptor.name!r}"
+        )
     await method(**{name: intent.params[name] for name in descriptor.argument_names})

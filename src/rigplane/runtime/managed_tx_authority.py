@@ -9,6 +9,7 @@ from enum import StrEnum
 from functools import partial
 from typing import Any, Protocol
 
+from rigplane.core.command_dispatch import DescriptorTxPolicy, command_descriptor
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.runtime.managed_tx_config import (
     ManagedTxTotConfig,
@@ -105,10 +106,6 @@ class ShutdownResult(StrEnum):
 
 
 _ProviderRetirement = Callable[[int], Awaitable[None]]
-
-_ANTENNA_WRITE_NAMES = frozenset(
-    {"set_antenna", "set_antenna_1", "set_antenna_2", "set_rx_antenna"}
-)
 
 
 class ManagedTxAuthority:
@@ -376,12 +373,13 @@ class ManagedTxAuthority:
         """Apply the sole managed-intent relay policy without altering ``intent``."""
         if not isinstance(intent, CommandIntent):
             raise TypeError("managed write admission requires a CommandIntent")
+        descriptor = command_descriptor(intent.name)
         async with self._lock:
             managed_tx = self._state.intent.kind is not ManagedTxIntentKind.RX
             if not managed_tx:
                 return True
-            if intent.name in _ANTENNA_WRITE_NAMES:
-                return False
+            if descriptor is not None:
+                return descriptor.tx_policy is not DescriptorTxPolicy.ANTENNA_SWITCH
             if intent.name == "set_tuner_status":
                 return intent.params.get("value") == 0
             if intent.name == "set_func" and intent.params.get("func") == "TUNER":
