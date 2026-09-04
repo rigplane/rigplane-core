@@ -66,7 +66,11 @@ def test_string_profile_loads_from_non_filesystem_package_resources(
     """The Yaesu consumer resolves bundled profiles without a source tree."""
     archive_path = tmp_path / "rigplane.zip"
     with ZipFile(archive_path, "w") as archive:
-        for name in ("ftx1.toml", "_keyboard-default.toml"):
+        for name in (
+            "ftx1.toml",
+            "_keyboard-default.toml",
+            "_ctcss_tables_v1.toml",
+        ):
             archive.writestr(f"rigplane/rigs/{name}", (_RIGS_DIR / name).read_bytes())
 
     with ZipFile(archive_path) as archive:

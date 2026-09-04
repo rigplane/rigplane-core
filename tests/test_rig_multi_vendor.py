@@ -359,6 +359,9 @@ class TestMultiVendorProfiles:
         # but removes the capability that makes it eligible for speech gating.
         without_speech = rig_path.read_text().replace('    "speech",\n', "", 1)
         assert without_speech != rig_path.read_text()
+        (tmp_path / "_ctcss_tables_v1.toml").write_bytes(
+            (RIGS_DIR / "_ctcss_tables_v1.toml").read_bytes()
+        )
         assert (
             "speech"
             not in load_rig(_write_toml(tmp_path, without_speech, filename))

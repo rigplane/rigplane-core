@@ -463,6 +463,12 @@ class RadioProfile:
     ] = field(default_factory=dict)
     # Measured per-radio transmit policy (MOR-1912).
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
+    # Ordered legal CTCSS domain resolved from the profile's named table.
+    # Values are exact integer centiHz (8850 = 88.5 Hz); the tuple order is
+    # also the provider index mapping. Declaring a table does not add a
+    # capability or command, so this is domain metadata rather than write
+    # authority. Appended to preserve the positional constructor contract.
+    ctcss_tones_centihz: tuple[int, ...] | None = None
 
     def supports_capability(self, capability: str) -> bool:
         return capability in self.capabilities

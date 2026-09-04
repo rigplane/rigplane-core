@@ -127,6 +127,10 @@ VALID_VFO_READBACK = {"absolute", "selected_unselected", "none"}
 # every other rig uses.
 VALID_RF_SQL_CONTROL_MODELS = {"separate", "combined"}
 DEFAULT_KEYBOARD_PROFILE_NAME = "_keyboard-default.toml"
+DEFAULT_CTCSS_TABLES_PROFILE_NAME = "_ctcss_tables_v1.toml"
+CTCSS_TONE_MIN_CENTIHZ = 6700
+CTCSS_TONE_MAX_CENTIHZ = 25410
+_CTCSS_CAPABILITIES = frozenset({"repeater_tone", "tsql", "sql_type"})
 
 _REQUIRED_SECTIONS = ("radio", "capabilities", "modes", "filters", "vfo")
 _REQUIRED_RADIO_FIELDS = ("id", "model", "receiver_count", "has_lan", "has_wifi")
@@ -592,6 +596,7 @@ class RigConfig:
         TxInterlockCommandFamily, TxInterlockDisposition
     ] = field(default_factory=dict)
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
+    ctcss_tones_centihz: tuple[int, ...] | None = None
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -745,6 +750,7 @@ class RigConfig:
             pre_labels=self.pre_labels,
             agc_modes=self.agc_modes,
             agc_labels=self.agc_labels,
+            ctcss_tones_centihz=self.ctcss_tones_centihz,
             break_in_modes=self.break_in_modes,
             break_in_labels=self.break_in_labels,
             notch_width_values=self.notch_width_values,
@@ -930,6 +936,98 @@ def _load_default_keyboard_config(path: Path) -> KeyboardConfig | None:
     return _load_keyboard_file(
         path, path.parent / DEFAULT_KEYBOARD_PROFILE_NAME, optional=True
     )
+
+
+def _load_ctcss_tables(path: Path) -> dict[str, tuple[int, ...]]:
+    catalog_path = path.parent / DEFAULT_CTCSS_TABLES_PROFILE_NAME
+    if not catalog_path.exists():
+        raise RigLoadError(
+            f"{path.name}: CTCSS table catalog file not found: {catalog_path.name}"
+        )
+    try:
+        data = tomllib.loads(catalog_path.read_text())
+    except Exception as exc:
+        raise RigLoadError(
+            f"{path.name}: failed to parse CTCSS table catalog "
+            f"{catalog_path.name}: {exc}"
+        ) from exc
+
+    if set(data) != {"schema_version", "tables"}:
+        raise RigLoadError(
+            f"{catalog_path.name}: root must contain exactly schema_version and tables"
+        )
+    if (
+        isinstance(data["schema_version"], bool)
+        or not isinstance(data["schema_version"], int)
+        or data["schema_version"] != 1
+    ):
+        raise RigLoadError(f"{catalog_path.name}: schema_version must be 1")
+    raw_tables = data["tables"]
+    if not isinstance(raw_tables, dict) or not raw_tables:
+        raise RigLoadError(f"{catalog_path.name}: [tables] must be a non-empty table")
+
+    tables: dict[str, tuple[int, ...]] = {}
+    for name, raw_table in raw_tables.items():
+        prefix = f"{catalog_path.name}: [tables.{name}]"
+        if not isinstance(name, str) or not name:
+            raise RigLoadError(f"{catalog_path.name}: table names must be non-empty")
+        if not isinstance(raw_table, dict) or set(raw_table) != {"values_centihz"}:
+            raise RigLoadError(f"{prefix} must contain exactly values_centihz")
+        values = raw_table["values_centihz"]
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in values
+            )
+        ):
+            raise RigLoadError(
+                f"{prefix}.values_centihz must be a non-empty integer array"
+            )
+        if len(values) != len(set(values)):
+            raise RigLoadError(f"{prefix}.values_centihz must not contain duplicates")
+        if any(first >= second for first, second in zip(values, values[1:])):
+            raise RigLoadError(f"{prefix}.values_centihz must be strictly ascending")
+        if any(
+            not CTCSS_TONE_MIN_CENTIHZ <= value <= CTCSS_TONE_MAX_CENTIHZ
+            for value in values
+        ):
+            raise RigLoadError(
+                f"{prefix}.values_centihz must be within "
+                f"{CTCSS_TONE_MIN_CENTIHZ}..{CTCSS_TONE_MAX_CENTIHZ} centiHz"
+            )
+        if any(value % 10 for value in values):
+            raise RigLoadError(f"{prefix}.values_centihz must use exact 0.1 Hz steps")
+        tables[name] = tuple(values)
+    return tables
+
+
+def _resolve_ctcss_table(
+    path: Path, data: dict[str, Any], features: tuple[str, ...] | list[str]
+) -> tuple[int, ...] | None:
+    filename = path.name
+    section = data.get("ctcss")
+    requires_table = bool(_CTCSS_CAPABILITIES.intersection(features))
+    if section is None:
+        if requires_table:
+            raise RigLoadError(f"{filename}: missing required [ctcss].table")
+        return None
+    if not isinstance(section, dict):
+        raise RigLoadError(f"{filename}: [ctcss] must be a table")
+    if set(section) != {"table"}:
+        raise RigLoadError(f"{filename}: [ctcss] must contain exactly table")
+    table_name = section["table"]
+    if not isinstance(table_name, str) or not table_name:
+        raise RigLoadError(f"{filename}: [ctcss].table must be a non-empty string")
+    tables = _load_ctcss_tables(path)
+    try:
+        return tables[table_name]
+    except KeyError as exc:
+        raise RigLoadError(
+            f"{filename}: unknown CTCSS table {table_name!r} in "
+            f"{DEFAULT_CTCSS_TABLES_PROFILE_NAME}"
+        ) from exc
 
 
 def _parse_command_value(
@@ -1990,6 +2088,7 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [capabilities].rf_sql_control_model must be one of "
             f"{sorted(VALID_RF_SQL_CONTROL_MODELS)}, got {rf_sql_control_model!r}"
         )
+    ctcss_tones_centihz = _resolve_ctcss_table(path, data, features)
 
     # Validate [validation].write_only_controls — each entry must be a declared
     # capability. These route through the validate set-and-observe engine path
@@ -2501,6 +2600,7 @@ def load_rig(path: Path) -> RigConfig:
         pre_labels=pre_labels,
         agc_modes=agc_modes,
         agc_labels=agc_labels,
+        ctcss_tones_centihz=ctcss_tones_centihz,
         break_in_modes=break_in_modes,
         break_in_labels=break_in_labels,
         notch_width_values=notch_width_values,

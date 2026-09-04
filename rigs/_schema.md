@@ -99,11 +99,38 @@ Known capability strings (grouped by area):
 
 **Scope:** `scope`
 
-**Tone:** `repeater_tone`, `tsql`
+**Tone:** `repeater_tone`, `tsql`, `sql_type`
 
 **Data:** `data_mode`
 
 **System:** `power_control`, `dial_lock`, `scan`, `bsr`, `main_sub_tracking`, `lcd_backlight`
+
+## `[ctcss]` — Named CTCSS Frequency Domain
+
+Profiles declaring `repeater_tone`, `tsql`, or `sql_type` must reference a
+named table from the versioned sibling catalog `_ctcss_tables_v1.toml`.
+
+| Field   | Type   | Required | Description |
+|---------|--------|----------|-------------|
+| `table` | string | yes for CTCSS-capable profiles | Table name under `[tables]` in `_ctcss_tables_v1.toml`. |
+
+Example:
+
+```toml
+[ctcss]
+table = "standard_50"
+```
+
+The loader resolves the selected `values_centihz` array to an immutable,
+ordered tuple on `RigConfig` and `RadioProfile`. Values are exact integer
+centiHz (`8850` = 88.5 Hz). The order is the provider's table-index mapping;
+the public/backend-neutral value is always the centiHz value, never the index.
+
+Catalog tables must be non-empty, strictly ascending, duplicate-free, within
+6700..25410 centiHz, and exactly representable in 0.1 Hz increments. Missing,
+unknown, or malformed references fail profile loading. A table reference only
+defines a legal domain and index mapping: it does not add a capability or grant
+a read or write command.
 
 ## `[tx_interlock]` — Profile Tightening Metadata
 
