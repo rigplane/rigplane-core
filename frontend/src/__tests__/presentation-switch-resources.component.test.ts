@@ -217,6 +217,7 @@ const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
   // `lcd-cockpit`/`lcd-scope` already demand it for.
   'peer-split': ['audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
+  'dual-sdr-face': ['hardware-scope'],
 };
 
 const WIDTH_FOR: Record<SkinId, number> = {
@@ -227,6 +228,7 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'sdr-test': 1400,
   'mobile': 390,
   'peer-split': 1600,
+  'dual-sdr-face': 1700,
 };
 function widthToSkin(): SkinId {
   const width = window.innerWidth;

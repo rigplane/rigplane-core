@@ -6,11 +6,8 @@
  * zone-mount mechanics are already covered exhaustively elsewhere (the
  * `semantic-*-wiring.component.test.ts` family); what this file is the ONLY
  * place that proves is PeerSplitLayout's own additions on top of that wiring:
- * the `ScaledStage` native size, the `.peer-split-glass` chrome class, the
- * wall-clock (not radio state), and that the real DOM elements the dual
- * composition emits today (`.channel-strips`, `.cockpit-global-row`, `.rx-tx-zone`,
- * `.tx-aux-surface`, `.meters-surface`, `.scope-display-surface`) land as
- * DESCENDANTS of the glass.
+ * the `ScaledStage` native size, the `.peer-split-glass` chrome class, and
+ * the read-only display projection mounted inside the glass.
  *
  * NOT asserted here, at all: that the grid CSS actually applies (`display:
  * grid` on `.semantic-surfaces`, row/column placement). Measured, not
@@ -196,34 +193,17 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 // its own, unrelated fixture reasons (a `__tests__` file, excluded from the
 // production "declared once" scan in `presentation/groups/__tests__/
 // contract.test.ts`).
-function render(): void {
+function render(displayVariant: 'peer' | 'dominant' | 'centerstage' | 'panadapter' = 'peer'): void {
   target = document.createElement('div');
   document.body.appendChild(target);
-  component = mount(PeerSplitLayout, { target, props: { canvasW: 1280, canvasH: 540, minScale: 0.5 } });
+  component = mount(PeerSplitLayout, {
+    target,
+    props: { canvasW: 1280, canvasH: 540, minScale: 0.5, displayVariant },
+  });
   flushSync();
 }
 
-/** MOR-2153 review: the local half of the clock reads the process's own
- *  timezone (`Date.prototype.getHours`/`getMinutes`), a review round found
- *  "machine-dependent and unasserted". `process.env.TZ = 'UTC'` in
- *  `beforeEach` was tried first and MEASURED not to work under
- *  `vi.useFakeTimers()` in this environment: the fixed instant below
- *  (14:32 UTC) still read back as this machine's real local offset (10:32
- *  in the environment this was verified in), not UTC — so it was reverted
- *  rather than kept as a comment describing behavior that does not hold.
- *  `expectedLocal()` below computes the SAME `getHours`/`getMinutes` pair
- *  the component's `clockLabel` does, independently, against whatever this
- *  process's real local offset actually is — deterministic and correct on
- *  every machine without needing to pin or predict that offset. */
-const FROZEN_INSTANT = new Date('2026-09-01T14:32:00Z');
-function expectedLocal(): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(FROZEN_INSTANT.getHours())}:${pad(FROZEN_INSTANT.getMinutes())}`;
-}
-
 beforeEach(() => {
-  vi.useFakeTimers();
-  vi.setSystemTime(FROZEN_INSTANT);
   h.state = abSharedState();
   h.caps = liveCaps();
   h.snapshot = { ...IDLE };
@@ -240,7 +220,6 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   document.body.innerHTML = '';
-  vi.useRealTimers();
 });
 
 describe('the peer-split chassis mounts', () => {
@@ -263,16 +242,27 @@ describe('the peer-split chassis mounts', () => {
     expect(stage!.style.height).toBe('540px');
   });
 
-  it('places the real dual-composition zones inside the glass, not beside it', () => {
+  it('places the two-column read-only display inside the glass, not beside it', () => {
     render();
     const glass = q('[data-testid="peer-split-glass"]');
-    expect(glass!.querySelector('.channel-strips')).not.toBeNull();
-    expect(glass!.querySelector('.cockpit-global-row')).not.toBeNull();
-    expect(glass!.querySelector('.rx-tx-zone')).not.toBeNull();
-    // Bare optional surfaces (no declared zone owns them yet — MOR-2151(cont.)):
-    expect(glass!.querySelector('.tx-aux-surface')).not.toBeNull();
-    expect(glass!.querySelector('.meters-surface')).not.toBeNull();
-    expect(glass!.querySelector('.scope-display-surface')).not.toBeNull();
+    expect(glass!.querySelector('[data-testid="peer-split-display"]')).not.toBeNull();
+    expect(glass!.querySelectorAll('[data-testid="lcd-peer-column"]')).toHaveLength(2);
+    expect(glass!.querySelector('[data-testid="peer-split-clock"]')).toBeNull();
+  });
+
+  it.each([
+    ['peer', 'peer-split-display'],
+    ['dominant', 'dominant-unified-display'],
+    ['centerstage', 'centerstage-display'],
+    ['panadapter', 'panadapter-display'],
+  ] as const)('routes the %s display through the same passive glass host', (displayVariant, testId) => {
+    render(displayVariant);
+    const glass = q('[data-testid="peer-split-glass"]');
+    expect(glass!.querySelector(`[data-testid="${testId}"]`)).not.toBeNull();
+    expect(glass!.querySelectorAll(
+      '[data-testid="peer-split-display"], [data-testid="dominant-unified-display"], '
+      + '[data-testid="centerstage-display"], [data-testid="panadapter-display"]',
+    )).toHaveLength(1);
   });
 
   // NOT ASSERTED HERE: that `.semantic-surfaces` actually receives
@@ -291,35 +281,11 @@ describe('the peer-split chassis mounts', () => {
   // vite.fixtures.config.ts`, fixture `peer-split-chassis`,
   // `getComputedStyle(document.querySelector('.semantic-surfaces')).display`.
 
-  // MOR-2153: wall-clock time is not radio state — nothing to mock beyond
-  // the system clock itself (`vi.setSystemTime(FROZEN_INSTANT)` above).
-  //
-  // MUTATION TARGETS (both found by a MOR-2153 review round, neither
-  // caught by the single combined-text assertion this replaces):
-  //  - swapping the `utc`/`local` fields `clockLabel` returns: with
-  //    `toContain('14:32')` on the combined `.peer-split-clock` text, a
-  //    swap was invisible because both halves happen to read '14:32'
-  //    digits either way at the frozen instant — only the trailing 'Z'
-  //    distinguishes them, which the two separate assertions below check
-  //    per span (`utc` exact 'HH:MMZ'; `local` against `expectedLocal()`,
-  //    computed independently the same way `clockLabel` does, so it stays
-  //    correct — and the swap stays caught — on any machine's timezone).
-  //  - moving the clock markup to a sibling of `<ScaledStage>` (breaking
-  //    Lesson 3 — "the clock lives inside the scaled stage"): querying
-  //    from `target` (the whole mount point) finds it regardless of where
-  //    in the tree it landed. Queried from `glass` here instead, so the
-  //    clock must be a DESCENDANT of `.peer-split-glass` — inside the
-  //    stage, per Lesson 3 — to be found at all.
-  it('renders a wall-clock readout, inside the glass, not derived from any radio field', () => {
+  it('contains no operator controls or event-handler affordances in the glass subtree', () => {
     render();
     const glass = q('[data-testid="peer-split-glass"]');
-    expect(glass).not.toBeNull();
-    const clock = glass!.querySelector('[data-testid="peer-split-clock"]');
-    expect(clock).not.toBeNull();
-    const utc = clock!.querySelector('[data-testid="peer-split-clock-utc"]');
-    const local = clock!.querySelector('[data-testid="peer-split-clock-local"]');
-    expect(utc!.textContent).toBe('14:32Z');
-    expect(local!.textContent).toBe(expectedLocal());
+    expect(glass!.querySelectorAll('button,input,select,a[href],[tabindex],[role="button"],[role="switch"]')).toHaveLength(0);
+    expect(glass!.innerHTML).not.toMatch(/onclick|onpointer|onwheel/i);
   });
 });
 
@@ -357,30 +323,16 @@ describe('the glass bezel keeps its own CSS after the chassis class it used to w
     expect(glass.position).toBe('relative');
     expect(glass.overflow).toBe('hidden');
     expect(glass['box-sizing']).toBe('border-box');
-    expect(glass.padding).toBe('14px');
+    expect(glass.padding).toBeUndefined();
     expect(glass.border).toBe('2px solid var(--dl-segmentline-bezel-edge, #8a7020)');
     expect(glass['border-radius']).toBe('10px');
     expect(glass.background).toBe('var(--dl-segmentline-glass, #c8a030)');
   });
 
-  it('keeps the meters/scope row from collapsing below its 72px floor', () => {
+  it('keeps the wiring host passive and clipped to the native glass', () => {
     const grid = declarationsFor('.peer-split-glass :global(.semantic-surfaces.semantic-surfaces)');
-    expect(grid['grid-template-rows']).toContain('minmax(72px, 1fr)');
-  });
-
-  // The receiver strips must occupy THIS chassis's own two column
-  // tracks (subgrid), not a separately-computed nested grid that only looks
-  // aligned at an even split — MEASURED live (`vite.fixtures.config.ts`,
-  // `peer-split-chassis` fixture): forcing the parent's `grid-template-
-  // columns` to `2fr 1fr` moved both `.channel-strip` elements to the exact
-  // same widths as `.rx-tx-zone`/`.tx-aux-surface` (826.66px / 413.34px);
-  // reverting `.channel-strips`'s own `grid-template-columns` to the
-  // wiring's un-overridden `repeat(auto-fit, minmax(0, 1fr))` kept both
-  // strips at an even 50/50 split regardless, which is exactly the
-  // collapse-back this pin catches.
-  it('subgrids the channel strips onto the chassis columns instead of a separately-computed split', () => {
-    const strips = declarationsFor('.peer-split-glass :global(.channel-strips.channel-strips)');
-    expect(strips['grid-template-columns']).toBe('subgrid');
+    expect(grid.gap).toBe('0');
+    expect(grid.overflow).toBe('hidden');
   });
 
   // This file's `:global(.scaled-stage-holder)` rule gives the holder

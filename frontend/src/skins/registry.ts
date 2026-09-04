@@ -17,7 +17,7 @@ import {
 
 export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
-  | 'sdr-test';
+  | 'sdr-test' | 'dual-sdr-face';
 
 export interface SkinResolutionContext {
   capabilities: Capabilities | null;
@@ -57,6 +57,7 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (layoutPreference === 'lcd-scope') return 'lcd-scope';
   if (layoutPreference === 'standard') return 'desktop-v2';
   if (layoutPreference === 'peer-split') return 'peer-split';
+  if (layoutPreference === 'dual-sdr-face') return 'dual-sdr-face';
   // MOR-1097 cutover: every non-mobile auto start uses the reworked
   // desktop-v2 composition. Scope availability remains presentation data, not
   // default-selection policy; explicit LCD preferences stay selectable.
@@ -95,6 +96,7 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   // the shell rather than loading it standalone.
   'peer-split': () => import('./lcd-peer-split/LcdPeerSplitSkin.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
+  'dual-sdr-face': () => import('./dual-sdr-face/DualSdrFaceSkin.svelte'),
 };
 
 export async function loadSkin(id: SkinId): Promise<Component> {
@@ -145,6 +147,7 @@ const SKIN_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
   // rather than copied from them.
   'peer-split': ['audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
+  'dual-sdr-face': ['hardware-scope'],
 };
 
 export function presentationResourcePlan(id: SkinId): readonly AppResource[] {

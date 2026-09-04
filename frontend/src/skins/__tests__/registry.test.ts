@@ -31,6 +31,7 @@ const entrypoints = vi.hoisted(() => {
     'peer-split': { name: 'peer-split' },
     'sdr-test': { name: 'sdr-test' },
     'dual-receiver-cockpit': { name: 'dual-receiver-cockpit' },
+    'dual-sdr-face': { name: 'dual-sdr-face' },
   };
   return table;
 });
@@ -44,6 +45,7 @@ const lazyImports = vi.hoisted(() => {
     'peer-split': vi.fn(() => ({ default: entrypoints['peer-split'] })),
     'sdr-test': vi.fn(() => ({ default: entrypoints['sdr-test'] })),
     'dual-receiver-cockpit': vi.fn(() => ({ default: entrypoints['dual-receiver-cockpit'] })),
+    'dual-sdr-face': vi.fn(() => ({ default: entrypoints['dual-sdr-face'] })),
   };
   return table;
 });
@@ -55,6 +57,7 @@ vi.mock('../mobile/MobileSkin.svelte', () => lazyImports['mobile']());
 vi.mock('../lcd-peer-split/LcdPeerSplitSkin.svelte', () => lazyImports['peer-split']());
 vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports['sdr-test']());
 vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports['dual-receiver-cockpit']());
+vi.mock('../dual-sdr-face/DualSdrFaceSkin.svelte', () => lazyImports['dual-sdr-face']());
 
 import { loadSkin, presentationResourcePlan, resolveSkinId } from '../registry';
 
@@ -69,7 +72,7 @@ const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =
 
 describe('skin registry', () => {
   it('gives mobile precedence over every forced layout preference', () => {
-    for (const layoutPreference of ['auto', 'lcd', 'lcd-cockpit', 'lcd-scope', 'standard', 'sdr-test', 'peer-split'] as const) {
+    for (const layoutPreference of ['auto', 'lcd', 'lcd-cockpit', 'lcd-scope', 'standard', 'sdr-test', 'peer-split', 'dual-sdr-face'] as const) {
       expect(resolve({ isMobile: true, layoutPreference, hasAnyScope: true })).toBe('mobile');
     }
   });
@@ -83,6 +86,7 @@ describe('skin registry', () => {
     // MOR-2152: peer-split becomes a forced, selectable preference — the
     // resolveSkinId branch this ticket adds.
     ['peer-split', 'peer-split'],
+    ['dual-sdr-face', 'dual-sdr-face'],
   ] as const)('resolves forced %s preference to %s', (layoutPreference, skinId) => {
     expect(resolve({ layoutPreference, hasAnyScope: false })).toBe(skinId);
   });
@@ -119,6 +123,7 @@ describe('skin registry', () => {
     ['mobile', entrypoints['mobile'], lazyImports['mobile']],
     ['peer-split', entrypoints['peer-split'], lazyImports['peer-split']],
     ['sdr-test', entrypoints['sdr-test'], lazyImports['sdr-test']],
+    ['dual-sdr-face', entrypoints['dual-sdr-face'], lazyImports['dual-sdr-face']],
   ] as const;
 
   it.each(LAZY_LOAD_TABLE)('lazily loads the %s entrypoint', async (skinId: SkinId, entrypoint, lazyImport) => {
@@ -231,6 +236,7 @@ describe('presentation resource plan', () => {
     'lcd-scope': ['audio-fft'],
     // The mobile layout mounts SpectrumPanel but no audio-FFT surface.
     'mobile': ['hardware-scope'],
+    'dual-sdr-face': ['hardware-scope'],
   };
 
   const everySkin = Object.keys(EXPECTED_RESOURCE_PLAN) as SkinId[];

@@ -31,7 +31,6 @@ describe('validateRadioViewModel', () => {
   const receiverIndicator = () => ({
     receiver: 'MAIN' as const,
     availability: { structural: true, operational: true },
-    rfState: 'receiving' as const,
     sMeter: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
     bandwidthHz: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
     agcMode: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
@@ -52,12 +51,75 @@ describe('validateRadioViewModel', () => {
     expect(model.receiverIndicators?.[0].digiSel.reading).toEqual({ status: 'known', value: false });
   });
 
+  it('accepts and preserves the exact pre-MOR-2309 receiver RF payload shape', () => {
+    const legacy = { ...receiverIndicator(), rfState: 'receiving' as const };
+    const model = validateRadioViewModel({ ...valid(), receiverIndicators: [legacy] });
+    expect(model.receiverIndicators?.[0]).toEqual(legacy);
+  });
+
   it('rejects duplicate receiver-indicator entries and extra raw keys', () => {
     expect(() => validateRadioViewModel({
       ...valid(), receiverIndicators: [receiverIndicator(), receiverIndicator()],
     })).toThrow(TypeError);
     expect(() => validateRadioViewModel({
       ...valid(), receiverIndicators: [{ ...receiverIndicator(), rawState: { ptt: false } }],
+    })).toThrow(TypeError);
+  });
+
+  const fact = <T>(value: T, structural = true, operational = true) => ({
+    reading: operational ? { status: 'known' as const, value } : { status: 'unknown' as const },
+    availability: { structural, operational },
+  });
+
+  const radioWideIndicators = () => ({
+    rfState: 'receiving' as const, antenna: fact(1),
+    atu: fact<'off' | 'on' | 'tuning'>('off'),
+    ritActive: fact(false), ritOffset: fact(0),
+    xitActive: fact(true), xitOffset: fact(0),
+    actions: {
+      main: { structural: true, operational: true },
+      sub: { structural: true, operational: false },
+      equalize: { structural: true, operational: true },
+      swap: { structural: true, operational: true },
+      quickSplit: { structural: true, operational: true },
+      quickDualWatch: { structural: true, operational: false },
+      speak: { structural: false, operational: false },
+    },
+  });
+
+  it('round-trips the singleton radio-wide contract without collapsing false or zero', () => {
+    const model = validateRadioViewModel({
+      ...valid(), radioWideIndicators: radioWideIndicators(),
+    });
+    expect(model.radioWideIndicators?.antenna.reading).toEqual({ status: 'known', value: 1 });
+    expect(model.radioWideIndicators?.ritActive.reading).toEqual({ status: 'known', value: false });
+    expect(model.radioWideIndicators?.ritOffset.reading).toEqual({ status: 'known', value: 0 });
+    expect(model.radioWideIndicators?.actions.sub).toEqual({ structural: true, operational: false });
+  });
+
+  it('rejects undeclared radio-wide fields and malformed action availability', () => {
+    expect(() => validateRadioViewModel({
+      ...valid(), radioWideIndicators: { ...radioWideIndicators(), rawState: {} },
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(),
+      radioWideIndicators: {
+        ...radioWideIndicators(),
+        actions: {
+          ...radioWideIndicators().actions,
+          speak: { structural: 'yes', operational: true },
+        },
+      },
+    })).toThrow(TypeError);
+    expect(() => validateRadioViewModel({
+      ...valid(),
+      radioWideIndicators: {
+        ...radioWideIndicators(),
+        actions: {
+          ...radioWideIndicators().actions,
+          split: { structural: true, operational: true },
+        },
+      },
     })).toThrow(TypeError);
   });
 

@@ -105,10 +105,10 @@ const DOM_BACKED: Readonly<Record<string, () => boolean>> = {
   'lcd-scope': () => /<SemanticRadioSurfaces\s*\/>/.test(lcdLayoutSource),
   'mobile': () => /<SemanticRadioSurfaces\s*\/>/.test(mobileLayoutSource),
   'dual-receiver-cockpit': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(cockpitShellSource),
-  // MOR-2151: PeerSplitLayout.svelte (MOR-2155) mounts the same
-  // `strips="dual"` composition unconditionally, the identical shape
-  // `dual-receiver-cockpit` above proves DOM-backed with.
-  'peer-split': () => /<SemanticRadioSurfaces strips="dual"\s*\/>/.test(peerSplitShellSource),
+  // MOR-2151: PeerSplitLayout.svelte mounts the same dual-receiver
+  // composition unconditionally, so its manifest-declared VFO/RX-TX
+  // surfaces have a real DOM path rather than a forward declaration.
+  'peer-split': () => /<SemanticRadioSurfaces(?=[^>]*\bstrips\s*=\s*"dual")[^>]*\/>/.test(peerSplitShellSource),
 };
 
 describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () => {
@@ -142,6 +142,13 @@ describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () 
     for (const m of ALL_MANIFESTS) {
       expect(DOM_BACKED[m.id](), `${m.id} should be DOM-backed`).toBe(true);
     }
+  });
+
+  // Kills: peer-split's real dual-receiver mount losing the explicit
+  // `strips="dual"` registration while another broad inventory condition
+  // still happens to keep the expected set empty.
+  it('discovers the registered peer-split shell as DOM-backed', () => {
+    expect(DOM_BACKED['peer-split']()).toBe(true);
   });
 
   // Kills the two ways `sharedShellMounts` could go vacuously true: a shell

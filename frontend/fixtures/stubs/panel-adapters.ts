@@ -3,7 +3,7 @@ import {
   makeAgcHandlers, makeAntennaHandlers, makeAudioRoutingHandlers, makeBandHandlers,
   makeCwPanelHandlers, makeDspHandlers, makeFilterHandlers, makeModeHandlers,
   makeRfFrontEndHandlers, makeRitXitHandlers, makeRxAudioHandlers, makeScanHandlers,
-  makeScopeControlsHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
+  makeScopeControlsHandlers, makeSystemHandlers, makeTxHandlers, makeVfoHandlers, makeVoxHandlers,
 } from './command-bus';
 
 export function bindSemanticSurfaceHandlers() {
@@ -15,6 +15,10 @@ export function bindSemanticSurfaceHandlers() {
     scopeControls: makeScopeControlsHandlers(), tx: makeTxHandlers(), vfo: makeVfoHandlers(), vox: makeVoxHandlers(),
   });
 }
+
+/** Fixture-safe singleton matching the production adapter facade. */
+const systemHandlers = makeSystemHandlers();
+export function getSystemHandlers() { return systemHandlers; }
 
 /** No Break-in Delay truth or command lifecycle exists in the offline fixture. */
 export function getBreakInDelayControlFeedback() {

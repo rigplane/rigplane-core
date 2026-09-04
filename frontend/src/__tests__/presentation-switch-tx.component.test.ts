@@ -154,6 +154,8 @@ const WIDTH_FOR: Record<SkinId, number> = {
   // only to satisfy `Record<SkinId, number>` exhaustiveness. 1600 is unused
   // by every other entry in this table.
   'peer-split': 1600,
+  // Production entrypoint is readonly and receives no command callback.
+  'dual-sdr-face': 1700,
 };
 function widthToSkin(): SkinId {
   const width = window.innerWidth;
