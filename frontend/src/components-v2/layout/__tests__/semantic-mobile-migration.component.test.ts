@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ManagedTxState } from '$lib/runtime/tx-controller/managed-state';
+import { presentationResources } from '$lib/runtime';
 
 // -- Child components the shell mounts that are irrelevant here -------------
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -369,16 +370,37 @@ describe('orientation change preserves App authority (MOR-1086 doctrine)', () =>
     expect(tx.transmitOn).toHaveBeenCalledTimes(1);
   });
 
-  // Kills: the semantic subtree taking its own App resource demand. It is
-  // destroyed and rebuilt on every rotation, so any demand it held would
-  // bounce the mobile hardware-scope stream (the MOR-1092 mutation, applied
-  // to mobile). Demand belongs to SpectrumPanel via the skin resource plan.
-  it('leaves App resource demand entirely outside the semantic subtree', () => {
-    const wiringSource = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
-    for (const source of [mobileLayoutSource, wiringSource]) {
-      expect(source).not.toContain('presentationResources');
-      expect(source).not.toContain('resource-demand');
-    }
+  // Kills: treating every semantic mount as selected LCD demand. Explicit
+  // LCD faces may lease their selected source at the shared wiring host, but
+  // mobile passes no displayFrameSource. Its destroy/rebuild on rotation must
+  // therefore never bounce either canonical App resource.
+  it('keeps undefined-source mobile mount, rotation, rebuild, and destroy at zero demand', () => {
+    const acquire = vi.spyOn(presentationResources, 'acquire');
+    const release = vi.spyOn(presentationResources, 'release');
+    const t = mountMobile();
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+
+    rotate(true);
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(0);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+
+    rotate(false);
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+
+    const mounted = components.splice(0);
+    mounted.forEach((component) => unmount(component));
+    flushSync();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+
+    expect(mobileLayoutSource).not.toContain('presentationResources');
+    expect(mobileLayoutSource).not.toContain('resource-demand');
+    expect(mobileLayoutSource).not.toContain('displayFrameSource');
     // The plan still names hardware-scope for mobile, owned by SpectrumPanel.
     const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
     expect(registrySource).toContain("'mobile': ['hardware-scope']");
