@@ -746,6 +746,28 @@ async def test_managed_shared_leaf_admits_exactly_once_before_execution() -> Non
 
 
 @pytest.mark.asyncio
+async def test_managed_selector_admission_uses_stable_descriptor_intent_name() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        execute_command_intent,
+    )
+    from rigplane.core.radio_protocol import AntennaControlCapable
+
+    radio = create_autospec(AntennaControlCapable, instance=True)
+    managed = MagicMock()
+    managed.admit_managed_write = AsyncMock(return_value=True)
+    command = bind_command_intent(
+        "set_rx_antenna", {"antenna": 2, "on": True}, source="test"
+    )
+
+    assert command.name == "set_rx_antenna"
+    await execute_command_intent(radio, command, managed_tx_authority=managed)
+
+    managed.admit_managed_write.assert_awaited_once_with(command)
+    radio.set_rx_antenna_ant2.assert_awaited_once_with(on=True)
+
+
+@pytest.mark.asyncio
 async def test_managed_shared_leaf_refusal_is_immediate_and_not_deferred() -> None:
     from rigplane.core.command_dispatch import (
         bind_command_intent,
