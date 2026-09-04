@@ -1754,9 +1754,13 @@ class ControlHandler:
     ) -> dict[str, Any]:
         if "value" not in params:
             raise ValueError("missing required 'value' parameter")
-        value = params["value"]
-        if type(value) is not int or value not in (0, 1, 2):
-            raise ValueError(f"tuner value must be 0, 1, or 2; got {value!r}")
+        intent = command_intent_from_request(
+            "set_tuner_status",
+            params,
+            source="websocket",
+            session_id=self._session_id,
+        )
+        value = intent.params["value"]
         if self._read_only and value == 2:
             raise PermissionError("read-only mode: set_tuner_status TUNING rejected")
 
@@ -1764,12 +1768,6 @@ class ControlHandler:
             port = self._managed_tx_port
             if port is None:
                 raise RuntimeError("managed tuner authority is unavailable")
-            intent = command_intent_from_request(
-                "set_tuner_status",
-                {"value": value},
-                source="websocket",
-                session_id=self._session_id,
-            )
             if not await port.authority.admit_managed_write(intent):
                 raise CommandError("managed tuner write was rejected")
             if radio is None or CAP_TUNER not in radio.capabilities:

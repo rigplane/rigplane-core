@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import pytest
 from rigplane.core.command_service import CommandService
 from rigplane.core.exceptions import ConnectionError as ProviderConnectionError
@@ -109,6 +110,9 @@ def test_managed_configuration_rejects_custom_handler():
         RigctldServer(object(), _handler=object(), managed_tx_authority=_NoTruthProbe(), command_service=_NoTruthProbe())
 def _intent(name, **params):
     return CommandIntent(id="test-" + name, name=name, params=params, source="rigctld")
+class _AllowManagedWrites:
+    async def admit_managed_write(self, intent):
+        return True
 class _LeafRadio:
     def __init__(self): self.calls = []
     async def set_freq(self, freq, receiver=0): self.calls.append(("freq", freq, receiver))
@@ -119,7 +123,7 @@ class _LeafRadio:
     async def _send_civ_raw(self, raw): self.calls.append(("raw", raw))
 class _LeafHandler:
     def __init__(self, error=HamlibError.OK):
-        self._radio, self._managed_tx_authority = _LeafRadio(), object()
+        self._radio, self._managed_tx_authority = _LeafRadio(), _AllowManagedWrites()
         self._has_canonical_state_store, self.error, self.calls = False, error, []
     async def _apply_packet_data_mode(self, *, receiver): self.calls.append(("packet", receiver))
     async def _execute_set_vfo(self, vfo): return self.calls.append(("vfo", vfo)) or self.error
@@ -151,6 +155,28 @@ async def test_managed_non_ptt_leaf_errors_are_not_rewritten(intent):
     with pytest.raises(_RigctldCommandFailure) as failure:
         await _RigctldCommandExecutor(_LeafHandler(HamlibError.EIO)).execute(intent)
     assert failure.value.error is HamlibError.EIO
+async def test_managed_tuner_func_uses_authority_before_rigctld_radio_io():
+    managed, _, _, _, _, _ = authority()
+    admit = AsyncMock(wraps=managed.admit_managed_write)
+    managed.admit_managed_write = admit
+    handler = _LeafHandler()
+    handler._managed_tx_authority = managed
+    executor = _RigctldCommandExecutor(handler)
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        with pytest.raises(_RigctldCommandFailure) as failure:
+            await executor.execute(_intent("set_func", func="TUNER", on=True))
+        assert failure.value.error is HamlibError.ERJCTED
+        assert handler.calls == []
+        await executor.execute(_intent("set_func", func="TUNER", on=False))
+        assert handler.calls == [("func", "TUNER", False, 0, None)]
+        assert [call.args[0].name for call in admit.await_args_list] == [
+            "set_tuner_status",
+            "set_tuner_status",
+        ]
+    finally:
+        await managed.force_off()
+        await managed.close()
 async def test_injected_references_and_per_call_leaf_preserve_shared_default(managed):
     handler = managed.server._rig_handler
     assert (handler._managed_tx_authority, handler._command_service, handler._state_store) == (managed.authority, managed.service, managed.store)

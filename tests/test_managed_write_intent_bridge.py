@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
+from rigplane.core.command_dispatch import (
+    bind_command_intent as canonical_bind_command_intent,
+)
 from rigplane.runtime._poller_types import (
     SetAfLevel,
     SetAntenna1,
@@ -106,13 +110,28 @@ def test_missing_session_identity_is_not_invented() -> None:
 
 
 @pytest.mark.parametrize("value", [-1, 3, True, 1.0, "1"])
-def test_tuner_value_outside_closed_domain_fails_before_admission(value: Any) -> None:
-    with pytest.raises(ValueError, match="tuner value must be 0, 1, or 2"):
-        managed_write_intent(
-            SetTunerStatus(cast(Any, value)),
-            command_id="cmd-invalid",
-            source="test",
-        )
+def test_tuner_value_outside_closed_domain_is_rejected_by_canonical_binder(
+    value: Any,
+) -> None:
+    with patch(
+        "rigplane.runtime.managed_write_intent_bridge.bind_command_intent",
+        wraps=canonical_bind_command_intent,
+    ) as binder:
+        with pytest.raises(ValueError, match="tuner value must be 0, 1, or 2"):
+            managed_write_intent(
+                SetTunerStatus(cast(Any, value)),
+                command_id="cmd-invalid",
+                source="test",
+            )
+
+    binder.assert_called_once_with(
+        "set_tuner_status",
+        {"value": value},
+        source="test",
+        command_id="cmd-invalid",
+        session_id=None,
+        timeout=2.0,
+    )
 
 
 def test_descriptor_boolean_validation_is_not_duplicated_or_loosened() -> None:

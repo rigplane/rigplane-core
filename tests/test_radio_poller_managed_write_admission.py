@@ -23,7 +23,9 @@ from rigplane.runtime._poller_types import (
     SetAntenna1,
     SetTunerStatus,
 )
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.web.radio_poller import CommandQueue, CommandQueueEntry, RadioPoller
+from test_managed_tx_authority import authority
 
 
 _PTT = FieldPath.global_("tx_state", "ptt")
@@ -37,6 +39,7 @@ def _radio() -> SimpleNamespace:
         send_civ=AsyncMock(),
         set_antenna_1=AsyncMock(),
         set_ptt=AsyncMock(),
+        set_tuner_status=AsyncMock(),
     )
 
 
@@ -155,6 +158,42 @@ async def test_rejected_mapped_write_fails_before_radio_io() -> None:
 
     admit.assert_awaited_once()
     radio.set_antenna_1.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("value", "admitted"), [(0, True), (1, False), (2, False)])
+async def test_real_authority_applies_tuner_value_policy_before_typed_radio_io(
+    value: int, admitted: bool
+) -> None:
+    managed, _, _, _, _, _ = authority()
+    radio = _radio()
+    store = StateStore()
+    store.begin_provider_generation()
+    poller = RadioPoller(
+        radio,
+        CommandQueue(),
+        state_store=store,
+        managed_tx_port=SimpleNamespace(authority=managed),
+    )
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        if admitted:
+            await poller._execute(  # noqa: SLF001
+                SetTunerStatus(value),
+                command_id=f"cmd-tuner-{value}",
+                source="websocket",
+            )
+            radio.set_tuner_status.assert_awaited_once_with(value)
+        else:
+            with pytest.raises(CommandError, match="authority refused write"):
+                await poller._execute(  # noqa: SLF001
+                    SetTunerStatus(value),
+                    command_id=f"cmd-tuner-{value}",
+                    source="websocket",
+                )
+            radio.set_tuner_status.assert_not_awaited()
+    finally:
+        await managed.force_off()
+        await managed.close()
 
 
 def test_required_managed_construction_without_port_fails_closed() -> None:

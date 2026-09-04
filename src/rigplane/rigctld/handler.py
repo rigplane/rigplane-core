@@ -56,6 +56,7 @@ from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
 from ..runtime.managed_tx_state import ManagedTxOutcome
+from ..runtime.managed_write_intent_bridge import managed_write_intent
 from ..types import Mode
 from .contract import (  # noqa: TID251
     CIV_TO_HAMLIB_MODE,
@@ -511,17 +512,31 @@ class _RigctldCommandExecutor:
         return CommandExecutionResult()
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
-        managed = self.handler._managed_tx_authority is not None
-        if managed and intent.name == "set_ptt":
+        authority = self.handler._managed_tx_authority
+        if authority is not None and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
 
         classification = _classify_rigctld_tx_intent(intent)
-        if (
-            classification.disposition is TxInterlockDisposition.BLOCK
-            and self.handler._has_canonical_state_store
-            and self.handler._resolve_rigctld_rf_state() is not tx_interlock.RfState.RX
-        ):
-            raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        if authority is not None:
+            admission_intent = intent
+            if isinstance(classification.command, tx_commands.SetTunerStatus):
+                session_id = intent.params.get("session_id")
+                admission_intent = managed_write_intent(
+                    classification.command,
+                    command_id=intent.id,
+                    source=intent.source,
+                    session_id=session_id if isinstance(session_id, str) else None,
+                )
+            if not await authority.admit_managed_write(admission_intent):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        else:
+            if (
+                classification.disposition is TxInterlockDisposition.BLOCK
+                and self.handler._has_canonical_state_store
+                and self.handler._resolve_rigctld_rf_state()
+                is not tx_interlock.RfState.RX
+            ):
+                raise _RigctldCommandFailure(HamlibError.ERJCTED)
         await self._wait_predecessor()
         params = intent.params
         if intent.name == "set_freq":
