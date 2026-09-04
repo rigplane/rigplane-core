@@ -47,6 +47,7 @@ class CivRequestKey:
     command: int
     sub: int | None
     receiver: int | None = None
+    data_prefix: bytes = b""
 
 
 @dataclass(slots=True)
@@ -79,6 +80,7 @@ def request_key_from_frame(frame: CivFrame) -> CivRequestKey:
         command=frame.command,
         sub=frame.sub,
         receiver=frame.receiver,
+        data_prefix=frame.data,
     )
 
 
@@ -422,5 +424,7 @@ class CivRequestTracker:
         if frame.sub != key.sub:
             return False
         if key.receiver is not None and frame.receiver != key.receiver:
+            return False
+        if key.data_prefix and not frame.data.startswith(key.data_prefix):
             return False
         return True

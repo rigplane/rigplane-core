@@ -10,6 +10,7 @@ from rigplane.civ import (
     CivEventType,
     CivRequestKey,
     CivRequestTracker,
+    request_key_from_frame,
 )
 from rigplane.types import CivFrame
 
@@ -32,6 +33,67 @@ def _ack_frame_from(addr: int) -> CivFrame:
         sub=None,
         data=b"",
     )
+
+
+def _response_frame(command: int, data: bytes) -> CivFrame:
+    return CivFrame(
+        to_addr=0xE0,
+        from_addr=0x98,
+        command=command,
+        sub=None,
+        data=data,
+    )
+
+
+def test_request_key_preserves_outgoing_data_prefix() -> None:
+    frame = _response_frame(0x25, b"\x00")
+
+    assert request_key_from_frame(frame) == CivRequestKey(
+        command=0x25,
+        sub=None,
+        data_prefix=b"\x00",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected_prefix", "wrong_prefix"),
+    [
+        (0x25, b"\x00", b"\x01"),
+        (0x26, b"\x00", b"\x01"),
+        (0x07, b"\xc2", b"\xd2"),
+    ],
+)
+async def test_tracker_distinguishes_response_data_prefixes(
+    command: int,
+    expected_prefix: bytes,
+    wrong_prefix: bytes,
+) -> None:
+    tracker = CivRequestTracker()
+    pending = tracker.register_response(
+        CivRequestKey(command=command, sub=None, data_prefix=expected_prefix)
+    )
+
+    wrong = CivEvent(
+        type=CivEventType.RESPONSE,
+        frame=_response_frame(command, wrong_prefix + b"\xaa"),
+    )
+    assert tracker.resolve(wrong) is False
+    assert not pending.done()
+
+    expected = _response_frame(command, expected_prefix + b"\xbb")
+    assert tracker.resolve(CivEvent(type=CivEventType.RESPONSE, frame=expected)) is True
+    assert pending.result() == expected
+
+
+@pytest.mark.asyncio
+async def test_tracker_empty_data_prefix_preserves_legacy_matching() -> None:
+    tracker = CivRequestTracker()
+    pending = tracker.register_response(CivRequestKey(command=0x25, sub=None))
+    response = _response_frame(0x25, b"\x01\xaa")
+
+    assert tracker.resolve(CivEvent(type=CivEventType.RESPONSE, frame=response)) is True
+    assert pending.result() == response
 
 
 @pytest.mark.asyncio
