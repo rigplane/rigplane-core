@@ -18,6 +18,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.web import server as web_server
 from rigplane.web.protocol import decode_json
 from rigplane.web.radio_poller import SetTunerStatus
@@ -32,6 +33,7 @@ def _make_handler(
     radio: Any = None,
     ptt: object = False,
     stale: bool = False,
+    authority: Any = None,
 ) -> tuple[ControlHandler, Queue[Any]]:
     """Build a ControlHandler with a fake server and return (handler, command_queue)."""
     ws = MagicMock()
@@ -72,6 +74,7 @@ def _make_handler(
         radio_model="IC-7610",
         server=server,
         read_only=read_only,
+        managed_tx_authority=authority,
     )
     return handler, command_queue
 
@@ -111,33 +114,48 @@ class TestWebPttReadOnly:
 
     @pytest.mark.asyncio
     async def test_ptt_allowed_when_not_read_only(self) -> None:
-        """ptt command dispatches normally when read_only=False."""
-        handler, q = _make_handler(read_only=False)
+        authority = SimpleNamespace(
+            submit_ptt=AsyncMock(
+                return_value=SimpleNamespace(outcome=ManagedTxOutcome.ACCEPTED)
+            )
+        )
+        handler, q = _make_handler(read_only=False, authority=authority)
 
         result = await handler._enqueue_command("ptt", {"state": True})
 
         assert result == {"state": True}
-        assert not q.empty(), "PttOn must be enqueued"
+        authority.submit_ptt.assert_awaited_once_with(True, handler._session_id)
+        assert q.empty()
 
     @pytest.mark.asyncio
     async def test_ptt_on_allowed_when_not_read_only(self) -> None:
-        """ptt_on command dispatches normally when read_only=False."""
-        handler, q = _make_handler(read_only=False)
+        authority = SimpleNamespace(
+            submit_ptt=AsyncMock(
+                return_value=SimpleNamespace(outcome=ManagedTxOutcome.ACCEPTED)
+            )
+        )
+        handler, q = _make_handler(read_only=False, authority=authority)
 
         result = await handler._enqueue_command("ptt_on", {})
 
         assert result == {}
-        assert not q.empty(), "PttOn must be enqueued"
+        authority.submit_ptt.assert_awaited_once_with(True, handler._session_id)
+        assert q.empty()
 
     @pytest.mark.asyncio
     async def test_ptt_off_allowed_when_not_read_only(self) -> None:
-        """ptt_off command dispatches normally when read_only=False."""
-        handler, q = _make_handler(read_only=False)
+        authority = SimpleNamespace(
+            submit_ptt=AsyncMock(
+                return_value=SimpleNamespace(outcome=ManagedTxOutcome.ACCEPTED)
+            )
+        )
+        handler, q = _make_handler(read_only=False, authority=authority)
 
         result = await handler._enqueue_command("ptt_off", {})
 
         assert result == {}
-        assert not q.empty(), "PttOff must be enqueued"
+        authority.submit_ptt.assert_awaited_once_with(False, handler._session_id)
+        assert q.empty()
 
 
 class TestWebCwReadOnly:

@@ -21,7 +21,8 @@ from rigplane.core.command_dispatch import CommandUnsupportedError
 from rigplane.core.command_service import command_intent_from_request
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
-from rigplane.runtime._poller_types import PttOff, SetAfLevel, SetRfGain, SetSquelch
+from rigplane.runtime._poller_types import SetAfLevel, SetRfGain, SetSquelch
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.runtime.radio import CoreRadio
 from rigplane.web import radio_poller as icom_poller
 from rigplane.web.handlers.control import ControlHandler
@@ -413,6 +414,14 @@ async def test_canonical_readback_waits_for_successful_write(
 async def test_control_run_admits_next_off_while_level_write_is_unsettled(path):
     incoming = asyncio.Queue()
     entered, release, off_ack = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    authority = SimpleNamespace(
+        submit_ptt=AsyncMock(
+            return_value=SimpleNamespace(outcome=ManagedTxOutcome.ACCEPTED)
+        ),
+        owner_disconnect=AsyncMock(return_value=ManagedTxOutcome.REJECTED),
+    )
+    path.server._production_managed_tx_port = SimpleNamespace(authority=authority)
+    path.handler._managed_tx_authority = path.server._managed_tx_authority()
 
     async def send_text(payload):
         message = json.loads(payload)
@@ -443,9 +452,8 @@ async def test_control_run_admits_next_off_while_level_write_is_unsettled(path):
         off = b'{"type":"cmd","id":"off","name":"ptt_off","params":{}}'
         await incoming.put((WS_OP_TEXT, off))
         await asyncio.wait_for(off_ack.wait(), timeout=1.0)
-        [entry] = path.server.command_queue.drain_entries()
-        assert isinstance(entry.command, PttOff) and entry.command_id == "off"
-        assert entry.source == "websocket" and entry.session_id == "levels-session"
+        assert path.server.command_queue.drain_entries() == []
+        authority.submit_ptt.assert_awaited_once_with(False, "levels-session")
         assert ws.recv.await_count >= 2 and not drain.done()
         path.write.assert_awaited_once_with("AG0073;")
     finally:

@@ -25,6 +25,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import StateStore
 from rigplane.runtime.radio import IcomRadio
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.scope import ScopeFrame
 from rigplane.types import AudioCodec
 from rigplane.web import server as server_module
@@ -46,8 +47,6 @@ from rigplane.web.protocol import (
     encode_json,
 )
 from rigplane.web.radio_poller import (
-    PttOff,
-    PttOn,
     QuickDwTrigger,
     QuickSplitTrigger,
     SelectVfo,
@@ -413,6 +412,9 @@ def _control_handler(
         "IC-7610",
         server=server,
         session_id=session_id,
+        managed_tx_authority=(
+            None if server is None else vars(server).get("managed_tx_authority")
+        ),
     )
 
 
@@ -526,8 +528,6 @@ def _scope_frame() -> ScopeFrame:
             {"shape": 1, "receiver": 1},
             {"shape": 1, "receiver": 1},
         ),
-        ("ptt", {"state": True}, PttOn, {}, {"state": True}),
-        ("ptt", {"state": False}, PttOff, {}, {"state": False}),
         (
             # MOR-1579: set_rf_power's wire contract is a normalized 0.0-1.0
             # float (frontend ValueControl min=0/max=1/step=0.01) — 0.4 is
@@ -781,8 +781,6 @@ def _scope_frame() -> ScopeFrame:
         ("set_split", {"on": True}, SetSplit, {"on": True}, {"on": True}),
         ("set_split", {"on": False}, SetSplit, {"on": False}, {"on": False}),
         ("set_vfo", {"vfo": "SUB"}, SelectVfo, {"vfo": "SUB"}, {"vfo": "SUB"}),
-        ("ptt_on", {}, PttOn, {}, {}),
-        ("ptt_off", {}, PttOff, {}, {}),
         ("vfo_swap", {}, VfoSwap, {}, {}),
         ("vfo_equalize", {}, VfoEqualize, {}, {}),
         (
@@ -2988,13 +2986,18 @@ async def test_event_sender_loop_forwards_notifications_without_subscription() -
 
 
 def _degraded_server() -> SimpleNamespace:
-    return SimpleNamespace(command_queue=_QueueRecorder())
+    authority = SimpleNamespace(
+        submit_ptt=AsyncMock(
+            return_value=SimpleNamespace(outcome=ManagedTxOutcome.ACCEPTED)
+        )
+    )
+    return SimpleNamespace(
+        command_queue=_QueueRecorder(), managed_tx_authority=authority
+    )
 
 
 @pytest.mark.asyncio
-async def test_ptt_on_rejected_when_radio_not_ready() -> None:
-    """connected:true + radio_ready:false (degraded LAN session) must not
-    silently ACK a PTT ON the radio will never execute (MOR-620)."""
+async def test_ptt_on_uses_authority_when_radio_not_ready() -> None:
     ws = SimpleNamespace(send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
@@ -3007,14 +3010,15 @@ async def test_ptt_on_rejected_when_radio_not_ready() -> None:
     )
 
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False
-    assert msg["error"] == "radio_not_ready"
+    assert msg["ok"] is True
+    server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
+        True, handler._session_id
+    )
     assert server.command_queue.items == []
 
 
 @pytest.mark.asyncio
-async def test_ptt_on_alias_rejected_when_radio_not_ready() -> None:
-    """The bare ptt_on command honors the same degraded-session gate."""
+async def test_ptt_on_alias_uses_authority_when_radio_not_ready() -> None:
     ws = SimpleNamespace(send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
@@ -3025,14 +3029,15 @@ async def test_ptt_on_alias_rejected_when_radio_not_ready() -> None:
     await handler._handle_command({"id": "p2", "name": "ptt_on", "params": {}})
 
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False
-    assert msg["error"] == "radio_not_ready"
+    assert msg["ok"] is True
+    server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
+        True, handler._session_id
+    )
     assert server.command_queue.items == []
 
 
 @pytest.mark.asyncio
-async def test_ptt_on_rejected_while_backend_reconnecting() -> None:
-    """A reconnect cycle in flight (conn_state=reconnecting) blocks PTT ON."""
+async def test_ptt_on_uses_authority_while_backend_reconnecting() -> None:
     ws = SimpleNamespace(send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
@@ -3044,8 +3049,10 @@ async def test_ptt_on_rejected_while_backend_reconnecting() -> None:
     )
 
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
-    assert msg["ok"] is False
-    assert msg["error"] == "radio_not_ready"
+    assert msg["ok"] is True
+    server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
+        True, handler._session_id
+    )
     assert server.command_queue.items == []
 
 
@@ -3065,12 +3072,17 @@ async def test_ptt_off_allowed_when_radio_not_ready() -> None:
     )
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["ok"] is True
-    assert isinstance(server.command_queue.items[-1], PttOff)
 
     await handler._handle_command({"id": "p5", "name": "ptt_off", "params": {}})
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["ok"] is True
-    assert isinstance(server.command_queue.items[-1], PttOff)
+    assert [
+        call.args for call in server.managed_tx_authority.submit_ptt.await_args_list
+    ] == [
+        (False, handler._session_id),
+        (False, handler._session_id),
+    ]
+    assert server.command_queue.items == []
 
 
 @pytest.mark.asyncio
@@ -3090,4 +3102,7 @@ async def test_ptt_on_allowed_when_radio_ready() -> None:
     msg = decode_json(ws.send_text.await_args_list[-1].args[0])
     assert msg["ok"] is True
     assert msg["result"] == {"state": True}
-    assert isinstance(server.command_queue.items[-1], PttOn)
+    server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
+        True, handler._session_id
+    )
+    assert server.command_queue.items == []

@@ -119,6 +119,7 @@ from rigplane.core.tx_safety import (
     TxOwner,
     TxSource,
 )
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 from rigplane.web.web_startup import stop_web_server
@@ -5384,7 +5385,7 @@ async def test_shutdown_drain_abandons_the_wait_not_the_write_on_timeout(
     assert radio.calls == ["set_ptt(False)", *_TEARDOWN]
 
 
-def _writable_control_session(queue: CommandQueue) -> ControlHandler:
+def _writable_control_session(queue: CommandQueue, authority: object) -> ControlHandler:
     """A writable control session whose ``run()`` ends only when cancelled —
     which is exactly when ``stop_web_server`` cancels its client tasks."""
 
@@ -5403,6 +5404,7 @@ def _writable_control_session(queue: CommandQueue) -> ControlHandler:
             unregister_control_event_queue=MagicMock(),
             build_state_update_envelope=MagicMock(return_value={}),
         ),
+        managed_tx_authority=authority,  # type: ignore[arg-type]
     )
 
 
@@ -5438,17 +5440,17 @@ def _shutdown_server(
 
 
 @pytest.mark.asyncio
-async def test_server_shutdown_delivers_the_unkey_its_client_enqueues_late() -> None:
-    """MOR-1181's production case, and why the drain alone is not enough:
-    ``stop_web_server`` cancels the poller at step 1, but the teardown PttOff
-    does not exist until ``ControlHandler.run()``'s finally runs at step 6. The
-    poller's own CancelledError handler therefore finds an empty queue every
-    time, deterministically — only the awaited final drain delivers the unkey."""
+async def test_server_shutdown_releases_via_authority_without_late_queue_off() -> None:
+    """Shutdown keeps provider teardown after Web owner release without a
+    late legacy queue fallback."""
     supervisor = _Supervisor()
     radio = _Radio(supervisor)
     queue = CommandQueue()
     poller = RadioPoller(radio, queue)  # type: ignore[arg-type]
-    handler = _writable_control_session(queue)
+    authority = SimpleNamespace(
+        owner_disconnect=AsyncMock(return_value=ManagedTxOutcome.ACCEPTED)
+    )
+    handler = _writable_control_session(queue, authority)
     client: asyncio.Task[None] = asyncio.create_task(handler.run())
     await asyncio.sleep(0.01)  # run() reaches the recv loop and publishes itself
     await poller._execute(PttOn(), session_id=handler._session_id)  # noqa: SLF001
@@ -5458,10 +5460,12 @@ async def test_server_shutdown_delivers_the_unkey_its_client_enqueues_late() -> 
     await stop_web_server(_shutdown_server(poller, [client]))  # type: ignore[arg-type]
 
     owner = TxOwner(TxSource.WEBSOCKET, handler._session_id)
-    assert supervisor.entries == [(True, owner), (False, owner)]
+    assert supervisor.entries == [(True, owner)]
     assert supervisor.outcomes[-1] is TxOutcome.ACCEPTED
-    assert radio.calls == ["start_tx", *_TEARDOWN]
+    authority.owner_disconnect.assert_awaited_once_with(handler._session_id)
+    assert radio.calls == ["start_tx"]
     assert queue.has_commands is False
+    assert poller.running is False and client.done()
 
 
 def _scope_shutdown_poller(
