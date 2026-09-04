@@ -22,10 +22,8 @@ from rigplane.runtime.radio import (
     ManagedTxProviderEvent,
     install_managed_tx_composition,
 )
-from rigplane.web.web_startup import (
-    attach_managed_tx_composition,
-    start_web_server,
-)
+from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.web_startup import attach_managed_tx_composition
 
 
 class FakeActuator:
@@ -74,15 +72,31 @@ def test_source_constructor_census_is_one_graph_and_zero_reachable_predecessor()
 
 
 @pytest.mark.asyncio
-async def test_managed_web_entrypoints_fail_closed_without_composition(capsys) -> None:
+async def test_managed_web_entrypoints_fail_closed_before_startup_side_effects(
+    tmp_path, capsys
+) -> None:
     assert await _cmd_web(LegacyRadio(), SimpleNamespace()) == 1
     assert "managed TX composition is required" in capsys.readouterr().err
 
-    unattached = SimpleNamespace(
-        _config=SimpleNamespace(managed_tx_required=True),
+    server = WebServer(
+        None,
+        WebConfig(managed_tx_required=True, discovery=False),
     )
+    attachments: list[str] = []
+    server._attach_audio_session_listener = lambda: attachments.append("audio")
+    server._attach_reconnect_status_listener = lambda: attachments.append("reconnect")
     with pytest.raises(RuntimeError, match="managed TX composition is required"):
-        await start_web_server(unattached)
+        await server.start()
+    assert attachments == []
+
+    composition = ManagedTxComposition(
+        FakeActuator(), config_path=tmp_path / "managed-tx.json"
+    )
+    attach_managed_tx_composition(server, composition, ManagedTxProviderEvent(1, 1))
+    with pytest.raises(RuntimeError, match="managed TX provider must be active"):
+        await server.start()
+    assert attachments == []
+    await composition.shutdown(asyncio.Event())
 
 
 @pytest.mark.asyncio
