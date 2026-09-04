@@ -50,10 +50,7 @@ class LocalTxWorkRunner:
         self._abort_fence.register(token, cancel_and_drain)
 
         try:
-            result = await task
-            if not self._abort_fence.is_current(token):
-                raise asyncio.CancelledError
-            return result
+            return await task
         except asyncio.CancelledError:
             if not task.done():
                 task.cancel()
