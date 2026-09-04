@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
 from rigplane.core.command_dispatch import DispatchRadio, prepare_command_intent
+from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     CommandSource,
@@ -23,6 +24,8 @@ __all__ = [
     "Command",
     "CommandQueue",
     "CommandQueueEntry",
+    "execute_positive_tx_queue_entry",
+    "validate_command_queue_entry_currency",
     "canonicalize_level_command",
     "execute_command_queue_entry",
     # -- command dataclasses (alphabetical) --
@@ -1006,12 +1009,68 @@ def canonicalize_level_command(
 
 @dataclass(frozen=True, slots=True)
 class CommandQueueEntry:
-    command: Command
+    command: Command | None
     future: asyncio.Future[None] | None = None
     command_id: str | None = None
     source: CommandSource | None = None
     session_id: str | None = None
     command_service: Any | None = None
+    expires_at_monotonic: float | None = None
+    provider_generation: int | None = None
+    connection_generation: object | None = None
+    positive_tx_ready: asyncio.Future[None] | None = None
+    positive_tx_submission: asyncio.Task[Any] | None = None
+
+
+def validate_command_queue_entry_currency(
+    entry: CommandQueueEntry,
+    *,
+    now: float,
+    provider_generation: int | None,
+    connection_generation: object | None,
+    session_is_live: Callable[[str], bool],
+    require_connection_generation: bool = False,
+) -> None:
+    """Reject a captured dispatch envelope after any causal input moved."""
+    if entry.expires_at_monotonic is not None and now >= entry.expires_at_monotonic:
+        raise CommandError("queued command expired before dispatch")
+    if entry.session_id is not None and not session_is_live(entry.session_id):
+        raise CommandError("queued command session is no longer active")
+    if (
+        entry.provider_generation is not None
+        and entry.provider_generation != provider_generation
+    ):
+        raise CommandError("queued command provider generation changed")
+    if require_connection_generation and entry.connection_generation is None:
+        raise CommandError("queued command connection generation is missing")
+    if (
+        entry.connection_generation is not None
+        and entry.connection_generation != connection_generation
+    ):
+        raise CommandError("queued command connection generation changed")
+
+
+async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
+    """Release one pre-registered positive transition and join its wire result."""
+    ready, submission = entry.positive_tx_ready, entry.positive_tx_submission
+    if ready is None or submission is None:
+        raise CommandError("positive TX queue entry is incomplete")
+    if ready.cancelled():
+        raise CommandError("positive TX queue entry was cancelled")
+    if not ready.done():
+        ready.set_result(None)
+    owner = asyncio.current_task()
+    cancelling = owner.cancelling() if owner is not None else 0
+    try:
+        receipt = await asyncio.shield(submission)
+    except asyncio.CancelledError as exc:
+        if owner is not None and owner.cancelling() > cancelling:
+            raise
+        raise CommandError("positive TX admission was revoked") from exc
+    outcome = getattr(receipt, "outcome", None)
+    if getattr(outcome, "value", outcome) != "accepted":
+        raise CommandError("positive TX admission was rejected")
+    await receipt.wait_settlement()
 
 
 async def execute_command_queue_entry(
@@ -1021,6 +1080,10 @@ async def execute_command_queue_entry(
     """Keep the operation owned until its leaf and cancellation cleanup finish."""
     reply = entry.future
     if reply is not None and reply.cancelled():
+        submission = entry.positive_tx_submission
+        if submission is not None and not submission.done():
+            submission.cancel()
+            await asyncio.gather(submission, return_exceptions=True)
         return
 
     async def invoke() -> Any:
@@ -1045,10 +1108,18 @@ async def execute_command_queue_entry(
                 child.exception()
             if reply is not None and not reply.done():
                 reply.cancel()
+            submission = entry.positive_tx_submission
+            if submission is not None and not submission.done():
+                submission.cancel()
+                await asyncio.gather(submission, return_exceptions=True)
             raise
         if reply is not None and not reply.done():
             reply.cancel()
     except Exception as exc:
+        submission = entry.positive_tx_submission
+        if submission is not None and not submission.done():
+            submission.cancel()
+            await asyncio.gather(submission, return_exceptions=True)
         if reply is not None and not reply.done():
             reply.set_exception(exc)
         raise
@@ -1101,6 +1172,33 @@ class CommandQueue:
         # never told about. Once any session registers the set is authoritative
         # even when empty — that is the every-session-gone case, not ignorance.
         self._live_sessions: set[str] | None = None
+        self._capture_connection_generation: Callable[[], object | None] | None = None
+
+    def bind_connection_generation(self, capture: Callable[[], object | None]) -> None:
+        """Bind the sole consumer-owned connection identity source."""
+        if self._capture_connection_generation is not None:
+            raise RuntimeError("command queue connection generation is already bound")
+        self._capture_connection_generation = capture
+
+    def unbind_connection_generation(
+        self, capture: Callable[[], object | None]
+    ) -> None:
+        """Release the connection identity source owned by a retired consumer."""
+        if self._capture_connection_generation is not capture:
+            raise RuntimeError(
+                "command queue connection generation is bound to another consumer"
+            )
+        self._capture_connection_generation = None
+
+    def capture_connection_generation(self) -> object:
+        """Capture one required dispatch identity for a managed enqueue."""
+        capture = self._capture_connection_generation
+        if capture is None:
+            raise RuntimeError("command queue connection generation is not bound")
+        generation = capture()
+        if generation is None:
+            raise RuntimeError("command queue connection generation is unavailable")
+        return generation
 
     def register_session(self, session_id: str) -> None:
         """Mark a control session live for as long as it stays connected."""
@@ -1133,12 +1231,15 @@ class CommandQueue:
 
     def put(
         self,
-        cmd: Command,
+        cmd: Command | None,
         *,
         command_id: str | None = None,
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
+        expires_at_monotonic: float | None = None,
+        provider_generation: int | None = None,
+        connection_generation: object | None = None,
     ) -> None:
         self._record_scope_demand(cmd)
         entry = CommandQueueEntry(
@@ -1147,6 +1248,9 @@ class CommandQueue:
             source=source,
             session_id=session_id,
             command_service=command_service,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=provider_generation,
+            connection_generation=connection_generation,
         )
         segment = self._coalesced_tail()
         if isinstance(cmd, (PttOn, PttOff)):
@@ -1160,13 +1264,18 @@ class CommandQueue:
 
     def put_ordered(
         self,
-        cmd: Command,
+        cmd: Command | None,
         *,
         future: asyncio.Future[None] | None = None,
         command_id: str | None = None,
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
+        expires_at_monotonic: float | None = None,
+        provider_generation: int | None = None,
+        connection_generation: object | None = None,
+        positive_tx_ready: asyncio.Future[None] | None = None,
+        positive_tx_submission: asyncio.Task[Any] | None = None,
     ) -> CommandQueueEntry:
         self._record_scope_demand(cmd)
         entry = CommandQueueEntry(
@@ -1176,6 +1285,11 @@ class CommandQueue:
             source=source,
             session_id=session_id,
             command_service=command_service,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=provider_generation,
+            connection_generation=connection_generation,
+            positive_tx_ready=positive_tx_ready,
+            positive_tx_submission=positive_tx_submission,
         )
         self._segments.append(_CommandQueueSegment.ordered_entry(entry))
         self._notify.set()

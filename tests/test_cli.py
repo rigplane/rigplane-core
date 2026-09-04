@@ -1080,10 +1080,12 @@ class TestWebRigctldDefault:
         composition.bind_state_store = AsyncMock()
         captured: dict[str, object] = {}
         web_stores: list[object] = []
+        command_queue = object()
 
         class FakeWebServer:
             def __init__(self, _radio, _cfg):
                 self.command_service = command_service
+                self.command_queue = command_queue
                 self.command_state_store = object()
                 web_stores.append(self.command_state_store)
 
@@ -1119,6 +1121,7 @@ class TestWebRigctldDefault:
 
         assert captured == {
             "managed_tx_authority": authority,
+            "command_queue": command_queue,
             "command_service": command_service,
         }
         composition.bind_state_store.assert_awaited_once_with(web_stores[0])
@@ -1134,6 +1137,7 @@ class TestWebRigctldDefault:
 
         class FakeWebServer:
             command_service = object()
+            command_queue = object()
 
             def __init__(self, _radio, _cfg):
                 self.command_state_store = object()

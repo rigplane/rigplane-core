@@ -1,10 +1,12 @@
 import asyncio
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any, cast
 
 import pytest
 
+from rigplane.core.exceptions import CommandError
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
@@ -257,6 +259,32 @@ async def test_transmit_is_latched_and_force_off_runs_one_abort_family() -> None
         (force.token, AbortOperation.STOP_CW),
         (force.token, AbortOperation.STOP_TUNE),
     ]
+    await managed.close()
+
+
+@pytest.mark.parametrize("poison", ["force_off", "provider_unavailable"])
+async def test_waiting_transmit_on_membership_is_poisoned_before_admission(
+    poison: str,
+) -> None:
+    managed, _, _, _, _, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    pending = managed.start_transmit_on_submission(ready=ready)
+
+    if poison == "force_off":
+        receipt = await managed.submit_force_off()
+        await receipt.wait_settlement()
+    else:
+        await managed.provider_unavailable()
+
+    await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), timeout=0.2)
+    assert pending.cancelled()
+    assert not ready.done()
+    assert all(
+        effect.operation is not ActuationOperation.TRANSMIT_ON
+        for effect in lane.effects
+    )
+    if poison == "provider_unavailable":
+        await managed.provider_available(8)
     await managed.close()
 
 
@@ -1105,6 +1133,28 @@ async def test_ten_thousand_idempotent_commands_keep_one_scheduler() -> None:
     assert not hasattr(managed, "observed_ptt")
     await managed.force_off()
     await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_managed_admission_fails_closed_for_unrepresentable_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.core import command_dispatch
+    from rigplane.core.state_pipeline_contracts import CommandIntent
+
+    descriptor = command_dispatch.command_descriptor("set_repeater_shift")
+    assert descriptor is not None
+    invalid = replace(descriptor, tx_policy=cast(Any, "relay-ish"))
+    monkeypatch.setattr(
+        command_dispatch, "_COMMAND_DESCRIPTORS", {invalid.name: invalid}
+    )
+    managed, _, _, _, _, _ = authority()
+    command = CommandIntent("unsafe", invalid.name, {"direction": 1}, "test")
+    try:
+        with pytest.raises(CommandError, match="is not admitted"):
+            await managed.admit_managed_write(command)
+    finally:
+        await managed.close()
 
 
 @pytest.mark.asyncio

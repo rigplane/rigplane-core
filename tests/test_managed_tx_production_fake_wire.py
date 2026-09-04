@@ -13,6 +13,11 @@ from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
 )
+from rigplane.runtime._poller_types import (
+    execute_command_queue_entry,
+    execute_positive_tx_queue_entry,
+    validate_command_queue_entry_currency,
+)
 from rigplane.runtime.radio import CoreRadio
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.web.handlers.control import ControlHandler
@@ -187,10 +192,26 @@ async def _joined_web_runtime(
     install_managed_tx_composition(actuator, composition)
     actuator.set_ptt = raw_set_ptt  # type: ignore[attr-defined]
     server = WebServer(actuator, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
+    server.command_queue.bind_connection_generation(lambda: actuator)
     await composition.transport_ready(actuator)
     await composition.bind_state_store(server.command_state_store)
     attach_managed_tx_composition(server, composition)
     return actuator, composition, server
+
+
+async def _drain_managed_positive_queue(server: WebServer) -> None:
+    while True:
+        await server.command_queue.wait(0.01)
+        while (entry := server.command_queue.take_entry()) is not None:
+            validate_command_queue_entry_currency(
+                entry,
+                now=asyncio.get_running_loop().time(),
+                provider_generation=server.command_state_store.provider_generation,
+                connection_generation=server.command_queue.capture_connection_generation(),
+                session_is_live=server.command_queue.session_is_live,
+                require_connection_generation=True,
+            )
+            await execute_command_queue_entry(entry, execute_positive_tx_queue_entry)
 
 
 @pytest.mark.asyncio
@@ -229,6 +250,7 @@ async def test_web_sessions_and_latched_commands_share_one_authority_to_final_wi
     tmp_path, actuator_type: type[_DelayedWire]
 ) -> None:
     actuator, composition, server = await _joined_web_runtime(tmp_path, actuator_type)
+    drain_task = asyncio.create_task(_drain_managed_positive_queue(server))
     session_a = _control_handler(server, actuator, composition, "session-a")
     session_b = _control_handler(server, actuator, composition, "session-b")
     try:
@@ -264,6 +286,8 @@ async def test_web_sessions_and_latched_commands_share_one_authority_to_final_wi
         assert not server.command_queue.drain()
         assert actuator.raw_ptt == []
     finally:
+        drain_task.cancel()
+        await asyncio.gather(drain_task, return_exceptions=True)
         await composition.shutdown(asyncio.Event())
 
 

@@ -2846,24 +2846,63 @@ async def test_execute_set_agc_undeclared_command_refuses_without_firing_event(
 
 
 @pytest.mark.asyncio
-async def test_run_backoff_and_query_error_paths() -> None:
+async def test_run_backoff_and_query_error_paths(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     queue = CommandQueue()
     queue.put(SetPower(10))
-    poller = RadioPoller(_make_radio(), StateCache(), queue)
+    radio = _make_radio()
+    radio.connected = True
+    radio.radio_ready = True
+    poller = RadioPoller(radio, StateCache(), queue)
 
     poller._execute = AsyncMock(side_effect=ConnectionError("down"))  # noqa: SLF001
     poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
     poller._initial_state_fetch = AsyncMock()  # noqa: SLF001  — skip to test backoff path
     poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
-    with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
+    with (
+        patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()),
+        caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"),
+    ):
         await poller._run()  # noqa: SLF001
     assert poller._send_query.await_count >= 2  # restore probe + normal query
+    assert "radio-poller: connection restored" in caplog.text
 
     poller2 = RadioPoller(_make_radio(), StateCache(), CommandQueue())
     poller2._send_query = AsyncMock(side_effect=RuntimeError("query failed"))  # noqa: SLF001
     poller2._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
     with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
         await poller2._run()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_backoff_probe_return_without_connectivity_does_not_restore(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    queue = CommandQueue()
+    queue.put(SetPower(10))
+    radio = _make_radio(model="IC-7300")
+    radio.connected = False
+    radio.radio_ready = False
+    poller = RadioPoller(radio, StateCache(), queue)
+    generation = poller._provider_generation()  # noqa: SLF001
+
+    poller._execute = AsyncMock(side_effect=ConnectionError("down"))  # noqa: SLF001
+    poller._send_query = AsyncMock(  # noqa: SLF001
+        side_effect=[None, asyncio.CancelledError()]
+    )
+    poller._initial_state_fetch = AsyncMock()  # noqa: SLF001
+
+    with (
+        patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()),
+        caplog.at_level(logging.INFO, logger="rigplane.web.radio_poller"),
+    ):
+        await poller._run()  # noqa: SLF001
+
+    assert "radio-poller: connection restored" not in caplog.text
+    assert radio.connected is False
+    assert radio.radio_ready is False
+    assert poller._provider_generation() == generation  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -4029,6 +4068,8 @@ async def test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay
     None
 ):
     radio = _make_radio()
+    radio.connected = True
+    radio.radio_ready = True
     radio.set_freq.side_effect = ConnectionError("down")
     state = RadioState()
     store = StateStore()
@@ -4056,8 +4097,12 @@ async def test_queued_command_failure_emits_failed_lifecycle_and_expires_overlay
 
     poller._send_query = AsyncMock(return_value=None)  # noqa: SLF001
     poller._queue.wait = AsyncMock(side_effect=asyncio.CancelledError())  # noqa: SLF001
-    with patch("rigplane.web.radio_poller.asyncio.sleep", new=AsyncMock()):
+    sleep = AsyncMock(
+        side_effect=(None, None, AssertionError("unexpected extra poller sleep"))
+    )
+    with patch("rigplane.web.radio_poller.asyncio.sleep", new=sleep):
         await poller._run()  # noqa: SLF001
+    assert sleep.await_count == 2
 
     events = [
         event for event in service.lifecycle_events() if event.command_id == "ws-fail"

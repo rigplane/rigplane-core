@@ -1469,6 +1469,16 @@ class ControlHandler:
                 getattr(self._radio, "profile", None), "max_watts", None
             )
         descriptor = command_descriptor(name)
+        if (
+            descriptor is not None
+            and descriptor.name == "set_tuner_status"
+            and self._managed_tx_authority is None
+        ):
+            descriptor = None
+        if descriptor is not None and (
+            self._server is None or getattr(self._server, "command_queue", None) is None
+        ):
+            raise RuntimeError("no command queue available")
         if descriptor is not None:
             intent = prepare_command_intent(
                 self._radio,
@@ -1519,8 +1529,32 @@ class ControlHandler:
         else:
             on = name == "ptt_on"
         try:
-            submission = await authority.submit_ptt(on, self._session_id)
-        except RuntimeError as exc:
+            if on:
+                if self._server is None:
+                    raise RuntimeError("no command queue available")
+                loop = asyncio.get_running_loop()
+                ready: asyncio.Future[None] = loop.create_future()
+                expires_at = loop.time() + 10.0
+                connection_generation = (
+                    self._server.command_queue.capture_connection_generation()
+                )
+                pending = authority.start_ptt_submission(
+                    True,
+                    self._session_id,
+                    ready=ready,
+                    expires_at_monotonic=expires_at,
+                )
+                submission = await self._server.enqueue_managed_positive_tx(
+                    ready=ready,
+                    submission=pending,
+                    source=source,
+                    session_id=self._session_id,
+                    expires_at_monotonic=expires_at,
+                    connection_generation=connection_generation,
+                )
+            else:
+                submission = await authority.submit_ptt(False, self._session_id)
+        except (CommandError, RuntimeError, TimeoutError) as exc:
             raise CommandRejectedError(
                 "managed transmit authority unavailable"
             ) from exc
@@ -1532,6 +1566,12 @@ class ControlHandler:
         self, intent: CommandIntent, *, wait_for_completion: bool = True
     ) -> CommandExecutionResult:
         descriptor = command_descriptor(intent.name)
+        if (
+            descriptor is not None
+            and descriptor.name == "set_tuner_status"
+            and self._managed_tx_authority is None
+        ):
+            descriptor = None
         if descriptor is not None:
             if self._server is None:
                 raise RuntimeError("no command queue available")
@@ -1543,6 +1583,13 @@ class ControlHandler:
             )
             raw_session_id = intent.params.get("session_id")
             session_id = None if raw_session_id is None else str(raw_session_id)
+            provider_generation: int | None = None
+            connection_generation: object | None = None
+            if self._managed_tx_authority is not None:
+                provider_generation = (
+                    self._server.command_state_store.provider_generation
+                )
+                connection_generation = queue.capture_connection_generation()
             enqueue_command_intent(
                 queue,
                 intent,
@@ -1552,6 +1599,13 @@ class ControlHandler:
                 session_id=session_id,
                 command_service=self._command_service,
                 timeout=intent.timeout,
+                expires_at_monotonic=(
+                    None
+                    if intent.timeout is None
+                    else asyncio.get_running_loop().time() + intent.timeout
+                ),
+                provider_generation=provider_generation,
+                connection_generation=connection_generation,
             )
             if future is None:
                 return CommandExecutionResult(details=descriptor.result(intent))

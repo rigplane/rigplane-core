@@ -9,6 +9,7 @@ from enum import StrEnum
 from functools import partial
 from typing import Any, Protocol
 
+from rigplane.core.command_dispatch import DescriptorTxPolicy, command_descriptor
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.runtime.managed_tx_config import (
     ManagedTxTotConfig,
@@ -106,10 +107,6 @@ class ShutdownResult(StrEnum):
 
 _ProviderRetirement = Callable[[int], Awaitable[None]]
 
-_ANTENNA_WRITE_NAMES = frozenset(
-    {"set_antenna", "set_antenna_1", "set_antenna_2", "set_rx_antenna"}
-)
-
 
 class ManagedTxAuthority:
     def __init__(
@@ -177,9 +174,15 @@ class ManagedTxAuthority:
         owner: str,
         *,
         ready: asyncio.Future[Any] | None = None,
+        expires_at_monotonic: float | None = None,
     ) -> ManagedTxSubmission:
         """Return admission after starting the authority-owned submission."""
-        return await self.start_ptt_submission(on, owner, ready=ready)
+        return await self.start_ptt_submission(
+            on,
+            owner,
+            ready=ready,
+            expires_at_monotonic=expires_at_monotonic,
+        )
 
     def start_ptt_submission(
         self,
@@ -187,6 +190,7 @@ class ManagedTxAuthority:
         owner: str,
         *,
         ready: asyncio.Future[Any] | None = None,
+        expires_at_monotonic: float | None = None,
     ) -> asyncio.Task[ManagedTxSubmission]:
         """Start a managed-ingress submission with membership installed.
 
@@ -194,9 +198,26 @@ class ManagedTxAuthority:
         authority's canonical fence membership exists before it returns.
         """
         started = asyncio.get_running_loop().create_future()
-        worker, admitted = self._begin_ptt_operation(
-            on, owner, ready=ready, _started=started
+        worker, admitted = (
+            self._begin_positive_operation(
+                "ptt_down",
+                owner,
+                ready=ready,
+                started=started,
+                expires_at_monotonic=expires_at_monotonic,
+            )
+            if on
+            else self._begin_ptt_operation(False, owner, ready=ready, _started=started)
         )
+        return self._publish_started_submission(worker, admitted, started)
+
+    def _publish_started_submission(
+        self,
+        worker: _SubmissionCompletion,
+        admitted: asyncio.Future[ManagedTxTransition],
+        started: asyncio.Future[None],
+    ) -> asyncio.Task[ManagedTxSubmission]:
+        """Publish admission while retaining authority ownership of settlement."""
 
         async def submit() -> ManagedTxSubmission:
             if not started.done():
@@ -219,6 +240,99 @@ class ManagedTxAuthority:
 
         submission.add_done_callback(own_submission)
         return submission
+
+    def _begin_positive_operation(
+        self,
+        action: str,
+        owner: str | None,
+        *,
+        ready: asyncio.Future[Any] | None,
+        started: asyncio.Future[None] | None = None,
+        expires_at_monotonic: float | None = None,
+    ) -> tuple[_SubmissionCompletion, asyncio.Future[ManagedTxTransition]]:
+        """Register one cancellable positive transition before it can admit."""
+        if action not in ("ptt_down", "transmit_on"):
+            raise ValueError("positive managed TX action is invalid")
+        if action == "ptt_down":
+            if type(owner) is not str:
+                raise TypeError("PTT requires a builtin str owner")
+            if not owner:
+                raise ValueError("PTT intent requires an owner token")
+        if ready is not None and not isinstance(ready, asyncio.Future):
+            raise TypeError("positive TX readiness must be an existing Future or Task")
+        generation = self._provider_generation
+        token = self._abort_fence.issue()
+        admitted: asyncio.Future[ManagedTxTransition] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        async def run() -> tuple[ManagedTxTransition, ActuationSettled | None]:
+            execution: asyncio.Task[ActuationSettled | None] | None = None
+            try:
+                if started is not None:
+                    await asyncio.wait((started,))
+                if ready is not None:
+                    await asyncio.wait((ready,))
+                async with self._lock:
+                    self._require_ingress_open_locked()
+                    if not (
+                        self._provider_generation == generation
+                        and self._abort_fence.is_current(token)
+                        and self._abort_fence.remove(token)
+                    ):
+                        return ManagedTxTransition(
+                            self._state, ManagedTxOutcome.REJECTED
+                        ), None
+                    if (
+                        expires_at_monotonic is not None
+                        and self._clock() >= expires_at_monotonic
+                    ):
+                        return ManagedTxTransition(
+                            self._state, ManagedTxOutcome.REJECTED
+                        ), None
+                    transition, full_force = self._transition_locked(action, owner)
+                    if transition is None:
+                        transition = ManagedTxTransition(
+                            self._state, ManagedTxOutcome.REJECTED
+                        )
+                    self._wakeup.wake()
+                    execution = asyncio.create_task(
+                        self._execute(transition.effects, full_force=full_force)
+                    )
+                    if not admitted.done():
+                        admitted.set_result(transition)
+                return transition, await asyncio.shield(execution)
+            except asyncio.CancelledError:
+                if execution is not None:
+                    await self._drain_cancelled(execution)
+                raise
+
+        def finished(
+            task: asyncio.Task[tuple[ManagedTxTransition, ActuationSettled | None]],
+        ) -> None:
+            self._abort_fence.remove(token)
+            error = None if task.cancelled() else task.exception()
+            if not admitted.done():
+                if task.cancelled():
+                    admitted.cancel()
+                elif error is not None:
+                    admitted.set_exception(error)
+                else:
+                    admitted.set_result(task.result()[0])
+
+        worker = asyncio.create_task(run())
+        self._own_submission(worker)
+        worker.add_done_callback(finished)
+
+        def cancel_pending() -> None:
+            worker.cancel()
+
+        try:
+            self._abort_fence.register(token, cancel_pending, scope=owner)
+        except BaseException:
+            worker.cancel()
+            raise
+        return worker, admitted
 
     async def _start_ptt_operation(
         self, on: bool, owner: str, *, ready: asyncio.Future[Any] | None = None
@@ -251,6 +365,10 @@ class ManagedTxAuthority:
             raise TypeError("PTT requires a bool and a builtin str owner")
         if not owner:
             raise ValueError("PTT intent requires an owner token")
+        if on:
+            return self._begin_positive_operation(
+                "ptt_down", owner, ready=ready, started=_started
+            )
         if ready is not None and not isinstance(ready, asyncio.Future):
             raise TypeError("PTT readiness must be an existing Future or Task")
         generation = self._provider_generation
@@ -364,9 +482,33 @@ class ManagedTxAuthority:
         await submission.wait_settlement()
         return submission.outcome
 
-    async def submit_transmit_on(self) -> ManagedTxSubmission:
+    async def submit_transmit_on(
+        self,
+        *,
+        ready: asyncio.Future[Any] | None = None,
+        expires_at_monotonic: float | None = None,
+    ) -> ManagedTxSubmission:
         """Return the latched-ON admission separately from provider settlement."""
-        return await self._submit_ingress("transmit_on")
+        return await self.start_transmit_on_submission(
+            ready=ready, expires_at_monotonic=expires_at_monotonic
+        )
+
+    def start_transmit_on_submission(
+        self,
+        *,
+        ready: asyncio.Future[Any] | None = None,
+        expires_at_monotonic: float | None = None,
+    ) -> asyncio.Task[ManagedTxSubmission]:
+        """Install cancellable TRANSMIT_ON membership before queue insertion."""
+        started = asyncio.get_running_loop().create_future()
+        worker, admitted = self._begin_positive_operation(
+            "transmit_on",
+            None,
+            ready=ready,
+            started=started,
+            expires_at_monotonic=expires_at_monotonic,
+        )
+        return self._publish_started_submission(worker, admitted, started)
 
     async def submit_force_off(self) -> ManagedTxSubmission:
         """Advance the abort fence and return before provider settlement."""
@@ -376,14 +518,18 @@ class ManagedTxAuthority:
         """Apply the sole managed-intent relay policy without altering ``intent``."""
         if not isinstance(intent, CommandIntent):
             raise TypeError("managed write admission requires a CommandIntent")
+        descriptor = command_descriptor(intent.name)
         async with self._lock:
             managed_tx = self._state.intent.kind is not ManagedTxIntentKind.RX
             if not managed_tx:
                 return True
-            if intent.name in _ANTENNA_WRITE_NAMES:
-                return False
-            if intent.name == "set_tuner_status":
-                return intent.params.get("value") == 0
+            if descriptor is not None:
+                if descriptor.tx_policy is DescriptorTxPolicy.ANTENNA_SWITCH:
+                    return False
+                if descriptor.tx_policy is DescriptorTxPolicy.TUNER_CONTROL:
+                    value = intent.params.get("value")
+                    return type(value) is int and value == 0
+                return True
             if intent.name == "set_func" and intent.params.get("func") == "TUNER":
                 return intent.params.get("on") is False
             return True

@@ -325,6 +325,7 @@ class _QueueRecorder:
         source: str | None = None,
         session_id: str | None = None,
         command_service: object | None = None,
+        **dispatch_currency: object,
     ) -> None:
         self.items.append(item)
         self.metadata.append(
@@ -334,8 +335,15 @@ class _QueueRecorder:
                 "source": source,
                 "session_id": session_id,
                 "command_service": command_service,
+                **dispatch_currency,
             }
         )
+
+    def put_ordered(self, item: object, **metadata: object) -> None:
+        self.put(item, **metadata)
+
+    def capture_connection_generation(self) -> object:
+        return "test-connection"
 
 
 class _AttenuatorIngressRadio:
@@ -405,6 +413,8 @@ def _control_handler(
             )
         )
         server = SimpleNamespace(command_state_store=store, command_queue=None)
+    elif server is not None and not hasattr(server, "command_state_store"):
+        server.command_state_store = StateStore()
     return ControlHandler(
         ws,
         radio,
@@ -830,7 +840,7 @@ async def test_enqueue_command_variants(
     cmd = queue.items[0]
     if expected_type is CommandIntent:
         if name in ("set_att", "set_attenuator"):
-            assert cmd.name == "set_attenuator_level"
+            assert cmd.name == "set_att"
             for key, value in expected_attrs.items():
                 assert cmd.params[key] == value
             assert cmd.target == FieldPath.receiver(
@@ -879,7 +889,7 @@ async def test_att_web_aliases_bind_one_canonical_intent(
     assert len(queue.items) == 1
     intent = queue.items[0]
     assert isinstance(intent, CommandIntent)
-    assert intent.name == "set_attenuator_level"
+    assert intent.name == "set_att"
     assert intent.params["db"] == expected_db
     assert intent.params["att"] == expected_db
     assert intent.params["receiver"] == 0
@@ -2991,8 +3001,43 @@ def _degraded_server() -> SimpleNamespace:
             return_value=SimpleNamespace(outcome=ManagedTxOutcome.ACCEPTED)
         )
     )
+
+    def start_ptt_submission(
+        on: bool,
+        owner: str,
+        *,
+        ready: asyncio.Future[None],
+        expires_at_monotonic: float,
+    ) -> asyncio.Task[object]:
+        async def complete() -> object:
+            await ready
+            return await authority.submit_ptt(on, owner)
+
+        del expires_at_monotonic
+        return asyncio.create_task(complete())
+
+    authority.start_ptt_submission = start_ptt_submission
+    queue = _QueueRecorder()
+
+    async def enqueue_managed_positive_tx(
+        *,
+        ready: asyncio.Future[None],
+        submission: asyncio.Task[object],
+        **_kwargs: object,
+    ) -> object:
+        queue.put_ordered(
+            None,
+            positive_tx_ready=ready,
+            positive_tx_submission=submission,
+        )
+        ready.set_result(None)
+        return await submission
+
     return SimpleNamespace(
-        command_queue=_QueueRecorder(), managed_tx_authority=authority
+        command_queue=queue,
+        command_state_store=StateStore(),
+        enqueue_managed_positive_tx=enqueue_managed_positive_tx,
+        managed_tx_authority=authority,
     )
 
 
@@ -3014,7 +3059,7 @@ async def test_ptt_on_uses_authority_when_radio_not_ready() -> None:
     server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
         True, handler._session_id
     )
-    assert server.command_queue.items == []
+    assert server.command_queue.items == [None]
 
 
 @pytest.mark.asyncio
@@ -3033,7 +3078,7 @@ async def test_ptt_on_alias_uses_authority_when_radio_not_ready() -> None:
     server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
         True, handler._session_id
     )
-    assert server.command_queue.items == []
+    assert server.command_queue.items == [None]
 
 
 @pytest.mark.asyncio
@@ -3053,7 +3098,7 @@ async def test_ptt_on_uses_authority_while_backend_reconnecting() -> None:
     server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
         True, handler._session_id
     )
-    assert server.command_queue.items == []
+    assert server.command_queue.items == [None]
 
 
 @pytest.mark.asyncio
@@ -3105,4 +3150,4 @@ async def test_ptt_on_allowed_when_radio_ready() -> None:
     server.managed_tx_authority.submit_ptt.assert_awaited_once_with(
         True, handler._session_id
     )
-    assert server.command_queue.items == []
+    assert server.command_queue.items == [None]

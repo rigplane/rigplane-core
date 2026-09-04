@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from queue import Queue
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -21,7 +20,7 @@ from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.web import server as web_server
 from rigplane.web.protocol import decode_json
-from rigplane.web.radio_poller import SetTunerStatus
+from rigplane.web.radio_poller import CommandQueue, SetTunerStatus
 from rigplane.web.handlers.control import ControlHandler
 
 _UNOBSERVED = object()
@@ -34,11 +33,12 @@ def _make_handler(
     ptt: object = False,
     stale: bool = False,
     authority: Any = None,
-) -> tuple[ControlHandler, Queue[Any]]:
+) -> tuple[ControlHandler, CommandQueue]:
     """Build a ControlHandler with a fake server and return (handler, command_queue)."""
     ws = MagicMock()
 
-    command_queue: Queue[Any] = Queue()
+    command_queue = CommandQueue()
+    command_queue.bind_connection_generation(lambda: "test-connection")
     clock = FreshnessClock(start=10.0)
     state_store = StateStore(freshness_clock=clock)
     if ptt is not _UNOBSERVED:
@@ -64,8 +64,42 @@ def _make_handler(
         command_state_store=state_store,
     )
 
+    async def enqueue_managed_positive_tx(
+        *,
+        ready: asyncio.Future[None],
+        submission: asyncio.Task[object],
+        **_kwargs: object,
+    ) -> object:
+        command_queue.put_ordered(
+            None,
+            positive_tx_ready=ready,
+            positive_tx_submission=submission,
+        )
+        ready.set_result(None)
+        return await submission
+
+    server.enqueue_managed_positive_tx = enqueue_managed_positive_tx
+
     if radio is None:
         radio = MagicMock()
+
+    if authority is not None and not hasattr(authority, "start_ptt_submission"):
+
+        def start_ptt_submission(
+            on: bool,
+            owner: str,
+            *,
+            ready: asyncio.Future[None],
+            expires_at_monotonic: float,
+        ) -> asyncio.Task[object]:
+            async def complete() -> object:
+                await ready
+                return await authority.submit_ptt(on, owner)
+
+            del expires_at_monotonic
+            return asyncio.create_task(complete())
+
+        authority.start_ptt_submission = start_ptt_submission
 
     handler = ControlHandler(
         ws=ws,
@@ -90,7 +124,7 @@ class TestWebPttReadOnly:
         with pytest.raises(PermissionError, match="read-only"):
             await handler._enqueue_command("ptt", {"state": True})
 
-        assert q.empty(), "command queue must not be touched in read-only mode"
+        assert not q.drain(), "command queue must not be touched in read-only mode"
 
     @pytest.mark.asyncio
     async def test_ptt_on_rejected_in_read_only_mode(self) -> None:
@@ -100,7 +134,7 @@ class TestWebPttReadOnly:
         with pytest.raises(PermissionError, match="read-only"):
             await handler._enqueue_command("ptt_on", {})
 
-        assert q.empty(), "command queue must not be touched in read-only mode"
+        assert not q.drain(), "command queue must not be touched in read-only mode"
 
     @pytest.mark.asyncio
     async def test_ptt_off_rejected_in_read_only_mode(self) -> None:
@@ -110,7 +144,7 @@ class TestWebPttReadOnly:
         with pytest.raises(PermissionError, match="read-only"):
             await handler._enqueue_command("ptt_off", {})
 
-        assert q.empty(), "command queue must not be touched in read-only mode"
+        assert not q.drain(), "command queue must not be touched in read-only mode"
 
     @pytest.mark.asyncio
     async def test_ptt_allowed_when_not_read_only(self) -> None:
@@ -125,7 +159,7 @@ class TestWebPttReadOnly:
 
         assert result == {"state": True}
         authority.submit_ptt.assert_awaited_once_with(True, handler._session_id)
-        assert q.empty()
+        assert q.drain() == [None]
 
     @pytest.mark.asyncio
     async def test_ptt_on_allowed_when_not_read_only(self) -> None:
@@ -140,7 +174,7 @@ class TestWebPttReadOnly:
 
         assert result == {}
         authority.submit_ptt.assert_awaited_once_with(True, handler._session_id)
-        assert q.empty()
+        assert q.drain() == [None]
 
     @pytest.mark.asyncio
     async def test_ptt_off_allowed_when_not_read_only(self) -> None:
@@ -155,7 +189,7 @@ class TestWebPttReadOnly:
 
         assert result == {}
         authority.submit_ptt.assert_awaited_once_with(False, handler._session_id)
-        assert q.empty()
+        assert not q.drain()
 
 
 class TestWebCwReadOnly:
@@ -175,7 +209,7 @@ class TestWebCwReadOnly:
         with pytest.raises(PermissionError, match="read-only"):
             await handler._enqueue_command("send_cw_text", {"text": "CQ CQ"})
 
-        assert q.empty(), "command queue must not be touched in read-only mode"
+        assert not q.drain(), "command queue must not be touched in read-only mode"
 
     @pytest.mark.asyncio
     async def test_send_cw_text_not_called_on_radio_in_read_only_mode(self) -> None:
@@ -217,7 +251,7 @@ class TestWebTunerReadOnly:
         with pytest.raises(PermissionError, match="read-only"):
             await handler._enqueue_command("set_tuner_status", {"value": 2})
 
-        assert q.empty(), "command queue must not be touched in read-only mode"
+        assert not q.drain(), "command queue must not be touched in read-only mode"
 
     @pytest.mark.asyncio
     async def test_tuner_on_allowed_in_read_only_mode(self) -> None:
@@ -273,20 +307,22 @@ class TestWebTunerReadOnly:
             await handler._enqueue_command("set_tuner_status", {"value": value})
 
         radio.set_tuner_status.assert_not_awaited()
-        assert q.empty()
+        assert not q.drain()
 
     @pytest.mark.parametrize("value", [1, 2])
     @pytest.mark.parametrize("ptt", [True, _UNOBSERVED], ids=["tx", "unknown"])
     async def test_tuner_engage_fails_closed_before_queue(
         self, value: int, ptt: object
     ) -> None:
-        radio = SimpleNamespace(capabilities=frozenset())
+        radio = SimpleNamespace(
+            capabilities=frozenset(), supports_command=MagicMock(return_value=False)
+        )
         handler, q = _make_handler(radio=radio, ptt=ptt)
 
         with pytest.raises(CommandError):
             await handler._enqueue_command("set_tuner_status", {"value": value})
 
-        assert q.empty()
+        assert not q.drain()
 
     @pytest.mark.parametrize(
         ("ptt", "stale"),
@@ -305,7 +341,10 @@ class TestWebTunerReadOnly:
 
     async def test_fresh_rx_queue_preserves_tuner_dispatch(self) -> None:
         handler, _ = _make_handler(
-            radio=SimpleNamespace(capabilities=frozenset()), ptt=False
+            radio=SimpleNamespace(
+                capabilities=frozenset(), supports_command=MagicMock(return_value=False)
+            ),
+            ptt=False,
         )
 
         class SuccessfulQueue:
@@ -334,7 +373,7 @@ class TestWebTunerReadOnly:
             await handler._enqueue_command("set_tuner_status", {"value": value})
 
         radio.set_tuner_status.assert_not_awaited()
-        assert q.empty()
+        assert not q.drain()
 
     @pytest.mark.parametrize("outcome", [False, RuntimeError("backend rejected")])
     async def test_direct_backend_failure_is_failed_not_acknowledged(
@@ -373,7 +412,10 @@ class TestWebTunerReadOnly:
                     future.set_result(outcome)
 
         handler, _ = _make_handler(
-            radio=SimpleNamespace(capabilities=frozenset()), ptt=False
+            radio=SimpleNamespace(
+                capabilities=frozenset(), supports_command=MagicMock(return_value=False)
+            ),
+            ptt=False,
         )
         queue = OutcomeQueue()
         handler._server.command_queue = queue
@@ -401,7 +443,10 @@ class TestWebTunerReadOnly:
 
         monkeypatch.setattr(web_server, "_COMMAND_BATCH_STEP_TIMEOUT", 0.001)
         handler, _ = _make_handler(
-            radio=SimpleNamespace(capabilities=frozenset()), ptt=False
+            radio=SimpleNamespace(
+                capabilities=frozenset(), supports_command=MagicMock(return_value=False)
+            ),
+            ptt=False,
         )
         handler._ws.send_text = AsyncMock()
         queue = StalledQueue()

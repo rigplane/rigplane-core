@@ -13,7 +13,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ..core.radio_protocol import ObservationPollable, StatePollable, StateStoreCapable
 from ..core.state_pipeline_contracts import Observation
@@ -74,19 +74,20 @@ def attach_managed_tx_composition(
     server._production_managed_tx_port = port
 
 
-def _validate_managed_tx(server: WebServer) -> None:
+def _validate_managed_tx(server: WebServer) -> ManagedTxCompositionPort | None:
     installed = _installed_managed_tx_composition(server._radio)
     server_namespace = vars(server)
     attached = server_namespace.get("_production_managed_tx_port")
     if installed is None:
         if attached is not None:
             raise RuntimeError("managed TX composition is not installed on the radio")
-        return
+        return None
     if attached is None:
         raise RuntimeError("managed TX composition is not attached to Web")
     if attached is not installed:
         raise RuntimeError("managed TX composition identity mismatch")
     attached.validate_state_store(server.command_state_store)
+    return cast("ManagedTxCompositionPort", attached)
 
 
 def _supports_scope_local(server: WebServer) -> bool:
@@ -94,11 +95,14 @@ def _supports_scope_local(server: WebServer) -> bool:
 
 
 async def start_web_server(server: WebServer) -> None:
-    _validate_managed_tx(server)
-    await _start_web_server(server)
+    managed_tx = _validate_managed_tx(server)
+    await _start_web_server(server, managed_tx)
 
 
-async def _start_web_server(server: WebServer) -> None:
+async def _start_web_server(
+    server: WebServer,
+    managed_tx: ManagedTxCompositionPort | None,
+) -> None:
     """Start the HTTP/WS listener and RadioPoller (if radio is connected).
 
     Mirrors the original :meth:`WebServer.start` body verbatim — the method
@@ -159,6 +163,7 @@ async def _start_web_server(server: WebServer) -> None:
     addr = server._server.sockets[0].getsockname()
     scheme = "https" if ssl_ctx else "http"
     logger.info("web server listening on %s://%s:%d", scheme, addr[0], addr[1])
+    managed_tx_authority = None if managed_tx is None else managed_tx.authority
     if server._radio is not None:
         from ..radio_protocol import StateNotifyCapable
 
@@ -187,6 +192,19 @@ async def _start_web_server(server: WebServer) -> None:
                 callback=_observation_cb,
                 command_queue=server._command_queue,
             )
+            bind_authority = getattr(
+                server._state_poller, "bind_managed_tx_authority", None
+            )
+            if managed_tx_authority is not None:
+                if not callable(bind_authority):
+                    server._server.close()
+                    await server._server.wait_closed()
+                    server._server = None
+                    server._server_was_running = False
+                    raise RuntimeError(
+                        "managed observation poller must bind transmit authority"
+                    )
+                bind_authority(managed_tx_authority)
             bind_generation = getattr(
                 server._state_poller, "bind_provider_generation", None
             )
@@ -235,6 +253,19 @@ async def _start_web_server(server: WebServer) -> None:
                 callback=_state_cb,
                 command_queue=server._command_queue,
             )
+            bind_authority = getattr(
+                server._state_poller, "bind_managed_tx_authority", None
+            )
+            if managed_tx_authority is not None:
+                if not callable(bind_authority):
+                    server._server.close()
+                    await server._server.wait_closed()
+                    server._server = None
+                    server._server_was_running = False
+                    raise RuntimeError(
+                        "managed state poller must bind transmit authority"
+                    )
+                bind_authority(managed_tx_authority)
             server._spawn(server._state_poller.start())
             logger.info("state poller started")
         else:
@@ -252,6 +283,7 @@ async def _start_web_server(server: WebServer) -> None:
                 radio_state=server._radio_state,
                 diagnostics=server.state_diagnostics,
                 state_store=server.command_state_store,
+                managed_tx_authority=managed_tx_authority,
             )
             server._radio_poller.start()
         if _supports_scope_local(server):

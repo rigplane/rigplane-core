@@ -2,6 +2,7 @@ import asyncio
 import gc
 import inspect
 from pathlib import Path
+from unittest.mock import create_autospec, patch
 
 import pytest
 
@@ -14,6 +15,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxOutcome,
 )
 from test_managed_tx_authority import authority
+from rigplane.runtime._poller_types import CommandQueue
 
 
 def intent(name: str, **params: object) -> CommandIntent:
@@ -32,6 +34,41 @@ async def wait_for_submission_cleanup(managed: ManagedTxAuthority) -> None:
         if not managed._abort_fence._cancellations and not managed._settlement_tasks:
             return
         await asyncio.sleep(0)
+
+
+def test_command_queue_binds_one_non_null_connection_generation_source() -> None:
+    queue = CommandQueue()
+    with pytest.raises(RuntimeError, match="not bound"):
+        queue.capture_connection_generation()
+
+    current: object | None = "connection-1"
+
+    def capture() -> object | None:
+        return current
+
+    queue.bind_connection_generation(capture)
+    assert queue.capture_connection_generation() == "connection-1"
+    with pytest.raises(RuntimeError, match="already bound"):
+        queue.bind_connection_generation(lambda: "connection-2")
+
+    current = None
+    with pytest.raises(RuntimeError, match="unavailable"):
+        queue.capture_connection_generation()
+
+    def wrong_capture() -> object | None:
+        return current
+
+    with pytest.raises(RuntimeError, match="another consumer"):
+        queue.unbind_connection_generation(wrong_capture)
+    queue.unbind_connection_generation(capture)
+    with pytest.raises(RuntimeError, match="not bound"):
+        queue.capture_connection_generation()
+
+    def replacement() -> object:
+        return "connection-2"
+
+    queue.bind_connection_generation(replacement)
+    assert queue.capture_connection_generation() == "connection-2"
 
 
 @pytest.mark.asyncio
@@ -97,6 +134,27 @@ async def test_start_ptt_submission_registers_membership_before_return() -> None
             await asyncio.gather(submission, return_exceptions=True)
         ready.cancel()
         await wait_for_submission_cleanup(managed)
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_absolute_expiry_rejects_transmit_before_admission_or_wire() -> None:
+    managed, clock, _, _, fence, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    submission = managed.start_transmit_on_submission(
+        ready=ready,
+        expires_at_monotonic=clock.now,
+    )
+    try:
+        assert fence._cancellations and not lane.effects
+        ready.set_result(None)
+        receipt = await asyncio.wait_for(submission, 0.2)
+        assert receipt.outcome is ManagedTxOutcome.REJECTED
+        assert await receipt.wait_settlement() is None
+        assert not lane.effects
+    finally:
+        if not ready.done():
+            ready.cancel()
         await finish(managed)
 
 
@@ -356,6 +414,59 @@ async def test_managed_write_policy_uses_intent_not_observed_ptt() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "name",
+    [
+        "set_antenna",
+        "set_antenna_1",
+        "set_antenna_2",
+        "set_rx_antenna",
+        "set_rx_antenna_ant1",
+        "set_rx_antenna_ant2",
+    ],
+)
+async def test_managed_antenna_alias_policy_uses_one_descriptor_lookup(
+    name: str,
+) -> None:
+    from rigplane.core.command_dispatch import command_descriptor
+
+    managed, _, _, _, _, _ = authority()
+    command = intent(name, enabled=True)
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        with patch(
+            "rigplane.runtime.managed_tx_authority.command_descriptor",
+            wraps=command_descriptor,
+        ) as lookup:
+            assert not await managed.admit_managed_write(command)
+        lookup.assert_called_once_with(name)
+    finally:
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_civ_output_executes_unchanged_during_managed_transmit() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        execute_command_intent,
+    )
+
+    managed, _, _, _, _, _ = authority()
+
+    class CivOutputRadio:
+        async def set_civ_output_ant(self, on: bool) -> None: ...
+
+    radio = create_autospec(CivOutputRadio, instance=True)
+    command = bind_command_intent("set_civ_output_ant", {"on": True}, source="test")
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+        await execute_command_intent(radio, command, managed_tx_authority=managed)
+        radio.set_civ_output_ant.assert_awaited_once_with(on=True)
+    finally:
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("command", "admitted"),
     [
         (intent("set_band", band="20m"), True),
@@ -365,10 +476,14 @@ async def test_managed_write_policy_uses_intent_not_observed_ptt() -> None:
         (intent("set_split_vfo", on=True, tx_vfo="VFOB"), True),
         (intent("set_antenna_1", on=True), False),
         (intent("set_antenna_2", on=False), False),
-        (intent("set_rx_antenna", enabled=True), False),
+        (intent("set_rx_antenna", antenna=2, on=True), False),
+        (intent("set_rx_antenna_ant1", on=True), False),
+        (intent("set_rx_antenna_ant2", on=False), False),
+        (intent("set_civ_output_ant", on=True), True),
         (intent("set_tuner_status", value=1), False),
         (intent("set_tuner_status", value=2), False),
         (intent("set_tuner_status", value=0), True),
+        (intent("set_tuner_status", value=False), False),
         (intent("set_func", func="TUNER", on=True), False),
         (intent("set_func", func="TUNER", on=False), True),
         (intent("force_off"), True),

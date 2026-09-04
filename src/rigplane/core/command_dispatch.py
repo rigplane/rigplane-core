@@ -30,6 +30,7 @@ __all__ = [
     "CommandDescriptor",
     "CommandUnsupportedError",
     "DescriptorTxPolicy",
+    "ManagedWriteAdmission",
     "bind_command_intent",
     "command_descriptor",
     "command_descriptors",
@@ -58,6 +59,9 @@ class DispatchQueue(Protocol):
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
+        expires_at_monotonic: float | None = None,
+        provider_generation: int | None = None,
+        connection_generation: object | None = None,
     ) -> None: ...
 
     def put_ordered(
@@ -69,12 +73,20 @@ class DispatchQueue(Protocol):
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
+        expires_at_monotonic: float | None = None,
+        provider_generation: int | None = None,
+        connection_generation: object | None = None,
     ) -> object: ...
+
+
+class ManagedWriteAdmission(Protocol):
+    async def admit_managed_write(self, intent: CommandIntent) -> bool: ...
 
 
 Binder = Callable[[Mapping[str, Any]], dict[str, Any]]
 TargetBuilder = Callable[[Mapping[str, Any]], FieldPath]
 ExpectationProjector = Callable[[Any, Mapping[str, Any]], dict[str, Any]]
+MethodNameResolver = Callable[[Mapping[str, Any]], str]
 
 
 class DescriptorTxPolicy(StrEnum):
@@ -82,6 +94,8 @@ class DescriptorTxPolicy(StrEnum):
 
     ALWAYS_PASS = "always_pass"
     TX_SAFE = "tx_safe"
+    ANTENNA_SWITCH = "antenna_switch"
+    TUNER_CONTROL = "tuner_control"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,19 +103,29 @@ class CommandDescriptor:
     """One operation's backend-neutral execution mechanics."""
 
     name: str
-    method_name: str
+    method_name: str | MethodNameResolver
     bind: Binder
     target: TargetBuilder
     argument_names: tuple[str, ...]
     tx_policy: DescriptorTxPolicy
     public_names: tuple[str, ...]
+    result_names: tuple[str, ...] | None = None
     timeout: float = 10.0
     queue_policy: Literal["ordered", "coalesced"] = "ordered"
     receiver_aware: bool = False
     project_expectation: ExpectationProjector | None = None
 
+    def resolve_method_name(self, params: Mapping[str, Any]) -> str:
+        method_name = (
+            self.method_name(params) if callable(self.method_name) else self.method_name
+        )
+        if not method_name:
+            raise CommandError(f"descriptor {self.name!r} resolved no Radio method")
+        return method_name
+
     def result(self, intent: CommandIntent) -> dict[str, Any]:
-        return {name: intent.params[name] for name in self.argument_names}
+        names = self.argument_names if self.result_names is None else self.result_names
+        return {name: intent.params[name] for name in names}
 
 
 def _bind_repeater_shift(params: Mapping[str, Any]) -> dict[str, Any]:
@@ -225,6 +249,43 @@ def _project_attenuator_expectation(
     return normalized
 
 
+def _bind_boolean(field: str, params: Mapping[str, Any]) -> dict[str, Any]:
+    value = params["on"] if "on" in params else params["enabled"]
+    if type(value) is not bool:
+        raise ValueError(f"{field} must be a bool")
+    return {"on": value, field: value}
+
+
+def _bind_rx_antenna(params: Mapping[str, Any]) -> dict[str, Any]:
+    antenna = params["antenna"]
+    if isinstance(antenna, bool) or not isinstance(antenna, int):
+        raise ValueError("antenna must be 1 or 2")
+    if antenna not in (1, 2):
+        raise ValueError("antenna must be 1 or 2")
+    return {"antenna": antenna, **_bind_boolean(f"rx_antenna_{antenna}", params)}
+
+
+def _global_slow_state_target(field: str, _params: Mapping[str, Any]) -> FieldPath:
+    return FieldPath.global_("slow_state", field)
+
+
+def _rx_antenna_target(params: Mapping[str, Any]) -> FieldPath:
+    return _global_slow_state_target(f"rx_antenna_{params['antenna']}", params)
+
+
+def _rx_antenna_method(params: Mapping[str, Any]) -> str:
+    return f"set_rx_antenna_ant{params['antenna']}"
+
+
+def _bind_tuner_status(params: Mapping[str, Any]) -> dict[str, Any]:
+    if "value" not in params:
+        raise ValueError("missing required 'value' parameter")
+    value = params["value"]
+    if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1, 2):
+        raise ValueError("tuner value must be 0, 1, or 2")
+    return {"value": value}
+
+
 _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
     {
         "set_repeater_shift": CommandDescriptor(
@@ -281,6 +342,70 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             receiver_aware=True,
             project_expectation=_project_attenuator_expectation,
         ),
+        "set_antenna_1": CommandDescriptor(
+            name="set_antenna_1",
+            method_name="set_antenna_1",
+            bind=partial(_bind_boolean, "rx_antenna_1"),
+            target=partial(_global_slow_state_target, "rx_antenna_1"),
+            argument_names=("on",),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_antenna", "set_antenna_1"),
+        ),
+        "set_antenna_2": CommandDescriptor(
+            name="set_antenna_2",
+            method_name="set_antenna_2",
+            bind=partial(_bind_boolean, "rx_antenna_2"),
+            target=partial(_global_slow_state_target, "rx_antenna_2"),
+            argument_names=("on",),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_antenna_2",),
+        ),
+        "set_rx_antenna": CommandDescriptor(
+            name="set_rx_antenna",
+            method_name=_rx_antenna_method,
+            bind=_bind_rx_antenna,
+            target=_rx_antenna_target,
+            argument_names=("on",),
+            result_names=("antenna", "on"),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_rx_antenna",),
+        ),
+        "set_rx_antenna_ant1": CommandDescriptor(
+            name="set_rx_antenna_ant1",
+            method_name="set_rx_antenna_ant1",
+            bind=partial(_bind_boolean, "rx_antenna_1"),
+            target=partial(_global_slow_state_target, "rx_antenna_1"),
+            argument_names=("on",),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_rx_antenna_ant1",),
+        ),
+        "set_rx_antenna_ant2": CommandDescriptor(
+            name="set_rx_antenna_ant2",
+            method_name="set_rx_antenna_ant2",
+            bind=partial(_bind_boolean, "rx_antenna_2"),
+            target=partial(_global_slow_state_target, "rx_antenna_2"),
+            argument_names=("on",),
+            tx_policy=DescriptorTxPolicy.ANTENNA_SWITCH,
+            public_names=("set_rx_antenna_ant2",),
+        ),
+        "set_civ_output_ant": CommandDescriptor(
+            name="set_civ_output_ant",
+            method_name="set_civ_output_ant",
+            bind=partial(_bind_boolean, "civ_output_ant"),
+            target=partial(_global_slow_state_target, "civ_output_ant"),
+            argument_names=("on",),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_civ_output_ant",),
+        ),
+        "set_tuner_status": CommandDescriptor(
+            name="set_tuner_status",
+            method_name="set_tuner_status",
+            bind=_bind_tuner_status,
+            target=partial(_global_slow_state_target, "tuner_status"),
+            argument_names=("value",),
+            tx_policy=DescriptorTxPolicy.TUNER_CONTROL,
+            public_names=("set_tuner_status",),
+        ),
     }
 )
 
@@ -289,6 +414,8 @@ _ADMITTED_DESCRIPTOR_TX_POLICIES = frozenset(
     {
         DescriptorTxPolicy.ALWAYS_PASS,
         DescriptorTxPolicy.TX_SAFE,
+        DescriptorTxPolicy.ANTENNA_SWITCH,
+        DescriptorTxPolicy.TUNER_CONTROL,
     }
 )
 
@@ -305,22 +432,37 @@ def _require_descriptor_policy_seat(descriptor: CommandDescriptor) -> None:
         )
 
 
+def _validate_descriptor_table() -> None:
+    for descriptor in _COMMAND_DESCRIPTORS.values():
+        _require_descriptor_policy_seat(descriptor)
+
+
+_validate_descriptor_table()
+
+
 def command_descriptors() -> Mapping[str, CommandDescriptor]:
+    _validate_descriptor_table()
     return _COMMAND_DESCRIPTORS
 
 
 def command_descriptor(name: str) -> CommandDescriptor | None:
     descriptor = _COMMAND_DESCRIPTORS.get(name)
+    if descriptor is None:
+        descriptor = next(
+            (
+                descriptor
+                for descriptor in _COMMAND_DESCRIPTORS.values()
+                if name in descriptor.public_names
+                or (
+                    isinstance(descriptor.method_name, str)
+                    and name == descriptor.method_name
+                )
+            ),
+            None,
+        )
     if descriptor is not None:
-        return descriptor
-    return next(
-        (
-            descriptor
-            for descriptor in _COMMAND_DESCRIPTORS.values()
-            if name in descriptor.public_names or name == descriptor.method_name
-        ),
-        None,
-    )
+        _require_descriptor_policy_seat(descriptor)
+    return descriptor
 
 
 def enqueue_command_intent(
@@ -333,6 +475,9 @@ def enqueue_command_intent(
     session_id: str | None,
     command_service: Any,
     timeout: float | None,
+    expires_at_monotonic: float | None = None,
+    provider_generation: int | None = None,
+    connection_generation: object | None = None,
 ) -> None:
     """Enqueue with descriptor policy and exact lifecycle identity preserved."""
 
@@ -358,6 +503,9 @@ def enqueue_command_intent(
             source=source,
             session_id=session_id,
             command_service=command_service,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=provider_generation,
+            connection_generation=connection_generation,
         )
         return
     if descriptor.queue_policy in ("ordered", "coalesced"):
@@ -368,6 +516,9 @@ def enqueue_command_intent(
             source=source,
             session_id=session_id,
             command_service=command_service,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=provider_generation,
+            connection_generation=connection_generation,
         )
         return
     raise CommandError(
@@ -396,7 +547,7 @@ def bind_command_intent(
     target = descriptor.target(normalized)
     return CommandIntent(
         id=command_id or f"{source}-{time.monotonic_ns()}",
-        name=descriptor.method_name,
+        name=descriptor.name,
         params=normalized,
         source=source,
         target=target,
@@ -427,16 +578,15 @@ def prepare_command_intent(
         session_id=session_id,
         timeout=descriptor.timeout,
     )
+    method_name = descriptor.resolve_method_name(intent.params)
     supported = (
-        radio.supports_command(
-            descriptor.method_name, receiver=intent.params["receiver"]
-        )
+        radio.supports_command(method_name, receiver=intent.params["receiver"])
         if descriptor.receiver_aware
-        else radio.supports_command(descriptor.method_name)
+        else radio.supports_command(method_name)
     )
     if not supported:
         raise CommandUnsupportedError(
-            f"command {descriptor.method_name!r} is not supported by active profile"
+            f"command {method_name!r} is not supported by active profile"
         )
     if descriptor.project_expectation is not None:
         intent = replace(
@@ -446,12 +596,27 @@ def prepare_command_intent(
     return intent
 
 
-async def execute_command_intent(radio: Any, intent: CommandIntent) -> None:
+async def execute_command_intent(
+    radio: Any,
+    intent: CommandIntent,
+    *,
+    managed_tx_authority: ManagedWriteAdmission | None = None,
+    validate_currency: Callable[[], None] | None = None,
+) -> None:
     """Invoke the reviewed Radio method for a descriptor-built intent."""
 
     descriptor = command_descriptor(intent.name)
     if descriptor is None:
         raise CommandError(f"no command descriptor for {intent.name!r}")
     _require_descriptor_policy_seat(descriptor)
-    method = getattr(radio, descriptor.method_name)
+    method = getattr(radio, descriptor.resolve_method_name(intent.params))
+    if (
+        managed_tx_authority is not None
+        and not await managed_tx_authority.admit_managed_write(intent)
+    ):
+        raise CommandError(
+            f"managed transmit authority refused command {descriptor.name!r}"
+        )
+    if validate_currency is not None:
+        validate_currency()
     await method(**{name: intent.params[name] for name in descriptor.argument_names})

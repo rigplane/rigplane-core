@@ -83,11 +83,22 @@ class _Authority:
             provider_generation=7,
         )
 
-    async def submit_transmit_on(self) -> _Submission:
+    def start_transmit_on_submission(
+        self,
+        *,
+        ready: asyncio.Future[None],
+        expires_at_monotonic: float,
+    ) -> asyncio.Task[_Submission]:
         self.calls.append("transmit_on")
         submission = _Submission(self.next_outcome)
         self.submissions.append(submission)
-        return submission
+
+        async def complete() -> _Submission:
+            await ready
+            return submission
+
+        del expires_at_monotonic
+        return asyncio.create_task(complete())
 
     async def submit_force_off(self) -> _Submission:
         self.calls.append("force_off")
@@ -118,6 +129,23 @@ def _server(
         server._production_managed_tx_port = type(  # noqa: SLF001
             "_Port", (), {"authority": authority}
         )()
+        server.command_queue.bind_connection_generation(lambda: "test-connection")
+
+        async def enqueue_managed_positive_tx(
+            *,
+            ready: asyncio.Future[None],
+            submission: asyncio.Task[_Submission],
+            **_kwargs: object,
+        ) -> _Submission:
+            server.command_queue.put_ordered(
+                None,
+                positive_tx_ready=ready,
+                positive_tx_submission=submission,
+            )
+            ready.set_result(None)
+            return await submission
+
+        server.enqueue_managed_positive_tx = enqueue_managed_positive_tx  # type: ignore[method-assign]
     return server
 
 
