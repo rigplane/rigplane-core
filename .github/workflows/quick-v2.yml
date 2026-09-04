@@ -7,7 +7,6 @@ on:
   workflow_run:
     workflows: ["Tests (quick)"]
     types: [completed]
-    branches: [main]
 
 permissions: {}
 

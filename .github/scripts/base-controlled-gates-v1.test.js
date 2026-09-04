@@ -76,6 +76,7 @@ test('quick v2 topology is hosted, metadata-only, and separately published', () 
   assert.equal(observer.LEGACY_WORKFLOW.path, '.github/workflows/quick.yml');
   assert.equal(observer.OBSERVATION_CONTEXT, 'quick-v2-observe');
 });
+test('workflow-run observation admits feature heads targeting main', () => assert.doesNotMatch(sources().quick, /\n  workflow_run:\n(?: {4}.*\n)* {4}branches:/u));
 
 test('topology contract catches permission, execution, event, and pin regressions', () => {
   const original = sources();
