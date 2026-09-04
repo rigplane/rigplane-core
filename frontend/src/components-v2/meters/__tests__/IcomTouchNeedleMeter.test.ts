@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { ComponentProps } from 'svelte';
-import IcomTouchNeedleMeter from '../IcomTouchNeedleMeter.svelte';
+import IcomTouchNeedleMeter, {
+  ICOM_TOUCH_NEEDLE_METER_VERSION,
+} from '../IcomTouchNeedleMeter.svelte';
 
 let mounted: ReturnType<typeof mount>[] = [];
 let roots: HTMLElement[] = [];
@@ -23,6 +25,10 @@ afterEach(() => {
 });
 
 describe('IcomTouchNeedleMeter state grammar', () => {
+  it('publishes the owner-accepted component checkpoint as version 0.1', () => {
+    expect(ICOM_TOUCH_NEEDLE_METER_VERSION).toBe('0.1');
+  });
+
   it('renders one profile-normalized known pointer and the preformatted value verbatim', () => {
     const root = render({
       value: 0.34,

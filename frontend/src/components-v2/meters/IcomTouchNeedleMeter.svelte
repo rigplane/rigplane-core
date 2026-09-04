@@ -1,4 +1,6 @@
 <script module lang="ts">
+  /** First owner-accepted visual and state-contract checkpoint. */
+  export const ICOM_TOUCH_NEEDLE_METER_VERSION = '0.1' as const;
   export type IcomTouchMeterScale = 'S' | 'Po' | 'SWR' | 'ALC' | 'COMP' | 'Id' | 'Vd';
 </script>
 
