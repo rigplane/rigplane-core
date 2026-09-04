@@ -152,7 +152,7 @@ def _control_handler(
     server: WebServer,
     actuator: _DelayedWire,
     composition: ManagedTxComposition,
-    _session_id: str,
+    session_id: str,
 ) -> ControlHandler:
     return ControlHandler(
         ws=_EofWebSocket(),  # type: ignore[arg-type]
@@ -160,7 +160,7 @@ def _control_handler(
         server_version="test",
         radio_model="IC-9700",
         server=server,
-        session_id="session-a",
+        session_id=session_id,
         managed_tx_authority=composition.authority,
     )
 
@@ -280,9 +280,6 @@ async def test_replacement_and_shutdown_drain_off_debt_at_final_wire_without_on_
 
     async def retire(event: Any) -> None:
         retired.append((event.provider_generation, tuple(actuator.wire)))
-        if event.provider_generation == 1:
-            actuator.wire.append(True)
-            actuator.wire_changed.set()
 
     composition = ManagedTxComposition(
         actuator,
