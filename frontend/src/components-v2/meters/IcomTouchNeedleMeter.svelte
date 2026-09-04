@@ -107,19 +107,19 @@
   const POWER_TICKS = curveTicks(36, POWER_CURVE, 5);
   const INNER_TICKS = curveTicks(29, INNER_CURVE, 4);
   const OUTER_LABELS = [
-    curveLabel('1', OUTER_CURVE, 0.16, 30, 'outside'),
-    curveLabel('5', OUTER_CURVE, 0.32, 30, 'outside'),
-    curveLabel('9', OUTER_CURVE, 0.50, 30, 'outside'),
-    curveLabel('+20', OUTER_CURVE, 0.61, 30, 'outside', 'red'),
-    curveLabel('+40', OUTER_CURVE, 0.77, 30, 'outside', 'red'),
-    curveLabel('+60dB', OUTER_CURVE, 0.94, 30, 'outside', 'red'),
+    curveLabel('1', OUTER_CURVE, 0.1650, 30, 'outside'),
+    curveLabel('5', OUTER_CURVE, 0.3217, 30, 'outside'),
+    curveLabel('9', OUTER_CURVE, 0.5020, 30, 'outside'),
+    curveLabel('+20', OUTER_CURVE, 0.5888, 30, 'outside', 'red'),
+    curveLabel('+40', OUTER_CURVE, 0.7383, 30, 'outside', 'red'),
+    curveLabel('+60dB', OUTER_CURVE, 0.8896, 30, 'outside', 'red'),
   ];
   const POWER_LABELS = [
-    curveLabel('0', POWER_CURVE, 0.11, 18, 'inside'),
-    curveLabel('10', POWER_CURVE, 0.33, 18, 'inside'),
-    curveLabel('50', POWER_CURVE, 0.57, 18, 'inside'),
-    curveLabel('100', POWER_CURVE, 0.79, 18, 'inside'),
-    curveLabel('W', POWER_CURVE, 0.96, 18, 'inside'),
+    curveLabel('0', POWER_CURVE, 0.1122, 18, 'inside'),
+    curveLabel('10', POWER_CURVE, 0.3273, 18, 'inside'),
+    curveLabel('50', POWER_CURVE, 0.5803, 18, 'inside'),
+    curveLabel('100', POWER_CURVE, 0.7930, 18, 'inside'),
+    curveLabel('W', POWER_CURVE, 0.9726, 18, 'inside'),
   ];
   const INNER_LABELS = [
     curveLabel('1', INNER_CURVE, 0.17, 20, 'inside'),
@@ -178,7 +178,7 @@
       {/each}
 
       <g class="outer-labels">
-        <text x="0" y="111">S</text>
+        <text x="0" y="98">S</text>
         {#each OUTER_LABELS as mark}
           <text class:red-text={mark.accent === 'red'} x={mark.x} y={mark.y} text-anchor="middle">{mark.text}</text>
         {/each}
@@ -216,8 +216,6 @@
       </g>
 
       <path class="scale blue heavy" d="M 155 210 Q 310 145 465 207" />
-      <path class="scale red heavy" d="M 198 212 Q 230 191 262 198" />
-      <path class="scale red heavy" d="M 272 200 Q 295 189 318 196" />
       <g class="lower-labels">
         <text class="blue-text" x="92" y="216">COMP</text>
         <text class="blue-text" x="174" y="191">0</text>
