@@ -401,7 +401,11 @@ describe('RadioLayout structure', () => {
     (skinId) => {
       const t = mountLayout(skinId);
 
-      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(1);
+      // The fixed-height StatusBar owns only the compact readout/trigger. The
+      // full editor is deliberately absent until that trigger opens its
+      // popover; its interaction contract is exercised separately.
+      expect(t.querySelectorAll('[data-testid="managed-tot-status"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(0);
       // The shell, its semantic RX/TX surface, and the StatusBar readout are
       // the three presentation consumers of the single injected App-root
       // controller — no layout-local authority is introduced.
