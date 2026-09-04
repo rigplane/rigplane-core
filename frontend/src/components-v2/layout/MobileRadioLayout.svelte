@@ -419,11 +419,7 @@
   const LS_PTT_MOVE_CANCEL_PX = 8;
 
   function lsPttPointerDown(event: PointerEvent) {
-    if (pttMode === 'latched') {
-      // Explicit unlock is the unconditional HTTP ForceOFF intent.
-      ptt?.down();
-      return;
-    }
+    if (pttMode === 'latched') return;
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
     lsPttStartX = event.clientX;
     lsPttStartY = event.clientY;
@@ -452,6 +448,7 @@
 
   function lsPttKeyDown(event: KeyboardEvent) {
     if ((event.key !== ' ' && event.key !== 'Enter') || event.repeat) return;
+    if (pttMode === 'latched') return;
     event.preventDefault(); lsPttEngaged = true; ptt?.down();
   }
 
@@ -567,24 +564,25 @@
           title="Unkey transmitter"
           onclick={() => txCtl.forceOff()}
         >UNKEY</button>
-        <button
-          class="m-ls-ptt"
-          class:m-ptt-held={owned && !latched}
-          class:m-ptt-latched={latched}
-          class:m-ls-ptt-dim={txPermit === 'denied' && pttMode === 'idle'}
-          onpointerdown={lsPttPointerDown}
-          onpointermove={lsPttPointerMove}
-          onpointerup={lsPttPointerUp}
-          onpointercancel={lsPttPointerUp}
-          onlostpointercapture={lsPttPointerUp}
-          onkeydown={lsPttKeyDown}
-          onkeyup={lsPttKeyUp}
-          onblur={lsPttPointerUp}
-          oncontextmenu={(e) => e.preventDefault()}
-          title={txPermit === 'denied' ? t('core.mobile.tx.notAllowedFreq') : t('core.mobile.tx.pushToTalk')}
-        >
-          {pttMode === 'latched' ? 'TX🔒' : pttMode === 'held' ? 'TX' : 'PTT'}
-        </button>
+        {#if !latched}
+          <button
+            class="m-ls-ptt"
+            class:m-ptt-held={owned}
+            class:m-ls-ptt-dim={txPermit === 'denied' && pttMode === 'idle'}
+            onpointerdown={lsPttPointerDown}
+            onpointermove={lsPttPointerMove}
+            onpointerup={lsPttPointerUp}
+            onpointercancel={lsPttPointerUp}
+            onlostpointercapture={lsPttPointerUp}
+            onkeydown={lsPttKeyDown}
+            onkeyup={lsPttKeyUp}
+            onblur={lsPttPointerUp}
+            oncontextmenu={(e) => e.preventDefault()}
+            title={txPermit === 'denied' ? t('core.mobile.tx.notAllowedFreq') : t('core.mobile.tx.pushToTalk')}
+          >
+            {pttMode === 'held' ? 'TX' : 'PTT'}
+          </button>
+        {/if}
       {/if}
     </div>
   </div>
@@ -1183,13 +1181,6 @@
     color: rgba(239, 68, 68, 0.5);
   }
 
-  .m-ls-ptt.m-ptt-latched {
-    background: #dc2626;
-    color: #fff;
-    box-shadow: 0 0 20px rgba(220, 38, 38, 0.6);
-    animation: ptt-latch-pulse 1s ease-in-out infinite;
-  }
-
   .m-ls-step-picker {
     position: fixed;
     bottom: 50%;
@@ -1446,19 +1437,6 @@
     box-shadow: 0 0 20px rgba(239, 68, 68, 0.5);
   }
 
-  .m-ptt-latched {
-    background: #dc2626;
-    border-color: #dc2626;
-    color: #fff;
-    box-shadow: 0 0 24px rgba(220, 38, 38, 0.6);
-    animation: ptt-latch-pulse 1s ease-in-out infinite;
-  }
-
-  @keyframes ptt-latch-pulse {
-    0%, 100% { box-shadow: 0 0 24px rgba(220, 38, 38, 0.6); }
-    50% { box-shadow: 0 0 32px rgba(220, 38, 38, 0.8); }
-  }
-
   .m-tx-info {
     display: flex;
     flex-direction: column;
@@ -1534,10 +1512,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .m-ptt-latched,
-    .m-ls-ptt.m-ptt-latched {
-      animation: none;
-    }
     .m-atu-tuning {
       animation: none;
     }

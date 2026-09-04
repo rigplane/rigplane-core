@@ -678,6 +678,26 @@ describe('mobile PTT via the App TX controller (MOR-1012)', () => {
     expect(tx.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
   });
 
+  it('canonical landscape TRANSMIT exposes exactly one actionable ForceOFF control', () => {
+    tx.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on', releaseRequired: true });
+    const t = mountLandscape();
+    const candidates = Array.from(
+      t.querySelectorAll<HTMLButtonElement>('.m-ls-unkey, .m-ls-ptt'),
+    );
+
+    expect(candidates).toHaveLength(1);
+    const [unkey] = candidates;
+    expect(unkey).toBe(landscapeUnkeyEl(t));
+    expect(unkey.type).toBe('button');
+    expect(unkey.disabled).toBe(false);
+    expect(unkey.tabIndex).toBe(0);
+    unkey.focus();
+    expect(document.activeElement).toBe(unkey);
+
+    for (const candidate of candidates) candidate.click();
+    expect(tx.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
+  });
+
   it('keeps the landscape-only Unkey control out of portrait presentation', () => {
     const t = mountMobile();
     expect(t.querySelector('.m-ls-unkey')).toBeNull();
