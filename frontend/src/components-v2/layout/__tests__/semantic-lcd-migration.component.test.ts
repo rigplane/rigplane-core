@@ -463,8 +463,14 @@ describe('TX authority: the LCD consumes one App-root managed controller', () =>
     'mounts one status-bar TOT consumer for %s through the same facade',
     (variant) => {
       const t = render(variant);
-      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="managed-tot-status"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="managed-tot-trigger"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(0);
       expect(txHarness.listenerCount()).toBe(2);
+
+      t.querySelector<HTMLButtonElement>('[data-testid="managed-tot-trigger"]')!.click();
+      flushSync();
+      expect(t.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(1);
 
       const input = t.querySelector<HTMLInputElement>('[data-testid="managed-tot-draft"]')!;
       input.value = '';
