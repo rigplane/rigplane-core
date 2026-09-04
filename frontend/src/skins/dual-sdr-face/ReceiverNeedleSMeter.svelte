@@ -1,5 +1,6 @@
 <script lang="ts">
   import { calibratedToSegments, isSmeterCalibrated } from '../../components-v2/meters/smeter-scale';
+  import { prefersReducedMotion } from '$lib/utils/smoothing.svelte';
 
   interface Props { value: number | null; }
   let { value }: Props = $props();
@@ -8,11 +9,13 @@
 </script>
 
 <svg class="needle-meter" viewBox="0 0 240 104" role="img" aria-label={available ? 'S meter' : 'S meter unavailable'}>
-  <path d="M20 88 A104 104 0 0 1 220 88" class="meter-arc" />
-  <path d="M27 88 A97 97 0 0 1 213 88" class="meter-arc faint" />
-  <text x="22" y="100">S</text><text x="109" y="21">9</text><text x="188" y="45">+40</text>
+  {#if available}
+    <path d="M20 88 A104 104 0 0 1 220 88" class="meter-arc" />
+    <path d="M27 88 A97 97 0 0 1 213 88" class="meter-arc faint" />
+    <text x="22" y="100">S</text><text x="109" y="21">9</text><text x="188" y="45">+40</text>
+  {/if}
   {#if angle !== null}
-    <line data-needle x1="120" y1="88" x2="120" y2="27" transform={`rotate(${angle} 120 88)`} class="needle" />
+    <line data-needle data-reduced-motion={prefersReducedMotion()} x1="120" y1="88" x2="120" y2="27" transform={`rotate(${angle} 120 88)`} class="needle" />
   {:else}
     <text data-meter-unknown x="120" y="70" text-anchor="middle">—</text>
   {/if}
