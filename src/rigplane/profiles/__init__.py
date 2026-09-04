@@ -470,6 +470,22 @@ class RadioProfile:
     # authority. Appended to preserve the positional constructor contract.
     ctcss_tones_centihz: tuple[int, ...] | None = None
 
+    @property
+    def vfo_swap_code(self) -> int | None:
+        """Deprecated alias; use ``swap_ab_code`` or ``swap_main_sub_code``.
+
+        Retained for 3.x compatibility with the v2.11.1 truthy fallback.
+        """
+        return self.swap_main_sub_code or self.swap_ab_code
+
+    @property
+    def vfo_equal_code(self) -> int | None:
+        """Deprecated alias; use ``equal_ab_code`` or ``equal_main_sub_code``.
+
+        Retained for 3.x compatibility with the v2.11.1 truthy fallback.
+        """
+        return self.equal_main_sub_code or self.equal_ab_code
+
     def supports_capability(self, capability: str) -> bool:
         return capability in self.capabilities
 

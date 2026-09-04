@@ -3795,6 +3795,54 @@ class TestToneTsqlParity:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
+        ("method_name", "freq_hz", "expected_tail"),
+        [
+            ("set_tone_freq", 8850, b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", 11090, b"\x1b\x01\x00\x11\x09\xfd"),
+        ],
+    )
+    async def test_set_tone_frequency_accepts_protocol_keyword(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        freq_hz: int,
+        expected_tail: bytes,
+    ) -> None:
+        await getattr(radio, method_name)(freq_hz=freq_hz)
+        assert mock_transport.sent_packets[-1].endswith(expected_tail)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "freq_centihz", "expected_tail"),
+        [
+            ("set_tone_freq", 8850, b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", 11090, b"\x1b\x01\x00\x11\x09\xfd"),
+        ],
+    )
+    async def test_set_tone_frequency_preserves_centihz_keyword_alias(
+        self,
+        radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        freq_centihz: int,
+        expected_tail: bytes,
+    ) -> None:
+        await getattr(radio, method_name)(freq_centihz=freq_centihz)
+        assert mock_transport.sent_packets[-1].endswith(expected_tail)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method_name", ["set_tone_freq", "set_tsql_freq"])
+    async def test_set_tone_frequency_rejects_both_keyword_spellings(
+        self, radio: IcomRadio, mock_transport: MockTransport, method_name: str
+    ) -> None:
+        with pytest.raises(TypeError, match="both freq_hz and freq_centihz"):
+            await getattr(radio, method_name)(freq_hz=8850, freq_centihz=8850)
+
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
         ("method_name", "sub"),
         [("get_tone_freq", 0x00), ("get_tsql_freq", 0x01)],
     )
