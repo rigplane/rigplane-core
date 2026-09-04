@@ -4,6 +4,7 @@ import type {
   PeerSplitDisplayModel,
   PeerSplitReceiverDisplay,
 } from '../../../semantic/radio-display-model';
+import type { LcdSpectrumFrame } from '../lcd-display-contract';
 import CenterstageDisplay from '../CenterstageDisplay.svelte';
 
 const known = <T>(value: T) => ({ state: 'known' as const, value });
@@ -77,15 +78,27 @@ afterEach(() => {
 
 function render(
   displayModel: PeerSplitDisplayModel = model,
-  normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>,
+  audioFftFrame?: unknown,
 ) {
   const target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(CenterstageDisplay, {
     target,
-    props: { model: displayModel, normalizedFftBins },
+    props: { model: displayModel, audioFftFrame },
   });
   return target;
+}
+
+function audioFftFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFrame {
+  return {
+    source: 'audio-fft',
+    receiver: 'MAIN',
+    freshness: 'fresh',
+    startHz: 0,
+    endHz: 4_000,
+    normalizedBins: [0, 0.5, 1],
+    ...overrides,
+  };
 }
 
 function withActive(id: 'MAIN' | 'SUB'): PeerSplitDisplayModel {
@@ -101,7 +114,7 @@ function withActive(id: 'MAIN' | 'SUB'): PeerSplitDisplayModel {
 
 describe('CenterstageDisplay', () => {
   it('is passive and renders exactly one active-receiver meter and scope', () => {
-    const target = render(model, { MAIN: [0, 0.5, 1], SUB: [1, 0.5, 0] });
+    const target = render(model, audioFftFrame());
 
     expect(target.querySelectorAll('button,input,select,a[href],[tabindex],[role="button"],[role="switch"]')).toHaveLength(0);
     expect(target.innerHTML).not.toMatch(/onclick|onpointer|onwheel/i);
@@ -134,6 +147,18 @@ describe('CenterstageDisplay', () => {
     expect(hero.textContent).not.toContain('14.250.000');
     expect(target.querySelector('[data-testid="centerstage-secondary"]')?.textContent).toContain('14.195.500');
     expect(target.querySelector('[data-testid="centerstage-meter"]')?.getAttribute('data-state')).toBe('unknown');
+    expect(target.querySelector('[data-testid="lcd-af-fft"]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['stale', audioFftFrame({ freshness: 'stale' })],
+    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', normalizedBins: [0] }],
+    ['source mismatch', audioFftFrame({ source: 'hardware' })],
+    ['receiver mismatch', audioFftFrame({ receiver: 'SUB' })],
+  ])('fails the audio FFT closed for a %s frame', (_case, frame) => {
+    const target = render(model, frame);
+
     expect(target.querySelector('[data-testid="lcd-af-fft"]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
   });
 
