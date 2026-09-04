@@ -194,7 +194,7 @@ def test_mismatched_tot_deadline_and_remaining_time_are_rejected(
     [
         (0.0, 0, "2026-09-04T12:34:56.789Z"),
         (-0.0001, 0, "2026-09-04T12:34:56.789Z"),
-        (604800.9999, 604800999, "2026-09-11T12:34:56.788Z"),
+        (604800.9999, 604800999, "2026-09-11T12:34:57.788Z"),
     ],
 )
 def test_active_tot_clamps_expired_time_and_preserves_large_remaining_time(
