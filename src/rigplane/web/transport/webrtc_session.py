@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     )
 
     from ...radio_protocol import Radio
+    from ...runtime.radio import ManagedTxCompositionPort
     from ..server import WebServer  # noqa: TID251
 
 __all__ = [
@@ -107,10 +108,13 @@ class WebRtcSessionManager:
         radio: "Radio | None",
         server: "WebServer | None",
         radio_model: str,
+        *,
+        managed_tx_port: "ManagedTxCompositionPort | None" = None,
     ) -> None:
         self._radio = radio
         self._server = server
         self._radio_model = radio_model
+        self._managed_tx_port = managed_tx_port
         self._sessions: dict[str, _Session] = {}
 
     async def negotiate(self, offer_sdp: str, offer_type: str) -> dict[str, Any]:
@@ -247,6 +251,7 @@ class WebRtcSessionManager:
                     if self._server is not None
                     else False
                 ),
+                managed_tx_port=self._managed_tx_port,
             )
         elif label == _SCOPE:
             handler = ScopeHandler(conn, self._radio, server=self._server)

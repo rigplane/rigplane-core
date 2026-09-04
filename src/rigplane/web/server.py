@@ -122,6 +122,7 @@ if TYPE_CHECKING:
 
     from ..profiles import RadioProfile
     from ..radio_protocol import Radio
+    from ..runtime.radio import ManagedTxCompositionPort
     from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
 
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
@@ -823,6 +824,7 @@ class WebServer:
         self._hardware_scope_available = _supports_scope(radio)
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.
+        self._production_managed_tx_port: ManagedTxCompositionPort | None = None
         self._webrtc_sessions: WebRtcSessionManager | None = None
         # Audio FFT scope: available when radio has audio capability.
         # For non-hardware-scope radios, also feeds /api/v1/scope (legacy).
@@ -3979,6 +3981,7 @@ class WebServer:
             self._config.radio_model,
             server=server if server is not None else self,
             read_only=self._config.read_only,
+            managed_tx_port=self._production_managed_tx_port,
         )
 
     async def _handle_http_commands(
@@ -5100,6 +5103,7 @@ class WebServer:
                     self._config.radio_model,
                     server=self,
                     read_only=self._config.read_only,
+                    managed_tx_port=self._production_managed_tx_port,
                 )
                 resp = await handler._enqueue_command(  # noqa: SLF001
                     "send_cw_text",
@@ -5113,6 +5117,7 @@ class WebServer:
                     self._config.radio_model,
                     server=self,
                     read_only=self._config.read_only,
+                    managed_tx_port=self._production_managed_tx_port,
                 )
                 resp = await handler._enqueue_command(  # noqa: SLF001
                     "stop_cw_text",
@@ -5204,7 +5209,12 @@ class WebServer:
             model = (
                 raw_model if isinstance(raw_model, str) else self._config.radio_model
             )
-            self._webrtc_sessions = WebRtcSessionManager(self._radio, self, model)
+            self._webrtc_sessions = WebRtcSessionManager(
+                self._radio,
+                self,
+                model,
+                managed_tx_port=self._production_managed_tx_port,
+            )
         return self._webrtc_sessions
 
     async def _webrtc_unavailable(
@@ -5800,6 +5810,7 @@ class WebServer:
                 model,
                 server=self,
                 read_only=self._config.read_only,
+                managed_tx_port=self._production_managed_tx_port,
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)
