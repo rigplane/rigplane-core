@@ -1,169 +1,120 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TxControllerDependencies } from '../controller';
-import { initialTxState, transition, type Eligibility, type PttMarker, type PttObservation, type TxEvent, type TxState } from '../model';
-import type { ControlSessionTransition } from '$lib/transport/ws-client'; type SessionHandler = (projection: any, session: ControlSessionTransition) => void;
+import type { ControlSessionTransition } from '$lib/transport/ws-client';
+import type { ManagedTxDependencies } from '../managed-controller';
+import type { ManagedTxState } from '../managed-state';
+
+type SessionHandler = (session: ControlSessionTransition) => void;
 const h = vi.hoisted(() => ({
-  contexts: new Map<unknown, unknown>(), factory: vi.fn(), controllers: 0,
-  events: [] as string[], effects: [] as string[],
-  session: undefined as SessionHandler | undefined,
+  contexts: new Map<unknown, unknown>(), factory: vi.fn(), session: undefined as SessionHandler | undefined,
   lifecycle: undefined as (() => void) | undefined, barrier: undefined as (() => Promise<void>) | undefined,
-  offSession: vi.fn(), offLifecycle: vi.fn(), offBarrier: vi.fn(), disposeDependencies: vi.fn(),
+  offSession: vi.fn(), offLifecycle: vi.fn(), offBarrier: vi.fn(), offAudio: vi.fn(), disposeBrowser: vi.fn(),
+  refresh: vi.fn(async () => {}), invalidate: vi.fn(),
+  sendPtt: vi.fn<(operation: 'ptt_on' | 'ptt_off') => Promise<'accepted' | 'rejected'>>(async () => 'accepted'),
+  submit: vi.fn<(operation: 'transmit_on' | 'force_off') => Promise<'accepted' | 'rejected'>>(async () => 'accepted'),
+  startAudio: vi.fn(async () => null), stopAudio: vi.fn(),
+  state: null as unknown as ManagedTxState, audioDied: undefined as (() => void) | undefined,
 }));
-vi.mock('svelte', () => ({ getContext: (key: unknown) => h.contexts.get(key),
-  setContext: (key: unknown, value: unknown) => { h.contexts.set(key, value); return value; } }));
-vi.mock('../browser-dependencies', () => ({ createBrowserTxControllerDependencies: h.factory }));
-vi.mock('../controller', async (original) => {
-  const actual = await original<typeof import('../controller')>();
-  return { ...actual, TxController: class extends actual.TxController {
-    constructor(epoch: number, baseline: PttMarker, dependencies: TxControllerDependencies) { super(epoch, baseline, dependencies); h.controllers += 1; }
-    override dispatch(event: TxEvent) { h.events.push(event.type); super.dispatch(event); }
-  } };
-});
-import { getAppTxController, provideAppTxControllerHost } from '../app-host';
-const projection = (session: ControlSessionTransition, seq: number) => ({
-  epoch: session.epoch, facts: null, modInputSource: { status: 'unknown' as const },
-  eligibility: { catPtt: session.state === 'connected', browserTxAudio: session.state === 'connected',
-    controlLive: session.state === 'connected', permit: 'allowed' as const,
-    target: { receiver: 'MAIN' as const, slot: 'A' as const, frequencyHz: 100 } },
-  ptt: { value: false, observed: true, fresh: session.state === 'connected', source: 'radio-readback' as const,
-    marker: { authorityEpoch: session.epoch, pttObservationSeq: seq, pttLastObservedMonotonic: seq } },
+vi.mock('svelte', () => ({
+  getContext: (key: unknown) => h.contexts.get(key),
+  setContext: (key: unknown, value: unknown) => { h.contexts.set(key, value); return value; },
+}));
+vi.mock('../browser-dependencies', () => ({ createManagedBrowserDependencies: h.factory }));
+import { getManagedAppTxController, provideManagedAppTxHost } from '../managed-app-host';
+
+const idle = (): ManagedTxState => ({
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null, faultDetail: null,
+  fresh: true, releaseRequired: false, remainingMs: null, lastOperation: null,
 });
 const bindings = () => ({
   registerPreDisconnectBarrier: (barrier: () => Promise<void>) => { h.barrier = barrier; return h.offBarrier; },
   lifecycleReleaseSource: (release: () => void) => { h.lifecycle = release; return h.offLifecycle; },
 });
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+
 beforeEach(() => {
-  h.contexts.clear(); h.events.length = 0; h.effects.length = 0; h.controllers = 0;
-  h.session = undefined; h.lifecycle = undefined; h.barrier = undefined;
-  for (const mock of [h.factory, h.offSession, h.offLifecycle, h.offBarrier, h.disposeDependencies]) mock.mockReset();
+  h.contexts.clear(); h.session = undefined; h.lifecycle = undefined; h.barrier = undefined; h.audioDied = undefined;
+  h.state = idle();
+  for (const mock of [h.factory, h.offSession, h.offLifecycle, h.offBarrier, h.offAudio,
+    h.disposeBrowser, h.refresh, h.invalidate, h.sendPtt, h.submit, h.startAudio, h.stopAudio]) mock.mockReset();
+  h.refresh.mockResolvedValue(undefined); h.sendPtt.mockResolvedValue('accepted');
+  h.submit.mockResolvedValue('accepted'); h.startAudio.mockResolvedValue(null);
   h.factory.mockImplementation(() => {
-    let seq = 0; let id = 0;
-    const dependencies: TxControllerDependencies = {
-      startAudio: async () => { h.effects.push('audio'); return null; },
-      sendPtt: (command) => { h.effects.push(command); }, stopLocalAudio: () => h.effects.push('stop'),
-      restoreMod: vi.fn(), commandId: (command) => `${command}-${++id}`,
-      schedule: vi.fn(() => ({})), cancel: vi.fn(),
-      timeoutMs: { 'audio-start': 5_000, 'on-confirmation': 5_000, 'off-confirmation': 5_000 },
+    const dependencies: ManagedTxDependencies = {
+      snapshot: () => h.state, refresh: h.refresh, invalidate: h.invalidate,
+      sendPtt: h.sendPtt, submit: h.submit, startAudio: h.startAudio,
+      stopLocalAudio: h.stopAudio,
+      onAudioDied: (handler) => { h.audioDied = handler; return h.offAudio; },
     };
     return {
-      dependencies, projectAuthority: (session: ControlSessionTransition) => projection(session, session.state === 'connected' ? ++seq : seq),
-      subscribeSession: (handler: SessionHandler) => {
-        h.session = (_projection, session) => handler!(projection(session, session.state === 'connected' ? ++seq : seq), session); return h.offSession;
-      },
-      bindLifecycleRelease: (source: (release: () => void) => () => void, release: () => void) => source(release),
-      dispose: h.disposeDependencies,
+      dependencies,
+      subscribeSession: (handler: SessionHandler) => { h.session = handler; return h.offSession; },
+      dispose: h.disposeBrowser,
     };
   });
 });
-describe('App TxController host', () => {
-  it('keeps import/context reads inert and provides one private owner with stable identity', () => {
-    expect(() => getAppTxController()).toThrow(/not provided/); expect(h.factory).not.toHaveBeenCalled();
-    const host = provideAppTxControllerHost(bindings()); const facade = getAppTxController();
-    expect([h.factory.mock.calls.length, h.controllers]).toEqual([1, 1]);
-    expect(Object.keys(facade).sort()).toEqual(['release', 'resetFault', 'setIntent', 'snapshot', 'start', 'subscribe']);
+
+describe('managed App TX host', () => {
+  it('provides one frozen App-root owner with stable identity', () => {
+    expect(() => getManagedAppTxController()).toThrow(/not provided/);
+    const host = provideManagedAppTxHost(bindings());
+    const facade = getManagedAppTxController();
+    expect(h.factory).toHaveBeenCalledTimes(1);
+    expect(Object.keys(facade).sort()).toEqual(['forceOff', 'pttOff', 'pttOn', 'snapshot', 'subscribe', 'transmitOn']);
     expect(Object.keys(host).sort()).toEqual(['dispose', 'refreshAuthority', 'release']);
-    expect(Object.isFrozen(facade)).toBe(true); expect(getAppTxController()).toBe(facade);
-    expect(() => provideAppTxControllerHost(bindings())).toThrow(/already provided/);
-    expect([h.factory.mock.calls.length, h.controllers]).toEqual([1, 1]);
+    expect(Object.isFrozen(facade)).toBe(true);
+    expect(getManagedAppTxController()).toBe(facade);
+    expect(() => provideManagedAppTxHost(bindings())).toThrow(/already provided/);
+    expect(h.factory).toHaveBeenCalledTimes(1);
   });
-  it('orders session epoch first and makes every stale callback inert after robust disposal', () => {
-    const host = provideAppTxControllerHost(bindings());
-    h.session!(projection({ state: 'connected', epoch: 4 }, 1), { state: 'connected', epoch: 4 });
-    expect(h.events).toEqual(['epoch', 'authority']);
-    h.offBarrier.mockImplementationOnce(() => { throw new Error('cleanup'); });
+
+  it('registers one lifecycle owner, refreshes on connect, and unregisters exactly once', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    expect([h.session, h.lifecycle, h.barrier].every(Boolean)).toBe(true);
+    h.session!({ state: 'connected', epoch: 4 });
+    await flush();
+    expect(h.refresh).toHaveBeenCalledTimes(1);
     host.dispose(); host.dispose();
-    expect([h.offBarrier, h.offSession, h.offLifecycle, h.disposeDependencies].map((fn) => fn.mock.calls.length)).toEqual([1, 1, 1, 1]);
-    const count = h.events.length;
-    h.session!(projection({ state: 'connected', epoch: 5 }, 2), { state: 'connected', epoch: 5 });
-    h.lifecycle!(); host.refreshAuthority(); getAppTxController().start('stale', 'lease', 'momentary');
-    expect(h.events).toHaveLength(count);
+    await flush();
+    expect([h.offBarrier, h.offSession, h.offLifecycle, h.offAudio, h.disposeBrowser]
+      .map((mock) => mock.mock.calls.length)).toEqual([1, 1, 1, 1, 1]);
   });
-  it('applies idle authoritative OFF and reuses that exact marker for an eligible Key start', async () => {
-    const host = provideAppTxControllerHost(bindings()); const facade = getAppTxController();
-    h.session!(projection({ state: 'connected', epoch: 1 }, 1), { state: 'connected', epoch: 1 });
-    expect(facade.snapshot()).toMatchObject({ guard: null, radioTx: 'unknown' });
-    expect(h.effects).toEqual([]);
 
-    host.refreshAuthority();
-    expect(facade.snapshot()).toMatchObject({ guard: null, radioTx: 'off',
-      pttMarker: { authorityEpoch: 1, pttObservationSeq: 2 } });
-    expect(h.effects).toEqual([]);
-
-    facade.start('desktop', 'lease', 'momentary');
-    await Promise.resolve(); await Promise.resolve();
-    expect(facade.snapshot()).toMatchObject({ guard: { authorityEpoch: 1 }, radioTx: 'off' });
-    expect(h.effects).toEqual(['audio', 'on']);
-  });
-  it('rejects equal-marker reuse unless OFF truth and every existing gate still qualify', () => {
-    const marker = { authorityEpoch: 1, pttObservationSeq: 2, pttLastObservedMonotonic: 2 };
-    const ptt: PttObservation = { value: false, observed: true, fresh: true,
-      source: 'radio-readback', marker };
-    const eligibility: Eligibility = { catPtt: true, browserTxAudio: true, controlLive: true,
-      permit: 'allowed', target: { receiver: 'MAIN', slot: 'A', frequencyHz: 100 } };
-    const confirmed = transition(initialTxState(1, { ...marker, pttObservationSeq: 1 }),
-      { type: 'authority', epoch: 1, ptt, eligibility, offCommandId: 'off' }).state;
-    const start = (state: TxState, evidence: PttObservation = ptt, gates: Eligibility = eligibility) =>
-      transition(state, { type: 'start', sourceId: 'desktop', leaseId: 'lease',
-        intent: 'momentary', eligibility: gates, ptt: evidence });
-
-    expect(start(confirmed).effects.map((effect) => effect.type)).toContain('start-audio');
-    const rejected = [
-      start({ ...confirmed, radioTx: 'unknown' }), start({ ...confirmed, radioTx: 'on' }),
-      start(confirmed, { ...ptt, marker: { ...marker, pttObservationSeq: 1 } }),
-      start(confirmed, { ...ptt, marker: { ...marker, authorityEpoch: 0 } }),
-      start(confirmed, { ...ptt, fresh: false }), start(confirmed, { ...ptt, source: 'other' }),
-      start(confirmed, ptt, { ...eligibility, catPtt: false }),
-      start(confirmed, ptt, { ...eligibility, browserTxAudio: false }),
-      start(confirmed, ptt, { ...eligibility, controlLive: false }),
-      start(confirmed, ptt, { ...eligibility, permit: 'denied' }),
-      start(confirmed, ptt, { ...eligibility, target: null }),
-      start({ ...confirmed, phase: 'failed', fault: 'audio-failed' }),
-    ];
-    for (const result of rejected) expect(result.effects).toEqual([]);
-  });
-  it('dispatches release synchronously, shares its bounded promise, and retains uncertain OFF state', async () => {
-    const host = provideAppTxControllerHost(bindings()); const facade = getAppTxController();
-    h.session!(projection({ state: 'connected', epoch: 1 }, 1), { state: 'connected', epoch: 1 });
-    host.refreshAuthority();
-    facade.start('desktop', 'lease', 'momentary');
-    await Promise.resolve(); await Promise.resolve();
-    expect(h.effects).toEqual(['audio', 'on']);
-    const release = host.release();
+  it('coalesces disconnect, lifecycle, and barrier release without replaying ON', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    const facade = getManagedAppTxController();
+    facade.pttOn();
+    await flush();
+    expect(h.sendPtt).toHaveBeenCalledExactlyOnceWith('ptt_on');
+    h.session!({ state: 'disconnected', epoch: 5 });
     h.lifecycle!();
-    expect(h.barrier!()).toBe(release); expect(h.effects).toEqual(['audio', 'on', 'off', 'stop']);
-    expect(facade.snapshot()).toMatchObject({ phase: 'releasing', txRisk: 'uncertain',
-      pendingOff: { originalEpoch: 1 }, radioTx: 'off' });
-    await release; expect(facade.snapshot().phase).toBe('releasing');
-  });
-  it('detaches and deeply freezes snapshot and subscription views', async () => {
-    const host = provideAppTxControllerHost(bindings()); const facade = getAppTxController();
-    h.session!(projection({ state: 'connected', epoch: 1 }, 1), { state: 'connected', epoch: 1 }); host.refreshAuthority();
-    let observed: TxState | undefined; facade.subscribe((state) => { observed = state as TxState; });
-    facade.start('desktop', 'lease', 'momentary');
-    const snapshot = facade.snapshot() as TxState; const emitted = observed!;
-    expect(snapshot).not.toBe(emitted);
-    expect([snapshot, snapshot.guard, snapshot.leaseTarget, emitted, emitted.guard, emitted.leaseTarget].every(Object.isFrozen)).toBe(true);
-    for (const mutate of [() => { snapshot.authorityEpoch = 99; }, () => { snapshot.guard!.generation = 99; },
-      () => { emitted.radioTx = 'on'; }, () => { emitted.pttMarker.authorityEpoch = 99; }, () => { emitted.leaseTarget!.frequencyHz = 999; }]) expect(mutate).toThrow(TypeError);
-    await Promise.resolve(); await Promise.resolve();
-    const later = facade.snapshot();
-    expect(later).toMatchObject({ authorityEpoch: 1, radioTx: 'off', pttMarker: { authorityEpoch: 1 }, guard: { leaseId: 'lease', generation: 1, authorityEpoch: 1 },
-      leaseTarget: { receiver: 'MAIN', slot: 'A', frequencyHz: 100 } });
-    facade.release('desktop', later.guard!); expect(h.effects).toEqual(['audio', 'on', 'off', 'stop']);
-  });
-  it('releases a held guard on dispose, not only through an explicit release() call', async () => {
-    // MOR-1226 (MOR-1165 audit remediation R2, A6-1): dispose()'s `void
-    // release()` was unpinned -- deleting it left all 13 TX test files
-    // green, including the two tests above, because neither calls
-    // dispose() while a guard is still held. This one does.
-    const host = provideAppTxControllerHost(bindings()); const facade = getAppTxController();
-    h.session!(projection({ state: 'connected', epoch: 1 }, 1), { state: 'connected', epoch: 1 });
-    host.refreshAuthority();
-    facade.start('desktop', 'lease', 'momentary');
-    await Promise.resolve(); await Promise.resolve();
-    expect(h.effects).toEqual(['audio', 'on']);
+    await h.barrier!();
+    await flush();
+    expect(h.sendPtt.mock.calls.map(([operation]) => operation)).toEqual(['ptt_on', 'ptt_off']);
+    expect(h.stopAudio).toHaveBeenCalledTimes(1);
+    expect(h.submit).not.toHaveBeenCalled();
     host.dispose();
-    expect(h.events).toContain('release');
-    expect(h.effects).toEqual(['audio', 'on', 'off', 'stop']);
+  });
+
+  it('destroy discharges a started TRANSMIT obligation with exactly one ForceOFF', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    getManagedAppTxController().transmitOn();
+    await vi.waitFor(() => expect(h.submit).toHaveBeenCalledWith('transmit_on'));
+    host.dispose(); host.dispose();
+    await vi.waitFor(() => expect(h.submit.mock.calls.map(([operation]) => operation))
+      .toEqual(['transmit_on', 'force_off']));
+    expect(h.sendPtt).not.toHaveBeenCalled();
+    expect(h.stopAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes disposed callbacks and facade actions inert', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    const facade = getManagedAppTxController();
+    host.dispose();
+    await flush();
+    const counts = [h.refresh, h.sendPtt, h.submit, h.startAudio].map((mock) => mock.mock.calls.length);
+    h.session!({ state: 'connected', epoch: 6 }); h.lifecycle!(); await h.barrier!();
+    facade.pttOn(); facade.pttOff(); facade.transmitOn(); facade.forceOff(); host.refreshAuthority();
+    await flush();
+    expect([h.refresh, h.sendPtt, h.submit, h.startAudio].map((mock) => mock.mock.calls.length)).toEqual(counts);
   });
 });

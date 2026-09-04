@@ -3,12 +3,13 @@ import { ManagedTxController, type ManagedTxDependencies } from '../managed-cont
 import type { ManagedTxState } from '../managed-state';
 
 const state = (fresh = true): ManagedTxState => ({
-  phase: fresh ? 'idle' : 'unknown', intent: null, radioTx: fresh ? 'off' : 'unknown',
+  phase: 'idle', intent: null, radioTx: fresh ? 'off' : 'unknown',
   txRisk: fresh ? 'none' : 'uncertain', fault: null, faultDetail: null, fresh,
   releaseRequired: false, remainingMs: null, lastOperation: null,
 });
 const h = { start: vi.fn<() => Promise<string | null>>(), stop: vi.fn(),
-  sendPtt: vi.fn(async () => 'accepted' as const), submit: vi.fn(async () => 'accepted' as const),
+  sendPtt: vi.fn<() => Promise<'accepted' | 'rejected'>>(async () => 'accepted'),
+  submit: vi.fn(async () => 'accepted' as const),
   projected: state(), audioDied: () => {} };
 function controller(): ManagedTxController {
   const dependencies: ManagedTxDependencies = {
