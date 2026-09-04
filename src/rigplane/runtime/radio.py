@@ -5098,7 +5098,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     resp = await self._send_civ_expect(
                         frame,
                         label="send_cw_text",
-                        is_current=is_current,
                     )
                 ack = parse_ack_nak(resp)
                 if ack is False:
