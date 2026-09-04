@@ -358,6 +358,13 @@ _EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
             band=1, register=1, frequency_hz=14_074_000, mode=1, filter=1
         )
     },
+    # Tone builders deliberately require the active profile's exact domain.
+    # Supply a synthetic domain here so this guard still reaches its map-key
+    # assertion without smuggling a fallback into production behavior.
+    "get_tone_freq": {"ctcss_tones_centihz": (8850, 10000)},
+    "set_tone_freq": {"freq_centihz": 8850, "ctcss_tones_centihz": (8850, 10000)},
+    "get_tsql_freq": {"ctcss_tones_centihz": (8850, 10000)},
+    "set_tsql_freq": {"freq_centihz": 8850, "ctcss_tones_centihz": (8850, 10000)},
 }
 
 
@@ -478,12 +485,21 @@ class TestExposedKeyDriftGuard:
         # routes through it, not just this batch's five.
         builders_module = sys.modules["rigplane.commands._builders"]
         monkeypatch.setattr(builders_module, "_build_from_map", _fake_build_from_map)
-        case_kwargs = self._synthesize_case(builder, cmd_map)
-        builder(to_addr=0x94, cmd_map=cmd_map, **case_kwargs)
+        target = inspect.unwrap(builder)
+        probe_map = cmd_map
+        if "ctcss_tones_centihz" in inspect.signature(target).parameters:
+            # Tone builders validate both their profile domain and their named
+            # command before reaching the patched frame builder.  Add only the
+            # builder's own placeholder command to this synthetic probe map.
+            probe_map = CommandMap(
+                {name: cmd_map.get(name) for name in cmd_map} | {_name: (0x1B, 0x00)}
+            )
+        case_kwargs = self._synthesize_case(builder, probe_map)
+        builder(to_addr=0x94, cmd_map=probe_map, **case_kwargs)
         assert "key" in captured, (
             f"{builder.__qualname__} did not call _build_from_map with cmd_map set"
         )
-        assert captured["key"] == builder.cmd_map_key(cmd_map)
+        assert captured["key"] == builder.cmd_map_key(probe_map)
 
 
 def test_ptt_off_is_also_covered_directly() -> None:
