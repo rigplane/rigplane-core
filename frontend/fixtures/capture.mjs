@@ -344,6 +344,22 @@ try {
     });
     const page = await context.newPage();
     const consoleErrors = [];
+    // The shared tuning-step store notifies the optional local RC-28
+    // companion on mount. The fixture has no companion, but this specific
+    // best-effort PUT must still settle before the strict console gate and
+    // context teardown below. Keep every other request on the normal route
+    // path so a genuinely broken resource remains visible to the harness.
+    const tuningStepUrl = `http://127.0.0.1:${PORT}/api/local/v1/rc28/tuning-step`;
+    const tuningStepFulfillments = [];
+    await page.route(tuningStepUrl, async (route) => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue();
+        return;
+      }
+      const fulfillment = route.fulfill({ status: 200, body: '{}' });
+      tuningStepFulfillments.push(fulfillment);
+      await fulfillment;
+    });
     // MOR-1430: attached BEFORE `page.goto` below (deterministic — no race
     // with navigation) alongside the console/pageerror traps.
     //
@@ -449,6 +465,7 @@ try {
     }
 
     // ── BEHAVIOR ASSERTIONS FIRST ────────────────────────────────────────
+    await Promise.all(tuningStepFulfillments);
     const resizedVp = spec.resizeTo ? VIEWPORTS[spec.resizeTo] : vp;
     const options = {
       arrangement: resizedVp.arrangement,
