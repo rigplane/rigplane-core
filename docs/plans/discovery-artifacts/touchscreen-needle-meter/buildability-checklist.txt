@@ -1,0 +1,244 @@
+# Buildability checklist (MOR-2217) — fill every line; do not delete any.
+# FIELD <name>: the drawn element, or `unavailable: <reason>`.
+# INTENT <name>: the feedback mechanism, or `display-only`.
+FIELD AntennaViewModel.antennaCount: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD AntennaViewModel.rxAnt: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD AntennaViewModel.txAntenna: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD BandViewModel.bandChoices: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD BandViewModel.currentBand: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD BandViewModel.currentBandTx: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD BandViewModel.tuneMaxHz: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD BandViewModel.tuneMinHz: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD CwKeyerViewModel.apf: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD CwKeyerViewModel.breakIn: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD CwKeyerViewModel.breakInDelay: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD CwKeyerViewModel.keyerSpeed: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD CwKeyerViewModel.pitchHz: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD CwKeyerViewModel.reversePaddle: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD CwKeyerViewModel.twinPeak: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.agcMode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.agcModes: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.agcTimeConstant: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.manualNotchWidth: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.nbActive: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.nbDepth: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.nbLevel: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.nbWidth: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.notchFreq: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.notchMode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.nrActive: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.nrLevel: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD DspViewModel.nrLevelProjection: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD FilterPassbandViewModel.dataMode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD FilterPassbandViewModel.filterShape: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD FilterPassbandViewModel.filterShapeControlStructural: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD FilterPassbandViewModel.ifShift: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD FilterPassbandViewModel.ifShiftControlStructural: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD FilterPassbandViewModel.pbtInner: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD FilterPassbandViewModel.pbtOuter: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD MetersViewModel.alc: backed by static ALC scale artwork; no live pointer in selected Po fixture
+FIELD MetersViewModel.compression: backed by static COMP scale artwork; no live pointer in selected Po fixture
+FIELD MetersViewModel.drainCurrent: backed by static Id scale label; no live pointer in selected Po fixture
+FIELD MetersViewModel.drainVoltage: backed by static Vd scale label; no live pointer in selected Po fixture
+FIELD MetersViewModel.power: backed by selected Po pointer, known/unknown/unsupported/relevance treatments
+FIELD MetersViewModel.rfState: backed by selected meter data-state and relevance treatment
+FIELD MetersViewModel.signal: backed by S scale artwork; future selection uses the same state grammar
+FIELD MetersViewModel.swr: backed by static SWR scale artwork; no live pointer in selected Po fixture
+FIELD ModeFilterViewModel.currentFilter: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ModeFilterViewModel.currentMode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ModeFilterViewModel.filterChoices: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ModeFilterViewModel.filterWidth: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ModeFilterViewModel.filterWidthMax: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ModeFilterViewModel.filterWidthMin: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ModeFilterViewModel.modeChoices: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.activeReceiver: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.antenna: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.band: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.cwKeyer: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.disabledReasons: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.dsp: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.dualWatch: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.filterPassband: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.meters: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.modeFilter: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.receiverIndicators: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.rfFrontEnd: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.ritXit: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.rxAudio: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.scan: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.scope: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.scopeControls: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.scopeDisplay: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.split: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.topologyId: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.txAux: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.txPermit: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.txTarget: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.vfoScheme: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RadioViewModel.vfos: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.agcMode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.attenuator: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.availability: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.bandwidthHz: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.digiSel: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.ipPlus: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.nbActive: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.notchMode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.nrActive: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.preamp: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.receiver: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.rfGain: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.rfState: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ReceiverIndicatorViewModel.sMeter: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RfFrontEndViewModel.attValues: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RfFrontEndViewModel.attenuator: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RfFrontEndViewModel.digiSel: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RfFrontEndViewModel.ipPlus: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RfFrontEndViewModel.preValues: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RfFrontEndViewModel.preamp: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RfFrontEndViewModel.rfGain: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RfFrontEndViewModel.squelch: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RitXitViewModel.ritActive: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RitXitViewModel.ritOffset: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RitXitViewModel.xitActive: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RitXitViewModel.xitOffset: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RxAudioViewModel.afLevel: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RxAudioViewModel.liveAudio: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RxAudioViewModel.modInputReadiness: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RxAudioViewModel.modInputSource: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RxAudioViewModel.monitorMode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RxAudioViewModel.routingFocus: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD RxAudioViewModel.routingSplit: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScanViewModel.scanResumeMode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScanViewModel.scanType: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScanViewModel.scanning: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeAvailabilityViewModel.audioFftScope: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeAvailabilityViewModel.hardwareScope: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.centerType: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.dual: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.duringTx: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.edge: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.hold: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.mode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.rbw: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.receiver: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.refDb: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.span: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.speed: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeControlsViewModel.vbwNarrow: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeDisplayViewModel.hardwareConnected: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeDisplayViewModel.health: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD ScopeDisplayViewModel.source: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.antiVoxGain: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.atu: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.compressor: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.compressorLevel: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.driveGain: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.micGain: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.monitor: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.monitorLevel: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.rfPower: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.vox: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.voxDelay: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD TxAuxViewModel.voxGain: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.filter: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.frequencyHz: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.isActive: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.isActiveSlot: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.isTxTarget: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.label: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.mode: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.receiver: unavailable: outside selectedRegion main-multiscale-needle-meter
+FIELD VfoViewModel.slot: unavailable: outside selectedRegion main-multiscale-needle-meter
+INTENT cw_auto_tune: display-only: selectedRegion dispatches no intent
+INTENT memory_clear: display-only: selectedRegion dispatches no intent
+INTENT memory_to_vfo: display-only: selectedRegion dispatches no intent
+INTENT memory_write: display-only: selectedRegion dispatches no intent
+INTENT quick_dualwatch: display-only: selectedRegion dispatches no intent
+INTENT quick_split: display-only: selectedRegion dispatches no intent
+INTENT scan_set_df_span: display-only: selectedRegion dispatches no intent
+INTENT scan_set_resume: display-only: selectedRegion dispatches no intent
+INTENT scan_start: display-only: selectedRegion dispatches no intent
+INTENT scan_stop: display-only: selectedRegion dispatches no intent
+INTENT set_af_level: display-only: selectedRegion dispatches no intent
+INTENT set_agc: display-only: selectedRegion dispatches no intent
+INTENT set_agc_time_constant: display-only: selectedRegion dispatches no intent
+INTENT set_antenna_1: display-only: selectedRegion dispatches no intent
+INTENT set_antenna_2: display-only: selectedRegion dispatches no intent
+INTENT set_anti_vox_gain: display-only: selectedRegion dispatches no intent
+INTENT set_apf: display-only: selectedRegion dispatches no intent
+INTENT set_attenuator: display-only: selectedRegion dispatches no intent
+INTENT set_auto_notch: display-only: selectedRegion dispatches no intent
+INTENT set_band: display-only: selectedRegion dispatches no intent
+INTENT set_break_in: display-only: selectedRegion dispatches no intent
+INTENT set_break_in_delay: display-only: selectedRegion dispatches no intent
+INTENT set_compressor: display-only: selectedRegion dispatches no intent
+INTENT set_compressor_level: display-only: selectedRegion dispatches no intent
+INTENT set_cw_pitch: display-only: selectedRegion dispatches no intent
+INTENT set_dash_ratio: display-only: selectedRegion dispatches no intent
+INTENT set_data1_mod_input: display-only: selectedRegion dispatches no intent
+INTENT set_data2_mod_input: display-only: selectedRegion dispatches no intent
+INTENT set_data3_mod_input: display-only: selectedRegion dispatches no intent
+INTENT set_data_mode: display-only: selectedRegion dispatches no intent
+INTENT set_data_off_mod_input: display-only: selectedRegion dispatches no intent
+INTENT set_dial_lock: display-only: selectedRegion dispatches no intent
+INTENT set_digisel: display-only: selectedRegion dispatches no intent
+INTENT set_drive_gain: display-only: selectedRegion dispatches no intent
+INTENT set_dual_watch: display-only: selectedRegion dispatches no intent
+INTENT set_filter: display-only: selectedRegion dispatches no intent
+INTENT set_filter_shape: display-only: selectedRegion dispatches no intent
+INTENT set_filter_width: display-only: selectedRegion dispatches no intent
+INTENT set_freq: display-only: selectedRegion dispatches no intent
+INTENT set_if_shift: display-only: selectedRegion dispatches no intent
+INTENT set_ip_plus: display-only: selectedRegion dispatches no intent
+INTENT set_key_speed: display-only: selectedRegion dispatches no intent
+INTENT set_main_sub_tracking: display-only: selectedRegion dispatches no intent
+INTENT set_manual_notch: display-only: selectedRegion dispatches no intent
+INTENT set_manual_notch_width: display-only: selectedRegion dispatches no intent
+INTENT set_memory_mode: display-only: selectedRegion dispatches no intent
+INTENT set_mic_gain: display-only: selectedRegion dispatches no intent
+INTENT set_mode: display-only: selectedRegion dispatches no intent
+INTENT set_monitor: display-only: selectedRegion dispatches no intent
+INTENT set_monitor_gain: display-only: selectedRegion dispatches no intent
+INTENT set_nb: display-only: selectedRegion dispatches no intent
+INTENT set_nb_depth: display-only: selectedRegion dispatches no intent
+INTENT set_nb_level: display-only: selectedRegion dispatches no intent
+INTENT set_nb_width: display-only: selectedRegion dispatches no intent
+INTENT set_notch_filter: display-only: selectedRegion dispatches no intent
+INTENT set_nr: display-only: selectedRegion dispatches no intent
+INTENT set_nr_level: display-only: selectedRegion dispatches no intent
+INTENT set_pbt_inner: display-only: selectedRegion dispatches no intent
+INTENT set_pbt_outer: display-only: selectedRegion dispatches no intent
+INTENT set_powerstat: display-only: selectedRegion dispatches no intent
+INTENT set_preamp: display-only: selectedRegion dispatches no intent
+INTENT set_rf_gain: display-only: selectedRegion dispatches no intent
+INTENT set_rf_power: display-only: selectedRegion dispatches no intent
+INTENT set_rit_frequency: display-only: selectedRegion dispatches no intent
+INTENT set_rit_status: display-only: selectedRegion dispatches no intent
+INTENT set_rit_tx_status: display-only: selectedRegion dispatches no intent
+INTENT set_rx_antenna_ant1: display-only: selectedRegion dispatches no intent
+INTENT set_rx_antenna_ant2: display-only: selectedRegion dispatches no intent
+INTENT set_scope_center_type: display-only: selectedRegion dispatches no intent
+INTENT set_scope_dual: display-only: selectedRegion dispatches no intent
+INTENT set_scope_during_tx: display-only: selectedRegion dispatches no intent
+INTENT set_scope_edge: display-only: selectedRegion dispatches no intent
+INTENT set_scope_hold: display-only: selectedRegion dispatches no intent
+INTENT set_scope_mode: display-only: selectedRegion dispatches no intent
+INTENT set_scope_rbw: display-only: selectedRegion dispatches no intent
+INTENT set_scope_ref: display-only: selectedRegion dispatches no intent
+INTENT set_scope_span: display-only: selectedRegion dispatches no intent
+INTENT set_scope_speed: display-only: selectedRegion dispatches no intent
+INTENT set_scope_vbw: display-only: selectedRegion dispatches no intent
+INTENT set_split: display-only: selectedRegion dispatches no intent
+INTENT set_squelch: display-only: selectedRegion dispatches no intent
+INTENT set_tuner_status: display-only: selectedRegion dispatches no intent
+INTENT set_twin_peak: display-only: selectedRegion dispatches no intent
+INTENT set_vfo: display-only: selectedRegion dispatches no intent
+INTENT set_vox: display-only: selectedRegion dispatches no intent
+INTENT set_vox_delay: display-only: selectedRegion dispatches no intent
+INTENT set_vox_gain: display-only: selectedRegion dispatches no intent
+INTENT speak: display-only: selectedRegion dispatches no intent
+INTENT switch_scope_receiver: display-only: selectedRegion dispatches no intent
+INTENT vfo_equalize: display-only: selectedRegion dispatches no intent
+INTENT vfo_swap: display-only: selectedRegion dispatches no intent
+
