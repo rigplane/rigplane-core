@@ -26,6 +26,107 @@ export function parseScopeFrame(buf: ArrayBuffer): ScopeFrame | null {
   });
 }
 
+/** The one LCD/SDR silence boundary. A frame is stale at this exact age. */
+export const SCOPE_FRAME_SILENCE_MS = 500;
+
+export type QualifiedScopeSource = 'hardware' | 'audio_fft';
+
+/**
+ * Runtime-qualified receipt. `wireSequence` is diagnostic continuity only;
+ * the locally accepted sequence and the three authority epochs are the
+ * lifecycle identity.
+ */
+export interface QualifiedScopeFrameEnvelope {
+  readonly source: QualifiedScopeSource;
+  readonly receiver: 0 | 1;
+  readonly providerGeneration: number;
+  readonly transportEpoch: number;
+  readonly receivedAt: number;
+  readonly acceptedSequence: number;
+  readonly wireSequence: number;
+  readonly frame: ScopeFrame;
+}
+
+export type ScopeFrameReceiptIdentity = Omit<QualifiedScopeFrameEnvelope, 'frame' | 'wireSequence'>;
+
+export interface ScopeFrameProjectionAuthority {
+  readonly source: QualifiedScopeSource;
+  readonly receiver: 0 | 1 | null;
+  readonly providerGeneration: number | null;
+  readonly transportEpoch: number | null;
+  readonly demanded: boolean;
+  readonly transport: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+  readonly nowMonotonic: number;
+}
+
+/** Structural match for the MOR-2321 LCD display-frame model. */
+export interface ScopeDisplayFrameCandidate {
+  readonly source: 'hardware' | 'audio-fft';
+  readonly receiver: 'MAIN' | 'SUB';
+  readonly freshness: 'fresh' | 'stale';
+  readonly startHz: number;
+  readonly endHz: number;
+  readonly normalizedBins: readonly number[];
+}
+
+const safeNonnegativeInteger = (value: unknown): value is number =>
+  Number.isSafeInteger(value) && (value as number) >= 0;
+const safePositiveInteger = (value: unknown): value is number =>
+  Number.isSafeInteger(value) && (value as number) > 0;
+
+export function qualifyScopeFrameEnvelope(
+  frame: ScopeFrame,
+  identity: ScopeFrameReceiptIdentity,
+  wireSequence: number,
+): QualifiedScopeFrameEnvelope | null {
+  if ((frame.receiver !== 0 && frame.receiver !== 1) || frame.receiver !== identity.receiver
+    || !safeNonnegativeInteger(identity.providerGeneration)
+    || !safePositiveInteger(identity.transportEpoch)
+    || !Number.isFinite(identity.receivedAt) || identity.receivedAt < 0
+    || !safePositiveInteger(identity.acceptedSequence)
+    || !safeNonnegativeInteger(wireSequence) || wireSequence > 0xffff) return null;
+  const retainedFrame = Object.freeze({ ...frame, pixels: new Uint8Array(frame.pixels) });
+  return Object.freeze({ ...identity, wireSequence, frame: retainedFrame });
+}
+
+/**
+ * Pure projection only: no store, clock, timer, transport, or alternate-source read.
+ * The caller supplies one monotonic snapshot from the controller's domain.
+ */
+export function toScopeDisplayFrame(
+  envelope: QualifiedScopeFrameEnvelope | null,
+  authority: ScopeFrameProjectionAuthority,
+): ScopeDisplayFrameCandidate | null {
+  if (!envelope || !authority.demanded || authority.transport !== 'connected'
+    || authority.receiver === null || !safeNonnegativeInteger(authority.providerGeneration)
+    || !safePositiveInteger(authority.transportEpoch)
+    || envelope.source !== authority.source || envelope.receiver !== authority.receiver
+    || envelope.providerGeneration !== authority.providerGeneration
+    || envelope.transportEpoch !== authority.transportEpoch
+    || !safeNonnegativeInteger(envelope.providerGeneration)
+    || !safePositiveInteger(envelope.transportEpoch)
+    || !safePositiveInteger(envelope.acceptedSequence)
+    || !safeNonnegativeInteger(envelope.wireSequence)
+    || !Number.isFinite(envelope.receivedAt) || envelope.receivedAt < 0
+    || !Number.isFinite(authority.nowMonotonic)) return null;
+
+  const age = authority.nowMonotonic - envelope.receivedAt;
+  const { frame } = envelope;
+  if (age < 0 || !(frame.pixels instanceof Uint8Array) || frame.pixels.length < 2
+    || frame.receiver !== envelope.receiver || !Number.isFinite(frame.startFreq)
+    || !Number.isFinite(frame.endFreq) || frame.endFreq <= frame.startFreq) return null;
+
+  const normalizedBins = Object.freeze(Array.from(frame.pixels, (sample) => sample / 255));
+  return Object.freeze({
+    source: envelope.source === 'audio_fft' ? 'audio-fft' : 'hardware',
+    receiver: envelope.receiver === 0 ? 'MAIN' : 'SUB',
+    freshness: age < SCOPE_FRAME_SILENCE_MS ? 'fresh' : 'stale',
+    startHz: frame.startFreq,
+    endHz: frame.endFreq,
+    normalizedBins,
+  });
+}
+
 import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ScopeControlsViewModel } from '../../../semantic/radio-view-model';

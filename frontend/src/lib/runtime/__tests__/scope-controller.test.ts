@@ -17,11 +17,14 @@ import type { ScopeFrame } from '../scope-controller.svelte';
 function makeMockChannel() {
   const binaryHandlers = new Set<(buf: ArrayBuffer) => void>();
   const stateHandlers = new Set<(state: string) => void>();
+  const sessionHandlers = new Set<(transition: { state: string; epoch: number }) => void>();
   const binaryHistory: Array<(buf: ArrayBuffer) => void> = [];
   const stateHistory: Array<(state: string) => void> = [];
   let state = 'disconnected';
+  let sessionEpoch = 1;
   return {
     get state() { return state; },
+    get sessionEpoch() { return sessionEpoch; },
     connect: vi.fn(),
     disconnect: vi.fn(),
     onBinary: vi.fn((handler: (buf: ArrayBuffer) => void) => {
@@ -34,17 +37,24 @@ function makeMockChannel() {
       stateHistory.push(handler);
       return () => { stateHandlers.delete(handler); };
     }),
+    onSessionTransition: vi.fn((handler: (transition: { state: string; epoch: number }) => void) => {
+      sessionHandlers.add(handler);
+      return () => { sessionHandlers.delete(handler); };
+    }),
     /** Fire a binary message to all registered handlers. */
     _fire(buf: ArrayBuffer) {
       for (const h of binaryHandlers) h(buf);
     },
     _setState(next: string) {
+      if (next === 'connected' && state !== 'connected') sessionEpoch += 1;
       state = next;
       for (const h of stateHandlers) h(next);
+      for (const h of sessionHandlers) h({ state: next, epoch: sessionEpoch });
     },
     _binaryHistory: binaryHistory, _stateHistory: stateHistory,
     _handlerCount() { return binaryHandlers.size; },
     _stateHandlerCount() { return stateHandlers.size; },
+    _sessionHandlerCount() { return sessionHandlers.size; },
   };
 }
 
@@ -58,6 +68,44 @@ function makeScopeFrameBuffer(pixelCount = 4): ArrayBuffer {
   view.setUint32(7, 14_200_000, true); // endFreq
   view.setUint16(14, pixelCount, true);
   return buf;
+}
+
+function makeTiming() {
+  let now = 0;
+  let nextId = 1;
+  const tasks = new Map<number, { at: number; callback: () => void; cancelled: boolean }>();
+  const timing = {
+    now: () => now,
+    setTimeout: (callback: () => void, delayMs: number) => {
+      const id = nextId++;
+      tasks.set(id, { at: now + delayMs, callback, cancelled: false });
+      return id as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimeout: (handle: ReturnType<typeof setTimeout>) => {
+      const task = tasks.get(handle as unknown as number);
+      if (task) task.cancelled = true;
+    },
+  };
+  return {
+    timing,
+    advance(ms: number) {
+      now += ms;
+      let progressed = true;
+      while (progressed) {
+        progressed = false;
+        for (const [id, task] of [...tasks]) {
+          if (!task.cancelled && task.at <= now) {
+            tasks.delete(id);
+            task.callback();
+            progressed = true;
+          }
+        }
+      }
+    },
+    fireEvenIfCancelled(id: number) { tasks.get(id)?.callback(); },
+    ids: () => [...tasks.keys()],
+    activeCount: () => [...tasks.values()].filter((task) => !task.cancelled).length,
+  };
 }
 
 // ── Tests ──
@@ -566,5 +614,109 @@ describe('ScopeController', () => {
       demanded: false, transport: 'disconnected', frameSeen: false,
     });
     expect(audio.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['hardware', 'hardwareScopeDriver'],
+    ['audio_fft', 'audioFftDriver'],
+  ] as const)('owns a live %s receipt only below the exact 500 ms boundary', async (source, driverName) => {
+    const timed = makeTiming();
+    const local = makeMockChannel();
+    const controller = new ScopeController(() => local as any, timed.timing);
+    controller.setFrameAuthority({ source, receiver: 0, providerGeneration: 9 });
+    const driver = controller[driverName];
+    const handle = await driver.start();
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer());
+
+    const receipt = controller.snapshotFrameEvidence().envelope;
+    expect(receipt).toMatchObject({
+      source, receiver: 0, providerGeneration: 9,
+      transportEpoch: local.sessionEpoch, receivedAt: 0, acceptedSequence: 1,
+    });
+    expect(controller.snapshotHealth(source).frameSeen).toBe(true);
+    timed.advance(499);
+    expect(controller.snapshotHealth(source).frameSeen).toBe(true);
+    timed.advance(1);
+    expect(controller.snapshotHealth(source).frameSeen).toBe(false);
+    expect(controller.snapshotFrameEvidence().envelope).toBe(receipt);
+    await driver.stop(handle);
+  });
+
+  it('does not let a delayed older expiry callback clear a newer receipt', async () => {
+    const timed = makeTiming();
+    const local = makeMockChannel();
+    const controller = new ScopeController(() => local as any, timed.timing);
+    controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 2 });
+    const handle = await controller.hardwareScopeDriver.start();
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer());
+    const oldTimer = timed.ids()[0];
+    timed.advance(100);
+    local._fire(makeScopeFrameBuffer());
+    const newer = controller.snapshotFrameEvidence().envelope;
+
+    timed.fireEvenIfCancelled(oldTimer);
+    expect(controller.snapshotFrameEvidence().envelope).toBe(newer);
+    expect(controller.snapshotHealth('hardware').frameSeen).toBe(true);
+    expect(newer?.acceptedSequence).toBe(2);
+    await controller.hardwareScopeDriver.stop(handle);
+  });
+
+  it('invalidates source, receiver, provider, transport, and demand boundaries immediately', async () => {
+    const timed = makeTiming();
+    const local = makeMockChannel();
+    const controller = new ScopeController(() => local as any, timed.timing);
+    controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 3 });
+    let handle = await controller.hardwareScopeDriver.start();
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer());
+    expect(controller.snapshotFrameEvidence().envelope).not.toBeNull();
+
+    controller.setFrameAuthority({ source: 'audio_fft', receiver: 0, providerGeneration: 3 });
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+    controller.setFrameAuthority({ source: 'hardware', receiver: null, providerGeneration: 3 });
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+    controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 4 });
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+
+    await controller.hardwareScopeDriver.stop(handle);
+    handle = await controller.hardwareScopeDriver.start();
+    local._setState('reconnecting');
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer());
+    expect(controller.snapshotFrameEvidence().envelope).not.toBeNull();
+    local._setState('reconnecting');
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+    expect(controller.snapshotHealth('hardware').frameSeen).toBe(false);
+
+    await controller.hardwareScopeDriver.stop(handle);
+    expect(controller.snapshotFrameEvidence().authority.demanded).toBe(false);
+    expect(timed.activeCount()).toBe(0);
+  });
+
+  it('rejects mismatched receivers and old provider callbacks without reviving or clearing current facts', async () => {
+    const timed = makeTiming();
+    const local = makeMockChannel();
+    const controller = new ScopeController(() => local as any, timed.timing);
+    controller.setFrameAuthority({ source: 'hardware', receiver: 1, providerGeneration: 5 });
+    const oldHandle = await controller.hardwareScopeDriver.start();
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer());
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+
+    await controller.hardwareScopeDriver.stop(oldHandle);
+    controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 5 });
+    const currentHandle = await controller.hardwareScopeDriver.start();
+    const oldGenerationCallback = local._binaryHistory.at(-1)!;
+    local._setState('connected');
+    local._fire(makeScopeFrameBuffer());
+    expect(controller.snapshotFrameEvidence().envelope?.providerGeneration).toBe(5);
+    controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 6 });
+    oldGenerationCallback(makeScopeFrameBuffer());
+    expect(controller.snapshotFrameEvidence().envelope).toBeNull();
+    await controller.hardwareScopeDriver.stop(currentHandle);
+    expect([local._handlerCount(), local._stateHandlerCount(), local._sessionHandlerCount()])
+      .toEqual([0, 0, 0]);
   });
 });
