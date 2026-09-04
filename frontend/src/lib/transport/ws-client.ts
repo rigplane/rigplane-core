@@ -258,6 +258,7 @@ export class WsChannel {
     ws.onmessage = (event: MessageEvent) => {
       if (this.ws === ws) this._resetHeartbeat();
       if (event.data instanceof ArrayBuffer) {
+        if (this.ws !== ws) return;
         this.binaryHandlers.forEach((h) => h(event.data as ArrayBuffer));
       } else {
         try {
