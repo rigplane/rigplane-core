@@ -558,6 +558,16 @@ _POST_WRITE_READBACK_FIELDS: dict[type, Callable[[Any], tuple[FieldPath, ...]]] 
     SetFilterWidth: lambda cmd: (
         FieldPath.active(_post_write_receiver_id(cmd), "freq_mode", "filter_width"),
     ),
+    SetToneFreq: lambda cmd: (
+        FieldPath.receiver(
+            _post_write_receiver_id(cmd), "operator_controls", "tone_freq"
+        ),
+    ),
+    SetTsqlFreq: lambda cmd: (
+        FieldPath.receiver(
+            _post_write_receiver_id(cmd), "operator_controls", "tsql_freq"
+        ),
+    ),
     SetBreakInDelay: lambda cmd: (
         FieldPath.global_("operator_controls", "break_in_delay"),
     ),
@@ -1169,6 +1179,29 @@ class RadioPoller:
         raise NotImplementedError(
             "radio-poller unsupported: unknown profile-less radio"
         )
+
+    def _validated_ctcss_centihz(self, value: Any) -> int:
+        """Return one exact neutral CTCSS value from the active profile domain.
+
+        The profile loader remains the only owner of catalog resolution and
+        detailed CTCSS limits.  This runtime boundary deliberately performs
+        no model selection, unit conversion, or fallback: it only rejects a
+        profile object that does not carry the loader's immutable, ascending
+        integer-domain shape and rejects values outside that exact domain.
+        """
+
+        domain = self._profile.ctcss_tones_centihz
+        if (
+            type(value) is not int
+            or type(domain) is not tuple
+            or not domain
+            or any(type(candidate) is not int for candidate in domain)
+            or any(first >= second for first, second in zip(domain, domain[1:]))
+        ):
+            raise CommandError("invalid CTCSS profile domain or centiHz value")
+        if value not in domain:
+            raise CommandError("centiHz value is outside the CTCSS profile domain")
+        return value
 
     def _vfo_command_profile(self, command: str) -> RadioProfile:
         """Resolve the exact profile allowed to declare a VFO primitive."""
@@ -3179,6 +3212,7 @@ class RadioPoller:
                     await radio.set_compressor(on)
             case SetToneFreq(freq_hz=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_tone_freq")
+                freq = self._validated_ctcss_centihz(freq)
                 if CAP_REPEATER_TONE in self._caps:
                     await radio.set_tone_freq(freq, receiver=rx)
                 if self._radio_state:
@@ -3188,6 +3222,7 @@ class RadioPoller:
                     target.tone_freq = freq
             case SetTsqlFreq(freq_hz=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_tsql_freq")
+                freq = self._validated_ctcss_centihz(freq)
                 if CAP_TSQL in self._caps:
                     await radio.set_tsql_freq(freq, receiver=rx)
                 if self._radio_state:
