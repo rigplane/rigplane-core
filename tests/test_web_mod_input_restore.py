@@ -338,17 +338,16 @@ class TestTeardownPttRelease:
 
 
 class TestRunTeardownWiring:
-    """run()'s finally must reach the release before any step that can raise."""
+    """A handler without managed authority cannot invent a teardown release."""
 
     @pytest.mark.asyncio
-    async def test_run_releases_ptt_on_disconnect_without_arm(self) -> None:
+    async def test_run_without_authority_enqueues_no_disconnect_ptt(self) -> None:
         handler, q = _make_run_handler()
         await handler.run()
-        assert q.drain() == [PttOff()]
+        assert q.drain() == []
 
     @pytest.mark.asyncio
-    async def test_release_survives_dead_egress_socket(self) -> None:
-        """A dead egress socket kills the sender; ``await event_task`` re-raises."""
+    async def test_dead_egress_does_not_add_a_legacy_release(self) -> None:
         handler, q = _make_run_handler()
         handler._ws.send_text = AsyncMock(
             side_effect=[None, None, ConnectionResetError("egress socket closed")]
@@ -357,16 +356,15 @@ class TestRunTeardownWiring:
         handler._event_queue.put_nowait({"type": "state_update"})
         with pytest.raises(ConnectionResetError):
             await handler.run()
-        assert q.drain() == [PttOn(), PttOff()]
+        assert q.drain() == [PttOn()]
 
     @pytest.mark.asyncio
-    async def test_release_survives_unregister_failure(self) -> None:
-        """``unregister_control_event_queue`` broadcasts; it is not raise-free."""
+    async def test_unregister_failure_does_not_add_a_legacy_release(self) -> None:
         handler, q = _make_run_handler(unregister=MagicMock(side_effect=RuntimeError))
         handler._enqueue_rc_power("ptt_on", {}, q, handler._radio)
         with pytest.raises(RuntimeError):
             await handler.run()
-        assert q.drain() == [PttOn(), PttOff()]
+        assert q.drain() == [PttOn()]
 
 
 class TestCommandRouting:

@@ -4116,6 +4116,7 @@ class WebServer:
             self._config.radio_model,
             server=server if server is not None else self,
             read_only=self._config.read_only,
+            managed_tx_authority=self._managed_tx_authority(),
         )
 
     async def _handle_http_commands(
@@ -5237,6 +5238,7 @@ class WebServer:
                     self._config.radio_model,
                     server=self,
                     read_only=self._config.read_only,
+                    managed_tx_authority=self._managed_tx_authority(),
                 )
                 resp = await handler._enqueue_command(  # noqa: SLF001
                     "send_cw_text",
@@ -5250,6 +5252,7 @@ class WebServer:
                     self._config.radio_model,
                     server=self,
                     read_only=self._config.read_only,
+                    managed_tx_authority=self._managed_tx_authority(),
                 )
                 resp = await handler._enqueue_command(  # noqa: SLF001
                     "stop_cw_text",
@@ -5937,6 +5940,7 @@ class WebServer:
                 model,
                 server=self,
                 read_only=self._config.read_only,
+                managed_tx_authority=self._managed_tx_authority(),
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)
