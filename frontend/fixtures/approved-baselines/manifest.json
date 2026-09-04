@@ -4,6 +4,10 @@
   "commit": "675820806d2927a06128ed1a027e085aaf67d633",
   "commitShort": "67582080",
   "branch": "codex/tmp-pr3156-visual-67582080",
+  "additions": [
+    { "file": "unified-instrument--desktop.png", "commit": "78194edd972c171d81651510e9cb9023ac1415d2", "visualRun": 33871576834, "artifactId": 9936138575, "artifactDigest": "sha256:ef47e99ce55c47acae6fab2cac5ba643ea88c4f0c2f9f4c66e94b0265754d154" },
+    { "file": "panadapter-first--desktop.png", "commit": "78194edd972c171d81651510e9cb9023ac1415d2", "visualRun": 33871576834, "artifactId": 9936138575, "artifactDigest": "sha256:ef47e99ce55c47acae6fab2cac5ba643ea88c4f0c2f9f4c66e94b0265754d154" }
+  ],
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",
