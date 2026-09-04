@@ -11,6 +11,8 @@ from enum import StrEnum
 
 from .types import CivFrame
 
+_REQUEST_DATA_PREFIX_COMMANDS = frozenset({0x07, 0x25, 0x26})
+
 __all__ = [
     "CivEvent",
     "CivEventType",
@@ -80,7 +82,9 @@ def request_key_from_frame(frame: CivFrame) -> CivRequestKey:
         command=frame.command,
         sub=frame.sub,
         receiver=frame.receiver,
-        data_prefix=frame.data,
+        data_prefix=(
+            frame.data if frame.command in _REQUEST_DATA_PREFIX_COMMANDS else b""
+        ),
     )
 
 

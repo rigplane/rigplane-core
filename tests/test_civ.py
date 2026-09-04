@@ -55,6 +55,21 @@ def test_request_key_preserves_outgoing_data_prefix() -> None:
     )
 
 
+def test_request_key_ignores_data_for_non_selector_commands() -> None:
+    frame = CivFrame(
+        to_addr=0xE0,
+        from_addr=0x98,
+        command=0x27,
+        sub=0x1F,
+        data=b"\x00",
+    )
+
+    assert request_key_from_frame(frame) == CivRequestKey(
+        command=0x27,
+        sub=0x1F,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("command", "expected_prefix", "wrong_prefix"),
