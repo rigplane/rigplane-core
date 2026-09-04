@@ -77,10 +77,17 @@ def _icom_poller(radio: MagicMock) -> RadioPoller:
     return poller
 
 
+def _server(radio: object) -> WebServer:
+    server = WebServer(radio, WebConfig())  # type: ignore[arg-type]
+    server.command_queue.bind_connection_generation(lambda: "test-connection")
+    return server
+
+
 async def _drain_yaesu(server: WebServer, radio: object) -> None:
     await server.command_queue.wait(timeout=1.0)
     poller = YaesuCatPoller.__new__(YaesuCatPoller)
     poller._radio = radio  # type: ignore[attr-defined]
+    poller._managed_tx_authority = None  # noqa: SLF001
     for entry in server.command_queue.drain_entries():
         if entry.future is not None and entry.future.cancelled():
             continue
@@ -98,7 +105,7 @@ async def _drain_yaesu(server: WebServer, radio: object) -> None:
 @pytest.mark.parametrize("surface", ["http", "ws"])
 async def test_success_waits_for_real_yaesu_drain(surface: str) -> None:
     radio = _radio()
-    server = WebServer(radio, WebConfig())
+    server = _server(radio)
     if surface == "http":
         writer = _Writer()
         request = asyncio.create_task(
@@ -169,7 +176,7 @@ async def test_structured_error_reaches_every_surface(
     batch_status: str,
 ) -> None:
     radio = _radio(error=error, supported=supported)
-    server = WebServer(radio, WebConfig())
+    server = _server(radio)
     payload = {"id": "shift", "name": "set_repeater_shift", "params": {"direction": 2}}
     if surface == "http":
         writer = _Writer()
@@ -216,7 +223,7 @@ async def test_descriptor_preflight_rejects_without_queue_or_overlay() -> None:
         RigctldClientRadio(host="127.0.0.1", port=4532),
     )
     for radio in radios:
-        server = WebServer(radio, WebConfig())
+        server = _server(radio)
         with pytest.raises(CommandUnsupportedError):
             await server._control_handler_for()._enqueue_command(  # noqa: SLF001
                 "set_repeater_shift", {"direction": 1}, source="http"
@@ -243,6 +250,7 @@ async def test_all_three_drains_execute_the_same_neutral_intent() -> None:
         elif drain == "yaesu":
             poller = YaesuCatPoller.__new__(YaesuCatPoller)
             poller._radio = radio  # type: ignore[attr-defined]
+            poller._managed_tx_authority = None  # noqa: SLF001
             await poller._execute_command(intent)  # noqa: SLF001
         else:
             poller = RigctldClientObservationPoller.__new__(
@@ -362,6 +370,7 @@ async def test_yaesu_drain_rejects_non_admitted_policy_before_radio_invocation(
     _install_non_admitted_descriptor(monkeypatch)
     poller = YaesuCatPoller.__new__(YaesuCatPoller)
     poller._radio = radio  # type: ignore[attr-defined]
+    poller._managed_tx_authority = None  # noqa: SLF001
 
     with pytest.raises(CommandError, match="is not admitted"):
         await poller._execute_command(intent)  # noqa: SLF001
@@ -392,7 +401,7 @@ async def test_descriptor_enqueue_preserves_queue_lifecycle_metadata() -> None:
     from rigplane.core.command_dispatch import prepare_command_intent
 
     radio = _radio()
-    server = WebServer(radio, WebConfig())
+    server = _server(radio)
     intent = prepare_command_intent(
         radio,
         "set_repeater_shift",
@@ -431,7 +440,7 @@ async def test_descriptor_queue_failure_completes_lifecycle_exactly_once() -> No
     from rigplane.core.command_dispatch import prepare_command_intent
 
     radio = _radio()
-    server = WebServer(radio, WebConfig())
+    server = _server(radio)
     intent = prepare_command_intent(
         radio,
         "set_repeater_shift",
@@ -473,7 +482,7 @@ async def test_descriptor_timeout_and_cancellation_cleanup_is_exact_once() -> No
         command_id="cancel-me",
         session_id="ws-a",
     )
-    server = WebServer(radio, WebConfig())
+    server = _server(radio)
     service = server.command_service
     task = asyncio.create_task(service.execute(intent))
     await asyncio.sleep(0)
@@ -551,7 +560,7 @@ async def test_descriptor_queue_policy_controls_enqueue(
         "_COMMAND_DESCRIPTORS",
         {mutated.name: mutated},
     )
-    server = WebServer(radio, WebConfig())
+    server = _server(radio)
     intent = prepare_command_intent(
         radio, mutated.name, {"direction": 1}, source="http"
     )
@@ -564,7 +573,7 @@ async def test_descriptor_queue_policy_controls_enqueue(
 @pytest.mark.asyncio
 async def test_batch_preparation_is_capture_only_then_executes_once() -> None:
     radio = _radio()
-    server = WebServer(radio, WebConfig())
+    server = _server(radio)
     before = server.command_service.lifecycle_events()
 
     step = await server._prepare_http_batch_step(  # noqa: SLF001
@@ -604,6 +613,7 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
         "set_rx_antenna_ant1",
         "set_rx_antenna_ant2",
         "set_civ_output_ant",
+        "set_tuner_status",
     }
     descriptor = command_descriptors()["set_repeater_shift"]
     assert descriptor.tx_policy is DescriptorTxPolicy.TX_SAFE
@@ -813,7 +823,7 @@ async def test_web_rx_antenna_selector_two_reaches_ant2_and_preserves_ack() -> N
     radio = _radio()
     radio.set_rx_antenna_ant1 = AsyncMock()
     radio.set_rx_antenna_ant2 = AsyncMock()
-    server = WebServer(radio, WebConfig())
+    server = _server(radio)
     ws = _Ws()
     handler = ControlHandler(ws, radio, "test", "FTX-1", server=server)  # type: ignore[arg-type]
 
@@ -874,7 +884,7 @@ def test_att_helper_uses_public_precedence_through_canonical_binding(
 
     intent = command_intent_from_request("set_att", params, source="public_api")
 
-    assert intent.name == "set_attenuator_level"
+    assert intent.name == "set_att"
     assert intent.params["db"] == expected_db
     assert intent.params["att"] == expected_db
     assert intent.params["receiver"] == params.get("receiver", 0)

@@ -1899,7 +1899,8 @@ class _ManagedTxRadioSession:
 
     async def __aenter__(self) -> Any:
         entered = await self._radio.__aenter__()
-        await self._composition.transport_ready(entered)
+        if not bool(getattr(entered, "managed_tx_transport_lifecycle_owned", False)):
+            await self._composition.transport_ready(entered)
         return entered
 
     async def shutdown(self) -> None:
@@ -3948,6 +3949,7 @@ async def _cmd_web(
                 radio,
                 rigctld_config,
                 managed_tx_authority=managed_tx_composition.authority,
+                command_queue=server.command_queue,
                 command_service=server.command_service,
             )
         try:

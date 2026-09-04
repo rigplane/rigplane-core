@@ -59,6 +59,9 @@ class DispatchQueue(Protocol):
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
+        expires_at_monotonic: float | None = None,
+        provider_generation: int | None = None,
+        connection_generation: object | None = None,
     ) -> None: ...
 
     def put_ordered(
@@ -70,6 +73,9 @@ class DispatchQueue(Protocol):
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: Any | None = None,
+        expires_at_monotonic: float | None = None,
+        provider_generation: int | None = None,
+        connection_generation: object | None = None,
     ) -> object: ...
 
 
@@ -89,6 +95,7 @@ class DescriptorTxPolicy(StrEnum):
     ALWAYS_PASS = "always_pass"
     TX_SAFE = "tx_safe"
     ANTENNA_SWITCH = "antenna_switch"
+    TUNER_CONTROL = "tuner_control"
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +277,13 @@ def _rx_antenna_method(params: Mapping[str, Any]) -> str:
     return f"set_rx_antenna_ant{params['antenna']}"
 
 
+def _bind_tuner_status(params: Mapping[str, Any]) -> dict[str, Any]:
+    value = params["value"]
+    if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1, 2):
+        raise ValueError("tuner value must be 0, 1, or 2")
+    return {"value": value}
+
+
 _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
     {
         "set_repeater_shift": CommandDescriptor(
@@ -381,6 +395,15 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_civ_output_ant",),
         ),
+        "set_tuner_status": CommandDescriptor(
+            name="set_tuner_status",
+            method_name="set_tuner_status",
+            bind=_bind_tuner_status,
+            target=partial(_global_slow_state_target, "tuner_status"),
+            argument_names=("value",),
+            tx_policy=DescriptorTxPolicy.TUNER_CONTROL,
+            public_names=("set_tuner_status",),
+        ),
     }
 )
 
@@ -390,6 +413,7 @@ _ADMITTED_DESCRIPTOR_TX_POLICIES = frozenset(
         DescriptorTxPolicy.ALWAYS_PASS,
         DescriptorTxPolicy.TX_SAFE,
         DescriptorTxPolicy.ANTENNA_SWITCH,
+        DescriptorTxPolicy.TUNER_CONTROL,
     }
 )
 
@@ -449,6 +473,9 @@ def enqueue_command_intent(
     session_id: str | None,
     command_service: Any,
     timeout: float | None,
+    expires_at_monotonic: float | None = None,
+    provider_generation: int | None = None,
+    connection_generation: object | None = None,
 ) -> None:
     """Enqueue with descriptor policy and exact lifecycle identity preserved."""
 
@@ -474,6 +501,9 @@ def enqueue_command_intent(
             source=source,
             session_id=session_id,
             command_service=command_service,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=provider_generation,
+            connection_generation=connection_generation,
         )
         return
     if descriptor.queue_policy in ("ordered", "coalesced"):
@@ -484,6 +514,9 @@ def enqueue_command_intent(
             source=source,
             session_id=session_id,
             command_service=command_service,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=provider_generation,
+            connection_generation=connection_generation,
         )
         return
     raise CommandError(
@@ -566,6 +599,7 @@ async def execute_command_intent(
     intent: CommandIntent,
     *,
     managed_tx_authority: ManagedWriteAdmission | None = None,
+    validate_currency: Callable[[], None] | None = None,
 ) -> None:
     """Invoke the reviewed Radio method for a descriptor-built intent."""
 
@@ -581,4 +615,6 @@ async def execute_command_intent(
         raise CommandError(
             f"managed transmit authority refused command {descriptor.name!r}"
         )
+    if validate_currency is not None:
+        validate_currency()
     await method(**{name: intent.params[name] for name in descriptor.argument_names})

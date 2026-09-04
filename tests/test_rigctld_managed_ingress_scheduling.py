@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 import pytest
 from rigplane.core.command_service import CommandService
+from rigplane.core.command_dispatch import execute_command_intent
 from rigplane.core.exceptions import ConnectionError as ProviderConnectionError
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath, Observation, SourceMetadata
 from rigplane.core.state_store import StateStore
@@ -12,6 +13,7 @@ from rigplane.rigctld import handler as rigctld_handler
 from rigplane.rigctld.contract import HamlibError, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler, _RigctldCommandExecutor, _RigctldCommandFailure
 from rigplane.rigctld.server import _MAX_PENDING_CLIENT_RESPONSES, RigctldServer
+from rigplane.runtime._poller_types import CommandQueue, execute_command_queue_entry, execute_positive_tx_queue_entry, validate_command_queue_entry_currency
 from rigplane.runtime.managed_tx_state import ActuationOperation, ActuationResult, ManagedTxIntentKind, ManagedTxOutcome
 from serial_stub import SerialMockRadio
 from test_managed_tx_authority import authority
@@ -28,6 +30,7 @@ class _Radio(SerialMockRadio):
         super().__init__()
         self.state_store, self.fail_frequency, self.calls = store, False, []
         self.entered, self.release, self.finished = (asyncio.Event() for _ in range(3))
+    def supports_command(self, _name, **_kwargs): return True
     async def set_freq(self, freq, receiver=0):
         self.calls.append(("F", freq, receiver))
         self.entered.set()
@@ -35,6 +38,8 @@ class _Radio(SerialMockRadio):
         self.finished.set()
         if self.fail_frequency:
             raise ProviderConnectionError("injected")
+    async def set_tuner_status(self, value):
+        self.calls.append(("tuner", value))
 @pytest.fixture
 async def managed():
     managed, _, _, _, fence, lane = authority()
@@ -44,10 +49,40 @@ async def managed():
     radio, default = _Radio(store), _Default()
     await radio.connect()
     service = CommandService(executor=default, state_store=store)
-    server = RigctldServer(radio, RigctldConfig(host="127.0.0.1", port=0, command_timeout=1.0), managed_tx_authority=managed, command_service=service)
+    queue = CommandQueue()
+    queue.bind_connection_generation(lambda: "rigctld-connection-1")
+    server = RigctldServer(radio, RigctldConfig(host="127.0.0.1", port=0, command_timeout=1.0), managed_tx_authority=managed, command_queue=queue, command_service=service)
     await server.start()
+    drained_entries = []
+    async def drain():
+        while True:
+            await queue.wait(.01)
+            while (entry := queue.take_entry()) is not None:
+                drained_entries.append(entry)
+                async def execute(claimed):
+                    validate_command_queue_entry_currency(claimed, now=asyncio.get_running_loop().time(), provider_generation=store.provider_generation, connection_generation="rigctld-connection-1", session_is_live=queue.session_is_live, require_connection_generation=True)
+                    if claimed.positive_tx_submission is not None:
+                        await execute_positive_tx_queue_entry(claimed)
+                    elif isinstance(claimed.command, CommandIntent):
+                        await execute_command_intent(
+                            radio,
+                            claimed.command,
+                            managed_tx_authority=managed,
+                            validate_currency=lambda: validate_command_queue_entry_currency(
+                                claimed,
+                                now=asyncio.get_running_loop().time(),
+                                provider_generation=store.provider_generation,
+                                connection_generation="rigctld-connection-1",
+                                session_is_live=queue.session_is_live,
+                            ),
+                        )
+                try:
+                    await execute_command_queue_entry(entry, execute)
+                except Exception:
+                    pass
+    drain_task = asyncio.create_task(drain())
     reader, writer = await asyncio.open_connection("127.0.0.1", server._server.sockets[0].getsockname()[1])
-    rig = SimpleNamespace(authority=managed, fence=fence, lane=lane, store=store, radio=radio, default=default, service=service, server=server, reader=reader, writer=writer)
+    rig = SimpleNamespace(authority=managed, fence=fence, lane=lane, store=store, radio=radio, default=default, service=service, server=server, queue=queue, reader=reader, writer=writer, drained_entries=drained_entries)
     try:
         yield rig
     finally:
@@ -58,6 +93,8 @@ async def managed():
         except OSError:
             pass
         await server.stop()
+        drain_task.cancel()
+        await asyncio.gather(drain_task, return_exceptions=True)
         await managed.close()
         await radio.disconnect()
 async def _send(rig, *commands):
@@ -75,8 +112,17 @@ async def _clear_release_debt(rig):
     assert await receipt.wait_settlement() is not None
 def _observe_starts(rig, on_start=None):
     start, submissions, off_started = rig.authority.start_ptt_submission, [], asyncio.Event()
-    def observed(on, owner, *, ready=None):
-        task = on_start() if on and on_start else start(on, owner, ready=ready)
+    def observed(on, owner, *, ready=None, expires_at_monotonic=None):
+        task = (
+            on_start()
+            if on and on_start
+            else start(
+                on,
+                owner,
+                ready=ready,
+                expires_at_monotonic=expires_at_monotonic,
+            )
+        )
         if on:
             submissions.append((task, ready))
         else:
@@ -98,15 +144,15 @@ def _gate_on_handler(rig, *, after=False):
         return response
     rig.server._rig_handler.execute = gated
     return entered, release
-@pytest.mark.parametrize("present", [(1, 0), (0, 1)])
+@pytest.mark.parametrize("present", [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0)])
 def test_partial_managed_configuration_is_rejected_before_bootstrap(present):
-    refs = {name: _NoTruthProbe() if value else None for name, value in zip(("managed_tx_authority", "command_service"), present, strict=True)}
+    refs = {name: (_NoTruthProbe() if name != "command_queue" else CommandQueue()) if value else None for name, value in zip(("managed_tx_authority", "command_queue", "command_service"), present, strict=True)}
     for constructor in (RigctldServer, RigctldHandler):
         with pytest.raises(ValueError, match="together"):
             constructor(object(), RigctldConfig(), **refs)
 def test_managed_configuration_rejects_custom_handler():
     with pytest.raises(ValueError, match="_handler"):
-        RigctldServer(object(), _handler=object(), managed_tx_authority=_NoTruthProbe(), command_service=_NoTruthProbe())
+        RigctldServer(object(), _handler=object(), managed_tx_authority=_NoTruthProbe(), command_queue=CommandQueue(), command_service=_NoTruthProbe())
 def _intent(name, **params):
     return CommandIntent(id="test-" + name, name=name, params=params, source="rigctld")
 class _LeafRadio:
@@ -151,21 +197,76 @@ async def test_managed_non_ptt_leaf_errors_are_not_rewritten(intent):
     with pytest.raises(_RigctldCommandFailure) as failure:
         await _RigctldCommandExecutor(_LeafHandler(HamlibError.EIO)).execute(intent)
     assert failure.value.error is HamlibError.EIO
+async def test_managed_tuner_normalizes_into_shared_queue_without_direct_admission():
+    class Authority:
+        async def admit_managed_write(self, _intent):
+            raise AssertionError("rigctld adapter pre-admitted tuner write")
+    class Radio:
+        def supports_command(self, name, **_kwargs): return name == "set_tuner_status"
+        async def set_tuner_status(self, value): raise AssertionError(f"direct tuner wire {value}")
+    queue = CommandQueue()
+    queue.bind_connection_generation(lambda: "rigctld-connection-1")
+    handler = SimpleNamespace(
+        _managed_tx_authority=Authority(), _command_queue=queue, _radio=Radio(),
+        _config=RigctldConfig(command_timeout=1.0),
+        _provider_generation_capture=lambda: 7,
+    )
+    task = asyncio.create_task(_RigctldCommandExecutor(handler).execute(
+        _intent("set_func", func="TUNER", on=True, session_id="rigctld-client-1")
+    ))
+    await asyncio.sleep(0)
+    entry = queue.take_entry()
+    assert entry is not None and isinstance(entry.command, CommandIntent)
+    assert (entry.command.name, entry.command.params["value"], entry.provider_generation, entry.connection_generation) == ("set_tuner_status", 1, 7, "rigctld-connection-1")
+    assert entry.future is not None and not entry.future.done()
+    entry.future.set_result(None)
+    await task
+async def test_managed_tuner_ignores_observed_rf_and_uses_authority_policy(managed):
+    managed.store.apply_current(Observation(
+        path=FieldPath.global_("tx_state", "ptt"), value=True,
+        source=SourceMetadata(source="test", provider="tests"),
+        timestamp_monotonic=asyncio.get_running_loop().time(), max_age=1e9,
+    ))
+    await _send(managed, "U TUNER 1")
+    assert await _replies(managed, 1) == [b"RPRT 0\n"]
+    assert ("tuner", 1) in managed.radio.calls
+
+    await _key(managed)
+    before = managed.radio.calls.count(("tuner", 1))
+    await _send(managed, "U TUNER 1", "U TUNER 0")
+    assert await _replies(managed, 2) == [b"RPRT -9\n", b"RPRT 0\n"]
+    assert managed.radio.calls.count(("tuner", 1)) == before
+    assert ("tuner", 0) in managed.radio.calls
 async def test_injected_references_and_per_call_leaf_preserve_shared_default(managed):
     handler = managed.server._rig_handler
     assert (handler._managed_tx_authority, handler._command_service, handler._state_store) == (managed.authority, managed.service, managed.store)
-    assert not hasattr(handler, "_command_queue") and not hasattr(managed.server, "_command_queue")
+    assert handler._command_queue is managed.queue and managed.server._command_queue is managed.queue
     managed.radio.release.set()
     await _send(managed, f"F {_FREQUENCY}")
     assert await _replies(managed, 1) == [b"RPRT 0\n"]
     assert managed.default.calls == []
-async def test_real_authority_receipt_does_not_wait_for_provider_settlement(managed):
+async def test_rigctld_success_waits_for_shared_queue_provider_settlement(managed):
     gate = managed.lane.block_next()
     submissions, _ = _observe_starts(managed)
     await _send(managed, "T 1")
-    assert await _replies(managed, 1) == [b"RPRT 0\n"]
-    assert len(submissions) == 1 and submissions[0][0].done() and not submissions[0][0].result().settlement_done
-    gate.set()
+    reply = asyncio.create_task(_replies(managed, 1))
+    try:
+        while not submissions or not submissions[0][0].done():
+            await asyncio.sleep(0)
+        assert not submissions[0][0].result().settlement_done and not reply.done()
+        gate.set()
+        assert await reply == [b"RPRT 0\n"]
+        assert submissions[0][0].result().settlement_done
+        assert any(
+            entry.positive_tx_submission is not None
+            and entry.connection_generation == "rigctld-connection-1"
+            for entry in managed.drained_entries
+        )
+    finally:
+        gate.set()
+        if not reply.done():
+            reply.cancel()
+        await asyncio.gather(reply, return_exceptions=True)
 async def test_active_owner_off_provider_error_retains_release_debt(managed):
     await _key(managed)
     managed.lane.results.append(ActuationResult.UNCERTAIN)
@@ -236,7 +337,7 @@ async def test_no_non_ptt_queue_or_classification_execution(managed):
     managed.radio.release.set()
     await _send(managed, f"F {_FREQUENCY}")
     assert await _replies(managed, 1) == [b"RPRT 0\n"] and managed.default.calls == []
-    assert not hasattr(managed.server, "_command_queue")
+    assert managed.server._command_queue is managed.queue and managed.queue.pending_count == 0
 async def test_frequency_provider_rejection_preserves_terminal_error(managed):
     managed.radio.fail_frequency = True
     await _send(managed, f"F {_FREQUENCY}")
@@ -266,7 +367,7 @@ async def test_revocation_marker_preserves_exact_submission_result(managed, outc
         await settle.wait()
         if outcome is None:
             raise RuntimeError("injected authority failure")
-        return SimpleNamespace(outcome=outcome)
+        return SimpleNamespace(outcome=outcome, wait_settlement=lambda: asyncio.sleep(0))
     submissions, off_started = _observe_starts(managed, lambda: asyncio.create_task(controlled()))
     await _send(managed, "T 1")
     await asyncio.wait_for(entered.wait(), _WAIT)

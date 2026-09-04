@@ -332,6 +332,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     WATCHDOG_CHECK_INTERVAL = 0.5
     _WATCHDOG_HEALTH_LOG_INTERVAL = 30.0
 
+    # CoreRadio publishes the exact CI-V transport identity at arm/rearm and
+    # withdraws that same identity before the transport closes. Mounted session
+    # wrappers must not replace it with the higher-level Radio object.
+    managed_tx_transport_lifecycle_owned = True
+
     # PowerControlCapable: Icom CI-V uses a raw 0-255 scale on the wire
     # (cmd 0x14 0x0A). Inspected by upper layers to decide unit
     # translation before queueing SetPower. See

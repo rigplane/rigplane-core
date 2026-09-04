@@ -15,6 +15,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxOutcome,
 )
 from test_managed_tx_authority import authority
+from rigplane.runtime._poller_types import CommandQueue
 
 
 def intent(name: str, **params: object) -> CommandIntent:
@@ -33,6 +34,22 @@ async def wait_for_submission_cleanup(managed: ManagedTxAuthority) -> None:
         if not managed._abort_fence._cancellations and not managed._settlement_tasks:
             return
         await asyncio.sleep(0)
+
+
+def test_command_queue_binds_one_non_null_connection_generation_source() -> None:
+    queue = CommandQueue()
+    with pytest.raises(RuntimeError, match="not bound"):
+        queue.capture_connection_generation()
+
+    current: object | None = "connection-1"
+    queue.bind_connection_generation(lambda: current)
+    assert queue.capture_connection_generation() == "connection-1"
+    with pytest.raises(RuntimeError, match="already bound"):
+        queue.bind_connection_generation(lambda: "connection-2")
+
+    current = None
+    with pytest.raises(RuntimeError, match="unavailable"):
+        queue.capture_connection_generation()
 
 
 @pytest.mark.asyncio
@@ -98,6 +115,27 @@ async def test_start_ptt_submission_registers_membership_before_return() -> None
             await asyncio.gather(submission, return_exceptions=True)
         ready.cancel()
         await wait_for_submission_cleanup(managed)
+        await finish(managed)
+
+
+@pytest.mark.asyncio
+async def test_absolute_expiry_rejects_transmit_before_admission_or_wire() -> None:
+    managed, clock, _, _, fence, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    submission = managed.start_transmit_on_submission(
+        ready=ready,
+        expires_at_monotonic=clock.now,
+    )
+    try:
+        assert fence._cancellations and not lane.effects
+        ready.set_result(None)
+        receipt = await asyncio.wait_for(submission, 0.2)
+        assert receipt.outcome is ManagedTxOutcome.REJECTED
+        assert await receipt.wait_settlement() is None
+        assert not lane.effects
+    finally:
+        if not ready.done():
+            ready.cancel()
         await finish(managed)
 
 
@@ -426,6 +464,7 @@ async def test_civ_output_executes_unchanged_during_managed_transmit() -> None:
         (intent("set_tuner_status", value=1), False),
         (intent("set_tuner_status", value=2), False),
         (intent("set_tuner_status", value=0), True),
+        (intent("set_tuner_status", value=False), False),
         (intent("set_func", func="TUNER", on=True), False),
         (intent("set_func", func="TUNER", on=False), True),
         (intent("force_off"), True),

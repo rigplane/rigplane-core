@@ -1,11 +1,12 @@
 import asyncio
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.capabilities import CAP_ANTENNA, CAP_AUDIO, CAP_POWER_CONTROL, CAP_TUNER
+from rigplane.core.command_dispatch import bind_command_intent
 from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -32,6 +33,7 @@ from rigplane.runtime._poller_types import (
     SetTunerStatus,
     VfoEqualize,
     VfoSwap,
+    validate_command_queue_entry_currency,
 )
 from rigplane.runtime.tx_interlock import (
     RfState,
@@ -55,6 +57,7 @@ _SPLIT = FieldPath.global_("tx_state", "split")
 
 def _radio() -> SimpleNamespace:
     return SimpleNamespace(
+        _civ_epoch=1,
         profile=resolve_radio_profile(model="IC-7300"),
         capabilities={CAP_ANTENNA, CAP_POWER_CONTROL, CAP_TUNER},
         send_civ=AsyncMock(),
@@ -325,6 +328,172 @@ def test_authority_approved_commands_do_not_inspect_observed_rf() -> None:
     for entry in commands:
         poller._enforce_tx_interlock(entry.command)  # type: ignore[arg-type] # noqa: SLF001
     assert poller._stage_tx_interlocked_entries(commands) == commands  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_descriptor_intent_uses_bound_authority_before_radio_write() -> None:
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    _observe_ptt(store, True)
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(side_effect=(False, True))
+    poller = RadioPoller(
+        radio,
+        queue,
+        state_store=store,
+        managed_tx_authority=authority,
+    )
+    intent = bind_command_intent("set_antenna_1", {"on": True}, source="websocket")
+
+    with pytest.raises(CommandError, match="transmit authority"):
+        await poller._execute(intent)  # noqa: SLF001
+    radio.set_antenna_1.assert_not_awaited()
+
+    await poller._execute(intent)  # noqa: SLF001
+
+    assert authority.admit_managed_write.await_args_list == [
+        ((intent,), {}),
+        ((intent,), {}),
+    ]
+    radio.set_antenna_1.assert_awaited_once_with(on=True)
+
+
+@pytest.mark.parametrize(
+    ("entry_kwargs", "message"),
+    (
+        ({"expires_at_monotonic": 9.0}, "expired"),
+        ({"session_id": "gone"}, "session"),
+        ({"provider_generation": 6}, "provider generation"),
+        ({"connection_generation": "old"}, "connection generation"),
+    ),
+)
+def test_dispatch_currency_rejects_each_captured_causal_mismatch(
+    entry_kwargs: dict[str, object], message: str
+) -> None:
+    entry = CommandQueueEntry(SetFreq(14_074_000), **entry_kwargs)
+    with pytest.raises(CommandError, match=message):
+        validate_command_queue_entry_currency(
+            entry,
+            now=10.0,
+            provider_generation=7,
+            connection_generation="new",
+            session_is_live=lambda _session_id: False,
+        )
+
+
+def test_managed_dispatch_currency_rejects_a_missing_connection_stamp() -> None:
+    entry = CommandQueueEntry(SetFreq(14_074_000))
+    with pytest.raises(CommandError, match="connection generation is missing"):
+        validate_command_queue_entry_currency(
+            entry,
+            now=10.0,
+            provider_generation=7,
+            connection_generation="current",
+            session_is_live=lambda _session_id: True,
+            require_connection_generation=True,
+        )
+
+
+async def test_shared_queue_finishes_descriptor_wire_before_positive_tx() -> None:
+    log: list[str] = []
+
+    class Admission:
+        async def admit_managed_write(self, _intent):
+            log.append("write-admitted")
+            return True
+
+    class Receipt:
+        outcome = SimpleNamespace(value="accepted")
+
+        async def wait_settlement(self):
+            log.append("positive-wire-settled")
+
+    async def positive(ready: asyncio.Future[None]):
+        await ready
+        log.append("positive-admitted")
+        return Receipt()
+
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    radio.set_antenna_1.side_effect = lambda **_kwargs: log.append("write-finished")
+    poller = RadioPoller(
+        radio, queue, state_store=store, managed_tx_authority=Admission()
+    )
+    intent = bind_command_intent("set_antenna_1", {"on": True}, source="websocket")
+    ready = asyncio.get_running_loop().create_future()
+    submission = asyncio.create_task(positive(ready))
+    connection_generation = queue.capture_connection_generation()
+    queue.put_ordered(
+        intent,
+        provider_generation=store.provider_generation,
+        connection_generation=connection_generation,
+    )
+    queue.put_ordered(
+        None,
+        source="http",
+        provider_generation=store.provider_generation,
+        connection_generation=connection_generation,
+        positive_tx_ready=ready,
+        positive_tx_submission=submission,
+    )
+
+    while (entry := queue.take_entry()) is not None:
+        await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+    assert log == [
+        "write-admitted",
+        "write-finished",
+        "positive-admitted",
+        "positive-wire-settled",
+    ]
+
+
+async def test_reverse_positive_then_descriptor_is_refused_before_wire() -> None:
+    managed = False
+
+    class Admission:
+        async def admit_managed_write(self, _intent):
+            return not managed
+
+    class Receipt:
+        outcome = SimpleNamespace(value="accepted")
+
+        async def wait_settlement(self):
+            nonlocal managed
+            managed = True
+
+    async def positive(ready: asyncio.Future[None]):
+        await ready
+        return Receipt()
+
+    radio, store, queue = _radio(), StateStore(), CommandQueue()
+    store.begin_provider_generation()
+    poller = RadioPoller(
+        radio, queue, state_store=store, managed_tx_authority=Admission()
+    )
+    ready = asyncio.get_running_loop().create_future()
+    connection_generation = queue.capture_connection_generation()
+    queue.put_ordered(
+        None,
+        source="rigctld",
+        provider_generation=store.provider_generation,
+        connection_generation=connection_generation,
+        positive_tx_ready=ready,
+        positive_tx_submission=asyncio.create_task(positive(ready)),
+    )
+    queue.put_ordered(
+        bind_command_intent("set_antenna_1", {"on": True}, source="websocket"),
+        provider_generation=store.provider_generation,
+        connection_generation=connection_generation,
+    )
+
+    first = queue.take_entry()
+    second = queue.take_entry()
+    assert first is not None and second is not None
+    await poller._execute_queued_entry(first)  # noqa: SLF001
+    with pytest.raises(CommandError, match="transmit authority"):
+        await poller._execute_queued_entry(second)  # noqa: SLF001
+    radio.set_antenna_1.assert_not_awaited()
 
 
 async def test_frequency_dispatches_without_entering_the_deferred_lane() -> None:

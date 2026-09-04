@@ -32,6 +32,8 @@ from ..core.command_service import (
     PendingOverlay,
     command_intent_from_request,
 )
+from ..core.command_dispatch import prepare_command_intent
+from ..core.exceptions import CommandError
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -100,6 +102,20 @@ _RIGCTLD_PTT_SUBMISSION: ContextVar[asyncio.Task[Any] | None] = ContextVar(
 _RIGCTLD_PTT_READY: ContextVar[asyncio.Future[None] | None] = ContextVar(
     "rigctld_ptt_ready", default=None
 )
+
+
+class _RigctldQueueReady(asyncio.Future[None]):
+    """Translate the queue turn into the pre-registered ingress readiness."""
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        super().__init__()
+        self._release = release
+
+    def set_result(self, result: None) -> None:
+        self._release()
+        super().set_result(result)
+
+
 # ---------------------------------------------------------------------------
 # IC-7610 hardcoded dump_state (hamlib protocol v0 positional format)
 # ---------------------------------------------------------------------------
@@ -488,32 +504,112 @@ class _RigctldCommandExecutor:
 
         submission = _RIGCTLD_PTT_SUBMISSION.get()
         ready = _RIGCTLD_PTT_READY.get()
+        queue = self.handler._command_queue
+        assert queue is not None
+        completion: asyncio.Future[None] | None = None
         task = asyncio.current_task()
         cancelling = 0 if task is None else task.cancelling()
         try:
-            if submission is None:
-                receipt = await authority.submit_ptt(
-                    on, owner, ready=self.predecessor if on else None
-                )
+            if not on:
+                receipt = await authority.submit_ptt(False, owner)
             else:
-                if on and ready is not None and not ready.done():
+                loop = asyncio.get_running_loop()
+                if submission is None:
+                    raise _RigctldCommandFailure(HamlibError.EINTERNAL)
+                release_queue = getattr(ready, "release_queue", None)
+                if not callable(release_queue):
+                    raise _RigctldCommandFailure(HamlibError.EINTERNAL)
+                queue_ready = _RigctldQueueReady(release_queue)
+                completion = loop.create_future()
+                expires_at = getattr(ready, "expires_at_monotonic", None)
+                if not isinstance(expires_at, float):
+                    raise _RigctldCommandFailure(HamlibError.EINTERNAL)
+                connection_generation = getattr(ready, "connection_generation", None)
+                if connection_generation is None:
+                    raise _RigctldCommandFailure(HamlibError.EINTERNAL)
+                queue.put_ordered(
+                    None,
+                    future=completion,
+                    source="rigctld",
+                    session_id=owner,
+                    expires_at_monotonic=expires_at,
+                    provider_generation=self.handler._provider_generation_capture(),
+                    connection_generation=connection_generation,
+                    positive_tx_ready=queue_ready,
+                    positive_tx_submission=submission,
+                )
+                if ready is not None and not ready.done():
                     ready.set_result(None)
                 receipt = await submission
+                await completion
         except asyncio.CancelledError as exc:
             if task is not None and task.cancelling() > cancelling:
                 raise
             raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+        except CommandError as exc:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
         except Exception as exc:
             raise _RigctldCommandFailure(HamlibError.EIO) from exc
+        finally:
+            if completion is not None:
+                if not completion.done():
+                    completion.cancel()
+                await asyncio.gather(completion, return_exceptions=True)
 
         if on and receipt.outcome is ManagedTxOutcome.REJECTED:
             raise _RigctldCommandFailure(HamlibError.ERJCTED)
+        return CommandExecutionResult()
+
+    async def _execute_managed_tuner(
+        self, intent: CommandIntent
+    ) -> CommandExecutionResult:
+        """Normalize the one in-scope rigctld function into the shared leaf."""
+        queue = self.handler._command_queue
+        assert queue is not None
+        raw_session = intent.params.get("session_id")
+        session_id = None if raw_session is None else str(raw_session)
+        normalized = prepare_command_intent(
+            self.handler._radio,
+            "set_tuner_status",
+            {"value": 1 if bool(intent.params["on"]) else 0},
+            source="rigctld",
+            command_id=intent.id,
+            session_id=session_id,
+        )
+        loop = asyncio.get_running_loop()
+        completion: asyncio.Future[None] = loop.create_future()
+        timeout = intent.timeout or self.handler._config.command_timeout
+        expires_at = loop.time() + timeout
+        queue.put_ordered(
+            normalized,
+            future=completion,
+            command_id=normalized.id,
+            source=normalized.source,
+            session_id=session_id,
+            expires_at_monotonic=expires_at,
+            provider_generation=self.handler._provider_generation_capture(),
+            connection_generation=queue.capture_connection_generation(),
+        )
+        try:
+            await asyncio.wait_for(
+                completion, timeout=max(0.0, expires_at - loop.time())
+            )
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            raise _RigctldCommandFailure(HamlibError.ETIMEOUT) from exc
+        except CommandError as exc:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
         return CommandExecutionResult()
 
     async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
         managed = self.handler._managed_tx_authority is not None
         if managed and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
+        if (
+            managed
+            and intent.name == "set_func"
+            and str(intent.params["func"]).upper() == "TUNER"
+        ):
+            return await self._execute_managed_tuner(intent)
 
         classification = _classify_rigctld_tx_intent(intent)
         if (
@@ -734,11 +830,15 @@ class RigctldHandler:
     ) -> None:
         supplied = (
             managed_tx_authority is not None,
+            command_queue is not None,
             command_service is not None,
         )
         if any(supplied) and not all(supplied):
-            raise ValueError("managed authority and service must be supplied together")
+            raise ValueError(
+                "managed authority, command queue, and service must be supplied together"
+            )
         self._managed_tx_authority = managed_tx_authority
+        self._command_queue = command_queue
         self._radio = radio
         self._config = config
         self._state_diagnostics = getattr(radio, "_state_diagnostics", None)
@@ -2729,9 +2829,10 @@ class RigctldHandler:
             command_id=f"rigctld-set-func-{time.monotonic_ns()}",
             session_id=self._session_id(),
         )
-        dropped = self._defer_write_gate(intent)
-        if dropped is not None:
-            return dropped
+        if not (self._managed_tx_authority is not None and func == "TUNER"):
+            dropped = self._defer_write_gate(intent)
+            if dropped is not None:
+                return dropped
         await self._execute_write(intent)
         return _ok()
 

@@ -1519,8 +1519,32 @@ class ControlHandler:
         else:
             on = name == "ptt_on"
         try:
-            submission = await authority.submit_ptt(on, self._session_id)
-        except RuntimeError as exc:
+            if on:
+                if self._server is None:
+                    raise RuntimeError("no command queue available")
+                loop = asyncio.get_running_loop()
+                ready: asyncio.Future[None] = loop.create_future()
+                expires_at = loop.time() + 10.0
+                connection_generation = (
+                    self._server.command_queue.capture_connection_generation()
+                )
+                pending = authority.start_ptt_submission(
+                    True,
+                    self._session_id,
+                    ready=ready,
+                    expires_at_monotonic=expires_at,
+                )
+                submission = await self._server.enqueue_managed_positive_tx(
+                    ready=ready,
+                    submission=pending,
+                    source=source,
+                    session_id=self._session_id,
+                    expires_at_monotonic=expires_at,
+                    connection_generation=connection_generation,
+                )
+            else:
+                submission = await authority.submit_ptt(False, self._session_id)
+        except (CommandError, RuntimeError, TimeoutError) as exc:
             raise CommandRejectedError(
                 "managed transmit authority unavailable"
             ) from exc
@@ -1552,6 +1576,13 @@ class ControlHandler:
                 session_id=session_id,
                 command_service=self._command_service,
                 timeout=intent.timeout,
+                expires_at_monotonic=(
+                    None
+                    if intent.timeout is None
+                    else asyncio.get_running_loop().time() + intent.timeout
+                ),
+                provider_generation=self._server.command_state_store.provider_generation,
+                connection_generation=queue.capture_connection_generation(),
             )
             if future is None:
                 return CommandExecutionResult(details=descriptor.result(intent))

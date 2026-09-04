@@ -1331,6 +1331,42 @@ class WebServer:
         """Command queue consumed by RadioPoller."""
         return self._command_queue
 
+    async def enqueue_managed_positive_tx(
+        self,
+        *,
+        ready: asyncio.Future[None],
+        submission: asyncio.Task[Any],
+        source: CommandSource,
+        session_id: str | None,
+        expires_at_monotonic: float,
+        connection_generation: object,
+    ) -> Any:
+        """Join one pre-registered positive transition to the shared queue."""
+        loop = asyncio.get_running_loop()
+        completion: asyncio.Future[None] = loop.create_future()
+        self._command_queue.put_ordered(
+            None,
+            future=completion,
+            source=source,
+            session_id=session_id,
+            expires_at_monotonic=expires_at_monotonic,
+            provider_generation=self.command_state_store.provider_generation,
+            connection_generation=connection_generation,
+            positive_tx_ready=ready,
+            positive_tx_submission=submission,
+        )
+        try:
+            await asyncio.wait_for(
+                completion,
+                timeout=max(0.0, expires_at_monotonic - loop.time()),
+            )
+        except BaseException:
+            if not submission.done():
+                submission.cancel()
+            await asyncio.gather(submission, return_exceptions=True)
+            raise
+        return submission.result()
+
     @property
     def state_diagnostics(self) -> StateDiagnosticsRecorder:
         """Behavior-neutral state-pipeline diagnostics recorder."""
@@ -4050,11 +4086,27 @@ class WebServer:
                 )
                 return
             try:
-                submission = (
-                    await authority.submit_transmit_on()
-                    if operation == "transmit_on"
-                    else await authority.submit_force_off()
-                )
+                if operation == "transmit_on":
+                    loop = asyncio.get_running_loop()
+                    ready: asyncio.Future[None] = loop.create_future()
+                    expires_at = loop.time() + 10.0
+                    connection_generation = (
+                        self._command_queue.capture_connection_generation()
+                    )
+                    pending = authority.start_transmit_on_submission(
+                        ready=ready,
+                        expires_at_monotonic=expires_at,
+                    )
+                    submission = await self.enqueue_managed_positive_tx(
+                        ready=ready,
+                        submission=pending,
+                        source="http",
+                        session_id=None,
+                        expires_at_monotonic=expires_at,
+                        connection_generation=connection_generation,
+                    )
+                else:
+                    submission = await authority.submit_force_off()
             except RuntimeError:
                 await self._managed_tx_unavailable(writer)
                 return

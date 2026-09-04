@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call as mock_call, patch
 
 import pytest
 
+from rigplane.core.command_dispatch import bind_command_intent
 from rigplane.core.command_service import CommandService
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import (
@@ -1682,6 +1683,25 @@ async def test_yaesu_authority_approved_commands_dispatch_during_observed_tx(
     getattr(radio, method).assert_awaited_once()
     assert getattr(radio, method).await_args.args == expected_args
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_yaesu_descriptor_intent_uses_bound_authority_once() -> None:
+    radio = make_radio()
+    radio.set_civ_output_ant = AsyncMock()
+    authority = MagicMock()
+    authority.admit_managed_write = AsyncMock(return_value=True)
+    poller = YaesuCatPoller(radio)
+    poller.bind_managed_tx_authority(authority)
+    _set_fresh_ptt_observation(poller, active=True)
+    intent = bind_command_intent("set_civ_output_ant", {"on": True}, source="websocket")
+
+    await poller._execute_command(intent)  # noqa: SLF001
+
+    authority.admit_managed_write.assert_awaited_once_with(intent)
+    radio.set_civ_output_ant.assert_awaited_once_with(on=True)
+    with pytest.raises(RuntimeError, match="already bound"):
+        poller.bind_managed_tx_authority(authority)
 
 
 @pytest.mark.asyncio

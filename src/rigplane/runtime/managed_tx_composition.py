@@ -196,6 +196,9 @@ class ManagedTxComposition:
                 return
             if self._live_transport_identity is not identity:
                 return
+            if self._active_provider is not None:
+                submission = await self._authority.submit_force_off()
+                await submission.wait_settlement()
             self._stale_transport_identities.append(identity)
             self._live_transport_identity = None
             self._poison_active()

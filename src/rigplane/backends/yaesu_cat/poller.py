@@ -29,7 +29,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from rigplane.core.command_service import _is_yaesu_cat_readback, _yaesu_receiver_alias
-from rigplane.core.command_dispatch import execute_command_intent
+from rigplane.core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
@@ -38,6 +38,8 @@ from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.runtime._poller_types import (
     canonicalize_level_command,
     execute_command_queue_entry,
+    execute_positive_tx_queue_entry,
+    validate_command_queue_entry_currency,
 )
 from rigplane.runtime.tx_interlock import (
     DeferredTxCommandLane,
@@ -112,6 +114,9 @@ class YaesuCatPoller:
         self._callback = callback
         self._observation_callback = observation_callback
         self._command_queue = command_queue
+        if command_queue is not None:
+            command_queue.bind_connection_generation(self._current_tx_target_generation)
+        self._managed_tx_authority: ManagedWriteAdmission | None = None
         self._fast_interval = fast_interval
         self._medium_interval = medium_interval
         self._slow_interval = slow_interval
@@ -158,6 +163,12 @@ class YaesuCatPoller:
             self._cancel_deferred_entry("provider binding replaced")
         self._capture_provider_generation = capture
         self._advance_provider_generation = advance
+
+    def bind_managed_tx_authority(self, authority: ManagedWriteAdmission) -> None:
+        """Bind the composition-owned admission object before polling starts."""
+        if self._managed_tx_authority is not None:
+            raise RuntimeError("managed transmit authority is already bound")
+        self._managed_tx_authority = authority
 
     def _captured_provider_generation(self) -> int | None:
         capture = self._capture_provider_generation
@@ -768,7 +779,14 @@ class YaesuCatPoller:
                     and not decision.allowed
                 ):
                     raise CommandError(decision.reason)
-                await self._execute_command(cmd)
+                if cmd is None:
+                    raise CommandError("queued command has no dispatch payload")
+                if isinstance(cmd, CommandIntent):
+                    await self._execute_command(
+                        cmd, validate_currency=lambda: validate_currency(entry)
+                    )
+                else:
+                    await self._execute_command(cmd)
                 self._track_receiver_select_readback(entry)
             except Exception as exc:
                 self._mark_queued_command_failed(entry, exc)
@@ -780,6 +798,30 @@ class YaesuCatPoller:
                 logger.debug(
                     "YaesuCatPoller: skipping cancelled queued command %s",
                     type(cmd).__name__,
+                )
+                return
+            if entry.positive_tx_submission is not None:
+
+                async def finish_positive(claimed: CommandQueueEntry) -> None:
+                    validate_currency(claimed)
+                    await execute_positive_tx_queue_entry(claimed)
+
+                try:
+                    await execute_command_queue_entry(entry, finish_positive)
+                except Exception:
+                    logger.warning(
+                        "YaesuCatPoller: positive TX queue entry failed",
+                        exc_info=True,
+                    )
+                return
+            try:
+                validate_currency(entry)
+            except Exception as exc:
+                self._mark_queued_command_failed(entry, exc)
+                logger.warning(
+                    "YaesuCatPoller: command %s failed currency validation",
+                    type(cmd).__name__,
+                    exc_info=True,
                 )
                 return
             decision = stage_entry(entry)
@@ -798,6 +840,23 @@ class YaesuCatPoller:
                     " policy validation" if policy_error else "",
                     exc_info=True,
                 )
+
+        def validate_currency(entry: CommandQueueEntry) -> None:
+            assert self._command_queue is not None
+            validate_command_queue_entry_currency(
+                entry,
+                now=time.monotonic(),
+                provider_generation=self._captured_provider_generation(),
+                connection_generation=self._current_tx_target_generation(),
+                session_is_live=self._command_queue.session_is_live,
+                require_connection_generation=(
+                    self._managed_tx_authority is not None
+                    and (
+                        entry.positive_tx_submission is not None
+                        or isinstance(entry.command, CommandIntent)
+                    )
+                ),
+            )
 
         for entry in released:
             await process_entry(entry)
@@ -958,7 +1017,12 @@ class YaesuCatPoller:
         0x0A: 10,  # 6m   → 50M
     }
 
-    async def _execute_command(self, cmd: Any) -> None:
+    async def _execute_command(
+        self,
+        cmd: Any,
+        *,
+        validate_currency: Callable[[], None] | None = None,
+    ) -> None:
         """Dispatch a single command to the radio.
 
         Commands come from the web UI CommandQueue.  The dispatcher handles
@@ -966,7 +1030,12 @@ class YaesuCatPoller:
         """
         cmd = canonicalize_level_command(cmd, self._radio)
         if isinstance(cmd, CommandIntent):
-            await execute_command_intent(self._radio, cmd)
+            await execute_command_intent(
+                self._radio,
+                cmd,
+                managed_tx_authority=self._managed_tx_authority,
+                validate_currency=validate_currency,
+            )
             return
         decision = evaluate_tx_interlock(
             cmd,

@@ -262,6 +262,32 @@ async def test_transmit_is_latched_and_force_off_runs_one_abort_family() -> None
     await managed.close()
 
 
+@pytest.mark.parametrize("poison", ["force_off", "provider_unavailable"])
+async def test_waiting_transmit_on_membership_is_poisoned_before_admission(
+    poison: str,
+) -> None:
+    managed, _, _, _, _, lane = authority()
+    ready = asyncio.get_running_loop().create_future()
+    pending = managed.start_transmit_on_submission(ready=ready)
+
+    if poison == "force_off":
+        receipt = await managed.submit_force_off()
+        await receipt.wait_settlement()
+    else:
+        await managed.provider_unavailable()
+
+    await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), timeout=0.2)
+    assert pending.cancelled()
+    assert not ready.done()
+    assert all(
+        effect.operation is not ActuationOperation.TRANSMIT_ON
+        for effect in lane.effects
+    )
+    if poison == "provider_unavailable":
+        await managed.provider_available(8)
+    await managed.close()
+
+
 @pytest.mark.asyncio
 async def test_offline_force_off_retries_immediately_when_provider_appears() -> None:
     managed, _, _, _, fence, lane = authority(generation=None)

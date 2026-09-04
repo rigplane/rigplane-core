@@ -375,6 +375,12 @@ class _IcomSerialRadioBase(CoreRadio):
             self._serial_device,
             self._serial_baudrate,
         )
+        if (
+            self._managed_tx_composition is not None
+            and self._serial_session.ready
+            and self._civ_transport is not None
+        ):
+            await self._arm_managed_tx()
 
     async def soft_disconnect(self) -> None:
         await self.disconnect()
@@ -409,6 +415,8 @@ class _IcomSerialRadioBase(CoreRadio):
         if self._serial_session.ready and self._civ_transport is not None:
             return
 
+        if self._managed_tx_composition is not None:
+            await self._park_managed_tx()
         self._conn_state = RadioConnectionState.RECONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = True
@@ -448,6 +456,12 @@ class _IcomSerialRadioBase(CoreRadio):
         # RECONNECTING (see ``_serial_civ_watchdog_loop``) must not be
         # credited against the link that just recovered.
         self._civ_watchdog_rebaseline()
+        if (
+            self._managed_tx_composition is not None
+            and self._serial_session.ready
+            and self._civ_transport is not None
+        ):
+            await self.rearm_managed_tx()
         if self._on_reconnect is not None:
             try:
                 self._on_reconnect()

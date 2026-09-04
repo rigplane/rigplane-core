@@ -25,8 +25,14 @@ from rigplane.commands import (
     build_civ_frame,
     parse_civ_frame,
 )
+from rigplane.core.state_store import StateStore
 from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.types import AudioCodec
 from rigplane.types import bcd_encode
 
@@ -132,6 +138,7 @@ class _FakeSerialCivLink:
         fail_connect: BaseException | None = None,
         fail_connect_calls: set[int] | None = None,
         fail_connect_calls_exc: BaseException | None = None,
+        lifecycle_events: list[tuple[str, object | None]] | None = None,
     ) -> None:
         self._fail_connect = fail_connect
         self._fail_connect_calls = set(fail_connect_calls or set())
@@ -145,6 +152,7 @@ class _FakeSerialCivLink:
         self._responses: asyncio.Queue[bytes] = asyncio.Queue()
         self._responses_by_send: dict[int, list[bytes]] = {}
         self.device_history: list[str] = []
+        self.lifecycle_events = lifecycle_events
 
     def set_device(self, device: str) -> None:
         self.device_history.append(device)
@@ -162,6 +170,8 @@ class _FakeSerialCivLink:
         self.healthy = True
 
     async def disconnect(self) -> None:
+        if self.lifecycle_events is not None:
+            self.lifecycle_events.append(("disconnect", None))
         self.disconnect_calls += 1
         self.connected = False
         self.ready = False
@@ -171,6 +181,8 @@ class _FakeSerialCivLink:
         if not self.connected:
             raise ConnectionError("Serial CI-V link is disconnected.")
         payload = bytes(frame)
+        if self.lifecycle_events is not None:
+            self.lifecycle_events.append(("send", payload))
         self.sent_frames.append(payload)
         send_no = len(self.sent_frames)
         for response in self._responses_by_send.pop(send_no, []):
@@ -257,6 +269,7 @@ async def test_serial_radio_connect_disconnect_and_core_command_execution() -> N
     assert await radio.get_freq() == 14_074_000
     assert link.sent_frames
     assert radio.radio_ready is True
+    assert radio._managed_tx_runtime is None
 
     await radio.disconnect()
     assert radio.connected is False
@@ -280,6 +293,159 @@ async def test_serial_radio_connect_failure_sets_disconnected_state() -> None:
     assert radio.connected is False
     assert radio.control_connected is False
     assert radio.radio_ready is False
+
+
+@pytest.mark.asyncio
+async def test_serial_connect_arms_mounted_composition_with_actual_transport(
+    tmp_path,
+) -> None:
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+
+    await radio.connect()
+
+    transport = radio._civ_transport
+    assert transport is not None
+    assert composition._live_transport_identity is transport
+    assert composition._active_provider is None
+
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)
+    assert composition._active_provider is not None
+    assert composition._active_provider.transport_identity is transport
+    assert composition._active_provider.provider_generation == 1
+
+    await radio.disconnect()
+    await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_mounted_session_keeps_serial_transport_as_sole_readiness_identity(
+    tmp_path,
+) -> None:
+    from rigplane.cli import _ManagedTxRadioSession
+
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    session = _ManagedTxRadioSession(radio, composition)
+
+    entered = await session.__aenter__()
+    transport = radio._civ_transport
+    assert entered is radio
+    assert transport is not None
+    assert composition._live_transport_identity is transport
+    assert composition._live_transport_identity is not radio
+
+    await session.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_serial_soft_reconnect_rearms_same_composition_on_new_transport(
+    tmp_path,
+) -> None:
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)
+
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    first_transport = radio._civ_transport
+    assert composition._active_provider is not None
+    assert composition._active_provider.transport_identity is first_transport
+    assert composition._active_provider.provider_generation == 1
+
+    link.ready = False
+    link.healthy = False
+    await radio.soft_reconnect()
+
+    second_transport = radio._civ_transport
+    assert second_transport is not None
+    assert second_transport is not first_transport
+    assert radio._managed_tx_composition is composition
+    assert composition._active_provider is not None
+    assert composition._active_provider.transport_identity is second_transport
+    assert composition._active_provider.provider_generation == 2
+
+    await radio.disconnect()
+    await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_serial_failed_soft_reconnect_leaves_composition_not_ready(
+    tmp_path,
+) -> None:
+    link = _FakeSerialCivLink(fail_connect_calls={2})
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)
+
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    assert composition._active_provider is not None
+    link.ready = False
+    link.healthy = False
+
+    with pytest.raises(ConnectionError, match="Failed to reconnect serial session"):
+        await radio.soft_reconnect()
+
+    projection = await composition.authority.snapshot()
+    assert composition._active_provider is None
+    assert projection.provider_generation is None
+    assert await composition.authority.transmit_on() is ManagedTxOutcome.REJECTED
+    with pytest.raises(RuntimeError, match="raw PTT ON is blocked"):
+        await radio.set_ptt(True)
+
+    await radio.disconnect()
+    await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_serial_disconnect_retires_composition_before_transport_close(
+    tmp_path,
+) -> None:
+    lifecycle_events: list[tuple[str, object | None]] = []
+
+    async def retire_provider(event) -> None:  # type: ignore[no-untyped-def]
+        lifecycle_events.append(("retire", event.transport_identity))
+
+    link = _FakeSerialCivLink(lifecycle_events=lifecycle_events)
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    composition = ManagedTxComposition(
+        radio,
+        config_path=tmp_path / "managed-tx.json",
+        retire_provider=retire_provider,
+    )
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)
+    await radio.connect()
+    transport = radio._civ_transport
+    keyed = await composition.authority.submit_ptt(True, "serial-owner")
+    assert keyed.outcome is ManagedTxOutcome.ACCEPTED
+    await keyed.wait_settlement()
+    lifecycle_events.clear()
+
+    await radio.disconnect()
+
+    expected_off = bytes(radio._commands.ptt_off(to_addr=radio._radio_addr))
+    off_index = lifecycle_events.index(("send", expected_off))
+    retire_index = lifecycle_events.index(("retire", transport))
+    close_index = lifecycle_events.index(("disconnect", None))
+    assert off_index < retire_index < close_index
+    await composition.shutdown(asyncio.Event())
 
 
 def test_serial_radio_rejects_unsupported_ptt_mode() -> None:

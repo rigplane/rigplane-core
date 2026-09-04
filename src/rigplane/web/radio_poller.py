@@ -79,7 +79,7 @@ from ..core.command_service import (
     CommandService,
 )
 from ..core.acquisition_drain import AcquisitionDrain
-from ..core.command_dispatch import execute_command_intent
+from ..core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionPriority,
@@ -341,6 +341,8 @@ from .._poller_types import (  # noqa: E402
     Command,
     CommandQueue,
     CommandQueueEntry,
+    execute_positive_tx_queue_entry,
+    validate_command_queue_entry_currency,
     DisableScope,
     EnableScope,
     MemoryClear,
@@ -605,12 +607,14 @@ class RadioPoller:
         diagnostics: StateDiagnosticsRecorder | None = None,
         state_store: StateStore | None = None,
         acquisition_executor: AcquisitionExecutor | None = None,
+        managed_tx_authority: ManagedWriteAdmission | None = None,
     ) -> None:
         queue = legacy_queue if legacy_queue is not None else command_queue
         self._radio = radio
         self._radio_state = radio_state
         self._state_diagnostics = diagnostics
         self._state_store = state_store or StateStore()
+        self._managed_tx_authority = managed_tx_authority
         raw_scheduler = getattr(radio, "_acquisition_scheduler", None)
         self._acquisition_scheduler = (
             raw_scheduler if isinstance(raw_scheduler, AcquisitionScheduler) else None
@@ -626,6 +630,9 @@ class RadioPoller:
         # so the map never leaks.
         self._acquisition_healthy_grace_started: dict[str, float] = {}
         self._queue = queue
+        self._queue.bind_connection_generation(
+            lambda: getattr(self._radio, "_civ_epoch", None)
+        )
         self._on_state_event = on_state_event
         self._task: asyncio.Task[None] | None = None
         self._caps: set[str] = self._radio_capabilities()
@@ -856,6 +863,28 @@ class RadioPoller:
         await execute_command_queue_entry(entry, self._execute_queued_entry_action)
 
     async def _execute_queued_entry_action(self, entry: CommandQueueEntry) -> None:
+        def validate_currency() -> None:
+            validate_command_queue_entry_currency(
+                entry,
+                now=time.monotonic(),
+                provider_generation=self._provider_generation(),
+                connection_generation=getattr(self._radio, "_civ_epoch", None),
+                session_is_live=self._queue.session_is_live,
+                require_connection_generation=(
+                    self._managed_tx_authority is not None
+                    and (
+                        entry.positive_tx_submission is not None
+                        or isinstance(entry.command, CommandIntent)
+                    )
+                ),
+            )
+
+        validate_currency()
+        if entry.positive_tx_submission is not None:
+            await execute_positive_tx_queue_entry(entry)
+            return
+        if entry.command is None:
+            raise CommandError("queued command has no dispatch payload")
         # MOR-1884: the interlock seat lives at the head of ``_execute`` now,
         # so queued commands and uncommanded internal emits share one seat.
         await self._execute(
@@ -864,6 +893,7 @@ class RadioPoller:
             source=entry.source or "websocket",
             session_id=entry.session_id,
             command_service=entry.command_service,
+            validate_currency=validate_currency,
         )
 
     def _relative_vfo_retention_policy(self) -> tuple[float, float]:
@@ -1464,6 +1494,7 @@ class RadioPoller:
         source: CommandSource | None = None,
         session_id: str | None = None,
         command_service: CommandService | None = None,
+        validate_currency: Callable[[], None] | None = None,
         provider_generation: int,
     ) -> None:
         """Apply a confirmed global readback value to the StateStore.
@@ -1746,6 +1777,9 @@ class RadioPoller:
                 entry = self._queue.take_entry()
                 if entry is None:
                     break
+                if entry.positive_tx_submission is not None:
+                    yield entry
+                    continue
                 yield from self._stage_tx_interlocked_entries(
                     [entry], advance_held=False
                 )
@@ -2123,6 +2157,7 @@ class RadioPoller:
         source: CommandSource = "websocket",
         session_id: str | None = None,
         command_service: CommandService | None = None,
+        validate_currency: Callable[[], None] | None = None,
     ) -> None:
         cmd = canonicalize_level_command(
             cmd,
@@ -2132,7 +2167,12 @@ class RadioPoller:
             session_id=session_id,
         )
         if isinstance(cmd, CommandIntent):
-            await execute_command_intent(self._radio, cmd)
+            await execute_command_intent(
+                self._radio,
+                cmd,
+                managed_tx_authority=self._managed_tx_authority,
+                validate_currency=validate_currency,
+            )
             self._request_post_write_readback(cmd)
             return
         # MOR-1884 (MOR-1626 criterion 7): the enforcement seat guards EVERY

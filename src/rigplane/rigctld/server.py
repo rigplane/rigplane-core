@@ -49,6 +49,7 @@ from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
     wire_parts_for_query,
 )
+from ..runtime._poller_types import CommandQueue
 from ..startup_checks import assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
@@ -75,10 +76,19 @@ _MAX_PENDING_CLIENT_RESPONSES = 64
 
 
 class _ManagedPttReady(asyncio.Future[None]):
-    def __init__(self, revocation: asyncio.Event) -> None:
+    def __init__(
+        self,
+        revocation: asyncio.Event,
+        *,
+        expires_at_monotonic: float,
+        connection_generation: object,
+    ) -> None:
         super().__init__()
         self._revocation = revocation
+        self.expires_at_monotonic = expires_at_monotonic
+        self.connection_generation = connection_generation
         self.validation_committed = False
+        self.queue_released = False
 
     @property
     def superseded(self) -> bool:
@@ -88,7 +98,16 @@ class _ManagedPttReady(asyncio.Future[None]):
         if self.superseded:
             return
         self.validation_committed = True
-        super().set_result(result)
+        self._resolve_if_ready()
+
+    def release_queue(self) -> None:
+        """Release the shared ordering gate without bypassing validation."""
+        self.queue_released = True
+        self._resolve_if_ready()
+
+    def _resolve_if_ready(self) -> None:
+        if self.validation_committed and self.queue_released and not self.done():
+            super().set_result(None)
 
     def commit_failure(self) -> bool:
         if self.superseded:
@@ -162,6 +181,7 @@ class RigctldServer:
         config: RigctldConfig | None = None,
         *,
         managed_tx_authority: ManagedTxAuthority | None = None,
+        command_queue: CommandQueue | None = None,
         command_service: CommandService | None = None,
         _protocol: Any = None,
         _handler: Any = None,
@@ -169,13 +189,17 @@ class RigctldServer:
     ) -> None:
         supplied = (
             managed_tx_authority is not None,
+            command_queue is not None,
             command_service is not None,
         )
         if any(supplied) and not all(supplied):
-            raise ValueError("managed authority and service must be supplied together")
+            raise ValueError(
+                "managed authority, command queue, and service must be supplied together"
+            )
         if all(supplied) and _handler is not None:
             raise ValueError("managed references cannot be combined with _handler")
         self._managed_tx_authority = managed_tx_authority
+        self._command_queue = command_queue
         self._command_service = command_service
         self._radio = radio
         self._config = config or RigctldConfig()
@@ -768,7 +792,7 @@ class RigctldServer:
                 state_store=self._state_store,
                 state_model_service=self._state_model_service,
                 managed_tx_authority=self._managed_tx_authority,
-                command_queue=None,
+                command_queue=self._command_queue,
                 command_service=self._command_service,
             )
 
@@ -1004,6 +1028,8 @@ class RigctldServer:
         # ``finally``: that pairing is what makes it a lease-bearing managed TX
         # owner identity rather than a throwaway request id (MOR-1014).
         session_id = f"rigctld-client-{client_id}"
+        if self._command_queue is not None:
+            self._command_queue.register_session(session_id)
         logger.info("client #%d connected from %s", client_id, session.peername)
 
         loop = asyncio.get_running_loop()
@@ -1145,13 +1171,25 @@ class RigctldServer:
                             ptt_revocation.set()
                             ptt_revocation = asyncio.Event()
                         if ptt_on:
-                            ptt_ready = _ManagedPttReady(ptt_revocation)
+                            assert self._command_queue is not None
+                            ptt_ready = _ManagedPttReady(
+                                ptt_revocation,
+                                expires_at_monotonic=(
+                                    loop.time() + self._config.command_timeout
+                                ),
+                                connection_generation=self._command_queue.capture_connection_generation(),
+                            )
                         assert self._managed_tx_authority is not None
                         ptt_submission = (
                             self._managed_tx_authority.start_ptt_submission(
                                 ptt_on,
                                 session_id,
                                 ready=ptt_ready,
+                                expires_at_monotonic=(
+                                    None
+                                    if ptt_ready is None
+                                    else ptt_ready.expires_at_monotonic
+                                ),
                             )
                         )
 
@@ -1171,6 +1209,8 @@ class RigctldServer:
             )
         finally:
             self._rate_windows.pop(client_id, None)
+            if self._command_queue is not None:
+                self._command_queue.unregister_session(session_id)
             tasks = tuple(response_tasks)
             if not graceful_quit:
                 for task in tasks:
