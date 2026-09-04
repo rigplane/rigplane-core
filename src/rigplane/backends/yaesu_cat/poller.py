@@ -112,6 +112,8 @@ class YaesuCatPoller:
         self._callback = callback
         self._observation_callback = observation_callback
         self._command_queue = command_queue
+        self._managed_queue_boundary: Any | None = None
+        self._managed_queue_required = False
         self._fast_interval = fast_interval
         self._medium_interval = medium_interval
         self._slow_interval = slow_interval
@@ -147,6 +149,20 @@ class YaesuCatPoller:
         self._deferred_tx_generation: (
             tuple[tuple[str | None, int], int | None] | None
         ) = None
+
+    @property
+    def managed_queue_boundary(self) -> Any | None:
+        """The runtime-owned managed queue boundary, when composition attached one."""
+        return self._managed_queue_boundary
+
+    def attach_managed_queue_boundary(
+        self, boundary: Any, *, required: bool = True
+    ) -> None:
+        """Attach the shared managed queue boundary before the poller starts."""
+        if required and boundary is None:
+            raise CommandError("managed transmit authority unavailable")
+        self._managed_queue_boundary = boundary
+        self._managed_queue_required = required
 
     def bind_provider_generation(
         self,
@@ -680,6 +696,10 @@ class YaesuCatPoller:
         """Process all pending commands from the web UI command queue."""
         if self._command_queue is None:
             return
+        managed_boundary = self._managed_queue_boundary
+        if managed_boundary is not None and self._managed_queue_required:
+            await self._drain_required_managed_commands(managed_boundary)
+            return
 
         boundary = self._deferred_generation_change()
         if boundary is not None:
@@ -782,6 +802,26 @@ class YaesuCatPoller:
                     type(cmd).__name__,
                 )
                 return
+            managed_boundary = self._managed_queue_boundary
+            if managed_boundary is not None and managed_boundary.handles(cmd):
+                try:
+                    await execute_command_queue_entry(
+                        entry,
+                        lambda claimed: managed_boundary.dispatch(
+                            claimed,
+                            lambda command: self._execute_command(
+                                command, apply_legacy_interlock=False
+                            ),
+                        ),
+                    )
+                    self._track_receiver_select_readback(entry)
+                except Exception:
+                    logger.warning(
+                        "YaesuCatPoller: managed command %s failed",
+                        type(cmd).__name__,
+                        exc_info=True,
+                    )
+                return
             decision = stage_entry(entry)
             if decision is None:
                 return
@@ -806,6 +846,38 @@ class YaesuCatPoller:
             if entry is None:
                 break
             await process_entry(entry)
+
+    async def _drain_required_managed_commands(self, boundary: Any) -> None:
+        """Dispatch a composed queue without touching the legacy RF/defer seat."""
+        assert self._command_queue is not None
+        for _ in range(self._command_queue.pending_count):
+            entry = self._command_queue.take_entry()
+            if entry is None:
+                break
+            if entry.future is not None and entry.future.cancelled():
+                continue
+            try:
+                if not boundary.handles(entry.command):
+                    raise CommandError(
+                        "managed queue boundary does not handle "
+                        f"{type(entry.command).__name__}"
+                    )
+                await execute_command_queue_entry(
+                    entry,
+                    lambda claimed: boundary.dispatch(
+                        claimed,
+                        lambda command: self._execute_command(
+                            command, apply_legacy_interlock=False
+                        ),
+                    ),
+                )
+                self._track_receiver_select_readback(entry)
+            except Exception:
+                logger.warning(
+                    "YaesuCatPoller: managed command %s failed",
+                    type(entry.command).__name__,
+                    exc_info=True,
+                )
 
     def _deferred_release_is_live(self, entry: CommandQueueEntry) -> bool:
         reason = None
@@ -958,7 +1030,9 @@ class YaesuCatPoller:
         0x0A: 10,  # 6m   → 50M
     }
 
-    async def _execute_command(self, cmd: Any) -> None:
+    async def _execute_command(
+        self, cmd: Any, *, apply_legacy_interlock: bool = True
+    ) -> None:
         """Dispatch a single command to the radio.
 
         Commands come from the web UI CommandQueue.  The dispatcher handles
@@ -968,16 +1042,17 @@ class YaesuCatPoller:
         if isinstance(cmd, CommandIntent):
             await execute_command_intent(self._radio, cmd)
             return
-        decision = evaluate_tx_interlock(
-            cmd,
-            rf_state=self._current_rf_state(),
-            disposition_overrides=self._tx_interlock_disposition_overrides(),
-        )
-        if not decision.allowed and (
-            decision.disposition is TxInterlockDisposition.BLOCK
-            or classify_tx_interlock(cmd) is TxInterlockDisposition.TX_SAFE
-        ):
-            raise CommandError(decision.reason)
+        if apply_legacy_interlock:
+            decision = evaluate_tx_interlock(
+                cmd,
+                rf_state=self._current_rf_state(),
+                disposition_overrides=self._tx_interlock_disposition_overrides(),
+            )
+            if not decision.allowed and (
+                decision.disposition is TxInterlockDisposition.BLOCK
+                or classify_tx_interlock(cmd) is TxInterlockDisposition.TX_SAFE
+            ):
+                raise CommandError(decision.reason)
 
         from ..._poller_types import (
             PttOff,

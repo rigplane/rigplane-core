@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,6 +46,7 @@ from rigplane.radio_state import RadioState
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import (
     CommandQueue,
+    CommandQueueEntry,
     SelectVfo,
     SetBand,
     SetFreq,
@@ -1280,6 +1281,132 @@ async def test_yaesu_known_rx_preserves_immediate_dispatch(
         NotImplementedError, match="SendCiv unsupported by Yaesu CAT dispatcher"
     ):
         await poller._execute_command(SendCiv(command=0x1C))  # noqa: SLF001
+
+
+class _ManagedQueueBoundary:
+    def __init__(self, *, reject_tuner: bool = False) -> None:
+        self.entries: list[object] = []
+        self._reject_tuner = reject_tuner
+
+    def handles(self, command: object) -> bool:
+        from rigplane.runtime._poller_types import PttOff, PttOn, SetTunerStatus
+
+        return isinstance(command, PttOn | PttOff | SetTunerStatus)
+
+    async def dispatch(
+        self,
+        entry: CommandQueueEntry,
+        execute_provider: Callable[[object], Awaitable[None]],
+    ) -> None:
+        from rigplane.runtime._poller_types import PttOff, PttOn, SetTunerStatus
+
+        self.entries.append(entry)
+        command = entry.command
+        if isinstance(command, PttOn | PttOff):
+            return
+        if isinstance(command, SetTunerStatus) and self._reject_tuner:
+            raise CommandError("managed transmit authority refused tuner write")
+        await execute_provider(command)
+
+
+@pytest.mark.asyncio
+async def test_managed_yaesu_queue_delegates_ptt_without_provider_io() -> None:
+    from rigplane.runtime._poller_types import CommandQueue, PttOff, PttOn
+
+    radio = make_radio()
+    radio.set_ptt = AsyncMock()
+    boundary = _ManagedQueueBoundary()
+    queue = CommandQueue()
+    queue.put_ordered(PttOn(), source="websocket", session_id="ws-17")
+    queue.put_ordered(PttOff(), source="websocket", session_id="ws-17")
+    poller = YaesuCatPoller(
+        radio,
+        command_queue=queue,
+    )
+    poller.attach_managed_queue_boundary(boundary, required=True)
+    assert poller.managed_queue_boundary is boundary
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert len(boundary.entries) == 2
+    radio.set_ptt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [1, 2])
+async def test_managed_yaesu_tuner_refusal_precedes_provider_io(value: int) -> None:
+    from rigplane.runtime._poller_types import CommandQueue, SetTunerStatus
+
+    radio = make_radio()
+    radio.set_tuner = AsyncMock()
+    radio.set_tuner_status = AsyncMock()
+    boundary = _ManagedQueueBoundary(reject_tuner=True)
+    queue = CommandQueue()
+    reply: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    queue.put_ordered(
+        SetTunerStatus(value),
+        future=reply,
+        command_id=f"tuner-{value}",
+        source="websocket",
+        session_id="ws-17",
+    )
+    poller = YaesuCatPoller(
+        radio,
+        command_queue=queue,
+    )
+    poller.attach_managed_queue_boundary(boundary)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert reply.exception() is not None
+    assert len(boundary.entries) == 1
+    radio.set_tuner.assert_not_awaited()
+    radio.set_tuner_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_managed_yaesu_tuner_off_bypasses_legacy_interlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.runtime._poller_types import CommandQueue, SetTunerStatus
+
+    radio = make_radio()
+    radio.set_tuner = AsyncMock()
+    radio.set_tuner_status = AsyncMock()
+    boundary = _ManagedQueueBoundary()
+    queue = CommandQueue()
+    queue.put_ordered(SetTunerStatus(0), command_id="tuner-off", source="websocket")
+    poller = YaesuCatPoller(
+        radio,
+        command_queue=queue,
+    )
+    poller.attach_managed_queue_boundary(boundary)
+    monkeypatch.setattr(
+        poller,
+        "_current_rf_state",
+        lambda: pytest.fail("managed drain must not consult observed RF"),
+    )
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert len(boundary.entries) == 1
+    radio.set_tuner.assert_awaited_once_with(0)
+    radio.set_tuner_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_yaesu_queue_retains_direct_ptt_dispatch() -> None:
+    from rigplane.runtime._poller_types import CommandQueue, PttOff
+
+    radio = make_radio()
+    radio.set_ptt = AsyncMock()
+    queue = CommandQueue()
+    queue.put_ordered(PttOff())
+    poller = YaesuCatPoller(radio, command_queue=queue)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    radio.set_ptt.assert_awaited_once_with(False)
 
 
 @pytest.mark.asyncio
