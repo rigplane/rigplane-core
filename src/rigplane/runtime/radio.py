@@ -17,7 +17,10 @@ import logging
 import os
 import socket as _socket
 import time
-from typing import TYPE_CHECKING, Literal, cast
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol, cast, runtime_checkable
 
 if TYPE_CHECKING:
     from typing import Any, Awaitable, Callable
@@ -66,7 +69,15 @@ from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
 from rigplane.runtime._scope_runtime import ScopeRuntimeMixin
 from rigplane.runtime.callable_support import supports_callable
 from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
+from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
+from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
+from rigplane.runtime.managed_tx_effect_lane import (
+    ManagedTxActuator,
+    ManagedTxEffectLane,
+)
 from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
+from rigplane.runtime.managed_tx_fence import TxAbortFence
+from rigplane.runtime.local_tx_work import LocalTxWorkRunner
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
@@ -208,6 +219,10 @@ __all__ = [
     "AudioRecoveryState",
     "CoreRadio",
     "IcomRadio",
+    "ManagedTxComposition",
+    "ManagedTxCompositionPort",
+    "ManagedTxProviderEvent",
+    "install_managed_tx_composition",
     "RawCivSubscription",
     "RadioProfile",
     "AudioCodec",
@@ -218,6 +233,227 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedTxProviderEvent:
+    """One provider lifecycle event shared by TX and observation consumers."""
+
+    provider_generation: int
+    observation_generation: int
+
+    def __post_init__(self) -> None:
+        if self.provider_generation < 0 or self.observation_generation < 0:
+            raise ValueError("managed TX generations must be non-negative")
+
+
+_ProviderHook = Callable[[ManagedTxProviderEvent], Awaitable[None]]
+
+
+@runtime_checkable
+class ManagedTxCompositionPort(Protocol):
+    """Typed production seat shared by Web, rigctld, and provider lifecycle."""
+
+    @property
+    def authority(self) -> ManagedTxAuthority: ...
+
+    @property
+    def abort_fence(self) -> TxAbortFence: ...
+
+    @property
+    def local_tx_work_runner(self) -> LocalTxWorkRunner: ...
+
+    @property
+    def active_provider(self) -> ManagedTxProviderEvent | None: ...
+
+    async def activate_provider(self, event: ManagedTxProviderEvent) -> None: ...
+
+    def start_provider_unavailable(
+        self, event: ManagedTxProviderEvent
+    ) -> asyncio.Task[None]: ...
+
+    async def shutdown(self, termination: asyncio.Event) -> ShutdownResult: ...
+
+
+class _SynchronousProviderInvalidation(Protocol):
+    def start_provider_unavailable(self) -> asyncio.Task[None]: ...
+
+
+async def _no_provider_hook(_event: ManagedTxProviderEvent) -> None:
+    return None
+
+
+class ManagedTxComposition:
+    """The sole production graph for managed-transmit policy and effects."""
+
+    def __init__(
+        self,
+        actuator: ManagedTxActuator,
+        *,
+        config_path: Path,
+        prepare_provider: _ProviderHook = _no_provider_hook,
+        retire_provider: _ProviderHook = _no_provider_hook,
+    ) -> None:
+        if not isinstance(actuator, ManagedTxActuator):
+            raise TypeError("production managed TX requires a normalized actuator")
+        self._prepare_provider = prepare_provider
+        self._retire_provider = retire_provider
+        self._abort_fence = TxAbortFence()
+        self._local_tx_work_runner = LocalTxWorkRunner(self._abort_fence)
+        self._config_store = ManagedTxTotConfigStore(config_path)
+        self._active_provider: ManagedTxProviderEvent | None = None
+        self._events: dict[int, ManagedTxProviderEvent] = {}
+        self._invalidation_tasks: dict[int, asyncio.Task[None]] = {}
+        self._transition_lock = asyncio.Lock()
+        self._shutting_down = False
+        self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
+
+        async def poison_generation(generation: int) -> None:
+            event = self._events.get(generation)
+            if event is not None:
+                await self.start_provider_unavailable(event)
+
+        self._lane = ManagedTxEffectLane(
+            actuator,
+            poison_generation=poison_generation,
+        )
+        self._authority = ManagedTxAuthority(
+            self._lane,
+            self._config_store,
+            self._abort_fence,
+            provider_generation=None,
+        )
+
+    @property
+    def authority(self) -> ManagedTxAuthority:
+        return self._authority
+
+    @property
+    def abort_fence(self) -> TxAbortFence:
+        return self._abort_fence
+
+    @property
+    def local_tx_work_runner(self) -> LocalTxWorkRunner:
+        return self._local_tx_work_runner
+
+    @property
+    def active_provider(self) -> ManagedTxProviderEvent | None:
+        return self._active_provider
+
+    async def activate_provider(self, event: ManagedTxProviderEvent) -> None:
+        async with self._transition_lock:
+            if self._shutting_down:
+                raise RuntimeError("managed TX composition is shutting down")
+            if not callable(
+                getattr(self._authority, "start_provider_unavailable", None)
+            ):
+                raise RuntimeError(
+                    "managed TX authority lacks synchronous provider invalidation"
+                )
+            current = self._active_provider
+            if current == event:
+                return
+            if current is not None:
+                raise RuntimeError("current provider must become unavailable first")
+            if self._events and event.provider_generation <= max(self._events):
+                raise ValueError("provider generation must increase")
+            if event.provider_generation in self._events:
+                raise ValueError("provider generation is already bound")
+            await self._prepare_provider(event)
+            try:
+                await self._authority.provider_available(event.provider_generation)
+            except BaseException:
+                await self._retire_provider(event)
+                raise
+            self._events[event.provider_generation] = event
+            self._active_provider = event
+
+    def start_provider_unavailable(
+        self, event: ManagedTxProviderEvent
+    ) -> asyncio.Task[None]:
+        existing = self._invalidation_tasks.get(event.provider_generation)
+        if existing is not None:
+            return existing
+        if self._active_provider != event:
+            return asyncio.create_task(_no_provider_hook(event))
+        starter = getattr(self._authority, "start_provider_unavailable", None)
+        if not callable(starter):
+            raise RuntimeError(
+                "managed TX authority lacks synchronous provider invalidation"
+            )
+        authority = cast(_SynchronousProviderInvalidation, self._authority)
+        authority_cleanup = authority.start_provider_unavailable()
+        self._active_provider = None
+
+        async def finish() -> None:
+            await authority_cleanup
+            await self._retire_provider(event)
+
+        task = asyncio.create_task(finish())
+        self._invalidation_tasks[event.provider_generation] = task
+        return task
+
+    async def shutdown(self, termination: asyncio.Event) -> ShutdownResult:
+        async with self._transition_lock:
+            task = self._shutdown_task
+            if task is None:
+                self._shutting_down = True
+                task = asyncio.create_task(self._complete_shutdown(termination))
+                self._shutdown_task = task
+        return await asyncio.shield(task)
+
+    async def _complete_shutdown(self, termination: asyncio.Event) -> ShutdownResult:
+        event = self._active_provider
+        if not self._events:
+            await self._authority.close()
+            return ShutdownResult.DRAINED
+
+        async def retire(generation: int) -> None:
+            bound = self._events.get(generation)
+            if bound is None:
+                raise RuntimeError("managed TX retirement lost provider event")
+            await self._retire_provider(bound)
+
+        result = await self._authority.shutdown(
+            retire_provider=retire,
+            termination=termination,
+        )
+        if result is ShutdownResult.DRAINED:
+            self._active_provider = None
+            if event is not None:
+                self._invalidation_tasks.pop(event.provider_generation, None)
+        return result
+
+
+class _LegacyManagedTxCutoverBlocker:
+    async def request_on(self, _owner: object) -> object:
+        raise RuntimeError("legacy PTT ingress is blocked by production composition")
+
+    async def release_owner(self, _owner: object, *, reason: object) -> object:
+        raise RuntimeError("legacy PTT ingress is blocked by production composition")
+
+
+_LEGACY_MANAGED_TX_CUTOVER_BLOCKER = _LegacyManagedTxCutoverBlocker()
+
+
+def install_managed_tx_composition(
+    radio: object, composition: ManagedTxCompositionPort
+) -> None:
+    """Install before connect, suppressing legacy-owner and raw-PTT fallback."""
+
+    installer = getattr(radio, "install_managed_tx_composition", None)
+    if callable(installer):
+        installer(composition)
+        return
+    if getattr(radio, "_managed_tx_composition", None) is not None:
+        raise RuntimeError("managed TX composition is already installed")
+    setattr(radio, "_managed_tx_composition", composition)
+    try:
+        setattr(radio, "managed_tx", _LEGACY_MANAGED_TX_CUTOVER_BLOCKER)
+    except (AttributeError, TypeError) as exc:
+        setattr(radio, "_managed_tx_composition", None)
+        raise RuntimeError("radio cannot block legacy managed TX fallback") from exc
+
 
 _AUDIO_CAPABILITIES = get_audio_capabilities()
 _DEFAULT_AUDIO_CODEC = _AUDIO_CAPABILITIES.default_codec
@@ -666,6 +902,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # non-None for the life of the radio: a failed arm degrades it to
         # NOT_READY, never back to ``None`` (see ``_arm_managed_tx``).
         self._managed_tx_runtime: ManagedRadioRuntime | None = None
+        self._managed_tx_composition: ManagedTxCompositionPort | None = None
         # CI-V epoch the last arming attempt was made against; ``None`` until
         # the first attempt.  Bounds arming to one attempt per epoch.
         self._managed_tx_armed_epoch: int | None = None
@@ -819,7 +1056,24 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         a rig whose provider never came ready refuses keys with ``NOT_READY``
         rather than reverting to an unsupervised write (MOR-1193).
         """
+        if self._managed_tx_composition is not None:
+            return cast(ManagedTxSupervisor, _LEGACY_MANAGED_TX_CUTOVER_BLOCKER)
         return self._managed_tx_runtime
+
+    def install_managed_tx_composition(
+        self, composition: ManagedTxCompositionPort
+    ) -> None:
+        """Install the production authority before any radio session starts."""
+
+        if self._managed_tx_composition is not None:
+            raise RuntimeError("managed TX composition is already installed")
+        if self._managed_tx_runtime is not None or self._conn_state is not (
+            RadioConnectionState.DISCONNECTED
+        ):
+            raise RuntimeError(
+                "managed TX composition must be installed before connect"
+            )
+        self._managed_tx_composition = composition
 
     @property
     def tx_snapshot(self) -> "TxSafetySnapshot | None":
@@ -945,6 +1199,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         worse answer than the honest ``None``. Only ``connect()`` brings a
         runtime back.
         """
+        if self._managed_tx_composition is not None:
+            return
         if self._civ_transport is None or self._managed_tx_binding_is_live():
             return
         async with self._managed_tx_arm_lock:
@@ -975,6 +1231,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         to do with managed TX. ``RIGPLANE_MANAGED_TX`` is the only managed-TX
         switch; neither reads the other.
         """
+        if self._managed_tx_composition is not None:
+            return
         async with self._managed_tx_arm_lock:
             if self._managed_tx_armed_epoch != self._civ_epoch:
                 await self._run_managed_tx_arm()
@@ -1120,6 +1378,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Ordered inside the ``finally`` with the members it belongs to, so a
         shutdown that timed out or raised still leaves a connectable radio.
         """
+        composition = self._managed_tx_composition
+        if composition is not None:
+            termination = asyncio.Event()
+            task = asyncio.create_task(composition.shutdown(termination))
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task), timeout=_MANAGED_TX_TEARDOWN_TIMEOUT_S
+                )
+            except TimeoutError:
+                termination.set()
+                await asyncio.shield(task)
+            return
         runtime = self._managed_tx_runtime
         if runtime is None:
             return
@@ -1164,6 +1434,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Bounded and fail-soft: a gate that will not shut is not a reason to
         refuse to tear down the path it guards.
         """
+        composition = self._managed_tx_composition
+        if composition is not None:
+            event = composition.active_provider
+            if event is not None:
+                await composition.start_provider_unavailable(event)
+            return
         runtime = self._managed_tx_runtime
         if runtime is None:
             return

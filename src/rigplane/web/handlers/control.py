@@ -162,6 +162,7 @@ from ..websocket import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...radio_protocol import Radio
+    from ...runtime.radio import ManagedTxCompositionPort
 
 from ...capabilities import (
     CAP_AF_LEVEL,
@@ -510,6 +511,7 @@ class ControlHandler:
         server: Any = None,
         read_only: bool = False,
         session_id: str | None = None,
+        managed_tx_port: "ManagedTxCompositionPort | None" = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
@@ -517,6 +519,7 @@ class ControlHandler:
         self._radio_model = radio_model
         self._server = server
         self._read_only = read_only
+        self._managed_tx_port = managed_tx_port
         self._session_id = (
             session_id if session_id is not None else f"websocket-{time.monotonic_ns()}"
         )
@@ -1631,7 +1634,15 @@ class ControlHandler:
                 "CW text too long: "
                 f"max {_MAX_CW_TEXT_CHARS} characters, got {len(text)}"
             )
-        await radio.send_cw_text(text)
+        port = self._managed_tx_port
+        if port is None:
+            raise RuntimeError("managed local TX runner is unavailable")
+        runner = port.local_tx_work_runner
+        if runner is None:
+            raise RuntimeError("managed local TX runner is unavailable")
+        await runner.run(
+            lambda is_current: radio.send_cw_text(text, is_current=is_current)
+        )
         return {"text": text}
 
     async def _ro_stop_cw_text(
@@ -1729,6 +1740,33 @@ class ControlHandler:
             raise ValueError(f"tuner value must be 0, 1, or 2; got {value!r}")
         if self._read_only and value == 2:
             raise PermissionError("read-only mode: set_tuner_status TUNING rejected")
+
+        if value in (1, 2):
+            port = self._managed_tx_port
+            if port is None:
+                raise RuntimeError("managed tuner authority is unavailable")
+            intent = command_intent_from_request(
+                "set_tuner_status",
+                {"value": value},
+                source="web",
+                session_id=self._session_id,
+            )
+            if not await port.authority.admit_managed_write(intent):
+                raise CommandError("managed tuner write was rejected")
+            if radio is None or CAP_TUNER not in radio.capabilities:
+                raise RuntimeError("radio does not support this command")
+            runner = port.local_tx_work_runner
+            if runner is None:
+                raise RuntimeError("managed local TX runner is unavailable")
+            outcome = await runner.run(
+                lambda is_current: radio.set_tuner_status(
+                    value, is_current=is_current
+                )
+            )
+            if outcome is False:
+                raise CommandError("tuner command was rejected by the backend")
+            label = {1: "ON", 2: "TUNING"}[value]
+            return {"value": value, "label": label}
 
         rf_state = self._observed_rf_state()
 
