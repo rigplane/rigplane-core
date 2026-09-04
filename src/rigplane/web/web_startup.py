@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "attach_managed_tx_composition",
+    "preflight_managed_tx_start",
     "prepare_managed_tx_observation_generation",
     "start_web_server",
     "stop_web_server",
@@ -85,6 +86,21 @@ def _managed_tx_attachment(
     )
 
 
+def preflight_managed_tx_start(
+    server: WebServer,
+) -> tuple[ManagedTxCompositionPort | None, ManagedTxProviderEvent | None]:
+    """Validate the production composition before any Web startup mutation."""
+
+    managed_tx, provider_event = _managed_tx_attachment(server)
+    if server._config.managed_tx_required and managed_tx is None:
+        raise RuntimeError("managed TX composition is required before Web startup")
+    if managed_tx is not None and (
+        provider_event is None or managed_tx.active_provider is not provider_event
+    ):
+        raise RuntimeError("managed TX provider must be active before the Web listener")
+    return managed_tx, provider_event
+
+
 def _supports_scope_local(server: WebServer) -> bool:
     return "scope" in runtime_capabilities(server._radio)
 
@@ -95,14 +111,8 @@ async def start_web_server(server: WebServer) -> None:
     Mirrors the original :meth:`WebServer.start` body verbatim — the method
     now delegates here so the public API is preserved.
     """
-    managed_tx, provider_event = _managed_tx_attachment(server)
-    if server._config.managed_tx_required and managed_tx is None:
-        raise RuntimeError("managed TX composition is required before Web startup")
+    managed_tx, _provider_event = preflight_managed_tx_start(server)
     if managed_tx is not None:
-        if provider_event is None or managed_tx.active_provider is not provider_event:
-            raise RuntimeError(
-                "managed TX provider must be active before the Web listener"
-            )
 
         def provider_generation_changed(observation_generation: int) -> None:
             current = managed_tx.active_provider

@@ -2704,8 +2704,12 @@ class WebServer:
 
     async def start(self) -> None:
         """Start the HTTP/WS listener and RadioPoller (if radio is connected)."""
-        from .web_startup import start_web_server  # noqa: TID251
+        from .web_startup import (  # noqa: TID251
+            preflight_managed_tx_start,
+            start_web_server,
+        )
 
+        preflight_managed_tx_start(self)
         self._stopping = False
         self._attach_audio_session_listener()
         self._attach_reconnect_status_listener()
