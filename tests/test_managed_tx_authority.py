@@ -1,10 +1,12 @@
 import asyncio
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any, cast
 
 import pytest
 
+from rigplane.core.exceptions import CommandError
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
@@ -1105,6 +1107,28 @@ async def test_ten_thousand_idempotent_commands_keep_one_scheduler() -> None:
     assert not hasattr(managed, "observed_ptt")
     await managed.force_off()
     await managed.close()
+
+
+@pytest.mark.asyncio
+async def test_managed_admission_fails_closed_for_unrepresentable_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.core import command_dispatch
+    from rigplane.core.state_pipeline_contracts import CommandIntent
+
+    descriptor = command_dispatch.command_descriptor("set_repeater_shift")
+    assert descriptor is not None
+    invalid = replace(descriptor, tx_policy=cast(Any, "relay-ish"))
+    monkeypatch.setattr(
+        command_dispatch, "_COMMAND_DESCRIPTORS", {invalid.name: invalid}
+    )
+    managed, _, _, _, _, _ = authority()
+    command = CommandIntent("unsafe", invalid.name, {"direction": 1}, "test")
+    try:
+        with pytest.raises(CommandError, match="is not admitted"):
+            await managed.admit_managed_write(command)
+    finally:
+        await managed.close()
 
 
 @pytest.mark.asyncio
