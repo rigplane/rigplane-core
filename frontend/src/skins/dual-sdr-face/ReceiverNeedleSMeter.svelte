@@ -1,11 +1,15 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { calibratedToSegments, isSmeterCalibrated } from '../../components-v2/meters/smeter-scale';
-  import { prefersReducedMotion } from '$lib/utils/smoothing.svelte';
+  import { createSmoother, prefersReducedMotion } from '$lib/utils/smoothing.svelte';
 
   interface Props { value: number | null; }
   let { value }: Props = $props();
   let available = $derived(value !== null && isSmeterCalibrated());
-  let angle = $derived(available ? -62 + (calibratedToSegments(value!) / 20) * 124 : null);
+  const smoother = createSmoother(0.06, 0.1);
+  $effect(() => { if (available) smoother.update(calibratedToSegments(value!)); });
+  onMount(() => { smoother.start(); return () => smoother.stop(); });
+  let angle = $derived(available ? -62 + (smoother.value / 20) * 124 : null);
 </script>
 
 <svg class="needle-meter" viewBox="0 0 240 104" role="img" aria-label={available ? 'S meter' : 'S meter unavailable'}>
