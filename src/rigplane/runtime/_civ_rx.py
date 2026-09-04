@@ -3680,15 +3680,27 @@ class CivRuntime:
         tracker = self._host._civ_request_tracker
         epoch = self._host._civ_epoch
 
-        def check_current() -> None:
+        def current_error() -> ConnectionError | None:
             if (
                 self._host._civ_transport is not transport
                 or self._host._civ_request_tracker is not tracker
                 or self._host._civ_epoch != epoch
             ):
-                raise ConnectionError("CI-V execution belongs to a retired session")
-            if is_current is not None and not is_current():
-                raise ConnectionError("managed TX attempt is stale")
+                return ConnectionError("CI-V execution belongs to a retired session")
+            try:
+                current = is_current is None or is_current()
+            except Exception:
+                current = False
+            return None if current else ConnectionError("managed TX attempt is stale")
+
+        def check_current() -> None:
+            if error := current_error():
+                raise error
+
+        def write_is_current() -> bool:
+            return current_error() is None
+
+        guard = {"is_current": write_is_current} if is_current is not None else {}
 
         parsed_frame = parse_civ_frame(civ_frame)
         request_key = request_key_from_frame(parsed_frame)
@@ -3713,7 +3725,7 @@ class CivRuntime:
 
                 check_current()
                 pkt = self._wrap_civ(civ_frame)
-                await transport.send_tracked(pkt)
+                await transport.send_tracked(pkt, **guard)
                 check_current()
             except (Exception, asyncio.CancelledError) as exc:
                 if ack_sink_token is not None:
@@ -3756,7 +3768,7 @@ class CivRuntime:
 
             check_current()
             pkt = self._wrap_civ(civ_frame)
-            await transport.send_tracked(pkt)
+            await transport.send_tracked(pkt, **guard)
             check_current()
             self._host._last_civ_send_monotonic = time.monotonic()
             assert pending is not None
