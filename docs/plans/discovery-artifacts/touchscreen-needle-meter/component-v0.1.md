@@ -15,6 +15,6 @@ Status: owner accepted for preservation on 2026-09-04. Further visual polishing 
 - Render: `current-render.png`, 640 by 240.
 - Comparison: `same-crop-comparison.png`.
 - Visual review: `visual-review.md`.
-- Design QA: repository-root `design-qa.md`.
+- Design QA: `design-qa.md` in this artifact directory.
 
 The lower red arcs are intentionally absent in 0.1 by owner direction. The `ALC`, `Id`, and `Vd` informational labels remain. This checkpoint does not add radio commands, control authority, or upstream fallback data.
