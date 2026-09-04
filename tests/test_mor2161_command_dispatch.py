@@ -6,7 +6,7 @@ import asyncio
 import json
 from dataclasses import replace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import pytest
 
@@ -600,6 +600,7 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
         "set_att",
         "set_antenna_1",
         "set_antenna_2",
+        "set_rx_antenna",
         "set_rx_antenna_ant1",
         "set_rx_antenna_ant2",
         "set_civ_output_ant",
@@ -638,11 +639,6 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
         ("set_antenna_1", "set_antenna_1", "global.slow_state.rx_antenna_1"),
         ("set_antenna_2", "set_antenna_2", "global.slow_state.rx_antenna_2"),
         (
-            "set_rx_antenna",
-            "set_rx_antenna_ant1",
-            "global.slow_state.rx_antenna_1",
-        ),
-        (
             "set_rx_antenna_ant1",
             "set_rx_antenna_ant1",
             "global.slow_state.rx_antenna_1",
@@ -669,8 +665,29 @@ def test_antenna_aliases_share_canonical_descriptor_policy(
     command = bind_command_intent(name, {"on": True}, source="test")
     assert command.name == method_name
     assert command.params["on"] is True
-    assert command.params["enabled"] is True
     assert str(command.target) == target
+
+
+def test_rx_antenna_selector_preserves_antenna_and_public_result_shape() -> None:
+    from rigplane.core.command_dispatch import (
+        bind_command_intent,
+        command_descriptor,
+    )
+
+    descriptor = command_descriptor("set_rx_antenna")
+    assert descriptor is not None
+    assert descriptor.name == "set_rx_antenna"
+    assert descriptor.tx_policy is DescriptorTxPolicy.ANTENNA_SWITCH
+
+    command = bind_command_intent(
+        "set_rx_antenna", {"antenna": 2, "on": True}, source="test"
+    )
+
+    assert command.name == "set_rx_antenna"
+    assert command.params["antenna"] == 2
+    assert command.params["on"] is True
+    assert str(command.target) == "global.slow_state.rx_antenna_2"
+    assert descriptor.result(command) == {"antenna": 2, "on": True}
 
 
 def test_civ_output_ant_is_descriptor_tx_safe() -> None:
@@ -687,7 +704,7 @@ def test_civ_output_ant_is_descriptor_tx_safe() -> None:
     )
     assert command.name == "set_civ_output_ant"
     assert command.params["on"] is False
-    assert command.params["enabled"] is False
+    assert descriptor.result(command) == {"on": False}
 
 
 def test_descriptor_lookup_rejects_unrepresentable_policy(
@@ -715,8 +732,9 @@ async def test_managed_shared_leaf_admits_exactly_once_before_execution() -> Non
         execute_command_intent,
     )
 
-    radio = MagicMock()
-    radio.set_rx_antenna_ant1 = AsyncMock()
+    from rigplane.core.radio_protocol import AntennaControlCapable
+
+    radio = create_autospec(AntennaControlCapable, instance=True)
     managed = MagicMock()
     managed.admit_managed_write = AsyncMock(return_value=True)
     command = bind_command_intent("set_rx_antenna_ant1", {"on": True}, source="test")
@@ -724,7 +742,7 @@ async def test_managed_shared_leaf_admits_exactly_once_before_execution() -> Non
     await execute_command_intent(radio, command, managed_tx_authority=managed)
 
     managed.admit_managed_write.assert_awaited_once_with(command)
-    radio.set_rx_antenna_ant1.assert_awaited_once_with(enabled=True)
+    radio.set_rx_antenna_ant1.assert_awaited_once_with(on=True)
 
 
 @pytest.mark.asyncio
@@ -756,15 +774,46 @@ async def test_unmanaged_shared_leaf_remains_direct() -> None:
         execute_command_intent,
     )
 
-    radio = MagicMock()
-    radio.set_rx_antenna_ant1 = AsyncMock()
+    from rigplane.core.radio_protocol import AntennaControlCapable
+
+    radio = create_autospec(AntennaControlCapable, instance=True)
     command = bind_command_intent(
         "set_rx_antenna_ant1", {"enabled": True}, source="public_api"
     )
 
     await execute_command_intent(radio, command)
 
-    radio.set_rx_antenna_ant1.assert_awaited_once_with(enabled=True)
+    radio.set_rx_antenna_ant1.assert_awaited_once_with(on=True)
+
+
+@pytest.mark.asyncio
+async def test_web_rx_antenna_selector_two_reaches_ant2_and_preserves_ack() -> None:
+    radio = _radio()
+    radio.set_rx_antenna_ant1 = AsyncMock()
+    radio.set_rx_antenna_ant2 = AsyncMock()
+    server = WebServer(radio, WebConfig())
+    ws = _Ws()
+    handler = ControlHandler(ws, radio, "test", "FTX-1", server=server)  # type: ignore[arg-type]
+
+    request = asyncio.create_task(
+        handler._dispatch_command(  # noqa: SLF001
+            "rx-ant", "set_rx_antenna", {"antenna": 2, "on": True}
+        )
+    )
+    await asyncio.sleep(0)
+    assert not request.done()
+
+    await _drain_yaesu(server, radio)
+    await request
+
+    radio.set_rx_antenna_ant1.assert_not_awaited()
+    radio.set_rx_antenna_ant2.assert_awaited_once_with(on=True)
+    assert ws.messages[-1] == {
+        "type": "response",
+        "id": "rx-ant",
+        "ok": True,
+        "result": {"antenna": 2, "on": True},
+    }
 
 
 def test_antenna_descriptor_preflight_preserves_profile_rejection() -> None:
