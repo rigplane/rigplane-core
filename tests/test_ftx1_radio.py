@@ -1609,23 +1609,30 @@ async def test_read_repeater_shift_rejects_invalid_answer_direction(
     ],
 )
 def test_ctcss_index_to_centihz_matches_chart(index, expected_centihz):
-    """Spot-check the index -> Hz -> centiHz mapping against the tone chart.
+    """Spot-check CN mapping through the active profile's resolved domain.
 
-    The 50-tone EIA CTCSS chart is verbatim from FTX-1_CAT_OM_ENG_2507; the
-    centiHz emission matches the Icom convention (round(Hz * 100)).
+    The profile catalog owns the 50-tone EIA domain; the Yaesu provider only
+    applies the CAT CN index to that resolved tuple.
     """
     from rigplane.backends.yaesu_cat.radio import _ctcss_index_to_centihz
 
-    assert _ctcss_index_to_centihz(index) == expected_centihz
+    profile = load_rig(_RIGS_DIR / "ftx1.toml").to_profile()
+    assert (
+        _ctcss_index_to_centihz(index, domain=profile.ctcss_tones_centihz)
+        == expected_centihz
+    )
 
 
-def test_ctcss_table_has_50_standard_tones():
-    """The FTX-1 CTCSS chart is the standard 50-tone EIA set (indices 0-49)."""
-    from rigplane.backends.yaesu_cat.radio import _CTCSS_TONE_CENTIHZ
+@pytest.mark.asyncio
+async def test_get_ctcss_tone_uses_active_profile_domain(connected_radio):
+    """A provider/model-independent profile tuple controls CN index mapping."""
+    connected_radio._profile_cache = replace(
+        connected_radio.profile,
+        ctcss_tones_centihz=(1234, 5678),
+    )
+    connected_radio._transport.query = AsyncMock(return_value="CN00001")
 
-    assert len(_CTCSS_TONE_CENTIHZ) == 50
-    assert _CTCSS_TONE_CENTIHZ[0] == 6700
-    assert _CTCSS_TONE_CENTIHZ[49] == 25410
+    assert await connected_radio.get_ctcss_tone() == 5678
 
 
 # ---------------------------------------------------------------------------
