@@ -17,7 +17,7 @@ import {
 
 export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
-  | 'sdr-test' | 'dual-sdr-face';
+  | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first';
 
 export interface SkinResolutionContext {
   capabilities: Capabilities | null;
@@ -57,6 +57,8 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
   if (layoutPreference === 'lcd-scope') return 'lcd-scope';
   if (layoutPreference === 'standard') return 'desktop-v2';
   if (layoutPreference === 'peer-split') return 'peer-split';
+  if (layoutPreference === 'unified-instrument') return 'unified-instrument';
+  if (layoutPreference === 'panadapter-first') return 'panadapter-first';
   if (layoutPreference === 'dual-sdr-face') return 'dual-sdr-face';
   // MOR-1097 cutover: every non-mobile auto start uses the reworked
   // desktop-v2 composition. Scope availability remains presentation data, not
@@ -95,6 +97,8 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   // `LcdLayout` with `variant="peer-split"`, which renders the glass inside
   // the shell rather than loading it standalone.
   'peer-split': () => import('./lcd-peer-split/LcdPeerSplitSkin.svelte'),
+  'unified-instrument': () => import('./lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte'),
+  'panadapter-first': () => import('./lcd-panadapter-first/LcdPanadapterFirstSkin.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
   'dual-sdr-face': () => import('./dual-sdr-face/DualSdrFaceSkin.svelte'),
 };
@@ -113,13 +117,15 @@ export async function loadSkin(id: SkinId): Promise<Component> {
  *
  * Read off the actual component trees:
  * - `hardware-scope` — `SpectrumPanel`, mounted by the desktop/sdr-test and
- *   mobile layouts; the LCD layouts (including `peer-split`, MOR-2153 PR-1)
- *   have none.
+ *   mobile layouts, plus the selected display in `panadapter-first`.
  * - `audio-fft` — `AudioSpectrumPanel` (right sidebar, desktop/sdr-test/LCD,
  *   `RightSidebar.svelte` behind `hasAudioFft()`) and `AmberCockpit` /
  *   `AmberScope` (LCD `cockpit`/`scope`); `peer-split` demands it purely
  *   through the same `RightSidebar` it now shares with `cockpit`/`scope` —
- *   its own glass mounts no audio-FFT surface. The mobile layout has none.
+ *   `unified-instrument` selects that source for its display. The
+ *   `panadapter-first` LCD shell still contains the existing AF inset in its
+ *   right sidebar even though the selected display uses hardware scope. The
+ *   mobile layout has none.
  *
  * `rx-audio` is deliberately absent: its lease is held by the runtime
  * (`setRxLive`), not by a presentation subtree, so it already survives a swap.
@@ -146,6 +152,8 @@ const SKIN_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
   // `lcd-cockpit`/`lcd-scope` below, re-derived from this shared shell
   // rather than copied from them.
   'peer-split': ['audio-fft'],
+  'unified-instrument': ['audio-fft'],
+  'panadapter-first': ['hardware-scope', 'audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
   'dual-sdr-face': ['hardware-scope'],
 };

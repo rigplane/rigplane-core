@@ -217,6 +217,8 @@ const SKIN_PLAN: Record<SkinId, readonly AppResource[]> = {
   // `RightSidebar`'s `AudioSpectrumPanel` — the same `audio-fft` producer
   // `lcd-cockpit`/`lcd-scope` already demand it for.
   'peer-split': ['audio-fft'],
+  'unified-instrument': ['audio-fft'],
+  'panadapter-first': ['hardware-scope', 'audio-fft'],
   'sdr-test': ['hardware-scope', 'audio-fft'],
   'dual-sdr-face': ['hardware-scope'],
 };
@@ -229,6 +231,8 @@ const WIDTH_FOR: Record<SkinId, number> = {
   'sdr-test': 1400,
   'mobile': 390,
   'peer-split': 1600,
+  'unified-instrument': 1280,
+  'panadapter-first': 1281,
   'dual-sdr-face': 1700,
 };
 function widthToSkin(): SkinId {

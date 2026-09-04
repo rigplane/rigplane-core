@@ -111,6 +111,8 @@
     { value: 'lcd-cockpit', label: 'LCD Cockpit' },
     { value: 'lcd-scope', label: 'LCD Scope' },
     { value: 'peer-split', label: 'LCD Peer Split' },
+    { value: 'unified-instrument', label: 'LCD Unified Instrument' },
+    { value: 'panadapter-first', label: 'LCD Panadapter' },
     { value: 'sdr-test', label: 'SDR Screen (test)' },
     { value: 'dual-sdr-face', label: 'Dual SDR Face' },
   ];
@@ -564,6 +566,8 @@
 
   .skin-select {
     appearance: none;
+    box-sizing: border-box;
+    inline-size: 128px;
     background: transparent;
     border: none;
     color: inherit;

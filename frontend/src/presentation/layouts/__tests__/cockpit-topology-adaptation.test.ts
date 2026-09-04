@@ -15,7 +15,7 @@ import { getLayout, type LayoutManifest } from '../contract';
 // sibling files (the MOR-1092 lesson, restated on MOR-1067).
 import {
   desktopV2Layout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
-  peerSplitLayout, sdrTestLayout,
+  panadapterFirstLayout, peerSplitLayout, sdrTestLayout, unifiedInstrumentLayout,
 } from '../declarations';
 // Namespace import of the SAME barrel, used ONLY to derive the F8
 // completeness set structurally (MOR-2074) — never to register anything (a
@@ -74,7 +74,7 @@ describe('F8 — every registered layout manifest names a loadable skin', () => 
   // manifest, not just the ones that existed when F8 was written.
   const REAL_LAYOUTS: readonly LayoutManifest[] = [
     sdrTestLayout, dualReceiverCockpitLayout, lcdCockpitLayout, lcdScopeLayout, mobileLayout,
-    desktopV2Layout, peerSplitLayout,
+    desktopV2Layout, peerSplitLayout, unifiedInstrumentLayout, panadapterFirstLayout,
   ];
 
   // MOR-2074: REAL_LAYOUTS above is a hand-list, so a new manifest exported
