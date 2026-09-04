@@ -30,22 +30,6 @@ if TYPE_CHECKING:
     from rigplane.core.radio_protocol import ManagedTxSupervisor
     from rigplane.core.tx_safety import ProviderPttObservation, TxSafetySnapshot
 
-    def _managed_tx_runtime_satisfies_supervisor(
-        runtime: ManagedRadioRuntime,
-    ) -> ManagedTxSupervisor:
-        """Mypy-only: fails to type-check if ``ManagedRadioRuntime`` drifts
-        from :class:`~rigplane.core.radio_protocol.ManagedTxSupervisor`.
-
-        Guarded by ``TYPE_CHECKING`` — never defined and never called at
-        runtime, so it costs nothing now that :meth:`CoreRadio._arm_managed_tx`
-        builds ``self._managed_tx_runtime`` (MOR-1016). Its only job is to turn a
-        ``request_on``/``release_owner`` signature drift on either side into
-        a ``uv run mypy src/`` error here, since the assembly-time
-        ``getattr_static`` two-step (:meth:`ManagedTxApi.bind`) only checks
-        member presence, never shape.
-        """
-        return runtime
-
 
 from . import radio_initial_state as _initial_state
 from . import radio_reconnect as _reconnect
@@ -68,14 +52,12 @@ from rigplane.runtime._civ_rx import (
 from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
 from rigplane.runtime._scope_runtime import ScopeRuntimeMixin
 from rigplane.runtime.callable_support import supports_callable
-from rigplane.runtime.managed_radio_runtime import ManagedRadioRuntime
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
 from rigplane.runtime.managed_tx_effect_lane import (
     ManagedTxActuator,
     ManagedTxEffectLane,
 )
-from rigplane.runtime.managed_tx_effect_service import managed_tx_effect_service
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.local_tx_work import LocalTxWorkRunner
 from rigplane.runtime.managed_tx_state import (
@@ -182,7 +164,6 @@ from rigplane.commands import (
 from rigplane.commands import get_main_sub_tracking as _get_main_sub_tracking_cmd
 from rigplane.commands import get_repeater_tone as _get_repeater_tone_cmd
 from rigplane.commands import get_repeater_tsql as _get_repeater_tsql_cmd
-from rigplane.core.env_config import get_managed_tx_enabled
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
@@ -190,7 +171,6 @@ from rigplane.core.tx_observation import (
     TX_READ_DEADLINE_SECONDS,
     TxStateReading,
 )
-from rigplane.core.tx_safety import TxOutcome
 from rigplane.runtime.meter_cal import interpolate_swr
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
@@ -272,6 +252,12 @@ class ManagedTxCompositionPort(Protocol):
         self, event: ManagedTxProviderEvent
     ) -> asyncio.Task[None]: ...
 
+    def start_provider_replacement(
+        self,
+        current: ManagedTxProviderEvent,
+        replacement: ManagedTxProviderEvent,
+    ) -> asyncio.Task[None]: ...
+
     async def shutdown(self, termination: asyncio.Event) -> ShutdownResult: ...
 
 
@@ -304,6 +290,7 @@ class ManagedTxComposition:
         self._active_provider: ManagedTxProviderEvent | None = None
         self._events: dict[int, ManagedTxProviderEvent] = {}
         self._invalidation_tasks: dict[int, asyncio.Task[None]] = {}
+        self._replacement_tasks: dict[int, asyncio.Task[None]] = {}
         self._transition_lock = asyncio.Lock()
         self._shutting_down = False
         self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
@@ -393,6 +380,28 @@ class ManagedTxComposition:
         self._invalidation_tasks[event.provider_generation] = task
         return task
 
+    def start_provider_replacement(
+        self,
+        current: ManagedTxProviderEvent,
+        replacement: ManagedTxProviderEvent,
+    ) -> asyncio.Task[None]:
+        """Synchronously fence ``current`` and activate its successor in-place."""
+
+        existing = self._replacement_tasks.get(replacement.provider_generation)
+        if existing is not None:
+            return existing
+        if replacement.provider_generation <= current.provider_generation:
+            raise ValueError("replacement provider generation must increase")
+        cleanup = self.start_provider_unavailable(current)
+
+        async def finish() -> None:
+            await cleanup
+            await self.activate_provider(replacement)
+
+        task = asyncio.create_task(finish())
+        self._replacement_tasks[replacement.provider_generation] = task
+        return task
+
     async def shutdown(self, termination: asyncio.Event) -> ShutdownResult:
         async with self._transition_lock:
             task = self._shutdown_task
@@ -468,36 +477,8 @@ _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 
 # Require >=3 accumulated errors before reporting ``connected = False``.
 _UDP_ERROR_THRESHOLD: int = 3
 
-# Deadline for the managed-TX arming probe (MOR-1016).  Deliberately shorter
-# than ``_civ_get_timeout``: by the time it runs the rig has already answered
-# a full initial-state fetch, so a PTT read that does not come back promptly
-# means the command is unsupported rather than merely slow — and the whole
-# point of the probe is to settle that *without* holding up ``connect()``.
-# Being wrong here costs supervised TX for one epoch, never the session.
-_MANAGED_TX_PROBE_TIMEOUT_S: float = 0.5
-
-# Deadline for the managed-TX teardown waits (MOR-1016): the shutdown that
-# carries a held lease's OFF out through a still-open CI-V path, and the
-# provider-park that shuts the gate ahead of a soft_disconnect.  Deliberately
-# longer than ``ManagedRadioRuntime``'s own 3 s effect-service bound, which is
-# what the durable OFF and its retries actually run under: an outer wait that
-# expired first would cut the release short rather than bound a wedged one, and
-# the remaining headroom covers ticker cancellation and port retirement.
+# Deadline for composition shutdown while the radio path can still carry OFF.
 _MANAGED_TX_TEARDOWN_TIMEOUT_S: float = 5.0
-
-
-async def _managed_tx_provider_released_by_disconnect() -> None:
-    """``ManagedRadioRuntime.shutdown``'s release hook, deliberately empty.
-
-    The hook exists for an owner whose provider outlives the runtime — a server
-    handing a shared rig back. ``disconnect()`` is the other case: the shutdown
-    has already retired the managed CI-V port by the time this runs, and the
-    session under it is released on the very next line, so there is nothing
-    left here to hand back. Clearing the radio's own managed-TX members is
-    deliberately *not* done here: the shutdown task is shielded, so on the
-    bounded path this may run long after ``disconnect()`` returned.
-    """
-    return None
 
 
 class RawCivSubscription:
@@ -895,25 +876,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             recovery_backoff_s=(0.0, 0.0, 0.0),
         )
         self._audio_runtime: AudioRecoveryRuntime = AudioRecoveryRuntime(self)
-        # Managed TX supervisor (MOR-1016).  Built once, by the first
-        # ``connect()`` that reaches ``_arm_managed_tx`` — never here: arming
-        # needs a live ``_civ_transport`` to capture, which does not exist
-        # until the control phase has run.  From that point on the member is
-        # non-None for the life of the radio: a failed arm degrades it to
-        # NOT_READY, never back to ``None`` (see ``_arm_managed_tx``).
-        self._managed_tx_runtime: ManagedRadioRuntime | None = None
+        # Production managed TX is installed before connect as one composition
+        # graph. CoreRadio does not construct a second authority/runtime.
         self._managed_tx_composition: ManagedTxCompositionPort | None = None
-        # CI-V epoch the last arming attempt was made against; ``None`` until
-        # the first attempt.  Bounds arming to one attempt per epoch.
-        self._managed_tx_armed_epoch: int | None = None
-        # Identity of the port the runtime is bound to, recorded the moment
-        # ``replace_provider`` captured it: (provider generation, CI-V epoch,
-        # transport).  Never cleared — every way a binding dies moves one of
-        # the three (see ``_managed_tx_binding_is_live``).
-        self._managed_tx_bound_port: tuple[int | None, int, object] | None = None
-        # Serialises the arming steps, so two callers cannot both find the
-        # binding dead and both replace the provider.
-        self._managed_tx_arm_lock = asyncio.Lock()
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
     def _advance_civ_generation(self, reason: str) -> None:
@@ -1042,23 +1007,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     @property
     def managed_tx(self) -> ManagedTxSupervisor | None:
-        """The radio's managed TX supervisor, or ``None`` when unmanaged.
-
-        Structural implementation of
-        :class:`~rigplane.core.radio_protocol.ManagedTxCapable`: a real class
-        member, never conjured through ``__getattr__``, so
-        :meth:`~rigplane.core.radio_protocol.ManagedTxApi.bind`'s
-        ``getattr_static`` read finds it. ``None`` outside a connect session —
-        before the first ``connect()`` and again after :meth:`disconnect` —
-        where every ingress keeps using the legacy :meth:`set_ptt` path.
-        Within one, from :meth:`_arm_managed_tx` to teardown, this answers that
-        session's runtime for good, whether or not the arming succeeded:
-        a rig whose provider never came ready refuses keys with ``NOT_READY``
-        rather than reverting to an unsupervised write (MOR-1193).
-        """
+        """Block the replaced facade while production composition is installed."""
         if self._managed_tx_composition is not None:
             return cast(ManagedTxSupervisor, _LEGACY_MANAGED_TX_CUTOVER_BLOCKER)
-        return self._managed_tx_runtime
+        return None
 
     def install_managed_tx_composition(
         self, composition: ManagedTxCompositionPort
@@ -1067,9 +1019,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         if self._managed_tx_composition is not None:
             raise RuntimeError("managed TX composition is already installed")
-        if self._managed_tx_runtime is not None or self._conn_state is not (
-            RadioConnectionState.DISCONNECTED
-        ):
+        if self._conn_state is not RadioConnectionState.DISCONNECTED:
             raise RuntimeError(
                 "managed TX composition must be installed before connect"
             )
@@ -1077,383 +1027,39 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     @property
     def tx_snapshot(self) -> "TxSafetySnapshot | None":
-        """Current managed TX state, or ``None`` when no runtime exists yet.
-
-        Read-only passthrough to the supervisor's snapshot so presentation
-        (MOR-1015) can render *why* a key was refused — unarmed provider,
-        someone else's lease, a rig that is not observably OFF — without
-        reaching into ``_managed_tx_runtime`` or re-deriving TX state from
-        the legacy poller's PTT mirror.
-        """
-        runtime = self._managed_tx_runtime
-        return None if runtime is None else runtime.tx_snapshot
-
-    @property
-    def _managed_tx_target_id(self) -> str:
-        """Stable identity of the physical rig this radio's TX runtime owns.
-
-        One managed runtime supervises one rig, so the id has to separate two
-        radios that a single process holds at once and stay the same across
-        that rig's reconnects. For a LAN radio that is the backend family plus
-        the CI-V endpoint (``_host`` is the rig's address and ``_civ_port`` the
-        data port the control phase negotiated); serial radios carry the OS
-        device path instead, since ``_IcomSerialRadioBase`` passes the device
-        as ``host`` with no ports at all and ``f"…:{host}:0"`` would read as a
-        LAN rig on port zero. That branch is inert today — the serial backend
-        overrides ``connect()`` without calling ``super()``, so nothing arms
-        it (MOR-1219) — and exists so the id is right the day it does.
-        """
-        device = getattr(self, "_serial_device", None)
-        if isinstance(device, str) and device:
-            return f"serial:{device}"
-        return f"{self.backend_id}:{self._host}:{self._civ_port}"
-
-    async def _managed_tx_provider_answers_ptt(self) -> bool:
-        """Ask the rig for PTT once, unmanaged, before any port is captured.
-
-        The guard on the retirement trap. ``request_fresh_ptt`` treats "the
-        provider could not prove PTT state" as grounds to retire the managed
-        port, and ``CivRuntime.retire_managed_tx_port`` implements retirement
-        by advancing the CI-V epoch and **disconnecting the transport itself**
-        — correct for a port that was armed and is now suspect, catastrophic
-        for one that failed its very first read: it would close the CI-V
-        socket ``connect()`` opened moments earlier and hand the caller back a
-        radio that reports ``connected is False``.
-
-        So the rig proves it answers ``0x1C 0x00`` on the ordinary command
-        path first, where a timeout costs one ``CommandError`` and nothing
-        else. Only then is the runtime given a port it can retire. A rig that
-        does not implement the command — or is not answering at all — never
-        reaches step 2, and keeps its session.
-
-        This narrows the trap rather than closing it: a rig that answers the
-        probe and then drops the seed reply still loses the socket. Closing it
-        for good means teaching either ``request_fresh_ptt`` or
-        ``retire_managed_tx_port`` that an unarmed port is not a suspect one,
-        which is a change to modules this PR does not touch.
-        """
-        civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
-        try:
-            await self._send_civ_expect(
-                civ, label="managed_tx_ptt_probe", timeout=_MANAGED_TX_PROBE_TIMEOUT_S
-            )
-        except Exception:
-            return False
-        return True
-
-    def _managed_tx_binding_is_live(self) -> bool:
-        """Whether the runtime's provider is bound to *this* CI-V port, now.
-
-        The one question a re-arm may key off, and the reason
-        ``_managed_tx_armed_epoch`` cannot answer it: that marker is written
-        before arming's first await, and arming's own retirement step can
-        advance the CI-V epoch before the capture that follows it. A perfectly
-        successful arm can therefore leave the marker one epoch behind a live
-        binding — at which point an epoch-keyed guard waves the *next* caller
-        through into exactly the second ``replace_provider`` this exists to
-        prevent, one call later than the naive case. That second call retires a
-        current port, and retirement advances the generation and disconnects
-        the transport, so the redundant re-arm is what breaks the connection
-        the reconnect just repaired.
-
-        The three facts recorded at capture are compared against the live ones
-        instead, which is also why nothing has to clear them: a retirement
-        advances the supervisor's provider generation, a CI-V recovery advances
-        the epoch, and a rebuilt data path replaces the transport object. Any
-        one of the three moving means the recorded port is no longer the bound
-        one, and the answer flips to "re-arm" on its own.
-        """
-        runtime, bound = self._managed_tx_runtime, self._managed_tx_bound_port
-        if runtime is None or bound is None or self._civ_transport is None:
-            return False
-        generation, epoch, transport = bound
-        return (
-            transport is self._civ_transport
-            and epoch == self._civ_epoch
-            and generation == runtime.tx_snapshot.provider_generation
-        )
+        """The removed legacy runtime no longer publishes this projection."""
+        return None
 
     async def rearm_managed_tx(self) -> None:
-        """Re-arm managed TX after a repaired CI-V path. The sole re-arm path.
-
-        Every consumer that used to reach for ``replace_provider`` of its own
-        accord routes here instead — the control phase ahead of its reconnect
-        callbacks, the Web recovery hook behind them — and exactly one of them
-        does the work: a caller that finds the provider already bound to the
-        live port returns having touched nothing. That no-op is the point.
-        Rebinding is not idempotent, and the cost of the redundant call is not
-        a wasted round trip but the transport itself
-        (:meth:`_managed_tx_binding_is_live`).
-
-        Past the guard this is arming unchanged — probe, capture, seed, and the
-        same degradation: a rig that cannot be supervised keeps its published
-        runtime and refuses TX rather than falling back to the unsupervised
-        legacy write (MOR-1193). Failures never propagate, so a caller on a
-        recovery path can await it without guarding.
-
-        A radio with no CI-V transport is not re-armable at all, and that is
-        what makes a disconnected one inert: :meth:`disconnect` clears the
-        runtime, so a re-arm that ran anyway would *build a second one* and
-        republish ``managed_tx`` on a radio with nothing to bind it to — a
-        supervisor whose port was captured from a closed session, which is a
-        worse answer than the honest ``None``. Only ``connect()`` brings a
-        runtime back.
-        """
-        if self._managed_tx_composition is not None:
-            return
-        if self._civ_transport is None or self._managed_tx_binding_is_live():
-            return
-        async with self._managed_tx_arm_lock:
-            # Re-checked under the lock: the holder this caller queued behind
-            # may have been the one that armed the very port it came to replace.
-            if not self._managed_tx_binding_is_live():
-                await self._run_managed_tx_arm()
+        """Compatibility hook; composition owns provider replacement."""
+        return
 
     async def _arm_managed_tx(self) -> None:
-        """Arm managed TX from ``connect()``, once per CI-V epoch.
-
-        The epoch bound belongs to this entry point, not to the arming steps:
-        a fresh connect is the one caller with nothing to compare a binding
-        against, so "have I already tried on this epoch" is the only cheap
-        question it can ask. Re-arm callers ask a sharper one — see
-        :meth:`rearm_managed_tx`.
-
-        ``RIGPLANE_MANAGED_TX=0`` stops this short of building anything, so
-        ``managed_tx`` stays ``None`` and every ingress keeps the legacy
-        unsupervised ``set_ptt`` path. The check itself lives one level down,
-        in :meth:`_run_managed_tx_arm`, because that is the sole construction
-        site and ``rearm_managed_tx`` reaches it too — a gate here alone would
-        let the first CI-V recovery arm the radio the operator switched off.
-
-        **Naming trap (R9):** the CLI's ``--managed`` flag and the
-        ``args.managed_runtime`` namespace it sets select the *local station
-        runtime* (web host binding, bundled rigctld) and have nothing whatever
-        to do with managed TX. ``RIGPLANE_MANAGED_TX`` is the only managed-TX
-        switch; neither reads the other.
-        """
-        if self._managed_tx_composition is not None:
-            return
-        async with self._managed_tx_arm_lock:
-            if self._managed_tx_armed_epoch != self._civ_epoch:
-                await self._run_managed_tx_arm()
-
-    async def _run_managed_tx_arm(self) -> None:
-        """Build, bind and seed the managed TX runtime for this CI-V epoch.
-
-        Four steps, all of which must land before a key is allowed:
-
-        1. construct the runtime — once per *connect session*, never per arm,
-           so every ingress that already bound a facade keeps pointing at the
-           same supervisor across a reconnect, a re-arm or a soft_disconnect.
-           The session, not the radio, is the bound: :meth:`disconnect` shuts
-           the runtime down and clears it (PR4), and the next ``connect()``
-           builds a new one. A fresh runtime's provider generations start again
-           at 1, which is why teardown also clears the CI-V layer's
-           generation-keyed registry — marks left by the previous session would
-           otherwise read as this one's and fail every arm from here on
-           (:meth:`~rigplane.runtime._civ_rx.CivRuntime.reset_managed_tx_generations`);
-        2. prove the rig answers PTT reads at all
-           (:meth:`_managed_tx_provider_answers_ptt`) — the guard that keeps a
-           failed arm from costing the CI-V session;
-        3. ``replace_provider(ready=True)`` — captures the *current* CI-V
-           transport as the managed port, which is why this runs at the end of
-           ``connect()`` and never in ``__init__``;
-        4. ``request_fresh_ptt()`` — one CI-V ``0x1C 0x00`` whose answer seeds
-           the authoritative OFF observation. Not optional and not cosmetic:
-           nothing polls PTT periodically, and ``request_on`` refuses with
-           ``RADIO_NOT_OFF`` until an observation exists, so a runtime armed
-           without this step can never key at all.
-
-        Failure at any step never propagates: a rig that cannot supervise TX
-        must still be usable for RX, tuning and audio. It degrades to
-        provider-not-ready and *stays published* — dropping the runtime would
-        hand the next key to the legacy unsupervised ``set_ptt`` with no lease,
-        no owner and no watchdog, which is the exact bypass MOR-1193 closed.
-
-        Serialised by ``_managed_tx_arm_lock``, so the steps below never
-        interleave with a second attempt. A step-4 failure retires the managed
-        port, which advances the epoch by itself — so the radio is immediately
-        eligible for a fresh attempt on the next ``connect()``/rearm rather
-        than being latched off for good.
-
-        Ahead of all four sits the kill switch. ``RIGPLANE_MANAGED_TX=0``
-        returns before the construction, so there is no runtime to publish and
-        ``managed_tx`` answers ``None`` — which every ingress already reads as
-        "unmanaged" and routes around, back to the legacy ``set_ptt`` write.
-        That is a different thing from a failed arm, which keeps the runtime
-        and refuses keys, and it is deliberately the louder of the two: a
-        failed arm is the rig's doing and the operator gets refusals to show
-        for it, while this one silently removes the lease, the owner and the
-        watchdog from every key on the radio. So it warns on every connect for
-        as long as it is set, and the marker below stays unwritten so a later
-        connect made with the switch back on arms normally.
-        """
-        if not get_managed_tx_enabled():
-            logger.warning(
-                "managed TX disabled by RIGPLANE_MANAGED_TX for %s: TX falls "
-                "back to the legacy unsupervised set_ptt path — no lease, no "
-                "owner, no keep-alive watchdog. Unset the variable to restore "
-                "supervision. (Unrelated to the CLI's --managed flag.)",
-                self._managed_tx_target_id,
-            )
-            return
-        self._managed_tx_armed_epoch = self._civ_epoch
-        runtime = self._managed_tx_runtime
-        if runtime is None:
-            runtime = ManagedRadioRuntime(
-                self._managed_tx_target_id,
-                service_factory=managed_tx_effect_service,
-                provider_lifecycle=self,
-            )
-            self._managed_tx_runtime = runtime
-        step = "ptt_probe"
-        try:
-            if await self._managed_tx_provider_answers_ptt():
-                step = "replace_provider"
-                bound = (await runtime.replace_provider(ready=True)).snapshot
-                if bound.provider_ready:
-                    # Identity of the port just captured, for the re-arm guard.
-                    # Recorded here rather than inside
-                    # ``_capture_managed_tx_port`` so a backend that overrides
-                    # that lifecycle hook cannot silently lose it.
-                    self._managed_tx_bound_port = (
-                        bound.provider_generation,
-                        self._civ_epoch,
-                        self._civ_transport,
-                    )
-                    step = "request_fresh_ptt"
-                    if (await runtime.request_fresh_ptt()).outcome is TxOutcome.APPLIED:
-                        return
-            logger.error(
-                "managed TX arming for %s did not complete at %s; TX stays "
-                "refused until a later connect re-arms it",
-                runtime.target_id,
-                step,
-            )
-        except Exception:
-            logger.error(
-                "managed TX arming for %s raised at %s; TX stays refused until "
-                "a later connect re-arms it",
-                runtime.target_id,
-                step,
-                exc_info=True,
-            )
-        # Degrade, never disappear.  A step-4 failure has already retired the
-        # port and marked the (new) provider not-ready, so this is a no-op
-        # there; the probe and capture paths need it stated explicitly.
-        try:
-            await runtime.set_provider_ready(ready=False)
-        except Exception:
-            logger.debug(
-                "managed TX degrade-to-not-ready failed for %s",
-                runtime.target_id,
-                exc_info=True,
-            )
+        """Compatibility hook; composition activation occurs at the CLI root."""
+        return
 
     async def _shutdown_managed_tx(self) -> None:
-        """Stop supervised TX while the CI-V path can still carry the OFF.
-
-        Ordered ahead of the session teardown in :meth:`disconnect` for the one
-        reason that matters: ``shutdown`` emergency-releases a held lease, and
-        a WRITE_OFF issued after the transport is gone is a rig left keyed with
-        nobody watching it. Bounded for the mirror-image reason — a supervisor
-        wedged on a rig that stopped answering must not hold ``disconnect()``
-        open, since closing the socket is itself the de-key of last resort.
-        The runtime shields its own shutdown task, so the bound abandons the
-        wait rather than the release: the OFF keeps trying behind us.
-
-        Clearing the three managed-TX members afterwards is the other half of
-        the MOR-1193 invariant, not a weakening of it. "Managed-eligible means
-        ``managed_tx`` is never ``None``" holds *from connect to disconnect*;
-        past disconnect there is no session to supervise, and the next
-        ``connect()`` arms a fresh runtime. Keeping this one published would
-        advertise a supervisor over a closed port — and leave the re-arm path
-        able to rebuild a binding for a rig that is gone.
-
-        Dropping the runtime is also what restarts its provider-generation
-        counter, which the CI-V layer uses as a registry key — so the session's
-        entries there have to go with it, or session 2's generation 1 collides
-        with session 1's and every arm from here on fails
-        (:meth:`~rigplane.runtime._civ_rx.CivRuntime.reset_managed_tx_generations`).
-        Ordered inside the ``finally`` with the members it belongs to, so a
-        shutdown that timed out or raised still leaves a connectable radio.
-        """
+        """Shut down the sole composition before the transport is released."""
         composition = self._managed_tx_composition
-        if composition is not None:
-            termination = asyncio.Event()
-            task = asyncio.create_task(composition.shutdown(termination))
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(task), timeout=_MANAGED_TX_TEARDOWN_TIMEOUT_S
-                )
-            except TimeoutError:
-                termination.set()
-                await asyncio.shield(task)
+        if composition is None:
             return
-        runtime = self._managed_tx_runtime
-        if runtime is None:
-            return
+        termination = asyncio.Event()
+        task = asyncio.create_task(composition.shutdown(termination))
         try:
             await asyncio.wait_for(
-                runtime.shutdown(
-                    release_provider=_managed_tx_provider_released_by_disconnect
-                ),
-                timeout=_MANAGED_TX_TEARDOWN_TIMEOUT_S,
+                asyncio.shield(task), timeout=_MANAGED_TX_TEARDOWN_TIMEOUT_S
             )
-        except asyncio.TimeoutError:
-            logger.error(
-                "managed TX shutdown for %s did not settle within %.1fs; "
-                "disconnecting anyway — the rig may still be keyed",
-                runtime.target_id,
-                _MANAGED_TX_TEARDOWN_TIMEOUT_S,
-            )
-        except Exception:
-            logger.error(
-                "managed TX shutdown for %s failed; disconnecting anyway",
-                runtime.target_id,
-                exc_info=True,
-            )
-        finally:
-            self._managed_tx_runtime = None
-            self._managed_tx_bound_port = None
-            self._managed_tx_armed_epoch = None
-            self._civ_runtime.reset_managed_tx_generations()
+        except TimeoutError:
+            termination.set()
+            await asyncio.shield(task)
 
     async def _park_managed_tx(self) -> None:
-        """Refuse keys for the length of a CI-V gap, without unpublishing.
-
-        ``soft_disconnect`` takes the data path down and expects it back, so
-        the runtime outlives it — but in between, a lease granted on the
-        strength of a provider still marked ready would have its WRITE_ON land
-        on a socket that is already closing, which is a key the supervisor
-        believes in and the rig never saw. Marking the provider not-ready first
-        makes ``request_on`` answer ``NOT_READY`` for the length of the gap,
-        and turns a lease held across it into the release that
-        :meth:`rearm_managed_tx` services against the repaired port.
-
-        Bounded and fail-soft: a gate that will not shut is not a reason to
-        refuse to tear down the path it guards.
-        """
+        """Invalidate the composition provider before a CI-V gap."""
         composition = self._managed_tx_composition
         if composition is not None:
             event = composition.active_provider
             if event is not None:
                 await composition.start_provider_unavailable(event)
-            return
-        runtime = self._managed_tx_runtime
-        if runtime is None:
-            return
-        try:
-            await asyncio.wait_for(
-                runtime.set_provider_ready(ready=False),
-                timeout=_MANAGED_TX_TEARDOWN_TIMEOUT_S,
-            )
-        except Exception:
-            logger.warning(
-                "managed TX did not park for %s ahead of soft_disconnect",
-                runtime.target_id,
-                exc_info=True,
-            )
 
     # ------------------------------------------------------------------
     # Backwards-compatible property shims for _connected / _intentional_disconnect

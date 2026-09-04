@@ -96,6 +96,8 @@ async def start_web_server(server: WebServer) -> None:
     now delegates here so the public API is preserved.
     """
     managed_tx, provider_event = _managed_tx_attachment(server)
+    if server._config.managed_tx_required and managed_tx is None:
+        raise RuntimeError("managed TX composition is required before Web startup")
     if managed_tx is not None:
         if provider_event is None or managed_tx.active_provider is not provider_event:
             raise RuntimeError(
@@ -108,7 +110,21 @@ async def start_web_server(server: WebServer) -> None:
                 current is not None
                 and observation_generation != current.observation_generation
             ):
-                managed_tx.start_provider_unavailable(current)
+                replacement = ManagedTxProviderEvent(
+                    provider_generation=current.provider_generation + 1,
+                    observation_generation=observation_generation,
+                )
+                task = managed_tx.start_provider_replacement(current, replacement)
+                setattr(server, _MANAGED_TX_EVENT_ATTR, replacement)
+
+                def replacement_done(done: asyncio.Task[None]) -> None:
+                    if not done.cancelled() and done.exception() is not None:
+                        logger.error(
+                            "managed TX provider replacement failed",
+                            exc_info=done.exception(),
+                        )
+
+                task.add_done_callback(replacement_done)
 
         unsubscribe = server.command_state_store.subscribe_provider_generation(
             provider_generation_changed
