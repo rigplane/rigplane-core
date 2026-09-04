@@ -30,8 +30,8 @@
     const trimmed = draft.trim();
     const configuredSeconds = trimmed === '' ? null : Number(trimmed);
     if (configuredSeconds !== null
-      && (!Number.isInteger(configuredSeconds) || configuredSeconds <= 0)) {
-      error = 'Enter a positive whole number, or leave blank to disable';
+      && (!Number.isFinite(configuredSeconds) || configuredSeconds <= 0)) {
+      error = 'Enter a positive number, or leave blank to disable';
       return;
     }
     saving = true;
@@ -66,9 +66,9 @@
       id="managed-tot-draft"
       data-testid="managed-tot-draft"
       type="number"
-      inputmode="numeric"
-      min="1"
-      step="1"
+      inputmode="decimal"
+      min="0"
+      step="any"
       placeholder="OFF"
       value={draft}
       disabled={!txState.fresh || saving}

@@ -11,6 +11,8 @@ export interface ManagedTxDependencies {
   sendPtt(operation: PttOperation): Promise<Outcome>;
   submit(operation: ManagedOperation): Promise<Outcome>;
   setTot(configuredSeconds: number | null): Promise<void>;
+  /** Browser-only presentation clock; never a TX or transport authority. */
+  onPresentationTick?(handler: () => void): () => void;
   startAudio(): Promise<string | null>;
   stopLocalAudio(): void;
   onAudioDied(handler: () => void): () => void;
@@ -28,10 +30,12 @@ export class ManagedTxController {
   #transmitCleanupRequired = false;
   #forceOffInFlight: Promise<void> | null = null;
   #offAudioDied: () => void;
+  #offPresentationTick: () => void;
 
   constructor(private readonly dependencies: ManagedTxDependencies) {
     this.#state = dependencies.snapshot();
     this.#offAudioDied = dependencies.onAudioDied(() => { void this.forceOff(); });
+    this.#offPresentationTick = dependencies.onPresentationTick?.(() => this.#publish()) ?? (() => {});
   }
 
   snapshot(): ManagedTxState { return this.#state; }
@@ -86,8 +90,8 @@ export class ManagedTxController {
 
   async setTot(configuredSeconds: number | null): Promise<void> {
     if (configuredSeconds !== null
-      && (!Number.isInteger(configuredSeconds) || configuredSeconds <= 0)) {
-      throw new RangeError('Managed TOT must be a positive integer or null');
+      && (!Number.isFinite(configuredSeconds) || configuredSeconds <= 0)) {
+      throw new RangeError('Managed TOT must be a positive finite number or null');
     }
     try {
       await this.dependencies.setTot(configuredSeconds);
@@ -129,6 +133,7 @@ export class ManagedTxController {
   dispose(): void {
     ++this.#generation;
     this.#offAudioDied();
+    this.#offPresentationTick();
     this.#listeners.clear();
     this.#flow = 'idle';
     this.#pttAttempted = false;

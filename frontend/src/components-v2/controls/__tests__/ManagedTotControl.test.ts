@@ -89,11 +89,28 @@ describe('managed TOT control', () => {
     expect(target.querySelector('[data-testid="managed-tot-current"]')?.textContent).not.toContain('OFF');
   });
 
-  it('rejects non-positive and fractional drafts before facade submission', () => {
+  it('accepts positive fractional drafts through the facade', async () => {
     const target = mountControl();
     const input = target.querySelector<HTMLInputElement>('[data-testid="managed-tot-draft"]')!;
-    for (const value of ['0', '-1', '1.5', 'Infinity', 'NaN']) {
-      Object.defineProperty(input, 'value', { configurable: true, writable: true, value });
+    input.value = '1.5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="managed-tot-save"]')!.click();
+    await Promise.resolve();
+    flushSync();
+    expect(tx.trace()).toEqual([{ transport: 'http', operation: 'set_tot', configuredSeconds: 1.5 }]);
+
+  });
+
+  it('rejects non-positive drafts before facade submission', () => {
+    const target = mountControl();
+    const input = target.querySelector<HTMLInputElement>('[data-testid="managed-tot-draft"]')!;
+    // A native number input normalizes textual NaN/Infinity to blank before
+    // Svelte sees it; the production finite guard remains deliberate for
+    // programmatic/edge values. Exercise the two invalid values a user can
+    // actually submit through this control.
+    for (const value of ['0', '-1']) {
+      input.value = value;
       input.dispatchEvent(new Event('input', { bubbles: true }));
       flushSync();
       target.querySelector<HTMLButtonElement>('[data-testid="managed-tot-save"]')!.click();

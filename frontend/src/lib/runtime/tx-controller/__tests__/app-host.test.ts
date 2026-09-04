@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   setTot: vi.fn<(configuredSeconds: number | null) => Promise<void>>(async () => {}),
   startAudio: vi.fn(async () => null), stopAudio: vi.fn(),
   state: null as unknown as ManagedTxState, audioDied: undefined as (() => void) | undefined,
+  presentationTick: undefined as (() => void) | undefined, offPresentationTick: vi.fn(),
 }));
 vi.mock('svelte', () => ({
   getContext: (key: unknown) => h.contexts.get(key),
@@ -35,9 +36,10 @@ const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 
 beforeEach(() => {
   h.contexts.clear(); h.session = undefined; h.lifecycle = undefined; h.barrier = undefined; h.audioDied = undefined;
+  h.presentationTick = undefined;
   h.state = idle();
   for (const mock of [h.factory, h.offSession, h.offLifecycle, h.offBarrier, h.offAudio,
-    h.disposeBrowser, h.refresh, h.invalidate, h.sendPtt, h.submit, h.setTot,
+    h.disposeBrowser, h.refresh, h.invalidate, h.sendPtt, h.submit, h.setTot, h.offPresentationTick,
     h.startAudio, h.stopAudio]) mock.mockReset();
   h.refresh.mockResolvedValue(undefined); h.sendPtt.mockResolvedValue('accepted');
   h.submit.mockResolvedValue('accepted'); h.startAudio.mockResolvedValue(null);
@@ -48,6 +50,7 @@ beforeEach(() => {
       sendPtt: h.sendPtt, submit: h.submit, setTot: h.setTot, startAudio: h.startAudio,
       stopLocalAudio: h.stopAudio,
       onAudioDied: (handler) => { h.audioDied = handler; return h.offAudio; },
+      onPresentationTick: (handler) => { h.presentationTick = handler; return h.offPresentationTick; },
     };
     return {
       dependencies,
@@ -138,15 +141,18 @@ describe('managed App TX host', () => {
       .map((mock) => mock.mock.calls.length)).toEqual(counts);
   });
 
-  it('routes TOT edits through the stable facade and rejects invalid input locally', async () => {
+  it('routes fractional and disabled TOT edits through the stable facade', async () => {
     const host = provideManagedAppTxHost(bindings());
     const facade = getManagedAppTxController();
 
     await facade.setTot(240);
+    await facade.setTot(1.5);
     await facade.setTot(null);
-    await expect(facade.setTot(1.5)).rejects.toThrow(/positive integer/);
+    await expect(facade.setTot(0)).rejects.toThrow(/positive finite/);
+    await expect(facade.setTot(Number.NaN)).rejects.toThrow(/positive finite/);
+    await expect(facade.setTot(Number.POSITIVE_INFINITY)).rejects.toThrow(/positive finite/);
 
-    expect(h.setTot.mock.calls).toEqual([[240], [null]]);
+    expect(h.setTot.mock.calls).toEqual([[240], [1.5], [null]]);
     expect(h.invalidate).not.toHaveBeenCalled();
     host.dispose();
     await flush();
@@ -168,5 +174,23 @@ describe('managed App TX host', () => {
     expect(published).toMatchObject({ fresh: false, configuredSeconds: null });
     host.dispose();
     await flush();
+  });
+
+  it('republishes browser-projected countdown ticks and clears that subscription on disposal', async () => {
+    const host = provideManagedAppTxHost(bindings());
+    const facade = getManagedAppTxController();
+    const seen: ManagedTxState[] = [];
+    facade.subscribe((state) => seen.push(state));
+
+    h.state = { ...idle(), remainingMs: 900 };
+    h.presentationTick!();
+    h.state = { ...h.state, fresh: false, remainingMs: null };
+    h.presentationTick!();
+
+    expect(seen.map(({ fresh, remainingMs }) => [fresh, remainingMs]))
+      .toEqual([[true, 900], [false, null]]);
+    host.dispose();
+    await flush();
+    expect(h.offPresentationTick).toHaveBeenCalledTimes(1);
   });
 });

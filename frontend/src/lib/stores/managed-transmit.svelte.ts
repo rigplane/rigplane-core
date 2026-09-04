@@ -23,7 +23,7 @@ export async function setManagedTransmitTot(
   client: Pick<ManagedTransmitClient, 'setTot'> = new ManagedTransmitClient(),
 ): Promise<void> {
   try {
-    applyManagedTransmitSnapshot(await client.setTot(configuredSeconds));
+    receiveManagedTransmitSnapshot(await client.setTot(configuredSeconds));
   } catch (error) {
     invalidateManagedTransmit();
     throw error;

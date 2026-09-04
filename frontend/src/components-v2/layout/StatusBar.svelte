@@ -55,7 +55,7 @@
 <script lang="ts">
   import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, Settings, Bug } from 'lucide-svelte';
   import ThemePicker from '../controls/ThemePicker.svelte';
-  import ManagedTotControl from '../controls/ManagedTotControl.svelte';
+  import ManagedTotStatusControl from '../controls/ManagedTotStatusControl.svelte';
   import SendReportDialog from '../dialogs/SendReportDialog.svelte';
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
@@ -380,7 +380,7 @@
 
   <div class="status-controls">
     {#if showManagedTotControl}
-      <ManagedTotControl />
+      <ManagedTotStatusControl />
     {/if}
     <button
       type="button"

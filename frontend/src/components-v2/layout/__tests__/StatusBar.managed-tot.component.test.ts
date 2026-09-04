@@ -76,14 +76,16 @@ describe('StatusBar managed TOT presentation', () => {
 
   it('mounts no managed-TOT consumer by default', () => {
     const host = render();
-    expect(host.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(0);
+    expect(host.querySelectorAll('[data-testid="managed-tot-status"]')).toHaveLength(0);
     expect(h.getManagedAppTxController).not.toHaveBeenCalled();
     expect(h.subscribe).not.toHaveBeenCalled();
   });
 
-  it('mounts exactly one consumer through the existing App-root facade when enabled', () => {
+  it('mounts one compact 28px-compatible readout through the existing App-root facade when enabled', () => {
     const host = render(true);
-    expect(host.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-testid="managed-tot-status"]')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-testid="managed-tot-control"]')).toHaveLength(0);
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="managed-tot-trigger"]')?.textContent).toContain('180s');
     expect(h.getManagedAppTxController).toHaveBeenCalledTimes(1);
     expect(h.subscribe).toHaveBeenCalledTimes(1);
     expect(h.setTot).not.toHaveBeenCalled();
