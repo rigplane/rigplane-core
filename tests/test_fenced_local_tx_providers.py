@@ -158,7 +158,8 @@ def _ack() -> CivFrame:
     return CivFrame(to_addr=0xE0, from_addr=0x94, command=0xFB)
 
 
-def test_icom_composition_injects_its_exact_runner_fence_and_authority(
+@pytest.mark.asyncio
+async def test_icom_composition_injects_its_exact_runner_fence_and_authority(
     tmp_path,
 ) -> None:
     radio = _icom_radio()
@@ -170,6 +171,7 @@ def test_icom_composition_injects_its_exact_runner_fence_and_authority(
     assert radio._local_tx_work is composition.local_tx_work_runner
     assert radio._local_tx_work._abort_fence is composition._abort_fence
     assert composition.authority._abort_fence is composition._abort_fence
+    await composition.shutdown(asyncio.Event())
 
 
 @pytest.mark.asyncio
@@ -201,6 +203,7 @@ async def test_icom_managed_cw_uses_one_operation_and_guards_every_chunk(
     assert predicates[0] is predicates[1]
     assert predicates[0] is not None
     assert predicates[0]() is True
+    await composition.shutdown(asyncio.Event())
 
 
 @pytest.mark.asyncio
@@ -248,6 +251,7 @@ async def test_icom_force_off_suppresses_late_cw_write_and_remaining_chunks(
     assert predicates[0] is not None
     assert predicates[0]() is False
     assert wire == []
+    await composition.shutdown(asyncio.Event())
 
 
 @pytest.mark.asyncio
@@ -295,6 +299,7 @@ async def test_icom_force_off_suppresses_late_tuner_write(
     assert predicates[0] is not None
     assert predicates[0]() is False
     assert wire == []
+    await composition.shutdown(asyncio.Event())
 
 
 @pytest.mark.asyncio
@@ -318,6 +323,7 @@ async def test_icom_managed_empty_cw_stop_and_tuner_off_remain_direct(
         "priority": Priority.IMMEDIATE
     }
     assert radio._send_civ_raw.await_args_list[1].kwargs == {"wait_response": False}
+    await composition.shutdown(asyncio.Event())
 
 
 @pytest.mark.asyncio
