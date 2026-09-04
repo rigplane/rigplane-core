@@ -28,6 +28,7 @@ const h = vi.hoisted(() => {
   return {
     ...box,
     runtime: {
+    onTxAudioDied: () => () => {},
       get state() { return h.state; },
       get caps() { return h.caps; },
       connectionStatus: 'disconnected',

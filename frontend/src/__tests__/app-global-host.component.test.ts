@@ -61,6 +61,7 @@ vi.mock('$lib/runtime', async () => {
     },
     get scope() { return { hardwareScopeConnected: false }; },
     bootstrap: h.bootstrap,
+    onTxAudioDied: () => () => {},
   };
   return { runtime: h.runtime };
 });
@@ -78,7 +79,10 @@ vi.mock('../lib/runtime/frontend-runtime', async () => {
     },
   };
 });
-vi.mock('../lib/transport/ws-client', () => ({ onMessage: h.onMessage }));
+vi.mock('../lib/transport/ws-client', () => ({
+  onMessage: h.onMessage,
+  onCommandDelivery: () => () => {},
+}));
 vi.mock('$lib/i18n', () => ({
   t: (key: string) => key,
   messageFromReasonCode: (code: string) => code,
