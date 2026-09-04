@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
@@ -196,5 +197,34 @@ describe('PeerSplitDisplay', () => {
 
     expect(target.querySelector('[data-status-label="NOTCH"]')?.getAttribute('data-state')).toBe('unknown');
     expect(target.querySelector('[data-status-label="ANF"]')?.getAttribute('data-state')).toBe('unknown');
+  });
+
+  it('preserves the DSP status-label hooks after rail extraction', () => {
+    const target = render();
+
+    expect([...target.querySelectorAll('.fact-rail [data-status-label]')]
+      .map((node) => node.getAttribute('data-status-label')))
+      .toEqual(['NB', 'NR', 'NOTCH', 'ANF']);
+  });
+
+  it('keeps extracted geometry styles with the primitive that owns the markup', () => {
+    const ownedSelectors = new Map([
+      ['LcdFrequencyReadout.svelte', ['.frequency {', '.frequency-cell {']],
+      ['LcdLinearSMeter.svelte', ['.s-meter {', '.meter-fill {']],
+      ['LcdOffsetRail.svelte', ['.offsets {', '.offset.unsupported {']],
+      ['LcdFilterScope.svelte', ['.scope-block {', '.filter-envelope.inner {']],
+      ['LcdFlagRail.svelte', ['.flag-zone {', '.status-flag.unsupported {']],
+      ['LcdTelemetryRail.svelte', ['.aux-rail {', '.telemetry .irrelevant {']],
+    ]);
+
+    for (const [file, selectors] of ownedSelectors) {
+      const source = readFileSync(`src/skins/segmentline/${file}`, 'utf8');
+      const style = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+      for (const selector of selectors) expect(style).toContain(selector);
+    }
+
+    const shell = readFileSync('src/skins/segmentline/PeerSplitDisplay.svelte', 'utf8');
+    const shellStyle = shell.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    expect(shellStyle).not.toMatch(/\.(frequency|offsets|s-meter|scope-block|flag-zone|telemetry)\b/);
   });
 });
