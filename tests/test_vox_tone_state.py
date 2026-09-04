@@ -236,7 +236,7 @@ def test_civ_rx_0x1b_0x00_sets_tone_freq_main(tmp_path: object) -> None:
 
 def test_civ_rx_0x1b_0x01_sets_tsql_freq_sub(tmp_path: object) -> None:
     """0x1B 0x01 with receiver=1 observes sub tsql_freq in centihz (MOR-451)."""
-    r = _make_radio_with_state(model="IC-7300")
+    r = _make_radio_with_state(model="IC-9700")
     rs = r._radio_state
     # 100.0 Hz → [0x00, 0x10, 0x00]
     data = _bcd_tone_freq(1, 0, 0)
@@ -445,12 +445,12 @@ async def test_execute_set_tone_freq_updates_main_state() -> None:
 async def test_execute_set_tone_freq_updates_sub_state() -> None:
     poller, state = _make_poller(model="IC-9700")
     await poller._execute(  # noqa: SLF001
-        SetToneFreq(freq_centihz=9700, receiver=1)
+        SetToneFreq(freq_centihz=9740, receiver=1)
     )
     poller._radio.set_tone_freq.assert_awaited_once_with(  # type: ignore[union-attr]  # noqa: SLF001
-        9700, receiver=1
+        9740, receiver=1
     )
-    assert state.sub.tone_freq == 9700
+    assert state.sub.tone_freq == 9740
 
 
 @pytest.mark.asyncio
