@@ -16,16 +16,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+let txHarness: ManagedAppTxHarness;
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  snapshot: null as unknown,
-  listeners: new Set<(next: unknown) => void>(),
-  start: vi.fn(),
-  release: vi.fn(),
-  setIntent: vi.fn(),
-  resetFault: vi.fn(),
   selectVfo: vi.fn(),
   splitToggle: vi.fn(),
   dualWatchToggle: vi.fn(),
@@ -60,18 +57,8 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => h.snapshot,
-    subscribe: (listener: (next: unknown) => void) => {
-      h.listeners.add(listener);
-      return () => h.listeners.delete(listener);
-    },
-    start: h.start,
-    setIntent: h.setIntent,
-    release: h.release,
-    resetFault: h.resetFault,
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => h.modInputGuard,
@@ -169,14 +156,6 @@ import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
 
-type Snapshot = {
-  phase: string; intent: string | null; guard: { leaseId: string } | null;
-  radioTx: string; txRisk: string; mayOwnKey: boolean; fault: string | null;
-};
-const IDLE: Snapshot = {
-  phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none',
-  mayOwnKey: false, fault: null,
-};
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 
 /** 2/main_sub: MAIN and SUB each carry A/B slots (4 vfo tiles total). */
@@ -371,12 +350,7 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 const qa = <T extends HTMLElement>(sel: string) => [...target.querySelectorAll<T>(sel)];
 
 beforeEach(() => {
-  h.snapshot = { ...IDLE };
-  h.listeners.clear();
-  h.start.mockReset();
-  h.release.mockReset();
-  h.setIntent.mockReset();
-  h.resetFault.mockReset();
+  txHarness = new ManagedAppTxHarness();
   h.selectVfo = vi.fn();
   h.splitToggle = vi.fn();
   h.dualWatchToggle = vi.fn();
@@ -501,7 +475,7 @@ describe('dual-rx-unavailable: SUB strip present but operationally disabled (MOR
     expect(key.disabled).toBe(false);
     key.click();
     flushSync();
-    expect(h.start).toHaveBeenCalledTimes(1);
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'transmit_on' }]);
   });
 
   // Pin round (verifier N1): the radio-wide row's immunity to the SUB
@@ -597,13 +571,14 @@ describe('exactly one authoritative TX action surface across both strips', () =>
     h.state = mainSubState('MAIN');
     h.caps = mainSubCaps();
     render();
-    push({ phase: 'failed', fault: 'audio-failed', guard: { leaseId: 'x' }, mayOwnKey: true });
+    txHarness.emitServerSnapshot({ lastError: 'audio-failed' });
+    flushSync();
 
     const unkey = q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!;
     expect(unkey.disabled).toBe(false);
     unkey.click();
     flushSync();
-    expect(h.release).toHaveBeenCalledTimes(1);
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
   });
 });
 
@@ -974,9 +949,8 @@ describe('MOR-1069 — a viewport or orientation change recomposes nothing at ru
   // touches the DOM — so that is what is pinned, by ELEMENT IDENTITY rather
   // than by markup equality. Kills: re-implementing the reflow as JS state
   // (a matchMedia subscription, a resize listener, an `{#if isPortrait}`),
-  // which remounts this subtree on rotation, destroys the RxTxSurface that
-  // owns the operator's only unkey control, and re-runs the wiring's
-  // `onDestroy` lease release under a fresh sourceId.
+  // which remounts this subtree on rotation and destroys the RxTxSurface that
+  // owns the operator's only unkey control.
   it('keeps every zone element, the TX surface and the key control identical across a rotation', () => {
     h.state = mainSubState('MAIN');
     h.caps = mainSubCaps();
@@ -998,29 +972,23 @@ describe('MOR-1069 — a viewport or orientation change recomposes nothing at ru
     expect(target.innerHTML).toBe(markupBefore);
   });
 
-  // The TX half, driven from a LIVE lease rather than from idle — idle has no
-  // guard, so a remount's fail-closed `onDestroy` release is a no-op and the
-  // interesting failure hides. Keyed, the same remount drops the operator's
-  // transmission on rotation, or re-keys under a fresh `sourceId` that the
-  // controller will refuse to release from. This is the ticket's "portrait/
-  // landscape replacement preserves TX/resource ownership", stated where it
-  // can actually fail: rotating while keyed is not a lease event.
-  it('rotating while KEYED neither releases nor re-acquires the lease', () => {
+  // Drive canonical TRANSMIT before rotating so this proves presentation
+  // reflow cannot replay or cancel the App-root managed intent.
+  it('rotating while TRANSMIT is active emits no TX command', () => {
     h.state = mainSubState('MAIN');
     h.caps = mainSubCaps();
     render();
 
     q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.click();
     flushSync();
-    expect(h.start).toHaveBeenCalledTimes(1);
-    push({ phase: 'transmitting', intent: 'latched', guard: { leaseId: 'L1' }, mayOwnKey: true });
-    h.start.mockReset();
-    h.release.mockReset();
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'transmit_on' }]);
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    flushSync();
+    txHarness.clearTrace();
 
     rotateToPortraitPhone();
 
-    expect(h.start).not.toHaveBeenCalled();
-    expect(h.release).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
     // ...and the only way out of transmit is still there, exactly once.
     expect(qa('[data-testid="rx-tx-surface"]')).toHaveLength(1);
     expect(qa('[data-testid="rx-tx-unkey"]')).toHaveLength(1);
@@ -1063,24 +1031,12 @@ describe('MOR-1069 — focus order is DOM order, and the LAST declared zone come
     expect(declared.indexOf('tx-aux')).toBeGreaterThan(declared.indexOf('rx-tx'));
   });
 
-  // MOR-1258. `tx-fault-reset` and the two ModInputTxWarning buttons only
-  // exist in the DOM while their own conditional trigger is active (a
-  // latched TX fault; a visible MOD-input guard). The base-case test above
-  // never enters either state, so before MOR-1258 these three controls could
-  // sit anywhere at all — including outside every declared zone — without
-  // this assertion ever seeing them (the MOR-1069 verification finding this
-  // ticket exists to close). Driving each conditional state in turn is what
-  // makes the assertion actually SEE them.
-  //
-  // MOR-1336: these three alerts are rx-tx zone members (R6, pinned formally
-  // below), not tx-aux members, so the sequence still ends in tx-aux even
-  // while they are present — they land just BEFORE it, never after.
   it.each([
-    ['a TX fault is latched', { phase: 'failed', fault: 'audio-failed' } as Partial<Snapshot>, false],
-    ['the MOD-input guard is visible', {} as Partial<Snapshot>, true],
-    ['both conditional alerts are active at once', { phase: 'failed', fault: 'audio-failed' } as Partial<Snapshot>, true],
+    ['the server reports a TX error', true, false],
+    ['the MOD-input guard is visible', false, true],
+    ['both conditional alerts are active at once', true, true],
   ] as const)('still ends in tx-aux with no control outside a declared zone — %s', (
-    _label, snapshotOver, modInputVisible,
+    _label, serverError, modInputVisible,
   ) => {
     h.state = mainSubState('MAIN');
     h.caps = mainSubCaps();
@@ -1088,11 +1044,14 @@ describe('MOR-1069 — focus order is DOM order, and the LAST declared zone come
       ? { visible: true, sourceLabel: 'MIC' }
       : { visible: false, sourceLabel: null };
     render(defaultPlan());
-    push(snapshotOver);
+    if (serverError) {
+      txHarness.emitServerSnapshot({ lastError: 'audio-failed' });
+      flushSync();
+    }
 
-    // Sanity: the conditional control(s) this case drives are actually present
+    // Sanity: the conditional element(s) this case drives are actually present
     // — otherwise the assertions below would pass vacuously.
-    if ('phase' in snapshotOver) expect(q('[data-testid="tx-fault-reset"]')).not.toBeNull();
+    if (serverError) expect(q('[data-testid="tx-fault-recovery"]')).not.toBeNull();
     if (modInputVisible) expect(q('[data-testid="mod-input-tx-warning"]')).not.toBeNull();
 
     const declared = dualReceiverCockpitLayout.zones.map((z) => z.id);
@@ -1129,25 +1088,24 @@ describe('MOR-1069 (N1) — rx-tx is a real bound zone element in the cockpit', 
   });
 });
 
-// MOR-1258 (owner decision, 2026-08-04, gate item (b)): `tx-fault-reset` and
-// the two ModInputTxWarning buttons are formal rx-tx zone members. Each
-// assertion is a direct containment check against the zone ELEMENT itself
-// (`.contains` / `.closest`), independent of the focus-order sequence above —
-// a mutant that re-homes any one of the three as a sibling of `.rx-tx-zone`
-// fails here even if it still happened to land last in tab order.
-describe('MOR-1258 — the three TX-adjacent alerts are formal rx-tx zone members', () => {
-  it('contains tx-fault-reset inside the rx-tx zone while a fault is latched, and nowhere before it', () => {
+describe('MOR-1258 — managed TX recovery and MOD alerts stay in the rx-tx zone', () => {
+  it('contains the non-dismissable server recovery status in rx-tx with no local reset UI', () => {
     h.state = mainSubState('MAIN');
     h.caps = mainSubCaps();
     render();
-    expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
+    expect(q('[data-testid="tx-fault-recovery"]')).toBeNull();
 
-    push({ phase: 'failed', fault: 'audio-failed' });
+    txHarness.emitServerSnapshot({ lastError: 'audio-failed' });
+    flushSync();
 
     const zone = q('[data-zone-id="rx-tx"]')!;
-    const reset = q('[data-testid="tx-fault-reset"]')!;
-    expect(zone.contains(reset)).toBe(true);
-    expect(reset.closest('[data-zone-id]')).toBe(zone);
+    const recovery = q('[data-testid="tx-fault-recovery"]')!;
+    const status = q('[data-testid="tx-fault-reset-blocked"]')!;
+    expect(zone.contains(recovery)).toBe(true);
+    expect(recovery.closest('[data-zone-id]')).toBe(zone);
+    expect(recovery.getAttribute('data-dismissable')).toBe('false');
+    expect(status.getAttribute('role')).toBe('status');
+    expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
   });
 
   it('contains both ModInputTxWarning buttons inside the rx-tx zone while the guard is visible', () => {
@@ -1170,36 +1128,54 @@ describe('MOR-1258 — the three TX-adjacent alerts are formal rx-tx zone member
     h.caps = mainSubCaps();
     h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
     render();
-    push({ phase: 'failed', fault: 'audio-failed' });
+    txHarness.emitServerSnapshot({ lastError: 'audio-failed' });
+    flushSync();
 
     const zone = q('[data-zone-id="rx-tx"]')!;
     expect(q('[data-testid="rx-tx-surface"]')!.parentElement).toBe(zone);
-    for (const testid of ['tx-fault-reset', 'mod-input-set-lan', 'mod-input-dismiss']) {
+    for (const testid of ['tx-fault-recovery', 'mod-input-set-lan', 'mod-input-dismiss']) {
       const el = q(`[data-testid="${testid}"]`);
       expect(el).not.toBeNull();
       expect(zone.contains(el)).toBe(true);
     }
   });
 
-  // The alert's own behavior is untouched by the containment move: the
-  // fault-reset handler still fires from its new DOM parent exactly as it
-  // did from the old one. (The ModInputTxWarning buttons' own handler
-  // wiring is unchanged — pinned in
-  // `components-v2/wiring/__tests__/semantic-rx-tx-wiring.component.test.ts`
-  // and `components-v2/panels/__tests__/ModInputTxWarning.isolated.test.ts` — moving
-  // its DOM parent does not touch the component's own click handlers.)
-  it('still reaches the fault-reset handler from inside the zone', () => {
+  it('keeps Force Off accessible through a stale server snapshot and emits exactly HTTP force_off', () => {
     h.state = mainSubState('MAIN');
     h.caps = mainSubCaps();
     render();
-    push({ phase: 'failed', fault: 'audio-failed' });
-
-    q<HTMLButtonElement>('[data-testid="tx-fault-reset"]')!.click();
+    txHarness.emitServerSnapshot({ lastError: 'audio-failed' });
+    txHarness.emitStale();
     flushSync();
-    expect(h.resetFault).toHaveBeenCalledTimes(1);
+
+    const off = q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!;
+    expect(off.disabled).toBe(false);
+    expect(q('[data-testid="rx-tx-state"]')?.getAttribute('data-rf')).toBe('unknown');
+    expect(q<HTMLButtonElement>('[data-testid="rx-tx-key"]')!.disabled).toBe(true);
+    off.click();
+    flushSync();
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
   });
 
-  // MOR-1336 (S4) restated (R6): the four tests above never supply a resolved
+  it('clears server recovery only after a later error-free canonical snapshot', () => {
+    h.state = mainSubState('MAIN');
+    h.caps = mainSubCaps();
+    render();
+    txHarness.emitServerSnapshot({ lastError: 'audio-failed' });
+    flushSync();
+    expect(q('[data-testid="tx-fault-recovery"]')).not.toBeNull();
+
+    q<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!.click();
+    flushSync();
+    expect(q('[data-testid="tx-fault-recovery"]')).not.toBeNull();
+    expect(q('[data-testid="tx-fault-reset"]')).toBeNull();
+
+    txHarness.emitServerSnapshot({ intent: 'rx', observedPtt: 'off', lastError: null });
+    flushSync();
+    expect(q('[data-testid="tx-fault-recovery"]')).toBeNull();
+  });
+
+  // MOR-1336 (S4) restated (R6): the tests above never supply a resolved
   // plan, so the new tx-aux zone never actually mounts alongside them — R6
   // holds, but only because there was nowhere for the alerts to have moved
   // TO. Restated with `defaultPlan()`, so the tx-aux zone is a real sibling
@@ -1210,12 +1186,13 @@ describe('MOR-1258 — the three TX-adjacent alerts are formal rx-tx zone member
     h.caps = mainSubCaps();
     h.modInputGuard = { visible: true, sourceLabel: 'MIC' };
     render(defaultPlan());
-    push({ phase: 'failed', fault: 'audio-failed' });
+    txHarness.emitServerSnapshot({ lastError: 'audio-failed' });
+    flushSync();
 
     const rxTxZone = q('[data-zone-id="rx-tx"]')!;
     const txAuxZone = q('[data-zone-id="tx-aux"]');
     expect(txAuxZone).not.toBeNull(); // sanity: the zone this pin restates for actually exists
-    for (const testid of ['tx-fault-reset', 'mod-input-set-lan', 'mod-input-dismiss']) {
+    for (const testid of ['tx-fault-recovery', 'mod-input-set-lan', 'mod-input-dismiss']) {
       const el = q(`[data-testid="${testid}"]`);
       expect(el).not.toBeNull();
       expect(rxTxZone.contains(el)).toBe(true);
@@ -1265,9 +1242,3 @@ describe('MOR-1257 (N4) — the components-v2 theme layer loads with this skin',
     expect(source).toMatch(/import\s+['"]\.\.\/\.\.\/components-v2\/theme\/index['"]\s*;/);
   });
 });
-
-function push(next: Partial<Snapshot>): void {
-  h.snapshot = { ...(h.snapshot as Snapshot), ...next };
-  for (const listener of h.listeners) listener(h.snapshot);
-  flushSync();
-}

@@ -13,6 +13,9 @@
  * exactly the collision this file's last test pins.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 import { mount, unmount, flushSync } from 'svelte';
 
 vi.mock('../../../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
@@ -72,18 +75,11 @@ vi.mock('$lib/runtime', () => ({
   },
 }));
 
-vi.mock('$lib/runtime/tx-controller/app-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/app-host')>();
+vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>();
   return {
     ...actual,
-    getAppTxController: () => ({
-      snapshot: () => ({ phase: 'idle', intent: null, guard: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false, fault: null }),
-      subscribe: () => () => {},
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
+    getManagedAppTxController: () => txHarness.controller,
   };
 });
 
@@ -140,6 +136,7 @@ function mountSkin() {
 }
 
 beforeEach(() => {
+  txHarness.reset();
   components = [];
   rt.state = null;
 });
@@ -174,8 +171,7 @@ describe('LcdPeerSplitSkin (MOR-2153 PR-1)', () => {
   // SemanticRadioSurfaces for cockpit/scope; PeerSplitLayout's own glass
   // mounts a SECOND SemanticRadioSurfaces (`strips="dual"`) unconditionally.
   // Mounting the glass inside the unmodified shell would give the operator
-  // two TX affordances — counted here, not asserted as a boolean, because
-  // each instance takes a distinct TX-lease `sourceId` and neither crashes.
+  // two TX affordances — counted here rather than asserted as a boolean.
   //
   // MUTATION KILLED: reverting LcdLayout's `{#if variant !== 'peer-split'}`
   // guard around `.content-right`'s `<SemanticRadioSurfaces />` back to

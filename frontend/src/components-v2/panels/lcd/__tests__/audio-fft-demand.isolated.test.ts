@@ -3,6 +3,9 @@ import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 
 type MockConnectionState = 'connecting' | 'connected' | 'disconnected';
 type DefaultScopeStatusProbe = {
@@ -68,17 +71,6 @@ const mocks = vi.hoisted(() => {
     sendRaw: vi.fn(),
     sendCommand: vi.fn(() => true),
     onMessage: vi.fn(() => () => {}),
-    txController: Object.freeze({
-      snapshot: vi.fn(() => Object.freeze({
-        phase: 'idle', intent: null, sourceId: null, leaseId: null, guard: null,
-        fault: null, radioTx: 'off', txRisk: 'none', mayOwnKey: false,
-      })),
-      subscribe: vi.fn(() => () => {}),
-      start: vi.fn(),
-      setIntent: vi.fn(),
-      release: vi.fn(),
-      resetFault: vi.fn(),
-    }),
   };
 });
 
@@ -102,8 +94,8 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
   return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
 });
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => mocks.txController,
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 vi.mock('../AmberAfScope.svelte', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../AmberAfScope.svelte')>();
@@ -342,14 +334,7 @@ describe('LCD audio-FFT demand ownership', () => {
       // MOR-1409 A09b: the HTTP polling writer is gone; WS is the sole state
       // writer, so cleanup never has polling to stop.
       expect(mocks.stopPolling).not.toHaveBeenCalled();
-      for (const surface of [
-        mocks.txController.snapshot,
-        mocks.txController.subscribe,
-        mocks.txController.start,
-        mocks.txController.setIntent,
-        mocks.txController.release,
-        mocks.txController.resetFault,
-      ]) expect(surface).not.toHaveBeenCalled();
+      expect(txHarness.trace()).toEqual([]);
     } finally {
       if (cockpit) await unmount(cockpit);
       if (scope) await unmount(scope);

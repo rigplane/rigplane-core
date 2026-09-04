@@ -24,6 +24,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { mount, unmount, flushSync } from 'svelte';
+import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+
+const txHarness = new ManagedAppTxHarness();
 
 // ── Child components irrelevant to the read-boundary contract ──────────────
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
@@ -111,13 +114,8 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getSmeterCalibration: vi.fn(() => null), getSmeterRedline: vi.fn(() => null),
 }));
 
-// The TX controller is not what this suite is about — a flat idle facade keeps
-// the layout mountable without pulling in the real state machine.
-vi.mock('$lib/runtime/tx-controller/app-host', () => ({
-  getAppTxController: () => ({
-    snapshot: () => ({ guard: null, intent: 'idle', radioTx: 'off' }),
-    subscribe: () => () => {},
-  }),
+vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
+  getManagedAppTxController: () => txHarness.controller,
 }));
 
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
@@ -145,6 +143,7 @@ function setViewport(width: number, height: number): void {
 }
 
 beforeEach(() => {
+  txHarness.reset();
   setViewport(390, 844);
   radioStore.current = null;
 });
@@ -309,6 +308,7 @@ describe('MobileRadioLayout pending-field boundaries (MOR-1409 A13a)', () => {
   // Kills: a gate so broad it hides the meter for a rig that IS reporting —
   // the readings must come back the moment they are observed.
   it('renders the TX dock meter once its readings are observed', () => {
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     radioStore.current = {
       active: 'MAIN', main: CONNECTED_RX, ptt: true,
       powerMeter: 120, swrMeter: 30, alcMeter: 40,
