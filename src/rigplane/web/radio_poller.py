@@ -3233,7 +3233,7 @@ class RadioPoller:
             case SetCompressor(on=on):
                 if CAP_COMPRESSOR in self._caps:
                     await radio.set_compressor(on)
-            case SetToneFreq(freq_hz=freq, receiver=rx):
+            case SetToneFreq(freq_centihz=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_tone_freq")
                 if CAP_REPEATER_TONE in self._caps:
                     await radio.set_tone_freq(freq, receiver=rx)
@@ -3242,7 +3242,7 @@ class RadioPoller:
                         self._radio_state.sub if rx != 0 else self._radio_state.main
                     )
                     target.tone_freq = freq
-            case SetTsqlFreq(freq_hz=freq, receiver=rx):
+            case SetTsqlFreq(freq_centihz=freq, receiver=rx):
                 self._ensure_receiver_supported(rx, operation="set_tsql_freq")
                 if CAP_TSQL in self._caps:
                     await radio.set_tsql_freq(freq, receiver=rx)
