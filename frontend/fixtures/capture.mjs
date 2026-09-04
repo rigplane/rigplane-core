@@ -356,7 +356,7 @@ try {
         await route.continue();
         return;
       }
-      const fulfillment = route.fulfill({ status: 204 });
+      const fulfillment = route.fulfill({ status: 200, body: '{}' });
       tuningStepFulfillments.push(fulfillment);
       await fulfillment;
     });
