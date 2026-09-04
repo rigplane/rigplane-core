@@ -3759,7 +3759,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         civ = self._commands.set_tuner_status(value, to_addr=self._radio_addr)
-        if value == 0 or self._local_tx_work is None:
+        if value in (0, 1, 2) or self._local_tx_work is None:
             await self._send_civ_raw(civ, wait_response=False)
             return
 
