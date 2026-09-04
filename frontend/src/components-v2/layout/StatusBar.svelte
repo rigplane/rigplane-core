@@ -566,6 +566,8 @@
 
   .skin-select {
     appearance: none;
+    box-sizing: border-box;
+    inline-size: 128px;
     background: transparent;
     border: none;
     color: inherit;
