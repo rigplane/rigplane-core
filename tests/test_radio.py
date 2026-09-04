@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -3760,7 +3761,7 @@ class TestToneTsqlParity:
             data=bytes([0x00, 0x08, 0x85]),
         )
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
-        assert await radio.get_tone_freq() == pytest.approx(88.5)
+        assert await radio.get_tone_freq() == 8_850
 
     @pytest.mark.asyncio
     async def test_get_tsql_freq(
@@ -3775,13 +3776,13 @@ class TestToneTsqlParity:
             data=bytes([0x00, 0x11, 0x09]),
         )
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
-        assert await radio.get_tsql_freq() == pytest.approx(110.9)
+        assert await radio.get_tsql_freq() == 11_090
 
     @pytest.mark.asyncio
     async def test_set_tone_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        await radio.set_tone_freq(88.5)
+        await radio.set_tone_freq(8_850)
         # plain (no cmd29 -- IC-7300 has none) + 0x1B + 0x00 + BCD(88.5) + FD
         assert mock_transport.sent_packets[-1].endswith(b"\x1b\x00\x00\x08\x85\xfd")
 
@@ -3789,7 +3790,7 @@ class TestToneTsqlParity:
     async def test_set_tsql_freq(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        await radio.set_tsql_freq(110.9)
+        await radio.set_tsql_freq(11_090)
         assert mock_transport.sent_packets[-1].endswith(b"\x1b\x01\x00\x11\x09\xfd")
 
 
@@ -3852,7 +3853,7 @@ class TestToneTsqlDualRxCmd29Guard:
                 build_civ_frame(
                     CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x00, data=b"\x00\x08\x85"
                 ),
-                88.5,
+                8_850,
             ),
             (
                 "get_tsql_freq",
@@ -3860,7 +3861,7 @@ class TestToneTsqlDualRxCmd29Guard:
                 build_civ_frame(
                     CONTROLLER_ADDR, 0xA2, 0x1B, sub=0x01, data=b"\x00\x11\x09"
                 ),
-                110.9,
+                11_090,
             ),
         ],
     )
@@ -3871,7 +3872,7 @@ class TestToneTsqlDualRxCmd29Guard:
         method_name: str,
         request_tail: bytes,
         response_civ: bytes,
-        expected: bool | float,
+        expected: bool | int,
     ) -> None:
         """MOR-1538: SUB GETs reach SUB via VFO-select instead of raising."""
         ack = _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA2, _CMD_ACK))
@@ -3882,10 +3883,7 @@ class TestToneTsqlDualRxCmd29Guard:
         method = getattr(ic9700_radio, method_name)
         result = await method(receiver=1)
 
-        if isinstance(expected, float):
-            assert result == pytest.approx(expected)
-        else:
-            assert result is expected
+        assert result == expected
 
         frames = mock_transport.sent_packets
         assert frames[0].endswith(b"\x07\xd1\xfd")  # select SUB
@@ -3898,8 +3896,8 @@ class TestToneTsqlDualRxCmd29Guard:
         [
             ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
             ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
-            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x08\x85\xfd"),
-            ("set_tsql_freq", (110.9,), b"\x1b\x01\x00\x11\x09\xfd"),
+            ("set_tone_freq", (8_850,), b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", (11_090,), b"\x1b\x01\x00\x11\x09\xfd"),
         ],
     )
     async def test_sub_receiver_set_uses_vfo_select_fallback(
@@ -3936,8 +3934,8 @@ class TestToneTsqlDualRxCmd29Guard:
         [
             ("set_repeater_tone", (True,), b"\x16\x42\x01\xfd"),
             ("set_repeater_tsql", (True,), b"\x16\x43\x01\xfd"),
-            ("set_tone_freq", (88.5,), b"\x1b\x00\x00\x08\x85\xfd"),
-            ("set_tsql_freq", (110.9,), b"\x1b\x01\x00\x11\x09\xfd"),
+            ("set_tone_freq", (8_850,), b"\x1b\x00\x00\x08\x85\xfd"),
+            ("set_tsql_freq", (11_090,), b"\x1b\x01\x00\x11\x09\xfd"),
         ],
     )
     async def test_main_receiver_still_sends_direct_frame(
@@ -3960,6 +3958,41 @@ class TestToneTsqlDualRxCmd29Guard:
         mock_transport.queue_response(_wrap_civ_in_udp(civ))
         assert await ic9700_radio.get_repeater_tone(receiver=0) is True
         assert mock_transport.sent_packets[-1].endswith(b"\x16\x42\xfd")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "args"),
+        [
+            ("get_tone_freq", ()),
+            ("set_tone_freq", (8_850,)),
+            ("get_tsql_freq", ()),
+            ("set_tsql_freq", (11_090,)),
+        ],
+    )
+    async def test_tone_domain_is_required_before_sub_vfo_fallback(
+        self,
+        ic9700_radio: IcomRadio,
+        mock_transport: MockTransport,
+        method_name: str,
+        args: tuple,
+    ) -> None:
+        """A missing profile domain must not select SUB before failing closed."""
+        ic9700_radio._profile = replace(ic9700_radio._profile, ctcss_tones_centihz=None)
+
+        with pytest.raises(ValueError, match="CTCSS tone domain"):
+            await getattr(ic9700_radio, method_name)(*args, receiver=1)
+
+        assert mock_transport.sent_packets == []
+
+    @pytest.mark.asyncio
+    async def test_float_tone_is_rejected_before_sub_vfo_fallback(
+        self, ic9700_radio: IcomRadio, mock_transport: MockTransport
+    ) -> None:
+        """The canonical builder rejects legacy float-Hz input before VFO mutation."""
+        with pytest.raises(TypeError, match="int in centiHz"):
+            await ic9700_radio.set_tone_freq(88.5, receiver=1)  # type: ignore[arg-type]
+
+        assert mock_transport.sent_packets == []
 
 
 class TestRepeaterToneDedupeKeyReceiverScoped:
@@ -4135,9 +4168,9 @@ class TestRequireReceiverToneMethodsPin:
             ("get_repeater_tsql", ()),
             ("set_repeater_tsql", (True,)),
             ("get_tone_freq", ()),
-            ("set_tone_freq", (88.5,)),
+            ("set_tone_freq", (8_850,)),
             ("get_tsql_freq", ()),
-            ("set_tsql_freq", (110.9,)),
+            ("set_tsql_freq", (11_090,)),
         ],
     )
     async def test_single_rx_receiver_1_reports_accurate_receiver_count(
