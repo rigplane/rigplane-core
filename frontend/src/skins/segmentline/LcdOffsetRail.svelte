@@ -1,12 +1,12 @@
 <script lang="ts">
   import type {
     PeerSplitDisplayModel,
-    PeerSplitReceiverDisplay,
+    DisplaySlotId,
   } from '../../semantic/radio-display-model';
   import { formatOffset } from './lcd-display-helpers';
 
   interface Props {
-    receiver: PeerSplitReceiverDisplay['receiver'];
+    receiver: DisplaySlotId;
     offsets: PeerSplitDisplayModel['offsets'];
   }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type {
   RadioViewModel, ReceiverIndicatorViewModel, TxAuxField,
 } from '../radio-view-model';
+import { topologyFixtures } from '../fixtures/topologies';
 import { projectPeerSplitDisplay } from '../radio-display-model';
 
 const availability = (structural = true, operational = true) => ({ structural, operational });
@@ -177,5 +178,68 @@ describe('projectPeerSplitDisplay', () => {
       else if (value && typeof value === 'object') Object.values(value).forEach(visit);
     };
     expect(() => visit(display)).not.toThrow();
+  });
+});
+
+function singleAb(active: 'A' | 'B' | null, knownB = true): RadioViewModel {
+  const fixture = topologyFixtures['1/ab'];
+  return {
+    ...view(), ...fixture,
+    scope: view().scope,
+    receiverIndicators: [indicator('MAIN')],
+    vfos: fixture.vfos.map((vfo) => ({
+      ...vfo,
+      frequencyHz: vfo.slot.kind === 'slotted' && vfo.slot.id === 'B' && !knownB
+        ? null : vfo.frequencyHz,
+      isActive: vfo.slot.kind === 'slotted' && vfo.slot.id === active,
+      isActiveSlot: vfo.slot.kind === 'slotted' && vfo.slot.id === active,
+    })),
+  };
+}
+
+describe('single-receiver LCD display slots', () => {
+  it.each(['A', 'B'] as const)('keeps A left and B right with %s active without duplicating receiver facts', (active) => {
+    const display = projectPeerSplitDisplay(singleAb(active));
+    expect(display.receivers.map((slot) => slot.label)).toEqual(['VFO A', 'VFO B']);
+    expect(display.receivers.map((slot) => slot.receiver)).toEqual(['MAIN', 'MAIN']);
+    expect(display.receivers.map((slot) => slot.vfoSlot)).toEqual(['A', 'B']);
+    expect(display.receivers.map((slot) => slot.frequency)).toEqual([
+      { state: 'known', value: 7_100_000 }, { state: 'known', value: 7_150_000 },
+    ]);
+    expect(display.activeReceiver?.vfoSlot).toBe(active);
+    for (const slot of display.receivers) {
+      const selected = slot.vfoSlot === active;
+      expect(slot.activity).toBe(selected ? 'active' : 'inactive');
+      expect(slot.operational).toBe(selected);
+      expect(slot.sMeter).toEqual(selected ? { state: 'known', value: -18 } : { state: 'unknown' });
+      expect(slot.bandwidthHz.state).toBe(selected ? 'known' : 'unknown');
+      expect(slot.dsp.agc.state).toBe(selected ? 'known' : 'unknown');
+      expect(slot.front.rfGain.state).toBe(selected ? 'known' : 'unknown');
+      expect(slot.spectrum).toBe(selected ? 'waiting' : 'inactive');
+    }
+  });
+
+  it.each(['A', 'B'] as const)('keeps unobserved B unknown with %s active', (active) => {
+    const display = projectPeerSplitDisplay(singleAb(active, false));
+    expect(display.receivers[0].frequency).toEqual({ state: 'known', value: 7_100_000 });
+    expect(display.receivers[1].frequency).toEqual({ state: 'unknown' });
+  });
+
+  it('does not assign MAIN telemetry or FFT when the active A/B slot is unobserved', () => {
+    const display = projectPeerSplitDisplay(singleAb(null));
+    expect(display.activeReceiver).toBeNull();
+    for (const slot of display.receivers) {
+      expect(slot.activity).toBe('unknown');
+      expect(slot.sMeter).toEqual({ state: 'unknown' });
+      expect(slot.spectrum).toBe('unknown');
+    }
+  });
+
+  it('does not fill a missing B observation with A or an unknown relative slot', () => {
+    const fixture = singleAb('A');
+    fixture.vfos = [fixture.vfos[0], {
+      ...fixture.vfos[1], slot: { kind: 'unknown' }, frequencyHz: 9_999_000,
+    }];
+    expect(projectPeerSplitDisplay(fixture).receivers[1].frequency).toEqual({ state: 'unknown' });
   });
 });

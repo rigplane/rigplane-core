@@ -62,7 +62,9 @@
 
   const active = $derived(model.activeReceiver ?? ghostReceiver);
   const activeIdentity = $derived(model.activeReceiver?.receiver ?? 'unknown');
-  const secondary = $derived(receiverById(
+  const fixedVfoSlots = $derived(model.receivers[0].vfoSlot !== undefined);
+  const primary = $derived(fixedVfoSlots ? model.receivers[0] : active);
+  const secondary = $derived(fixedVfoSlots ? model.receivers[1] : receiverById(
     model,
     model.activeReceiver?.receiver === 'SUB' ? 'MAIN' : 'SUB',
   ));
@@ -115,13 +117,14 @@
   <section
     class="hero-frequency"
     data-testid="centerstage-hero"
-    data-receiver={activeIdentity}
-    data-state={active.frequency.state}
-    style:opacity={active.frequency.state === 'unknown' ? 0.34 : 1}
-    style:visibility={active.frequency.state === 'unsupported' ? 'hidden' : 'visible'}
+    data-receiver={fixedVfoSlots ? primary.receiver : activeIdentity}
+    data-display-slot={primary.vfoSlot ?? primary.receiver}
+    data-state={primary.frequency.state}
+    style:opacity={primary.frequency.state === 'unknown' ? 0.34 : 1}
+    style:visibility={primary.frequency.state === 'unsupported' ? 'hidden' : 'visible'}
   >
-    <span class="receiver-tag">{model.activeReceiver?.label ?? 'ACTIVE'}{model.activeReceiver ? ' ●' : ''}</span>
-    <LcdFrequencyReadout receiver={active.receiver} field={active.frequency} />
+    <span class="receiver-tag">{primary.label}{primary.activity === 'active' ? ' ●' : ''}</span>
+    <LcdFrequencyReadout receiver={primary.vfoSlot ?? primary.receiver} field={primary.frequency} />
   </section>
 
   <section
@@ -133,7 +136,7 @@
     style:visibility={secondary.frequency.state === 'unsupported' ? 'hidden' : 'visible'}
   >
     <span class="secondary-tag">{secondary.label}{secondary.activity === 'active' ? ' ●' : ''}</span>
-    <LcdFrequencyReadout receiver={secondary.receiver} field={secondary.frequency} />
+    <LcdFrequencyReadout receiver={secondary.vfoSlot ?? secondary.receiver} field={secondary.frequency} />
     <span
       class="secondary-mode"
       data-state={secondary.mode.state}

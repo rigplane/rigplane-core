@@ -7,11 +7,11 @@
   import { SEGMENTLINE_TOKENS } from '../../presentation/languages/segmentline/tokens';
   import type {
     DisplayValue,
-    PeerSplitReceiverDisplay,
+    DisplaySlotId,
   } from '../../semantic/radio-display-model';
 
   interface Props {
-    receiver: PeerSplitReceiverDisplay['receiver'];
+    receiver: DisplaySlotId;
     field: DisplayValue<number>;
   }
 
