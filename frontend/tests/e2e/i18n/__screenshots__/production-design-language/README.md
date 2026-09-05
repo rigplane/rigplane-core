@@ -199,7 +199,7 @@ are now independently CI-confirmed clean on the same commit
 Only the four named production-root images below were regenerated. No other
 i18n screenshot, production source, fixture, or test changed in this re-pin.
 
-## Linux re-pin provenance (current — 2026-09-05 UTC MOR-2342 upper instruments)
+## Linux re-pin provenance (superseded — 2026-09-05 UTC MOR-2342 upper instruments)
 
 | Field | Value |
 | --- | --- |
@@ -220,14 +220,43 @@ assertions completed before the four pixel comparisons; the other 39 cases
 passed, including presentation repair. No scene was skipped. A subsequent exact-head run must confirm
 these expectations; this comparison run itself is not a visual PASS.
 
+## Linux re-pin provenance (current — 2026-09-05 UTC MOR-2342 desktop controls)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `6a3ae096209abffdea2184846dc5926e1386f3af` |
+| CI run / job | [Tests (quick) #33936293197](https://github.com/rigplane/rigplane-core/actions/runs/33936293197) / `101224798047` |
+| Runner | self-hosted Linux `mm-build-core-1` |
+| Source | Byte-identical `actual.png` attachments from `mor-1400-production-visual-diagnostics`; no macOS-generated baseline. |
+| Context / comparator | Unchanged Chromium production config: 1280×800, DPR 1, en-US, UTC; `threshold: 0.2`, `maxDiffPixelRatio: 0.001`. |
+| Reason | The desktop shell now groups semantic controls into scrolling side columns, with TX/recovery first on the right, scope controls in the center and station meters below. This removes the clipped Standard deck. |
+
+Each scene is **compared-fail**, inspected and accepted for re-pin:
+
+| Scene | Changed pixels | Disposition |
+| --- | ---: | --- |
+| StudioLine dark | 21,565 | Accepted semantic side panels, visible Unkey, scope and meters placement. |
+| StudioLine light | 145,338 | Same geometry and theme-correct control chrome; labels remain readable. |
+| FieldLine dark | 35,057 | Same grouping; language borders and TX fault rail preserved. |
+| FieldLine light | 162,867 | Same grouping and preserved rails; light panels and Unkey remain readable. |
+
+The upper/status offsets follow the new grid gap and removal of the enclosing
+clipped deck. UNKNOWN text and language typography are retained. Legacy band
+and memory extras follow the semantic panels in the scrollable columns.
+All four actual/diff pairs were inspected. CSS/accessibility assertions passed
+before comparison; the other 39 cases passed, none skipped. These captures use
+simulated production state and do not establish hardware acceptance. A subsequent
+exact-head CI run must confirm the new expectations; this failed comparison is
+not a visual PASS.
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `b39215c5d22d02048a4cc25ba0a88048c5f845c4177aa63d0bf565b50f29dc05` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `66de99c97321b4291c49132dd184e750a0e99911e7557034d2a1265d0f4cf32a` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `fecfbb0e31620b68a738d65a89a1c841dced9c01fc9746264212c9cf2bc5192d` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `6fd41da9ec97ff6846fa340b9b2b7304687b1d6105589ea78ec2755adcb6ef06` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `82c72d8b6a48c1b2d88314279866ce495e846f73237eabadead5108244af0c19` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `07abbfc43b9d94471baa71a7299e44a35431537bb5a689426101255e5a055e2d` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `98c9a34c1fcb6bda63eb0521ce4b3c4286da6198dbcf9df05e9fcc4a3ed8a681` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `68e9908caf2cee2c1c2e621bdae14af7fde6a69659343dddcb10497df6ee996d` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output
