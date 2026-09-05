@@ -23,7 +23,8 @@ function fixture(known: boolean) {
   function observe(obj: object, prefix = '') {
     for (const [key, value] of Object.entries(obj)) {
       const path = prefix ? `${prefix}.${key}` : key;
-      fields[path] = { observed: true, freshness: 'fresh', availability: 'available', storePath: path };
+      // Synthetic observation provenance for this fixture, not a radio measurement.
+      fields[path] = { observed: true, freshness: 'fresh', availability: 'available', storePath: path, lastObservedMonotonic: 0 };
       if (value && typeof value === 'object') observe(value, path);
     }
   }
@@ -48,12 +49,13 @@ function fixture(known: boolean) {
   return { state, caps };
 }
 
-async function boot(page: Page, layout: string, width: number, known: boolean) {
-  const { state, caps } = fixture(known);
+async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false) {
+  const { state, caps } = productionUnknown
+    ? { state: structuredClone(mockState), caps: structuredClone(mockCapabilities) } : fixture(known);
   await page.setViewportSize({ width, height: width === 900 ? 900 : 1000 });
-  await page.addInitScript(({ state, layout, width }) => {
+  await page.addInitScript(({ state, layout, width, language }) => {
     localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 1, layout,
-      designLanguage: 'studioline', theme: width === 900 ? 'github-light' : 'nord' }));
+      designLanguage: language, theme: width === 900 ? 'github-light' : 'nord' }));
     localStorage.setItem('rigplane.i18n.locale', width === 900 ? 'ru-RU' : 'en-US');
     const commands: unknown[] = [];
     Object.assign(window, { geometryCommands: commands });
@@ -70,12 +72,16 @@ async function boot(page: Page, layout: string, width: number, known: boolean) {
           this.readyState = 1;
           const open = new Event('open'); this.dispatchEvent(open); this.onopen?.(open);
           if (new URL(url, location.href).pathname === '/api/v1/ws') {
-            const e = new MessageEvent('message', { data: JSON.stringify({ type: 'state_update',
-              data: { type: 'full', data: state, revision: state.revision,
-                stateRevision: state.stateRevision, freshnessRevision: state.freshnessRevision,
-                observationSeq: state.observationSeq, stateContractVersion: state.stateContractVersion,
-                providerGeneration: state.providerGeneration } }) });
-            this.dispatchEvent(e); this.onmessage?.(e);
+            const emit = (next: typeof state) => {
+              const e = new MessageEvent('message', { data: JSON.stringify({ type: 'state_update',
+                data: { type: 'full', data: next, revision: next.revision,
+                  stateRevision: next.stateRevision, freshnessRevision: next.freshnessRevision,
+                  observationSeq: next.observationSeq, stateContractVersion: next.stateContractVersion,
+                  providerGeneration: next.providerGeneration } }) });
+              this.dispatchEvent(e); this.onmessage?.(e);
+            };
+            emit(state);
+            window.addEventListener('geometry-state', e => emit((e as CustomEvent<typeof state>).detail));
           }
         });
       }
@@ -83,7 +89,7 @@ async function boot(page: Page, layout: string, width: number, known: boolean) {
       close() { this.readyState = 3; const e = new Event('close'); this.dispatchEvent(e); this.onclose?.(e); }
     }
     Object.assign(window, { WebSocket: Socket });
-  }, { state, layout, width });
+  }, { state, layout, width, language });
   await page.route('**/api/**', route => {
     const name = new URL(route.request().url()).pathname.split('/').pop();
     const body = name === 'state' ? state : name === 'capabilities' ? caps : name === 'info' ? mockInfo
@@ -170,4 +176,70 @@ for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
       await info.attach('geometry', { path: screenshot, contentType: 'image/png' });
     });
   }
+}
+
+// The cue must share existing instrument space, including while it is hidden.
+for (const layout of ['standard', 'sdr-test']) for (const language of ['studioline', 'fieldline']) {
+  test(`${layout} ${language} instrument cue adds no tracks through recovery`, async ({ page }, info) => {
+    await boot(page, layout, 1440, false, language, true);
+    // SDR opts out of the selected design language; assert the actual production state.
+    if (layout === 'standard') await expect(page.locator('html')).toHaveAttribute('data-design-language', language);
+    else expect(await page.locator('html').getAttribute('data-design-language')).toBeNull();
+    await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', layout === 'standard' ? 'standard' : 'sdr');
+    const frequency = page.locator('.receiver-instrument [data-vfo-freq]').first();
+    await expect(frequency).toHaveText('—');
+    const paint = await frequency.evaluate(e => {
+      const read = (e: Element) => { const s = getComputedStyle(e); return [s.fontFamily, s.fontSize, s.fontWeight, s.lineHeight, s.color, s.textShadow, s.letterSpacing]; };
+      return { outer: read(e), inner: read(e.querySelector('.freq')!) };
+    });
+    expect(paint.inner).toEqual(paint.outer);
+    const measure = () => page.locator('.receiver-instrument').evaluateAll(instruments => {
+      const rect = (e: Element) => e.getBoundingClientRect().toJSON();
+      return instruments.map(instrument => {
+        const cues = [...instrument.querySelectorAll<HTMLElement>('[data-vfo-stale-cue]')];
+        const geometry = () => [...instrument.querySelectorAll('.vfo-tile,.vfo-role,.vfo-freq,.vfo-mode,.vfo-select')].map(rect);
+        const present = geometry();
+        cues.forEach(cue => { cue.style.display = 'none'; }); const absent = geometry();
+        cues.forEach(cue => { cue.style.display = ''; });
+        return { present, absent };
+      });
+    });
+    const unknown = await measure(); unknown.forEach(box => expect(box.present).toEqual(box.absent));
+    await info.attach('unknown-bounds', { body: JSON.stringify(unknown), contentType: 'application/json' });
+    // The shared production unknown fixture remains evidence-free; recovery uses the IC fixture.
+    await boot(page, layout, 1440, false, language);
+    let current: Awaited<ReturnType<typeof measure>> | undefined;
+    for (const [index, stateName] of ['current', 'stale', 'current'].entries()) {
+      const state = fixture(true).state;
+      Object.assign(state, { revision: index + 2, stateRevision: index + 2,
+        freshnessRevision: index + 2, observationSeq: index + 2 });
+      if (stateName === 'stale') for (const [path, field] of Object.entries(state.fieldStatus ?? {})) {
+        if (!/^main\.(?:unselectedVfo\.)?(?:freqHz|mode|filter|filterNum)$/.test(path)) continue;
+        Object.assign(field, { freshness: 'stale', availability: 'stale' });
+      }
+      await page.evaluate(state => window.dispatchEvent(new CustomEvent('geometry-state', { detail: state })), state);
+      await expect(frequency).toHaveAttribute('data-display-state', stateName);
+      await expect(frequency).toContainText('035');
+      const boxes = await measure(); boxes.forEach(box => expect(box.present).toEqual(box.absent));
+      await info.attach(`${stateName}-${index}-bounds`, { body: JSON.stringify(boxes), contentType: 'application/json' });
+      if (current) expect(boxes).toEqual(current); else current = boxes;
+      if (stateName === 'stale') {
+        const cues = page.locator('.receiver-instrument [data-vfo-stale-cue]');
+        expect(await cues.count()).toBeGreaterThan(0);
+        for (const cue of await cues.all()) {
+          await expect(cue).toHaveAttribute('aria-hidden', 'false');
+          await expect(cue).toBeVisible();
+          expect(await cue.evaluate(cue => {
+            const marker = cue.firstElementChild!.getBoundingClientRect();
+            return [...cue.parentElement!.children].filter(e => e !== cue).every(e => {
+              const b = e.getBoundingClientRect();
+              return marker.right <= b.left || marker.left >= b.right || marker.bottom <= b.top || marker.top >= b.bottom;
+            });
+          })).toBe(true);
+        }
+        await page.screenshot({ path: info.outputPath('instrument-stale.png'), fullPage: true });
+      }
+    }
+    expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] }).geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+  });
 }

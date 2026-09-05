@@ -515,7 +515,7 @@
       >
         <span class="vfo-role">{roleLabel(vfo)}</span>
         <span
-          class="vfo-freq"
+          class="vfo-freq" class:display-unknown={displayHz === null && pendingHz === null}
           {...(appearance === 'semantic' ? freq?.attributes ?? {} : {})}
           data-vfo-freq
           data-freq-tunable={!readoutDisabled(vfo)}
@@ -892,7 +892,12 @@
     display: grid; grid-template-columns: 1fr auto; gap: 6px;
     padding: 0; border: 0; background: transparent;
   }
-  .receiver-instrument .vfo-role { font-size: 12px; letter-spacing: .1em; }
+  /* Share the role cell and its following gap; auto placement would add a row. */
+  .receiver-instrument .vfo-stale-cue {
+    grid-column: 1; grid-row: 1; justify-self: end; align-self: start;
+    transform: translateX(100%); line-height: 1; letter-spacing: normal;
+  }
+  .receiver-instrument .vfo-role { grid-column: 1; grid-row: 1; font-size: 12px; letter-spacing: .1em; }
   .receiver-instrument .vfo-mode { font-size: 12px; grid-column: 1; }
   .receiver-instrument .vfo-freq {
     grid-column: 1 / -1; grid-row: 3; white-space: nowrap;
@@ -904,6 +909,10 @@
   .receiver-instrument :where(.vfo-freq) { font-weight: 700; }
   .receiver-instrument .vfo-freq :global(.freq) {
     font-size: inherit; line-height: inherit; font-weight: inherit; font-family: inherit;
+  }
+  /* A retained null primitive keeps the established instrument placeholder paint. */
+  .receiver-instrument .vfo-freq.display-unknown :global(.freq) {
+    font: inherit; letter-spacing: inherit; color: inherit; text-shadow: inherit;
   }
   .receiver-instrument .is-active .vfo-freq {
     color: var(--v2-vfo-main-freq-active, #7cfce5);
