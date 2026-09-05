@@ -161,8 +161,8 @@ export class ScopeController {
   /**
    * Installs the one canonical display identity. Changing any identity member
    * retires the prior envelope synchronously. A provider-generation change
-   * also retires the channel revision: its callbacks may still serve legacy
-   * raw subscribers but cannot revive display facts under the new provider.
+   * also retires the channel revision and rebinds the selected demanded source
+   * without changing the resource host's handle or adopting old-provider pixels.
    */
   setFrameAuthority(authority: ScopeFrameCanonicalAuthority | null): void {
     const normalized = authority
@@ -181,6 +181,13 @@ export class ScopeController {
     this._frameAuthority = normalized;
     this._frameEnvelope = null;
     this._notifyEvidence();
+    if (normalized?.receiver != null && normalized.providerGeneration != null) {
+      if (normalized.source === 'hardware') {
+        this._rebind('hardware', this._hardwareBindings, this._activeHardwareHandle);
+      } else {
+        this._rebind('audio_fft', this._bindings, this._activeHandle);
+      }
+    }
   }
 
   snapshotFrameEvidence(): ScopeFrameEvidence {
@@ -228,58 +235,91 @@ export class ScopeController {
   }
 
   private _connect(): AudioFftHandle {
-    const ch = this._getChannel('audio-scope');
+    const channel = this._getChannel('audio-scope');
     const handle = Object.freeze({ token: Symbol('audio-fft') });
-    const authorityRevision = this._authorityRevision;
-    let unsubscribeBinary = () => {}, unsubscribeState = () => {}, unsubscribeSession = () => {};
     this._activeHandle = handle;
-    this._invalidateSource('audio_fft');
-    this._setHealth('audio_fft', {
-      demanded: true, transport: ch.state, frameSeen: false,
-    });
+    return this._installBinding('audio_fft', this._bindings, handle, channel);
+  }
+
+  private _rebind<H extends AudioFftHandle | HardwareHandle>(
+    source: ScopeSource, bindings: Map<H, ChannelBinding>, handle: H | null,
+  ): void {
+    const old = handle && bindings.get(handle);
+    if (!handle || !old || old.authorityRevision === this._authorityRevision) return;
+    this._invalidateSource(source);
+    bindings.delete(handle); // Retained callbacks lose authority before transport teardown.
     try {
-      unsubscribeState = ch.onStateChange((state) => {
-        if (this._activeHandle !== handle) return;
-        if (state !== 'connected') this._invalidateSource('audio_fft');
-        this._setHealth('audio_fft', {
-          demanded: true, transport: state,
-          frameSeen: state === 'connected' && this._arrivalIsLive('audio_fft'),
-        });
-      });
-      unsubscribeSession = this._subscribeSession(ch, (transition) => {
-        this._sessionTransition('audio_fft', handle, transition);
-      });
-      unsubscribeBinary = ch.onBinary((buf: ArrayBuffer) => {
-        if (this._activeHandle !== handle || this._readHealth('audio_fft').transport !== 'connected') return;
+      try { this._unsubscribeBinding(old); } finally { old.channel.disconnect(); }
+      this._setHealth(source, { demanded: true, transport: 'disconnected', frameSeen: false });
+      this._installBinding(source, bindings, handle, old.channel, true);
+    } catch (error) {
+      // The host still owns this exact handle, including after failed registration/connect.
+      if (!bindings.has(handle)) bindings.set(handle, this._emptyBinding(old.channel, old.authorityRevision));
+      this._setHealth(source, { demanded: true, transport: 'disconnected', frameSeen: false });
+      console.warn('Scope authority rebind failed', error);
+    }
+  }
+
+  private _emptyBinding(channel: WsChannel, authorityRevision: number): ChannelBinding {
+    return { channel, authorityRevision, unsubscribeBinary: () => {}, unsubscribeState: () => {}, unsubscribeSession: () => {} };
+  }
+
+  private _unsubscribeBinding(binding: ChannelBinding): void {
+    try { binding.unsubscribeBinary(); } finally {
+      try { binding.unsubscribeState(); } finally { binding.unsubscribeSession(); }
+    }
+  }
+
+  private _installBinding<H extends AudioFftHandle | HardwareHandle>(
+    source: ScopeSource, bindings: Map<H, ChannelBinding>, handle: H,
+    channel: WsChannel, preserveDemand = false,
+  ): H {
+    const authorityRevision = this._authorityRevision;
+    const binding = this._emptyBinding(channel, authorityRevision);
+    const current = () => bindings.get(handle) === binding
+      && (source === 'hardware' ? this._activeHardwareHandle : this._activeHandle) === handle;
+    bindings.set(handle, binding);
+    this._invalidateSource(source);
+    this._setHealth(source, { demanded: true, transport: channel.state, frameSeen: false });
+    try {
+      binding.unsubscribeBinary = channel.onBinary((buf) => {
+        if (!current() || this._readHealth(source).transport !== 'connected') return;
         const frame = parseScopeFrame(buf);
         if (!frame) {
-          this._invalidateSource('audio_fft', authorityRevision === this._authorityRevision);
+          this._invalidateSource(source, authorityRevision === this._authorityRevision);
           return;
         }
-        if (this._acceptFrame('audio_fft', ch, authorityRevision, frame, buf)) {
-          for (const h of this._subscribers.values()) h(frame);
+        if (this._acceptFrame(source, channel, authorityRevision, frame, buf)) {
+          const subscribers = source === 'hardware' ? this._hardwareSubscribers : this._subscribers;
+          for (const subscriber of subscribers.values()) subscriber(frame);
         }
       });
-      this._bindings.set(handle, {
-        channel: ch, authorityRevision, unsubscribeBinary, unsubscribeState, unsubscribeSession,
+      binding.unsubscribeState = channel.onStateChange((state) => {
+        if (!current()) return;
+        if (state !== 'connected') this._invalidateSource(source);
+        this._setHealth(source, {
+          demanded: true, transport: state,
+          frameSeen: state === 'connected' && this._arrivalIsLive(source),
+        });
       });
-      ch.connect('/api/v1/audio-scope');
+      binding.unsubscribeSession = this._subscribeSession(channel, (transition) => {
+        if (current()) this._sessionTransition(source, handle, transition);
+      });
+      channel.connect(source === 'hardware' ? '/api/v1/scope' : '/api/v1/audio-scope');
       return handle;
     } catch (error) {
-      this._bindings.delete(handle);
-      try { unsubscribeBinary(); } finally {
-        try { unsubscribeState(); } finally { unsubscribeSession(); }
+      bindings.delete(handle);
+      this._unsubscribeBinding(binding);
+      const active = source === 'hardware' ? this._activeHardwareHandle : this._activeHandle;
+      if (active === handle) {
+        if (!preserveDemand) {
+          if (source === 'hardware') this._activeHardwareHandle = null;
+          else this._activeHandle = null;
+        }
+        this._invalidateSource(source);
+        this._setHealth(source, { demanded: preserveDemand, transport: 'disconnected', frameSeen: false });
       }
-      if (this._activeHandle === handle) {
-        this._activeHandle = null;
-        this._invalidateSource('audio_fft');
-        this._setHealth('audio_fft', {
-          demanded: false, transport: 'disconnected', frameSeen: false,
-        });
-      }
-      if (![...this._bindings.values()].some((binding) => binding.channel === ch)) {
-        ch.disconnect();
-      }
+      if (![...bindings.values()].some((item) => item.channel === channel)) channel.disconnect();
       throw error;
     }
   }
@@ -314,61 +354,8 @@ export class ScopeController {
   private _connectHardware(): HardwareHandle {
     const channel = this._getChannel('scope');
     const handle = Object.freeze({ generation: ++this._hardwareGeneration });
-    const authorityRevision = this._authorityRevision;
-    let unsubscribeBinary = () => {}, unsubscribeState = () => {}, unsubscribeSession = () => {};
     this._activeHardwareHandle = handle;
-    this._invalidateSource('hardware');
-    this._setHealth('hardware', {
-      demanded: true, transport: channel.state, frameSeen: false,
-    });
-    try {
-      unsubscribeBinary = channel.onBinary((buf) => {
-        if (
-          this._activeHardwareHandle !== handle
-          || this._readHealth('hardware').transport !== 'connected'
-        ) return;
-        const frame = parseScopeFrame(buf);
-        if (!frame) {
-          this._invalidateSource('hardware', authorityRevision === this._authorityRevision);
-          return;
-        }
-        if (this._acceptFrame('hardware', channel, authorityRevision, frame, buf)) {
-          for (const subscriber of this._hardwareSubscribers.values()) subscriber(frame);
-        }
-      });
-      unsubscribeState = channel.onStateChange((state: ConnectionState) => {
-        if (this._activeHardwareHandle !== handle) return;
-        if (state !== 'connected') this._invalidateSource('hardware');
-        this._setHealth('hardware', {
-          demanded: true, transport: state,
-          frameSeen: state === 'connected' && this._arrivalIsLive('hardware'),
-        });
-      });
-      unsubscribeSession = this._subscribeSession(channel, (transition) => {
-        this._sessionTransition('hardware', handle, transition);
-      });
-      this._hardwareBindings.set(handle, {
-        channel, authorityRevision, unsubscribeBinary, unsubscribeState, unsubscribeSession,
-      });
-      channel.connect('/api/v1/scope');
-    } catch (error) {
-      this._hardwareBindings.delete(handle);
-      try { unsubscribeBinary(); } finally {
-        try { unsubscribeState(); } finally { unsubscribeSession(); }
-      }
-      if (this._activeHardwareHandle === handle) {
-        this._activeHardwareHandle = null;
-        this._invalidateSource('hardware');
-        this._setHealth('hardware', {
-          demanded: false, transport: 'disconnected', frameSeen: false,
-        });
-      }
-      if (![...this._hardwareBindings.values()].some((item) => item.channel === channel)) {
-        channel.disconnect();
-      }
-      throw error;
-    }
-    return handle;
+    return this._installBinding('hardware', this._hardwareBindings, handle, channel);
   }
 
   private _disconnectHardware(handle: HardwareHandle): void {
