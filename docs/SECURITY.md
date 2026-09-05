@@ -12,13 +12,18 @@ rigplane implements Icom's proprietary LAN protocol for controlling amateur radi
 
 The library is designed for use on **trusted local networks** (home LAN, shack network). The Icom protocol was designed for convenience, not security.
 
-### What rigplane protects
+### Application access
 
-- ✅ **No credential storage** — credentials are passed as parameters or environment variables, never written to disk by the library
-- ✅ **No hardcoded secrets** — no default passwords or keys in the codebase
-- ✅ **Clean exception handling** — errors don't leak credentials in tracebacks
-- ✅ **Minimal attack surface** — core requires only `pyserial`; optional extras are well-scoped
-- ✅ **Controlled network listeners** — the library initiates outbound UDP connections; the optional web server (`rigplane web`) and rigctld server (`rigplane serve`) bind to configurable addresses and support auth tokens
+Core HTTP, WebSocket and rigctld listeners do not require application tokens.
+Restrict listener access to trusted clients through bind addresses and network
+controls. Web TLS configuration remains available; radio protocol credentials
+are separate from application access.
+
+Sources: `src/rigplane/web/api_contract.py: STABLE_HTTP_ENDPOINTS` and
+`STABLE_WEBSOCKET_ROUTES`; `src/rigplane/web/server.py: WebConfig`;
+`src/rigplane/rigctld/server.py: RigctldServer`;
+`src/rigplane/rigctld/contract.py: RigctldConfig`;
+`src/rigplane/runtime/_control_phase.py: ControlPhaseRuntime._connect_once`.
 
 ### What the Icom protocol does NOT provide
 

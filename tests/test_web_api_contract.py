@@ -14,6 +14,8 @@ from rigplane.web.api_contract import (
     STABLE_HTTP_ENDPOINTS,
     STABLE_WEBSOCKET_ROUTES,
     WEB_API_CONTRACT_VERSION,
+    HttpEndpoint,
+    WebSocketRoute,
 )
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.rig_loader import load_rig
@@ -255,6 +257,18 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
         "operation",
         "result",
     )
+
+
+@pytest.mark.parametrize(
+    "route",
+    STABLE_HTTP_ENDPOINTS + STABLE_WEBSOCKET_ROUTES,
+    ids=[f"{route['method']} {route['path']}" for route in STABLE_HTTP_ENDPOINTS]
+    + [f"WS {route['path']}" for route in STABLE_WEBSOCKET_ROUTES],
+)
+def test_stable_routes_require_no_application_credentials(
+    route: HttpEndpoint | WebSocketRoute,
+) -> None:
+    assert route["auth"] == "none"
 
 
 def test_command_batch_docs_use_numeric_data_mode_contract() -> None:

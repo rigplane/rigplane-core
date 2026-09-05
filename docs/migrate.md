@@ -34,17 +34,29 @@ candidate witness before it becomes a tested compatibility claim.
 | WEB1 | Root JSON `txFreqMonitor` | Removed; absence is not a measured `false`. |
 | WEB2 | Root JSON `notchFilter` | Select `main.notchFilter` or `sub.notchFilter` explicitly. |
 | WEB3 | HTTP `ptt` ON/OFF command payloads | Migrate to canonical owned momentary PTT or intentional latched TRANSMIT, described below. |
-| WEB4 | HTTP routes, response metadata, WS framing | Retain existing shapes with the WEB1–3 semantic exceptions; HTTP contract version stays independent of the package version. |
+| WEB4 | HTTP routes, response metadata, WS framing | Retain existing shapes with the WEB1–3 semantic exceptions and application-token removal below; HTTP contract version stays independent of the package version. |
 | EXT1 | Extension command boolean | Report the actual client transport boolean through the canonical intent path; false may leave an offline command queued. |
 | EXT2 | Permissive extension command/parameter dispatch | Use strict non-TX intents with required parameters and receiver. |
 | EXT3 | Host numeric `1`, manifest `host_api: "1.0"` or omission | Host `2`, explicit `host_api: "2.0"`; reject old or omitted declarations. Manifest schema remains `version: 1`. |
 | CLI1 | `ptt on && sleep 10 && ptt off` | Use `rigplane ptt --for 10`; the command owns the hold and release. |
-| CLI2 | Other CLI inventory, entrypoints, Python/dependencies/extras | Preserve audited inventory; package metadata changes to the beta version. |
+| CLI2 | Other CLI inventory, entrypoints, Python/dependencies/extras | Preserve audited inventory except the retired application-token options below; package metadata changes to the beta version. |
 | CFG1 | Tone-capable custom profile without a table | Declare a supported named `[ctcss]` table. |
 | WIRE1 | Empty successful response after raw timeout | Handle `RPRT -5` as an error. |
 | WIRE2 | Raw `w` in read-only mode | Handle `RPRT -22`, including for raw reads; use structured reads. |
 | WIRE3 | General rigctld framing and structured operations | Preserve audited wire shape; representative fake-provider witnesses remain required. |
 | OUT1 | Private internals, arbitrary external profiles, blanket 2.x emulation | No compatibility promise; Pro release and external-consumer census are outside this scope. |
+
+## Application-token removal
+
+Remove `--auth-token` and `--auth-token-file` from Core launch commands;
+the parser rejects both retired options. Core HTTP and WebSocket clients
+no longer need a Bearer header or `?token=` query parameter. The stable API
+registry keeps contract version 1 and reports `auth: "none"`.
+
+Sources: `src/rigplane/cli/__init__.py: _reject_retired_auth_option`;
+`src/rigplane/web/api_contract.py: WEB_API_CONTRACT_VERSION`,
+`STABLE_HTTP_ENDPOINTS` and `STABLE_WEBSOCKET_ROUTES`;
+`tests/test_web_auth_compare_digest.py: test_http_dispatch_needs_no_application_token`.
 
 ## Python APIs and CTCSS units
 
@@ -297,10 +309,6 @@ from icom_lan import IcomRadio, LanBackendConfig, create_radio
 # New canonical form:
 from rigplane import IcomRadio, LanBackendConfig, create_radio
 ```
-
-User data — Web UI panel layouts, theme, auth tokens, memory channels, log
-directories — is migrated **automatically** on first launch. No re-login,
-no reconfigure, nothing to back up.
 
 ## Breaking changes
 
