@@ -6,11 +6,6 @@ export { getAuthHeaders, getAuthToken };
 
 const BASE = '/api/v1';
 
-/** @deprecated Retained for source compatibility; HTTP requests do not throw this error. */
-export class AuthenticationError extends Error {
-  override name = 'AuthenticationError';
-}
-
 async function fetchApiResponse(path: string, signal?: AbortSignal): Promise<Response> {
   signal?.throwIfAborted();
   const res = await fetch(path, { headers: getAuthHeaders(), signal, redirect: 'error' });
