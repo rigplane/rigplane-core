@@ -54,6 +54,77 @@ describe('typed non-PTT radio intents', () => {
     vi.useRealTimers();
   });
 
+  it.each([false, true])('returns transport acceptance %s separately from lifecycle', (transportAccepted) => {
+    harness.sendCommand.mockReturnValue(transportAccepted);
+    const result = intents.dispatchRadioIntentWithResult({
+      id: 'acceptance', name: 'set_freq', params: { freq: 14_074_000, receiver: 0 },
+    });
+    expect(result.transportAccepted).toBe(transportAccepted);
+    expect(result.lifecycle).toMatchObject({ id: 'acceptance', status: 'pending' });
+    expect(result.lifecycle).not.toHaveProperty('confirmedValue');
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(
+      'set_freq', { freq: 14_074_000, receiver: 0 }, 'acceptance',
+    );
+  });
+
+  it('preserves the original dispatch lifecycle return on transport refusal', () => {
+    harness.sendCommand.mockReturnValue(false);
+    const result = intents.dispatchRadioIntent({ id: 'old-caller', name: 'vfo_swap', params: {} });
+    expect(result).toMatchObject({ id: 'old-caller', name: 'vfo_swap', status: 'pending' });
+    expect(result).not.toHaveProperty('lifecycle');
+    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith('vfo_swap', {}, 'old-caller');
+  });
+
+  it.each(['sendCommand', 'dispatchCommand'] as const)('host %s preserves non-TX consumer calls and each transport result', async (method) => {
+    const { createDefaultLocalExtensionHostApi } = await import('$lib/local-extensions/host-api');
+    const api = createDefaultLocalExtensionHostApi();
+    const examples = [
+      ['set_freq', { freq: 14_074_000, receiver: 0 }],
+      ['set_mode', { mode: 'CW', receiver: 1 }],
+      ['set_af_level', { level: 0.5, receiver: 0 }],
+      ['vfo_swap', {}],
+    ] as const;
+    for (const [name, params] of examples) {
+      for (const accepted of [false, true, false]) {
+        harness.sendCommand.mockClear().mockReturnValue(accepted);
+        expect(api[method](name, params)).toBe(accepted);
+        expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, params, expect.any(String));
+        expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
+      }
+    }
+  });
+
+  it('rejects obsolete TX and malformed extension requests before transport dispatch', async () => {
+    const { createDefaultLocalExtensionHostApi } = await import('$lib/local-extensions/host-api');
+    const api = createDefaultLocalExtensionHostApi();
+    for (const [name, params] of [
+      ['unknown', {}], ['ptt', { state: true }], ['ptt', { state: false }],
+      ['ptt_on', {}], ['ptt_off', {}], ['set_af_level', { level: 0.5 }],
+      ['set_freq', { freq: 14_074_000, extra: true }], ['set_freq', { freq: '14074000' }],
+    ] as const) {
+      expect(api.sendCommand(name, params)).toBe(false);
+      expect(api.dispatchCommand(name, params)).toBe(false);
+    }
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it.each(['1.0', undefined])('reports a migration message when loading host API %s', async (host_api) => {
+    const { loadLocalExtensionManifest } = await import('$lib/local-extensions/manifest');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+        version: 1, ...(host_api === undefined ? {} : { host_api }),
+        extensions: [{ id: 'meter', mount: 'floating-overlay', entry: '/local/meter.js' }],
+      }) });
+      expect(await loadLocalExtensionManifest({ fetch })).toBeNull();
+      expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/host_api.*2\.0.*migrat/i));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/PTT.*unsupported/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('sends one exact three-argument envelope with no optimistic side channel', () => {
     const record = intents.dispatchRadioIntent({
       id: 'freq-1',

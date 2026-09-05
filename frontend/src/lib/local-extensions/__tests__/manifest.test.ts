@@ -60,7 +60,7 @@ describe('loadLocalExtensionManifest', () => {
   it('treats unsupported host API versions as no local extensions', async () => {
     const fetch = vi.fn().mockResolvedValue(mockResponse(200, {
       version: 1,
-      host_api: '2.0',
+      host_api: '3.0',
       extensions: [{ id: 'one', mount: 'floating-overlay', entry: '/local/one.js' }],
     }));
 
@@ -80,7 +80,7 @@ describe('loadLocalExtensionManifest', () => {
   it('loads valid same-origin floating overlay extensions', async () => {
     const fetch = vi.fn().mockResolvedValue(mockResponse(200, {
       version: 1,
-      host_api: '1.0',
+      host_api: '2.0',
       extensions: [
         {
           id: 'meter',
@@ -100,7 +100,7 @@ describe('loadLocalExtensionManifest', () => {
 
     expect(manifest).toEqual({
       version: 1,
-      host_api: '1.0',
+      host_api: '2.0',
       extensions: [
         {
           id: 'meter',
@@ -116,9 +116,18 @@ describe('loadLocalExtensionManifest', () => {
 });
 
 describe('parseLocalExtensionManifest', () => {
+  it.each(['1.0', undefined, '3.0', 2, null])('rejects incompatible host API %s', (host_api) => {
+    expect(parseLocalExtensionManifest({
+      version: 1,
+      ...(host_api === undefined ? {} : { host_api }),
+      extensions: [{ id: 'meter', mount: 'floating-overlay', entry: '/local/meter.js' }],
+    })).toBeNull();
+  });
+
   it('drops invalid extension descriptors', () => {
     const manifest = parseLocalExtensionManifest({
       version: 1,
+      host_api: '2.0',
       extensions: [
         { id: 'ok', mount: 'floating-overlay', entry: '/local/ok.js' },
         { id: '', mount: 'floating-overlay', entry: '/local/no-id.js' },
@@ -142,6 +151,7 @@ describe('parseLocalExtensionManifest', () => {
   it('returns null when no valid extensions remain', () => {
     expect(parseLocalExtensionManifest({
       version: 1,
+      host_api: '2.0',
       extensions: [
         { id: 'remote', mount: 'floating-overlay', entry: 'https://example.com/remote.js' },
       ],
