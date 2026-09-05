@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
   import WaterfallCanvas from './WaterfallCanvas.svelte';
   import DxOverlay from './DxOverlay.svelte';
@@ -60,7 +60,9 @@
   // layouts that have no `applyModeDefault()` driver for the shared
   // tuning-step store. `MobileRadioLayout` passes `true`; `RadioLayout`
   // omits it (defaults `false`, toggle shown) because it owns the driver.
-  let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false } = $props();
+  let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, scopeControls }: {
+    hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; scopeControls?: Snippet;
+  } = $props();
 
   const vfoHandlers = getVfoHandlers();
   const filterHandlers = getFilterHandlers();
@@ -569,7 +571,7 @@
       </button>
     </div>
   {:else}
-  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} />
+  <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} />
   {/if}
   <div class="spectrum-with-scales">
     <div class="db-scale">

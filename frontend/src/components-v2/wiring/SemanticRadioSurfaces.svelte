@@ -86,7 +86,8 @@
   interface Props {
     strips?: 'single' | 'dual';
     regions?: boolean;
-    regionContent?: Snippet;
+    regionContent?: Snippet<[Snippet | undefined]>;
+    scopeControlsInRegionContent?: boolean;
     regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
     displayFrameSource?: LcdSpectrumSource;
@@ -113,7 +114,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    strips = 'single', regions = false, regionContent, regionExtras, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
+    strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -1380,6 +1381,10 @@
     {/if}
   {/snippet}
 
+  {#snippet zonedScopeControls()}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBareSurfaces)}
+  {/snippet}
+
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -1454,12 +1459,13 @@
       {#if regionExtras}{@render regionExtras('left')}{/if}
       </div>
       <div class:desktop-controls-center={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
-      {@render zoned(
-        'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
-        allowBareSurfaces,
-      )}
+      {#if !scopeControlsInRegionContent || !regionContent}
+        {@render zonedScopeControls()}
+      {/if}
       {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
-      {#if regionContent}{@render regionContent()}{/if}
+      {#if regionContent}
+        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined)}
+      {/if}
       </div>
       <div class:desktop-controls-right={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
       {#if singleOrder.includes('rxTx')}

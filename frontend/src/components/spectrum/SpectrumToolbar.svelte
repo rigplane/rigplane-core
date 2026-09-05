@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { getTuningStep, adjustTuningStep, isAutoStep, setAutoStep, formatStep } from '../../lib/stores/tuning.svelte';
   import { t } from '$lib/i18n';
   import { type ColorSchemeName } from '../../lib/renderers/waterfall-renderer';
@@ -19,6 +20,23 @@
     name: string;
     layer: string;
     file: string;
+  }
+
+  interface Props {
+    enableAvg?: boolean;
+    enablePeakHold?: boolean;
+    brtLevel?: number;
+    colorScheme?: ColorSchemeName;
+    fullscreen?: boolean;
+    showBandPlan?: boolean;
+    hiddenLayers?: string[];
+    showEiBi?: boolean;
+    scopeDemandOn?: boolean;
+    onScopeDemandChange?: (enabled: boolean) => void;
+    hideSourceControls?: boolean;
+    hideScopeControls?: boolean;
+    hideAutoStepToggle?: boolean;
+    scopeControls?: Snippet;
   }
 
   let {
@@ -91,7 +109,8 @@
      * needs no change; `MobileRadioLayout` passes `true` explicitly.
      */
     hideAutoStepToggle = false,
-  } = $props();
+    scopeControls,
+  }: Props = $props();
 
   const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
 
@@ -372,6 +391,12 @@
     </div>
     {/if}
   {/if}
+  {#if hasCapability('scope') && hideScopeControls && scopeControls}
+    <div class="toolbar-separator"></div>
+    <div class="semantic-scope-controls-host toolbar-group-c">
+      {@render scopeControls()}
+    </div>
+  {/if}
   <div class="toolbar-separator"></div>
   <!-- Group D: Display (neutral wash) -->
   <div class="toolbar-group-d">
@@ -536,6 +561,31 @@
   .toolbar-group-d {
     /* Display only — neutral wash */
     background: rgba(255, 255, 255, 0.02);
+  }
+
+  .semantic-scope-controls-host {
+    min-width: 0;
+    max-width: 100%;
+    height: auto;
+    flex-wrap: wrap;
+  }
+
+  .semantic-scope-controls-host :global(.surface-zone),
+  .semantic-scope-controls-host :global(.semantic-control-panel) { display: contents; }
+
+  .semantic-scope-controls-host :global(.scope-controls-surface) {
+    min-width: 0;
+    max-width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .semantic-scope-controls-host :global(.scope-row),
+  .semantic-scope-controls-host :global(.scope-stepper) {
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .toolbar-separator {
