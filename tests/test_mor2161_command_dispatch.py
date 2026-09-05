@@ -253,10 +253,9 @@ async def test_all_three_drains_execute_the_same_neutral_intent() -> None:
             poller._managed_tx_authority = None  # noqa: SLF001
             await poller._execute_command(intent)  # noqa: SLF001
         else:
-            poller = RigctldClientObservationPoller.__new__(
-                RigctldClientObservationPoller
+            poller = RigctldClientObservationPoller(
+                radio, callback=lambda _: None, medium_interval=1.0, slow_interval=1.0
             )
-            poller._radio = radio  # type: ignore[attr-defined]
             await poller._execute_command(intent)  # noqa: SLF001
         radio.set_repeater_shift.assert_awaited_once_with(direction=3, receiver=1)
 
@@ -388,8 +387,9 @@ async def test_rigctld_drain_rejects_non_admitted_policy_before_radio_invocation
         radio, "set_repeater_shift", {"direction": 3}, source="http"
     )
     _install_non_admitted_descriptor(monkeypatch)
-    poller = RigctldClientObservationPoller.__new__(RigctldClientObservationPoller)
-    poller._radio = radio  # type: ignore[attr-defined]
+    poller = RigctldClientObservationPoller(
+        radio, callback=lambda _: None, medium_interval=1.0, slow_interval=1.0
+    )
 
     with pytest.raises(CommandError, match="is not admitted"):
         await poller._execute_command(intent)  # noqa: SLF001

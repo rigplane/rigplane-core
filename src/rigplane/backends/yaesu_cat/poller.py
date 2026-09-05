@@ -631,12 +631,25 @@ class YaesuCatPoller:
         self._cancel_deferred_entry("serial reconnect")
         advance = self._advance_provider_generation
         provider_generation = None if advance is None else advance()
+        reconnect_generation = self._captured_provider_generation()
+        previous_writer = getattr(transport, "_writer", None)
         try:
             logger.warning("YaesuCatPoller: triggering auto-reconnect")
             self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
             self._publish_unknown_ptt(provider_generation)
             await transport.reconnect()
+            composition = getattr(self._radio, "_managed_tx_composition", None)
+            writer = getattr(transport, "_writer", None)
+            if (
+                composition is not None
+                and transport is getattr(self._radio, "_transport", None)
+                and getattr(transport, "connected", False) is True
+                and writer is not None
+                and writer is not previous_writer
+                and self._provider_generation_is_current(reconnect_generation)
+            ):
+                await composition.transport_ready(writer)
             logger.info("YaesuCatPoller: reconnected successfully")
         except Exception:
             logger.error("YaesuCatPoller: reconnect failed", exc_info=True)

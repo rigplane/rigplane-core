@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -44,6 +45,18 @@ from rigplane.backends.yaesu_cat.transport import (
 )
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_state import RadioState
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
+from rigplane.runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+    ManagedTxIntentKind,
+    ManagedTxOutcome,
+)
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import (
     CommandQueue,
@@ -60,6 +73,167 @@ from rigplane.web.radio_poller import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class _ReconnectActuator:
+    def __init__(self) -> None:
+        self.operations: list[
+            tuple[EffectToken, ActuationOperation | AbortOperation]
+        ] = []
+        self.currency: list[Callable[[], bool]] = []
+        self.on_started = asyncio.Event()
+        self.finish_on = asyncio.Event()
+        self.finish_on.set()
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        assert is_current()
+        self.operations.append((token, operation))
+        self.currency.append(is_current)
+        if operation is ActuationOperation.PTT_ON:
+            self.on_started.set()
+            await self.finish_on.wait()
+        return ActuationResult.ACCEPTED
+
+
+async def _managed_reconnect_path(tmp_path: Path):
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    transport = radio._transport
+    transport._connected = True
+    transport._writer = SimpleNamespace(close=lambda: None, wait_closed=AsyncMock())
+    for _ in range(5):
+        transport._stats.record_error("fixture disconnect")
+
+    async def connect() -> None:
+        transport._writer = SimpleNamespace(close=lambda: None, wait_closed=AsyncMock())
+        transport._connected = True
+        transport._stats.record_success()
+
+    transport.connect = AsyncMock(side_effect=connect)
+    actuator = _ReconnectActuator()
+    composition = ManagedTxComposition(actuator, config_path=tmp_path / "tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    await composition.transport_ready(radio)
+    await composition.bind_state_store(store)
+    composition.transport_ready = AsyncMock(wraps=composition.transport_ready)
+    poller = radio.create_observation_poller(callback=lambda observations: None)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    poller.bind_managed_tx_authority(composition.authority)
+    return radio, poller, store, composition, actuator
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_on", [False, True])
+async def test_managed_reconnect_restores_current_provider_without_replaying_on(
+    tmp_path: Path,
+    late_on: bool,
+) -> None:
+    radio, poller, store, composition, actuator = await _managed_reconnect_path(
+        tmp_path
+    )
+    authority = composition.authority
+    try:
+        if late_on:
+            actuator.finish_on.clear()
+        old = await authority.submit_ptt(True, "old-owner")
+        assert old.outcome is ManagedTxOutcome.ACCEPTED
+        await asyncio.wait_for(actuator.on_started.wait(), 1)
+        if not late_on:
+            await old.wait_settlement()
+        original_connect = radio._transport.connect
+
+        async def connect() -> None:
+            await original_connect()
+            before = await authority.snapshot()
+            assert before.provider_generation is None
+            assert before.state.release_required
+            actuator.finish_on.set()
+            await old.wait_settlement()
+            assert (await authority.snapshot()).state.release_required
+
+        radio._transport.connect = AsyncMock(side_effect=connect)
+        old_currency = actuator.currency[0]
+        for generation in (1, 2):
+            for _ in range(5):
+                radio._transport._stats.record_error("fixture disconnect")
+            radio._transport._last_reconnect = 0
+            await poller._try_reconnect()
+
+            composition.transport_ready.assert_awaited_with(radio._transport._writer)
+            assert composition.transport_ready.await_count == generation
+            composition.validate_state_store(store)
+            snapshot = await authority.snapshot()
+            assert store.provider_generation == generation
+            assert snapshot.provider_generation == generation + 1
+            assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
+            assert not snapshot.state.release_required
+            assert not old_currency()
+            assert (
+                sum(op is ActuationOperation.PTT_ON for _, op in actuator.operations)
+                == generation
+            )
+            assert actuator.operations[-1][1] is ActuationOperation.FORCE_RECEIVE
+            assert actuator.operations[-1][0].provider_generation == generation + 1
+
+            assert (
+                await authority.ptt_down(f"fresh-{generation}")
+                is ManagedTxOutcome.ACCEPTED
+            )
+            assert actuator.operations[-1][1] is ActuationOperation.PTT_ON
+            assert actuator.operations[-1][0].provider_generation == generation + 1
+    finally:
+        actuator.finish_on.set()
+        termination = asyncio.Event()
+        termination.set()
+        await composition.shutdown(termination)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["failure", "provider", "transport", "cooldown"])
+async def test_managed_reconnect_does_not_publish_failed_or_stale_readiness(
+    tmp_path: Path, boundary: str
+) -> None:
+    radio, poller, store, composition, actuator = await _managed_reconnect_path(
+        tmp_path
+    )
+    transport = radio._transport
+    original_connect = transport.connect
+
+    async def connect() -> None:
+        if boundary == "failure":
+            raise CatTransportError("reconnect failed")
+        await original_connect()
+        if boundary == "provider":
+            store.begin_provider_generation()
+        elif boundary == "transport":
+            radio._transport = SimpleNamespace(stats=SimpleNamespace(reconnects=0))
+
+    transport.connect = AsyncMock(side_effect=connect)
+    if boundary == "cooldown":
+        transport._last_reconnect = time.monotonic()
+    try:
+        await poller._try_reconnect()
+        composition.transport_ready.assert_not_awaited()
+        assert (await composition.authority.snapshot()).provider_generation is None
+        assert (
+            await composition.authority.ptt_down("fresh") is ManagedTxOutcome.REJECTED
+        )
+        assert not actuator.operations
+        with pytest.raises(RuntimeError, match="not current"):
+            composition.validate_state_store(store)
+    finally:
+        termination = asyncio.Event()
+        termination.set()
+        await composition.shutdown(termination)
 
 
 def _canonical_ptt_path(
