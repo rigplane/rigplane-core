@@ -111,6 +111,77 @@ describe('meters TX truth comes from the App TX authority (R9 / MOR-1235)', () =
   });
 });
 
+describe('target meter display provenance (MOR-2359)', () => {
+  const targets = [['power', 'powerMeter'], ['swr', 'swrMeter'], ['alc', 'alcMeter']] as const;
+  const observed = { ...fresh, lastObservedMonotonic: 310658.42975425 };
+  const capabilities = caps({ stateContractVersion: 1, providerGeneration: 1 });
+  function stateWith(status: Partial<FieldStatus> = {}): ServerState {
+    return meterState({
+      stateContractVersion: 1, providerGeneration: 1,
+      fieldStatus: { ...meterState().fieldStatus,
+        ...Object.fromEntries(targets.map(([, path]) => [path, { ...observed, ...status }])),
+      },
+    });
+  }
+  it.each(targets)('projects current/stale/never-observed independently for %s', (meter, path) => {
+    const state = stateWith();
+    expect(model(state, capabilities, TX).meters![meter].display).toEqual({ state: 'current', value: state[path] });
+    for (const status of [{ freshness: 'stale' }, { availability: 'stale' }] as const) {
+      expect(model(stateWith(status), capabilities, TX).meters![meter].display).toEqual({ state: 'stale', value: state[path] });
+    }
+    expect(model(stateWith({ observed: false }), capabilities, TX).meters![meter].display)
+      .toEqual({ state: 'unknown', reason: 'not-observed' });
+    expect(model({ ...state, fieldStatus: {} }, capabilities, TX).meters![meter].display)
+      .toEqual({ state: 'unknown', reason: 'not-observed' });
+  });
+  it.each(targets)('preserves valid zero and rejects invalid %s scalars', (meter, path) => {
+    expect(model({ ...stateWith(), [path]: 0 }, capabilities, TX).meters![meter].display)
+      .toEqual({ state: 'current', value: 0 });
+    for (const value of [NaN, Infinity, null, '1', false]) {
+      expect(model({ ...stateWith(), [path]: value }, capabilities, TX).meters![meter].display)
+        .toEqual({ state: 'unknown', reason: 'invalid-value' });
+    }
+    expect(model({ ...stateWith(), [path]: undefined }, capabilities, TX).meters![meter].display)
+      .toEqual({ state: 'unsupported' });
+    expect(model(stateWith(), { ...capabilities, tx: false }, TX).meters![meter].display)
+      .toEqual({ state: 'unsupported' });
+  });
+  it('requires observation markers and matching identity but not active receiver freshness', () => {
+    for (const lastObservedMonotonic of [null, undefined, NaN, Infinity, -1]) {
+      expect(model(stateWith({ lastObservedMonotonic }), capabilities, TX).meters!.power.display)
+        .toEqual({ state: 'unknown', reason: 'invalid-evidence' });
+    }
+    for (const providerGeneration of [undefined, 2]) {
+      expect(model({ ...stateWith(), providerGeneration }, capabilities, TX).meters!.power.display)
+        .toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+    }
+    const state = stateWith();
+    state.fieldStatus!.active = { ...stale, observed: false };
+    expect(model(state, capabilities, TX).meters!.power.display).toEqual({ state: 'current', value: 0.6 });
+  });
+  it('changes no strict meter facts across RF authority states', () => {
+    for (const tx of [RX, TX, { radioTx: 'off', txRisk: 'uncertain' }, { radioTx: 'unknown', txRisk: 'none' }] as const) {
+      for (const status of [{}, { freshness: 'stale', availability: 'stale' }, { observed: false }] as const) {
+        const state = stateWith(status);
+        const meters = model(state, capabilities, tx).meters!;
+        const relevant = meters.rfState !== 'receiving';
+        for (const [meter, path] of targets) {
+          const { display, ...strict } = meters[meter];
+          expect(display).toBeDefined();
+          const operational = !('freshness' in status && status.freshness === 'stale');
+          expect(strict).toEqual({
+            reading: operational ? { status: 'known', value: state[path] } : { status: 'unknown' },
+            availability: { structural: true, operational }, relevant,
+          });
+        }
+        for (const meter of ['signal', 'compression', 'drainVoltage', 'drainCurrent'] as const) {
+          expect(meters[meter]).not.toHaveProperty('display');
+        }
+      }
+    }
+  });
+});
+
 describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', () => {
   it('emits no meters when capabilities are absent', () => {
     expect(toRadioViewModel(meterState(), null, RX)).toBeNull();
@@ -160,6 +231,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     const meters = model(meterState({ alcMeter: undefined }), caps(), TX).meters!;
     expect(meters.alc).toEqual({
       reading: { status: 'unknown' }, availability: { structural: false, operational: false }, relevant: true,
+      display: { state: 'unsupported' },
     });
   });
 
@@ -169,6 +241,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     }), caps(), TX).meters!;
     expect(meters.swr).toEqual({
       reading: { status: 'unknown' }, availability: { structural: true, operational: false }, relevant: true,
+      display: { state: 'unknown', reason: 'identity-unresolved' },
     });
   });
 
