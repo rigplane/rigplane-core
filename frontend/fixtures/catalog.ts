@@ -22,8 +22,9 @@ import {
   IDLE_TX, type AudioRuntimeState, type ModGuardProps, type TxSnapshot,
 } from './harness-state';
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
-const stale = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale' };
+// Synthetic observation provenance for these fixtures, not a radio measurement.
+const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 0 };
+const stale = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale', lastObservedMonotonic: 0 };
 
 type FieldStatusMap = Record<string, unknown>;
 const statuses = (paths: readonly string[], entry: unknown = fresh): FieldStatusMap =>
@@ -43,6 +44,7 @@ function mainSubState(active: 'MAIN' | 'SUB' = 'MAIN', entry: unknown = fresh): 
   const slot = (hz: number) => ({ freqHz: hz, mode: 'USB', filterNum: 1 });
   const receiver = (hz: number) => ({ vfoA: slot(hz), vfoB: slot(hz + 30000), activeSlot: 'A' });
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active, split: true, dualWatch: true, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(21295000),
@@ -73,6 +75,7 @@ function abSharedState(active: 'MAIN' | 'SUB' = 'SUB'): ServerState {
     'sub.freqHz', 'sub.mode', 'sub.filter'];
   const receiver = (hz: number) => ({ freqHz: hz, mode: 'CW', filter: 1 });
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active, split: false, dualWatch: true, ptt: false,
     txTarget: { status: 'known', receiver: active, slot: null, frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14250000),
@@ -97,6 +100,7 @@ function abSharedSubUnobserved(): ServerState {
 function singleState(): ServerState {
   const paths = [...RADIO_WIDE, 'main.freqHz', 'main.mode', 'main.filter'];
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14195000 },
     main: { freqHz: 14195000, mode: 'USB', filter: 1 },
@@ -110,6 +114,7 @@ function abState(): ServerState {
     'main.vfoA.freqHz', 'main.vfoA.mode', 'main.vfoA.filterNum',
     'main.vfoB.freqHz', 'main.vfoB.mode', 'main.vfoB.filterNum'];
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: true, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14195000 },
     main: {

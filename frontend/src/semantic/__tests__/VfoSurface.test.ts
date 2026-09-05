@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
+import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
 import {
@@ -27,6 +28,9 @@ import {
 } from '../radio-view-model';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
+import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
 import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
 import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
 
@@ -42,6 +46,135 @@ function mountSurface(props: ComponentProps<typeof VfoSurface>): HTMLElement {
   components.push(component);
   return target;
 }
+
+describe('VFO qualified display continuity', () => {
+  function view(state: 'current' | 'stale' | 'unknown'): RadioViewModel {
+    const base = topologyFixtures['1/single'];
+    const display = {
+      frequencyHz: state === 'unknown' ? { state, reason: 'not-observed' as const } : { state, value: 14250000 },
+      mode: state === 'unknown' ? { state, reason: 'not-observed' as const } : { state, value: 'USB' },
+      filter: state === 'unknown' ? { state, reason: 'not-observed' as const } : { state, value: 'FIL1' },
+    };
+    return { ...base, vfos: base.vfos.map((vfo) => ({ ...vfo, display,
+      frequencyHz: state === 'current' ? 14250000 : null,
+      mode: state === 'current' ? 'USB' : null, filter: state === 'current' ? 'FIL1' : null,
+    })) };
+  }
+  it.each(['semantic', 'sdr', 'standard'] as const)('%s retains primitive/digits/cue through freshness-only transitions', (appearance) => {
+    const model = writable(view('current'));
+    const live = fromStore(model);
+    const onTuneFrequency = vi.fn();
+    const root = mountSurface({ get viewModel() { return live.current; }, appearance, onTuneFrequency });
+    const primitive = root.querySelector('.freq')!;
+    const digits = [...primitive.querySelectorAll('.digit')];
+    const cue = root.querySelector('[data-vfo-stale-cue]')!;
+    expect(cue).not.toBeNull();
+    digits.at(-1)!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    for (const state of ['stale', 'current'] as const) {
+      model.set(view(state)); flushSync();
+      expect(root.querySelector('.freq')).toBe(primitive);
+      expect(primitive.querySelectorAll('.digit')).toHaveLength(digits.length);
+      digits.forEach((digit, index) => expect(primitive.querySelectorAll('.digit')[index]).toBe(digit));
+      expect(root.querySelector('[data-vfo-stale-cue]')).toBe(cue);
+      expect(primitive.textContent?.replace(/\s/g, '')).toBe('14.250.000');
+      expect(root.querySelector('.vfo-mode')!.textContent).toBe('USB / FIL1');
+      expect(primitive.getAttribute('aria-disabled')).toBe(String(state === 'stale'));
+      expect(cue.getAttribute('aria-hidden')).toBe(String(state !== 'stale'));
+      expect(cue.textContent).not.toBe('');
+      const wheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true, bubbles: true });
+      digits.at(-1)!.dispatchEvent(wheel);
+      primitive.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      flushSync();
+      expect(wheel.defaultPrevented).toBe(false);
+      expect(onTuneFrequency).not.toHaveBeenCalled();
+    }
+    digits.at(-1)!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    digits.at(-1)!.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14250001);
+  });
+  it('renders first stale, unknown, unsupported and readonly slots without fabricating frequency', () => {
+    const root = mountSurface({ viewModel: view('stale') });
+    expect(root.querySelector('.vfo-freq')!.textContent?.trim()).toBe('14.250.000');
+    expect(root.querySelector('.digit')).toBeNull();
+    const unknown = mountSurface({ viewModel: view('unknown'), onTuneFrequency: vi.fn() });
+    expect(unknown.querySelector('.freq')!.textContent?.trim()).toBe('—');
+    expect(unknown.querySelector('.digit')).toBeNull();
+    const unsupported = view('current');
+    unsupported.vfos = unsupported.vfos.map((vfo) => ({ ...vfo, display: { frequencyHz: { state: 'unsupported' }, mode: { state: 'unsupported' }, filter: { state: 'unsupported' } } }));
+    expect(mountSurface({ viewModel: unsupported }).querySelector('.vfo-freq')!.textContent?.trim()).toBe('—');
+  });
+  it.each(['en-US', 'ru-RU'] as const)('exposes the localized stale reason with a reserved non-color marker in %s', (locale) => {
+    setLocale(locale);
+    try {
+      const root = mountSurface({ viewModel: view('stale'), onTuneFrequency: vi.fn() });
+      const cue = root.querySelector<HTMLElement>('[data-vfo-stale-cue]')!;
+      expect(cue.querySelector('[aria-hidden="true"]')!.textContent).toBe('†');
+      expect(cue.querySelector('.sr-only')!.textContent).toBe(cue.title);
+      expect(cue.title).toBe(locale === 'en-US' ? 'the last reading is too old to trust'
+        : 'последние данные устарели и не заслуживают доверия');
+      expect(root.querySelector('[data-vfo-freq]')!.getAttribute('aria-describedby')).toBe(cue.id);
+    } finally { _resetLocale(); }
+  });
+  it('keeps pending feedback separate and computes renewed gestures from strict frequency', () => {
+    const onTuneFrequency = vi.fn();
+    const root = mountSurface({ viewModel: view('current'), onTuneFrequency, pendingFrequencyHz: { MAIN: 14300000 } });
+    const primitive = root.querySelector('.freq')!;
+    expect(primitive.getAttribute('data-freq-status')).toBe('pending');
+    expect(primitive.textContent?.replace(/\s/g, '')).toContain('14.300.000');
+    const digit = primitive.querySelectorAll('.digit').item(7);
+    digit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    primitive.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14250001);
+  });
+  it('the parent callback independently rejects a stale/null strict frequency', () => {
+    const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
+    const body = source.match(/function tuneFrequency\(vfo: VfoViewModel, frequencyHz: number\): void \{([\s\S]*?)\n  \}/)![1];
+    const invoke = new Function('disabled', 'vfo', 'frequencyHz', 'onTuneFrequency', body);
+    const tune = vi.fn();
+    invoke(false, view('stale').vfos[0], 15000000, tune);
+    invoke(true, view('current').vfos[0], 15000000, tune);
+    invoke(false, { ...view('current').vfos[0], isActiveSlot: false }, 15000000, tune);
+    expect(tune).not.toHaveBeenCalled();
+    invoke(false, view('current').vfos[0], 14250001, tune);
+    expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 14250001);
+  });
+  it('a stale ancestor disables the local readout while a fresh leaf keeps its strict frequency', () => {
+    const caps = { receivers: 1, vfoScheme: 'single', capabilities: [],
+      stateContractVersion: 1, providerGeneration: 1 } as unknown as Capabilities;
+    const state = { stateContractVersion: 1, providerGeneration: 1, active: 'MAIN',
+      main: { freqHz: 14250000, mode: 'USB', filter: 1 },
+      fieldStatus: Object.fromEntries(['main', 'main.freqHz', 'main.mode', 'main.filter'].map((path) => [path, {
+        observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 0,
+      }])),
+    } as unknown as ServerState;
+    const model = writable(toRadioViewModel(state, caps)!);
+    const live = fromStore(model);
+    const onTuneFrequency = vi.fn();
+    const root = mountSurface({ get viewModel() { return live.current; }, onTuneFrequency });
+    const primitive = root.querySelector('.freq')!;
+    const digit = primitive.querySelectorAll('.digit').item(7);
+    digit.dispatchEvent(new MouseEvent('click', { bubbles: true })); flushSync();
+    state.fieldStatus!.main.freshness = 'stale';
+    const staleView = toRadioViewModel(state, caps)!;
+    expect(staleView.vfos[0].frequencyHz).toBe(14250000);
+    expect(staleView.vfos[0].display?.frequencyHz.state).toBe('stale');
+    model.set(staleView); flushSync();
+    expect(root.querySelector('.freq')).toBe(primitive);
+    digit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    primitive.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+    expect(primitive.getAttribute('aria-disabled')).toBe('true');
+    state.fieldStatus!.main.freshness = 'fresh';
+    model.set(toRadioViewModel(state, caps)!); flushSync();
+    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onTuneFrequency).not.toHaveBeenCalled();
+    digit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14250001);
+  });
+});
 
 beforeEach(() => {
   components = [];

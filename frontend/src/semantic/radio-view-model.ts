@@ -67,6 +67,11 @@ export interface VfoViewModel {
   frequencyHz: number | null;
   mode: string | null;
   filter: string | null;
+  readonly display?: {
+    readonly frequencyHz: DisplayObservation<number>;
+    readonly mode: DisplayObservation<string>;
+    readonly filter: DisplayObservation<string>;
+  };
   /** The ACTIVE RECEIVER's active VFO — globally unique across the radio. */
   isActive: boolean;
   /**
@@ -1280,7 +1285,7 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
   const v = record(value, path);
   exactKeys(
     v,
-    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget'],
+    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget', 'display'],
     path,
   );
   return {
@@ -1293,6 +1298,17 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
     isActive: bool(v.isActive, `${path}.isActive`),
     isActiveSlot: bool(v.isActiveSlot, `${path}.isActiveSlot`),
     isTxTarget: bool(v.isTxTarget, `${path}.isTxTarget`),
+    ...(v.display !== undefined ? { display: validateVfoDisplay(v.display, `${path}.display`) } : {}),
+  };
+}
+
+function validateVfoDisplay(value: unknown, path: string): NonNullable<VfoViewModel['display']> {
+  const v = record(value, path);
+  exactKeys(v, ['frequencyHz', 'mode', 'filter'], path);
+  return {
+    frequencyHz: validateDisplayObservation(v.frequencyHz, `${path}.frequencyHz`, num),
+    mode: validateDisplayObservation(v.mode, `${path}.mode`, str),
+    filter: validateDisplayObservation(v.filter, `${path}.filter`, str),
   };
 }
 

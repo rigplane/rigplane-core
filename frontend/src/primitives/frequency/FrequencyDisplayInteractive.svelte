@@ -14,7 +14,10 @@
      * +15.7 MHz — a TX-out-of-band hazard). `freq` must never be sourced
      * from `pendingDisplayHz` — that is precisely the bug.
      */
-    freq: number;
+    freq: number | null;
+    displayHz?: number | null;
+    disabled?: boolean;
+    contextKey?: string;
     compact?: boolean;
     active?: boolean;
     receiver?: 'main' | 'sub';
@@ -61,6 +64,9 @@
 
   let {
     freq,
+    displayHz,
+    disabled = false,
+    contextKey,
     compact = false,
     active = true,
     receiver = 'main',
@@ -88,14 +94,23 @@
 
   let selectedDigitIndex = $state<number | null>(null);
   let hoveredDigitIndex = $state<number | null>(null);
+  let inert = $derived(disabled || freq === null || !Number.isFinite(freq));
+  $effect(() => {
+    void inert;
+    void contextKey;
+    void receiver;
+    selectedDigitIndex = null;
+    hoveredDigitIndex = null;
+  });
 
   let pending = $derived(pendingDisplayHz !== null);
-  // RENDER off the pending target when present — `freq` (confirmed) stays
-  // untouched by this and is read ONLY inside the gesture handlers below.
-  let allDigits = $derived(splitFrequencyToDigits(pendingDisplayHz ?? freq));
+  // Pending and historical readouts never replace the strict arithmetic input.
+  let shownFrequency = $derived(pendingDisplayHz ?? (displayHz === undefined ? freq : displayHz));
+  let allDigits = $derived(shownFrequency === null ? [] : splitFrequencyToDigits(shownFrequency));
   let groups = $derived(groupDigitsForDisplay(allDigits));
 
   function handleWheel(digit: DigitInfo, event: WheelEvent) {
+    if (inert || freq === null) return;
     // MOR-1639: scrolling over a VFO readout is ordinary page navigation
     // until the operator deliberately picks THIS digit. Do not consume an
     // unarmed event: that both preserves page scrolling and guarantees no
@@ -110,11 +125,13 @@
   }
 
   function handleDigitClick(digit: DigitInfo, event: MouseEvent) {
+    if (inert) return;
     event.stopPropagation();
     selectedDigitIndex = digit.digitIndex;
   }
 
   function handleKeyDown(event: KeyboardEvent) {
+    if (inert || freq === null) return;
     if (selectedDigitIndex === null) return;
     const digit = allDigits.find(d => d.digitIndex === selectedDigitIndex);
     if (!digit) return;
@@ -130,6 +147,7 @@
   }
 
   function handleDigitEnter(digit: DigitInfo) {
+    if (inert) return;
     hoveredDigitIndex = digit.digitIndex;
   }
 
@@ -154,9 +172,13 @@
   data-vfo-freq={vfoFreqHook ? '' : undefined}
   data-vfo-active={vfoFreqHook ? active : undefined}
   aria-describedby={pending && pendingAnnouncement ? pendingId : undefined}
+  aria-disabled={inert}
   style={Object.entries(cssVars).map(([k, v]) => `${k}:${v}`).join(';')}
-  tabindex="0" role="group" aria-label="Frequency display" onkeydown={handleKeyDown}
+  tabindex={inert ? -1 : 0} role="group" aria-label="Frequency display" onkeydown={handleKeyDown}
 >
+  {#if shownFrequency === null}
+    <span>—</span>
+  {:else}
   {#each groups.mhz as digit}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -198,6 +220,7 @@
       onmouseleave={handleDigitLeave}
     >{digit.char}</span>
   {/each}
+  {/if}
   {#if pending && pendingAnnouncement}
     <span id={pendingId} class="sr-only">{pendingAnnouncement}</span>
   {/if}
@@ -243,6 +266,8 @@
   .digit:hover {
     color: var(--freq-hover-color, var(--v2-text-white, #ffffff));
   }
+
+  .freq[aria-disabled='true'] .digit { cursor: default; }
 
   .digit.hovered::after {
     content: '';

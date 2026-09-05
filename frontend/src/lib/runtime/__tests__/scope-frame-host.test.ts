@@ -10,10 +10,16 @@ function channel() {
   const sessions = new Set<(value: { state: string; epoch: number }) => void>();
   let state = 'disconnected';
   let epoch = 0;
+  function transition(next: string) {
+    if (next === 'connected' && state !== 'connected') epoch += 1;
+    state = next;
+    for (const handler of [...states]) handler(next);
+    for (const handler of [...sessions]) handler({ state: next, epoch });
+  }
   return {
     get state() { return state; },
     get sessionEpoch() { return epoch; },
-    connect: vi.fn(), disconnect: vi.fn(),
+    connect: vi.fn(() => transition('connecting')), disconnect: vi.fn(() => transition('disconnected')),
     onBinary(handler: (buffer: ArrayBuffer) => void) {
       binary.add(handler); return () => { binary.delete(handler); };
     },
@@ -24,12 +30,8 @@ function channel() {
       sessions.add(handler); return () => { sessions.delete(handler); };
     },
     fire(buffer: ArrayBuffer) { for (const handler of [...binary]) handler(buffer); },
-    transition(next: string) {
-      if (next === 'connected' && state !== 'connected') epoch += 1;
-      state = next;
-      for (const handler of [...states]) handler(next);
-      for (const handler of [...sessions]) handler({ state: next, epoch });
-    },
+    transition,
+    retainBinary: () => [...binary][0],
     counts: () => [binary.size, states.size, sessions.size],
   };
 }
@@ -156,24 +158,26 @@ describe('ScopeFrameHost MOR-2326 lifecycle', () => {
     host.dispose();
   });
 
-  it('retires provider receipts, rejects old callbacks, and recovers on re-acquisition', async () => {
+  it('retires provider receipts, rejects old callbacks, and recovers under the original handle', async () => {
     const { channels, controller, host } = rig();
     host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 1 });
-    let handle = await controller.hardwareScopeDriver.start();
+    const handle = await controller.hardwareScopeDriver.start();
     channels.scope.transition('connected');
     const updates = vi.fn();
     host.subscribePresentation(updates);
     channels.scope.fire(frame());
     const original = updates.mock.lastCall![0];
+    const retired = channels.scope.retainBinary();
     host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 2 });
     expect(updates.mock.lastCall![0]).toMatchObject({
       envelope: null, authority: { providerGeneration: 2 }, resolution: { state: 'ghost' },
     });
     channels.scope.fire(frame());
     expect(host.snapshotPresentation().envelope).toBeNull();
-    await controller.hardwareScopeDriver.stop(handle);
-    handle = await controller.hardwareScopeDriver.start();
-    channels.scope.transition('reconnecting');
+    retired(frame());
+    expect(host.snapshotPresentation().envelope).toBeNull();
+    expect(channels.scope.connect).toHaveBeenCalledTimes(2);
+    expect(channels.scope.disconnect).toHaveBeenCalledTimes(1);
     channels.scope.transition('connected');
     channels.scope.fire(frame());
     const renewed = updates.mock.lastCall![0];
@@ -181,6 +185,8 @@ describe('ScopeFrameHost MOR-2326 lifecycle', () => {
     expect(renewed.envelope.providerGeneration).toBe(2);
     expect(renewed.envelope.acceptedSequence).toBeGreaterThan(original.envelope.acceptedSequence);
     expect(renewed.envelope.transportEpoch).toBeGreaterThan(original.envelope.transportEpoch);
+    retired(frame());
+    expect(host.snapshotPresentation()).toEqual(renewed);
     channels.scope.fire(new ArrayBuffer(16));
     expect(updates.mock.lastCall![0].resolution.state).toBe('ghost');
     expect(original.resolution.state).toBe('live');

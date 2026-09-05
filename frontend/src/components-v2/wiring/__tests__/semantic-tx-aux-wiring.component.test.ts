@@ -163,7 +163,7 @@ import {
   ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
 } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 0 };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** Every txAux raw field the MOR-1244 adapter reads, all observed fresh. */
@@ -190,6 +190,7 @@ function liveState(withTxAux: boolean): ServerState {
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1,
   });
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
@@ -199,6 +200,7 @@ function liveState(withTxAux: boolean): ServerState {
 }
 
 const liveCaps = (withTxAux: boolean): Capabilities => ({
+  stateContractVersion: 1, providerGeneration: 1,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: withTxAux
     ? ['audio', 'tx', 'dual_rx', 'vox', 'compressor', 'monitor', 'tuner', 'drive_gain']
@@ -324,9 +326,10 @@ describe('the txAux surface mounts only when the view model carries the group', 
    * RECEIVER instead of per radio. MAIN B and SUB B keep their text nodes — the
    * intra-receiver hazard B1 found stays closed.
    */
-  const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span '
-    + 'div span span span button div span span div span span span span span span span span span span span button '
-    + 'div span span span button div section header strong div div div '
+  // Four VFO tiles now reserve a cue container, marker and accessible reason.
+  const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span span span span '
+    + 'div span span span span span span button div span span div span span span span span span span span span span span span span span button '
+    + 'div span span span span span span button div section header strong div div div '
     + 'section header strong div div div section div span '
     + 'div button button div button button p span span section p span span span p div button button '
     + 'ul section div button button button label span input output div button button button output '
@@ -346,6 +349,12 @@ describe('the txAux surface mounts only when the view model carries the group', 
     h.caps = liveCaps(false);
     render();
     expect(testids()).toEqual(DEFAULT_PATH_TESTIDS);
+    const cues = target.querySelectorAll('[data-vfo-stale-cue]');
+    expect(cues).toHaveLength(4);
+    for (const cue of cues) {
+      expect(cue.children).toHaveLength(2);
+      expect(cue.getAttribute('aria-hidden')).toBe('true');
+    }
     expect(outline()).toBe(DEFAULT_PATH_OUTLINE);
   });
 

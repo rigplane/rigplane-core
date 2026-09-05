@@ -116,6 +116,58 @@ for (const spec of COCKPIT) {
   });
 }
 
+/** MOR-2364: real line boxes catch phone wrapping even if a PNG is re-pinned. */
+test('VFO phone cue preserves one-line fit and freshness geometry', async ({ page }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/fixtures/index.html?fixture=topology-2-main-sub&theme=v2');
+  await page.waitForSelector('body[data-harness-ready="true"]');
+  await page.evaluate(() => document.fonts.ready);
+  const result = await page.evaluate(() => {
+    const tiles = [...document.querySelectorAll<HTMLElement>('[data-vfo-tile]')];
+    const cues = tiles.map((tile) => tile.querySelector<HTMLElement>('[data-vfo-stale-cue]')!);
+    const rect = (el: Element) => {
+      const { x, y, width, height } = el.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    const geometry = () => tiles.map((tile) => ({ tile: rect(tile),
+      content: [...tile.children].filter((el) => !el.matches('[data-vfo-stale-cue]')).map(rect),
+    }));
+    const lineCounts = () => tiles.flatMap((tile) =>
+      [...tile.querySelectorAll('.vfo-role, .vfo-mode, .vfo-select')].map((el) => {
+        const range = document.createRange(); range.selectNodeContents(el);
+        return new Set([...range.getClientRects()].map((box) => box.top)).size;
+      }));
+    // Removing the cue models the pre-feature footprint, independent of host fonts.
+    cues.forEach((cue) => { cue.style.display = 'none'; });
+    const withoutCue = geometry();
+    cues.forEach((cue) => { cue.style.display = ''; });
+    const current = geometry(); const lines = lineCounts();
+    // This is a CSS layout probe; component tests drive real observation transitions.
+    cues.forEach((cue) => cue.classList.add('stale'));
+    const stale = geometry();
+    const clear = cues.map((cue, index) => {
+      const marker = cue.firstElementChild!.getBoundingClientRect();
+      const tile = tiles[index].getBoundingClientRect();
+      if (marker.width <= 0 || marker.height <= 0 || marker.left < tile.left
+        || marker.right > tile.right || marker.top < tile.top || marker.bottom > tile.bottom) return false;
+      return [...tiles[index].children].filter((el) => el !== cue).every((el) => {
+        const box = el.getBoundingClientRect();
+        return marker.right <= box.left || marker.left >= box.right
+          || marker.bottom <= box.top || marker.top >= box.bottom;
+      });
+    });
+    const visible = cues.map((cue) => getComputedStyle(cue).visibility);
+    cues.forEach((cue) => cue.classList.remove('stale'));
+    return { withoutCue, current, stale, restored: geometry(), lines, clear, visible };
+  });
+  expect(result.lines.every((count) => count === 1)).toBe(true);
+  expect(result.current).toEqual(result.withoutCue);
+  expect(result.stale).toEqual(result.current);
+  expect(result.restored).toEqual(result.current);
+  expect(result.clear).toEqual([true, true, true, true]);
+  expect(result.visible).toEqual(['visible', 'visible', 'visible', 'visible']);
+});
+
 /** The MOR-1088 mobile PTT pair: idle FAB and a real pointer-held FAB. */
 test('ptt-idle--mobile', async ({ page }) => {
   await page.setViewportSize(PHONE);

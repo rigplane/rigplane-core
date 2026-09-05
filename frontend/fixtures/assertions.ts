@@ -476,7 +476,10 @@ export function runAssertions(
       + `expected ${structurallyZoneless} (vfo/rx-tx surface controls, MOR-1069 exempt)`);
   }
   check('no-negative-tabindex-and-no-aria-hidden-control',
-    controls().every((el) => Number(el.getAttribute('tabindex') ?? '0') >= 0
+    controls().every((el) => (Number(el.getAttribute('tabindex') ?? '0') >= 0
+      // Retained inert readouts keep focus context but are not native Tab stops.
+      || (el.matches('div.freq[role="group"][aria-disabled="true"][tabindex="-1"]')
+        && el.closest('[data-vfo-freq][data-freq-tunable="false"]') !== null))
       && el.closest('[aria-hidden="true"]') === null),
     `${controls().length} focusable controls`);
 

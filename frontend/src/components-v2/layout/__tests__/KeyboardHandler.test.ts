@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { writable, fromStore } from 'svelte/store';
+import type { RadioViewModel } from '../../../semantic/radio-view-model';
 
 import KeyboardHandler from '../KeyboardHandler.svelte';
 import {
@@ -88,6 +90,92 @@ describe('KeyboardHandler', () => {
     expect(onAction).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'tune', params: { direction: 'up', fine: false } }),
     );
+  });
+
+  describe('retained inert frequency readouts (MOR-2364)', () => {
+    const bindings: KeyboardConfig = { ...config, bindings: [
+      ...config.bindings,
+      ...['ArrowDown', 'PageUp', 'PageDown', 'j'].map((key) => ({
+        id: key, section: 'Tuning', sequence: [key], action: 'tune',
+      })),
+      { id: 'leader-tune', section: 'Tuning', sequence: ['g', 't'], action: 'tune' },
+      { id: 'leader-band', section: 'Tuning', sequence: ['g', 'b'], action: 'band_select' },
+      { id: 'band-digit', section: 'Bands', sequence: ['7'], action: 'band_select' },
+      { id: 'band-letter', section: 'Bands', sequence: ['b'], action: 'band_select' },
+      { id: 'stop', section: 'Safety', sequence: ['Escape'], action: 'scan_stop' },
+      { id: 'leader-stop', section: 'Safety', sequence: ['g', 's'], action: 'scan_stop' },
+    ] };
+    function harness(initial: 'current' | 'null' | 'disabled' = 'current') {
+      const base = topologyFixtures['1/single'];
+      const current: RadioViewModel = { ...base, vfos: base.vfos.map((vfo) => ({ ...vfo, display: {
+        frequencyHz: { state: 'current', value: vfo.frequencyHz! },
+        mode: { state: 'current', value: 'USB' }, filter: { state: 'current', value: 'FIL1' },
+      } })) };
+      const initialView = initial === 'null' ? { ...current, vfos: current.vfos.map((vfo) => ({ ...vfo, frequencyHz: null })) } : current;
+      const state = writable({ viewModel: initialView, disabled: initial === 'disabled' });
+      const live = fromStore(state);
+      const target = document.createElement('div'); document.body.appendChild(target);
+      const onTuneFrequency = vi.fn(); const onAction = vi.fn();
+      components.push(mount(VfoSurface, { target, props: { onTuneFrequency,
+        get viewModel() { return live.current.viewModel; }, get disabled() { return live.current.disabled; },
+      } }));
+      const handler = mountHandler({ config: bindings, onAction });
+      const input = document.createElement('input'); input.setAttribute('data-freq-entry', ''); document.body.appendChild(input);
+      flushSync(); const frequency = target.querySelector<HTMLElement>('.freq')!; frequency.focus();
+      function set(kind: 'current' | 'null' | 'ancestor-stale' | 'disabled') {
+        state.set({ disabled: kind === 'disabled', viewModel: { ...current, vfos: current.vfos.map((vfo) => ({ ...vfo,
+          frequencyHz: kind === 'null' ? null : vfo.frequencyHz,
+          display: { ...vfo.display!, frequencyHz: { state: kind === 'current' || kind === 'disabled' ? 'current' : 'stale', value: vfo.frequencyHz! } },
+        })) } }); flushSync();
+      }
+      const key = (key: string, flags: KeyboardEventInit = {}) => {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...flags });
+        frequency.dispatchEvent(event); flushSync(); return event;
+      };
+      return { set, key, frequency, input, onAction, onTuneFrequency, handler };
+    }
+    it.each(['null', 'ancestor-stale', 'disabled'] as const)('blocks direct and leader tuning/digits while %s, then restores current routing', (kind) => {
+      const h = harness(); h.set(kind);
+      expect(document.activeElement).toBe(h.frequency);
+      for (const key of ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'j', 'b', '7']) h.key(key);
+      for (const suffix of ['t', 'b', '7']) { h.key('g'); h.key(suffix); }
+      expect(h.onAction).not.toHaveBeenCalled(); expect(h.onTuneFrequency).not.toHaveBeenCalled();
+      expect(h.input.value).toBe(''); expect(document.activeElement).toBe(h.frequency);
+      expect(h.handler.querySelector('.keyboard-leader-pill')).toBeNull();
+      h.set('current'); h.key('ArrowUp');
+      expect(h.onAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'tune' }));
+      h.key('7'); expect(h.input.value).toBe('7'); expect(document.activeElement).toBe(h.input);
+    });
+    it('checks a leader continuation against the current inert state', () => {
+      const h = harness(); h.key('g'); h.set('ancestor-stale'); h.key('t');
+      expect(h.onAction).not.toHaveBeenCalled(); expect(h.handler.querySelector('.keyboard-leader-pill')).toBeNull();
+      h.set('current'); h.key('g'); h.key('t');
+      expect(h.onAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'tune' }));
+    });
+    it.each(['null', 'disabled'] as const)('cannot arm a tuning leader from an initially %s readout', (initial) => {
+      const h = harness(initial); h.key('ArrowUp'); h.key('7'); h.key('g');
+      h.set('current'); h.key('t');
+      expect(h.onAction).not.toHaveBeenCalled(); expect(h.input.value).toBe('');
+      h.key('g'); h.key('t');
+      expect(h.onAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'tune' }));
+    });
+    it('preserves Tab, native modifiers, stop/help and shortcuts outside an inert readout', () => {
+      const h = harness(); h.set('ancestor-stale');
+      h.key('g'); expect(h.key('Tab').defaultPrevented).toBe(false);
+      expect(h.handler.querySelector('.keyboard-leader-pill')).toBeNull();
+      for (const flags of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }]) {
+        expect(h.key('7', flags).defaultPrevented).toBe(false);
+        expect(h.key('ArrowUp', flags).defaultPrevented).toBe(false);
+      }
+      h.key('Escape'); h.key('g'); h.key('s');
+      expect(h.onAction.mock.calls.map(([action]) => action.action)).toEqual(['scan_stop', 'scan_stop']);
+      h.key('?'); expect(h.handler.querySelector('[role="dialog"]')).not.toBeNull();
+      h.onAction.mockClear(); h.frequency.blur();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '7' }));
+      expect(h.onAction.mock.calls.map(([action]) => action.action)).toEqual(['tune', 'band_select']);
+      expect(h.input.value).toBe('');
+    });
   });
 
   it('supports leader sequences for focus actions', () => {
