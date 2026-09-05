@@ -37,7 +37,7 @@ import type {
   RadioWideIndicatorsViewModel, DualActionBlockViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
-import { qualifyDisplayObservation } from './display-observation';
+import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand } from '$lib/radio/band-plan';
@@ -317,12 +317,18 @@ function deriveMeters(
   if (!raws.some((v) => v !== undefined)) return undefined;
   const txMeter = (raw: unknown, path: string): MeterField =>
     meterField(hasTx && raw !== undefined, topFieldAvailable(state, path), raw, onTx);
+  const displayTxMeter = (raw: unknown, path: string) => ({
+    ...txMeter(raw, path),
+    display: qualifyRadioDisplayObservation({
+      state, caps, path, structural: hasTx && raw !== undefined, value: numOrUndef(raw),
+    }),
+  });
   return {
     rfState,
     signal: meterField(rx?.sMeter !== undefined, topFieldAvailable(state, sPath), rx?.sMeter, !onTx),
-    power: txMeter(powerMeter, 'powerMeter'),
-    swr: txMeter(swrMeter, 'swrMeter'),
-    alc: txMeter(alcMeter, 'alcMeter'),
+    power: displayTxMeter(powerMeter, 'powerMeter'),
+    swr: displayTxMeter(swrMeter, 'swrMeter'),
+    alc: displayTxMeter(alcMeter, 'alcMeter'),
     compression: txMeter(compMeter, 'compMeter'),
     // Vd is the station's supply rail, not a TX reading: it is worth showing
     // in every RF state (the dock keeps it on instantaneous display for the

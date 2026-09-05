@@ -32,6 +32,40 @@ const AVAIL = { structural: true, operational: true } as const;
 const base = topologyFixtures['1/single'];
 const RF_STATES: readonly MeterRfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
 
+describe('target meter display observation contract (MOR-2359)', () => {
+  function withDisplay(meter: string, display: unknown) {
+    const view = withMeters(base);
+    const field = view.meters![meter as keyof Omit<MetersViewModel, 'rfState'>];
+    return { ...view, meters: { ...view.meters, [meter]: { ...field, display } } };
+  }
+  it.each(['power', 'swr', 'alc'])('round-trips optional display only on %s', (meter) => {
+    for (const display of [
+      { state: 'current', value: 0 }, { state: 'stale', value: 0.5 },
+      { state: 'unknown', reason: 'not-observed' }, { state: 'unsupported' },
+    ]) {
+      const view = withDisplay(meter, display);
+      expect(validateRadioViewModel(JSON.parse(JSON.stringify(view)))).toEqual(view);
+    }
+  });
+  it.each(['signal', 'compression', 'drainVoltage', 'drainCurrent'])(
+    'keeps exact-key rejection on unmigrated %s', (meter) => {
+      expect(() => validateRadioViewModel(withDisplay(meter, { state: 'current', value: 1 })))
+        .toThrow(new RegExp(`\\$\\.meters\\.${meter}:.*display`));
+    },
+  );
+  it.each([
+    null, {}, { state: 'current' }, { state: 'current', value: '1' },
+    { state: 'current', value: NaN }, { state: 'stale', value: Infinity },
+    { state: 'stale', value: 1, extra: true }, { state: 'unknown', reason: 'stale' },
+    { state: 'unknown', reason: 'not-observed', value: 0 }, { state: 'unsupported', value: 0 },
+  ])('rejects malformed display %j', (display) => {
+    for (const meter of ['power', 'swr', 'alc']) {
+      expect(() => validateRadioViewModel(withDisplay(meter, display)))
+        .toThrow(new RegExp(`\\$\\.meters\\.${meter}\\.display`));
+    }
+  });
+});
+
 describe('meters (MOR-1262 slice 2A)', () => {
   // ── Kill-test 1: absence is byte-identical, not a new default shape ──────
   it('validates a meters-absent model and never adds the key', () => {

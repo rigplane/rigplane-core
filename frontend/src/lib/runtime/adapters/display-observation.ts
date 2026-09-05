@@ -15,6 +15,29 @@ function validEvidence(status: FieldStatus): boolean {
     && Number.isFinite(status.lastObservedMonotonic) && status.lastObservedMonotonic >= 0;
 }
 
+function validIdentity(state: ServerState | null, caps: Capabilities | null): state is ServerState {
+  const generation = state?.providerGeneration;
+  return !!state && !!caps && state.stateContractVersion === 1 && caps.stateContractVersion === 1
+    && typeof generation === 'number' && Number.isSafeInteger(generation) && generation >= 0
+    && caps.providerGeneration === generation;
+}
+
+export function qualifyRadioDisplayObservation<T extends Scalar>({
+  state, caps, path, structural, value,
+}: {
+  state: ServerState | null;
+  caps: Capabilities | null;
+  path: string;
+  structural: boolean;
+  value: T | undefined;
+}): DisplayObservation<T> {
+  if (!structural) return { state: 'unsupported' };
+  if (!validIdentity(state, caps) || path === '' || path.includes('.')) {
+    return { state: 'unknown', reason: 'identity-unresolved' };
+  }
+  return qualifyEvidence(state, path, value);
+}
+
 export function qualifyDisplayObservation<T extends Scalar>({
   state, caps, receiver, path, structural, value,
 }: {
@@ -26,17 +49,18 @@ export function qualifyDisplayObservation<T extends Scalar>({
   value: T | undefined;
 }): DisplayObservation<T> {
   if (!structural) return { state: 'unsupported' };
-  const generation = state?.providerGeneration;
   const receiverKey = receiver === 'MAIN' ? 'main' : 'sub';
-  if (!state || !caps || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
-    || typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 0
-    || caps.providerGeneration !== generation
+  if (!validIdentity(state, caps) || !caps
     || (caps.receivers !== 1 && caps.receivers !== 2)
     || (receiver === 'SUB' && caps.receivers !== 2)
     || (state.active === 'SUB' && caps.receivers !== 2)
     || !state[receiverKey] || !path.startsWith(`${receiverKey}.`)) {
     return { state: 'unknown', reason: 'identity-unresolved' };
   }
+  return qualifyEvidence(state, path, value);
+}
+
+function qualifyEvidence<T extends Scalar>(state: ServerState, path: string, value: T | undefined): DisplayObservation<T> {
   const leaf = state.fieldStatus?.[path];
   if (!leaf || !hasObservation(leaf)) return { state: 'unknown', reason: 'not-observed' };
   const statuses = [leaf];

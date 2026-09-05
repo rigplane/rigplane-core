@@ -289,7 +289,7 @@ describe('AudioManager reconnect coalescing (MOR-924)', () => {
 });
 
 
-describe('AudioManager current WebSocket authentication', () => {
+describe('AudioManager credential-free WebSockets', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.useFakeTimers();
@@ -308,7 +308,7 @@ describe('AudioManager current WebSocket authentication', () => {
     vi.unstubAllGlobals();
   });
 
-  it('uses the current encoded token on initial RX and each reconnect', async () => {
+  it('ignores stored application tokens on initial RX and each reconnect', async () => {
     const { audioManager } = await import('../audio-manager');
     for (const token of ['synthetic +&?=#/ token', 'synthetic-rotated', null]) {
       if (token) localStorage.setItem('rigplane-auth-token', token);
@@ -322,12 +322,12 @@ describe('AudioManager current WebSocket authentication', () => {
       const url = new URL(socket.url);
       expect(url.origin).toBe('wss://radio.example.test');
       expect(url.pathname).toBe('/api/v1/audio');
-      expect(url.searchParams.getAll('token')).toEqual(token ? [token] : []);
+      expect(url.searchParams.getAll('token')).toEqual([]);
       socket.open();
     }
   });
 
-  it('does not log the error event carrying the authenticated socket URL', async () => {
+  it('does not log the error event carrying the socket URL', async () => {
     const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
     localStorage.setItem('rigplane-auth-token', 'synthetic-private');
     const { audioManager } = await import('../audio-manager');

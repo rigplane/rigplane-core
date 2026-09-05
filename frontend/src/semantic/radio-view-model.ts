@@ -187,6 +187,10 @@ export interface MeterField {
   relevant: boolean;
 }
 
+export interface DisplayObservedMeterField extends MeterField {
+  readonly display?: DisplayObservation<number>;
+}
+
 /**
  * The authoritative RF state the meters are read against. Member-for-member
  * the RX/TX surface's own `RfState` (`rx-tx-surface.ts`, MOR-1064) — declared
@@ -204,9 +208,9 @@ export type MeterRfState = 'receiving' | 'transmitting' | 'uncertain' | 'unknown
 export interface MetersViewModel {
   rfState: MeterRfState;
   signal: MeterField;
-  power: MeterField;
-  swr: MeterField;
-  alc: MeterField;
+  power: DisplayObservedMeterField;
+  swr: DisplayObservedMeterField;
+  alc: DisplayObservedMeterField;
   compression: MeterField;
   drainVoltage: MeterField;
   drainCurrent: MeterField;
@@ -1362,6 +1366,16 @@ function validateMeterField(value: unknown, path: string): MeterField {
   };
 }
 
+function validateDisplayObservedMeterField(value: unknown, path: string): DisplayObservedMeterField {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'display'], path);
+  const strict = validateMeterField({ reading: v.reading, availability: v.availability, relevant: v.relevant }, path);
+  return {
+    ...strict,
+    ...(v.display !== undefined ? { display: validateDisplayObservation(v.display, `${path}.display`, num) } : {}),
+  };
+}
+
 /** This `exactKeys` list is exactly the seven meters the adapter reads plus
  *  the authoritative `rfState` — no speculative keys (MOR-1244 finding N4).
  *  See `radio-view-model-adapter.ts::deriveMeters`. */
@@ -1373,9 +1387,9 @@ function validateMeters(value: unknown, path: string): MetersViewModel {
   return {
     rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
     signal: validateMeterField(v.signal, `${path}.signal`),
-    power: validateMeterField(v.power, `${path}.power`),
-    swr: validateMeterField(v.swr, `${path}.swr`),
-    alc: validateMeterField(v.alc, `${path}.alc`),
+    power: validateDisplayObservedMeterField(v.power, `${path}.power`),
+    swr: validateDisplayObservedMeterField(v.swr, `${path}.swr`),
+    alc: validateDisplayObservedMeterField(v.alc, `${path}.alc`),
     compression: validateMeterField(v.compression, `${path}.compression`),
     drainVoltage: validateMeterField(v.drainVoltage, `${path}.drainVoltage`),
     drainCurrent: validateMeterField(v.drainCurrent, `${path}.drainCurrent`),
