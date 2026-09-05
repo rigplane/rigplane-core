@@ -44,6 +44,14 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+const SPECTRUM_AMPLITUDE_MAX = 80;
+
+export function spectrumDisplayAmplitude(sample: number, refLevel: number): number {
+  const refAdjust = (refLevel / 60) * 40;
+  const adjusted = clamp(sample + refAdjust, 0, SPECTRUM_AMPLITUDE_MAX);
+  return Math.sqrt(adjusted / SPECTRUM_AMPLITUDE_MAX);
+}
+
 type GradCache = { grad: CanvasGradient; height: number; fillColor: string };
 
 /**
@@ -117,14 +125,11 @@ export function renderSpectrum(
   // Gain boost: map 0-80 → full height with sqrt curve for better contrast
   // at low signal levels (IC-7610 scope data typically peaks at ~55)
   // Ref level: -30..+30 dB → ±40 on 0-80 scale (same mapping as waterfall)
-  const refAdjust = (options.refLevel / 60) * 40;
   const yPoints = new Float32Array(width);
   for (let x = 0; x < width; x++) {
     const idx = Math.min(n - 1, Math.floor((x / width) * n));
-    const adjusted = Math.min(80, Math.max(0, data[idx] + refAdjust));
-    const amp = Math.min(1.0, adjusted / 80);
-    const boosted = Math.sqrt(amp);
-    yPoints[x] = height * (1 - boosted);
+    const amplitude = spectrumDisplayAmplitude(data[idx], options.refLevel);
+    yPoints[x] = height * (1 - amplitude);
   }
 
   // Filled area under spectrum (gradient cached per-instance; recreated only when height or fillColor changes)
@@ -284,7 +289,6 @@ export class SpectrumRenderer {
     options: SpectrumOptions,
   ): void {
     // Draw peak hold as subtle gray fill between current spectrum and peak line
-    const refAdjust = (options.refLevel / 60) * 40;
     const n = currentData.length;
     
     ctx.fillStyle = 'rgba(200, 200, 200, 0.25)';
@@ -293,9 +297,8 @@ export class SpectrumRenderer {
     // Start from left, draw current spectrum line
     for (let x = 0; x < width; x++) {
       const idx = Math.min(n - 1, Math.floor((x / width) * n));
-      const adjusted = Math.min(80, Math.max(0, currentData[idx] + refAdjust));
-      const amp = Math.min(1.0, adjusted / 80);
-      const y = height * (1 - Math.sqrt(amp));
+      const amplitude = spectrumDisplayAmplitude(currentData[idx], options.refLevel);
+      const y = height * (1 - amplitude);
       if (x === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -303,9 +306,8 @@ export class SpectrumRenderer {
     // Draw back along peak line (right to left)
     for (let i = peaks.length - 1; i >= 0; i--) {
       const x = (i / peaks.length) * width;
-      const peakAdjusted = Math.min(80, Math.max(0, peaks[i] + refAdjust));
-      const amp = Math.min(1.0, peakAdjusted / 80);
-      const y = height * (1 - Math.sqrt(amp));
+      const amplitude = spectrumDisplayAmplitude(peaks[i], options.refLevel);
+      const y = height * (1 - amplitude);
       ctx.lineTo(x, y);
     }
     

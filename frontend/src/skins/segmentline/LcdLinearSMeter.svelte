@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { createSmoother } from '$lib/utils/smoothing.svelte';
   import type { DisplayValue } from '../../semantic/radio-display-model';
   import { meterFill } from './lcd-display-helpers';
 
@@ -7,12 +9,24 @@
   }
 
   let { field }: Props = $props();
+
+  const smoother = createSmoother(0.06, 0.1);
+  let displayFill = $derived(field.state === 'known' ? smoother.value : 0);
+
+  $effect(() => {
+    smoother.update(meterFill(field));
+  });
+
+  onMount(() => {
+    smoother.start();
+    return () => smoother.stop();
+  });
 </script>
 
 <div class="s-meter" data-state={field.state}>
   <span class="meter-label">S</span>
   <div class="meter-track">
-    <div class="meter-fill" style:width={`${meterFill(field) * 100}%`}></div>
+    <div class="meter-fill" style:width={`${displayFill * 100}%`}></div>
     <span class="meter-threshold"></span>
   </div>
   <div class="meter-scale" aria-hidden="true">

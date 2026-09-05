@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { renderSpectrum, SpectrumRenderer, defaultSpectrumOptions, type SpectrumOptions } from '../spectrum-renderer';
+import {
+  renderSpectrum, SpectrumRenderer, defaultSpectrumOptions, spectrumDisplayAmplitude,
+  type SpectrumOptions,
+} from '../spectrum-renderer';
 
 function createMockCtx() {
   const log = {
@@ -209,5 +212,19 @@ describe('SpectrumRenderer', () => {
     const { ctx: c2, log: l2 } = createMockCtx();
     renderer.render(c2, new Uint8Array(10).fill(10), 10, 100, opts());
     expect(l2.fills).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('spectrumDisplayAmplitude', () => {
+  it('preserves the established zero, mid-scale, and clamp transfer', () => {
+    expect(spectrumDisplayAmplitude(0, 0)).toBe(0);
+    expect(spectrumDisplayAmplitude(40, 0)).toBeCloseTo(Math.sqrt(0.5), 8);
+    expect(spectrumDisplayAmplitude(80, 0)).toBe(1);
+    expect(spectrumDisplayAmplitude(255, 0)).toBe(1);
+  });
+
+  it('keeps the existing reference adjustment in the shared transfer', () => {
+    expect(spectrumDisplayAmplitude(40, 30)).toBeCloseTo(Math.sqrt(0.75), 8);
+    expect(spectrumDisplayAmplitude(40, -30)).toBe(0.5);
   });
 });
