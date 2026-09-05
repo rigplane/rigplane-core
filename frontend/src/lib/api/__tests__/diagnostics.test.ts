@@ -91,12 +91,20 @@ describe('previewBundle', () => {
     expect(result.csrf_token).toBe('csrf-xyz');
   });
 
-  it('includes Authorization header when auth token is stored', async () => {
+  it.each([
+    ['preview', () => previewBundle({})],
+    ['send', () => sendBundle('prev-abc', 'csrf-xyz')],
+    ['save', () => saveBundle('prev-abc', 'csrf-xyz')],
+    ['delete', () => deletePreview('prev-abc', 'csrf-xyz')],
+  ])('%s neither reads stored credentials nor sends Authorization', async (_name, request) => {
     // Stub a minimal localStorage — robust against earlier tests that may
     // have replaced globalThis.localStorage (vitest fast-pool isolate:false).
-    const store: Record<string, string> = { 'rigplane-auth-token': 'tok-secret' };
+    const store: Record<string, string> = {
+      'rigplane-auth-token': 'tok-secret',
+      'icom-lan-auth-token': 'legacy-secret',
+    };
     const stub = {
-      getItem: (k: string) => (k in store ? store[k] : null),
+      getItem: vi.fn((k: string) => (k in store ? store[k] : null)),
       setItem: (k: string, v: string) => {
         store[k] = v;
       },
@@ -116,10 +124,11 @@ describe('previewBundle', () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeOkResponse(makePreviewResponse()));
     globalThis.fetch = fetchMock;
 
-    await previewBundle({});
+    await request();
 
     const [, init] = fetchMock.mock.calls[0];
-    expect(init.headers.Authorization).toBe('Bearer tok-secret');
+    expect(new Headers(init.headers).has('Authorization')).toBe(false);
+    expect(stub.getItem).not.toHaveBeenCalled();
   });
 
   it('throws DiagnosticsApiError with server-supplied code on 4xx', async () => {
