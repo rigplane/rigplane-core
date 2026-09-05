@@ -1,29 +1,15 @@
-"""Tests for timing-safe token comparison (issue #947).
-
-Verifies that the HTTP API and WebSocket auth paths in web/server.py
-use ``hmac.compare_digest`` for token comparison. These tests don't
-measure timing directly — they assert correctness (accept on match,
-reject on mismatch) and that the module imports ``hmac``.
-"""
+"""Application-token retirement contracts (MOR-2361)."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rigplane.web import server as web_server
 from rigplane.web.server import WebConfig, WebServer
-
-
-def test_server_module_imports_hmac() -> None:
-    """Regression guard: ensure the web server imports hmac.
-
-    If this fails, someone has removed the import and fallen back to
-    timing-unsafe `==` comparisons.
-    """
-    assert hasattr(web_server, "hmac")
 
 
 class _MemoryWriter:
@@ -52,98 +38,72 @@ class _MemoryWriter:
         return ("127.0.0.1", 0)
 
 
-def _make_server(token: str) -> WebServer:
-    cfg = WebConfig(auth_token=token)
-    return WebServer(radio=None, config=cfg)
+
+@pytest.mark.parametrize("token", ["retired-private-value", " ", "unicode-λ"])
+def test_nonempty_legacy_config_is_rejected_without_disclosure(token):
+    with pytest.raises(ValueError) as exc:
+        WebConfig(auth_token=token)
+    assert str(exc.value) == "Application authentication was removed; auth_token must be empty."
 
 
-def test_http_api_accepts_correct_bearer_token() -> None:
-    """HTTP API endpoint accepts the correct Bearer token."""
-    srv = _make_server("s3cr3t")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header", [None, "Bearer wrong", "wrong", "Bearer unicode-λ"])
+@pytest.mark.parametrize("path", ["/api/v1/info", "/api/v1/state", "/api/v1/capabilities", "/api/v1/runtime", "/api/v1/station"])
+async def test_http_dispatch_needs_no_application_token(header, path):
+    srv = WebServer(radio=None, config=WebConfig())
+    # The retained compatibility attribute cannot reactivate the retired gate.
+    srv._config.auth_token = "retired-private-value"
     writer = _MemoryWriter()
-    headers = {"authorization": "Bearer s3cr3t"}
-
-    async def run() -> None:
-        # _handle_http needs a reader too; use an empty one for a GET with no body.
-        reader = asyncio.StreamReader()
-        reader.feed_eof()
-        await srv._handle_http(writer, "GET", "/api/v1/info", headers, reader, None)  # type: ignore[arg-type]
-
-    asyncio.run(run())
-    # Correct token → should NOT produce a 401.
-    assert b"401" not in bytes(writer.buffer[:32])
+    headers = {"authorization": header} if header is not None else {}
+    await srv._handle_http(writer, "GET", path, headers)
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 200 ")
+    assert b"retired-private-value" not in writer.buffer
+    assert b'"authRequired": true' not in writer.buffer
 
 
-def test_http_api_rejects_wrong_bearer_token() -> None:
-    """HTTP API endpoint rejects a bearer value that differs from the token."""
-    srv = _make_server("s3cr3t")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/ws", "/api/v1/scope", "/api/v1/audio-scope", "/api/v1/audio"])
+@pytest.mark.parametrize("legacy_token", [False, True])
+async def test_all_ws_channels_upgrade_without_application_auth(monkeypatch, path, legacy_token):
+    srv = WebServer(radio=None, config=WebConfig())
+    srv._config.auth_token = "retired-private-value"
+    srv._audio_fft_scope = object()
+    handlers = {}
+    for name in ("ControlHandler", "ScopeHandler", "AudioHandler"):
+        factory = MagicMock(return_value=MagicMock(run=AsyncMock()))
+        monkeypatch.setattr(web_server, name, factory)
+        handlers[name] = factory
     writer = _MemoryWriter()
-    headers = {"authorization": "Bearer wrong"}
+    headers = {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="}
+    if legacy_token:
+        headers["authorization"] = "Bearer wrong"
+    await srv._handle_websocket(
+        asyncio.StreamReader(), writer, path, headers,
+        {"token": ["wrong"]} if legacy_token else {},
+    )
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 101 ")
+    expected = "ControlHandler" if path.endswith("/ws") else "AudioHandler" if path.endswith("/audio") else "ScopeHandler"
+    handlers[expected].return_value.run.assert_awaited_once()
+    assert sum(factory.call_count for factory in handlers.values()) == 1
 
-    async def run() -> None:
-        reader = asyncio.StreamReader()
-        reader.feed_eof()
-        await srv._handle_http(writer, "GET", "/api/v1/info", headers, reader, None)  # type: ignore[arg-type]
 
-    asyncio.run(run())
-    assert b"401" in bytes(writer.buffer[:32])
-
-
-def test_http_api_rejects_missing_bearer_prefix() -> None:
-    """Header without the `Bearer ` prefix must be rejected."""
-    srv = _make_server("s3cr3t")
+@pytest.mark.asyncio
+async def test_ws_still_rejects_missing_key():
+    srv = WebServer(radio=None, config=WebConfig())
     writer = _MemoryWriter()
-    headers = {"authorization": "s3cr3t"}  # no prefix
-
-    async def run() -> None:
-        reader = asyncio.StreamReader()
-        reader.feed_eof()
-        await srv._handle_http(writer, "GET", "/api/v1/info", headers, reader, None)  # type: ignore[arg-type]
-
-    asyncio.run(run())
-    assert b"401" in bytes(writer.buffer[:32])
+    await srv._handle_websocket(asyncio.StreamReader(), writer, "/api/v1/ws", {})
+    assert bytes(writer.buffer).startswith(b"HTTP/1.1 400 ")
 
 
-@pytest.mark.parametrize(
-    "auth_header,token_param,should_pass",
-    [
-        ("Bearer s3cr3t", "", True),
-        ("", "s3cr3t", True),
-        ("Bearer wrong", "", False),
-        ("", "wrong", False),
-        ("Bearer wrong", "wrong", False),
-    ],
-)
-def test_websocket_auth_matrix(
-    auth_header: str, token_param: str, should_pass: bool
-) -> None:
-    """WebSocket upgrade path accepts either header OR query token when correct."""
-    srv = _make_server("s3cr3t")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,reason", [("/api/v1/unknown", "unknown channel"), ("/api/v1/audio-scope", "audio FFT scope not available")])
+async def test_ws_still_refuses_unavailable_channels(monkeypatch, path, reason):
+    srv = WebServer(radio=None, config=WebConfig())
     writer = _MemoryWriter()
-    headers = {
-        "upgrade": "websocket",
-        "connection": "Upgrade",
-        "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
-        "sec-websocket-version": "13",
-    }
-    if auth_header:
-        headers["authorization"] = auth_header
-    query = {"token": [token_param]} if token_param else {}
-
-    async def run() -> None:
-        reader = asyncio.StreamReader()
-        reader.feed_eof()
-        await srv._handle_websocket(  # type: ignore[attr-defined]
-            reader,
-            writer,
-            "/api/v1/ws",
-            headers,
-            query,  # type: ignore[arg-type]
-        )
-
-    asyncio.run(run())
-    head = bytes(writer.buffer[:32])
-    if should_pass:
-        assert b"401" not in head
-    else:
-        assert b"401" in head
+    ws = MagicMock(close=AsyncMock())
+    monkeypatch.setattr(web_server, "WebSocketConnection", MagicMock(return_value=ws))
+    await srv._handle_websocket(
+        asyncio.StreamReader(), writer, path,
+        {"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="},
+    )
+    ws.close.assert_awaited_once_with(1008, reason)

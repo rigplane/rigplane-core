@@ -2094,10 +2094,6 @@ class TestRemainingPortPreflight:
                     str(free_web_port),
                     "--rigctld-port",
                     str(occupied_rigctld_port),
-                    # Sidestep the unrelated managed-mode auth requirement so
-                    # this test isolates the preflight/port-check path.
-                    "--auth-token",
-                    "test-token",
                 ]
             )
             assert args.web_host == "127.0.0.1"

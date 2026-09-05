@@ -1608,7 +1608,7 @@ async def test_runtime_endpoint_reports_process_bind_radio_and_bridge_status() -
         radio_ready=True,
         capabilities=set(),
     )
-    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0, auth_token="token"))
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     srv._server = _FakeAsyncServer()  # noqa: SLF001
     srv._audio_bridge = SimpleNamespace(  # noqa: SLF001
         running=True,
@@ -1622,7 +1622,7 @@ async def test_runtime_endpoint_reports_process_bind_radio_and_bridge_status() -
         writer,
         "GET",
         "/api/v1/runtime",
-        headers={"authorization": "Bearer token"},
+        headers={},
     )
 
     status, data = _response_json(writer)
@@ -1632,7 +1632,8 @@ async def test_runtime_endpoint_reports_process_bind_radio_and_bridge_status() -
     assert data["version"]
     assert data["bind"] == {"host": "127.0.0.1", "port": 4242}
     assert data["logPath"] == "/tmp/rigplane.log"
-    assert data["authRequired"] is True
+    assert data["authRequired"] is False
+    assert data["station"]["authRequired"] is False
     assert data["backend"] == "rigplane"
     assert data["radio"] == {
         "model": "IC-7610",
