@@ -3,6 +3,10 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 const h = vi.hoisted(() => ({ tx: null as ManagedAppTxController | null }));
+vi.mock('$lib/transport/http-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/transport/http-client')>(),
+  fetchInfo: vi.fn().mockResolvedValue({}),
+}));
 vi.mock('$lib/transport/ws-client', () => ({
   connect: vi.fn(), sendRaw: vi.fn(), sendCommand: vi.fn(),
   getControlSession: () => ({ state: 'connected', epoch: 1 }),
