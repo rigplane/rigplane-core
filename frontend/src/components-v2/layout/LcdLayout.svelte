@@ -277,12 +277,47 @@
     min-height: 0;
   }
 
+  /* These facts and actions share the fixed sidebar's available width. */
+  .semantic-slot :global(.vfo-list),
+  .semantic-slot :global(.vfo-tile),
+  .semantic-slot :global(.receiver-indicators),
+  .semantic-slot :global(.rx-tx-actions) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
+  }
+
   .lcd-slot {
     width: 100%;
     min-height: 0;
     display: flex;
     aspect-ratio: 16 / 7.5;
     max-height: 100%;
+  }
+
+  .lcd-slot[data-lcd-variant='scope'],
+  .lcd-slot[data-lcd-variant='cockpit'] {
+    /* Keep a useful scope below the wrapped frequency and indicator rows. */
+    min-height: 420px;
+  }
+
+  @container (max-width: 640px) {
+    .lcd-slot[data-lcd-variant='cockpit'] :global(.lcd-vfo-main) {
+      grid-template-columns: auto minmax(0, 1fr);
+      flex: 0 0 auto;
+      gap: 4px 10px;
+    }
+
+    .lcd-slot[data-lcd-variant='cockpit'] :global(.vfo-badges) {
+      grid-column: 1 / -1;
+      flex-wrap: wrap;
+    }
+
+    .lcd-slot[data-lcd-variant='cockpit'] :global(.vfo-freq) {
+      --lcd-frequency-major-size: clamp(24px, 7cqw, 48px);
+      --lcd-frequency-hz-size: clamp(18px, 5.25cqw, 36px);
+      --lcd-frequency-dot-size: clamp(18px, 4.5cqw, 34px);
+    }
   }
 
   /* The segmentline glass (`PeerSplitLayout.svelte`) is a fixed-native stage
