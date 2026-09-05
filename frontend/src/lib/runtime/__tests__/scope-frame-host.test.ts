@@ -89,6 +89,147 @@ function rig() {
 }
 
 describe('ScopeFrameHost MOR-2326 lifecycle', () => {
+  it('publishes resolution and receipt from one read, sharing the qualified envelope', async () => {
+    const { channels, controller, host } = rig();
+    host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 12 });
+    const handle = await controller.hardwareScopeDriver.start();
+    channels.scope.transition('connected');
+    const updates = vi.fn();
+    const legacy = vi.fn();
+    host.subscribePresentation(updates);
+    host.subscribe(legacy);
+    const read = vi.spyOn(controller, 'snapshotFrameEvidence');
+    const input = frame();
+    channels.scope.fire(input);
+
+    expect(read).toHaveBeenCalledTimes(1);
+    const projected = updates.mock.lastCall![0];
+    const evidence = read.mock.results[0].value;
+    expect(projected.envelope).toBe(evidence.envelope);
+    expect(projected.authority).toBe(evidence.authority);
+    expect(projected.resolution).toBe(legacy.mock.lastCall![0]);
+    expect(projected.resolution.state).toBe('live');
+    expect(projected.envelope.acceptedSequence).toBeGreaterThan(0);
+    expect(Object.isFrozen(projected)).toBe(true);
+    expect(Object.isFrozen(projected.authority)).toBe(true);
+    expect(Object.isFrozen(projected.envelope)).toBe(true);
+    expect(Object.isFrozen(projected.envelope.frame)).toBe(true);
+    expect(Object.isFrozen(projected.resolution)).toBe(true);
+    expect(Object.isFrozen(projected.resolution.frame.normalizedBins)).toBe(true);
+    new Uint8Array(input).fill(0);
+    expect([...projected.envelope.frame.pixels]).toEqual([0, 128, 255]);
+    expect(projected.resolution.frame.normalizedBins).toEqual([0, 128 / 255, 1]);
+    expect(host.snapshotPresentation()).toEqual(projected);
+    await controller.hardwareScopeDriver.stop(handle);
+    host.dispose();
+  });
+
+  it('publishes exact expiry and selected-receiver null despite unrelated raw liveness', async () => {
+    const { time, channels, controller, host } = rig();
+    host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 1 });
+    const handle = await controller.hardwareScopeDriver.start();
+    channels.scope.transition('connected');
+    const updates = vi.fn();
+    host.subscribePresentation(updates);
+    channels.scope.fire(frame());
+    const live = updates.mock.lastCall![0];
+    time.advance(499);
+    expect(host.snapshotPresentation().resolution.state).toBe('live');
+    time.advance(1);
+    expect(updates.mock.lastCall![0]).toMatchObject({
+      envelope: live.envelope, resolution: { state: 'ghost', reason: 'stale' },
+    });
+    expect(live.resolution.state).toBe('live');
+    channels.scope.fire(frame(1));
+    expect(controller.hardwareScopeFrameLive).toBe(true);
+    expect(updates.mock.lastCall![0]).toMatchObject({
+      envelope: null, resolution: { state: 'ghost', reason: 'missing' },
+    });
+    channels.scope.fire(frame());
+    channels.scope.transition('reconnecting');
+    expect(updates.mock.lastCall![0].resolution.state).toBe('ghost');
+    await controller.hardwareScopeDriver.stop(handle);
+    expect(updates.mock.lastCall![0].envelope).toBeNull();
+    expect(host.snapshotPresentation().authority.demanded).toBe(false);
+    host.updateAuthority(null);
+    expect(updates.mock.lastCall![0].envelope).toBeNull();
+    host.dispose();
+  });
+
+  it('retires provider receipts, rejects old callbacks, and recovers on re-acquisition', async () => {
+    const { channels, controller, host } = rig();
+    host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 1 });
+    let handle = await controller.hardwareScopeDriver.start();
+    channels.scope.transition('connected');
+    const updates = vi.fn();
+    host.subscribePresentation(updates);
+    channels.scope.fire(frame());
+    const original = updates.mock.lastCall![0];
+    host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 2 });
+    expect(updates.mock.lastCall![0]).toMatchObject({
+      envelope: null, authority: { providerGeneration: 2 }, resolution: { state: 'ghost' },
+    });
+    channels.scope.fire(frame());
+    expect(host.snapshotPresentation().envelope).toBeNull();
+    await controller.hardwareScopeDriver.stop(handle);
+    handle = await controller.hardwareScopeDriver.start();
+    channels.scope.transition('reconnecting');
+    channels.scope.transition('connected');
+    channels.scope.fire(frame());
+    const renewed = updates.mock.lastCall![0];
+    expect(renewed.resolution.state).toBe('live');
+    expect(renewed.envelope.providerGeneration).toBe(2);
+    expect(renewed.envelope.acceptedSequence).toBeGreaterThan(original.envelope.acceptedSequence);
+    expect(renewed.envelope.transportEpoch).toBeGreaterThan(original.envelope.transportEpoch);
+    channels.scope.fire(new ArrayBuffer(16));
+    expect(updates.mock.lastCall![0].resolution.state).toBe('ghost');
+    expect(original.resolution.state).toBe('live');
+    await controller.hardwareScopeDriver.stop(handle);
+    host.dispose();
+  });
+
+  it.each([-1, NaN, Infinity])('rejects invalid clock age %s in the presentation', async (age) => {
+    const { time, channels, controller, host } = rig();
+    host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 1 });
+    const handle = await controller.hardwareScopeDriver.start();
+    channels.scope.transition('connected');
+    channels.scope.fire(frame());
+    time.advance(age);
+    expect(host.snapshotPresentation().resolution.state).toBe('ghost');
+    await controller.hardwareScopeDriver.stop(handle);
+    host.dispose();
+  });
+
+  it('shares one evidence subscription and isolates/removes presentation subscribers', () => {
+    const { controller, host } = rig();
+    host.dispose();
+    const unsubscribe = vi.fn();
+    const subscribe = vi.spyOn(controller, 'subscribeFrameEvidence').mockReturnValue(unsubscribe);
+    const owner = new ScopeFrameHost(controller);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const healthy = vi.fn();
+    const legacy = vi.fn();
+    owner.subscribePresentation(() => { throw new Error('observer'); });
+    const remove = owner.subscribePresentation(healthy);
+    owner.subscribe(legacy);
+    const notify = subscribe.mock.calls[0][0];
+    notify();
+    expect(healthy).toHaveBeenCalledTimes(1);
+    expect(legacy).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('Scope frame host subscriber failed', expect.any(Error));
+    remove();
+    notify();
+    expect(healthy).toHaveBeenCalledTimes(1);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    owner.dispose();
+    owner.dispose();
+    owner.subscribePresentation(healthy);
+    notify();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(healthy).toHaveBeenCalledTimes(1);
+    expect(legacy).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ['hardware', 'hardwareScopeDriver', 'scope'],
     ['audio-fft', 'audioFftDriver', 'audio-scope'],
