@@ -477,7 +477,7 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
  * `useSurfacePlan()` at `NO_PLAN`, and every zone wrapper then disappears
  * whatever the manifest declares.
  */
-describe('vfo and rxTx gain zone hosts on the SDR face only (MOR-2231)', () => {
+describe('vfo and rxTx use declared zone hosts on both desktop faces', () => {
   function renderZoned(skinId: SkinId, manifest: LayoutManifest): HTMLElement {
     const target = document.createElement('div');
     document.body.appendChild(target);
@@ -502,20 +502,18 @@ describe('vfo and rxTx gain zone hosts on the SDR face only (MOR-2231)', () => {
       .not.toBeNull();
   });
 
-  // MUTATION KILLED: passing `regions` unconditionally (or letting `zoned()`
-  // take `vfo`/`rxTx` on every face), which would wrap desktop-v2's two
-  // surfaces too. That is the byte-identity claim this batch rests on, and
-  // this is the only assertion in the suite that can refuse it.
-  it('leaves the desktop-v2 surfaces bare, with no zone element around either', () => {
+  // Standard shares the declared region composition while retaining one
+  // semantic VFO and one server-owned TX action surface.
+  it('hosts Standard VFO and TX in their declared regions', () => {
     const t = renderZoned('desktop-v2', desktopV2Layout);
     const vfo = t.querySelector('[data-testid="vfo-surface"]');
     const rxTx = t.querySelector('[data-testid="rx-tx-surface"]');
     expect(vfo).not.toBeNull();
     expect(rxTx).not.toBeNull();
-    expect(vfo!.closest('.surface-zone')).toBeNull();
-    expect(rxTx!.closest('.surface-zone')).toBeNull();
-    expect(t.querySelector('[data-zone-id="receiver-deck"]')).toBeNull();
-    expect(t.querySelector('[data-zone-id="rx-tx"]')).toBeNull();
+    expect(vfo!.closest('.surface-zone')?.getAttribute('data-zone-id')).toBe('receiver-deck');
+    expect(rxTx!.closest('.surface-zone')?.getAttribute('data-zone-id')).toBe('rx-tx');
+    expect(t.querySelectorAll('[data-zone-id="receiver-deck"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-zone-id="rx-tx"]')).toHaveLength(1);
   });
 });
 
@@ -1189,7 +1187,7 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
       : new Map([[SURFACE_PLAN_CONTEXT_KEY, () => resolveSurfacePlan(sdrTestLayout, workspace)]]);
     mounted.push(mount(SemanticRadioSurfaces, {
       target,
-      props: { regions, regionContent },
+      props: { regions, regionContent, vfoAppearance: regions ? 'sdr' : 'semantic' },
       context,
     }));
     flushSync();
@@ -1239,13 +1237,13 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
   it('uses the SDR region sequence while regions=false keeps the previous surface sequence', () => {
     const zoned = renderVertical(true, DEFAULT_WORKSPACE, sentinel)
       .querySelector('[data-testid="semantic-radio-surfaces"]')!;
-    expect([...zoned.children].map((el) =>
+    expect([...zoned.querySelectorAll('[data-zone-id], [data-testid="region-content-sentinel"]')].map((el) =>
       el.getAttribute('data-zone-id')
         ?? (el.matches('.content-row, [data-testid="region-content-sentinel"]') ? 'content-row' : null),
     ).filter(Boolean)).toEqual([
       'receiver-deck', 'rf-front-end', 'filter', 'band', 'antenna', 'rit-xit-scan',
-      'scope-controls', 'scope-display', 'content-row', 'rx-audio', 'dsp', 'cw-keyer',
-      'tx-aux', 'rx-tx', 'meters',
+      'scope-controls', 'scope-display', 'content-row', 'rx-tx', 'rx-audio', 'dsp',
+      'cw-keyer', 'tx-aux', 'meters',
     ]);
     expect(zoned.querySelectorAll('[data-testid="region-content-sentinel"]').length).toBe(1);
     expect(zoned.querySelectorAll(KEY_AUTHORITIES).length).toBe(1);
@@ -1318,31 +1316,36 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
    * rectangle correctness is exercised by the browser acceptance probe.
    */
   const RADIO_LAYOUT_SOURCE = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
-  const placementFor = (id: string): RegExpMatchArray[] => [...RADIO_LAYOUT_SOURCE.matchAll(
-    new RegExp(`\\.radio-layout\\.sdr-test[^{]*\\[data-zone-id='${id}'\\][^{]*\\{[^}]*grid-area`, 'g'),
-  )];
-
-  it('names every declared sdr-test zone in a placement rule', () => {
-    // Non-vacuity: the same reader finds nothing for a zone id this manifest
-    // does not declare, so a match above is evidence and not an artifact.
-    expect(placementFor('primary-vfo')).toEqual([]);
-    const unplaced = sdrTestLayout.zones.map((z) => z.id).filter((id) => placementFor(id).length === 0);
-    expect(unplaced).toEqual([]);
+  it.each(['sdr-test', 'desktop-v2'] as const)('%s owns each control once in its intended column', (skinId) => {
+    const root = render(skinId);
+    for (const [region, surfaces] of [
+      ['left', ['rf-front-end', 'filter', 'band', 'antenna', 'ritxit-scan']],
+      ['center', ['scope-controls', 'scope-display']],
+      ['right', ['rx-tx', 'rx-audio', 'dsp', 'cw-keyer', 'tx-aux']],
+    ] as const) {
+      for (const surface of surfaces) {
+        const selector = `[data-testid="${surface}-surface"]`;
+        expect(root.querySelectorAll(selector), surface).toHaveLength(1);
+        expect(root.querySelector(`.desktop-controls-${region} ${selector}`), surface).not.toBeNull();
+      }
+    }
+    expect(root.querySelectorAll(KEY_AUTHORITIES)).toHaveLength(1);
+    expect(root.querySelector('.desktop-controls-right [data-testid="rx-tx-unkey"]')).not.toBeNull();
+    expect(root.querySelector('.desktop-controls-center .content-row')).not.toBeNull();
   });
 
-  it('names every non-zone in-flow box in a placement rule', () => {
-    for (const [cls, source] of [
-      ['control-link-lost', 'src/components-v2/layout/StatusBar.svelte'],
-      ['status-bar', 'src/components-v2/layout/StatusBar.svelte'],
-      ['content-row', 'src/components-v2/layout/RadioLayout.svelte'],
-      ['tx-fault-recovery', 'src/components-v2/wiring/SemanticRadioSurfaces.svelte'],
-      ['mod-input-tx-warning', 'src/components-v2/panels/ModInputTxWarning.svelte'],
-    ] as const) {
-      expect(readFileSync(source, 'utf8'), cls).toContain(`class="${cls}"`);
-      expect(RADIO_LAYOUT_SOURCE, cls).toMatch(new RegExp(
-        `\\.radio-layout\\.sdr-test[^{]*\\.${cls}(?:\\)|\\b)[^{]*\\{[^}]*grid-area`,
-      ));
-    }
+  it.each(['sdr-test', 'desktop-v2'] as const)('%s keeps failed TX recovery beside a usable unkey', async (skinId) => {
+    txHarness.emitServerSnapshot({ observedPtt: 'unknown', releaseRequired: true, lastError: 'release failed' });
+    const root = render(skinId);
+    const right = root.querySelector('.desktop-controls-right')!;
+    expect(right.querySelectorAll('[data-testid="tx-fault-recovery"]')).toHaveLength(1);
+    const unkey = right.querySelector<HTMLButtonElement>('[data-testid="rx-tx-unkey"]')!;
+    expect(unkey.disabled).toBe(false);
+    unkey.focus();
+    expect(document.activeElement).toBe(unkey);
+    unkey.click();
+    await Promise.resolve();
+    expect(txHarness.trace()).toEqual([{ transport: 'http', operation: 'force_off' }]);
   });
 
   /**
@@ -1355,58 +1358,30 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     ["> :global(.control-link-lost)", '1 / 1 / 2 / -1'],
     ["> :global(.status-bar)", '2 / 1 / 3 / -1'],
     [":global([data-zone-id='receiver-deck'])", '3 / 1 / 4 / -1'],
-    [":global([data-zone-id='rf-front-end'])", '4 / 1 / 5 / 2'],
-    [":global([data-zone-id='filter'])", '5 / 1 / 6 / 2'],
-    [":global([data-zone-id='band'])", '6 / 1 / 7 / 2'],
-    [":global([data-zone-id='antenna'])", '7 / 1 / 8 / 2'],
-    [":global([data-zone-id='rit-xit-scan'])", '8 / 1 / 9 / 2'],
-    [":global([data-zone-id='scope-controls'])", '4 / 2 / 5 / 3'],
-    [":global([data-zone-id='scope-display'])", '5 / 2 / 6 / 3'],
-    [":global(.semantic-surfaces > .content-row)", '6 / 2 / 9 / 3'],
-    [":global([data-zone-id='rx-audio'])", '4 / 3 / 5 / 4'],
-    [":global([data-zone-id='dsp'])", '5 / 3 / 6 / 4'],
-    [":global([data-zone-id='cw-keyer'])", '6 / 3 / 7 / 4'],
-    [":global([data-zone-id='tx-aux'])", '7 / 3 / 8 / 4'],
-    [":global([data-zone-id='rx-tx'])", '8 / 3 / 9 / 4'],
-    [":global(.semantic-surfaces > .tx-fault-recovery)", '9 / 1 / 10 / -1'],
-    [":global(.semantic-surfaces > .mod-input-tx-warning)", '10 / 1 / 11 / -1'],
-    [":global([data-zone-id='meters'])", '11 / 1 / 12 / -1'],
-  ] as const;
-
-  const NARROW_OVERRIDES = [
-    [":global([data-zone-id='scope-controls'])", '9 / 1 / 10 / -1'],
-    [":global([data-zone-id='scope-display'])", '10 / 1 / 11 / -1'],
-    [":global(.semantic-surfaces > .content-row)", '11 / 1 / 12 / -1'],
-    [":global([data-zone-id='rx-audio'])", '12 / 1 / 13 / -1'],
-    [":global([data-zone-id='dsp'])", '13 / 1 / 14 / -1'],
-    [":global([data-zone-id='cw-keyer'])", '14 / 1 / 15 / -1'],
-    [":global([data-zone-id='tx-aux'])", '15 / 1 / 16 / -1'],
-    [":global([data-zone-id='rx-tx'])", '16 / 1 / 17 / -1'],
-    [":global(.semantic-surfaces > .tx-fault-recovery)", '17 / 1 / 18 / -1'],
-    [":global(.semantic-surfaces > .mod-input-tx-warning)", '18 / 1 / 19 / -1'],
-    [":global([data-zone-id='meters'])", '19 / 1 / 20 / -1'],
+    [":global(.desktop-controls-left)", '4 / 1 / 5 / 2'],
+    [":global(.desktop-controls-center)", '4 / 2 / 5 / 3'],
+    [":global(.desktop-controls-right)", '4 / 3 / 5 / 4'],
+    [":global([data-zone-id='meters'])", '5 / 1 / 6 / -1'],
   ] as const;
 
   function expectPlacement(source: string, selector: string, area: string): void {
-    expect(source).toContain(`.radio-layout.sdr-test ${selector}`);
-    const rule = source.slice(source.indexOf(`.radio-layout.sdr-test ${selector}`));
+    expect(source).toContain(`.desktop-control-face ${selector}`);
+    const rule = source.slice(source.indexOf(`.desktop-control-face ${selector}`));
     expect(rule.slice(0, rule.indexOf('}') + 1)).toContain(`grid-area: ${area}`);
   }
 
   it('pins the wide warning, chrome, region, notice and meter row declarations', () => {
     const wide = RADIO_LAYOUT_SOURCE.slice(0, RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
     expect(wide).toContain('grid-template-columns: 228px minmax(0, 1fr) 228px');
-    expect(wide).toContain('grid-template-rows: auto 28px repeat(9, auto)');
+    expect(wide).toContain('grid-template-rows: auto 28px auto minmax(320px, 1fr) auto');
     expect(wide).toContain('min-height: 320px');
     for (const [selector, area] of WIDE_PLACEMENTS) expectPlacement(wide, selector, area);
   });
 
   it('pins every declaration that changes at the narrow breakpoint', () => {
     const narrow = RADIO_LAYOUT_SOURCE.slice(RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
-    expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)');
-    expect(narrow).toContain('grid-template-rows: auto 28px repeat(17, auto)');
-    expect(narrow).toContain('min-height: 660px');
-    for (const [selector, area] of NARROW_OVERRIDES) expectPlacement(narrow, selector, area);
+    expect(narrow).toContain('grid-template-columns: 190px minmax(0, 1fr) 190px');
+    expect(RADIO_LAYOUT_SOURCE).toContain('overflow-y: auto; min-height: 0');
   });
 });
 
@@ -1720,7 +1695,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   // retirement in the tail. Non-vacuous proof is in the dedicated "drops the
   // legacy ..." tests below, which use caps that make each evidence gate fire.
   it('renders exactly the panel inventory desktop-v2 renders post-S9', () => {
-    const ids = [...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
+    const ids = [...renderAll('desktop-v2').querySelectorAll('[data-panel-id]:not(.semantic-control-panel [data-panel-id])')]
       .map((el) => el.getAttribute('data-panel-id'))
       .sort();
     expect(ids).toEqual([
@@ -1767,7 +1742,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   };
 
   it('every legacy panel still on screen is a recorded decision, not an oversight', () => {
-    const ids = new Set([...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
+    const ids = new Set([...renderAll('desktop-v2').querySelectorAll('[data-panel-id]:not(.semantic-control-panel [data-panel-id])')]
       .map((el) => el.getAttribute('data-panel-id')!));
     const undecided = [...ids].filter((id) => !(id in SURVIVING_PANEL_REASONS)).sort();
     expect(undecided).toEqual([]);
@@ -1782,7 +1757,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
   // renders but keeps its reason) must fail too. `tx` and `audio-scope` are
   // exempt: they are deliberately not in the default-fixture inventory.
   it('no stale entry remains in the panel ledger after a zone retires its panels', () => {
-    const ids = new Set([...renderAll('desktop-v2').querySelectorAll('[data-panel-id]')]
+    const ids = new Set([...renderAll('desktop-v2').querySelectorAll('[data-panel-id]:not(.semantic-control-panel [data-panel-id])')]
       .map((el) => el.getAttribute('data-panel-id')!));
     const EXEMPT = new Set(['tx', 'audio-scope']);
     const stale = Object.keys(SURVIVING_PANEL_REASONS).filter((id) => !ids.has(id) && !EXEMPT.has(id));

@@ -316,6 +316,17 @@ The architecture is proven when:
 
 ## Open decisions
 
+This list records the July design questions. Workspace and density policy now
+have implemented contracts: `frontend/src/presentation/workspace/contract.ts`
+defines `WorkspaceV1`, validated import/export and bounded forward reads;
+`frontend/src/presentation/workspace/resolution.ts` defines `densityActivation`
+and `resolveSurfacePlan`. Density is a workspace preference constrained by the
+active language; surface preferences stay inside the layout's declared zones
+and cannot remove required surfaces. See `docs/guide/web-ui.md` for operator
+controls and limits, and `docs/architecture/building-a-skin.md` for current skin
+ownership. These pointers resolve questions 2 and 4 below; they do not certify
+all acceptance criteria or promise a public custom-skin SDK.
+
 1. Boundary between semantic components and language-specific renderers.
 2. Whether density belongs to design language, workspace, or both.
 3. Reference radios and viewport matrix for the first layout.

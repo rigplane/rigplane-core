@@ -34,6 +34,7 @@
 -->
 <script lang="ts">
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';
+  import '../desktop-v2/semantic-controls.css';
 </script>
 
 <RadioLayout skinId="sdr-test" />
