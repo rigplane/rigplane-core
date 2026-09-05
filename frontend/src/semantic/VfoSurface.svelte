@@ -856,6 +856,13 @@
   .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); }
   .vfo-stale-cue { visibility: hidden; font-size: 10px; inline-size: 1ch; flex: 0 0 1ch; }
   .vfo-stale-cue.stale { visibility: visible; }
+  /* Reserve the semantic tile's upper trailing corner, not another flex gap.
+     A flow slot can wrap a 375px phone row even while its cue is hidden. */
+  [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }
+  [data-vfo-appearance='semantic'] .vfo-stale-cue {
+    position: absolute; inset-inline-end: 1px; inset-block-start: 1px;
+    line-height: 1; letter-spacing: normal;
+  }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
   .vfo-select, .fact-toggle, .vfo-op { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
   .vfo-select:disabled, .fact-toggle:disabled, .vfo-op:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
