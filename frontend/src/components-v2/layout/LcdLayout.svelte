@@ -77,6 +77,13 @@
       ? { canvas: segmentlineGroup.canvas, minScale: segmentlineGroup.scaling.minScale }
       : undefined,
   );
+  const frameBorder = 1;
+  // The slot keeps the native aspect outside its border; reserve both inner axes.
+  let stageFrameMinimum = $derived(segmentlineStage ? Math.ceil(Math.max(
+    segmentlineStage.canvas.w * segmentlineStage.minScale + 2 * frameBorder,
+    (segmentlineStage.canvas.h * segmentlineStage.minScale + 2 * frameBorder)
+      * segmentlineStage.canvas.w / segmentlineStage.canvas.h,
+  )) : undefined);
   let segmentlineDisplay: LcdDisplayVariantId = $derived(
     variant === 'unified-instrument' ? 'dominant'
       : variant === 'panadapter-first' ? 'panadapter'
@@ -120,11 +127,12 @@
   });
 </script>
 
-<div class="lcd-layout">
+<div class="lcd-layout" style:--lcd-frame-border={`${frameBorder}px`}>
   <StatusBar {showManagedTotControl} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
-  <section class="content-row">
+  <section class="content-row" class:fixed-native-stage={!!segmentlineStage}
+    style:--stage-frame-minimum={stageFrameMinimum === undefined ? undefined : `${stageFrameMinimum}px`}>
     <div class="content-left">
       <LeftSidebar hideTxPanel />
     </div>
@@ -212,6 +220,12 @@
     gap: 5px;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .content-row.fixed-native-stage {
+    /* Keep controls usable below the stage floor; the whole row scrolls. */
+    grid-template-columns: minmax(216px, 228px) minmax(var(--stage-frame-minimum), 1fr) minmax(216px, 228px);
+    overflow-x: auto;
   }
 
   .content-left,
@@ -347,7 +361,7 @@
     min-width: 0;
     overflow: hidden;
     background: var(--v2-bg-card);
-    border: 1px solid var(--v2-border-darker);
+    border: var(--lcd-frame-border) solid var(--v2-border-darker);
     border-radius: 4px;
   }
 </style>
