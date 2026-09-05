@@ -8,6 +8,7 @@ import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ScopeDisplayProjection } from '$lib/runtime/adapters/scope-display-projection';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 
 // ---------------------------------------------------------------------------
@@ -370,6 +371,7 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => ({
 // Import component after mocks
 // ---------------------------------------------------------------------------
 
+import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import SpectrumPanel from '../SpectrumPanel.svelte';
 import spectrumPanelSource from '../SpectrumPanel.svelte?raw';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -1385,5 +1387,188 @@ describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
     const viewer = target.querySelector<HTMLButtonElement>('[aria-label="Scope viewer"]')!;
     expect(viewer.textContent).toContain('Viewer ON'); viewer.click(); flushSync(); expect(viewer.textContent).toContain('Viewer OFF');
     expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
+  });
+});
+
+describe('managed scope projection (MOR-2367)', () => {
+  function projection(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current'): ScopeDisplayProjection {
+    return Object.freeze({
+      frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
+        startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) }),
+      frameMode: 0,
+      passband: state === 'current' || state === 'stale'
+        ? Object.freeze({ state, tuple: Object.freeze({ frequencyHz: 14_050_250, mode: 'USB',
+          widthHz: 2_400, shiftHz: 0, frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 }) })
+        : { state, reason: 'not-observed' },
+    });
+  }
+  function managed(initial: ReturnType<typeof projection> | null | undefined) {
+    const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
+    const onScopeDemandChange = vi.fn((enabled: boolean) => props.set('demanded', enabled));
+    const target = mountPanel({
+      get scopeProjection() { return props.get('projection'); },
+      get scopeDemanded() { return props.get('demanded'); }, onScopeDemandChange,
+    });
+    return { target, props, onScopeDemandChange };
+  }
+  function cleared(target: HTMLElement) {
+    for (const selector of ['canvas', '.freq-axis', '.tune-line', '.passband-overlay', '.passband-resize-zone', '.draggable']) {
+      expect(target.querySelector(selector), selector).toBeNull();
+    }
+  }
+  it.each([null, 'current'] as const)('never acquires or subscribes raw scope for managed %s', (kind) => {
+    const { target } = managed(kind === null ? null : projection());
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
+    expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
+    emitFrame();
+    if (kind === null) cleared(target);
+    else expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+  it('keeps omitted and explicit undefined projections on the legacy acquisition path', () => {
+    mountPanel(); mountPanel({ scopeProjection: undefined });
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(2);
+    expect(mockRuntime.scope.subscribeHardware).toHaveBeenCalledTimes(2);
+  });
+  it('clears after legacy-to-managed null and rejects a captured late raw callback', () => {
+    const { target, props } = managed(undefined);
+    emitFrame(); const oldCallback = runtimeHarness.state.capturedHardwareFrame!;
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    props.set('projection', null); flushSync(); cleared(target);
+    oldCallback({ receiver: 0, mode: 0, startFreq: 14_000_000, endFreq: 14_100_000, pixels: new Uint8Array([90, 90]) });
+    flushSync(); cleared(target);
+    expect(runtimeHarness.state.hardwareUnsubscribe).toHaveBeenCalledOnce();
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledOnce();
+  });
+  it.each(['null', 'off'] as const)('clears pixels, coordinates and active captures on %s while shared health stays true', async (boundary) => {
+    const shared = mockRuntime.acquireHardwareScope();
+    const { target, props, onScopeDemandChange } = managed(projection());
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([0, 128, 255]);
+    const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 80, 100); pointer(waterfall, 'pointermove', 80, 130);
+    const oldCanvas = target.querySelector('canvas');
+    if (boundary === 'null') props.set('projection', null);
+    else target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
+    flushSync(); cleared(target);
+    expect(oldCanvas?.isConnected).toBe(false);
+    expect(runtimeHarness.state.mockScopeConnected).toBe(true);
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledOnce();
+    expect(mockRuntime.releaseHardwareScope).not.toHaveBeenCalled();
+    pointer(window, 'pointerup', 80, 130);
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 81, 100); pointer(spectrum, 'pointermove', 81, 130); pointer(spectrum, 'pointerup', 81, 130);
+    target.querySelector('.spectrum-panel')!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }));
+    emitFrame(); cleared(target);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    if (boundary === 'off') {
+      expect(onScopeDemandChange).toHaveBeenCalledWith(false);
+      props.set('projection', null); flushSync();
+      target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click(); flushSync();
+      expect(onScopeDemandChange).toHaveBeenLastCalledWith(true); cleared(target);
+    }
+    props.set('projection', projection()); flushSync();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    mockRuntime.releaseHardwareScope(shared);
+  });
+  it.each(['unknown', 'unsupported'] as const)('keeps the managed sample plane without raw RF fallback for %s passband', (state) => {
+    const { target } = managed(projection(state));
+    expect(target.querySelector('canvas')).not.toBeNull();
+    expect(target.querySelector('.freq-axis')).not.toBeNull();
+    expect(target.querySelector('.tune-line')).toBeNull();
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+  });
+  it('retains whole stale geometry with a non-color cue while strict fresh frequency still pans', () => {
+    const { target, props } = managed(projection()); const original = target.querySelector('.passband-overlay')!.getAttribute('style');
+    authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null }); refreshSpectrumAuthority();
+    props.set('projection', projection('stale')); flushSync();
+    expect(target.querySelector('.passband-overlay')!.getAttribute('style')).toBe(original);
+    const cue = target.querySelector('.passband-freshness')!;
+    expect(cue.textContent?.trim()).not.toBe(''); expect(cue.getAttribute('aria-label')).toBeTruthy();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 82, 100); pointer(spectrum, 'pointermove', 82, 120); pointer(spectrum, 'pointerup', 82, 120);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
+    authorityHarness.state.current = authority({ frequencyHz: null }); refreshSpectrumAuthority(); flushSync();
+    pointer(spectrum, 'pointerdown', 83, 100); pointer(spectrum, 'pointermove', 83, 120); pointer(spectrum, 'pointerup', 83, 120);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+    props.set('projection', projection()); flushSync();
+    expect(target.querySelector('.passband-freshness')!.textContent?.trim()).toBe('');
+  });
+  it('does not grant stale resize even if a separate strict snapshot is current', () => {
+    const { target, props } = managed(projection()); const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 84, 100); pointer(waterfall, 'pointermove', 84, 130);
+    props.set('projection', projection('stale')); flushSync();
+    pointer(window, 'pointerup', 84, 130);
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+  it('pushes normalized managed frames through existing waterfall registrations on mount and recovery', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      const { target, props } = managed(projection());
+      expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
+      const firstCanvas = target.querySelector('.waterfall-content canvas');
+      props.set('projection', null); flushSync(); const afterClear = push.mock.calls.length;
+      emitFrame(); expect(push).toHaveBeenCalledTimes(afterClear);
+      props.set('projection', projection()); flushSync();
+      expect(target.querySelector('.waterfall-content canvas')).not.toBe(firstCanvas);
+      expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
+      expect(push.mock.calls.length).toBeGreaterThan(afterClear);
+    } finally { push.mockRestore(); }
+  });
+  it('preserves raw waterfall push delivery in legacy mode', () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    try {
+      mountPanel(); const frame = emitFrame();
+      expect(push).toHaveBeenCalledWith(frame.pixels);
+    } finally { push.mockRestore(); }
+  });
+  it.each(['tap', 'pan'] as const)('cancels an in-flight %s and DX coordinates when managed projection becomes null', (gesture) => {
+    const { target, props } = managed(projection()); const { spectrum, waterfall } = prepareGeometry(target);
+    const surface = gesture === 'tap' ? waterfall.querySelector('canvas')! : spectrum;
+    const spot = { spotter: 'N0CALL', freq: 14_075_410, call: 'K1ABC', comment: 'test', time_utc: '1200', timestamp: 1 };
+    runtimeHarness.state.capturedDxMessage?.({ type: 'dx_spot', spot }); flushSync();
+    expect(target.querySelector('.dx-badge')).not.toBeNull();
+    pointer(surface, 'pointerdown', 86, 100);
+    if (gesture === 'pan') pointer(surface, 'pointermove', 86, 120);
+    props.set('projection', null); flushSync();
+    pointer(surface, 'pointerup', 86, 120);
+    runtimeHarness.state.capturedDxMessage?.({ type: 'dx_spot', spot }); flushSync();
+    expect(target.querySelector('.dx-badge')).toBeNull(); cleared(target);
+    expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+  });
+  it('routes current managed waterfall tap and wheel through canonical handlers', () => {
+    const { target } = managed(projection()); const { waterfall } = prepareGeometry(target);
+    const canvas = waterfall.querySelector('canvas')!;
+    pointer(canvas, 'pointerdown', 87, 150); pointer(canvas, 'pointerup', 87, 150);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
+    target.querySelector('.spectrum-panel')!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }));
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenLastCalledWith(14_049_000, 0, 'step');
+  });
+  it('obeys an external demanded=false even if the supplied projection is still live', () => {
+    const { target, props } = managed(projection());
+    props.set('demanded', false); flushSync(); cleared(target);
+    props.set('projection', projection()); flushSync(); cleared(target);
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
+    props.set('demanded', true); flushSync();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+  });
+  it.each(['failed', 'cancelled'] as const)('keeps pending resize temporary and returns to the qualified tuple after %s', (phase) => {
+    const input = projection(); const { target } = managed(input); const { waterfall } = prepareGeometry(target);
+    const zone = waterfall.querySelector('.passband-resize-zone')!;
+    pointer(zone, 'pointerdown', 85, 100); pointer(waterfall, 'pointermove', 85, 130); pointer(waterfall, 'pointerup', 85, 130);
+    expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledWith(2_700, 0, 17);
+    setFilterWidthLifecycle(pendingFilterWidthLifecycle(2_700)); flushSync();
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('27%');
+    setFilterWidthLifecycle({ outcome: { phase } }); flushSync();
+    expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('24%');
+    expect(input.passband).toEqual(projection().passband);
   });
 });
