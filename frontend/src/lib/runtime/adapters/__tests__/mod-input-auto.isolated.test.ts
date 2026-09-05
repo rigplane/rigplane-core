@@ -124,7 +124,16 @@ function setState(overrides: Record<string, unknown> = {}): void {
 }
 
 function useDualReceiverCapabilities(): void {
-  setCapabilities({ capabilities: ['data_mode'], receivers: 2, vfoScheme: 'main_sub', stateContractVersion: 1, providerGeneration: 0 } as never);
+  setCapabilities({
+    capabilities: ['data_mode'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    audioTx: true,
+    audioTxRoute: 'lan',
+    audioTxRequiredModInputSource: 5,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+  } as never);
 }
 
 function missingStatus() {
@@ -191,7 +200,14 @@ beforeEach(() => {
   vi.mocked(runtime.startTx).mockResolvedValue(null);
   vi.mocked(runtime.stopTx).mockClear();
   resetRadioState();
-  setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
+  setCapabilities({
+    capabilities: ['data_mode'],
+    audioTx: true,
+    audioTxRoute: 'lan',
+    audioTxRequiredModInputSource: 5,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+  } as never);
   dismissModInputTxGuard();
 });
 
