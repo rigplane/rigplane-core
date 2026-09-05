@@ -1969,14 +1969,15 @@ async def test_set_compressor_off_delegates_to_set_processor(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_get_tuner_status_delegates_to_get_tuner(connected_radio):
+async def test_get_tuner_status_reads_atu(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="AC001")
     result = await connected_radio.get_tuner_status()
     assert isinstance(result, int)
 
 
 @pytest.mark.asyncio
-async def test_set_tuner_status_delegates_to_set_tuner(connected_radio):
+async def test_set_tuner_status_acquires_atu_route(connected_radio):
+    connected_radio._transport.query = AsyncMock(return_value="AC101")
     connected_radio._transport.write = AsyncMock()
     await connected_radio.set_tuner_status(1)
     connected_radio._transport.write.assert_called_once()

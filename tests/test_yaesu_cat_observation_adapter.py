@@ -163,11 +163,8 @@ def _make_radio() -> MagicMock:
     radio.read_clarifier = AsyncMock(return_value=(True, False))
     radio.get_clarifier_freq = AsyncMock(return_value=-250)
     radio.read_clarifier_freq = AsyncMock(return_value=-250)
-    # Tuner + dial-lock observation reads (MOR-455). ``read_tuner`` returns the
-    # raw device int (0=OFF, 1=ON, 2=tuning, 3=tune-start); ``read_lock``
-    # returns the dial-lock bool.
     radio.get_tuner = AsyncMock(return_value=2)
-    radio.read_tuner = AsyncMock(return_value=2)
+    radio.get_tuner_status = AsyncMock(return_value=2)
     radio.get_lock = AsyncMock(return_value=True)
     radio.read_lock = AsyncMock(return_value=True)
     # CW keyer family observation reads (MOR-456). ``read_keyer_speed`` returns
@@ -502,11 +499,11 @@ class _SideEffectingYaesuRadio:
         self.radio_state.rit_freq = value
         return value
 
-    async def read_tuner(self) -> int:
+    async def get_tuner_status(self) -> int:
         return 2
 
     async def get_tuner(self) -> int:
-        value = await self.read_tuner()
+        value = await self.get_tuner_status()
         self.radio_state.tuner_status = value
         return value
 
@@ -1148,7 +1145,7 @@ async def test_tx_controls_poll_emits_global_setpoints() -> None:
     radio.read_clarifier.assert_awaited_once()
     radio.read_clarifier_freq.assert_awaited_once()
     # Tuner + dial-lock each use a single read (MOR-455).
-    radio.read_tuner.assert_awaited_once()
+    radio.get_tuner_status.assert_awaited_once()
     radio.read_lock.assert_awaited_once()
     # CW keyer family each use a single read (MOR-456).
     radio.read_keyer_speed.assert_awaited_once()
@@ -1232,7 +1229,7 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_clarifier.assert_not_awaited()
     radio.read_clarifier_freq.assert_not_awaited()
     # Tuner + dial-lock are dropped: ``tuner``/``dial_lock`` caps absent (MOR-455).
-    radio.read_tuner.assert_not_awaited()
+    radio.get_tuner_status.assert_not_awaited()
     radio.read_lock.assert_not_awaited()
     # CW keyer family dropped: the ``cw`` runtime cap is absent here (MOR-456).
     radio.read_keyer_speed.assert_not_awaited()
@@ -1395,8 +1392,8 @@ async def test_adapter_uses_read_only_yaesu_paths_when_getters_mutate_state() ->
         ("global.tx_state.rit_tx", False),
         ("global.operator_controls.rit_freq", -250),
         # Tuner + dial-lock (MOR-455): gated on the ``tuner``/``dial_lock`` caps
-        # (present here); a single ``read_tuner``/``read_lock`` each — neither
-        # mutates legacy state. tuner_status is the raw device int (0-3).
+        # (present here); a single ``get_tuner_status``/``read_lock`` each — neither
+        # mutates legacy state. tuner_status is the generic ATU status (0-2).
         ("global.operator_controls.tuner_status", 2),
         ("global.tx_state.dial_lock", True),
         # CW keyer family (MOR-456): gated on the ``cw`` cap (present here); a

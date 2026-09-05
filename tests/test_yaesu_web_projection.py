@@ -243,7 +243,7 @@ def _make_radio() -> MagicMock:
     # Tuner + dial-lock observation reads (MOR-455). tuner_status is a global
     # operator-control int (raw device scale, 0-3); dial_lock is a global
     # tx_state bool — both ride the tx-control lane.
-    radio.read_tuner = AsyncMock(return_value=2)
+    radio.get_tuner_status = AsyncMock(return_value=2)
     radio.read_lock = AsyncMock(return_value=True)
     # CW keyer family observation reads (MOR-456). key_speed/cw_pitch/break_in/
     # break_in_delay ride the tx-control lane (global operator-control ints);

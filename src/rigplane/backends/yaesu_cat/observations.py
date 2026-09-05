@@ -272,7 +272,7 @@ class YaesuObservationRadio(Protocol):
 
     async def read_clarifier_freq(self, receiver: int = 0) -> int: ...
 
-    async def read_tuner(self) -> int: ...
+    async def get_tuner_status(self) -> int: ...
 
     async def read_lock(self) -> bool: ...
 
@@ -1123,16 +1123,15 @@ class YaesuObservationAdapter:
                     )
         # Antenna tuner (MOR-455) — GLOBAL operator-control state (CAT ``AC``),
         # gated on the ``tuner`` runtime capability, mirroring the legacy
-        # poller's ``"tuner" in caps`` gate. Emitted as the raw device int
-        # (0-3); cross-vendor calibration is MOR-453.
+        # poller's ``"tuner" in caps`` gate; the generic getter normalizes AC.
         if self._has_runtime_capability("tuner") and self._can_poll(_TUNER):
-            ok, value = await self._safe_read("tuner", self.radio.read_tuner())
+            ok, value = await self._safe_read("tuner", self.radio.get_tuner_status())
             if ok and value is not None:
                 observations.append(
                     adapter.observation(
                         _TUNER,
                         int(value),
-                        native_id="read_tuner",
+                        native_id="get_tuner_status",
                     )
                 )
         # Dial lock (MOR-455) — GLOBAL tx_state bool (CAT ``LK``), gated on the

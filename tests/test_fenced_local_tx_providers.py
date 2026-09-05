@@ -30,6 +30,7 @@ def _fenced_radio(fence: TxAbortFence | None) -> YaesuCatRadio:
     radio = YaesuCatRadio("/dev/null", tx_abort_fence=fence)
     transport = radio._transport
     transport._connected = True
+    transport.query = AsyncMock(return_value="AC101")
     transport.flush_rx = AsyncMock(return_value=0)
     transport._drain_responses = AsyncMock(return_value=0)
     transport._raw_write = AsyncMock()
@@ -136,16 +137,21 @@ async def test_force_receive_suppresses_remaining_cw_chunks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unmanaged_calls_keep_the_direct_write_contract() -> None:
+async def test_unmanaged_calls_keep_native_writes_and_guard_generic_tuner() -> None:
     radio = _fenced_radio(None)
     radio._transport.write = AsyncMock()
 
     await radio.send_cw_text("CQ")
     await radio.set_tuner_status(2)
 
-    assert [call.kwargs for call in radio._transport.write.await_args_list] == [{}, {}]
+    cw_call, tuner_call = radio._transport.write.await_args_list
+    assert cw_call.kwargs == {}
+    assert tuner_call.kwargs["is_current"]() is True
+    radio._transport.stats.reconnects += 1
+    assert tuner_call.kwargs["is_current"]() is False
+    radio._transport.query.assert_awaited_once_with("AC;")
     assert radio._transport.write.await_args_list[0].args[0].startswith("KY ")
-    assert radio._transport.write.await_args_list[1].args[0].startswith("AC")
+    assert tuner_call.args == ("AC103;",)
 
 
 def _icom_radio() -> CoreRadio:
