@@ -314,6 +314,17 @@ describe('the migrated LCD entrypoints own VFO/TX through the semantic surfaces'
     expect(column.querySelector('[data-testid="rx-tx-surface"]')).not.toBeNull();
   });
 
+  // MOR-1413: the retained radio-operation menu is the first top-right block;
+  // semantic VFO/TX facts follow it without changing either component's owner.
+  it.each(VARIANTS)('places the existing VFO menu first in the %s top-right column', (variant) => {
+    const column = render(variant).querySelector('.content-right')!;
+    const menu = column.querySelector('.vfo-ctrl-panel')!;
+    const semantic = column.querySelector('[data-testid="semantic-radio-surfaces"]')!;
+
+    expect(column.firstElementChild).toBe(menu);
+    expect(menu.compareDocumentPosition(semantic) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
   // MUTATION KILLED: adding the surfaces alongside the legacy TX panel. The
   // LCD would then ship two PTT affordances — the exact duplicate ownership
   // MOR-1099 exists to retire, on the layout that also renders TX indication.
