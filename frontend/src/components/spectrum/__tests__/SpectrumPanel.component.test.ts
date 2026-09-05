@@ -793,7 +793,6 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(spectrumPanelSource.match(/getFilterHandlers\(\)/g)).toHaveLength(1);
     expect(spectrumPanelSource).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
     expect(spectrumPanelSource).toContain('let scopeMode = $derived(frameScopeMode)');
-    expect(spectrumPanelSource).toContain('spanHz: tuneVisible ? spanHz : 0');
     expect(spectrumPanelSource).not.toContain('function toSpectrumAuthority');
     expect(spectrumPanelSource).not.toContain('function snapSpectrumFilterWidth');
   });

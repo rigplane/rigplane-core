@@ -62,6 +62,21 @@ describe('renderSpectrum', () => {
     expect(log.fillText.length).toBe(0);
   });
 
+  it('suppresses RF labels and carrier overlays without changing the audio trace geometry', () => {
+    const { ctx, log } = createMockCtx();
+    const reference = createMockCtx();
+    const pixels = new Uint8Array([0, 20, 80, 40, 0]);
+    renderSpectrum(ctx, pixels, 80, 40, opts({
+      spanHz: 12000, centerHz: 6000, showRfOverlays: false,
+      tuneHz: 6000, passbandHz: 2400, mode: 'USB',
+    }));
+    renderSpectrum(reference.ctx, pixels, 80, 40, opts());
+    expect(log.fillText).toEqual([]);
+    expect(log.fillRect).toEqual(reference.log.fillRect);
+    expect(log.lineTo).toEqual(reference.log.lineTo);
+    expect(log.strokes).toBe(reference.log.strokes);
+  });
+
   it('clamps label x within [20, width-20]', () => {
     const { ctx, log } = createMockCtx();
     renderSpectrum(ctx, data50(), 800, 400, opts({ spanHz: 1e6, centerHz: 14_500_000 }));

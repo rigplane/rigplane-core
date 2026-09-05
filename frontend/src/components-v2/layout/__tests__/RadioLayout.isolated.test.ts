@@ -322,7 +322,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasDualReceiver: vi.fn(() => false),
   hasAudio: vi.fn(() => false),
   hasSpectrum: vi.fn(() => true),
-  hasAnyScope: vi.fn(() => false),
+  hasAnyScope: vi.fn(() => true),
   isAudioFftScope: vi.fn(() => false),
   hasAudioFft: vi.fn(() => false),
   getScopeSource: vi.fn(() => null),
@@ -541,7 +541,7 @@ describe('App presentation selection', () => {
       capabilities: { scope: true },
       layoutPreference: 'standard',
       isMobile: false,
-      hasAnyScope: false,
+      hasAnyScope: true,
     });
     expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
   });
