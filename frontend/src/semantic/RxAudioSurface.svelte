@@ -48,7 +48,7 @@
   prefs were never restored", which renders present-and-unobserved.
 -->
 <script module lang="ts">
-  import { modInputSourceLabel } from '$lib/radio/mod-input';
+  import { MOD_INPUT_SOURCES, modInputSourceLabel } from '$lib/radio/mod-input';
   import type {
     AudioFocus, ModInputReadiness, MonitorMode, RxAudioField,
   } from './radio-view-model';
@@ -64,12 +64,7 @@
   export const SPLIT_CHOICES = [[true, 'on'], [false, 'off']] as const;
   /** The ONE rendering of "not measured". Never 0, never 'both', never 'off'. */
   export const UNKNOWN_TEXT = '—';
-  /** MOR-1384 — the restored audio-link-lost words. English is hardcoded here
-   *  exactly like every other string on this surface (the MOR-1373 semantic
-   *  i18n policy is still open); the v2 key `core.overlay.audioLinkLost` is
-   *  NOT reused, and its "— reconnecting…" clause is deliberately dropped: a
-   *  retry in flight is client behaviour this contract does not carry, and
-   *  this surface may not consult the audio manager to find out. */
+  /** MOR-1384 — audio-link loss without an inferred retry state. */
   export const LINK_LOST_TEXT = 'live audio link lost';
   /** Readiness words. `mismatch` names the consequence, not just the state. */
   export const READINESS_LABEL: Record<ModInputReadiness['status'], string> = {
@@ -88,6 +83,7 @@
 </script>
 
 <script lang="ts">
+  import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -97,15 +93,30 @@
     onRoutingFocus?: (focus: AudioFocus) => void;
     onRoutingSplit?: (split: boolean) => void;
     onSetModInputLan?: () => void;
+    onModInputChange?: (source: number) => void;
   }
   let {
     view, onMonitorMode, onAfLevel, onRoutingFocus, onRoutingSplit, onSetModInputLan,
+    onModInputChange,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine):
    *  a radio with no audio chain gets no empty panel and no zone had to learn
    *  about it. */
   let rx = $derived(view.rxAudio);
+  let modInputValue = $derived(
+    rx?.modInputSource.reading.status === 'known'
+      && modInputSourceLabel(rx.modInputSource.reading.value) !== null
+      ? String(rx.modInputSource.reading.value) : '',
+  );
+  let modInputUsable = $derived(!!rx && usable(rx.modInputSource) && modInputValue !== '');
+
+  function changeModInput(select: HTMLSelectElement): void {
+    const value = select.value;
+    const source = MOD_INPUT_SOURCES.find((option) => String(option.value) === value);
+    select.value = modInputValue;
+    if (modInputUsable && source) onModInputChange?.(source.value);
+  }
   /** Rule (3): the FACT, not a capability re-derivation. */
   let liveOffered = $derived(rx?.liveAudio.structural === true);
   /** MOR-1384 — the v2 `RxAudioPanel` link-lost readout, restored from the SAME
@@ -214,6 +225,23 @@
         data-readiness={rx.modInputReadiness.status}
         data-observed={usable(rx.modInputSource)}
       >
+        <label class="rx-audio-mod-selector">
+          <span>{t('core.modePanel.modInputLabel')}</span>
+          <select
+            data-testid="rx-audio-mod-select"
+            aria-label={t('core.modePanel.modInputAria')}
+            value={modInputValue}
+            disabled={!modInputUsable}
+            onchange={(event) => changeModInput(event.currentTarget)}
+          >
+            {#if modInputValue === ''}
+              <option value="" disabled>{UNKNOWN_TEXT}</option>
+            {/if}
+            {#each MOD_INPUT_SOURCES as option (option.value)}
+              <option value={String(option.value)}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
         <span data-testid="rx-audio-mod-source">MOD: {rx.modInputSource.reading.status === 'known'
           ? modInputSourceLabel(rx.modInputSource.reading.value) ?? UNKNOWN_TEXT
           : UNKNOWN_TEXT}</span>
@@ -237,10 +265,12 @@
   .rx-audio-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .rx-audio-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .rx-audio-level { display: flex; align-items: baseline; gap: 0.5rem; }
+  .rx-audio-mod-selector { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; max-width: 100%; }
+  .rx-audio-mod-selector select { min-width: 0; max-width: 100%; }
   .rx-audio-name { min-width: 4ch; }
   .rx-audio-choice[aria-checked='true'] { font-weight: 700; }
   /* Second channel beside `data-observed`, never the only one: the unknown
      text itself is the primary one and survives forced-colors. */
   [data-observed='false'] { font-style: italic; }
-  button:disabled, input:disabled { cursor: not-allowed; }
+  button:disabled, input:disabled, select:disabled { cursor: not-allowed; }
 </style>

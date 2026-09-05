@@ -1075,6 +1075,7 @@
         onRoutingFocus={(focus) => routingIntents.onFocusChange(focus)}
         onRoutingSplit={(split) => routingIntents.onSplitStereoChange(split)}
         onSetModInputLan={setModInputLan}
+        onModInputChange={semanticHandlers.mode.onModInputChange}
       />
     {/if}
   {/snippet}
