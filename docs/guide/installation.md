@@ -16,7 +16,17 @@ description: Install RigPlane from PyPI on macOS, Linux, or Windows — Python 3
 pip install rigplane
 ```
 
+The prebuilt wheel includes the Web UI and does not require Node.js or npm.
+If pip must build from a source distribution instead, follow the source-build
+requirements below.
+
 ## Install from Source
+
+Building from a Git checkout or source distribution requires Node.js and npm.
+The build runs `npm ci` and downloads frontend dependencies from the npm
+registry unless they are already cached. The source-distribution install path
+has been verified with Node.js 20.20.2 and npm 10.8.2; this is the tested
+toolchain, not a claim that other versions are supported.
 
 ```bash
 git clone https://github.com/rigplane/rigplane-core.git
