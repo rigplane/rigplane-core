@@ -30,6 +30,7 @@ vi.mock('../tx-mic', () => ({
   TxMic: class {
     start = txStart;
     stop = txStop;
+    get active() { return true; }
     static supported() { return true; }
   },
 }));
