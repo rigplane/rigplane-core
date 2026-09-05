@@ -1,21 +1,10 @@
 import { validateCapabilities, type Capabilities } from '../types/capabilities';
 import type { InfoResponse } from '../types/protocol';
+import { getAuthHeaders, getAuthToken } from '../auth';
+
+export { getAuthHeaders, getAuthToken };
 
 const BASE = '/api/v1';
-
-export function getAuthToken(): string | null {
-  const storage = globalThis.localStorage;
-  if (!storage || typeof storage.getItem !== 'function') {
-    return null;
-  }
-  return storage.getItem('rigplane-auth-token');
-}
-
-export function getAuthHeaders(): Record<string, string> {
-  const token = getAuthToken();
-  if (token) return { Authorization: `Bearer ${token}` };
-  return {};
-}
 
 function handleUnauthorized(): void {
   const token = prompt('Enter auth token:');

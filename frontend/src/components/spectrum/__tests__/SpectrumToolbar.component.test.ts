@@ -4,7 +4,7 @@
  * from the merged spectrum selector while actions use the bound scope family.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
+import { mount, unmount, flushSync, tick } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -128,6 +128,7 @@ vi.mock('../ScopeSettingsPopover.svelte', () => ({ default: vi.fn() }));
 globalThis.fetch = vi.fn(() =>
   Promise.resolve({ ok: false, json: () => Promise.resolve({}) } as Response),
 );
+const fetchMock = vi.mocked(globalThis.fetch);
 
 import SpectrumToolbar from '../SpectrumToolbar.svelte';
 
@@ -242,7 +243,11 @@ function clearIntentSpies() {
 
 beforeEach(() => {
   components = [];
+  localStorage.clear();
   vi.clearAllMocks();
+  fetchMock.mockImplementation(() =>
+    Promise.resolve({ ok: false, json: () => Promise.resolve({}) } as Response),
+  );
   tuningHarness.state.autoStep = false;
   capabilityHarness.scope = true;
   capabilityHarness.dual = true;
@@ -258,6 +263,7 @@ beforeEach(() => {
 afterEach(() => {
   components.forEach((component) => unmount(component));
   document.body.innerHTML = '';
+  localStorage.clear();
 });
 
 // ── Canonical selector and one-time binder ─────────────────────────────────
@@ -541,6 +547,63 @@ describe('structural and browser-local behavior', () => {
     const component = components.pop()!;
     unmount(component);
     expect(target.querySelector('.spectrum-toolbar')).toBeNull();
+  });
+});
+
+describe('band-plan HTTP authentication', () => {
+  it('authenticates GETs and rereads the token for the existing config POST', async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/layers')) {
+        return {
+          ok: true,
+          json: async () => ({ layers: [{ layer: 'ham', name: 'Ham' }, { layer: 'eibi', name: 'EiBi' }] }),
+        } as Response;
+      }
+      if (url.endsWith('/config') && init?.method === 'POST') {
+        return { ok: true, json: async () => ({}) } as Response;
+      }
+      if (url.endsWith('/config')) {
+        return {
+          ok: true,
+          json: async () => ({ region: 'US', availableRegions: ['US', 'CA'] }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    localStorage.setItem('rigplane-auth-token', 'read-token');
+    const target = mountToolbar();
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/layers', {
+      headers: { Authorization: 'Bearer read-token' },
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/config', {
+      headers: { Authorization: 'Bearer read-token' },
+    });
+
+    localStorage.setItem('rigplane-auth-token', 'write-token');
+    await tick();
+    await vi.waitFor(() => {
+      expect(target.querySelector<HTMLButtonElement>('.layer-toggle-btn')).not.toBeNull();
+    });
+    target.querySelector<HTMLButtonElement>('.layer-toggle-btn')!.click();
+    flushSync();
+    const caButton = Array.from(target.querySelectorAll<HTMLButtonElement>('.region-btn'))
+      .find((item) => item.textContent?.trim() === 'CA');
+    expect(caButton).toBeDefined();
+    caButton!.click();
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/config', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer write-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ region: 'CA' }),
+      });
+    });
   });
 });
 

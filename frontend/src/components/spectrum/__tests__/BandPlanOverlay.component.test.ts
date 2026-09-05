@@ -85,6 +85,7 @@ function mountOverlay(props: OverlayProps) {
 
 beforeEach(() => {
   cleanups = [];
+  localStorage.clear();
   vi.useFakeTimers();
   mockFetch.mockReset();
   // Default: fetch returns empty segments so local fallback is used
@@ -99,6 +100,7 @@ afterEach(() => {
   document.body.innerHTML = '';
   vi.useRealTimers();
   vi.restoreAllMocks();
+  localStorage.clear();
 });
 
 // ── Tests ──
@@ -192,6 +194,25 @@ describe('BandPlanOverlay (component)', () => {
     const titles = Array.from(segments).map((s) => s.getAttribute('title'));
     expect(titles).toContain('CW-R');
     expect(titles).toContain('SSB-R');
+  });
+
+  it('reads auth when the debounced request runs and keeps 401 fallback behavior', async () => {
+    localStorage.setItem('rigplane-auth-token', 'stale-token');
+    mockFetch.mockResolvedValue({ ok: false, status: 401 } as Response);
+    const { target } = mountOverlay({
+      startFreq: 14_000_000,
+      endFreq: 14_350_000,
+    });
+    localStorage.setItem('rigplane-auth-token', 'current-token');
+
+    await vi.advanceTimersByTimeAsync(150);
+    flushSync();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/band-plan/segments?start=13825000&end=14525000',
+      { headers: { Authorization: 'Bearer current-token' } },
+    );
+    expect(target.querySelectorAll('.band-segment')).toHaveLength(3);
   });
 
   it('hidden layers are filtered out', async () => {
