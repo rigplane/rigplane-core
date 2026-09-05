@@ -549,7 +549,8 @@
      control and scope regions. Side columns scroll without clipping the deck. */
   .radio-layout.desktop-control-face {
     grid-template-columns: 228px minmax(0, 1fr) 228px;
-    grid-template-rows: auto 28px auto minmax(320px, 1fr) auto;
+    /* Wrapped scope controls must contribute to the row above station meters. */
+    grid-template-rows: auto 28px auto minmax(min-content, 1fr) auto;
     gap: 4px;
     overflow-y: auto;
   }
@@ -568,8 +569,12 @@
   }
   .desktop-control-face :global(.desktop-controls-right) { grid-area: 4 / 3 / 5 / 4; }
   .desktop-control-face :global(.desktop-controls-left),
-  .desktop-control-face :global(.desktop-controls-right) { overflow-y: auto; min-height: 0; }
-  .desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; }
+  .desktop-control-face :global(.desktop-controls-right) {
+    overflow-y: auto; min-height: 0;
+    /* Scrollable sidebars must not contribute their full content height. */
+    contain: size;
+  }
+  .desktop-control-face .content-row { display: flex; flex: 1; min-height: 280px; contain: size; }
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }

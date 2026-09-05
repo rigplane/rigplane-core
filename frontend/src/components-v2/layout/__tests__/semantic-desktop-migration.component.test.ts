@@ -1373,7 +1373,7 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
   it('pins the wide warning, chrome, region, notice and meter row declarations', () => {
     const wide = RADIO_LAYOUT_SOURCE.slice(0, RADIO_LAYOUT_SOURCE.indexOf('@media (max-width: 1024px)'));
     expect(wide).toContain('grid-template-columns: 228px minmax(0, 1fr) 228px');
-    expect(wide).toContain('grid-template-rows: auto 28px auto minmax(320px, 1fr) auto');
+    expect(wide).toContain('grid-template-rows: auto 28px auto minmax(min-content, 1fr) auto');
     expect(wide).toContain('min-height: 320px');
     for (const [selector, area] of WIDE_PLACEMENTS) expectPlacement(wide, selector, area);
   });
