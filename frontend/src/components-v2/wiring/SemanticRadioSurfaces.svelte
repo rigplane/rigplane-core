@@ -15,7 +15,9 @@
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { presentationResources, runtime } from '$lib/runtime';
-  import { ScopeFrameHost } from '$lib/runtime/scope-frame-host';
+  import { ScopeFrameHost, type ScopeFramePresentation } from '$lib/runtime/scope-frame-host';
+  import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay } from '$lib/runtime/adapters/scope-passband-display';
+  import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import {
     EMPTY_PBT_PRESENTATION, projectPbtPresentation, type PbtField,
@@ -86,7 +88,7 @@
   interface Props {
     strips?: 'single' | 'dual';
     regions?: boolean;
-    regionContent?: Snippet<[Snippet | undefined]>;
+    regionContent?: Snippet<[Snippet | undefined, ManagedScopeRegion | undefined]>;
     scopeControlsInRegionContent?: boolean;
     regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
@@ -472,6 +474,10 @@
       toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
     ),
   );
+  let managedScope = $derived(displayFrameSource === 'hardware' && regions && regionContent !== undefined);
+  let scopeDemanded = $state(true);
+  let scopePresentation = $state.raw<ScopeFramePresentation | null>(null);
+  let scopePassband = $state.raw(EMPTY_SCOPE_PASSBAND_DISPLAY);
   let selectedDisplayFrame = $state.raw<LcdSpectrumFrame | undefined>(undefined);
   let scopeFrameHost: ScopeFrameHost | null = null;
   let stopWatchingScopeFrameHost: (() => void) | null = null;
@@ -480,26 +486,59 @@
     selectedDisplayFrame = resolution.state === 'live' ? resolution.frame : undefined;
   }
 
+  function refreshScopePassband(): void {
+    if (!managedScope && untrack(() => scopePassband === EMPTY_SCOPE_PASSBAND_DISPLAY)) return;
+    const active = canonicalView?.vfos.filter(vfo => vfo.isActive) ?? [];
+    const vfo = active.length === 1 ? active[0] : null;
+    const selection = vfo && (vfo.slot.kind === 'slotted' || vfo.slot.kind === 'unslotted')
+      ? { receiver: vfo.receiver, slot: vfo.slot.kind === 'slotted' ? vfo.slot.id : 'single' as const } : null;
+    const input = { state: runtime.state, caps: runtime.caps, selection, session: controlSession,
+      frame: managedScope && scopeDemanded ? scopePresentation : null };
+    scopePassband = untrack(() => projectScopePassbandDisplay(scopePassband, input));
+  }
+  function acceptScopePresentation(presentation: ScopeFramePresentation): void {
+    scopePresentation = presentation;
+    if (scopeDemanded) acceptDisplayFrameResolution(presentation.resolution);
+    else selectedDisplayFrame = undefined;
+    untrack(refreshScopePassband);
+  }
+  let watchingManagedScope: boolean | null = null;
   function ensureScopeFrameHost(): ScopeFrameHost {
-    if (scopeFrameHost !== null) return scopeFrameHost;
-    scopeFrameHost = new ScopeFrameHost(runtime.scope);
-    stopWatchingScopeFrameHost = scopeFrameHost.subscribe(acceptDisplayFrameResolution);
+    scopeFrameHost ??= new ScopeFrameHost(runtime.scope);
+    if (watchingManagedScope !== managedScope) {
+      stopWatchingScopeFrameHost?.();
+      scopePresentation = null;
+      untrack(refreshScopePassband);
+      watchingManagedScope = managedScope;
+      stopWatchingScopeFrameHost = managedScope
+        ? scopeFrameHost.subscribePresentation(acceptScopePresentation)
+        : scopeFrameHost.subscribe(acceptDisplayFrameResolution);
+    }
     return scopeFrameHost;
   }
+  function setManagedScopeDemand(enabled: boolean): void {
+    scopeDemanded = enabled;
+    if (!enabled) selectedDisplayFrame = undefined;
+    untrack(refreshScopePassband);
+  }
+  let managedScopeRegion: ManagedScopeRegion | undefined = $derived.by(() => {
+    if (!managedScope) return undefined;
+    const resolution = scopePresentation?.resolution;
+    const frameMode = scopePresentation?.envelope?.frame.mode;
+    const acceptedSequence = scopePresentation?.envelope?.acceptedSequence;
+    const projection = scopeDemanded && resolution?.state === 'live'
+      && typeof frameMode === 'number' && Number.isSafeInteger(frameMode) && acceptedSequence !== undefined
+      ? { frame: resolution.frame, frameMode, acceptedSequence, passband: scopePassband.display } : null;
+    return { projection, demanded: scopeDemanded, setDemand: setManagedScopeDemand };
+  });
+  $effect(refreshScopePassband);
 
-  $effect(() => {
+  let scopeAuthority = $derived.by(() => {
     const source = displayFrameSource;
-    if (source === undefined) {
-      scopeFrameHost?.updateAuthority(null);
-      selectedDisplayFrame = undefined;
-      return;
-    }
-
-    const host = ensureScopeFrameHost();
     const stateGeneration = runtime.state?.providerGeneration;
     const capsGeneration = runtime.caps?.providerGeneration;
     const receiver = canonicalView?.activeReceiver;
-    const authority = receiver?.status === 'known'
+    return source !== undefined && receiver?.status === 'known'
       && typeof stateGeneration === 'number'
       && Number.isSafeInteger(stateGeneration)
       && stateGeneration >= 0
@@ -509,13 +548,30 @@
       && stateGeneration === capsGeneration
       ? { source, receiver: receiver.receiver, providerGeneration: stateGeneration }
       : null;
-    host.updateAuthority(authority);
-    acceptDisplayFrameResolution(host.snapshot());
+  });
+  let scopeLeaseGeneration = $derived(scopeAuthority?.providerGeneration ?? null);
+  $effect(() => {
+    const source = displayFrameSource;
+    if (source === undefined) {
+      scopeFrameHost?.updateAuthority(null);
+      selectedDisplayFrame = undefined;
+      scopePresentation = null;
+      untrack(refreshScopePassband);
+      return;
+    }
+
+    const host = ensureScopeFrameHost();
+    const authority = scopeAuthority;
+    untrack(() => {
+      host.updateAuthority(authority);
+      if (managedScope) acceptScopePresentation(host.snapshotPresentation());
+      else acceptDisplayFrameResolution(host.snapshot());
+    });
   });
 
   $effect(() => {
     const source = displayFrameSource;
-    if (source === undefined) return;
+    if (source === undefined || (managedScope && (!scopeDemanded || scopeLeaseGeneration === null))) return;
     ensureScopeFrameHost();
     const resource = source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
     const lease = presentationResources.acquire(resource, 'SemanticRadioSurfaces.readonlyDisplay');
@@ -532,6 +588,9 @@
     const host = scopeFrameHost;
     stopWatchingScopeFrameHost = null;
     scopeFrameHost = null;
+    scopePresentation = null;
+    selectedDisplayFrame = undefined;
+    scopePassband = EMPTY_SCOPE_PASSBAND_DISPLAY;
     try { stop?.(); } finally { host?.dispose(); }
   });
 
@@ -543,7 +602,7 @@
   let view = $state<RadioViewModel | null>(null);
   const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
   const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
-  let controlSession = $state(readControlSession?.() ?? { state: 'disconnected', epoch: -1 });
+  let controlSession = $state(readControlSession?.() ?? { state: 'disconnected' as const, epoch: -1 });
   const pbtFloorKey = (generation: number, receiver: 'MAIN' | 'SUB', field: PbtField) =>
     `${generation}:${receiver}:${field}`;
   const unsubscribePbtSession = subscribeControlSession?.((next) => {
@@ -561,6 +620,7 @@
       }
     }
     controlSession = next;
+    untrack(refreshScopePassband);
   });
   onDestroy(() => unsubscribePbtSession?.());
   const pbtEvidence = (): PbtPresentationEvidence => {
@@ -1465,7 +1525,7 @@
       {/if}
       {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
       {#if regionContent}
-        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined)}
+        {@render regionContent(scopeControlsInRegionContent ? zonedScopeControls : undefined, managedScopeRegion)}
       {/if}
       </div>
       <div class:desktop-controls-right={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
