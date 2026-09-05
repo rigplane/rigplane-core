@@ -231,6 +231,15 @@
   [data-indicator-appearance='sdr'] .fact { padding: 2px 6px; border-radius: 3px; letter-spacing: .06em; }
   [data-indicator-appearance='sdr'] .facts { gap: 5px; min-height: 24px; }
   .header-badges { display: inline-flex; gap: 4px; margin-left: auto; }
+  /* The historical Standard face reserves a bounded 58px meter row. Without
+     this face-owned height, the wide SVG's intrinsic ratio makes the whole
+     receiver deck grow with viewport width. */
+  [data-indicator-appearance='standard'] .s-meter {
+    width: 100%; max-width: 600px; height: 58px;
+  }
+  [data-indicator-appearance='standard'] .s-meter :global(svg[data-variant='vfo-wide']) {
+    height: 100%;
+  }
   [data-indicator-appearance='standard'] .facts { gap: 4px; }
   .shared-indicators:not([data-indicator-appearance='semantic']) .facts { justify-content: center; }
   .shared-indicators:not([data-indicator-appearance='semantic']) .fact { font-size: 9px; }

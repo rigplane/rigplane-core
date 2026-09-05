@@ -188,4 +188,14 @@ describe('MOR-2342 addressed meter appearance', () => {
     expect(root.querySelector('.header-badges')?.textContent).toContain('BAR');
     expect(root.querySelector('.header-badges')?.textContent).toContain('—');
   });
+  it('bounds the rendered Standard S-meter at the historical row height', () => {
+    const root = render({ indicator: indicator(), appearance: 'standard' });
+    const shell = root.querySelector<HTMLElement>('[data-testid="receiver-s-meter"]')!;
+    const meter = shell.querySelector<SVGElement>('svg[data-variant="vfo-wide"]')!;
+    expect(shell).not.toBeNull();
+    expect(meter).not.toBeNull();
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    expect(source).toMatch(/\[data-indicator-appearance='standard'\] \.s-meter \{\s*width: 100%; max-width: 600px; height: 58px;/);
+    expect(source).toContain("svg[data-variant='vfo-wide']");
+  });
 });

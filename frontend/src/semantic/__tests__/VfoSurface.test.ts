@@ -17,6 +17,7 @@
  *   - i18n coverage: no unresolved catalog key leaks into rendered text.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
@@ -2158,6 +2159,19 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(root.querySelectorAll('[data-receiver-instrument]')).toHaveLength(1);
     expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
     expect(root.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(1);
+  });
+  it('keeps the Standard active frequency dominant over its secondary memory', () => {
+    const root = mountSurface({ viewModel: withReceiverIndicators('1/ab'), appearance: 'standard' });
+    const primary = root.querySelector<HTMLElement>('[data-vfo-active-slot="true"] .vfo-freq')!;
+    const secondary = root.querySelector<HTMLElement>('[data-vfo-active-slot="false"] .vfo-freq')!;
+    expect(primary).not.toBeNull();
+    expect(secondary).not.toBeNull();
+    const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
+    expect(source).toContain('grid-template-columns: auto minmax(0, 1fr) auto;');
+    expect(source).toContain('grid-template-rows: auto auto;');
+    expect(source).toContain('grid-template-columns: auto auto minmax(0, 1fr) auto;');
+    expect(source).toContain('font-size: clamp(34px, 3vw, 44px)');
+    expect(source).toContain('.secondary-slot .vfo-freq { font-size: 18px;');
   });
 });
 
