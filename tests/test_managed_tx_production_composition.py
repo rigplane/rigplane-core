@@ -12,22 +12,29 @@ from rigplane.capabilities import CAP_ANTENNA
 from rigplane.core.command_dispatch import bind_command_intent
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
-    FieldPath,
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    project_observed_ptt,
+)
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
     ActuationResult,
     EffectToken,
+    ManagedTxIntentKind,
+    ManagedTxOutcome,
+    ReleasePlan,
 )
 from rigplane.runtime._poller_types import CommandQueue
-from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     ManagedTxCompositionPort,
@@ -39,7 +46,7 @@ from rigplane.web.web_startup import (
 )
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web.radio_poller import RadioPoller
-from test_managed_tx_authority import authority
+from test_managed_tx_authority import FakeClock, authority
 
 
 class RecordingActuator:
@@ -318,68 +325,112 @@ async def test_observation_generation_drift_poisons_before_listener(tmp_path) ->
 
 
 _ROOT = Path(__file__).parents[1]
-_PTT = FieldPath.global_("tx_state", "ptt")
 
 
-def _observe_ptt(store: StateStore, value: bool) -> None:
+def _observe_ptt(store: StateStore, clock: FakeClock, value: ObservedPtt) -> None:
     store.apply_current(
         Observation(
-            path=_PTT,
+            path=OBSERVED_PTT_PATH,
             value=value,
             source=SourceMetadata(source="poll_response", provider="test"),
-            timestamp_monotonic=100.0,
+            timestamp_monotonic=clock.now,
             max_age=1_000.0,
             provider_generation=store.provider_generation,
         )
     )
 
 
+async def _managed_tx_signature(
+    managed: ManagedTxAuthority, clock: FakeClock
+) -> dict[str, object]:
+    projection = await managed.snapshot()
+    state = projection.state
+    return {
+        "intent_kind": state.intent.kind,
+        "owner_token": state.intent.owner_token,
+        "release_plan": state.release_plan,
+        "release_required": state.release_required,
+        "tx_started_at": state.tx_started_at_monotonic,
+        "tot_deadline": state.tot_deadline_monotonic,
+        "configured_tot": projection.configured_tot_seconds,
+        "remaining_tot": projection.remaining_tot_seconds,
+        "retry_due": managed._retry_due,
+        "retry_delay": managed._retry_delay,
+        "provider_generation": projection.provider_generation,
+        "clock_now": clock.now,
+    }
+
+
 async def test_managed_descriptor_admission_ignores_observed_ptt_discriminator() -> (
     None
 ):
-    signatures = []
-    refusal_messages = []
-    for observed_ptt in (False, True, None):
+    signatures: list[dict[str, object]] = []
+    refusal_messages: list[str] = []
+    admitted_results: list[object] = []
+    for observed_ptt in (ObservedPtt.OFF, ObservedPtt.ON, ObservedPtt.UNKNOWN):
         managed, clock, _, _, _, _ = authority()
-        assert await managed.ptt_down("same-owner") is ManagedTxOutcome.ACCEPTED
-        before = await managed.snapshot()
-        signatures.append(
-            (
-                before.state.intent,
-                before.state.release_required,
-                before.state.tx_started_at_monotonic,
-                before.state.tot_deadline_monotonic,
-                managed._retry_due,
-                clock.now,
+        try:
+            assert await managed.ptt_down("same-owner") is ManagedTxOutcome.ACCEPTED
+            before_observation = await _managed_tx_signature(managed, clock)
+            assert before_observation == {
+                "intent_kind": ManagedTxIntentKind.PTT,
+                "owner_token": "same-owner",
+                "release_plan": ReleasePlan.PTT_RELEASE,
+                "release_required": True,
+                "tx_started_at": 100.0,
+                "tot_deadline": 110.0,
+                "configured_tot": 10.0,
+                "remaining_tot": 10.0,
+                "retry_due": None,
+                "retry_delay": 2.0,
+                "provider_generation": 7,
+                "clock_now": 100.0,
+            }
+
+            store = StateStore(freshness_clock=FreshnessClock(start=clock.now))
+            store.begin_provider_generation()
+            _observe_ptt(store, clock, observed_ptt)
+            assert project_observed_ptt(store.snapshot()) is observed_ptt
+            after_observation = await _managed_tx_signature(managed, clock)
+            assert after_observation == before_observation
+
+            radio = SimpleNamespace(
+                profile=resolve_radio_profile(model="IC-7300"),
+                capabilities={CAP_ANTENNA},
+                set_antenna_1=AsyncMock(),
+                set_civ_output_ant=AsyncMock(),
             )
-        )
+            poller = RadioPoller(
+                radio,
+                CommandQueue(),
+                state_store=store,
+                managed_tx_authority=managed,
+            )
+            antenna = bind_command_intent(
+                "set_antenna_1", {"on": True}, source="websocket"
+            )
+            with pytest.raises(CommandError, match="transmit authority") as refusal:
+                await poller._execute(antenna)  # noqa: SLF001
+            refusal_messages.append(str(refusal.value))
+            radio.set_antenna_1.assert_not_awaited()
+            after_refusal = await _managed_tx_signature(managed, clock)
+            assert after_refusal == after_observation
 
-        store = StateStore()
-        store.begin_provider_generation()
-        if observed_ptt is not None:
-            _observe_ptt(store, observed_ptt)
-        radio = SimpleNamespace(
-            profile=resolve_radio_profile(model="IC-7300"),
-            capabilities={CAP_ANTENNA},
-            set_antenna_1=AsyncMock(),
-        )
-        poller = RadioPoller(
-            radio,
-            CommandQueue(),
-            state_store=store,
-            managed_tx_authority=managed,
-        )
-        intent = bind_command_intent("set_antenna_1", {"on": True}, source="websocket")
-        with pytest.raises(CommandError, match="transmit authority") as refusal:
-            await poller._execute(intent)  # noqa: SLF001
-        refusal_messages.append(str(refusal.value))
-        radio.set_antenna_1.assert_not_awaited()
-
-        assert await managed.force_off() is ManagedTxOutcome.ACCEPTED
-        await managed.close()
+            tx_safe = bind_command_intent(
+                "set_civ_output_ant", {"enabled": False}, source="websocket"
+            )
+            admitted_results.append(await poller._execute(tx_safe))  # noqa: SLF001
+            radio.set_civ_output_ant.assert_awaited_once_with(on=False)
+            after_admission = await _managed_tx_signature(managed, clock)
+            assert after_admission == after_refusal
+            signatures.append(after_admission)
+        finally:
+            await managed.force_off()
+            await managed.close()
 
     assert signatures[0] == signatures[1] == signatures[2]
     assert refusal_messages[0] == refusal_messages[1] == refusal_messages[2]
+    assert admitted_results == [None, None, None]
 
 
 def _function_source(path: Path, name: str) -> str:
