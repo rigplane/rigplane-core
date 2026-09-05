@@ -1,0 +1,285 @@
+/* Button and range chrome adapted from control-button.css and HBarRenderer.svelte.
+   SemanticControlPanel excludes VFO; the skin ancestor opts in to this chrome. */
+.desktop-control-face .semantic-control-panel {
+  min-width: 0;
+  color: var(--v2-text-primary);
+  font: 11px 'Roboto Mono', monospace;
+  --desktop-slider-thumb: linear-gradient(90deg,
+    var(--vc-illum-thumb-grad-dark, #555964) 0%,
+    var(--vc-illum-thumb-grad-mid-1, #737782) 8%,
+    var(--vc-illum-thumb-grad-mid-2, #858994) 20%,
+    var(--vc-illum-thumb-grad-bright-1, #9397a2) 35%,
+    var(--vc-illum-thumb-grad-bright-2, #9fa3ae) 45%,
+    var(--vc-illum-thumb-grad-center, #adb1bc) 50%,
+    var(--vc-illum-thumb-grad-bright-2, #9fa3ae) 55%,
+    var(--vc-illum-thumb-grad-bright-1, #9397a2) 65%,
+    var(--vc-illum-thumb-grad-mid-2, #858994) 80%,
+    var(--vc-illum-thumb-grad-mid-1, #737782) 92%,
+    var(--vc-illum-thumb-grad-dark, #555964) 100%);
+}
+
+.desktop-control-face .semantic-control-panel .panel-content-inner > section {
+  padding: 8px 10px 10px;
+  gap: 8px;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.desktop-control-face .semantic-control-panel section :is(button, input, select) {
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.desktop-control-face .semantic-control-panel section button {
+  position: relative;
+  min-height: 28px;
+  min-width: 0;
+  padding: 4px 8px;
+  appearance: none;
+  border: 1px solid var(--v2-border-dark);
+  border-radius: 3px;
+  background: linear-gradient(180deg,
+    var(--hw-gradient-top-1, var(--v2-control-button-gradient-top)) 0%,
+    var(--hw-gradient-top-2, var(--v2-control-button-gradient-top)) 14%,
+    var(--hw-gradient-mid, var(--v2-control-button-gradient-bottom)) 52%,
+    var(--hw-gradient-bottom, var(--v2-control-button-gradient-bottom)) 100%);
+  color: var(--v2-text-subdued);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 var(--v2-control-button-highlight);
+}
+
+.desktop-control-face .semantic-control-panel section button:hover:not(:disabled) {
+  color: var(--v2-text-bright);
+  border-color: var(--v2-accent-cyan);
+}
+
+.desktop-control-face .semantic-control-panel section button:is([aria-pressed='true'], [aria-checked='true']) {
+  color: var(--v2-text-bright);
+  border-color: var(--v2-accent-cyan);
+  box-shadow: inset 3px 0 var(--v2-accent-cyan), inset 0 1px 0 var(--v2-control-button-highlight);
+}
+
+.desktop-control-face .semantic-control-panel section :is(button, input, select):disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.desktop-control-face .semantic-control-panel section :is(button, input, select):focus-visible {
+  outline: 2px solid var(--v2-accent-cyan);
+  outline-offset: 2px;
+}
+
+.desktop-control-face .semantic-control-panel section button[data-pending='true'] {
+  border-style: dashed;
+}
+
+.desktop-control-face .semantic-control-panel section :is(input:not([type='range']), select) {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 4px;
+  border: 1px solid var(--v2-border-dark);
+  border-radius: 3px;
+  background: var(--v2-bg-darkest);
+  color: var(--v2-text-primary);
+}
+
+.desktop-control-face .semantic-control-panel section input[type='checkbox'] {
+  min-height: auto;
+  accent-color: var(--v2-accent-cyan);
+}
+
+.desktop-control-face .semantic-control-panel :is(
+  .rf-front-end-level, .filter-level, .rx-audio-level, .dsp-level, .cw-keyer-level, .tx-aux-level, .offset
+) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.desktop-control-face .semantic-control-panel :is(
+  .rf-front-end-name, .filter-level-name, .rx-audio-name, .dsp-name, .cw-keyer-name, .tx-aux-name
+) {
+  min-width: 0;
+  color: var(--v2-text-dim);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.desktop-control-face .semantic-control-panel label > output {
+  grid-column: 2;
+  grid-row: 1;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.desktop-control-face .semantic-control-panel section input[type='range'] {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  margin: 0;
+  padding: 0 5px;
+  border: 1px solid var(--vc-illum-frame-border, #b48c5a4d);
+  border-radius: 12px;
+  background: var(--vc-hw-channel-bg, #070b0e);
+  box-shadow: inset 0 2px 4px var(--vc-hw-channel-shadow-1, #000f),
+    inset 0 -1px 2px var(--vc-hw-channel-shadow-2, #0009),
+    inset 0 0 0 1px var(--vc-hw-channel-border, #0008);
+  cursor: pointer;
+}
+
+.desktop-control-face .semantic-control-panel input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--vc-illum-glow-primary, #d2a56e), var(--vc-hw-slot-dark, #785a3c0f));
+}
+
+.desktop-control-face .semantic-control-panel input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--vc-illum-glow-primary, #d2a56e), var(--vc-hw-slot-dark, #785a3c0f));
+}
+
+.desktop-control-face .semantic-control-panel input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 24px;
+  margin-top: -10px;
+  border: 1px solid var(--vc-illum-thumb-border, #494949);
+  border-radius: 3px;
+  background: var(--desktop-slider-thumb);
+  box-shadow: 0 2px 4px #000a, inset 0 1px #ffffff70;
+}
+
+.desktop-control-face .semantic-control-panel input[type='range']::-moz-range-thumb {
+  width: 22px;
+  height: 24px;
+  border: 1px solid var(--vc-illum-thumb-border, #494949);
+  border-radius: 3px;
+  background: var(--desktop-slider-thumb);
+  box-shadow: 0 2px 4px #000a, inset 0 1px #ffffff70;
+}
+
+.desktop-control-face .semantic-control-panel :is(
+  .rf-front-end-row, .filter-choice-group, .rx-audio-row, .dsp-row, .cw-keyer-row, .tx-aux-row, .antenna-row, .band-row
+) {
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.desktop-control-face .semantic-control-panel :is(
+  .rf-front-end-row, .filter-choice-group, .rx-audio-row, .dsp-row, .cw-keyer-row, .tx-aux-row, .antenna-row
+) > button {
+  flex: 1 1 0;
+}
+
+.desktop-control-face .semantic-control-panel .filter-choice-group:first-child {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.desktop-control-face .semantic-control-panel .band-row[role='group'] {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.desktop-control-face .semantic-control-panel section :is(p, ul) {
+  margin-block: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.desktop-control-face .semantic-control-panel .rx-tx-state {
+  flex-wrap: wrap;
+  padding: 6px;
+  border: 1px solid var(--v2-border-dark);
+  border-radius: 3px;
+}
+
+.desktop-control-face .semantic-control-panel .rx-tx-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.desktop-control-face .semantic-control-panel section .rx-tx-key {
+  min-height: 42px;
+  border: 2px solid var(--v2-accent-red);
+}
+
+.desktop-control-face .semantic-control-panel section .rx-tx-unkey {
+  min-height: 34px;
+}
+
+.desktop-control-face .desktop-scope-controls .scope-controls-surface {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--v2-border-dark);
+  border-radius: 3px;
+  background: var(--v2-bg-card);
+}
+
+.desktop-control-face .desktop-scope-controls :is(.scope-row, .scope-stepper) {
+  gap: 3px;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.desktop-control-face .desktop-scope-controls section button {
+  min-height: 22px;
+  padding: 3px 5px;
+  font-size: 9px;
+}
+
+.desktop-control-face .desktop-scope-status .scope-display-surface {
+  flex-wrap: wrap;
+  padding: 4px 8px;
+  font-size: 9px;
+  color: var(--v2-text-secondary);
+}
+
+.desktop-control-face .desktop-station-meters .meters-surface {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  align-items: stretch;
+}
+
+.desktop-control-face .desktop-station-meters .meters-rf {
+  grid-column: 1 / -1;
+}
+
+.desktop-control-face .desktop-station-meters .meter-tile {
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--v2-border-dark);
+  border-radius: 3px;
+}
+
+@media (forced-colors: active) {
+  .desktop-control-face .semantic-control-panel section :is(button, input, select) {
+    border-color: ButtonText;
+  }
+  .desktop-control-face .semantic-control-panel section button:is([aria-pressed='true'], [aria-checked='true']) {
+    outline: 2px solid Highlight;
+    outline-offset: -3px;
+  }
+  .desktop-control-face .semantic-control-panel input[type='range'] {
+    appearance: auto;
+    -webkit-appearance: auto;
+  }
+}
