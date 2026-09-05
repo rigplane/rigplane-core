@@ -211,6 +211,8 @@ describe('RF gain display observation', () => {
     const marker = node.querySelector('.stale-cue')!;
     const text = node.textContent;
     expect(text).toContain('RFG 0.75');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(node.hasAttribute('tabindex')).toBe(false);
     expect(getComputedStyle(marker).visibility).toBe('hidden');
     expect(getComputedStyle(marker).width).toBe('1ch');
     flushSync(() => state.set('indicator', indicator({ rfGain: {
@@ -221,13 +223,15 @@ describe('RF gain display observation', () => {
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-state')).toBe('unknown');
     expect(node.getAttribute('data-display-state')).toBe('stale');
-    expect(node.getAttribute('aria-label')).toContain('stale');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75 (stale, last observed)"]')).toBe(node);
     expect(getComputedStyle(marker).visibility).toBe('visible');
     expect(marker.textContent?.trim()).not.toBe('');
     expect(target.querySelector('[aria-live], button, input')).toBeNull();
     flushSync(() => state.set('indicator', current));
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-display-state')).toBe('current');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label*="stale"]')).toBeNull();
     expect(getComputedStyle(marker).visibility).toBe('hidden');
   });
   it('does not display a strict fallback default when explicit observation is unknown', () => {

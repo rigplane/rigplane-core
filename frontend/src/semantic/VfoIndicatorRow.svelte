@@ -150,6 +150,7 @@
       <span
         class="fact"
         data-indicator-fact="rf-gain"
+        role="img"
         data-state={indicator.rfGain.reading.status}
         data-display-state={indicator.rfGain.display?.state ?? (indicator.rfGain.reading.status === 'known' ? 'current' : 'unknown')}
         aria-label={`RF gain ${rfGainNumber(indicator.rfGain)}${indicator.rfGain.display?.state === 'stale' ? ' (stale, last observed)' : ''}`}
