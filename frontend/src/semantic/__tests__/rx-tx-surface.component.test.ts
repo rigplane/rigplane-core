@@ -15,6 +15,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
+import { ManagedTxController } from '$lib/runtime/tx-controller/managed-controller';
+import { projectManagedTx } from '$lib/runtime/tx-controller/managed-state';
 import rxTxSurfaceSource from '../RxTxSurface.svelte?raw';
 import { topologyFixtures, withAudioOnlyScope, type TopologyFixtureId } from '../fixtures/topologies';
 import type { RadioViewModel } from '../radio-view-model';
@@ -289,8 +291,6 @@ describe('key intent gating', () => {
   });
 
   it.each([
-    ['observed RF on', snap({ radioTx: 'on' }), 'radio-transmitting'],
-    ['RF state unknown', snap({ radioTx: 'unknown' }), 'rf-state-unknown'],
     ['audio start pending', snap({ phase: 'audio-start-pending' }), 'tx-busy'],
     ['an active server session', snap({ phase: 'active', txRisk: 'confirmed-on', radioTx: 'on' }), 'tx-busy'],
     ['a release in flight', snap({ phase: 'releasing', txRisk: 'uncertain' }), 'tx-busy'],
@@ -304,6 +304,43 @@ describe('key intent gating', () => {
       flushSync();
       expect(onRequestKey).not.toHaveBeenCalled();
     }, { onRequestKey, onRequestUnkey: vi.fn() });
+  });
+
+  it.each([
+    ['on', 'transmitting', 'TX', 'radio-transmitting'],
+    ['unknown', 'unknown', 'RF ?', 'rf-state-unknown'],
+  ] as const)('idle managed RX with observed %s emits TRANSMIT and retains RF diagnostics', async (
+    observedPtt, rf, label, reason,
+  ) => {
+    const tx = projectManagedTx({
+      schemaVersion: 1, sampledAt: '2026-09-05T00:00:00Z',
+      managedTransmit: {
+        status: 'available', intent: { kind: 'rx' }, releaseRequired: false,
+        lastError: null, lastActuation: null, abortErrors: [],
+        tot: { configuredSeconds: null, active: false, remainingMs: null, expiresAt: null },
+      },
+      txObservation: { observedPtt },
+    }, false);
+    const submit = vi.fn().mockResolvedValue('accepted');
+    const controller = new ManagedTxController({
+      snapshot: () => tx, refresh: async () => {}, invalidate: vi.fn(),
+      sendPtt: vi.fn(), submit, setTot: vi.fn(),
+      startAudio: async () => null, stopLocalAudio: vi.fn(), onAudioDied: () => () => {},
+    });
+    const s = render(topologyFixtures['1/single'], tx, {
+      onRequestKey: () => controller.transmitOn(),
+      onRequestUnkey: () => { void controller.forceOff(); },
+    });
+    try {
+      expect(tx).toMatchObject({ fresh: true, phase: 'idle', intent: null, releaseRequired: false });
+      expect(s.state().dataset.rf).toBe(rf);
+      expect(s.root().querySelector('[data-testid="rx-tx-rf-label"]')?.textContent).toBe(label);
+      expect(s.reasons()).toContain(reason);
+      expect(s.key().disabled).toBe(false);
+      s.key().click();
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith('transmit_on'));
+      expect(s.unkey().disabled).toBe(false);
+    } finally { s.dispose(); controller.dispose(); }
   });
 
   it('a stale canonical snapshot disables Key without disabling Unkey', () => {
