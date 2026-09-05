@@ -59,7 +59,7 @@
   // admission. Keep that fail-closed affordance separate from view-model
   // permit/target hints, which remain advisory and server-owned.
   let keyUnavailable = $derived(
-    tx.fresh === false || tx.phase !== 'idle' || rf !== 'receiving',
+    tx.fresh === false || tx.phase !== 'idle',
   );
   let pressed = $derived(tx.phase !== 'idle' && tx.phase !== 'failed');
   let known = $derived(view.txTarget.status === 'known');
