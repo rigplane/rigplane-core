@@ -63,3 +63,7 @@ export function getPendingNbOn(_receiver: 0 | 1): boolean | null {
 export function getPendingNrOn(_receiver: 0 | 1): boolean | null {
   return null;
 }
+
+export function getDataModeArmed(): { armed: false; value: null } {
+  return { armed: false, value: null };
+}

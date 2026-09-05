@@ -64,6 +64,7 @@ import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.sve
 import { setRadioState, resetRadioState } from '$lib/stores/radio.svelte';
 import { acknowledgeCommand, getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
+import { sendCommand } from '$lib/transport/ws-client';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const PROVIDER_GENERATION = 0;
@@ -198,6 +199,7 @@ function render(): void {
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 
 beforeEach(() => {
+  vi.mocked(sendCommand).mockClear();
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
   // Assert acceptance, not just call it — a rejected fixture would leave
@@ -220,6 +222,70 @@ afterEach(() => {
 });
 
 describe('discrete pending markers reach the mounted DOM over the real wiring path (MOR-1488, closes MOR-1473)', () => {
+  function seedData(active: 'MAIN' | 'SUB' = 'SUB', unavailable?: 'active' | 'dataMode' | 'staleDataMode'): ServerState {
+    resetRadioState();
+    clearCapabilities();
+    expect(setCapabilities({ ...liveCaps(), receivers: 2, vfoScheme: 'main_sub',
+      capabilities: [...liveCaps().capabilities, 'data_mode'], dataModeCount: 1,
+      dataModeLabels: { '0': 'OFF', '1': 'DATA' },
+    })).toBe(true);
+    const state = liveState();
+    const fieldStatus: NonNullable<ServerState['fieldStatus']> = { ...state.fieldStatus, 'main.dataMode': fresh,
+      ...Object.fromEntries(Object.entries(state.fieldStatus!).filter(([key]) => key.startsWith('main.'))
+        .map(([key, value]) => [key.replace('main.', 'sub.'), value])), 'sub.dataMode': fresh,
+    };
+    if (unavailable) fieldStatus[unavailable === 'active' ? 'active' : `${active.toLowerCase()}.dataMode`] = {
+      ...fresh, ...(unavailable === 'staleDataMode' ? { freshness: 'stale' as const } : { observed: false }),
+    };
+    const dataState = { ...state, active, sub: { ...state.main, dataMode: 0 }, fieldStatus };
+    expect(setRadioState(dataState)).toBe(true);
+    return dataState;
+  }
+
+  it.each(['MAIN', 'SUB'] as const)('DATA click emits one receiver-specific frame for %s and pending never becomes confirmed', active => {
+    const state = seedData(active);
+    render();
+    expect(sendCommand).not.toHaveBeenCalled();
+    const off = q<HTMLButtonElement>('[data-testid="filter-data-mode-0"]')!;
+    const on = q<HTMLButtonElement>('[data-testid="filter-data-mode-1"]')!;
+    expect(on).not.toBeNull();
+    on.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_data_mode',
+      { mode: 1, receiver: active === 'MAIN' ? 0 : 1 }, expect.any(String));
+    expect(on.dataset.pending).toBe('true');
+    expect(off.dataset.pending).toBe('false');
+    expect(off.getAttribute('aria-pressed')).toBe('true');
+    expect(on.getAttribute('aria-pressed')).toBe('false');
+    const commands = getCommandLifecycles().filter(command => command.name === 'set_data_mode');
+    expect(commands).toHaveLength(1);
+    acknowledgeCommand(commands[0].id, commands[0].originalEpoch, commands[0].originalEpoch);
+    flushSync();
+    expect(on.dataset.pending).toBe('true');
+    const receiver = active === 'MAIN' ? 'main' : 'sub';
+    expect(setRadioState({ ...state, revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+      [receiver]: { ...state[receiver], dataMode: 1 },
+    })).toBe(true);
+    flushSync();
+    expect(on.dataset.pending).toBe('false');
+    expect(off.getAttribute('aria-pressed')).toBe('false');
+    expect(on.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it.each(['active', 'dataMode', 'staleDataMode'] as const)('DATA with unavailable %s emits nothing on mount or forced click', unavailable => {
+    seedData('SUB', unavailable);
+    render();
+    const on = q<HTMLButtonElement>('[data-testid="filter-data-mode-1"]')!;
+    expect(on).not.toBeNull();
+    expect(on.disabled).toBe(true);
+    expect(on.getAttribute('aria-pressed')).toBe('false');
+    on.disabled = false;
+    on.click();
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
   it('marks the clicked filter choice pending while set_filter is in flight (FilterSurface)', () => {
     render();
     expect(q('[data-testid="filter-select"]')!.dataset.filterStatus).toBe('confirmed');

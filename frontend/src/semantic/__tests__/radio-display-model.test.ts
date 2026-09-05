@@ -89,6 +89,7 @@ function view(): RadioViewModel {
       tuneMinHz: 30_000, tuneMaxHz: 74_800_000,
     },
     filterPassband: {
+      dataModeChoices: [],
       filterShape: known(1), filterShapeControlStructural: false,
       ifShift: known(250), ifShiftControlStructural: false,
       pbtInner: known(400), pbtOuter: known(-400), dataMode: unknown(false),

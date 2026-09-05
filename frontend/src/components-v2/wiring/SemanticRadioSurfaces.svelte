@@ -27,7 +27,7 @@
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
-    getSystemHandlers,
+    getSystemHandlers, getDataModeArmed,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
@@ -715,6 +715,8 @@
   let pendingFilter = $derived(
     activeReceiverIndex === null ? null : getPendingFilterSelection(activeReceiverIndex),
   );
+  let dataModeArmed = $derived(getDataModeArmed());
+  let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
   let pendingPreamp = $derived(
     activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
   );
@@ -1148,8 +1150,7 @@
     both renders the pre-1304 element shape exactly.
 
     UNLIKE `txAuxSurface`/`metersSurface` it is control-bearing (fix round,
-    verify-MOR-1304 F1). `FilterSurface` renders up to 14 focusable controls
-    (mode/filter/shape buttons, width and passband-level sliders), and the
+    verify-MOR-1304 F1). `FilterSurface` renders focusable controls, and the
     DUAL COCKPIT manifest (`dual-receiver-cockpit.ts`) declares no `filter`
     zone, so a bare mount there would put every one of those controls outside
     every declared zone and after the `rx-tx` zone that MOR-1069 requires to
@@ -1178,6 +1179,8 @@
       <FilterSurface
         {view}
         {pendingFilter}
+        {pendingDataMode}
+        onDataModeChange={filterIntents.onDataModeChange}
         onModeChange={filterIntents.onModeChange}
         onFilterChange={filterIntents.onFilterChange}
         onFilterWidthChange={filterIntents.onFilterWidthChange}

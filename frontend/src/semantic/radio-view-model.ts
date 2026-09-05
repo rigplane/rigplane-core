@@ -289,6 +289,16 @@ export interface RxAudioViewModel {
  */
 export type ModeFilterField<T> = TxAuxField<T>;
 
+export interface ActiveFilterConfiguration {
+  readonly slots: readonly { readonly filter: number; readonly label: string; readonly factoryWidthHz: number | null }[];
+  readonly fixed: boolean;
+  readonly minHz: number | null;
+  readonly maxHz: number | null;
+  readonly stepHz: number | null;
+  readonly segments: readonly { readonly hzMin: number; readonly hzMax: number; readonly stepHz: number; readonly indexMin: number }[];
+  readonly table: readonly number[];
+}
+
 /**
  * Mode/filter facts (MOR-1262 decomposition slice 4A). Facts only — no
  * command emission; choosing a mode or dragging the filter-width control
@@ -301,14 +311,9 @@ export type ModeFilterField<T> = TxAuxField<T>;
  * selection and the width bounds ARE readings, and degrade to `unknown`
  * rather than to `toFilterProps`'s fabricated defaults ('USB', 2400 Hz,
  * 50..9999 Hz) — see `radio-view-model-adapter.ts`'s `deriveModeFilter`.
- *
- * `filterWidthMin`/`filterWidthMax` are the ONE remaining consumer of
- * `resolveFilterModeConfig`'s per-mode table lookup that this slice adds;
- * the X6200 CAT-audit lesson (filter-width codecs are radio-specific) is why
- * this group never re-derives that table itself — it reads the shipped
- * resolver's own output, like `modInputReadiness` reads `deriveTxCapabilities`.
  */
 export interface ModeFilterViewModel {
+  readonly activeFilterConfiguration: ActiveFilterConfiguration | null;
   currentMode: ModeFilterField<string>;
   modeChoices: readonly string[];
   currentFilter: ModeFilterField<number>;
@@ -399,6 +404,7 @@ export interface FilterPassbandViewModel {
   pbtInner: DisplayObservedField<number>;
   pbtOuter: DisplayObservedField<number>;
   dataMode: FilterPassbandField<number>;
+  readonly dataModeChoices: readonly { readonly value: number; readonly label: string | null }[];
 }
 
 /**
@@ -1619,15 +1625,66 @@ function numArray(value: unknown, path: string): number[] {
   return value.map((item, i) => num(item, `${path}[${i}]`));
 }
 
-/** N4 again: exactly the seven facts the adapter reads, no speculative keys.
- *  See `radio-view-model-adapter.ts::deriveModeFilter`. */
+function positiveHz(value: unknown, path: string): number {
+  const n = num(value, path);
+  if (n <= 0) invalid(path, 'positive Hz');
+  return n;
+}
+
+function nonBlank(value: unknown, path: string): string {
+  const label = str(value, path);
+  if (!label.trim()) invalid(path, 'a non-empty label');
+  return label;
+}
+
+function validateFilterConfiguration(value: unknown, path: string): ActiveFilterConfiguration | null {
+  if (value === null) return null;
+  const v = record(value, path);
+  exactKeys(v, ['slots', 'fixed', 'minHz', 'maxHz', 'stepHz', 'segments', 'table'], path);
+  if (!Array.isArray(v.slots) || !Array.isArray(v.segments) || !Array.isArray(v.table)) invalid(path, 'configuration arrays');
+  const nullableHz = (n: unknown, p: string) => n === null ? null : positiveHz(n, p);
+  const minHz = nullableHz(v.minHz, path + '.minHz');
+  const maxHz = nullableHz(v.maxHz, path + '.maxHz');
+  if (minHz !== null && maxHz !== null && minHz > maxHz) invalid(path, 'ordered bounds');
+  const table = v.table.map((n, i) => positiveHz(n, path + '.table[' + i + ']'));
+  if (table.some((n, i) => i > 0 && n <= table[i - 1])) invalid(path, 'increasing table widths');
+  return {
+    slots: v.slots.map((item, i) => {
+      const slot = record(item, path + '.slots[' + i + ']');
+      exactKeys(slot, ['filter', 'label', 'factoryWidthHz'], path);
+      if (slot.filter !== i + 1) invalid(path, 'contiguous filter slots from one');
+      return { filter: i + 1, label: nonBlank(slot.label, path), factoryWidthHz: nullableHz(slot.factoryWidthHz, path) };
+    }),
+    fixed: bool(v.fixed, path + '.fixed'), minHz, maxHz, stepHz: nullableHz(v.stepHz, path + '.stepHz'),
+    segments: v.segments.map((item) => {
+      const segment = record(item, path + '.segments');
+      exactKeys(segment, ['hzMin', 'hzMax', 'stepHz', 'indexMin'], path);
+      const hzMin = positiveHz(segment.hzMin, path), hzMax = positiveHz(segment.hzMax, path);
+      const indexMin = num(segment.indexMin, path);
+      if (hzMin > hzMax || !Number.isSafeInteger(indexMin) || indexMin < 0) invalid(path, 'valid segment bounds and index');
+      return { hzMin, hzMax, stepHz: positiveHz(segment.stepHz, path), indexMin };
+    }), table,
+  };
+}
+
+function validateDataModeChoices(value: unknown, path: string): FilterPassbandViewModel['dataModeChoices'] {
+  if (!Array.isArray(value) || value.length > 4) invalid(path, 'DATA choices in 0..3');
+  return value.map((item, i) => {
+    const choice = record(item, path + '[' + i + ']');
+    exactKeys(choice, ['value', 'label'], path);
+    if (choice.value !== i) invalid(path, 'contiguous DATA choices from zero');
+    return { value: i, label: choice.label === null ? null : nonBlank(choice.label, path) };
+  });
+}
+
 function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'currentMode', 'modeChoices', 'currentFilter', 'filterChoices',
-    'filterWidth', 'filterWidthMin', 'filterWidthMax',
+    'filterWidth', 'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
   ], path);
   return {
+    activeFilterConfiguration: validateFilterConfiguration(v.activeFilterConfiguration, `${path}.activeFilterConfiguration`),
     currentMode: validateTxAuxField(v.currentMode, `${path}.currentMode`, str),
     modeChoices: strArray(v.modeChoices, `${path}.modeChoices`),
     currentFilter: validateTxAuxField(v.currentFilter, `${path}.currentFilter`, num),
@@ -1638,15 +1695,13 @@ function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   };
 }
 
-/** N4 again: exactly the six facts the adapter reads, no speculative keys.
- *  See `radio-view-model-adapter.ts::deriveFilterPassband`. */
 function validateFilterPassband(value: unknown, path: string): FilterPassbandViewModel {
   const v = record(value, path);
   exactKeys(
     v,
     [
       'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
-      'pbtInner', 'pbtOuter', 'dataMode',
+      'pbtInner', 'pbtOuter', 'dataMode', 'dataModeChoices',
     ],
     path,
   );
@@ -1657,6 +1712,7 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     ifShiftControlStructural: bool(v.ifShiftControlStructural, `${path}.ifShiftControlStructural`),
     pbtInner: validateDisplayObservedField(v.pbtInner, `${path}.pbtInner`, num),
     pbtOuter: validateDisplayObservedField(v.pbtOuter, `${path}.pbtOuter`, num),
+    dataModeChoices: validateDataModeChoices(v.dataModeChoices, `${path}.dataModeChoices`),
     dataMode: validateTxAuxField(v.dataMode, `${path}.dataMode`, num),
   };
 }
