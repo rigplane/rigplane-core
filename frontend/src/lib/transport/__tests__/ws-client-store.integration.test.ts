@@ -4,7 +4,8 @@ import type { Capabilities } from '../../types/capabilities';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
 
 const fetchCapabilities = vi.hoisted(() => vi.fn());
-vi.mock('../http-client', () => ({ fetchCapabilities }));
+vi.mock('../http-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../http-client')>(), fetchCapabilities }));
 
 // ─── End-to-end fidelity test: REAL ws-client → REAL radio.svelte store ──────
 //

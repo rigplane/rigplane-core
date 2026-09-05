@@ -61,7 +61,7 @@ class FakeWebSocket {
   onerror: ((event: unknown) => void) | null = null;
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
 
-  constructor(_url: string) {
+  constructor(public url: string) {
     FakeWebSocket.instances.push(this);
   }
 
@@ -285,5 +285,67 @@ describe('AudioManager reconnect coalescing (MOR-924)', () => {
     expect(secondStart[0].client_id).toBe(clientId);
 
     audioManager.stopRx();
+  });
+});
+
+
+describe('AudioManager current WebSocket authentication', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'https:', host: 'radio.example.test' });
+    localStorage.clear();
+  });
+
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.stopRx();
+    vi.restoreAllMocks();
+    localStorage.clear();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the current encoded token on initial RX and each reconnect', async () => {
+    const { audioManager } = await import('../audio-manager');
+    for (const token of ['synthetic +&?=#/ token', 'synthetic-rotated', null]) {
+      if (token) localStorage.setItem('rigplane-auth-token', token);
+      else localStorage.removeItem('rigplane-auth-token');
+      if (!FakeWebSocket.instances.length) audioManager.startRx();
+      else {
+        FakeWebSocket.instances.at(-1)!.serverClose();
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      const socket = FakeWebSocket.instances.at(-1)!;
+      const url = new URL(socket.url);
+      expect(url.origin).toBe('wss://radio.example.test');
+      expect(url.pathname).toBe('/api/v1/audio');
+      expect(url.searchParams.getAll('token')).toEqual(token ? [token] : []);
+      socket.open();
+    }
+  });
+
+  it('does not log the error event carrying the authenticated socket URL', async () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    localStorage.setItem('rigplane-auth-token', 'synthetic-private');
+    const { audioManager } = await import('../audio-manager');
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.onerror?.({ target: socket });
+    expect(errorLog).toHaveBeenCalledWith('[audio-ws] error');
+    expect(JSON.stringify(errorLog.mock.calls)).not.toContain('synthetic-private');
+  });
+
+  it('keeps initial and reconnected anonymous RX token-free', async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.startRx();
+    FakeWebSocket.instances[0].serverClose();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(FakeWebSocket.instances.map((socket) => socket.url)).toEqual([
+      'wss://radio.example.test/api/v1/audio',
+      'wss://radio.example.test/api/v1/audio',
+    ]);
   });
 });
