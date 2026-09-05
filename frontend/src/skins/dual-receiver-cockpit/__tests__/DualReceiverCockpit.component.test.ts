@@ -881,6 +881,7 @@ describe('operational audio-scope availability (scope=false + audioFft=true)', (
    * within itself, so the second mount's id is never the first's.
    */
   const markup = (): string => target.innerHTML
+    .replace(/vfo-reason-\d+-/g, 'vfo-reason-N-')
     .replace(/rx-tx-\d+/g, 'rx-tx-N')
     .replace(/tx-aux-blocked-\d+/g, 'tx-aux-blocked-N')
     // MOR-1481 rework (R2): every per-field reason id (`tx-aux-reason-N-atu`,

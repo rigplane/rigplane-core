@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { fixtureById } from '../../../../../fixtures/catalog';
 /**
  * MOR-1065 — the live adapter behind the semantic VFO / RX-TX surfaces.
  *
@@ -90,6 +91,19 @@ const unobservedState = (): ServerState => ({
 } as ServerState);
 
 describe('qualified VFO display observations', () => {
+  it.each(['topology-2-main-sub', 'topology-1-single', 'topology-2-ab-shared',
+    'tx-phase-rx', 'tx-phase-tx', 'tx-phase-fault'])('keeps %s fixture current with explicit synthetic observation evidence', (id) => {
+    const fixture = fixtureById(id)!;
+    const state = structuredClone(fixture.state()!);
+    const capabilities = fixture.caps()!;
+    for (const vfo of toRadioViewModel(state, capabilities)!.vfos) {
+      expect(vfo.slot.kind).not.toBe('unknown');
+      expect(vfo.frequencyHz).not.toBeNull();
+      expect(vfo.display?.frequencyHz).toEqual({ state: 'current', value: vfo.frequencyHz });
+      expect(vfo.display?.mode).toEqual({ state: 'current', value: vfo.mode });
+      expect(vfo.display?.filter).toEqual({ state: 'current', value: vfo.filter });
+    }
+  });
   const dc = { ...TOPOLOGY_CAPS['1/single'], stateContractVersion: 1, providerGeneration: 1 };
   function ds(isStale = false): ServerState {
     const state = observedState({ stateContractVersion: 1, providerGeneration: 1 });
