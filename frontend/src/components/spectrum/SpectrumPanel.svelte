@@ -84,6 +84,7 @@
     : runtime.scope.hardwareScopeConnected);
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let scopePixels = $state<Uint8Array | null>(null);
+  let sampledReceipt: number | null = null;
   let enableAvg = $state(true);
   let enablePeakHold = $state(true);
   let brtLevel = $state(0);
@@ -513,6 +514,7 @@
   const CENTRAL_SCOPE_AMPLITUDE_MAX = 80;
 
   function clearSample(): void {
+    sampledReceipt = null;
     scopePixels = null;
     startFreq = 0;
     endFreq = 0;
@@ -537,9 +539,12 @@
       frameScopeMode = projection.frameMode;
       startFreq = projection.frame.startHz;
       endFreq = projection.frame.endHz;
-      scopePixels = Uint8Array.from(projection.frame.normalizedBins, sample => Math.round(sample * 255));
-      spectrumPush?.(scopePixels);
-      waterfallPush?.(scopePixels);
+      if (sampledReceipt !== projection.acceptedSequence) {
+        sampledReceipt = projection.acceptedSequence;
+        scopePixels = Uint8Array.from(projection.frame.normalizedBins, sample => Math.round(sample * 255));
+        spectrumPush?.(scopePixels);
+        waterfallPush?.(scopePixels);
+      }
       if (projection.passband.state !== 'current') { resizeCapture = null; resizeCandidate = null; }
     });
   });
@@ -622,7 +627,7 @@
   <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} />
   {/if}
   {#if managed}
-    <div class="passband-freshness" role="status" aria-label={displayStale ? t('core.rxTx.target.reason.stale') : undefined}>
+    <div class="passband-freshness" aria-label={displayStale ? t('core.rxTx.target.reason.stale') : undefined}>
       {displayStale ? `◷ ${t('core.rxTx.target.reason.stale')}` : ''}
     </div>
   {/if}

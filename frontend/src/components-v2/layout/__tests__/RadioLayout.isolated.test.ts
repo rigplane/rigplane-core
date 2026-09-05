@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const txHarness = new ManagedAppTxHarness({ stale: true });
@@ -39,6 +41,7 @@ vi.mock('../../../lib/media/media-session', () => ({
 }));
 
 vi.mock('../../../lib/runtime/frontend-runtime', () => ({
+  get presentationResources() { return rt.resources; },
   runtime: {
     state: null,
     onTxAudioDied: () => () => {},
@@ -54,7 +57,7 @@ vi.mock('../../../lib/runtime/frontend-runtime', () => ({
       source: null, available: false, resourceSelected: false, demand: 0,
       lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
     },
-    scope: { hardwareScopeConnected: false },
+    get scope() { return rt.scope; },
     bootstrap: vi.fn(async () => vi.fn()),
   },
 }));
@@ -62,9 +65,13 @@ vi.mock('../../../lib/runtime/frontend-runtime', () => ({
 // MOR-1235: `state` is a live getter over a mutable holder (default `null`,
 // reset per test) so a test can put a REAL `ptt` on the runtime state and
 // prove the meters dock ignores it in favour of the App TX authority.
-const rt = vi.hoisted(() => ({ state: null as unknown }));
+const rt = vi.hoisted(() => ({ state: null as unknown,
+  scope: null as unknown as ScopeController, resources: null as unknown as PresentationResourceHost<unknown>,
+  evidenceListeners: 0,
+}));
 
 vi.mock('$lib/runtime', () => ({
+  get presentationResources() { return rt.resources; },
   runtime: {
     get state() { return rt.state; },
     caps: null,
@@ -82,7 +89,7 @@ vi.mock('$lib/runtime', () => ({
       source: null, available: false, resourceSelected: false, demand: 0,
       lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
     },
-    scope: { hardwareScopeConnected: false },
+    get scope() { return rt.scope; },
   },
 }));
 
@@ -379,6 +386,14 @@ beforeEach(() => {
   components = [];
   radio.current = null;
   rt.state = null;
+  rt.scope = new ScopeController(() => { throw new Error('Routing fixture has no selected transport'); });
+  rt.resources = new PresentationResourceHost('routing');
+  rt.evidenceListeners = 0;
+  const subscribe = rt.scope.subscribeFrameEvidence.bind(rt.scope);
+  vi.spyOn(rt.scope, 'subscribeFrameEvidence').mockImplementation(fn => {
+    rt.evidenceListeners++; const stop = subscribe(fn);
+    return () => { stop(); rt.evidenceListeners--; };
+  });
   vi.mocked(hasDualReceiver).mockReturnValue(false);
   vi.mocked(getScopeSource).mockReturnValue(null);
   vi.mocked(hasSpectrum).mockReturnValue(true);
@@ -389,8 +404,12 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerHeight', { writable: true, configurable: true, value: 900 });
 });
 
-afterEach(() => {
-  components.forEach((c) => unmount(c));
+afterEach(async () => {
+  await Promise.all(components.map(c => unmount(c)));
+  expect(rt.evidenceListeners).toBe(0);
+  expect(rt.resources.snapshot('hardware-scope').demand).toBe(0);
+  expect(txHarness.listenerCount()).toBe(0);
+  await rt.resources.teardown();
   document.body.innerHTML = '';
   // Hygiene WITHIN this file. It runs in the `isolated` pool
   // (`vite.config.ts`), so these holders cannot leak into another file — but

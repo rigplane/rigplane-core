@@ -8,6 +8,7 @@ import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type { LcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import * as passband from '$lib/runtime/adapters/scope-passband-display';
 import { ScopeFrameHost } from '$lib/runtime/scope-frame-host';
@@ -53,12 +54,19 @@ import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 
 function channel() {
   const binary = new Set<(buffer: ArrayBuffer) => void>(), states = new Set<(state: string) => void>();
-  let state = 'disconnected';
-  return { get state() { return state; }, sessionEpoch: 1, connect: vi.fn(), disconnect: vi.fn(),
+  const sessions = new Set<(next: { state: string; epoch: number }) => void>();
+  let state = 'disconnected', epoch = 0;
+  function transition(next: string) {
+    if (next === 'connected' && state !== 'connected') epoch++;
+    state = next; for (const fn of states) fn(state);
+    for (const fn of sessions) fn({ state, epoch });
+  }
+  return { get state() { return state; }, get sessionEpoch() { return epoch; },
+    connect: vi.fn(() => transition('connecting')), disconnect: vi.fn(() => transition('disconnected')),
     onBinary: (fn: (buffer: ArrayBuffer) => void) => { binary.add(fn); return () => binary.delete(fn); },
     onStateChange: (fn: (value: string) => void) => { states.add(fn); return () => states.delete(fn); },
-    onSessionTransition: () => () => {},
-    connected() { state = 'connected'; for (const fn of states) fn(state); },
+    onSessionTransition: (fn: (next: { state: string; epoch: number }) => void) => { sessions.add(fn); return () => sessions.delete(fn); },
+    connected() { transition('connected'); },
     frame(receiver = 0) {
       const buffer = new ArrayBuffer(19), view = new DataView(buffer);
       view.setUint8(0, 1); view.setUint8(1, receiver); view.setUint32(3, 14_000_000, true);
@@ -130,6 +138,43 @@ afterEach(async () => {
 });
 
 describe('one managed scope owner through the real region and panel', () => {
+  it('appends only accepted receipts, including identical bins, and seeds recovery once', async () => {
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    await render(); expect(push).toHaveBeenCalledTimes(1);
+    renew(10, true); expect(push).toHaveBeenCalledTimes(1);
+    expect(target.querySelector('.passband-freshness')!.textContent).toContain('◷');
+    renew(10); expect(push).toHaveBeenCalledTimes(1);
+    radio.current!.ptt = true; flushSync(); expect(push).toHaveBeenCalledTimes(1);
+    wire.frame(); expect(push).toHaveBeenCalledTimes(2);
+    const shared = h.resources.acquire('hardware-scope', 'independent');
+    toggle(); clear(); wire.frame(); expect(push).toHaveBeenCalledTimes(2);
+    toggle(); expect(push).toHaveBeenCalledTimes(3);
+    renew(11); expect(push).toHaveBeenCalledTimes(3);
+    vi.advanceTimersByTime(500); flushSync(); clear();
+    wire.frame(); expect(push).toHaveBeenCalledTimes(4);
+    h.resources.release(shared);
+  });
+  it('keeps freshness text readable without effective live-region semantics', async () => {
+    await render();
+    for (const stale of [true, false, true]) {
+      renew(10, stale);
+      const cue = target.querySelector('.passband-freshness')!;
+      const implicitLive = ({ status: 'polite', log: 'polite', alert: 'assertive' } as Record<string, string>)[cue.getAttribute('role') ?? ''];
+      expect(cue.getAttribute('aria-live') ?? implicitLive ?? 'off').toBe('off');
+      expect(cue.textContent?.includes('◷')).toBe(stale);
+      if (stale) expect(cue.getAttribute('aria-label')).toBeTruthy();
+    }
+  });
+  it('recovers when an independent hardware lease predates managed authority', async () => {
+    const shared = h.resources.acquire('hardware-scope', 'independent-before-host');
+    await Promise.resolve();
+    await render(); wire.frame();
+    expect(h.scope.hardwareScopeConnected).toBe(true);
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(2);
+    expect(overlay()).not.toBeNull();
+    h.resources.release(shared);
+  });
+
   it.each(['desktop-v2', 'sdr-test'] as const)('%s clears local OFF under an independent healthy lease and fences replay', async skin => {
     await render(true, skin); const shared = h.resources.acquire('hardware-scope', 'independent');
     expect(overlay()).not.toBeNull(); expect(h.raw).not.toHaveBeenCalled(); expect(h.acquire).not.toHaveBeenCalled();
@@ -231,7 +276,7 @@ describe('one managed scope owner through the real region and panel', () => {
     expect(region!()!.projection?.passband.state).toBe('current');
     legacyComponent.$set({ regionContent: undefined }); flushSync();
     expect(managedWatch).toHaveBeenCalledOnce(); expect(readonlyWatch).toHaveBeenCalledOnce();
-    legacyComponent.$set({ regionContent: snippet }); flushSync(); wire.frame();
+    legacyComponent.$set({ regionContent: snippet }); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
     expect(managedWatch).toHaveBeenCalledTimes(2); expect(evidence).toHaveBeenCalledOnce();
     expect(region!()!.projection?.passband.state).toBe('unknown'); renew(11); wire.frame();
     expect(region!()!.projection?.passband.state).toBe('current');

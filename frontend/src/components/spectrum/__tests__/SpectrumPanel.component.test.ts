@@ -1395,7 +1395,7 @@ describe('managed scope projection (MOR-2367)', () => {
     return Object.freeze({
       frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
         startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) }),
-      frameMode: 0,
+      frameMode: 0, acceptedSequence: 1,
       passband: state === 'current' || state === 'stale'
         ? Object.freeze({ state, tuple: Object.freeze({ frequencyHz: 14_050_250, mode: 'USB',
           widthHz: 2_400, shiftHz: 0, frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 }) })
@@ -1512,6 +1512,7 @@ describe('managed scope projection (MOR-2367)', () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     try {
       const { target, props } = managed(projection());
+      expect(push).toHaveBeenCalledTimes(1);
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       const firstCanvas = target.querySelector('.waterfall-content canvas');
       props.set('projection', null); flushSync(); const afterClear = push.mock.calls.length;
@@ -1519,7 +1520,7 @@ describe('managed scope projection (MOR-2367)', () => {
       props.set('projection', projection()); flushSync();
       expect(target.querySelector('.waterfall-content canvas')).not.toBe(firstCanvas);
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
-      expect(push.mock.calls.length).toBeGreaterThan(afterClear);
+      expect(push).toHaveBeenCalledTimes(afterClear + 1);
     } finally { push.mockRestore(); }
   });
   it('preserves raw waterfall push delivery in legacy mode', () => {
