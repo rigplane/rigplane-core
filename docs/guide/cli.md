@@ -777,20 +777,15 @@ rigplane web --no-rigctld
 # Custom ports
 rigplane web --port 9090 --rigctld-port 4533
 
-# Require token for /api and WebSocket channels
-rigplane web --auth-token "change-me"
-rigplane web --auth-token-file ./runtime-token
-
 # Managed local runtime for a supervising desktop app
-RIGPLANE_AUTH_TOKEN="$(openssl rand -hex 24)" rigplane station --port 0
-rigplane station --port 0 --auth-token-file ./runtime-token
+rigplane station --port 0
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--host` | `0.0.0.0` | Web server bind address |
 | `--port` | `8080` | Web server port |
-| `--managed` | off | Use managed local defaults: loopback bind, auth required, embedded rigctld on loopback |
+| `--managed` | off | Use managed local defaults: loopback bind, embedded rigctld on loopback |
 | `--static-dir PATH` | — | Serve static files from a custom directory (default: built-in assets) |
 | `--bridge DEVICE` | — | Start audio bridge with named virtual device |
 | `--bridge-tx-device DEVICE` | — | Separate TX-only device for bidirectional bridge (e.g. `BlackHole 16ch`) |
@@ -799,27 +794,32 @@ rigplane station --port 0 --auth-token-file ./runtime-token
 | `--rigctld-port` | `4532` | Rigctld listen port |
 | `--dx-cluster HOST:PORT` | — | Connect to DX cluster server for real-time spot overlays (opt-in) |
 | `--callsign CALL` | — | Your callsign for DX cluster login (required with `--dx-cluster`) |
-| `--auth-token TOKEN` | — | Require `Authorization: Bearer <TOKEN>` for `/api/*` and WS channels |
-| `--auth-token-file PATH` | — | Read API/WS bearer token from a file |
+
+Core clients that can reach the web listener need no application credential.
+Remove the retired `--auth-token` and `--auth-token-file` flags from existing
+`web` and `station` launch commands: either flag now fails during argument
+parsing, before radio startup, without reading a token file. The environment
+variable `RIGPLANE_AUTH_TOKEN` is ignored (`src/rigplane/cli/__init__.py:
+_reject_retired_auth_option`, `_cmd_web`). For Python callers,
+`WebConfig.auth_token` must be omitted or empty; nonempty values raise
+`ValueError` (`src/rigplane/web/server.py: WebConfig.__post_init__`).
 
 ### `station`
 
 Start the managed local station runtime. This is a convenience command for
-supervisors such as desktop shells: it runs the web/API server on loopback,
-requires API/WebSocket auth, and enables embedded rigctld on loopback for local
+supervisors such as desktop shells: it runs the web/API server on loopback
+and enables embedded rigctld on loopback for local
 clients such as RigPlane Pro.
 
 ```bash
-export RIGPLANE_AUTH_TOKEN="$(openssl rand -hex 24)"
 rigplane station --port 0
 ```
 
 `station` shares the radio connection flags from the top-level CLI, including
 `--host`, `--user`, `--pass-file`, `--backend`, `--serial-port`, and model/CI-V
-options. Prefer `--auth-token-file` or `RIGPLANE_AUTH_TOKEN` over `--auth-token`
-so the local API token does not appear in process listings. Explicit
-`--auth-token` wins over `--auth-token-file`; the file wins over
-`RIGPLANE_AUTH_TOKEN`.
+options. Radio login credentials, bind selection and TLS options are unchanged
+by application-auth removal (`src/rigplane/cli/__init__.py: _build_parser`,
+`_apply_managed_runtime_defaults`, `_cmd_web`).
 
 After the web listener binds, `station` writes one JSON startup event to stdout:
 
@@ -834,7 +834,7 @@ When UDP discovery is enabled, `rigplane station` and `rigplane web` answer
 `RIGPLANE_DISCOVER\n` broadcasts with a `rigplane.station.discovery.v1` JSON
 payload. The payload includes the base URL, `/healthz`, `/readyz`,
 `/api/v1/runtime`, `/api/v1/station`, version, display name, radio model,
-backend, auth-required flag, and a readiness value such as
+backend, `authRequired: false`, and a readiness value such as
 `ready_with_radio`, `no_usb_radio_connected`, or
 `radio_powered_off_or_unreachable`.
 
@@ -1057,8 +1057,6 @@ rigplane proxy --radio 192.168.1.100 --listen 10.8.0.1
 | `--static-dir PATH` | `web` | *(built-in)* | Serve static web assets from a custom directory instead of the built-in UI |
 | `--dx-cluster HOST:PORT` | `web` | *(none)* | Connect to a DX cluster server for real-time spot overlays |
 | `--callsign CALL` | `web` | *(none)* | Your callsign for DX cluster login (required with `--dx-cluster`) |
-| `--auth-token TOKEN` | `web` | *(none)* | Require Bearer auth for API/WS endpoints |
-| `--auth-token-file PATH` | `web`, `station` | *(none)* | Read Bearer auth token from a file |
 | `--tls` | `web` | off | Enable HTTPS with auto-generated self-signed certificate |
 | `--tls-cert PATH` | `web` | *(none)* | Path to TLS certificate PEM file |
 | `--tls-key PATH` | `web` | *(none)* | Path to TLS private key PEM file |
@@ -1077,9 +1075,6 @@ rigplane web --static-dir /opt/icom-ui/dist
 
 # Connect to a DX cluster and show spot overlays on the waterfall
 rigplane web --dx-cluster dxc.nc7j.com:7373 --callsign KN4KYD
-
-# Protect API + WS endpoints with a bearer token
-rigplane web --auth-token "change-me"
 ```
 
 ## Exit Codes

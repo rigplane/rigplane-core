@@ -12,10 +12,6 @@
  * presentation components must NOT import it; they should pass callbacks
  * down to the dialog wiring instead.
  *
- * Auth header behaviour mirrors `transport/http-client.ts` (Bearer token
- * from localStorage, key `icom-lan-auth-token`). The helper is duplicated
- * here on purpose — keeping `lib/api/` independent of transport internals.
- *
  * See `docs/plans/2026-05-03-diagnostic-data-collection-design.md` §4.9.
  */
 
@@ -76,16 +72,6 @@ export class DiagnosticsApiError extends Error {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function getAuthHeaders(): Record<string, string> {
-  const storage = globalThis.localStorage;
-  if (!storage || typeof storage.getItem !== 'function') {
-    return {};
-  }
-  const token = storage.getItem('rigplane-auth-token');
-  if (token) return { Authorization: `Bearer ${token}` };
-  return {};
-}
-
 interface ErrorBody {
   error?: string;
   message?: string;
@@ -124,7 +110,7 @@ async function raiseFromResponse(
 export async function previewBundle(req: PreviewRequest): Promise<PreviewResponse> {
   const res = await fetch(`${BASE}/preview`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   });
   if (!res.ok) await raiseFromResponse(res, 'preview_failed');
@@ -147,7 +133,6 @@ export async function sendBundle(
     headers: {
       'Content-Type': 'application/json',
       'X-Diagnostic-CSRF': csrfToken,
-      ...getAuthHeaders(),
     },
     body: JSON.stringify({ preview_id: previewId, consent: true }),
   });
@@ -168,7 +153,6 @@ export async function saveBundle(
     headers: {
       'Content-Type': 'application/json',
       'X-Diagnostic-CSRF': csrfToken,
-      ...getAuthHeaders(),
     },
     body: JSON.stringify({ preview_id: previewId }),
   });
@@ -187,7 +171,7 @@ export async function deletePreview(
 ): Promise<void> {
   const res = await fetch(`${BASE}/preview/${previewId}`, {
     method: 'DELETE',
-    headers: { 'X-Diagnostic-CSRF': csrfToken, ...getAuthHeaders() },
+    headers: { 'X-Diagnostic-CSRF': csrfToken },
   });
   if (!res.ok) await raiseFromResponse(res, 'delete_failed');
 }

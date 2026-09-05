@@ -20,11 +20,10 @@
  */
 
 const LEGACY_TO_NEW: Record<string, string> = {
-  // Hyphenated (legacy v1) — auth token, layout, LCD modes, hidden layers,
+  // Hyphenated (legacy v1) — layout, LCD modes, hidden layers,
   // skin selection. Some keys (`icom-lan-skin`, `icom-lan-lcd-variant`,
   // `icom-lan-skin-migrated-0.18`) are not currently produced by this
   // codebase, but v1.x users may still have them in browser storage.
-  'icom-lan-auth-token': 'rigplane-auth-token',
   'icom-lan-layout': 'rigplane-layout',
   'icom-lan-lcd-display-mode': 'rigplane-lcd-display-mode',
   'icom-lan-hidden-layers': 'rigplane-hidden-layers',

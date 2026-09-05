@@ -19,8 +19,8 @@ rigplane web
 # Explicit host/port
 rigplane web --host 0.0.0.0 --port 9090
 
-# Require API/WebSocket auth token
-rigplane web --auth-token "change-me"
+# Managed local runtime on loopback
+rigplane station --port 0
 ```
 
 Open `http://<server-ip>:8080` (or your custom port).
@@ -88,13 +88,21 @@ These are primarily used by automation, deployment scripts, and operator tooling
 | `GET` | `/api/v1/eibi/identify?...` | Broadcast station identification |
 | `GET` | `/api/v1/eibi/bands` | EiBi band list |
 
-### Auth behavior (`--auth-token`)
+### Application credentials
 
-- `GET /api/*` requires `Authorization: Bearer <token>`.
-- WebSocket endpoints accept either:
-  - `Authorization: Bearer <token>`, or
-  - `?token=<token>` query parameter.
-- Static files (`/`, JS, CSS, assets) are still served without token.
+Clients that can reach Core's web listener need no application credential for
+HTTP or WebSocket access. The browser does not prompt for, read, persist or send
+an application token (`frontend/src/lib/auth.ts: getAuthToken`,
+`frontend/src/lib/transport/http-client.ts: fetchInfo`). Old browser
+token entries may remain inert; preference migration leaves them untouched
+(`frontend/src/lib/migrate-legacy-storage.ts: migrateLegacyStorage`).
+
+Remove `--auth-token` and `--auth-token-file` from old launch commands; these
+flags now fail before radio startup. `RIGPLANE_AUTH_TOKEN` is ignored. See the
+[CLI migration note](cli.md#web) and [API migration contract](../api/web.md#application-authentication-removal)
+for the empty-only `WebConfig.auth_token` compatibility field and diagnostic
+CSRF, Origin and consent behavior. Radio credentials, bind selection and TLS
+options retain their existing roles.
 
 !!! note "Audio bridge control path"
     Runtime bridge activation is typically done from CLI flags
@@ -224,7 +232,7 @@ Use `/api/v1/capabilities` before sending model-specific batches; not every
 radio exposes the same receivers, memory operations, audio routing controls, or
 feature toggles. Prefer these structured commands over raw CI-V for routine
 automation so RigPlane remains the single owner of the radio connection,
-queueing, pacing, auth policy, and safety checks.
+queueing, pacing, and safety checks.
 
 For vendor-specific CI-V commands that are not yet covered by structured
 commands, use the queued `send_civ` escape hatch. The payload mirrors the
@@ -283,7 +291,6 @@ import json
 import urllib.request
 
 base_url = "http://127.0.0.1:8080"
-token = None  # or "your-token"
 
 payload = {
     "id": "display-type-b",
@@ -300,8 +307,6 @@ request = urllib.request.Request(
     headers={"Content-Type": "application/json"},
     method="POST",
 )
-if token:
-    request.add_header("Authorization", f"Bearer {token}")
 
 with urllib.request.urlopen(request, timeout=5) as response:
     result = json.load(response)

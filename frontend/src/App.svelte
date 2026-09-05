@@ -287,7 +287,6 @@
         console.error('init error:', err);
         if (!mounted) return;
         backendError = t('core.app.backendError', { detail: String(err) });
-        if (err instanceof Error && err.name === 'AuthenticationError') return;
         if (retryCount < MAX_RETRIES) {
           const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
           retrying = true;
