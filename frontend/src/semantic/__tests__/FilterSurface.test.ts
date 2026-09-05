@@ -752,6 +752,7 @@ describe('explicit PBT display (MOR-1692)', () => {
     withSurface(current, (s) => {
       const group = s.group(`filter-${field}`)!, input = s.input(`filter-${field}`)!;
       expect(input).not.toBeNull(); expect(input.disabled).toBe(true); expect(input.value).toBe('425');
+      expect(Array.from(input.labels ?? []).map((label) => label.textContent)).toContain(field === 'pbtInner' ? 'PBT inner' : 'PBT outer');
       expect(s.output(`filter-${field}`)?.textContent).toBe('425');
       expect(s.output(`filter-${field}`)?.getAttribute('aria-live')).toBe('off');
       const description = document.getElementById(input.getAttribute('aria-describedby')!);

@@ -87,8 +87,9 @@
       : { state: 'unknown' as const, reason: 'not-observed' as const }
   );
   const pbtUsable = (f: DisplayObservedField<number>): boolean => usable(f) && pbtDisplay(f).state === 'current';
-  const numberOf = (f: TxAuxField<number>, fallback: number): number =>
-    f.reading.status === 'known' ? f.reading.value : fallback;
+  const numberOf = (f: DisplayObservedField<number>, fallback: number): number =>
+    f.display?.state === 'current' || f.display?.state === 'stale' ? f.display.value
+      : f.reading.status === 'known' ? f.reading.value : fallback;
   /** Never fabricates a selection: `usable` alone cannot narrow `reading` for
    *  the `===` comparison below, so the known-check is repeated explicitly. */
   const isSelected = (f: TxAuxField<unknown>, value: unknown): boolean =>
@@ -202,6 +203,18 @@
     {/if}
 
     {#if filterPassband}
+      {#snippet passbandRange(field: FilterPassbandLevelField, min: number, max: number, step: number)}
+        {@const display = field === 'ifShift' ? undefined : pbtDisplay(filterPassband[field])}
+        {#key display?.state}
+          <input
+            id={`${pendingFilterId}-${field}-input`} type="range" {min} {max} {step}
+            value={numberOf(filterPassband[field], min)}
+            aria-describedby={display?.state === 'stale' ? `${pendingFilterId}-${field}-description` : undefined}
+            disabled={field === 'ifShift' ? !usable(filterPassband[field]) : !pbtUsable(filterPassband[field])}
+            oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
+          />
+        {/key}
+      {/snippet}
       {#if filterPassband.filterShapeControlStructural}
         <div
           class="filter-choice-group" data-testid="filter-shape"
@@ -228,17 +241,10 @@
               data-disabled-reason={reasonOf(filterPassband[field])}
               data-presentation={display.state === 'current' ? 'confirmed' : display.state === 'stale' ? 'retained' : 'unknown'}
             >
-              <span class="filter-level-name">{label}</span>
+              <label class="filter-level-name" for={`${pendingFilterId}-${field}-input`}>{label}</label>
               <span class="pbt-slot" data-pbt-slot>
                 {#if display.state === 'current' || display.state === 'stale'}
-                  {#key display.state}
-                    <input
-                      type="range" {min} {max} {step} value={display.value} aria-label={label}
-                      aria-describedby={display.state === 'stale' ? descriptionId : undefined}
-                      disabled={!pbtUsable(filterPassband[field])}
-                      oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
-                    />
-                  {/key}
+                  {@render passbandRange(field, min, max, step)}
                 {:else}
                   <span class="pbt-unknown">{t('core.vfo.state.unknown')}</span>
                 {/if}
@@ -258,12 +264,7 @@
               data-presentation={presentationOf(filterPassband[field])}
             >
               <span class="filter-level-name">{label}</span>
-              <input
-                type="range" {min} {max} {step}
-                value={numberOf(filterPassband[field], min)}
-                disabled={!usable(filterPassband[field])}
-                oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
-              />
+              {@render passbandRange(field, min, max, step)}
               <output>{textOf(filterPassband[field])}</output>
             </label>
           {/if}
