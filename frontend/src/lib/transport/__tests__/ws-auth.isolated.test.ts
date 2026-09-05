@@ -20,10 +20,10 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-function expectCurrentToken(token: string | null, path: string): void {
+function expectNoToken(path: string): void {
   const url = new URL(instances.at(-1)!.url, 'https://radio.example.test');
   expect(url.pathname).toBe(path);
-  expect(url.searchParams.getAll('token')).toEqual(token ? [token] : []);
+  expect(url.searchParams.getAll('token')).toEqual([]);
 }
 
 async function rotateAndReconnect(token: string | null): Promise<void> {
@@ -33,22 +33,22 @@ async function rotateAndReconnect(token: string | null): Promise<void> {
   await vi.advanceTimersByTimeAsync(1250);
 }
 
-describe('production WebSocket authentication', () => {
-  it('refreshes control credentials on automatic and explicit reconnect, preserving query parameters', async () => {
+describe('credential-free production WebSockets', () => {
+  it('ignores retired storage on automatic and explicit reconnect, preserving query parameters', async () => {
     const { connect, disconnectAll, reconnectAll, getLastCloseInfo } = await import('../ws-client');
     const first = 'synthetic +&?=#/ token';
     localStorage.setItem('rigplane-auth-token', first);
     connect('/api/v1/ws?receiver=1&token=synthetic-old&token=synthetic-older');
-    expectCurrentToken(first, '/api/v1/ws');
+    expectNoToken('/api/v1/ws');
     instances[0].simulateOpen();
     await rotateAndReconnect('synthetic-rotated');
-    expectCurrentToken('synthetic-rotated', '/api/v1/ws');
+    expectNoToken('/api/v1/ws');
     expect(new URL(instances.at(-1)!.url, 'https://radio.example.test').searchParams.get('receiver')).toBe('1');
     localStorage.removeItem('rigplane-auth-token');
     instances.at(-1)!.simulateOpen();
     disconnectAll();
     reconnectAll();
-    expectCurrentToken(null, '/api/v1/ws');
+    expectNoToken('/api/v1/ws');
     expect(JSON.stringify(getLastCloseInfo())).not.toContain('synthetic');
     expect(JSON.stringify(vi.mocked(console.info).mock.calls)).not.toContain('synthetic');
   });
@@ -56,27 +56,27 @@ describe('production WebSocket authentication', () => {
   it('keeps anonymous control initial and reconnect token-free', async () => {
     const { connect } = await import('../ws-client');
     connect();
-    expectCurrentToken(null, '/api/v1/ws');
+    expectNoToken('/api/v1/ws');
     await rotateAndReconnect(null);
-    expectCurrentToken(null, '/api/v1/ws');
+    expectNoToken('/api/v1/ws');
   });
 
   it.each([
     ['audioFftDriver', '/api/v1/audio-scope'],
     ['hardwareScopeDriver', '/api/v1/scope'],
-  ] as const)('authenticates actual ScopeController %s on initial and changed/absent-token reconnect', async (driverName, path) => {
+  ] as const)('keeps actual ScopeController %s token-free on initial and changed/absent-token reconnect', async (driverName, path) => {
     const { ScopeController } = await import('../../runtime/scope-controller.svelte');
     const controller = new ScopeController();
     const driver = controller[driverName];
     localStorage.setItem('rigplane-auth-token', 'synthetic +&?=#/ token');
     const handle = await driver.start();
-    expectCurrentToken('synthetic +&?=#/ token', path);
+    expectNoToken(path);
     instances.at(-1)!.simulateOpen();
     await rotateAndReconnect('synthetic-rotated');
-    expectCurrentToken('synthetic-rotated', path);
+    expectNoToken(path);
     instances.at(-1)!.simulateOpen();
     await rotateAndReconnect(null);
-    expectCurrentToken(null, path);
+    expectNoToken(path);
     await driver.stop(handle);
   });
 

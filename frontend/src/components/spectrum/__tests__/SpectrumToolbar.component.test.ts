@@ -550,8 +550,8 @@ describe('structural and browser-local behavior', () => {
   });
 });
 
-describe('band-plan HTTP authentication', () => {
-  it('authenticates GETs and rereads the token for the existing config POST', async () => {
+describe('band-plan credential-free HTTP', () => {
+  it('omits retired credentials from GETs and the existing config POST', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.endsWith('/layers')) {
@@ -576,10 +576,10 @@ describe('band-plan HTTP authentication', () => {
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/layers', {
-      headers: { Authorization: 'Bearer read-token' },
+      headers: {},
     });
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/config', {
-      headers: { Authorization: 'Bearer read-token' },
+      headers: {},
     });
 
     localStorage.setItem('rigplane-auth-token', 'write-token');
@@ -598,7 +598,6 @@ describe('band-plan HTTP authentication', () => {
       expect(fetchMock).toHaveBeenCalledWith('/api/v1/band-plan/config', {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer write-token',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ region: 'CA' }),

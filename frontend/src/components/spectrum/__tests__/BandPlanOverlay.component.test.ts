@@ -196,7 +196,7 @@ describe('BandPlanOverlay (component)', () => {
     expect(titles).toContain('SSB-R');
   });
 
-  it('reads auth when the debounced request runs and keeps 401 fallback behavior', async () => {
+  it('ignores retired tokens when the debounced request runs and keeps 401 fallback behavior', async () => {
     localStorage.setItem('rigplane-auth-token', 'stale-token');
     mockFetch.mockResolvedValue({ ok: false, status: 401 } as Response);
     const { target } = mountOverlay({
@@ -210,7 +210,7 @@ describe('BandPlanOverlay (component)', () => {
 
     expect(mockFetch).toHaveBeenCalledWith(
       '/api/v1/band-plan/segments?start=13825000&end=14525000',
-      { headers: { Authorization: 'Bearer current-token' } },
+      { headers: {} },
     );
     expect(target.querySelectorAll('.band-segment')).toHaveLength(3);
   });

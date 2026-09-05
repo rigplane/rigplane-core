@@ -110,7 +110,7 @@ afterEach(() => {
 });
 
 describe('MOR-1409 A05b EiBi tune authority', () => {
-  it('authenticates status, bands, and stations with a fresh token read', async () => {
+  it('fetches status, bands, and stations without retired credentials', async () => {
     localStorage.setItem('rigplane-auth-token', 'status-token');
     h.fetch.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -143,16 +143,16 @@ describe('MOR-1409 A05b EiBi tune authority', () => {
 
     const calls = h.fetch.mock.calls;
     expect(calls.find(([url]) => String(url).includes('/status'))?.[1]).toEqual({
-      headers: { Authorization: 'Bearer status-token' },
+      headers: {},
     });
     for (const suffix of ['/bands', '/stations']) {
       expect(calls.find(([url]) => String(url).includes(suffix))?.[1]).toEqual({
-        headers: { Authorization: 'Bearer query-token' },
+        headers: {},
       });
     }
   });
 
-  it('authenticates the fetch POST without changing its body or content type', async () => {
+  it('omits retired credentials from the fetch POST and preserves its body and content type', async () => {
     localStorage.setItem('rigplane-auth-token', 'fetch-token');
     h.fetch.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -180,7 +180,6 @@ describe('MOR-1409 A05b EiBi tune authority', () => {
       expect(h.fetch).toHaveBeenCalledWith('/api/v1/eibi/fetch', {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer fetch-token',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ force: false }),
