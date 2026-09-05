@@ -107,13 +107,14 @@
   </header>
 
   <div class="receiver-deck">
-    {#each model.receivers as receiver (receiver.receiver)}
+    {#each model.receivers as receiver (receiver.vfoSlot ?? receiver.receiver)}
       <section
         class="receiver-column"
         class:active={receiver.activity === 'active'}
         data-testid="lcd-peer-column"
         data-column-activity={receiver.activity}
         data-receiver={receiver.receiver}
+        data-display-slot={receiver.vfoSlot ?? receiver.receiver}
       >
         <div class="column-accent" aria-hidden="true"></div>
         <div class="column-head">
@@ -125,8 +126,8 @@
           </div>
         </div>
 
-        <LcdFrequencyReadout receiver={receiver.receiver} field={receiver.frequency} />
-        <LcdOffsetRail receiver={receiver.receiver} offsets={model.offsets} />
+        <LcdFrequencyReadout receiver={receiver.vfoSlot ?? receiver.receiver} field={receiver.frequency} />
+        <LcdOffsetRail receiver={receiver.vfoSlot ?? receiver.receiver} offsets={model.offsets} />
         <LcdLinearSMeter field={receiver.sMeter} />
         <LcdFilterScope
           {receiver}

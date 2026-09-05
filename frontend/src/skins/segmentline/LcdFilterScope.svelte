@@ -18,7 +18,7 @@
 </script>
 
 <div class="scope-block" data-scope-state={receiver.spectrum}>
-  <span class="scope-label" data-testid={`lcd-scope-label-${receiver.receiver}`}>
+  <span class="scope-label" data-testid={`lcd-scope-label-${receiver.vfoSlot ?? receiver.receiver}`}>
     {receiver.spectrum === 'unsupported' ? 'BANDPASS' : 'AF SCOPE · BANDPASS'}
   </span>
   <div class="scope-plot">
@@ -32,7 +32,7 @@
       data-testid="lcd-filter-envelope"
       viewBox="0 0 500 100"
       preserveAspectRatio="none"
-      aria-label={`${receiver.receiver} passive filter envelope`}
+      aria-label={`${receiver.vfoSlot ?? receiver.receiver} passive filter envelope`}
     >
       {#if envelopes.length > 0}
         {#each envelopes as item}

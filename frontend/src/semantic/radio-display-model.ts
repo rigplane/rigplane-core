@@ -1,6 +1,6 @@
 import type {
   MeterField, RadioViewModel, ReceiverId, ReceiverIndicatorViewModel, TxAuxField,
-  VfoViewModel,
+  VfoSlotId, VfoViewModel,
 } from './radio-view-model';
 
 export type DisplayValue<T> =
@@ -21,8 +21,11 @@ export type DisplayOffset =
 
 export type DisplayTelemetry = DisplayValue<number> & { readonly relevant: boolean };
 
+export type DisplaySlotId = ReceiverId | VfoSlotId;
+
 export interface PeerSplitReceiverDisplay {
   readonly receiver: ReceiverId;
+  readonly vfoSlot?: VfoSlotId;
   readonly label: string;
   readonly activity: 'active' | 'inactive' | 'unknown';
   readonly operational: boolean;
@@ -83,9 +86,9 @@ export interface PeerSplitDisplayModel {
 
 type Fact<T> = Pick<TxAuxField<T>, 'reading' | 'availability'>;
 
-function displayValue<T>(field: Fact<T> | undefined): DisplayValue<T> {
+function displayValue<T>(field: Fact<T> | undefined, observed = true): DisplayValue<T> {
   if (!field || !field.availability.structural) return { state: 'unsupported' };
-  if (!field.availability.operational || field.reading.status === 'unknown') return { state: 'unknown' };
+  if (!observed || !field.availability.operational || field.reading.status === 'unknown') return { state: 'unknown' };
   return { state: 'known', value: field.reading.value };
 }
 
@@ -93,8 +96,8 @@ function directValue<T>(value: T | null | undefined): DisplayValue<T> {
   return value === null || value === undefined ? { state: 'unknown' } : { state: 'known', value };
 }
 
-function displayIndicator(field: Fact<boolean> | undefined): DisplayIndicator {
-  const value = displayValue(field);
+function displayIndicator(field: Fact<boolean> | undefined, observed = true): DisplayIndicator {
+  const value = displayValue(field, observed);
   if (value.state !== 'known') return value;
   return { state: value.value ? 'active' : 'inactive' };
 }
@@ -116,13 +119,24 @@ function receiverIndicator(
   return view.receiverIndicators?.find((indicator) => indicator.receiver === receiver);
 }
 
-function receiverDisplay(view: RadioViewModel, receiver: ReceiverId): PeerSplitReceiverDisplay {
-  const vfo = selectedVfo(view, receiver);
+function receiverDisplay(
+  view: RadioViewModel, receiver: ReceiverId, vfoSlot?: VfoSlotId,
+): PeerSplitReceiverDisplay {
+  const vfo = vfoSlot
+    ? view.vfos.find((candidate) => candidate.receiver === receiver
+      && candidate.slot.kind === 'slotted' && candidate.slot.id === vfoSlot)
+    : selectedVfo(view, receiver);
   const indicator = receiverIndicator(view, receiver);
+  const selectedSlots = view.vfos.filter((candidate) => candidate.receiver === receiver
+    && candidate.slot.kind === 'slotted' && candidate.isActiveSlot);
+  const selectedSlot = selectedSlots.length === 1 ? selectedSlots[0] : undefined;
   const activity = view.activeReceiver.status === 'unknown'
+    || (vfoSlot !== undefined && selectedSlot === undefined)
     ? 'unknown'
-    : view.activeReceiver.receiver === receiver ? 'active' : 'inactive';
+    : view.activeReceiver.receiver === receiver && (!vfoSlot || vfo === selectedSlot)
+      ? 'active' : 'inactive';
   const isActive = activity === 'active';
+  const observed = vfoSlot === undefined || isActive;
   const scopeStructural = view.scope.audioFftScope.structural;
   const spectrum = !scopeStructural ? 'unsupported'
     : activity === 'unknown' ? 'unknown'
@@ -130,33 +144,34 @@ function receiverDisplay(view: RadioViewModel, receiver: ReceiverId): PeerSplitR
 
   return {
     receiver,
-    label: view.vfoScheme === 'ab_shared'
+    ...(vfoSlot ? { vfoSlot } : {}),
+    label: vfoSlot ? `VFO ${vfoSlot}` : view.vfoScheme === 'ab_shared'
       ? (receiver === 'MAIN' ? 'VFO A' : 'VFO B')
       : vfo?.label || receiver,
     activity,
-    operational: indicator?.availability.operational ?? false,
+    operational: observed && (indicator?.availability.operational ?? false),
     frequency: directValue(vfo?.frequencyHz),
     mode: directValue(vfo?.mode),
     filter: directValue(vfo?.filter),
     band: isActive ? displayValue(view.band?.currentBand) : { state: 'unsupported' },
-    sMeter: displayValue(indicator?.sMeter),
-    bandwidthHz: displayValue(indicator?.bandwidthHz),
+    sMeter: displayValue(indicator?.sMeter, observed),
+    bandwidthHz: displayValue(indicator?.bandwidthHz, observed),
     ifShiftHz: isActive ? displayValue(view.filterPassband?.ifShift) : { state: 'unsupported' },
     pbtInnerHz: isActive ? displayValue(view.filterPassband?.pbtInner) : { state: 'unsupported' },
     pbtOuterHz: isActive ? displayValue(view.filterPassband?.pbtOuter) : { state: 'unsupported' },
     spectrum,
     dsp: {
-      agc: displayValue(indicator?.agcMode),
-      nb: displayIndicator(indicator?.nbActive),
-      nr: displayIndicator(indicator?.nrActive),
-      notch: displayValue(indicator?.notchMode),
+      agc: displayValue(indicator?.agcMode, observed),
+      nb: displayIndicator(indicator?.nbActive, observed),
+      nr: displayIndicator(indicator?.nrActive, observed),
+      notch: displayValue(indicator?.notchMode, observed),
     },
     front: {
-      preamp: displayValue(indicator?.preamp),
-      attenuator: displayValue(indicator?.attenuator),
-      rfGain: displayValue(indicator?.rfGain),
-      digiSel: displayIndicator(indicator?.digiSel),
-      ipPlus: displayIndicator(indicator?.ipPlus),
+      preamp: displayValue(indicator?.preamp, observed),
+      attenuator: displayValue(indicator?.attenuator, observed),
+      rfGain: displayValue(indicator?.rfGain, observed),
+      digiSel: displayIndicator(indicator?.digiSel, observed),
+      ipPlus: displayIndicator(indicator?.ipPlus, observed),
     },
   };
 }
@@ -201,8 +216,9 @@ function telemetry(field: MeterField | undefined): DisplayTelemetry {
 }
 
 export function projectPeerSplitDisplay(view: RadioViewModel): PeerSplitDisplayModel {
-  const main = receiverDisplay(view, 'MAIN');
-  const sub = receiverDisplay(view, 'SUB');
+  const singleAb = view.topologyId === '1/ab' && view.vfoScheme === 'ab';
+  const main = receiverDisplay(view, 'MAIN', singleAb ? 'A' : undefined);
+  const sub = singleAb ? receiverDisplay(view, 'MAIN', 'B') : receiverDisplay(view, 'SUB');
   const receivers = [main, sub] as const;
   const activeReceiver = receivers.find((receiver) => receiver.activity === 'active') ?? null;
   const shared = view.radioWideIndicators;

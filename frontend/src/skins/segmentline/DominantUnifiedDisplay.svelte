@@ -116,7 +116,7 @@
       data-state={main.frequency.state}
       style:visibility={main.frequency.state === 'unsupported' ? 'hidden' : undefined}
     >
-      <LcdFrequencyReadout receiver={main.receiver} field={main.frequency} />
+      <LcdFrequencyReadout receiver={main.vfoSlot ?? main.receiver} field={main.frequency} />
     </div>
     <div class="hero-facts">
       <span
@@ -158,7 +158,7 @@
       data-state={sub.frequency.state}
       style:visibility={sub.frequency.state === 'unsupported' ? 'hidden' : undefined}
     >
-      <LcdFrequencyReadout receiver={sub.receiver} field={sub.frequency} />
+      <LcdFrequencyReadout receiver={sub.vfoSlot ?? sub.receiver} field={sub.frequency} />
     </div>
     <div class="sub-facts">
       <span
@@ -187,19 +187,20 @@
       </span>
     </div>
     <div class="sub-offsets">
-      <LcdOffsetRail receiver={sub.receiver} offsets={model.offsets} />
+      <LcdOffsetRail receiver={sub.vfoSlot ?? sub.receiver} offsets={model.offsets} />
     </div>
   </section>
 
   <div class="meter-row">
-    {#each model.receivers as receiver (receiver.receiver)}
+    {#each model.receivers as receiver (receiver.vfoSlot ?? receiver.receiver)}
       <div
         class="meter-cell receiver-state-{receiver.activity}"
         data-testid="lcd-dominant-meter"
         data-receiver={receiver.receiver}
+        data-display-slot={receiver.vfoSlot ?? receiver.receiver}
         data-receiver-activity={receiver.activity}
       >
-        <span class="meter-receiver">{receiver.receiver}</span>
+        <span class="meter-receiver">{receiver.vfoSlot ?? receiver.receiver}</span>
         <LcdLinearSMeter field={receiver.sMeter} />
       </div>
     {/each}

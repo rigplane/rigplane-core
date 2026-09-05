@@ -51,13 +51,14 @@
   data-rf-state={model.rfState}
 >
   <div class="frequency-deck">
-    {#each model.receivers as receiver (receiver.receiver)}
+    {#each model.receivers as receiver (receiver.vfoSlot ?? receiver.receiver)}
       <section
         class="frequency-column"
         class:active={receiver.activity === 'active'}
         data-testid="panadapter-frequency-column"
         data-column-activity={receiver.activity}
         data-receiver={receiver.receiver}
+        data-display-slot={receiver.vfoSlot ?? receiver.receiver}
       >
         <div class="frequency-head">
           <span class="receiver-label">{receiver.label}{receiver.activity === 'active' ? ' ●' : ''}</span>
@@ -67,7 +68,7 @@
             <span data-state={receiver.band.state}>{stateText(receiver.band)}</span>
           </div>
         </div>
-        <LcdFrequencyReadout receiver={receiver.receiver} field={receiver.frequency} />
+        <LcdFrequencyReadout receiver={receiver.vfoSlot ?? receiver.receiver} field={receiver.frequency} />
         <LcdLinearSMeter field={receiver.sMeter} />
       </section>
     {/each}
