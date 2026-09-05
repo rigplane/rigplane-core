@@ -304,7 +304,7 @@
 
     <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
       {#if semanticDeck}
-        <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent} />
+        <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent} vfoAppearance="sdr" />
       {/if}
     </section>
   </div>
@@ -326,7 +326,7 @@
       separates `{#if semanticDeck}` from the mount by `\s*` only.
     -->
     {#if semanticDeck}
-      <SemanticRadioSurfaces regions={skinId === 'sdr-test'} />
+      <SemanticRadioSurfaces regions={skinId === 'sdr-test'} vfoAppearance={skinId === 'desktop-v2' ? 'standard' : 'semantic'} />
     {:else}
       <VfoHeader
         {mainVfo}
@@ -517,8 +517,9 @@
     grid-template-rows: 28px 200px minmax(0, 1fr) auto;
   }
   .radio-layout.semantic-deck:not(.sdr-test) {
-    grid-template-rows: 28px 280px minmax(0, 1fr) auto;
+    grid-template-rows: 28px minmax(240px, auto) minmax(320px, 1fr) auto;
   }
+  .radio-layout.semantic-deck:not(.sdr-test) > .receiver-deck { overflow-y: auto; }
   /* MOR-2231 (step 1, batch 5): `:not(.sdr-test)` on this rule and on the
      promotion below hands the SDR face over to its own grid further down,
      without relying on source order to break a specificity tie. No other
@@ -529,7 +530,7 @@
   @media (min-width: 1680px) {
     .radio-layout.semantic-deck:not(.sdr-test) {
       grid-template-columns: 228px minmax(0, 1fr) 228px;
-      grid-template-rows: 28px 280px minmax(0, 1fr) auto;
+      grid-template-rows: 28px minmax(240px, auto) minmax(320px, 1fr) auto;
       grid-template-areas:
         "status status status"
         "left   deck   right"
