@@ -511,7 +511,11 @@ class _RigctldCommandExecutor:
         cancelling = 0 if task is None else task.cancelling()
         try:
             if not on:
-                receipt = await authority.submit_ptt(False, owner)
+                receipt = (
+                    await submission
+                    if submission is not None
+                    else await authority.submit_ptt(False, owner)
+                )
             else:
                 loop = asyncio.get_running_loop()
                 if submission is None:
