@@ -270,6 +270,7 @@
     let cleanupBootstrap: (() => void) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let mounted = true;
+    const bootstrapAbort = new AbortController();
     const handleResize = () => {
       windowWidth = window.innerWidth;
       windowHeight = window.innerHeight;
@@ -278,7 +279,7 @@
 
     (async () => {
       try {
-        cleanupBootstrap = await runtime.bootstrap();
+        cleanupBootstrap = await runtime.bootstrap(bootstrapAbort.signal);
         if (!mounted) return cleanupBootstrap();
         txAuthorityReady = true;
         backendError = null;
@@ -286,6 +287,7 @@
         console.error('init error:', err);
         if (!mounted) return;
         backendError = t('core.app.backendError', { detail: String(err) });
+        if (err instanceof Error && err.name === 'AuthenticationError') return;
         if (retryCount < MAX_RETRIES) {
           const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
           retrying = true;
@@ -302,6 +304,7 @@
 
     return () => {
       mounted = false;
+      bootstrapAbort.abort();
       presentationActive = false;
       txAuthorityReady = false;
       txHost.dispose();

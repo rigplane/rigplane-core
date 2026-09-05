@@ -25,6 +25,7 @@ import {
 } from '$lib/stores/connection.svelte';
 import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
+import { fetchInfo } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { makeAudioRoutingHandlers } from './commands/panel-commands';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
@@ -274,7 +275,7 @@ class FrontendRuntime {
    *
    * @returns A cleanup function that tears down presentation resources when called.
    */
-  async bootstrap(): Promise<() => void> {
+  async bootstrap(signal?: AbortSignal): Promise<() => void> {
     // If already completed, return cached cleanup.
     if (this._bootstrapCleanup !== null) {
       return this._bootstrapCleanup;
@@ -286,7 +287,7 @@ class FrontendRuntime {
     }
 
     // Set sentinel before first await to serialize concurrent callers.
-    this._bootstrapInFlight = this._doBootstrap();
+    this._bootstrapInFlight = this._doBootstrap(signal);
 
     try {
       return await this._bootstrapInFlight;
@@ -300,7 +301,10 @@ class FrontendRuntime {
    * Private implementation of bootstrap. Separated so the sentinel
    * can be set before this async function starts.
    */
-  private async _doBootstrap(): Promise<() => void> {
+  private async _doBootstrap(signal?: AbortSignal): Promise<() => void> {
+    await fetchInfo(signal);
+    signal?.throwIfAborted();
+
     // A new App instance re-arms the runtime: `_ended` is latched by the
     // previous instance's cleanup and would otherwise fail every facade
     // (`acquireHardwareScope`, `subscribeDx`, `setRxLive`) closed forever.
