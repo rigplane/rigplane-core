@@ -33,8 +33,8 @@ that API only in a secure context, such as browser-trusted HTTPS; a private-LAN
 See the [W3C Secure Contexts specification](https://www.w3.org/TR/secure-contexts/)
 and the [MDN getUserMedia reference](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia).
 
-For a remote browser, start the Web UI with Core TLS support (`--tls`, or
-`--tls-cert` and `--tls-key` with certificates trusted by the browser), install
+For a remote browser, start the Web UI with Core TLS support using
+`--tls-cert` and `--tls-key` together, with a certificate valid and trusted for the server hostname; `--tls` alone generates self-signed TLS and does not establish browser certificate trust. Install
 the [`tls` extra](installation.md#optional-dependencies) when needed, and open the
 resulting `https://` URL. A browser connected through an SSH loopback tunnel
 may instead use `http://localhost:<forwarded-port>` because loopback is a
