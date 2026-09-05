@@ -53,6 +53,7 @@
   } from '../../semantic/TxAuxSurface.svelte';
   import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
+  import SemanticControlPanel from '../layout/SemanticControlPanel.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import CwKeyerSurface, { type CwLevelField } from '../../semantic/CwKeyerSurface.svelte';
   import ScopeControlsSurface, {
@@ -86,6 +87,7 @@
     strips?: 'single' | 'dual';
     regions?: boolean;
     regionContent?: Snippet;
+    regionExtras?: Snippet<['left' | 'right']>;
     vfoAppearance?: 'semantic' | 'sdr' | 'standard';
     displayFrameSource?: LcdSpectrumSource;
     readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
@@ -111,7 +113,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    strips = 'single', regions = false, regionContent, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
+    strips = 'single', regions = false, regionContent, regionExtras, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -876,9 +878,8 @@
     to move between arrangements. `__tests__/semantic-rx-tx-wiring.component.test.ts`
     re-pins that bare shape under NO_PLAN: it supplies no surface plan, so
     `zoneOwning()` is null and the surface renders bare there whatever
-    `regions` says. The plan-resolved `regions === false` case is a separate
-    claim, pinned in `semantic-desktop-migration.component.test.ts` by
-    `leaves the desktop-v2 surfaces bare, with no zone element around either`.
+    `regions` says. Standard and SDR now request declared region hosts;
+    other single compositions retain the existing bare VFO/TX path.
 
     The snippet is deliberate: it keeps exactly ONE `<RxTxSurface>` tag in
     this file, so single TX authority stays a property of the SOURCE rather
@@ -971,14 +972,19 @@
     not a second mount mechanism, a different answer to "and if nobody owns
     it?".
   -->
+  {#snippet presented(surface: SemanticSurfaceName, body: Snippet)}
+    {#if vfoAppearance === 'semantic'}{@render body()}
+    {:else}<SemanticControlPanel {surface}>{@render body()}</SemanticControlPanel>{/if}
+  {/snippet}
+
   {#snippet zoned(
     surface: SemanticSurfaceName, present: boolean, body: Snippet, allowBare = true,
   )}
     {#if present}
       {@const zoneId = zoneOwning(surface)}
       {#if zoneId !== null}
-        <div class="surface-zone" data-zone-id={zoneId}>{@render body()}</div>
-      {:else if allowBare}{@render body()}{/if}
+        <div class="surface-zone" data-zone-id={zoneId}>{@render presented(surface, body)}</div>
+      {:else if allowBare}{@render presented(surface, body)}{/if}
     {/if}
   {/snippet}
 
@@ -1421,6 +1427,7 @@
       {#if singleOrder.includes('vfo')}
         {@render zoned('vfo', view !== null, vfoSurface)}
       {/if}
+      <div class:desktop-controls-left={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
       {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
       {@render zoned(
         'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
@@ -1432,21 +1439,28 @@
         'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined, ritXitScanSurface,
         allowBareSurfaces,
       )}
+      {#if regionExtras}{@render regionExtras('left')}{/if}
+      </div>
+      <div class:desktop-controls-center={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
       {@render zoned(
         'scopeControls', view?.scopeControls !== undefined, scopeControlsSurface,
         allowBareSurfaces,
       )}
       {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
       {#if regionContent}{@render regionContent()}{/if}
-      {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
-      {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
-      {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
-      {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface, allowBareSurfaces)}
+      </div>
+      <div class:desktop-controls-right={vfoAppearance !== 'semantic'} class:region-passthrough={vfoAppearance === 'semantic'}>
       {#if singleOrder.includes('rxTx')}
         {@render zoned('rxTx', view !== null, rxTxSurface)}
       {/if}
       {@render txFaultRecovery()}
       {@render txAdjacentAlerts()}
+      {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
+      {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
+      {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
+      {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface, allowBareSurfaces)}
+      {#if regionExtras}{@render regionExtras('right')}{/if}
+      </div>
       {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
     {:else}
     <!--
@@ -1515,6 +1529,7 @@
 </div>
 
 <style>
+  .region-passthrough { display: contents; }
   /* Layout only — the surfaces own their own presentation. */
   .semantic-surfaces {
     display: flex;
