@@ -627,7 +627,7 @@
       >{lowerScale.label}{lowerScale.unit ? ` ${lowerScale.unit}` : ''}</text>
       {#if lowerScale.stateText}
         <text x={READOUT_CX} y={LOWER_LABEL_Y} font-size={LOWER_LABEL_FS}
-          fill="var(--v2-text-dim)" text-anchor="middle">{lowerScale.stateText}</text>
+          fill="var(--v2-text-dim)" text-anchor="middle" dominant-baseline="text-before-edge">{lowerScale.stateText}</text>
       {/if}
 
       {#each lowerScale.ticks as t}
