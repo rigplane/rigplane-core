@@ -42,6 +42,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
     } as Record<PropertyKey, unknown>)[handler] ?? h.noop })
     : group }),
   getSystemHandlers: () => ({ onSpeak: h.speak }),
+  getDataModeArmed: () => ({ armed: false, value: null }),
   getBreakInDelayControlFeedback: () => null, getPendingFrequencyHz: () => null,
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
