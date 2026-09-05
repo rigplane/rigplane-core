@@ -912,18 +912,23 @@
     border-inline: 1px solid var(--v2-border-panel, #18222d);
   }
   .freq-stack { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-  .receiver-instrument .vfo-tile {
+  .receiver-instrument :where(.vfo-tile) {
     display: grid; grid-template-columns: 1fr auto; gap: 6px;
     padding: 0; border: 0; background: transparent;
   }
   .receiver-instrument .vfo-role { font-size: 12px; letter-spacing: .1em; }
   .receiver-instrument .vfo-mode { font-size: 12px; grid-column: 1; }
   .receiver-instrument .vfo-freq {
-    grid-column: 1 / -1; grid-row: 3; white-space: nowrap; font-weight: 700;
+    grid-column: 1 / -1; grid-row: 3; white-space: nowrap;
     font-size: clamp(26px, 3.6vw, 52px); line-height: 1.2; letter-spacing: .01em;
     color: var(--v2-text-dim, #6f8196); text-align: right; margin: 20px 0 6px;
   }
-  .receiver-instrument .vfo-freq :global(.freq) { font-size: inherit; line-height: inherit; }
+  /* The face owns geometry; the selected design language owns numeral weight
+     and font family. The interactive primitive must inherit that typography. */
+  .receiver-instrument :where(.vfo-freq) { font-weight: 700; }
+  .receiver-instrument .vfo-freq :global(.freq) {
+    font-size: inherit; line-height: inherit; font-weight: inherit; font-family: inherit;
+  }
   .receiver-instrument .is-active .vfo-freq {
     color: var(--v2-vfo-main-freq-active, #7cfce5);
     text-shadow: 0 0 12px rgba(124,252,229,.5);
