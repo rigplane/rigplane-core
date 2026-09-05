@@ -1,5 +1,5 @@
 import { toScopeDisplayFrame } from './adapters/scope-adapter';
-import type { ScopeController } from './scope-controller.svelte';
+import type { ScopeController, ScopeFrameEvidence } from './scope-controller.svelte';
 import {
   resolveLcdSpectrumFrame,
   type LcdSpectrumFrameResolution,
@@ -14,6 +14,10 @@ export interface ScopeFrameHostAuthority {
 }
 
 type ResolutionHandler = (resolution: LcdSpectrumFrameResolution) => void;
+export interface ScopeFramePresentation extends ScopeFrameEvidence {
+  readonly resolution: LcdSpectrumFrameResolution;
+}
+type PresentationHandler = (presentation: ScopeFramePresentation) => void;
 
 /**
  * Runtime-side owner of the MOR-2321 display-frame resolution. Wiring supplies
@@ -22,6 +26,7 @@ type ResolutionHandler = (resolution: LcdSpectrumFrameResolution) => void;
  */
 export class ScopeFrameHost {
   private readonly listeners = new Map<number, ResolutionHandler>();
+  private readonly presentationListeners = new Map<number, PresentationHandler>();
   private nextId = 0;
   private authority: ScopeFrameHostAuthority | null = null;
   private unsubscribeEvidence: () => void;
@@ -46,7 +51,25 @@ export class ScopeFrameHost {
   }
 
   snapshot(): LcdSpectrumFrameResolution {
-    return this.resolve();
+    return this.snapshotPresentation().resolution;
+  }
+
+  snapshotPresentation(): ScopeFramePresentation {
+    const evidence = this.controller.snapshotFrameEvidence();
+    const authority = this.authority;
+    const candidate = authority ? toScopeDisplayFrame(evidence.envelope, evidence.authority) : null;
+    const resolution = Object.freeze(resolveLcdSpectrumFrame(candidate, {
+      source: authority?.source ?? 'hardware',
+      receiver: authority?.receiver ?? null,
+    }));
+    return Object.freeze({ ...evidence, resolution });
+  }
+
+  subscribePresentation(handler: PresentationHandler): () => void {
+    if (this.disposed) return () => {};
+    const id = this.nextId++;
+    this.presentationListeners.set(id, handler);
+    return () => { this.presentationListeners.delete(id); };
   }
 
   subscribe(handler: ResolutionHandler): () => void {
@@ -62,27 +85,22 @@ export class ScopeFrameHost {
     this.unsubscribeEvidence();
     this.controller.setFrameAuthority(null);
     this.listeners.clear();
-  }
-
-  private resolve(): LcdSpectrumFrameResolution {
-    const authority = this.authority;
-    if (!authority) {
-      return resolveLcdSpectrumFrame(null, { source: 'hardware', receiver: null });
-    }
-    const evidence = this.controller.snapshotFrameEvidence();
-    const candidate = toScopeDisplayFrame(evidence.envelope, evidence.authority);
-    return resolveLcdSpectrumFrame(candidate, {
-      source: authority.source,
-      receiver: authority.receiver,
-    });
+    this.presentationListeners.clear();
   }
 
   private publish(): void {
     if (this.disposed) return;
-    const resolution = this.resolve();
+    const presentation = this.snapshotPresentation();
     for (const listener of [...this.listeners.values()]) {
       try {
-        listener(resolution);
+        listener(presentation.resolution);
+      } catch (error) {
+        console.warn('Scope frame host subscriber failed', error);
+      }
+    }
+    for (const listener of [...this.presentationListeners.values()]) {
+      try {
+        listener(presentation);
       } catch (error) {
         console.warn('Scope frame host subscriber failed', error);
       }
