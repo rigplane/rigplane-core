@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.0.0b1] — Unreleased candidate
+## [3.0.0b1] — 2026-09-05
 
 ### Migration from 2.11.1
 
@@ -21,12 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must adopt canonical ownership, admission, completion and OFF; the former
   leave-keyed lifecycle is not emulated. Momentary PTT and latched TRANSMIT
   are distinct operations.
-- The package target is `3.0.0b1` in `pyproject.toml` and the editable
-  `rigplane` entry of `uv.lock`. HTTP contract version 1 and the approved
-  extension-host target (numeric 2, manifest `host_api: "2.0"`) are separate
+- The package version is `3.0.0b1`. HTTP contract version 1 and the
+  extension-host contract (numeric 2, manifest `host_api: "2.0"`) are separate
   contracts. The host requires the explicit new declaration while retaining
   manifest schema version 1. Installed-candidate compatibility is a separate
-  release gate; no release or full 2.x compatibility is claimed.
+  release gate; no full 2.x compatibility is claimed.
 - Core includes SDR preservation against the 2.11.1 behavior baseline.
   Browser, packaging/rollback and hardware acceptance remain release gates;
   Pro packaging and release follow separately.
@@ -608,6 +607,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The unused pre-v2 `src/rigplane/web/static.old/index.html` source copy was
+  removed in #2400 (`32eb20bd`). The supported UI is built from `frontend/`
+  and bundled with the Python artifact. Rollback uses a known complete
+  package/frontend artifact and retained user preferences, not the deleted
+  snapshot; source removal alone does not prove installed or active-session
+  rollback acceptance.
 - **`rigplane.backends.icom7610.drivers.serial_stub` no longer ships in the
   package (#2129, #2131).** `SerialMockRadio` and the serial framing test
   doubles were test-only code living inside the wheel; they moved to
@@ -2562,8 +2567,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...HEAD
-[3.0.0b1]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b1...HEAD
+[3.0.0b1]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...v3.0.0b1
 [2.10.2]: https://github.com/rigplane/rigplane-core/compare/v2.10.1...v2.10.2
 [2.10.1]: https://github.com/rigplane/rigplane-core/compare/v2.10.0...v2.10.1
 [2.10.0]: https://github.com/rigplane/rigplane-core/compare/v2.9.0...v2.10.0

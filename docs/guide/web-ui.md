@@ -143,8 +143,11 @@ If backend recovery is already in progress, `radio_connect` returns:
 - Receiver/routing: `select_vfo`, `vfo_swap`, `vfo_equalize`, `set_dual_watch`
 - Scope control: `switch_scope_receiver`, `set_scope_during_tx`, `set_scope_center_type`
 
-These are representative command names, not the complete catalog. The HTTP and
-WebSocket command surfaces share the same command names and `params` objects.
+These are representative command names, not the complete catalog. Most non-TX
+commands share names and `params` objects across HTTP and WebSocket. Momentary
+`ptt` uses the owned WebSocket flow; the legacy HTTP `ptt`, `ptt_on` and
+`ptt_off` command payloads are rejected. Latched TRANSMIT and unconditional OFF
+use the managed-transmit API described below.
 The full command catalog — every name, parameter shape, capability gate, and
 batch-eligibility flag — is published in
 [HTTP / WebSocket Command Catalog](../api/command-catalog.md).
@@ -152,7 +155,7 @@ Lower-level Python/CI-V examples are documented in [CI-V Commands](commands.md).
 
 ## HTTP Structured Commands
 
-Automation clients can send the same structured command names over HTTP:
+Automation clients can send structured non-TX commands over HTTP:
 
 ```bash
 curl -X POST http://127.0.0.1:8080/api/v1/commands \
@@ -440,34 +443,30 @@ Practical rule:
 
 ### Managed TX and PTT ownership
 
-For the Icom CI-V backends served by `RadioPoller`, browser PTT commands
-route through the same managed-TX ingress (`bind_managed_tx()` in
-`src/rigplane/web/radio_poller.py`) as other control-channel PTT sources.
-Current boundary: managed TX — a per-session
-lease, owner identity, and a 180-second max-key-down watchdog
-(`BACKEND_MAX_KEY_DOWN_SECONDS` in `src/rigplane/core/tx_safety.py`) — is
-armed on the LAN `IcomRadio` path only. Serial/USB Icom (pending full
-managed arming, MOR-1219), Yaesu CAT and rigctld-client (pending MOR-1190)
-are legacy and unmanaged: no lease, no owner identity. On those, a key is
-bounded only by the seat that issued it. A Web UI key gets this poller's
-180-second backstop (MOR-1220), which fires on its deadline whatever the rig
-is observed doing. A `rigctld` key gets rigctld's own bound (MOR-1904) — the
-same 180 seconds, but additionally cancelled once the rig is observed back in
-receive after that key. Both are damage bounds, not ownership: neither grants
-a session any claim on the transmitter, and a key rigplane did not issue is
-bounded by neither. See
-[`docs/CHANGELOG.md`](../CHANGELOG.md) for the dated record of this
-boundary.
+The browser's App-owned managed TX controller sends intents to the backend's
+canonical managed-transmit authority. Presentation components render its
+snapshot and request operations; they do not create another TX owner or
+infer radio state from a button press. The composition entry is
+`frontend/src/lib/runtime/tx-controller/managed-app-host.ts`:
+`provideManagedAppTxHost`; `WebServer._managed_tx_authority` in
+`src/rigplane/web/server.py` supplies the server authority.
 
-On that same Icom CI-V path, if a second WebSocket session tries to key a
-rig whose lease is already held live elsewhere, `ptt` is refused rather
-than stealing the key; a PTT ON enqueued by a WebSocket session that has
-already disconnected is also refused (fail-closed). PTT OFF is never
-refused this way. Yaesu CAT
-(`backends/yaesu_cat/poller.py`) and rigctld-client
-(`backends/rigctld_client/radio.py`) drain the same command queue with a
-bare `radio.set_ptt(True)` — no ingress bind, no lease, and no
-stale-session refusal.
+Momentary PTT uses the control WebSocket and keeps press/release on the same
+connection owner. Latched TRANSMIT is a separate operation through
+`POST /api/v1/managed-transmit/command`; its `force_off` operation requests
+unconditional OFF. Releasing an owner's PTT intent is not unconditional OFF.
+See [the TX migration examples](../migrate.md#tx-consumers-ownership-admission-completion-and-off)
+for request shapes and the intentionally rejected legacy HTTP commands.
+
+Admission is not completion or observed RF. Read the managed document at
+`GET /api/v1/managed-transmit` and preserve unavailable, stale and unknown
+states. A lost response must not trigger an automatic positive-TX retry.
+An unavailable managed authority is not permission to fall back to a legacy
+direct-key path. Time-out configuration and remaining time come from the
+managed document; do not infer a universal timer or ownership guarantee from
+a backend name. Direct hardware or external keying is not an owned browser
+PTT intent. Final operator/hardware acceptance is separate from these API
+contracts.
 
 ## Frontend Runtime Workflow (Current Implementation)
 
@@ -476,7 +475,7 @@ The browser app startup path is implemented in `frontend/src/App.svelte` and
 
 ### Boot sequence
 
-1. Initialize the skin selector from localStorage (see "Layout and skin resolution" below).
+1. Initialize the workspace-backed skin selector (see "Layout and skin resolution" below).
 2. Register MediaSession handlers (when API is available).
 3. Start HTTP polling loop for `/api/v1/state` (interval set to `1000ms` in app bootstrap).
 4. Start battery monitor (progressive enhancement) and adjust polling multiplier.
@@ -493,9 +492,13 @@ The frontend keeps one behavior path and splits responsibilities by module:
 | UI view-model mapping | `frontend/src/lib/runtime/adapters/` (`radio-view-model-adapter.ts`, `panel-adapters.ts`) | |
 | WS command dispatch | `frontend/src/lib/runtime/commands/panel-commands.ts` | |
 | HTTP system actions | `frontend/src/lib/runtime/system-controller.ts` via `runtime.system.*` | Owns radio connect/disconnect, power on/off, and EiBi identify calls. |
+| Presentation composition and resource handover | `frontend/src/App.svelte`: `requestPresentation`, `acquireSwapBridge`; `frontend/src/lib/runtime/resource-demand.ts` | The bridge preserves already-demanded resources during a layout change; it does not create demand for an otherwise unused service. |
+| Browser TX facade and session cleanup | `frontend/src/lib/runtime/tx-controller/managed-app-host.ts`: `provideManagedAppTxHost` | App lifetime, outside replaceable skins; renders server-managed state and submits intents. |
 
-Current skin files in `frontend/src/skins/*` delegate to `components-v2/layout/*`;
-behavior is implemented in the layout and runtime modules listed above.
+Skin entry points are registered in `frontend/src/skins/registry.ts` and may
+compose semantic surfaces or shared layout components. Layout replacement
+does not recreate runtime bootstrap or TX ownership. The accepted dependency
+direction is documented in the [v3 architecture decision](../plans/2026-07-25-ui-composition-architecture-v3.md).
 
 ### Backend CI-V poll cadence (state freshness)
 
@@ -563,7 +566,9 @@ Representative bindings from the shared default profile:
 | `Tab` | Swap VFO |
 | `Escape` | Clear RIT/XIT offset |
 
-There is currently no keyboard shortcut bound to PTT. Implementation:
+There is no global keyboard shortcut bound to PTT. Focused PTT controls
+support Space/Enter through their own press/release handlers; this is
+distinct from a window-level radio shortcut. Global-binding implementation:
 `frontend/src/components-v2/layout/keyboard-map.ts` (event matching) and
 `frontend/src/lib/runtime/commands/panel-commands.ts` (`makeKeyboardHandlers`,
 action dispatch).
@@ -579,21 +584,20 @@ Mobile-first interaction logic is implemented in:
 
 ### Layout and skin resolution
 
-Skin/layout is resolved once per render in `frontend/src/App.svelte` via
-`resolveSkinId(...)`, then passed as a `skinId` prop into
-`components-v2/layout/RadioLayout.svelte`. `frontend/src/skins/*` are thin
-delegation wrappers that mount the layout components with a fixed
-`skinId`/`variant` (see `skins/registry.ts`):
+Skin/layout is resolved in `frontend/src/App.svelte` via `resolveSkinId(...)`
+and lazy-loaded through `skins/registry.ts`:
 
 1. `isMobile` is true when:
    - `min(window.innerWidth, window.innerHeight) < 640`, or
    - touch device and `min(window.innerWidth, window.innerHeight) < 500`.
 2. If `isMobile` is true -> `mobile` skin.
-3. Otherwise, layout preference from localStorage key `rigplane-layout` is used:
+3. Otherwise, the workspace layout preference is used:
    - `lcd-cockpit` -> LCD Cockpit skin (TS-990S-style dual-cockpit)
    - `lcd-scope` -> LCD Scope skin (IC-7300-style scope-dominant)
    - `standard` -> desktop-v2 skin
    - `sdr-test` -> SDR Screen test skin
+   - `peer-split`, `unified-instrument`, `panadapter-first` -> their respective LCD shell presentations
+   - `dual-sdr-face` -> dual-receiver SDR instrument face
    - `auto` -> desktop-v2 unconditionally (MOR-1097 cutover); scope availability does not affect this resolution.
 
 `normalizeLayoutMode()` (`frontend/src/presentation/layout-mode.ts`, since
@@ -602,10 +606,43 @@ callers) normalizes legacy persisted values so old localStorage entries
 keep resolving: `amber-lcd`/`lcd` -> `lcd-cockpit`, `spectrum`/`desktop-v2`
 -> `standard`.
 
-The status bar layout control (`StatusBar.svelte`) is a `<select>` dropdown
-listing all five values above, not a cycle button. `cycleLayoutMode()` — a
-vestigial cycle-through-values helper with no caller — was deleted
-(MOR-2059).
+The status bar layout control (`StatusBar.svelte`) is a `<select>` dropdown.
+The persistent ID vocabulary is `CANONICAL_LAYOUT_MODES` in
+`frontend/src/presentation/layout-mode.ts`; it is distinct from skin manifest
+IDs (`standard` maps to `desktop-v2`). The QA-only `dual-receiver-cockpit`
+query override is not a persistable workspace choice.
+
+### Workspace settings, import and export
+
+In the standard layout, open Settings and expand WORKSPACE. Select layout,
+design language, theme and density there. Language IDs are `studioline`,
+`fieldline` and `segmentline`; a language activates only on compatible
+layouts. Density is clamped to that language's supported values.
+
+The schema is `WorkspaceV1` in
+`frontend/src/presentation/workspace/contract.ts`. It stores stable IDs and
+per-zone surface visibility/order in `rigplane:workspace`. A workspace can
+hide or reorder surfaces already declared within a zone. It cannot force-show
+unsupported controls, move surfaces across zones, remove required semantic
+surfaces, or persist capabilities, radio state, credentials, transport sessions
+or TX safety settings. Pinned command names are validated schema data with
+no user-interface consumer yet.
+
+Export saves `rigplane-workspace.json`. Import accepts a JSON file or pasted
+JSON and validates the whole document before replacing the workspace. Any
+rejected field prevents the import; the UI reports field/reason details.
+Export includes preserved unknown fields. Reset restores the frozen defaults
+and offers an in-session undo. These operations use `importWorkspace`,
+`exportWorkspace` and `resetWorkspace` in
+`frontend/src/presentation/workspace/store.svelte.ts`.
+
+Schema versions 1–3 are readable by the current v1 reader. A lossy newer
+document is held read-only for the session until explicit whole-document
+reset or a valid import; normal edits do not silently overwrite it. Legacy
+pre-workspace keys are retained. An older build reads those retained old
+preferences, not edits made only to the new workspace. The
+[workspace verification runbook](../validation/workspace-v1-verification.md)
+records a historical storage probe, not final installed-release acceptance.
 
 ### Bottom sheet gestures
 
@@ -626,22 +663,24 @@ Panel headers support vertical swipe:
 
 ### Mobile PTT workflow
 
-Mobile PTT button behavior (`components-v2/wiring/tx-ptt-gesture.ts`, wired
-into `MobileRadioLayout.svelte` through the shared App TX controller):
+Mobile PTT pointer timing is implemented by
+`components-v2/wiring/managed-tx-gesture.ts`: `createManagedTxGesture`, wired
+into `MobileRadioLayout.svelte` through the App-owned managed TX controller:
 
-- press then release -> keys TX; release arms a 300ms window instead of
-  de-keying immediately
-- a second press inside that 300ms window latches TX (lock) instead of
-  starting a new key
-- a press while latched unlatches and releases TX immediately
-- rotating the device while keyed or latched releases TX rather than
-  stranding it (the gesture recognizer is torn down and rebuilt for the
-  new orientation)
+- a press requests momentary PTT; release arms a 300ms window before
+  requesting its release
+- a second press inside that window requests canonical latched TRANSMIT
+  when available, or releases PTT otherwise
+- a press while latched requests ForceOff
+- changing orientation destroys the old gesture generation and releases its
+  in-progress or pending momentary PTT intent; it does not clear canonical
+  latched TRANSMIT
 
-There is no mobile-local safety timer — the previous 3-minute
-presentation-side timer was removed in MOR-1011/MOR-1012. See
-[Managed TX and PTT ownership](#managed-tx-and-ptt-ownership) above for the
-backend-side max-key-down backstop that replaced it.
+These are requests, not confirmation of radio transitions. Use the managed
+state/observation and explicit OFF control; local gesture cleanup does not
+prove RF OFF. There is no mobile-local safety timer. See
+[Managed TX and PTT ownership](#managed-tx-and-ptt-ownership) for the
+authority and observation boundary.
 
 ## Operations Runbook
 
@@ -656,6 +695,22 @@ rigplane web --dx-cluster dxc.nc7j.com:7373 --callsign YOURCALL
 ```bash
 rigplane web --static-dir /opt/icom-ui/dist
 ```
+
+### Package cutover and rollback
+
+Before replacing a deployed package, export the workspace and preserve the
+browser origin/storage used by the deployment. End the active operating
+session and confirm the required release/RX state before stopping or replacing
+it; an accepted OFF request alone is insufficient. Restore a known complete
+package/frontend artifact together, then verify its version, UI and preferences.
+Do not mix legacy static files into a running current session.
+
+The unused pre-v2 `static.old` source copy was removed in #2400; it is not the
+rollback UI. Retained workspace keys preserve the documented legacy-read
+window, but do not by themselves prove package or active-session rollback.
+Final candidate install/browser/rollback evidence remains separate from the
+source contracts here. Core beta scope and the later Pro release are described
+in the [migration guide](../migrate.md#core-sdr-and-acceptance-scope).
 
 ### Quick health checks
 
@@ -765,10 +820,10 @@ const sub = state.sub ?? null;
 - **Scope recovery behavior:** scope enable/re-enable is deferred until `radio_ready=true`;
   all-zero scope frames trigger automatic re-enable attempts.
 - **No v1 UI:** `?ui=v1` is no longer supported (since v0.20+) — the app only ships
-  the current (v2) skins-based UI. Mobile interactions (sheet/panel swipe, touch-first
+  the current skins-based UI. Mobile interactions (sheet/panel swipe, touch-first
   PTT flow) are always active on a mobile-sized viewport; no query param or stored
   selection is required.
-- **Layout mode expectations:** layout preference (`rigplane-layout`) resolution is not
+- **Layout mode expectations:** workspace layout preference resolution is not
   capability-aware; `auto` resolves to desktop-v2 unconditionally (MOR-1097 cutover), and scope
   availability plays no part in it.
 - **System action error surfacing:** connect/disconnect/power actions in v2 call
