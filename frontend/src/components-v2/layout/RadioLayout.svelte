@@ -24,6 +24,7 @@
   // whether the legacy twins are suppressed can never depend on some other
   // module having pulled the barrel in first.
   import '../../presentation/layouts/declarations';
+  import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
@@ -272,13 +273,15 @@
   });
 </script>
 
-{#snippet sdrRegionContent(scopeControls: Snippet | undefined)}
+{#snippet sdrRegionContent(scopeControls: Snippet | undefined, managedScope: ManagedScopeRegion | undefined)}
   <section class="content-row">
     <main class="content-center center-column">
       {#if hasAnyScope()}
         <div class="spectrum-slot">
           <div class="spectrum-frame">
-            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} {scopeControls} />
+            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} {scopeControls}
+              scopeProjection={managedScope?.projection} scopeDemanded={managedScope?.demanded}
+              onScopeDemandChange={managedScope?.setDemand} />
           </div>
         </div>
       {/if}
@@ -306,6 +309,7 @@
     <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
       {#if semanticDeck}
         <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent} {scopeControlsInRegionContent}
+          displayFrameSource={getScopeSource() === 'hardware' ? 'hardware' : undefined}
           regionExtras={desktopRegionExtras} vfoAppearance={skinId === 'sdr-test' ? 'sdr' : 'standard'} />
       {/if}
     </section>
