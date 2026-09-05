@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { fixtureById } from '../../../../../fixtures/catalog';
 /**
  * MOR-1065 — the live adapter behind the semantic VFO / RX-TX surfaces.
  *
@@ -88,6 +89,167 @@ function observedState(overrides: Partial<ServerState> = {}): ServerState {
 const unobservedState = (): ServerState => ({
   ...observedState(), fieldStatus: {},
 } as ServerState);
+
+describe('qualified VFO display observations', () => {
+  it.each(['topology-2-main-sub', 'topology-1-single', 'topology-2-ab-shared',
+    'tx-phase-rx', 'tx-phase-tx', 'tx-phase-fault'])('keeps %s fixture current with explicit synthetic observation evidence', (id) => {
+    const fixture = fixtureById(id)!;
+    const state = structuredClone(fixture.state()!);
+    const capabilities = fixture.caps()!;
+    for (const vfo of toRadioViewModel(state, capabilities)!.vfos) {
+      expect(vfo.slot.kind).not.toBe('unknown');
+      expect(vfo.frequencyHz).not.toBeNull();
+      expect(vfo.display?.frequencyHz).toEqual({ state: 'current', value: vfo.frequencyHz });
+      expect(vfo.display?.mode).toEqual({ state: 'current', value: vfo.mode });
+      expect(vfo.display?.filter).toEqual({ state: 'current', value: vfo.filter });
+    }
+  });
+  const dc = { ...TOPOLOGY_CAPS['1/single'], stateContractVersion: 1, providerGeneration: 1 };
+  function ds(isStale = false): ServerState {
+    const state = observedState({ stateContractVersion: 1, providerGeneration: 1 });
+    state.fieldStatus = Object.fromEntries(Object.keys(state.fieldStatus!).map((path) =>
+      [path, { ...(isStale && /\.(freqHz|mode|filter|filterNum)$/.test(path) ? stale : fresh), lastObservedMonotonic: 0 }]));
+    return state;
+  }
+  const display = (state: ServerState | null, c: Capabilities = dc) => toRadioViewModel(state, c)!.vfos[0].display;
+  const strictBaselines: Record<string, unknown> = {
+    '1/single:false': [
+      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":false},
+    ],
+    '1/single:true': [
+      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":null,"mode":null,"filter":null,"isActive":true,"isActiveSlot":true,"isTxTarget":false},
+    ],
+    '1/ab:false': [
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
+    ],
+    '1/ab:true': [
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":null,"mode":null,"filter":null,"isActive":true,"isActiveSlot":true,"isTxTarget":true},
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":false,"isTxTarget":false},
+    ],
+    '2/ab_shared:false': [
+      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"unslotted"},"label":"SUB","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
+    ],
+    '2/ab_shared:true': [
+      {"receiver":"MAIN","slot":{"kind":"unslotted"},"label":"MAIN","frequencyHz":null,"mode":null,"filter":null,"isActive":true,"isActiveSlot":true,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"unslotted"},"label":"SUB","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":true,"isTxTarget":false},
+    ],
+    '2/main_sub:false': [
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":14250000,"mode":"USB","filter":"FIL1","isActive":true,"isActiveSlot":true,"isTxTarget":true},
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"slotted","id":"A"},"label":"SUB A","frequencyHz":14300000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":true,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"slotted","id":"B"},"label":"SUB B","frequencyHz":14350000,"mode":"USB","filter":"FIL1","isActive":false,"isActiveSlot":false,"isTxTarget":false},
+    ],
+    '2/main_sub:true': [
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"A"},"label":"MAIN A","frequencyHz":null,"mode":null,"filter":null,"isActive":true,"isActiveSlot":true,"isTxTarget":true},
+      {"receiver":"MAIN","slot":{"kind":"slotted","id":"B"},"label":"MAIN B","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":false,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"slotted","id":"A"},"label":"SUB A","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":true,"isTxTarget":false},
+      {"receiver":"SUB","slot":{"kind":"slotted","id":"B"},"label":"SUB B","frequencyHz":null,"mode":null,"filter":null,"isActive":false,"isActiveSlot":false,"isTxTarget":false},
+    ],
+  };
+
+  it.each([false, true, false])('qualifies first accepted snapshots with stale=%s', (isStale) => {
+    expect(display(ds(isStale))).toEqual({
+      frequencyHz: { state: isStale ? 'stale' : 'current', value: 14250000 },
+      mode: { state: isStale ? 'stale' : 'current', value: 'USB' },
+      filter: { state: isStale ? 'stale' : 'current', value: 'FIL1' },
+    });
+  });
+  it('accepts zero frequency/filter and rejects non-scalar or empty values', () => {
+    const state = ds(true);
+    state.main = { ...state.main, freqHz: 0, filter: 0 };
+    expect(display(state)?.frequencyHz).toEqual({ state: 'stale', value: 0 });
+    expect(display(state)?.filter).toEqual({ state: 'stale', value: 'FIL0' });
+    state.main = { ...state.main, freqHz: NaN, mode: '', filter: Infinity };
+    expect(Object.values(display(state)!)).toEqual(Array(3).fill({ state: 'unknown', reason: 'invalid-value' }));
+    state.main.freqHz = false as unknown as number;
+    expect(display(state)?.frequencyHz).toEqual({ state: 'unknown', reason: 'invalid-value' });
+  });
+  it.each([
+    undefined, { ...fresh, observed: false }, { ...fresh },
+    { ...fresh, lastObservedMonotonic: -1 },
+    { ...fresh, lastObservedMonotonic: 1, availability: 'unavailable' },
+  ])('rejects missing or invalid leaf evidence %#', (status) => {
+    const state = ds();
+    state.fieldStatus!['main.freqHz'] = status as FieldStatus;
+    expect(display(state)?.frequencyHz.state).toBe('unknown');
+  });
+  it.each(['main', 'main.vfoA'])('honors ancestor veto and ancestor staleness at %s', (path) => {
+    const c = { ...dc, vfoScheme: 'ab' as const, vfoReadback: 'absolute' as const };
+    const state = ds();
+    state.fieldStatus![path] = { ...fresh, observed: false, lastObservedMonotonic: 0 };
+    expect(display(state, c)?.frequencyHz).toEqual({ state: 'unknown', reason: 'not-observed' });
+    state.fieldStatus![path] = { ...stale, lastObservedMonotonic: 0 };
+    expect(display(state, c)?.frequencyHz).toEqual({ state: 'stale', value: 14250000 });
+  });
+  it('fences capability generation, contract, reset and unresolved slot identity without caching', () => {
+    expect(display(ds())?.frequencyHz.state).toBe('current');
+    for (const c of [{ ...dc, providerGeneration: 2 }, { ...dc, stateContractVersion: undefined }]) {
+      expect(display(ds(), c)?.frequencyHz).toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+    }
+    expect(display(null)?.frequencyHz.state).toBe('unknown');
+    const state = ds();
+    state.main = { ...state.main, vfoA: undefined, vfoB: undefined };
+    expect(display(state, { ...dc, vfoScheme: 'ab', vfoReadback: 'absolute' })?.frequencyHz)
+      .toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+    expect(display(ds(true))?.frequencyHz).toEqual({ state: 'stale', value: 14250000 });
+  });
+  it.each([
+    { providerGeneration: undefined }, { providerGeneration: -1 },
+    { stateContractVersion: undefined }, { active: 'SUB' as const },
+  ])('rejects unresolved state identity %#', (overrides) => {
+    expect(display({ ...ds(), ...overrides })?.frequencyHz)
+      .toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+  });
+  it('does not carry a receiver display into a new generation or fabricate a missing value', () => {
+    const first = ds(true);
+    const next = ds(true);
+    next.providerGeneration = 2;
+    next.main.freqHz = 7100000;
+    const nextCaps = { ...dc, providerGeneration: 2 };
+    expect(display(first)?.frequencyHz).toEqual({ state: 'stale', value: 14250000 });
+    expect(display(next, nextCaps)?.frequencyHz).toEqual({ state: 'stale', value: 7100000 });
+    next.fieldStatus = {};
+    expect(display(next, nextCaps)?.frequencyHz).toEqual({ state: 'unknown', reason: 'not-observed' });
+    const missing = ds();
+    missing.main.freqHz = undefined as unknown as number;
+    expect(display(missing)?.frequencyHz).toEqual({ state: 'unknown', reason: 'invalid-value' });
+  });
+  it.each(Object.keys(TOPOLOGY_CAPS))('uses each %s position path and preserves strict baseline', (id) => {
+    const c = { ...TOPOLOGY_CAPS[id], stateContractVersion: 1, providerGeneration: 1 };
+    for (const isStale of [false, true]) {
+      const state = ds(isStale);
+      const view = toRadioViewModel(state, c)!;
+      const strict = view.vfos.map(({ display: _display, ...vfo }) => vfo);
+      const baseline = topologyFixtures[id as keyof typeof topologyFixtures].vfos;
+      // Capture the complete pre-change projection separately from display assertions.
+      expect(strict).toEqual(strictBaselines[`${id}:${isStale}`]);
+      expect(view.vfos).toHaveLength(baseline.length);
+      for (const vfo of view.vfos) {
+        const rx = vfo.receiver === 'MAIN' ? state.main : state.sub;
+        const raw = vfo.slot.kind === 'slotted' ? rx[vfo.slot.id === 'A' ? 'vfoA' : 'vfoB']! : rx;
+        expect(vfo.display?.frequencyHz).toEqual({ state: isStale ? 'stale' : 'current', value: raw.freqHz });
+      }
+    }
+  });
+  it('keeps relative selected/unselected provenance separate from absolute A/B', () => {
+    const state = ds(true);
+    delete state.fieldStatus!['main.activeSlot'];
+    state.main.unselectedVfo = slot(7100000, 'LSB');
+    for (const leaf of ['freqHz', 'mode', 'filterNum']) {
+      state.fieldStatus![`main.unselectedVfo.${leaf}`] = { ...stale, lastObservedMonotonic: 0 };
+    }
+    const c = { ...dc, vfoScheme: 'ab' as const, vfoReadback: 'selected_unselected' as const };
+    const view = toRadioViewModel(state, c)!;
+    expect(view.vfos.map((vfo) => [vfo.slot, vfo.display?.frequencyHz, vfo.isActiveSlot])).toEqual([
+      [{ kind: 'relative', role: 'selected' }, { state: 'stale', value: 14250000 }, true],
+      [{ kind: 'relative', role: 'unselected' }, { state: 'stale', value: 7100000 }, false],
+    ]);
+    state.main.unselectedVfo = undefined;
+    expect(toRadioViewModel(state, c)!.vfos[1].display?.frequencyHz.state).toBe('unknown');
+  });
+});
 
 function model(
   state: ServerState | null, capabilities: Capabilities | null,

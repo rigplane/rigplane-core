@@ -42,7 +42,7 @@
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
-  import type { BooleanFact, RadioViewModel, VfoViewModel } from './radio-view-model';
+  import type { BooleanFact, DisplayObservation, RadioViewModel, VfoViewModel } from './radio-view-model';
 
   interface Props {
     viewModel: RadioViewModel;
@@ -318,69 +318,26 @@
    * out-of-the-box tile text on the live bench.
    */
   function frequencyDisplay(vfo: VfoViewModel): ReturnType<typeof renderSlot> {
-    return renderSlot('frequencyDisplay', { frequencyHz: vfo.frequencyHz });
+    return renderSlot('frequencyDisplay', { frequencyHz: displayValue(vfo.display?.frequencyHz, vfo.frequencyHz) });
   }
 
-  /**
-   * MOR-1322 (S3b) — per-digit tuning parity with the legacy VfoHeader, under
-   * the owner's option (b): tuning OPTS OUT of the design language. The
-   * MOR-1275 `frequencyDisplay` renderer stays display-only — it is never asked
-   * to produce interactive markup — and the digit control self-renders.
-   *
-   * COMPOSITION RULE: one readout slot (`.vfo-freq`), two MUTUALLY EXCLUSIVE
-   * fillings, and BOTH now opt out of the language's text (MOR-1482 extends
-   * the same option-(b) precedent from the tunable branch to this one).
-   * Tunable → the self-rendered digit control; not tunable → `formatFrequency`,
-   * unconditionally, language active or not. Never both: two elements painting
-   * the same frequency is a double readout, and the operator must see exactly
-   * one number per VFO. Because both fillings read the SAME single fact
-   * (`vfo.frequencyHz`), they cannot show conflicting values by construction —
-   * that is the property the tests pin, in both language states.
-   *
-   * The language keeps its claim on the REGION either way: `freq.attributes`
-   * are spread onto the slot in both branches, so a language's tokens/hooks
-   * still decorate the frequency area. What opts out is the rendering of the
-   * VALUE — including, as of MOR-1482, the value's TEXT — which is exactly
-   * what "the renderer stays display-only" means, taken one step further.
-   *
-   * Two-level gating (MOR-977), and the split matters — it is what makes the
-   * guard REACHABLE and therefore independently testable:
-   *   STRUCTURAL (`hasTunableFrequency`) — no observed frequency, no tune
-   *     intent wired, or the tile is NOT ITS RECEIVER'S ACTIVE SLOT: there is
-   *     nothing this tile can tune, so no control mounts and the slot shows the
-   *     plain readout. ABSENT.
-   *
-   *     The active-slot term is load-bearing and was a real bug without it
-   *     (MOR-1322 verification B1). The tune intent is RECEIVER-scoped —
-   *     `set_freq {receiver}` writes that receiver's *active* VFO — so a
-   *     control on a tile that is not that receiver's active slot would take
-   *     its step from VFO B's digits and move VFO A: the operator scrolls one
-   *     VFO and watches a different one move.
-   *
-   *     MOR-1335 (G4) qualifies the term PER RECEIVER. B1 first spelled it
-   *     `isActive`, which is globally unique, so on `2/main_sub` (IC-7610) only
-   *     one tile on the WHOLE radio was tunable and the SUB receiver lost the
-   *     per-digit tuning the legacy `VfoPanel` had. That legacy shape is the
-   *     specification: ONE widget per RECEIVER, over that receiver's current
-   *     frequency. `isActiveSlot` is exactly that correspondence, and it does
-   *     not widen the hazard — the hazard is INTRA-receiver (which VFO of this
-   *     receiver `set_freq` lands on), and the intent carries `vfo.receiver`,
-   *     so a SUB tile can only ever address SUB. Unobserved active-slot
-   *     readings are `false` on both of that receiver's slots (the contract's
-   *     fail-closed rule), so an unknown never becomes a tunable guess.
-   *   OPERATIONAL (`disabled`, a MOR-1256 strip whose receiver is present but
-   *     unavailable) — the control DOES mount, marked `aria-disabled`, and
-   *     `tuneFrequency` refuses the dispatch. PRESENT BUT INERT, exactly as the
-   *     select controls in this same surface behave.
-   *
-   * Folding `disabled` into the structural gate instead would make the guard
-   * unreachable from the DOM — a mutant deleting it would survive, which is
-   * precisely the MOR-1321 B2 finding. Here the markup gate and the handler
-   * guard are two mechanisms on two different conditions, and each is pinned
-   * on its own by bypassing the other.
-   */
+  function displayValue<T>(display: DisplayObservation<T> | undefined, strict: T | null): T | null {
+    if (display === undefined) return strict;
+    return display.state === 'current' || display.state === 'stale' ? display.value : null;
+  }
+
+  function hasDigitReadout(vfo: VfoViewModel): boolean {
+    return vfo.isActiveSlot && onTuneFrequency !== undefined
+      && (vfo.frequencyHz !== null || vfo.display !== undefined);
+  }
+
   function hasTunableFrequency(vfo: VfoViewModel): boolean {
     return vfo.isActiveSlot && vfo.frequencyHz !== null && onTuneFrequency !== undefined;
+  }
+
+  function readoutDisabled(vfo: VfoViewModel): boolean {
+    return disabled || !hasTunableFrequency(vfo)
+      || (vfo.display !== undefined && vfo.display.frequencyHz.state !== 'current');
   }
 
   function tuneFrequency(vfo: VfoViewModel, frequencyHz: number): void {
@@ -539,6 +496,11 @@
       {@const selectDisabled = selectable && (vfo.slot.kind === 'unknown' || disabled)}
       {@const freq = frequencyDisplay(vfo)}
       {@const pendingHz = pendingFrequencyHz?.[vfo.receiver] ?? null}
+      {@const displayHz = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz)}
+      {@const displayMode = displayValue(vfo.display?.mode, vfo.mode)}
+      {@const displayFilter = displayValue(vfo.display?.filter, vfo.filter)}
+      {@const staleDisplay = Object.values(vfo.display ?? {}).some((field) => field.state === 'stale')}
+      {@const staleId = `${reasonIdPrefix}-display-${i}`}
       <div
         class="vfo-tile"
         class:is-active={vfo.isActive}
@@ -552,19 +514,16 @@
         data-vfo-tx-target={vfo.isTxTarget}
       >
         <span class="vfo-role">{roleLabel(vfo)}</span>
-        <!--
-          MOR-1322 — ONE readout slot, two mutually exclusive fillings. See the
-          `tuneFrequency` comment for the composition rule and why "alongside"
-          cannot mean two visible numbers.
-        -->
         <span
-          class="vfo-freq"
+          class="vfo-freq" class:display-unknown={displayHz === null && pendingHz === null}
           {...(appearance === 'semantic' ? freq?.attributes ?? {} : {})}
           data-vfo-freq
-          data-freq-tunable={hasTunableFrequency(vfo) && !disabled}
-          aria-disabled={hasTunableFrequency(vfo) && disabled ? 'true' : undefined}
+          data-freq-tunable={!readoutDisabled(vfo)}
+          data-display-state={vfo.display?.frequencyHz.state}
+          aria-disabled={hasDigitReadout(vfo) && readoutDisabled(vfo) ? 'true' : undefined}
+          aria-describedby={staleDisplay ? staleId : undefined}
         >
-          {#if hasTunableFrequency(vfo)}
+          {#if hasDigitReadout(vfo)}
             <!--
               MOR-1441 REVIEW FIX (severe): `freq` is ALWAYS confirmed radio
               truth (`vfo.frequencyHz`), never `pendingHz` — the pending
@@ -584,7 +543,10 @@
               redundant `[data-vfo-freq]` inside it.
             -->
             <FrequencyDisplayInteractive
-              freq={vfo.frequencyHz ?? 0}
+              freq={vfo.frequencyHz}
+              {displayHz}
+              disabled={readoutDisabled(vfo)}
+              contextKey={`${viewModel.topologyId}:${vfo.receiver}:${slotKey(vfo.slot)}`}
               pendingDisplayHz={pendingHz}
               pendingAnnouncement={pendingHz !== null ? t('core.vfo.freq.pendingAnnouncement') : undefined}
               compact={appearance === 'semantic'}
@@ -613,10 +575,15 @@
               a future hero-scale mount (not this tile) is the intended
               consumer.
             -->
-            {formatFrequency(vfo.frequencyHz)}
+            {formatFrequency(displayHz)}
           {/if}
         </span>
-        <span class="vfo-mode">{vfo.mode ?? '—'}{vfo.filter ? ` / ${vfo.filter}` : ''}</span>
+        <span class="vfo-mode">{displayMode ?? '—'}{displayFilter ? ` / ${displayFilter}` : ''}</span>
+        <span id={staleId} class="vfo-stale-cue" class:stale={staleDisplay}
+          data-vfo-stale-cue aria-hidden={!staleDisplay}
+          title={staleDisplay ? t('core.rxTx.target.reason.stale') : undefined}>
+          <span aria-hidden="true">†</span><span class="sr-only">{t('core.rxTx.target.reason.stale')}</span>
+        </span>
         {#if vfo.isTxTarget}
           <span class="vfo-badge" data-vfo-tx-badge>{t('core.vfo.txTarget.label')}</span>
         {/if}
@@ -887,6 +854,15 @@
   .vfo-tile { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: var(--v2-bg-panel, rgba(255, 255, 255, 0.03)); }
   .vfo-tile.is-active { border-color: var(--v2-accent-cyan, #00d4ff); }
   .vfo-role { font-weight: 700; color: var(--v2-text-secondary, rgba(255, 255, 255, 0.8)); }
+  .vfo-stale-cue { visibility: hidden; font-size: 10px; inline-size: 1ch; flex: 0 0 1ch; }
+  .vfo-stale-cue.stale { visibility: visible; }
+  /* Reserve the semantic tile's upper trailing corner, not another flex gap.
+     A flow slot can wrap a 375px phone row even while its cue is hidden. */
+  [data-vfo-appearance='semantic'] .vfo-tile { position: relative; }
+  [data-vfo-appearance='semantic'] .vfo-stale-cue {
+    position: absolute; inset-inline-end: 1px; inset-block-start: 1px;
+    line-height: 1; letter-spacing: normal;
+  }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
   .vfo-select, .fact-toggle, .vfo-op { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
   .vfo-select:disabled, .fact-toggle:disabled, .vfo-op:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
@@ -916,7 +892,12 @@
     display: grid; grid-template-columns: 1fr auto; gap: 6px;
     padding: 0; border: 0; background: transparent;
   }
-  .receiver-instrument .vfo-role { font-size: 12px; letter-spacing: .1em; }
+  /* Share the role cell and its following gap; auto placement would add a row. */
+  .receiver-instrument .vfo-stale-cue {
+    grid-column: 1; grid-row: 1; justify-self: end; align-self: start;
+    transform: translateX(100%); line-height: 1; letter-spacing: normal;
+  }
+  .receiver-instrument .vfo-role { grid-column: 1; grid-row: 1; font-size: 12px; letter-spacing: .1em; }
   .receiver-instrument .vfo-mode { font-size: 12px; grid-column: 1; }
   .receiver-instrument .vfo-freq {
     grid-column: 1 / -1; grid-row: 3; white-space: nowrap;
@@ -928,6 +909,10 @@
   .receiver-instrument :where(.vfo-freq) { font-weight: 700; }
   .receiver-instrument .vfo-freq :global(.freq) {
     font-size: inherit; line-height: inherit; font-weight: inherit; font-family: inherit;
+  }
+  /* A retained null primitive keeps the established instrument placeholder paint. */
+  .receiver-instrument .vfo-freq.display-unknown :global(.freq) {
+    font: inherit; letter-spacing: inherit; color: inherit; text-shadow: inherit;
   }
   .receiver-instrument .is-active .vfo-freq {
     color: var(--v2-vfo-main-freq-active, #7cfce5);

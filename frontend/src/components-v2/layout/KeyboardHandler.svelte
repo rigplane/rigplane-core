@@ -55,11 +55,23 @@
   }
 
   function dispatch(action: KeyboardActionConfig): void {
+    if (frequencyActionBlocked(action)) return;
     if (action.action === 'toggle_help') {
       helpOpen = !helpOpen;
       return;
     }
     onAction(action);
+  }
+
+  function inertFrequencyReadout(): boolean {
+    const focused = document.activeElement;
+    const readout = focused?.closest('[data-vfo-freq]');
+    return !!readout && (readout.getAttribute('data-freq-tunable') === 'false'
+      || focused?.closest('[aria-disabled="true"]') !== null);
+  }
+
+  function frequencyActionBlocked(action: KeyboardActionConfig): boolean {
+    return inertFrequencyReadout() && (action.action === 'tune' || action.action === 'band_select');
   }
 
   /**
@@ -122,7 +134,7 @@
       isDigitKey(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey
       && document.activeElement?.closest('[data-vfo-freq]')
     ) {
-      if (isFrequencyDisplayFocused(document.activeElement)) {
+      if (!inertFrequencyReadout() && isFrequencyDisplayFocused(document.activeElement)) {
         routeDigitToFrequencyEntry(event.key);
       }
       // MOR-1444 B2 (round-2 review): mirrors the MOR-1449 Tab guard
@@ -165,7 +177,7 @@
       return;
     }
 
-    const sequenceStarts = resolveSequenceStarts(event, keyboardConfig);
+    const sequenceStarts = resolveSequenceStarts(event, keyboardConfig).filter((action) => !frequencyActionBlocked(action));
     if (sequenceStarts.length) {
       event.preventDefault();
       pendingSequences = sequenceStarts;

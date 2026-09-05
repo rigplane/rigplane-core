@@ -1550,6 +1550,10 @@ export function toRadioViewModel(
         // fabrication MOR-988 §3.2 forbids.
         : [{ slot: { kind: 'unknown' }, base: `${key}.`, filterKey: 'filter', src: rx }];
     return positions.map(({ slot, base, filterKey, src }) => {
+      const displayObservation = <T extends number | string>(leaf: string, value: T | undefined) =>
+        slot.kind === 'unknown' ? { state: 'unknown' as const, reason: 'identity-unresolved' as const }
+          : qualifyDisplayObservation({ state, caps, receiver, path: `${base}${leaf}`, structural: true, value });
+      const filter = src?.[filterKey];
       // MOR-1335 (G4): the per-RECEIVER half of "active", named on its own so a
       // receiver-scoped intent has a slot to address on EVERY receiver — not
       // only on the active one. `activeSlot` is already the gated read above,
@@ -1565,6 +1569,12 @@ export function toRadioViewModel(
             ? (slot.role === 'selected' ? 'Selected VFO' : 'Unselected VFO')
             : receiver,
         ...readings(state, base, filterKey, src),
+        display: {
+          frequencyHz: displayObservation('freqHz', typeof src?.freqHz === 'number' ? src.freqHz : undefined),
+          mode: displayObservation('mode', typeof src?.mode === 'string' ? src.mode : undefined),
+          filter: displayObservation(filterKey,
+            typeof filter === 'number' && Number.isFinite(filter) ? `FIL${filter}` : undefined),
+        },
         // Unchanged in meaning, restated on the new fact: the radio-wide active
         // VFO IS the active receiver's active slot.
         isActive: activeReceiver.status === 'known' && activeReceiver.receiver === receiver

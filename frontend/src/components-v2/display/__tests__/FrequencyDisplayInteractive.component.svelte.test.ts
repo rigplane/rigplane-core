@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
@@ -109,6 +110,52 @@ function mountDisplay(props: ComponentProps<typeof FrequencyDisplayInteractive>)
   flushSync();
   return t;
 }
+
+describe('display-only frequency and disabled arithmetic', () => {
+  it.each([{ freq: null, disabled: false }, { freq: 14250000, disabled: true }])('rejects every gesture with %j', (authority) => {
+    const onFreqChange = vi.fn();
+    const root = mountDisplay({ ...authority, displayHz: 7100000, onFreqChange });
+    const primitive = root.querySelector('.freq')!;
+    expect(primitive.textContent?.replace(/\s/g, '')).toBe('7.100.000');
+    expect(primitive.getAttribute('aria-disabled')).toBe('true');
+    for (const digit of primitive.querySelectorAll('.digit')) {
+      digit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const wheel = new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true });
+      digit.dispatchEvent(wheel);
+      for (const key of ['ArrowUp', 'ArrowDown']) primitive.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      expect(onFreqChange).not.toHaveBeenCalled();
+      expect(wheel.defaultPrevented).toBe(false);
+    }
+    flushSync();
+    expect(primitive.querySelector('.selected')).toBeNull();
+    expect(onFreqChange).not.toHaveBeenCalled();
+  });
+  it('shows null as unknown and preserves valid zero', () => {
+    expect(mountDisplay({ freq: null }).querySelector('.freq')!.textContent?.trim()).toBe('—');
+    expect(mountDisplay({ freq: 0 }).querySelector('.freq')!.textContent?.replace(/\s/g, '')).toBe('.000.000');
+  });
+  it('clears the armed digit on disable or context change and uses strict input after rearming', () => {
+    const control = writable({ disabled: false, contextKey: 'MAIN:A' });
+    const live = fromStore(control);
+    const onFreqChange = vi.fn();
+    const root = mountDisplay({ freq: 14250000, displayHz: 7100000, onFreqChange,
+      get disabled() { return live.current.disabled; }, get contextKey() { return live.current.contextKey; },
+    });
+    const primitive = root.querySelector('.freq')!;
+    const digit = primitive.querySelectorAll('.digit').item(6);
+    for (const contextKey of ['MAIN:A', 'MAIN:B']) {
+      digit.dispatchEvent(new MouseEvent('click', { bubbles: true })); flushSync();
+      control.set({ disabled: contextKey === 'MAIN:A', contextKey }); flushSync();
+      control.set({ disabled: false, contextKey }); flushSync();
+      primitive.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+      expect(onFreqChange).not.toHaveBeenCalled();
+    }
+    digit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    primitive.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14250001);
+  });
+});
 
 beforeEach(async () => {
   vi.resetModules();
