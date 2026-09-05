@@ -406,6 +406,19 @@ async def test_pending_on_defers_handler_state_evaluation_until_predecessor(mana
 @pytest.mark.parametrize("provider_error", [False, True])
 async def test_off_bypasses_but_later_on_keeps_held_frequency_barrier(managed, provider_error):
     await _key(managed)
+    later_on_received = asyncio.Event()
+    start, execute = managed.authority.start_ptt_submission, managed.server._rig_handler.execute
+    def observed(on, owner, **kwargs):
+        submission = start(on, owner, **kwargs)
+        if on:
+            later_on_received.set()
+        return submission
+    async def gated(cmd, **kwargs):
+        if cmd.long_cmd == "set_ptt" and not int(cmd.args[0]):
+            await asyncio.wait_for(later_on_received.wait(), _WAIT)
+        return await execute(cmd, **kwargs)
+    managed.authority.start_ptt_submission = observed
+    managed.server._rig_handler.execute = gated
     managed.radio.fail_frequency = provider_error
     await _send(managed, f"F {_FREQUENCY}", "T 0", "T 1")
     await asyncio.wait_for(managed.radio.entered.wait(), _WAIT)
