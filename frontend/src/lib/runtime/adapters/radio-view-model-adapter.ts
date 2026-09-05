@@ -37,6 +37,7 @@ import type {
   RadioWideIndicatorsViewModel, DualActionBlockViewModel,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
+import { qualifyDisplayObservation } from './display-observation';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand } from '$lib/radio/band-plan';
@@ -782,7 +783,13 @@ function deriveReceiverIndicators(
       notchMode: txAuxField(hasNotch, notchOperational, notchMode),
       attenuator: strictField(hasAttenuator, 'att', numOrUndef(rx?.att)),
       preamp: strictField(hasPreamp, 'preamp', numOrUndef(rx?.preamp)),
-      rfGain: strictField(hasRfGain, 'rfGain', numOrUndef(rx?.rfGain)),
+      rfGain: {
+        ...strictField(hasRfGain, 'rfGain', numOrUndef(rx?.rfGain)),
+        display: qualifyDisplayObservation({
+          state, caps, receiver, path: path('rfGain'), structural: hasRfGain,
+          value: numOrUndef(rx?.rfGain),
+        }),
+      },
       digiSel: strictField(hasDigiSel, 'digisel', boolOrUndef(rx?.digisel)),
       ipPlus: strictField(hasIpPlus, 'ipplus', boolOrUndef(rx?.ipplus)),
     };

@@ -7,7 +7,7 @@
   import type { Snippet } from 'svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type {
-    RadioWideIndicatorsViewModel, ReceiverIndicatorField,
+    DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
   } from './radio-view-model';
 
@@ -29,6 +29,12 @@
 
   function numeric(field: ReceiverIndicatorField<number>): string {
     return field.reading.status === 'known' ? String(field.reading.value) : '—';
+  }
+
+  function rfGainNumber(field: DisplayObservedField<number>): string {
+    if (!field.display) return numeric(field);
+    return field.display.state === 'current' || field.display.state === 'stale'
+      ? String(field.display.value) : '—';
   }
 
   function agc(field: ReceiverIndicatorViewModel['agcMode']): string {
@@ -140,10 +146,23 @@
         DIGI-SEL {booleanLabel(indicator.digiSel)}
       </span>
     {/if}
-    {#if indicator.rfGain.availability.structural}
-      <span class="fact" data-indicator-fact="rf-gain" data-state={indicator.rfGain.reading.status}>
-        RFG {numeric(indicator.rfGain)}
-      </span>
+    {#if indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported'}
+      <span
+        class="fact"
+        data-indicator-fact="rf-gain"
+        role="img"
+        data-state={indicator.rfGain.reading.status}
+        data-display-state={indicator.rfGain.display?.state ?? (indicator.rfGain.reading.status === 'known' ? 'current' : 'unknown')}
+        aria-label={`RF gain ${rfGainNumber(indicator.rfGain)}${indicator.rfGain.display?.state === 'stale' ? ' (stale, last observed)' : ''}`}
+      >RFG {rfGainNumber(indicator.rfGain)}<span
+          class="stale-cue"
+          style:display="inline-block"
+          style:width="1ch"
+          style:margin-inline-start="0.25ch"
+          aria-hidden="true"
+          title="Stale: last observed value"
+          style:visibility={indicator.rfGain.display?.state === 'stale' ? 'visible' : 'hidden'}
+        >◷</span></span>
     {/if}
   </div>
 </section>

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /**
  * MOR-1065 — the live adapter behind the semantic VFO / RX-TX surfaces.
  *
@@ -863,5 +864,40 @@ describe('the emitted model carries only contract data', () => {
       'receiverIndicators', 'scope', 'scopeControls', 'split',
       'topologyId', 'txPermit', 'txTarget', 'vfoScheme', 'vfos',
     ]);
+  });
+});
+
+
+describe('RF gain additive display observation', () => {
+  const displayCaps = { ...INDICATOR_CAPS, stateContractVersion: 1, providerGeneration: 1 };
+  function displayState(stale = false) {
+    const state = indicatorState({ stateContractVersion: 1, providerGeneration: 1 });
+    state.fieldStatus!['main.rfGain'] = {
+      ...fresh, lastObservedMonotonic: 310658.42975425,
+      ...(stale ? { freshness: 'stale' as const, availability: 'stale' as const } : {}),
+    };
+    return state;
+  }
+  it.each([false, true])('preserves every strict model member for stale=%s', (stale) => {
+    const view = toRadioViewModel(displayState(stale), displayCaps, RECEIVING)!;
+    const strictJson = JSON.stringify(view, (key, value) => key === 'display' ? undefined : value);
+    const digest = createHash('sha256').update(strictJson).digest('hex');
+    expect(digest).toBe(stale ? 'b4b5cff2b85557e39baa48e4d73c756e12ff026488ffa05a1ef558ca0b3f0507' : '379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');
+  });
+  it.each([false, true])('projects explicit display without admitting stale RFgain, stale=%s', (stale) => {
+    const view = model(displayState(stale), displayCaps, RECEIVING);
+    expect(view.receiverIndicators![0].rfGain).toEqual({
+      reading: stale ? { status: 'unknown' } : { status: 'known', value: 0 },
+      availability: { structural: true, operational: !stale },
+      display: { state: stale ? 'stale' : 'current', value: 0 },
+    });
+  });
+  it('does not classify a fresh but nonoperational SUB as stale', () => {
+    const state = displayState();
+    state.dualWatch = false;
+    state.fieldStatus!['sub.rfGain'] = { ...fresh, lastObservedMonotonic: 310658.42975425 };
+    const view = model(state, { ...displayCaps, capabilities: displayCaps.capabilities.filter((cap) => cap !== 'dual_rx') }, RECEIVING);
+    expect(view.receiverIndicators![1].rfGain.availability.operational).toBe(false);
+    expect(view.receiverIndicators![1].rfGain.display).toEqual({ state: 'current', value: 0.75 });
   });
 });
