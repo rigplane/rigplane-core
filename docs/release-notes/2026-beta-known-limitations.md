@@ -12,6 +12,18 @@ reclassification without a corresponding line here is incomplete.
 None of the items below produces false transmit state or routes RF incorrectly;
 that class of defect is release-blocking by definition and is not on this list.
 
+## Browser microphone capture
+
+- **Browser voice TX requires a secure browser context.** `getUserMedia()` is
+  available to the Web UI only over browser-trusted HTTPS or a local loopback
+  origin such as `localhost`; a private-LAN HTTP URL is not a loopback origin.
+  Use Core TLS setup with `--tls-cert` and `--tls-key` together. Use a certificate
+  valid and trusted for the server hostname. The `--tls` option alone generates
+  self-signed TLS and does not establish browser certificate trust. Open the
+  resulting `https://` URL. Alternatively, access a loopback endpoint through
+  an SSH tunnel. This limitation concerns microphone capture and voice TX; it
+  does not make all control or RX operations unavailable over HTTP.
+
 ## Receive-control feedback and precision
 
 - **PBT values can briefly blank or show a transient endpoint during

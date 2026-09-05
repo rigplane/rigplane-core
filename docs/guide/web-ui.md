@@ -25,6 +25,24 @@ rigplane web --auth-token "change-me"
 
 Open `http://<server-ip>:8080` (or your custom port).
 
+### Browser microphone requirement
+
+Browser voice TX uses `getUserMedia()` to capture the microphone. Browsers expose
+that API only in a secure context, such as browser-trusted HTTPS; a private-LAN
+`http://<server-ip>` URL is not the same as `localhost` or a loopback origin.
+See the [W3C Secure Contexts specification](https://www.w3.org/TR/secure-contexts/)
+and the [MDN getUserMedia reference](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia).
+
+For a remote browser, start the Web UI with Core TLS support using
+`--tls-cert` and `--tls-key` together. Use a certificate valid and trusted for
+the server hostname. The `--tls` option alone generates self-signed TLS and
+does not establish browser certificate trust. Install the [`tls` extra](installation.md#optional-dependencies) when needed, and open the resulting
+`https://` URL. A browser connected through an SSH loopback tunnel may instead
+use `http://localhost:<forwarded-port>` because loopback is a browser-trusted
+origin; the LAN HTTP URL itself remains insecure. This requirement affects
+browser microphone capture and voice TX; it does not imply that every control
+or receive operation fails over HTTP.
+
 ## What Runs Where
 
 | Layer | Implementation | Notes |
