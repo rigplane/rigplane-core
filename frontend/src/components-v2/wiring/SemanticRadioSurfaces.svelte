@@ -86,6 +86,7 @@
     strips?: 'single' | 'dual';
     regions?: boolean;
     regionContent?: Snippet;
+    vfoAppearance?: 'semantic' | 'sdr' | 'standard';
     displayFrameSource?: LcdSpectrumSource;
     readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
   }
@@ -110,7 +111,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    strips = 'single', regions = false, regionContent, displayFrameSource, readonlyDisplay,
+    strips = 'single', regions = false, regionContent, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -847,6 +848,7 @@
     {#if view}
       <VfoSurface
         viewModel={view}
+        appearance={vfoAppearance}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
         {hasDualReceiver}

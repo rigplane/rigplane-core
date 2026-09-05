@@ -4,6 +4,7 @@
   ANT/TUNE/RIT/XIT facts and DUAL actions belong to slice 2.
 -->
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type {
     RadioWideIndicatorsViewModel, ReceiverIndicatorField,
@@ -12,10 +13,13 @@
 
   interface Props {
     indicator?: ReceiverIndicatorViewModel;
+    appearance?: 'semantic' | 'sdr' | 'standard';
+    children?: Snippet;
+    slotLabel?: string;
     radioWide?: RadioWideIndicatorsViewModel;
   }
 
-  let { indicator, radioWide }: Props = $props();
+  let { indicator, radioWide, appearance = 'semantic', children, slotLabel }: Props = $props();
 
   const rfLabel = (state: RadioWideIndicatorsViewModel['rfState']): string =>
     state === 'transmitting' ? 'TX'
@@ -60,6 +64,7 @@
 {#if indicator}
 <section
   class="indicator-row"
+  data-indicator-appearance={appearance}
   data-testid="vfo-indicator-row"
   data-indicator-receiver={indicator.receiver}
   data-indicator-operational={indicator.availability.operational}
@@ -74,11 +79,14 @@
         data-state={indicator.bandwidthHz.reading.status}
       >BW {numeric(indicator.bandwidthHz)}{indicator.bandwidthHz.reading.status === 'known' ? ' Hz' : ''}</span>
     {/if}
+    {#if appearance === 'standard'}
+      <span class="header-badges"><span class="fact">BAR</span><span class="fact">{slotLabel ?? '—'}</span></span>
+    {/if}
   </header>
 
   <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver}>
     {#if indicator.sMeter.reading.status === 'known' && Number.isFinite(indicator.sMeter.reading.value)}
-      <LinearSMeter value={indicator.sMeter.reading.value} compact variant="vfo-wide" />
+      <LinearSMeter value={indicator.sMeter.reading.value} compact label={appearance === 'standard' ? slotLabel : undefined} variant={appearance === 'sdr' ? 'sdr-screen' : 'vfo-wide'} />
     {:else}
       <div
         class="s-meter-unknown"
@@ -88,6 +96,8 @@
       >S —</div>
     {/if}
   </div>
+
+  {#if children}{@render children()}{/if}
 
   <div class="facts" aria-label={`${indicator.receiver} receiver facts`}>
     {#if indicator.agcMode.availability.structural}
@@ -137,11 +147,14 @@
     {/if}
   </div>
 </section>
+{:else if children}
+  {@render children()}
 {/if}
 
 {#if radioWide}
   <section
     class="indicator-row shared-indicators"
+    data-indicator-appearance={appearance}
     data-testid="vfo-shared-indicators"
     aria-label="Radio-wide indicators"
   >
@@ -210,4 +223,15 @@
     color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
     font-size: 11px;
   }
+
+  .indicator-row[data-indicator-appearance='sdr'], .indicator-row[data-indicator-appearance='standard'] {
+    padding: 0; border: 0; background: transparent; border-radius: 0; gap: 6px;
+  }
+  [data-indicator-appearance='sdr'] header { justify-content: space-between; letter-spacing: .14em; }
+  [data-indicator-appearance='sdr'] .fact { padding: 2px 6px; border-radius: 3px; letter-spacing: .06em; }
+  [data-indicator-appearance='sdr'] .facts { gap: 5px; min-height: 24px; }
+  .header-badges { display: inline-flex; gap: 4px; margin-left: auto; }
+  [data-indicator-appearance='standard'] .facts { gap: 4px; }
+  .shared-indicators:not([data-indicator-appearance='semantic']) .facts { justify-content: center; }
+  .shared-indicators:not([data-indicator-appearance='semantic']) .fact { font-size: 9px; }
 </style>

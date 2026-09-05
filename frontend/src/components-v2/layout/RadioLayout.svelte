@@ -304,7 +304,7 @@
 
     <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
       {#if semanticDeck}
-        <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent} />
+        <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent} vfoAppearance="sdr" />
       {/if}
     </section>
   </div>
@@ -326,7 +326,7 @@
       separates `{#if semanticDeck}` from the mount by `\s*` only.
     -->
     {#if semanticDeck}
-      <SemanticRadioSurfaces regions={skinId === 'sdr-test'} />
+      <SemanticRadioSurfaces regions={skinId === 'sdr-test'} vfoAppearance={skinId === 'desktop-v2' ? 'standard' : 'semantic'} />
     {:else}
       <VfoHeader
         {mainVfo}

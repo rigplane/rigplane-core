@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import VfoIndicatorRow from '../VfoIndicatorRow.svelte';
 import type {
   Availability, RadioWideIndicatorsViewModel,
@@ -28,10 +28,7 @@ function indicator(overrides: Partial<ReceiverIndicatorViewModel> = {}): Receive
 let component: ReturnType<typeof mount> | null = null;
 let target: HTMLDivElement;
 
-function render(props: {
-  indicator?: ReceiverIndicatorViewModel;
-  radioWide?: RadioWideIndicatorsViewModel;
-}): HTMLElement {
+function render(props: ComponentProps<typeof VfoIndicatorRow>): HTMLElement {
   component = mount(VfoIndicatorRow, { target, props });
   flushSync();
   return target;
@@ -170,5 +167,25 @@ describe('radio-wide singleton indicators (MOR-2309)', () => {
     expect(rit?.textContent).toContain('RIT OFF — Hz');
     expect(xit?.getAttribute('data-state')).toBe('unknown');
     expect(xit?.textContent).toContain('XIT — 0 Hz');
+  });
+});
+
+
+describe('MOR-2342 addressed meter appearance', () => {
+  it.each(['sdr', 'standard'] as const)('never draws unknown as zero in %s', (appearance) => {
+    const root = render({ indicator: indicator({ sMeter: unknown() }), appearance });
+    expect(root.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();
+    expect(root.querySelector('[data-testid="receiver-s-meter-unknown"]')?.textContent).toContain('S —');
+  });
+  it('selects the SDR meter without changing a confirmed zero or receiver identity', () => {
+    const root = render({ indicator: indicator(), appearance: 'sdr' });
+    expect(root.querySelector('[data-indicator-receiver="MAIN"]')).not.toBeNull();
+    expect(root.querySelector('svg[data-variant="sdr-screen"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="receiver-s-meter-unknown"]')).toBeNull();
+  });
+  it('renders only the supplied Standard slot label, never MAIN as A', () => {
+    const root = render({ indicator: indicator(), appearance: 'standard' });
+    expect(root.querySelector('.header-badges')?.textContent).toContain('BAR');
+    expect(root.querySelector('.header-badges')?.textContent).toContain('—');
   });
 });
