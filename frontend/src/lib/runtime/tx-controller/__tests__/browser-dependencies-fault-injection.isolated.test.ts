@@ -73,6 +73,7 @@ describe('managed browser TX fault injection', () => {
     const { TxMic } = await import('$lib/audio/tx-mic');
     const { audioManager } = await import('$lib/audio/audio-manager');
     const startMic = vi.spyOn(TxMic.prototype, 'start').mockResolvedValue(null);
+    const activeMic = vi.spyOn(TxMic.prototype, 'active', 'get').mockReturnValue(true);
     const audioDied = vi.fn();
     instances.length = 0;
     vi.stubGlobal('WebSocket', MockWebSocket);
@@ -94,6 +95,7 @@ describe('managed browser TX fault injection', () => {
       tx.dispose();
       audioManager.stopTx();
       startMic.mockRestore();
+      activeMic.mockRestore();
       vi.unstubAllGlobals();
     }
   });

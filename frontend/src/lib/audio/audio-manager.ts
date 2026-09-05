@@ -97,7 +97,7 @@ class AudioManager {
           console.warn(`[audio-ws] TX frame dropped, WS state=${this.ws?.readyState}`);
         }
       }
-    });
+    }, (reason) => this._failTxAudio(reason));
   }
 
   /** Register a change callback for reactive UI updates. Returns unsubscribe fn. */
@@ -221,6 +221,7 @@ class AudioManager {
     if (this._txEnabled) return null;
     const err = await this.txMic.start();
     if (err) return err;
+    if (!this.txMic.active) return 'TX MIC: capture stopped before start completed';
     this._txEnabled = true;
     setTxEnabled(true);
     this.connect();
@@ -232,13 +233,13 @@ class AudioManager {
   }
 
   stopTx(): void {
+    this.txMic.stop();
     if (!this._txEnabled) return;
     this._txEnabled = false;
     setTxEnabled(false);
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'audio_stop', direction: 'tx' }));
     }
-    this.txMic.stop();
     this.maybeDisconnect();
     this.notify();
   }
@@ -373,20 +374,11 @@ class AudioManager {
     this._setTxCodecFallback(msg.opus_decode === false);
   }
 
-  /**
-   * End browser TX audio after the codec switch could not be completed.
-   *
-   * The server cannot decode Opus and the PCM16 leg refused to start, so no
-   * audio can reach the air on this session. Ending it takes the same
-   * teardown a failed TX audio start takes — `stopTx()` releases the
-   * server-side TX lease, which disarms the radio's TX audio leg — and the
-   * fallback indication is cleared so nothing claims transmission is working
-   * while the transmitter is keyed. The next key re-runs `txMic.start()` on
-   * the pinned PCM16 path and returns this same error from `startTx()`, the
-   * input the TX controller turns into `audio-failed` and de-keys on.
-   */
+  /** End failed capture/codec audio and notify the existing canonical de-key path. */
   private _failTxAudio(reason: string): void {
-    console.error(`[audio-ws] TX codec switch failed, stopping TX audio: ${reason}`);
+    // A failure during preparation is returned by startTx, before TX admission.
+    if (!this._txEnabled) return;
+    console.error(`[audio-ws] TX audio failed, stopping TX audio: ${reason}`);
     this._setTxCodecFallback(false);
     this.stopTx();
     // Snapshot + isolate: one throwing subscriber must not starve the rest.

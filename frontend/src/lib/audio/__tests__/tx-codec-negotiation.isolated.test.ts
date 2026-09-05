@@ -15,6 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TxMic } from '../tx-mic';
+import { ManagedTxController, type ManagedOperation } from '../../runtime/tx-controller/managed-controller';
 import { AUDIO_HEADER_SIZE, CODEC_PCM16, SAMPLE_RATE } from '../constants';
 
 const setTxCodecFallbackMock = vi.fn();
@@ -109,10 +110,14 @@ function sentTypes(ws: FakeWebSocket): string[] {
  * only way the PCM16 leg can fail on a browser that has WebCodecs.
  */
 function installMediaGlobals({ contextSampleRate = SAMPLE_RATE } = {}) {
-  const track = { stop: vi.fn(), kind: 'audio' };
+  const track = Object.assign(new EventTarget(), { stop: vi.fn(), kind: 'audio' });
+  let finishRead!: (value: any) => void;
+  let rejectRead!: (reason: Error) => void;
+  const pendingRead = new Promise<any>((resolve, reject) => { finishRead = resolve; rejectRead = reject; });
+  let encoderCallbacks: AudioEncoderInit;
   const reader = {
-    read: vi.fn(() => Promise.resolve({ done: true })),
-    cancel: vi.fn().mockResolvedValue(undefined),
+    read: vi.fn(() => pendingRead),
+    cancel: vi.fn(async () => { finishRead({ done: true }); }),
   };
   const encoder = { configure: vi.fn(), encode: vi.fn(), close: vi.fn(), state: 'configured' };
   let processor: any = null;
@@ -126,7 +131,8 @@ function installMediaGlobals({ contextSampleRate = SAMPLE_RATE } = {}) {
     }),
     close: vi.fn().mockResolvedValue(undefined),
   };
-  (globalThis as any).AudioEncoder = function (this: any) {
+  (globalThis as any).AudioEncoder = function (this: any, callbacks: AudioEncoderInit) {
+    encoderCallbacks = callbacks;
     Object.assign(this, encoder);
     return encoder;
   };
@@ -134,13 +140,20 @@ function installMediaGlobals({ contextSampleRate = SAMPLE_RATE } = {}) {
     return { readable: { getReader: () => reader } };
   };
   (globalThis as any).AudioContext = vi.fn(function () { return context; });
-  const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+  const stream = { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
   Object.defineProperty(globalThis, 'navigator', {
     value: { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue(stream) } },
     writable: true,
     configurable: true,
   });
-  return { track, reader, encoder, context, getProcessor: () => processor };
+  return {
+    track, stream, reader, encoder, context, getProcessor: () => processor,
+    eof: () => finishRead({ done: true }),
+    sample: (value: unknown) => finishRead({ done: false, value }),
+    reject: () => rejectRead(new Error('capture reader failed')),
+    encoderError: () => encoderCallbacks.error(new DOMException('encoder failed')),
+    encoderOutput: () => encoderCallbacks.output({ byteLength: 1, copyTo: vi.fn() } as unknown as EncodedAudioChunk, {}),
+  };
 }
 
 function clearMediaGlobals(): void {
@@ -260,6 +273,148 @@ describe('AudioManager consumes the server TX codec ack', () => {
     expect(died).toEqual(['throwing', 'kept']);
     unsubscribeThrowing();
     unsubscribeThrowing(); // idempotent
+  });
+
+  it.each(['eof', 'reject', 'encoderError', 'encode-throws', 'opus-ended', 'pcm-ended'] as const)(
+    'capture %s reaches the existing canonical ForceOFF exactly once', async (failure) => {
+      const media = installMediaGlobals();
+      if (failure === 'pcm-ended') delete (globalThis as any).AudioEncoder;
+      const { audioManager } = await import('../audio-manager');
+      const died = vi.fn();
+      audioManager.onTxAudioDied(died);
+      const submit = vi.fn<(operation: ManagedOperation) => Promise<'accepted'>>(async () => 'accepted');
+      const tx = new ManagedTxController({
+        snapshot: () => ({ phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none',
+          fault: null, faultDetail: null, fresh: true, releaseRequired: false,
+          configuredSeconds: 180, remainingMs: null, lastOperation: null }),
+        refresh: async () => {}, invalidate: vi.fn(), sendPtt: async () => 'accepted',
+        submit, setTot: async () => {}, startAudio: () => audioManager.startTx(),
+        stopLocalAudio: () => audioManager.stopTx(),
+        onAudioDied: (handler) => audioManager.onTxAudioDied(handler),
+      });
+      try {
+        tx.transmitOn();
+        await vi.waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith('transmit_on'));
+        FakeWebSocket.instances[0].open();
+        if (failure === 'opus-ended' || failure === 'pcm-ended') media.track.dispatchEvent(new Event('ended'));
+        else if (failure === 'encode-throws') {
+          media.encoder.encode.mockImplementationOnce(() => { throw new Error('encode failed'); });
+          media.sample({ close: vi.fn() });
+        } else media[failure]();
+        if (failure === 'encoderError') {
+          media.track.dispatchEvent(new Event('ended'));
+          media.eof();
+        }
+        await vi.waitFor(() => expect(died).toHaveBeenCalledOnce());
+        expect(submit.mock.calls).toEqual([['transmit_on'], ['force_off']]);
+        expect(audioManager.txEnabled).toBe(false);
+        expect(audioManager.txCodec).toBeNull();
+        expect(media.track.stop).toHaveBeenCalledOnce();
+        // Concurrent and late producer signals cannot submit another global OFF.
+        media.track.dispatchEvent(new Event('ended'));
+        if (failure !== 'pcm-ended') media.encoderError();
+        media.eof();
+        await Promise.resolve();
+        expect(died).toHaveBeenCalledOnce();
+        expect(submit).toHaveBeenCalledTimes(2);
+      } finally { tx.dispose(); audioManager.stopTx(); }
+    },
+  );
+
+  it.each(['eof', 'reject'] as const)('does not enable TX when capture %s occurs during start', async (failure) => {
+    const media = installMediaGlobals();
+    const { audioManager } = await import('../audio-manager');
+    media[failure]();
+    expect(await audioManager.startTx()).not.toBeNull();
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('cancels pending microphone permission without a late audio start or death notification', async () => {
+    const media = installMediaGlobals();
+    let grant!: (stream: MediaStream) => void;
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementationOnce(() => new Promise((resolve) => { grant = resolve; }));
+    const { audioManager } = await import('../audio-manager');
+    const died = vi.fn();
+    audioManager.onTxAudioDied(died);
+    const starting = audioManager.startTx();
+    audioManager.stopTx();
+    grant(media.stream);
+    expect(await starting).not.toBeNull();
+    expect(audioManager.txEnabled).toBe(false);
+    expect(media.track.stop).toHaveBeenCalledOnce();
+    expect(died).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('does not stop a replacement capture when cancelled permission resolves late', async () => {
+    const old = installMediaGlobals();
+    let grant!: (stream: MediaStream) => void;
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementationOnce(() => new Promise((resolve) => { grant = resolve; }));
+    const { audioManager } = await import('../audio-manager');
+    const starting = audioManager.startTx();
+    audioManager.stopTx();
+    const current = installMediaGlobals();
+    expect(await audioManager.startTx()).toBeNull();
+    grant(old.stream);
+    expect(await starting).not.toBeNull();
+    expect(old.track.stop).toHaveBeenCalledOnce();
+    expect(current.track.stop).not.toHaveBeenCalled();
+    expect(audioManager.txEnabled).toBe(true);
+    audioManager.stopTx();
+  });
+
+  it('ignores an old reader rejection after restart', async () => {
+    const old = installMediaGlobals();
+    old.reader.cancel.mockImplementationOnce(async () => {});
+    const { audioManager } = await import('../audio-manager');
+    const died = vi.fn();
+    audioManager.onTxAudioDied(died);
+    await audioManager.startTx();
+    audioManager.stopTx();
+    installMediaGlobals();
+    await audioManager.startTx();
+    old.reject();
+    await Promise.resolve();
+    expect(audioManager.txEnabled).toBe(true);
+    expect(died).not.toHaveBeenCalled();
+    audioManager.stopTx();
+  });
+
+  it('ignores old capture callbacks after restart and intentional codec-switch cancellation', async () => {
+    const old = installMediaGlobals();
+    old.reader.cancel.mockImplementationOnce(async () => {}); // terminal result arrives after restart
+    const oldTrackListener = vi.spyOn(old.track, 'addEventListener');
+    const { audioManager } = await import('../audio-manager');
+    const died = vi.fn();
+    audioManager.onTxAudioDied(died);
+    await audioManager.startTx();
+    audioManager.stopTx();
+    const current = installMediaGlobals();
+    await audioManager.startTx();
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.open();
+    const sentBefore = ws.sent.length;
+    old.encoderOutput();
+    old.encoderError();
+    const oldEnded = oldTrackListener.mock.calls[0][1] as EventListener;
+    oldEnded(new Event('ended'));
+    const lateSample = { close: vi.fn() };
+    old.sample(lateSample);
+    await Promise.resolve();
+    expect(lateSample.close).toHaveBeenCalledOnce();
+    expect(current.encoder.encode).not.toHaveBeenCalled();
+    expect(ws.sent).toHaveLength(sentBefore);
+    expect(audioManager.txEnabled).toBe(true);
+    expect(died).not.toHaveBeenCalled();
+    ws.serverText({ type: 'audio_tx_format', codec: 'pcm16', opus_decode: false });
+    current.encoderError();
+    await Promise.resolve();
+    expect(audioManager.txCodec).toBe('pcm16');
+    expect(died).not.toHaveBeenCalled();
+    audioManager.stopTx();
+    current.track.dispatchEvent(new Event('ended'));
+    expect(died).not.toHaveBeenCalled();
   });
 
   it('leaves the pin alone when the ack names a codec it does not know', async () => {
