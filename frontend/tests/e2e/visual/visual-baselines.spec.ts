@@ -145,3 +145,60 @@ test('ptt-held--mobile', async ({ page }) => {
     .toEqual(['ws.ptt_on', 'ws.ptt_off']);
   await page.evaluate((snapshot) => window.__ptt.emitServerSnapshot(snapshot), PTT_SERVER.rx);
 });
+
+for (const compact of [true, false]) for (const stateText of ['IDLE', 'STALE', '?']) {
+  test(`TX lower state clearance -- ${compact ? 'compact' : 'default'} -- ${stateText}`, async ({ page }, testInfo) => {
+    await page.goto('/fixtures/index.html?fixture=topology-1-single&theme=v2');
+    await page.waitForSelector('body[data-harness-ready="true"]');
+    const geometry = await page.evaluate(async ({ compact, stateText }) => {
+      const runtimePath = '/@id/svelte';
+      const meterPath = '/src/components-v2/meters/LinearSMeter.svelte';
+      const { mount, flushSync, unmount } = await import(runtimePath);
+      const { default: Meter } = await import(meterPath);
+      const target = document.createElement('div');
+      target.style.width = '600px';
+      document.body.append(target);
+      const component = mount(Meter, { target, props: {
+        value: 0, label: 'S', compact,
+        lowerScale: { label: 'SWR', ticks: [{ value: 0, label: '1' }, { value: 1, label: '∞' }],
+          valueFraction: 0, fault: false, relevant: false, stateText },
+      } });
+      flushSync();
+      await document.fonts.ready;
+      try {
+        const lower = target.querySelector('[data-lower-relevant]')!;
+        const state = [...lower.querySelectorAll('text')].find((node) => node.textContent === stateText)!;
+        const label = lower.querySelector('[data-lower-row-label]')!;
+        const readouts = [...target.querySelectorAll('[data-main-relevant]:last-child text')];
+        const box = (node: Element) => {
+          const { x, y, width, height, bottom } = node.getBoundingClientRect();
+          return { x, y, width, height, bottom };
+        };
+        const measure = () => {
+          const status = box(state);
+          const readings = readouts.map(box);
+          return { status, readings, lowerTop: box(label).y, bottom: box(target.querySelector('svg')!).bottom,
+            overlaps: readings.map((reading) => Math.max(0, Math.min(status.x + status.width, reading.x + reading.width)
+              - Math.max(status.x, reading.x)) * Math.max(0, Math.min(status.bottom, reading.bottom) - Math.max(status.y, reading.y))),
+          };
+        };
+        const actual = measure();
+        const baseline = state.getAttribute('dominant-baseline');
+        state.removeAttribute('dominant-baseline');
+        const oldOverlap = measure();
+        if (baseline !== null) state.setAttribute('dominant-baseline', baseline);
+        return { actual, oldOverlap, restored: measure(), readoutText: readouts.map((node) => node.textContent) };
+      } finally { await unmount(component); target.remove(); }
+    }, { compact, stateText });
+    await testInfo.attach('lower-state-geometry', { body: JSON.stringify(geometry, null, 2), contentType: 'application/json' });
+    expect(geometry.readoutText.some((text) => text?.includes('dBm'))).toBe(true);
+    expect(geometry.actual.readings).toHaveLength(2);
+    expect(geometry.actual.status.width).toBeGreaterThan(0);
+    expect(geometry.actual.overlaps).toEqual([0, 0]);
+    expect(geometry.actual.status.y).toBeGreaterThanOrEqual(geometry.actual.lowerTop - 0.5);
+    expect(geometry.actual.status.bottom).toBeLessThanOrEqual(geometry.actual.bottom);
+    expect(Math.max(...geometry.oldOverlap.overlaps)).toBeGreaterThan(0);
+    expect(geometry.oldOverlap.readings).toEqual(geometry.actual.readings);
+    expect(geometry.restored).toEqual(geometry.actual);
+  });
+}

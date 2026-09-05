@@ -10,9 +10,10 @@
   import { updatePeakHold, peakHoldDisplay, PEAK_DECAY_MS, type PeakHoldState } from '../panels/meter-utils';
 
   interface Props {
-    value: number;         // 0–1 normalized
+    value: number | null;         // 0–1 normalized
     label: string;         // 'Po' | 'SWR' | 'ALC' | 'COMP'
     displayValue: string;  // '35W' | '1.2' | '-8'
+    accessibleDescription?: string;
     /**
      * Segment palette. MOR-2255 gave this prop a real writer:
      * `semantic/MetersSurface.svelte` passes the active design language's own
@@ -29,7 +30,7 @@
 
   let {
     value, label, displayValue, zones = DEFAULT_ZONES, compact = false, showPeak = false,
-    fault = false,
+    fault = false, accessibleDescription,
   }: Props = $props();
 
   // ── Segment geometry ────────────────────────────────────────────────────────
@@ -60,7 +61,8 @@
   const smoother = createSmoother(0.08, 0.2);
 
   $effect(() => {
-    smoother.update(valueToSegments(value, SEG_COUNT));
+    if (value === null) smoother.reset(0);
+    else smoother.update(valueToSegments(value, SEG_COUNT));
   });
 
   onMount(() => {
@@ -82,6 +84,7 @@
   // and immediately re-latch from the still-live `value` (mirrors the dock's
   // own `untrack(() => stepAllPeaks())` pattern for the identical hazard).
   $effect(() => {
+    if (value === null) { peakState = undefined; return; }
     if (!showPeak) return;
     const v = value;
     const t = Date.now();
@@ -108,7 +111,7 @@
   });
 
   let peakPct = $derived.by(() => {
-    if (!showPeak || peakState === undefined) return undefined;
+    if (value === null || !showPeak || peakState === undefined) return undefined;
     const level = prefersReducedMotion()
       ? peakState.latchedPeak
       : peakHoldDisplay(peakState, value, peakNow, PEAK_DECAY_MS);
@@ -120,8 +123,9 @@
   }
 
   // ── Reactive display values ─────────────────────────────────────────────────
-  let fullSegs = $derived(Math.floor(smoother.value));
-  let fracSeg  = $derived(smoother.value - Math.floor(smoother.value));
+  const measuredFault = $derived(value !== null && fault);
+  let fullSegs = $derived(value === null ? 0 : Math.floor(smoother.value));
+  let fracSeg  = $derived(value === null ? 0 : smoother.value - Math.floor(smoother.value));
 </script>
 
 <svg
@@ -130,7 +134,8 @@
   height="auto"
   preserveAspectRatio="xMidYMid meet"
   role="group"
-  data-fault={fault ? 'true' : 'false'}
+  aria-label={accessibleDescription}
+  data-fault={measuredFault ? 'true' : 'false'}
   ondblclick={resetPeak}
 >
   <!-- Container background. MOR-1345: an over-threshold SWR/ALC reading
@@ -141,8 +146,8 @@
     x="0" y="0" width="300" height={TOTAL_HEIGHT}
     rx="6"
     fill="var(--v2-bg-darkest)"
-    stroke={fault ? 'var(--v2-accent-red, #ff4040)' : 'var(--v2-bg-panel)'}
-    stroke-width={fault ? 2 : 1}
+    stroke={measuredFault ? 'var(--v2-accent-red, #ff4040)' : 'var(--v2-bg-panel)'}
+    stroke-width={measuredFault ? 2 : 1}
   />
 
   <!-- Label -->
@@ -160,6 +165,7 @@
 
   <!-- Bar track background -->
   <rect
+    data-gauge-track
     x={BAR_X} y={TRACK_Y}
     width={BAR_WIDTH} height={TRACK_H}
     rx="1"
@@ -183,12 +189,14 @@
     <!-- Active -->
     {#if i < fullSegs}
       <rect
+        data-gauge-fill={i}
         {x} y={TRACK_Y + 1}
         width={SEG_W} height={TRACK_H - 2}
         fill={zone.color}
       />
     {:else if i === fullSegs && fracSeg > 0.01}
       <rect
+        data-gauge-fill={i}
         {x} y={TRACK_Y + 1}
         width={Math.max(1, SEG_W * fracSeg)} height={TRACK_H - 2}
         fill={zone.color}

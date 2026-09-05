@@ -24,8 +24,10 @@
  * control of any kind and decides no TX state. Block 1.
  */
 import { readFileSync } from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import MetersSurface, { METER_BARS } from '../MetersSurface.svelte';
 import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';
 import type {
@@ -243,9 +245,6 @@ describe('structural availability decides whether a meter EXISTS', () => {
     });
   });
 
-  // MUTATION KILLED: hiding an unobserved meter (a reflow on every dropout) or
-  // — far worse — drawing its gauge at zero, which reads as "0 W into the
-  // antenna" when the truth is "not measured".
   it.each(ALL_KEYS)('keeps an operationally-unavailable "%s" PRESENT and marked unobserved', (field) => {
     const view = withField(base(), field, {
       availability: { structural: true, operational: false },
@@ -254,16 +253,17 @@ describe('structural availability decides whether a meter EXISTS', () => {
       const tile = s.tile(field)!;
       expect(tile).not.toBeNull();
       expect(tile.dataset.observed).toBe('false');
-      expect(tile.querySelector('svg')).toBeNull();
-      expect(tile.textContent).toContain('?');
+      const persistent = ['signal', 'power', 'alc'].includes(field);
+      expect(tile.querySelectorAll('svg')).toHaveLength(persistent ? 1 : 0);
+      expect(tile.textContent).toContain(field === 'power' || field === 'alc' ? 'IDLE' : '?');
     });
   });
 
-  it.each(ALL_KEYS)('never draws a gauge for an unobserved "%s" reading', (field) => {
+  it.each(ALL_KEYS)('retains supported instruments for an unobserved "%s" reading', (field) => {
     withSurface(withField(base(), field, { unknown: true }), (s) => {
       const tile = s.tile(field)!;
       expect(tile.dataset.observed).toBe('false');
-      expect(tile.querySelector('svg')).toBeNull();
+      expect(tile.querySelectorAll('svg')).toHaveLength(['signal', 'power', 'alc'].includes(field) ? 1 : 0);
     });
   });
 
@@ -943,30 +943,17 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
       });
     });
 
-    // Fix cycle 4 (F1): the UNOBSERVED half of the same tile. With no known
-    // reading, `MetersSurface` renders the `<span class="meter-unknown">S ?`
-    // fallback instead of `<LinearSMeter>` — so the `relevant` prop that
-    // carries the tile's dim in the observed branch does not exist, and this
-    // ancestor rule is the only thing left that can dim it. Reachable: a
-    // radio that stops reporting the S-meter while keyed, and the cold-start
-    // `rfState='unknown'` window.
-    //
-    // MUTATION KILLED: narrowing the selector's `:not(...)` back to
-    // `:not([data-meter='signal'])` (dropping the `[data-observed='true']`
-    // half) — this tile's computed opacity falls back to the empty string
-    // and the assertion below fails. That mutation leaves the test above
-    // green, which is exactly why this case needed its own test.
-    it('still dims the UNOBSERVED S-meter tile through the shared rule when it is irrelevant', () => {
+    it('keeps the unavailable main row dim independent of the live lower row', () => {
       const view = withField(base('transmitting'), 'signal', { unknown: true, relevant: false });
       withSurface(view, (s) => {
         const tile = s.tile('signal')!;
         expect(tile.dataset.relevant).toBe('false');
         expect(tile.dataset.observed).toBe('false');
-        // The `{:else}` fallback really did render — no `LinearSMeter`, so
-        // nothing inside the tile carries a dim of its own.
-        expect(s.signalSvg()).toBeNull();
-        expect(tile.querySelector('.meter-unknown')).not.toBeNull();
-        expect(getComputedStyle(tile).opacity).toBe('0.4');
+        expect(tile.querySelectorAll('svg')).toHaveLength(1);
+        expect(tile.textContent).toContain('S ?');
+        expect(getComputedStyle(tile).opacity).not.toBe('0.4');
+        expect(tile.querySelector('[data-main-relevant]')?.getAttribute('opacity')).toBe('0.4');
+        expect(tile.querySelector('[data-lower-relevant]')?.getAttribute('opacity')).toBe('1');
       });
     });
   });
@@ -1040,4 +1027,122 @@ describe('main-bar and SWR-row opacity are independent, non-compounding channels
       }
     });
   });
+});
+
+const TX_KEYS = ['power', 'alc', 'swr'] as const;
+describe('persistent TX instruments', () => {
+  for (const structural of [false, true]) for (const rf of RF_STATES)
+    for (const relevant of [false, true]) for (const state of ['current', 'stale', 'unknown'] as const) {
+      it(`${structural}/${rf}/${relevant}/${state}`, () => {
+        const view = base(rf);
+        for (const key of TX_KEYS) view.meters![key] = {
+          availability: { structural, operational: state === 'current' }, relevant,
+          reading: { status: 'known', value: 170 },
+          display: state === 'unknown' ? { state, reason: 'not-observed' } : { state, value: 170 },
+        };
+        withSurface(view, () => {
+          const idle = rf === 'receiving' && !relevant;
+          const indeterminate = !idle && !(rf === 'transmitting' && relevant);
+          for (const key of TX_KEYS) {
+            const el = target.querySelector(key === 'swr' ? '[data-lower-relevant]' : `[data-meter="${key}"] svg`);
+            expect(!!el).toBe(structural);
+            if (!el) continue;
+            const text = el.textContent ?? '';
+            const description = el.getAttribute('aria-label') ?? '';
+            if (idle) {
+              expect(text).toContain('IDLE');
+              expect(description).toContain('Not measuring in RX');
+              expect(description).not.toMatch(/170|\?/);
+            } else {
+              expect(text).not.toContain('IDLE');
+              if (state === 'stale') expect(text).toContain('STALE');
+              if (state === 'unknown') expect(text).toContain('?');
+              if (indeterminate) expect(description).toContain('RF relevance indeterminate');
+            }
+            if (idle || state !== 'current') {
+              expect(el.querySelectorAll(key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toHaveLength(0);
+              expect(el.querySelectorAll('[data-testid="bar-gauge-peak-marker"]')).toHaveLength(0);
+              expect(el.getAttribute('data-fault')).not.toBe('true');
+              expect(description).not.toContain('170');
+            }
+          }
+        });
+      });
+    }
+  it.each([false, true])('SWR survives unavailable S (structurally absent=%s)', (absent) => {
+    const view = withField(base('transmitting'), 'signal', {
+      unknown: true, availability: { structural: !absent, operational: false },
+    });
+    withSurface(view, () => {
+      expect(target.querySelectorAll('[data-lower-tick-mark]')).toHaveLength(6);
+      expect(target.querySelectorAll('[data-lower-fill]').length).toBeGreaterThan(0);
+      const svg = target.querySelector('[data-lower-fault]')!;
+      expect(svg.textContent).not.toMatch(/dBm|uncalibrated/);
+      expect(svg.querySelectorAll('[data-main-relevant]')).toHaveLength(absent ? 0 : 2);
+    });
+  });
+  it('keeps SVG, tracks and ticks through retained TX → RX → smaller TX without a frame', () => {
+    const props: { view: RadioViewModel } = proxy({ view: base('transmitting') });
+    for (const key of TX_KEYS) props.view = withRaw(props.view, key, 200);
+    const component = mount(MetersSurface, { target, props });
+    flushSync();
+    const nodes = [...target.querySelectorAll('svg, [data-lower-tick-mark], [data-lower-segment], [data-gauge-track]')];
+    props.view = { ...props.view, meters: { ...props.view.meters!, rfState: 'receiving' } };
+    for (const key of TX_KEYS) props.view = withField(props.view, key, { relevant: false });
+    flushSync();
+    expect(nodes.every((node) => node.isConnected)).toBe(true);
+    expect(target.querySelectorAll('[data-meter="power"] [data-gauge-fill], [data-meter="alc"] [data-gauge-fill], [data-lower-fill], [data-meter="power"] [data-testid="bar-gauge-peak-marker"], [data-meter="alc"] [data-testid="bar-gauge-peak-marker"]')).toHaveLength(0);
+    for (const key of ['power', 'alc']) expect(target.querySelector(`[data-meter="${key}"]`)?.textContent).not.toMatch(/200|\?/);
+    props.view = { ...props.view, meters: { ...props.view.meters!, rfState: 'transmitting' } };
+    for (const key of TX_KEYS) props.view = withRaw(withField(props.view, key, { relevant: true }), key, 10);
+    flushSync();
+    expect(nodes.every((node) => node.isConnected)).toBe(true);
+    for (const marker of target.querySelectorAll('[data-meter="power"] [data-testid="bar-gauge-peak-marker"], [data-meter="alc"] [data-testid="bar-gauge-peak-marker"]')) {
+      expect(Number(marker.getAttribute('x'))).toBeLessThan(100);
+    }
+    unmount(component);
+  });
+});
+
+it('uses current display calibration while preserving VD/ID/COMP through RX idle', () => {
+  const caps = makeFaultCaps();
+  caps.meterCalibrations!.power = [{ raw: 0, actual: 0, label: '0' }, { raw: 255, actual: 200, label: '200' }];
+  setCapabilities(caps);
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = vi.fn().mockReturnValue({ matches: true });
+  try {
+    const view = base('transmitting');
+    view.meters!.power = { ...view.meters!.power, reading: { status: 'unknown' },
+      display: { state: 'current', value: 50 } };
+    const props: { view: RadioViewModel } = proxy({ view });
+    const component = mount(MetersSurface, { target, props });
+    flushSync();
+    try {
+      expect(target.querySelector('[data-meter="power"]')?.textContent).toContain('50W');
+      expect(target.querySelectorAll('[data-meter="power"] [data-gauge-fill]')).toHaveLength(3);
+      const other = ['drainVoltage', 'drainCurrent', 'compression'].map((key) =>
+        target.querySelector(`[data-meter="${key}"]`)!.outerHTML);
+      props.view = { ...props.view, meters: { ...props.view.meters!, rfState: 'receiving',
+        power: { ...props.view.meters!.power, relevant: false } } };
+      flushSync();
+      expect(target.querySelector('[data-meter="power"]')?.textContent).toContain('IDLE');
+      expect(['drainVoltage', 'drainCurrent', 'compression'].map((key) =>
+        target.querySelector(`[data-meter="${key}"]`)!.outerHTML)).toEqual(other);
+    } finally { unmount(component); }
+  } finally { clearCapabilities(); window.matchMedia = originalMatchMedia; vi.restoreAllMocks(); }
+});
+
+it('a current calibrated zero remains a measurement, distinct from RX idle', () => {
+  const caps = makeFaultCaps();
+  caps.meterCalibrations!.power = [{ raw: 0, actual: 0, label: '0' }, { raw: 255, actual: 100, label: '100' }];
+  setCapabilities(caps);
+  try {
+    const view = base('transmitting');
+    view.meters!.power = { ...view.meters!.power, reading: { status: 'unknown' }, display: { state: 'current', value: 0 } };
+    withSurface(view, (s) => {
+      expect(s.tile('power')?.textContent).toContain('0W');
+      expect(s.tile('power')?.textContent).not.toContain('IDLE');
+      expect(s.tile('power')?.querySelector('svg')?.getAttribute('aria-label')).toContain('Current observation. 0W');
+    });
+  } finally { clearCapabilities(); }
 });

@@ -8,8 +8,10 @@
  * RX/TX, which is exactly what the real IC-7300's shared bar does NOT do (its
  * bottom row is visible-but-empty while receiving).
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { ComponentProps } from 'svelte';
 import LinearSMeter, { type LowerScaleDescriptor } from '../LinearSMeter.svelte';
 
@@ -180,4 +182,47 @@ describe('LinearSMeter lowerScale prop — layout stability across RX/TX (MOR-22
     // symptom above.
     expect(viewBoxOf(rx)).toBe(viewBoxOf(tx));
   });
+});
+
+it.each([true, false])('retains a lower descriptor without inventing a main reading (mainPresent=%s)', (mainPresent) => {
+  const target = mountMeter({ value: null, mainPresent, lowerScale: descriptor({
+    stateText: 'IDLE', accessibleDescription: 'Not measuring in RX',
+  }) });
+  expect(lowerSegs(target)).toHaveLength(20);
+  expect(target.querySelector('[data-lower-relevant]')?.getAttribute('aria-label')).toBe('Not measuring in RX');
+  expect(target.textContent).toContain('IDLE');
+  expect(target.textContent).not.toMatch(/dBm|uncalibrated/);
+  expect(target.querySelectorAll('[data-main-relevant]')).toHaveLength(mainPresent ? 2 : 0);
+  if (mainPresent) expect(target.textContent).toContain('S ?');
+});
+
+it('null clears normal-motion main fill and peak without remounting the lower scale', () => {
+  vi.useFakeTimers();
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = vi.fn().mockReturnValue({ matches: false });
+  const props: ComponentProps<typeof LinearSMeter> = proxy({ value: 255, lowerScale: descriptor() });
+  try {
+    const target = mountMeter(props);
+    vi.advanceTimersByTime(600);
+    flushSync();
+    const svg = target.querySelector('svg');
+    const lower = target.querySelector('[data-lower-tick-mark]');
+    const main = () => target.querySelector('[data-main-relevant]')!;
+    const lit = () => main().querySelectorAll('rect:not([data-segment])').length - 2;
+    expect(lit()).toBeGreaterThan(10);
+    props.value = null;
+    flushSync();
+    expect(lit()).toBe(0);
+    expect(target.textContent).not.toContain('uncalibrated');
+    props.value = 10;
+    flushSync();
+    expect(lit()).toBe(0);
+    expect(target.querySelectorAll('line[stroke-width="2"]')).toHaveLength(0);
+    expect(target.querySelector('svg') === svg).toBe(true);
+    expect(target.querySelector('[data-lower-tick-mark]') === lower).toBe(true);
+  } finally {
+    components.forEach((component) => unmount(component));
+    components = [];
+    vi.useRealTimers(); window.matchMedia = originalMatchMedia; vi.restoreAllMocks();
+  }
 });
