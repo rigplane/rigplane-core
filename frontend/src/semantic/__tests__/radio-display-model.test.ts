@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type {
-  RadioViewModel, ReceiverIndicatorViewModel, TxAuxField,
+  DisplayObservation, MeterRfState, RadioViewModel, ReceiverIndicatorViewModel, TxAuxField,
 } from '../radio-view-model';
 import { topologyFixtures } from '../fixtures/topologies';
 import { projectPeerSplitDisplay } from '../radio-display-model';
+import { projectTxMeterDisplay } from '../tx-meter-display';
 
 const availability = (structural = true, operational = true) => ({ structural, operational });
 const known = <T>(value: T): TxAuxField<T> => ({ reading: { status: 'known', value }, availability: availability() });
@@ -122,7 +123,7 @@ describe('projectPeerSplitDisplay', () => {
     expect(display.activeReceiver?.front.attenuator).toEqual({ state: 'known', value: 0 });
     expect(display.activeReceiver?.front.ipPlus).toEqual({ state: 'inactive' });
     expect(display.activeReceiver?.front.digiSel).toEqual({ state: 'unsupported' });
-    expect(display.telemetry.power).toEqual({ state: 'unknown', relevant: false });
+    expect(display.telemetry.power).toMatchObject({ state: 'unknown', relevant: false });
   });
 
   it('does not treat a hardware RF scope as an AF-FFT source', () => {
@@ -243,3 +244,31 @@ describe('single-receiver LCD display slots', () => {
     expect(projectPeerSplitDisplay(fixture).receivers[1].frequency).toEqual({ state: 'unknown' });
   });
 });
+
+const txObservations: (DisplayObservation<number> | undefined)[] = [
+  undefined, { state: 'current', value: 0 }, { state: 'current', value: 12.345 },
+  { state: 'stale', value: 87.654 }, { state: 'unknown', reason: 'not-observed' },
+];
+for (const structural of [false, true]) for (const operational of [false, true]) for (const rfState of ['receiving', 'transmitting', 'uncertain', 'unknown'] as MeterRfState[])
+  for (const relevant of [false, true]) for (const display of txObservations) {
+    it(`additive TX telemetry ${structural}/${operational}/${rfState}/${relevant}/${display?.state ?? 'legacy'}/${display && 'value' in display ? display.value : ''}`, () => {
+      const input = view();
+      input.meters!.rfState = rfState;
+      for (const key of ['power', 'swr', 'alc'] as const) input.meters![key] = {
+        availability: availability(structural, operational), reading: { status: 'known', value: 87.654 }, relevant,
+        ...(display ? { display } : {}),
+      };
+      const before = structuredClone(input);
+      const output = projectPeerSplitDisplay(input);
+      for (const key of ['power', 'swr', 'alc'] as const) {
+        const { txDisplay, ...legacy } = output.telemetry[key];
+        expect(txDisplay).toEqual(projectTxMeterDisplay(input.meters![key], rfState));
+        expect(legacy).toEqual(!structural ? { state: 'unsupported', relevant } : operational
+          ? { state: 'known', value: 87.654, relevant } : { state: 'unknown', relevant });
+      }
+      expect(output.telemetry.drainVoltage).toEqual({ state: 'known', value: 13.8, relevant: true });
+      expect(output.telemetry.drainCurrent).toEqual({ state: 'known', value: 0.7, relevant: true });
+      expect(output.telemetry.compression).toEqual({ state: 'unknown', relevant: false });
+      expect(input).toEqual(before);
+    });
+  }

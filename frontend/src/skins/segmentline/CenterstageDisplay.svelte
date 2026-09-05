@@ -8,7 +8,7 @@
   import LcdFrequencyReadout from './LcdFrequencyReadout.svelte';
   import LcdLinearSMeter from './LcdLinearSMeter.svelte';
   import { resolveLcdSpectrumFrame } from './lcd-display-contract';
-  import { stateText, telemetryText } from './lcd-display-helpers';
+  import { stateText, telemetryText, telemetryDescription } from './lcd-display-helpers';
 
   interface Props {
     model: PeerSplitDisplayModel;
@@ -170,6 +170,7 @@
     {#each telemetry as item}
       <span
         class:irrelevant={!item.field.relevant}
+        role="group" aria-label={telemetryDescription(item.label, item.field)}
         data-state={item.field.state}
         style:visibility={item.field.state === 'unsupported' ? 'hidden' : 'visible'}
       ><small>{item.label}</small> {telemetryText(item.field)}</span>

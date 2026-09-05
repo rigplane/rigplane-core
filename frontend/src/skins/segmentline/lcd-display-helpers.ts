@@ -40,7 +40,24 @@ export function meterFill(field: DisplayValue<number>): number {
 }
 
 export function telemetryText(field: DisplayTelemetry): string {
-  return field.state === 'known' ? String(Number(field.value.toFixed(2))) : '?';
+  const tx = field.txDisplay;
+  if (!tx) return field.state === 'known' ? String(Number(field.value.toFixed(2))) : '?';
+  if (!tx.supported) return '?';
+  if (tx.relevance === 'idle') return 'IDLE';
+  if (tx.observation.state === 'stale') return 'STALE';
+  if (tx.observation.state !== 'current') return '?';
+  return `${Number(tx.observation.value.toFixed(2))}${tx.relevance === 'indeterminate' ? ' ?' : ''}`;
+}
+
+export function telemetryDescription(label: string, field: DisplayTelemetry): string {
+  const tx = field.txDisplay;
+  if (!tx) return `${label}: ${field.state === 'known' ? telemetryText(field)
+    : field.state === 'unsupported' ? 'Unsupported' : 'Not observed'}`;
+  if (!tx.supported) return `${label}: Unsupported`;
+  if (tx.relevance === 'idle') return `${label}: Not measuring in RX`;
+  const cue = tx.relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
+  return `${label}: ${cue}${tx.observation.state === 'stale' ? 'Stale observation'
+    : tx.observation.state === 'current' ? `Current observation: ${Number(tx.observation.value.toFixed(2))}` : 'Not observed'}`;
 }
 
 function envelope(

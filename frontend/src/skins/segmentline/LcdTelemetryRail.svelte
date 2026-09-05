@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PeerSplitDisplayModel } from '../../semantic/radio-display-model';
-  import { telemetryText } from './lcd-display-helpers';
+  import { telemetryText, telemetryDescription } from './lcd-display-helpers';
 
   interface Props {
     telemetry: PeerSplitDisplayModel['telemetry'];
@@ -24,7 +24,8 @@
   </div>
   <div class="telemetry">
     {#each items as item}
-      <span class:irrelevant={!item.field.relevant} data-state={item.field.state}>
+      <span class:irrelevant={!item.field.relevant} data-state={item.field.state}
+        role="group" aria-label={telemetryDescription(item.label, item.field)}>
         <small>{item.label}</small> {telemetryText(item.field)}
       </span>
     {/each}

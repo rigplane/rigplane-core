@@ -1,7 +1,8 @@
 import type {
-  MeterField, RadioViewModel, ReceiverId, ReceiverIndicatorViewModel, TxAuxField,
+  DisplayObservedMeterField, MeterRfState, MeterField, RadioViewModel, ReceiverId, ReceiverIndicatorViewModel, TxAuxField,
   VfoSlotId, VfoViewModel,
 } from './radio-view-model';
+import { projectTxMeterDisplay, type TxMeterDisplay } from './tx-meter-display';
 
 export type DisplayValue<T> =
   | { readonly state: 'known'; readonly value: T }
@@ -19,7 +20,10 @@ export type DisplayOffset =
   | { readonly state: 'inactive'; readonly offsetHz?: number }
   | { readonly state: 'unknown' | 'unsupported' };
 
-export type DisplayTelemetry = DisplayValue<number> & { readonly relevant: boolean };
+export type DisplayTelemetry = DisplayValue<number> & {
+  readonly relevant: boolean;
+  readonly txDisplay?: TxMeterDisplay;
+};
 
 export type DisplaySlotId = ReceiverId | VfoSlotId;
 
@@ -215,6 +219,10 @@ function telemetry(field: MeterField | undefined): DisplayTelemetry {
   return { ...value, relevant: field?.relevant ?? false };
 }
 
+function txTelemetry(field: DisplayObservedMeterField | undefined, rfState: MeterRfState): DisplayTelemetry {
+  return { ...telemetry(field), txDisplay: projectTxMeterDisplay(field, rfState) };
+}
+
 export function projectPeerSplitDisplay(view: RadioViewModel): PeerSplitDisplayModel {
   const singleAb = view.topologyId === '1/ab' && view.vfoScheme === 'ab';
   const main = receiverDisplay(view, 'MAIN', singleAb ? 'A' : undefined);
@@ -249,9 +257,9 @@ export function projectPeerSplitDisplay(view: RadioViewModel): PeerSplitDisplayM
     telemetry: {
       drainVoltage: telemetry(view.meters?.drainVoltage),
       drainCurrent: telemetry(view.meters?.drainCurrent),
-      power: telemetry(view.meters?.power),
-      swr: telemetry(view.meters?.swr),
-      alc: telemetry(view.meters?.alc),
+      power: txTelemetry(view.meters?.power, view.meters?.rfState ?? 'unknown'),
+      swr: txTelemetry(view.meters?.swr, view.meters?.rfState ?? 'unknown'),
+      alc: txTelemetry(view.meters?.alc, view.meters?.rfState ?? 'unknown'),
       compression: telemetry(view.meters?.compression),
     },
   };
