@@ -27,7 +27,6 @@ export class ManagedTxController {
   #pttAttempted = false;
   #audioPreparation: Promise<boolean> | null = null;
   #audioNeedsCleanup = false;
-  #transmitCleanupRequired = false;
   #forceOffInFlight: Promise<void> | null = null;
   #offAudioDied: () => void;
   #offPresentationTick: () => void;
@@ -116,9 +115,6 @@ export class ManagedTxController {
     if (this.#flow === 'ptt' || this.#pttAttempted) await Promise.race([
       this.pttOff(), new Promise<void>((resolve) => setTimeout(resolve, 500)),
     ]);
-    else if (this.#transmitCleanupRequired || (
-      this.#state.fresh && this.#state.intent === 'latched'
-    )) await this.#boundedForceOff();
     else { ++this.#generation; this.#flow = 'idle'; this.#stopAudio(); }
   }
 
@@ -159,7 +155,6 @@ export class ManagedTxController {
   async #sendTransmitOn(generation: number): Promise<void> {
     if (!await this.#prepareAudio()) return;
     if (generation !== this.#generation || this.#flow !== 'transmit') return;
-    this.#transmitCleanupRequired = true;
     if (this.#pttAttempted) {
       let released: Outcome;
       try { released = await this.dependencies.sendPtt('ptt_off'); }
@@ -184,21 +179,6 @@ export class ManagedTxController {
     this.#publish();
   }
 
-  async #boundedForceOff(): Promise<void> {
-    await Promise.race([
-      this.forceOff(),
-      new Promise<void>((resolve) => setTimeout(resolve, 500)),
-    ]);
-  }
-
-  #reconcileCleanupObligation(): void {
-    const state = this.#state;
-    if (state.fresh && state.intent === null && !state.releaseRequired
-      && state.lastOperation === 'force_receive') {
-      this.#transmitCleanupRequired = false;
-    }
-  }
-
   #prepareAudio(): Promise<boolean> {
     if (this.#audioPreparation !== null) return this.#audioPreparation;
     this.#audioNeedsCleanup = true;
@@ -220,7 +200,6 @@ export class ManagedTxController {
 
   #publish(): void {
     this.#state = this.dependencies.snapshot();
-    this.#reconcileCleanupObligation();
     for (const listener of this.#listeners) listener(this.#state);
   }
 }

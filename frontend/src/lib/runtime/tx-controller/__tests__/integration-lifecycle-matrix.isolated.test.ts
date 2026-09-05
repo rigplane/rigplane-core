@@ -17,9 +17,10 @@ const h = vi.hoisted(() => ({
   stop: vi.fn(),
   restore: vi.fn(),
   submit: vi.fn(async () => 'accepted' as const),
+  latched: false,
 }));
 vi.mock('$lib/stores/managed-transmit.svelte', () => ({
-  managedTransmitSnapshot: () => ({ schemaVersion: 1, sampledAt: '2026-09-04T00:00:00Z', managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false, lastError: null, lastActuation: null, abortErrors: [], tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null } }, txObservation: { observedPtt: 'off' } }),
+  managedTransmitSnapshot: () => ({ schemaVersion: 1, sampledAt: '2026-09-04T00:00:00Z', managedTransmit: { status: 'available', intent: { kind: h.latched ? 'transmit' : 'rx' }, releaseRequired: h.latched, lastError: null, lastActuation: null, abortErrors: [], tot: { configuredSeconds: 180, active: false, remainingMs: null, expiresAt: null } }, txObservation: { observedPtt: 'off' } }),
   managedTransmitIsStale: () => false, managedTransmitRemainingMs: () => null,
   refreshManagedTransmit: vi.fn(async () => {}), invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
   setManagedTransmitTot: vi.fn(async () => {}),
@@ -150,6 +151,7 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     h.stop.mockClear();
     h.restore.mockClear();
     h.submit.mockClear();
+    h.latched = false;
   });
 
   afterEach(() => {
@@ -214,6 +216,32 @@ describe('tx-controller integration lifecycle matrix — real WsChannel + real b
     expect(countFrames('ptt_off', socket)).toBe(0);
     confirmAuthority(controller, factory, getSession(), false, 3);
     expect(countFrames('ptt_on', socket)).toBe(0);
+  });
+
+  it.each(['requester', 'unrelated'] as const)(
+    '%s socket loss and reconnect preserve latched TRANSMIT without replaying ON', async (browser) => {
+    const { factory, controller, socket: socket0 } = await setup();
+    if (browser === 'requester') {
+      controller.transmitOn();
+      await flush();
+      expect(h.submit).toHaveBeenCalledExactlyOnceWith('transmit_on');
+    }
+    h.latched = true;
+    await controller.refresh();
+    expect(controller.snapshot().intent).toBe('latched');
+
+    socket0.simulateClose();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(instances).toHaveLength(2);
+    const socket1 = instances[1];
+    socket1.simulateOpen();
+    await flush();
+
+    expect(h.submit.mock.calls).toEqual(browser === 'requester' ? [['transmit_on']] : []);
+    expect(countFrames('ptt_on', socket0, socket1)).toBe(0);
+    expect(countFrames('ptt_off', socket0, socket1)).toBe(0);
+    expect(h.stop).toHaveBeenCalledTimes(browser === 'requester' ? 1 : 0);
+    controller.dispose(); factory.dispose();
   });
 
   it('duplicate release coalescing: two release dispatches produce exactly one ptt_off frame', async () => {
