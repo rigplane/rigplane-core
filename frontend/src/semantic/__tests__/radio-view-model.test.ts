@@ -22,6 +22,37 @@ function valid(): RadioViewModel {
   };
 }
 
+describe('VFO display facet', () => {
+  const display = {
+    frequencyHz: { state: 'stale', value: 0 },
+    mode: { state: 'current', value: 'USB' },
+    filter: { state: 'unsupported' },
+  };
+  const withDisplay = (facet: unknown) => {
+    const base = valid();
+    return { ...base, vfos: [{ ...base.vfos[0], display: facet }] };
+  };
+  it('round-trips the opt-in facet and preserves the legacy shape', () => {
+    expect(validateRadioViewModel(valid())).toEqual(valid());
+    expect(validateRadioViewModel(withDisplay(display))).toEqual(withDisplay(display));
+    expect(validateRadioViewModel(withDisplay({ ...display,
+      frequencyHz: { state: 'unknown', reason: 'identity-unresolved' },
+    })).vfos[0].frequencyHz).toBe(14195000);
+  });
+  it.each([
+    null, {}, { ...display, rawState: {} }, { ...display, mode: undefined },
+    { ...display, frequencyHz: { state: 'stale', value: null } },
+    { ...display, frequencyHz: { state: 'current', value: NaN } },
+    { ...display, frequencyHz: { state: 'current', value: false } },
+    { ...display, mode: { state: 'current', value: 1 } },
+    { ...display, filter: { state: 'stale', value: 1 } },
+    { ...display, mode: { state: 'unknown', reason: 'guessed' } },
+    { ...display, filter: { state: 'unsupported', value: 'FIL1' } },
+  ])('rejects malformed facet %#', (facet) => {
+    expect(() => validateRadioViewModel(withDisplay(facet))).toThrow(TypeError);
+  });
+});
+
 describe('validateRadioViewModel', () => {
   it('accepts a well-formed view model and round-trips it unchanged', () => {
     const model = valid();
