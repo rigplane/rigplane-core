@@ -486,6 +486,9 @@
     dragCandidate = null;
   }
 
+  const AUDIO_FFT_AMPLITUDE_MAX = 160;
+  const CENTRAL_SCOPE_AMPLITUDE_MAX = 80;
+
   $effect(() => {
     const sourceIsAudio = audioFft;
     return untrack(() => {
@@ -501,12 +504,19 @@
       if (sourceIsAudio) runtime.scope.registerPresentationDriver(presentationResources);
       const receive = (frame: Parameters<Parameters<typeof runtime.scope.subscribe>[0]>[0]) => {
         if (!scopeDemandOn) return;
+        if (sourceIsAudio && (frame.pixels.length < 3 || frame.pixels.length % 2 === 0
+          || frame.endFreq <= frame.startFreq)) return;
+        const pixels = sourceIsAudio
+          ? frame.pixels.slice(Math.floor(frame.pixels.length / 2)).map(value =>
+              Math.round(Math.min(value, AUDIO_FFT_AMPLITUDE_MAX)
+                * CENTRAL_SCOPE_AMPLITUDE_MAX / AUDIO_FFT_AMPLITUDE_MAX))
+          : frame.pixels;
         frameScopeMode = frame.mode;
-        startFreq = frame.startFreq;
-        endFreq = frame.endFreq;
-        scopePixels = frame.pixels;
-        spectrumPush?.(frame.pixels);
-        waterfallPush?.(frame.pixels);
+        startFreq = sourceIsAudio ? 0 : frame.startFreq;
+        endFreq = sourceIsAudio ? (frame.endFreq - frame.startFreq) / 2 : frame.endFreq;
+        scopePixels = pixels;
+        spectrumPush?.(pixels);
+        waterfallPush?.(pixels);
       };
       const unsubscribe = sourceIsAudio
         ? runtime.scope.subscribe(receive)
