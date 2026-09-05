@@ -20,6 +20,8 @@
   export interface LowerScaleDescriptor {
     readonly label: string;
     readonly unit?: string;
+    readonly stateText?: string;
+    readonly accessibleDescription?: string;
     readonly ticks: readonly LowerScaleTick[];
     /** 0..1 — how much of the row's segments are lit. 0 is a legitimate
      *  "not reading right now" state (e.g. not transmitting), not "absent" —
@@ -55,7 +57,8 @@
   } from './smeter-scale';
 
   interface Props {
-    value: number;    // calibrated dB relative to S9 from backend state
+    value: number | null;    // calibrated dB relative to S9 from backend state
+    mainPresent?: boolean;
     compact?: boolean;
     label?: string;
     variant?: string;
@@ -87,7 +90,7 @@
 
   let {
     value, compact = false, label, variant, display = DEFAULT_METER_DISPLAY, lowerScale,
-    relevant = true,
+    relevant = true, mainPresent = true,
   }: Props = $props();
 
   const isVfoVariant = $derived(variant === 'vfo' || variant === 'vfo-wide');
@@ -323,7 +326,8 @@
   const smoother = createSmoother(0.06, 0.1);
 
   $effect(() => {
-    smoother.update((calibratedToSegments(value) / RAW_SEGMENT_DOMAIN) * SEG_COUNT);
+    if (value === null || !mainPresent) smoother.reset(0);
+    else smoother.update((calibratedToSegments(value) / RAW_SEGMENT_DOMAIN) * SEG_COUNT);
   });
 
   onMount(() => {
@@ -344,6 +348,7 @@
   let peakFrameId = 0;
 
   $effect(() => {
+    if (value === null || !mainPresent) { peakSegs = 0; peakTime = 0; return; }
     const current = smoother.value;
 
     if (prefersReducedMotion()) {
@@ -423,7 +428,7 @@
   // Peak X position for the vertical indicator line
   let peakX = $derived(BAR_X + peakSegs * (SEG_W + SEG_GAP));
   // Only show peak line if it's meaningfully ahead of current bar
-  let showPeak = $derived(peakSegs - smoother.value > 0.3);
+  let showPeak = $derived(value !== null && mainPresent && peakSegs - smoother.value > 0.3);
 
   // Peak-line color zones as fractions of the raw 20-segment domain — 15/20
   // and 18/20 are visual gradient stops with no calibration anchor (unlike
@@ -435,17 +440,17 @@
   let peakColor = $derived(peakSegs <= s9SegmentIndex ? 'var(--v2-accent-cyan-bright)' : peakSegs <= peakZoneYellow ? 'var(--v2-accent-yellow)' : peakSegs <= peakZoneOrange ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)');
 
   // ── Reactive display values ─────────────────────────────────────────────────
-  let fullSegs = $derived(Math.floor(smoother.value));
-  let fracSeg  = $derived(smoother.value - Math.floor(smoother.value));
+  let fullSegs = $derived(value === null ? 0 : Math.floor(smoother.value));
+  let fracSeg  = $derived(value === null ? 0 : smoother.value - Math.floor(smoother.value));
 
-  let displaySUnit = $derived(calibratedToSUnit(value));
-  let displayDbm   = $derived(formatDbm(calibratedToDbm(value)));
+  let displaySUnit = $derived(value === null ? 'S ?' : calibratedToSUnit(value));
+  let displayDbm   = $derived(value === null ? '' : formatDbm(calibratedToDbm(value)));
 
   // v2.11.1 SDR SVG geometry; the current calibrated scale still owns positions.
   const SDR_CELLS = 40;
   const SDR_CELL_WIDTH = 328 / SDR_CELLS;
   const SDR_SUB_WIDTH = (SDR_CELL_WIDTH - 2 - 0.5) / 2;
-  const sdrFill = $derived((smoother.value / SEG_COUNT) * SDR_CELLS * 2);
+  const sdrFill = $derived(((value === null ? 0 : smoother.value) / SEG_COUNT) * SDR_CELLS * 2);
   const sdrS9 = $derived((rawToSegments(getS9Raw()) / RAW_SEGMENT_DOMAIN) * SDR_CELLS * 2);
   function sdrColor(index: number): string {
     const aboveS9 = index >= sdrS9;
@@ -457,6 +462,7 @@
 {#if variant === 'sdr-screen'}
   <svg class="sdr-meter" viewBox="0 0 420 50" preserveAspectRatio="none"
     data-variant={variant} role="img" aria-label={`S meter ${displaySUnit} ${displayDbm}`}>
+    {#if mainPresent}
     <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
       <g font-family="Roboto Mono, monospace" font-size="11" fill="var(--v2-text-primary, #C8D4E0)" font-weight="700">
         <text x="4" y="14">{displayDbm === 'uncalibrated' ? 'raw' : 'S'}</text>
@@ -478,6 +484,7 @@
         <text x="412" y="46" text-anchor="end" fill="var(--v2-text-secondary, #A0B4C8)" font-size="10">uncalibrated</text>
       {/if}
     </g>
+    {/if}
   </svg>
 {:else}
 <svg
@@ -494,6 +501,7 @@
        dimmed by the `relevant` PROP, independent of `lowerScale.relevant`.
        This group is never an ancestor of `data-lower-relevant` below (nor
        the reverse), so the two opacities cannot compose. -->
+  {#if mainPresent}
   <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
   <!-- Container background -->
   <rect
@@ -585,6 +593,7 @@
     {/if}
   {/each}
   </g>
+  {/if}
 
   <!-- Lower scale row (MOR-2250, PR 2 of 2): label + ticks are structural —
        they render whenever `lowerScale` is present at all, independent of
@@ -602,6 +611,7 @@
          layout-stability note above `lowerScale` in Props; only their
          opacity, not their presence, depends on `relevant`. -->
     <g
+      role="group" aria-label={lowerScale.accessibleDescription}
       data-lower-relevant={lowerScale.relevant ? 'true' : 'false'}
       opacity={lowerScale.relevant ? 1 : DIM_OPACITY}
     >
@@ -615,6 +625,10 @@
         text-anchor="start"
         dominant-baseline="text-before-edge"
       >{lowerScale.label}{lowerScale.unit ? ` ${lowerScale.unit}` : ''}</text>
+      {#if lowerScale.stateText}
+        <text x={READOUT_CX} y={LOWER_LABEL_Y} font-size={LOWER_LABEL_FS}
+          fill="var(--v2-text-dim)" text-anchor="middle">{lowerScale.stateText}</text>
+      {/if}
 
       {#each lowerScale.ticks as t}
         {@const tx = lowerTickX(t.value)}
@@ -685,6 +699,7 @@
        only because `lowerScale`'s own `<g>` sits between them in the
        markup. Same `relevant` prop, same sibling relationship to
        `data-lower-relevant`. -->
+  {#if mainPresent}
   <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
   <!-- Peak hold indicator -->
   {#if showPeak}
@@ -719,6 +734,7 @@
     dominant-baseline="central"
   >{displayDbm}</text>
   </g>
+  {/if}
 </svg>
 {/if}
 

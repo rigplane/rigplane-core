@@ -107,3 +107,31 @@ describe('BarGauge peak-hold marker (MOR-1282)', () => {
     expect(markerCount(t)).toBe(0);
   });
 });
+
+it('null empties immediately and clears old fill/peak before a smaller sample', () => {
+  const { t, state } = mountReactive({ value: 1, label: 'Po', displayValue: '100W', showPeak: true, fault: true });
+  vi.advanceTimersByTime(600);
+  flushSync();
+  const svg = t.querySelector('svg');
+  const track = t.querySelector('rect[x="44"]');
+  expect(t.querySelectorAll('rect').length).toBeGreaterThan(13);
+  expect(svg?.getAttribute('data-fault')).toBe('true');
+  state.value = null;
+  state.displayValue = 'IDLE';
+  state.showPeak = false;
+  flushSync();
+  expect(t.querySelector('svg') === svg).toBe(true);
+  expect(t.querySelector('rect[x="44"]') === track).toBe(true);
+  expect(t.querySelectorAll('rect')).toHaveLength(12);
+  expect(svg?.getAttribute('data-fault')).toBe('false');
+  expect(markerCount(t)).toBe(0);
+  state.value = 0.1;
+  state.displayValue = '10W';
+  state.showPeak = true;
+  flushSync();
+  expect(markerX(t)).toBe(64);
+  expect(t.querySelectorAll('rect')).toHaveLength(13);
+  vi.advanceTimersByTime(100);
+  flushSync();
+  expect(t.querySelectorAll('rect').length).toBeLessThanOrEqual(14);
+});

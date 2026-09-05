@@ -1,56 +1,6 @@
-<!--
-  Semantic meters surface (MOR-1273, vocabulary slice 2B).
-
-  Presentation only. It renders the MOR-1269 `meters` fact group — S / Po /
-  SWR / ALC / COMP / Vd / Id — as SVG gauges. It holds no state, consults no
-  controller and emits no intent (v3 ADR invariant 11): a meter is a readout,
-  never an action surface.
-
-  SAFETY (R9). Three rules govern this file:
-
-  (1) TX truth arrives ALREADY DECIDED. `meters.rfState` and each field's
-      `relevant` flag come from the App-owned TX authority via the adapter's
-      evidence gate; this surface displays that conclusion and computes no
-      second one. Deriving relevance from the raw transmit wire bit is the
-      open disagreement MOR-1235 reported and MOR-1269 closed — the single
-      `view` prop below is the whole reason it cannot come back here.
-  (2) The RF word and its mark are the SHARED `RF_LABEL` / `RF_MARK` maps that
-      spell the RX/TX surface's own state, imported rather than copied. A copy
-      could drift and tell the operator "RX" beside a key button reading "TX".
-      They are text AND shape, so the state survives forced-colors (MOR-977).
-  (3) An unobserved meter renders as an explicit `?`, never as a gauge at
-      zero, for every top-level tile in this file — "0 W into the antenna"
-      and "not measured" are different claims. SWR's shared lower row is
-      the one exception (MOR-2250, PR 2 of 2, owner ruling): it renders a
-      zero-fill row rather than a `?`, because the structural/absent
-      distinction is already made once, at the `present(meters.swr)` check
-      on the `<LinearSMeter>` mount below — the row itself never restates
-      it.
-  (4) FAULT (MOR-1345): SWR/ALC over-threshold highlighting is a FACT this
-      surface computes from the SAME `isSwrFault`/`isAlcFault` predicates the
-      legacy dock's border reads (`meter-utils`, imported not copied), gated
-      on `relevant` (this field's own TX-authority conclusion, rule 1) AND
-      "observed" (rule 3) — an unobserved reading is never a fault. The
-      colour itself is drawn by the component this file hands the boolean
-      to: `BarGauge` for ALC, `LinearSMeter`'s lower-scale row (MOR-2250, PR
-      2 of 2) for SWR — this file only ever computes the boolean.
-
-  Two-level availability (MOR-977/1256): `structural: false` renders NOTHING —
-  "this radio has no SWR meter" is a different claim from "the SWR meter is
-  unreadable right now", which renders present-but-unobserved. An irrelevant
-  meter is DIMMED rather than hidden, so the dock geometry does not reflow
-  under the operator at the moment they key up (MOR-485).
-
-  BALLISTICS ARE NOT HERE. Smoothing and peak-hold — and, with them, the
-  `prefers-reduced-motion` behaviour of MOR-1233/1249/1252 — belong to the
-  shipped SVG components this file composes (`LinearSMeter`, `BarGauge`), both
-  driving `$lib/utils/smoothing.svelte`'s `createSmoother`, which snaps to
-  target instead of animating under `reduce`. A loop here would be a second,
-  unaudited one. This surface's own styles carry structure only: no colour, no
-  transition, so a reduced-motion cockpit page stays provably still.
--->
 <script module lang="ts">
-  import type { MeterField, MetersViewModel } from './radio-view-model';
+  import { projectTxMeterDisplay } from './tx-meter-display';
+  import type { DisplayObservedMeterField, MeterRfState, MeterField, MetersViewModel } from './radio-view-model';
   import {
     alcLevel, compLevel, formatAlc, formatAmps, formatCompDb, formatPowerWatts,
     formatVolts, idLevel, isAlcFault, isSwrFault, normalizePower, sLevel,
@@ -120,44 +70,29 @@
     { value: 1, label: '∞' },
   ] as const;
 
-  /**
-   * `valueFraction`/`fault` use the SAME present/observed/relevant gating
-   * and the SAME `swrLevel`/`isSwrFault` predicates the removed SWR
-   * `BarGauge` row used (`present`/`observed`/`rawOf` above and the
-   * `FAULT_CHECKS` gating pattern this mirrors) — imported, not re-derived,
-   * so the two can never disagree about what counts as a reading or a
-   * fault. `valueFraction` is NOT additionally gated on `relevant`: an
-   * irrelevant-but-observed reading still reports its real fill, the same
-   * discipline every `METER_BARS` field's own level follows (SWR itself
-   * left `METER_BARS` — see the note above it — but its lower row keeps the
-   * same rule). This is unconditional on `rfState` — the caller passes it
-   * every render (see the `<LinearSMeter>` mount below); a `0` fraction
-   * while receiving is simply what `observed(meters.swr)` naturally
-   * resolves to when the radio has no known SWR sample outside TX, not a
-   * branch on TX state here.
-   *
-   * `relevant` is passed through unchanged as its own descriptor field —
-   * NOT translated into a dim here. Fix cycle 2: `meters.swr.relevant` and
-   * `meters.signal.relevant` are DIFFERENT facts (`meters.signal.relevant`
-   * is roughly `!onTx`-shaped per the adapter's fail-closed TX-relevance
-   * doctrine, `deriveMeters` in `radio-view-model-adapter.ts`, while
-   * `meters.swr.relevant` fails CLOSED the other way), and each now drives
-   * its own independent, non-nested `<g>` inside `LinearSMeter`: this field
-   * feeds `LowerScaleDescriptor.relevant` → `<g data-lower-relevant>`, while
-   * `meters.signal.relevant` feeds the separate `relevant` prop → the
-   * `<g data-main-relevant>` groups (see the `<LinearSMeter>` mount below).
-   * Neither is an ancestor of the other, so the two opacities can never
-   * compound — each field's dim reaches exactly its own row.
-   */
-  function swrLowerScale(f: MeterField): LowerScaleDescriptor {
-    const isObserved = observed(f);
-    const raw = rawOf(f);
+  function txPresentation(f: DisplayObservedMeterField, rfState: MeterRfState) {
+    const projected = projectTxMeterDisplay(f, rfState);
+    if (!projected.supported) return { value: null, text: '?', description: 'Not observed' };
+    const { relevance, observation } = projected;
+    if (relevance === 'idle') return { value: null, text: 'IDLE', description: 'Not measuring in RX' };
+    const cue = relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
     return {
-      label: 'SWR',
-      ticks: SWR_LOWER_SCALE_TICKS,
-      valueFraction: isObserved ? swrLevel(raw) : 0,
-      fault: isObserved && f.relevant && isSwrFault(raw),
-      relevant: f.relevant,
+      value: observation.state === 'current' ? observation.value : null,
+      text: observation.state === 'stale' ? 'STALE' : observation.state === 'current'
+        ? (relevance === 'indeterminate' ? ' ?' : '') : '?',
+      description: cue + (observation.state === 'stale' ? 'Stale observation'
+        : observation.state === 'current' ? 'Current observation' : 'Not observed'),
+    };
+  }
+
+  function swrLowerScale(f: DisplayObservedMeterField, rfState: MeterRfState): LowerScaleDescriptor {
+    const state = txPresentation(f, rfState);
+    return {
+      label: 'SWR', ticks: SWR_LOWER_SCALE_TICKS,
+      valueFraction: state.value === null ? 0 : swrLevel(state.value),
+      fault: state.value !== null && f.relevant && isSwrFault(state.value),
+      relevant: f.relevant, stateText: state.text,
+      accessibleDescription: `SWR: ${state.description}`,
     };
   }
 
@@ -167,7 +102,7 @@
    * hands over at S9). The reading is handed over on the 0..1 UI scale
    * `meter-utils` already calibrates, with the S9 crossover expressed on the
    * same scale, so the descriptor's fractions mean what they say; an unobserved
-   * meter passes `null` and stays unknown rather than reading as zero (rule 3).
+   * meter passes `null` and stays unknown rather than reading as zero.
    * Annotations only — availability, relevance and the gauge itself remain this
    * surface's decisions.
    *
@@ -226,36 +161,28 @@
       <span data-testid="meters-rf-label">{RF_LABEL[meters.rfState]}</span>
     </p>
 
-    {#if present(meters.signal)}
+    {#if present(meters.signal) || present(meters.swr)}
       <div
-        class="meter-tile" data-meter-tile data-meter="signal" data-testid="meter-signal"
+        class="meter-tile" data-meter-tile data-meter={present(meters.signal) ? "signal" : "swr"} data-testid={present(meters.signal) ? "meter-signal" : "meter-swr"}
         data-relevant={meters.signal.relevant} data-observed={observed(meters.signal)}
-        role="group" aria-label="S meter"
+        role="group" aria-label={present(meters.signal) ? "S meter" : "SWR meter"}
         {...display?.attributes ?? {}}
       >
-        {#if observed(meters.signal)}
-          <!-- MOR-2250 (PR 2 of 2): `lowerScale` is built and passed on
-               EVERY render this branch takes, never behind an `rfState`
-               check — the shared bar's bottom row must occupy the same
-               geometry whether receiving or transmitting (see the file's
-               own layout-stability note on `swrLowerScale` above). Absent
-               only when the radio structurally has no SWR meter at all. -->
-          <LinearSMeter
-            value={rawOf(meters.signal)} label="S" compact
-            display={display?.display ?? undefined}
-            lowerScale={present(meters.swr) ? swrLowerScale(meters.swr) : undefined}
-            relevant={meters.signal.relevant}
-          />
-        {:else}
-          <span class="meter-unknown">S ?</span>
-        {/if}
+        <LinearSMeter
+          value={observed(meters.signal) ? rawOf(meters.signal) : null} label="S" compact
+          mainPresent={present(meters.signal)}
+          display={display?.display ?? undefined}
+          lowerScale={present(meters.swr) ? swrLowerScale(meters.swr, meters.rfState) : undefined}
+          relevant={meters.signal.relevant}
+        />
       </div>
     {/if}
 
     {#each METER_BARS as [field, label, level, format, showPeak] (field)}
       {#if present(meters[field]) && (field !== 'compression' || compressorOn)}
-        {@const isObserved = observed(meters[field])}
-        {@const raw = rawOf(meters[field])}
+        {@const tx = field === 'power' || field === 'alc' ? txPresentation(meters[field], meters.rfState) : null}
+        {@const isObserved = tx ? tx.value !== null : observed(meters[field])}
+        {@const raw = tx ? tx.value ?? 0 : rawOf(meters[field])}
         {@const fault = isObserved && meters[field].relevant
           && (FAULT_CHECKS[field]?.(raw) ?? false)}
         <div
@@ -263,14 +190,17 @@
           data-relevant={meters[field].relevant} data-observed={isObserved} data-fault={fault}
           role="group" aria-label={`${label} meter`}
         >
-          {#if isObserved}
+          {#if isObserved || tx}
             <!-- MOR-2255: `zones` comes from the SAME `display` descriptor
                  the S-meter above reads, so every gauge on this surface is
                  painted by one language. `undefined` (no language, or a
                  descriptor without the quintet) falls back to `BarGauge`'s
                  own `DEFAULT_ZONES`. -->
             <BarGauge
-              value={level(raw)} {label} displayValue={format(raw)} compact {showPeak} {fault}
+              value={isObserved ? level(raw) : null} {label}
+              displayValue={tx ? (isObserved ? format(raw) + tx.text : tx.text) : format(raw)}
+              accessibleDescription={tx ? `${label}: ${tx.description}${isObserved ? `. ${format(raw)}` : ''}` : undefined}
+              compact showPeak={showPeak && isObserved} {fault}
               zones={display?.display?.zones}
             />
           {:else}
@@ -289,20 +219,7 @@
   .meters-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .meters-rf { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; font-weight: 700; }
   .meter-tile { display: block; }
-  /* Dim, never hide: an irrelevant meter keeps its box so the dock cannot
-     reflow across an RX/TX transition. Opacity survives forced-colors, and it
-     is a second channel beside `data-relevant`, never the only one.
-     The S-meter tile takes one of two dimming paths, never both (MOR-2250,
-     fix cycles 2 and 4), which is why the `:not(...)` below carries two
-     conditions. Observed: `LinearSMeter` is mounted and `relevant` reaches
-     it as a prop, dimming that component's own `<g data-main-relevant>`
-     groups — so this ancestor rule must skip the tile, or its opacity would
-     compound with the independently-relevant SWR row inside the same svg
-     (CSS opacity multiplies down the DOM). Unobserved: no `LinearSMeter` is
-     mounted, the `{:else}` `<span class="meter-unknown">` renders instead,
-     and nothing inside the tile dims — so this rule covers it like any
-     other tile. */
-  .meter-tile[data-relevant='false']:not([data-meter='signal'][data-observed='true']) {
+  .meter-tile[data-relevant='false']:not([data-meter='signal']):not([data-meter='swr']) {
     opacity: 0.4;
   }
   .meter-unknown { font-weight: 700; }

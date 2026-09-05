@@ -323,3 +323,25 @@ describe('createSmoother — target initial value (MOR-1251 F4)', () => {
     }
   });
 });
+
+it('reset clears current and target synchronously without changing the live schedule', () => {
+  const { restore, setMatches } = mockReducedMotion(false);
+  const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+  try {
+    const smoother = createSmoother(0.12, 0.32, 9);
+    smoother.update(15);
+    smoother.start();
+    smoother.reset(0);
+    expect(smoother.value).toBe(0);
+    expect(raf).toHaveBeenCalledTimes(1);
+    setMatches(true);
+    expect(smoother.value).toBe(0);
+    setMatches(false);
+    smoother.update(2);
+    expect(smoother.value).toBe(0);
+    setMatches(true);
+    expect(smoother.value).toBe(2);
+    smoother.stop();
+  } finally { restore(); }
+});
