@@ -12,6 +12,7 @@
 
 <script lang="ts">
   import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
+  import { spectrumDisplayAmplitude } from '../../lib/renderers/spectrum-renderer';
   import type { PeerSplitReceiverDisplay } from '../../semantic/radio-display-model';
   import { resolveLcdSpectrumFrame } from './lcd-display-contract';
 
@@ -121,7 +122,8 @@
     {/if}
     {#each renderBins as sample, index}
       {@const binWidth = PLOT_WIDTH / renderBins.length}
-      {@const binHeight = sample * (PLOT_HEIGHT - 4)}
+      {@const displaySample = spectrumDisplayAmplitude(sample * 255, 0)}
+      {@const binHeight = displaySample * (PLOT_HEIGHT - 4)}
       <rect
         class="rf-bin"
         data-rf-bin={index}

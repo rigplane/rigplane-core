@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
+import { spectrumDisplayAmplitude } from '../../../lib/renderers/spectrum-renderer';
 import type { LcdSpectrumFrame } from '../lcd-display-contract';
 import LcdRfPanadapter, {
   type LcdRfPanadapterPassband,
@@ -168,5 +169,30 @@ describe('LcdRfPanadapter', () => {
     )).toHaveLength(0);
     expect(target.innerHTML).not.toMatch(/onclick|onpointer|onwheel/i);
     expect(source).not.toMatch(/(?:lib\/runtime|stores?\/|controller|transport|socket|demand)/i);
+  });
+});
+
+describe('LcdRfPanadapter hardware amplitude parity', () => {
+  it('keeps normalized raw bins immutable while applying the shared display transfer', () => {
+    const bins = Object.freeze([0, 40 / 255, 80 / 255, 1]);
+    const target = render(hardwareFrame({ normalizedBins: bins }));
+    const rendered = [...target.querySelectorAll('[data-rf-bin]')];
+
+    expect([...bins]).toEqual([0, 40 / 255, 80 / 255, 1]);
+    expect(rendered.map((node) => Number(node.getAttribute('data-rf-sample')))).toEqual(bins);
+    expect(rendered.map((node) => Number(node.getAttribute('height')))).toEqual([
+      0,
+      spectrumDisplayAmplitude(40, 0) * 94,
+      94,
+      94,
+    ]);
+  });
+
+  it('continues to reject audio FFT frames instead of applying RF transfer to them', () => {
+    const target = render(hardwareFrame({ source: 'audio-fft' }));
+
+    expect(target.querySelector('[data-testid="lcd-rf-panadapter"]')
+      ?.getAttribute('data-frame-reason')).toBe('source-mismatch');
+    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(0);
   });
 });
