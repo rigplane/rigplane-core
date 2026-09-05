@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
   import WaterfallCanvas from './WaterfallCanvas.svelte';
   import DxOverlay from './DxOverlay.svelte';
@@ -12,7 +12,7 @@
     type WaterfallOptions,
     type ColorSchemeName,
   } from '../../lib/renderers/waterfall-renderer';
-  import { runtime } from '../../lib/runtime/frontend-runtime';
+  import { presentationResources, runtime } from '../../lib/runtime/frontend-runtime';
   import { type DxSpot } from '../../lib/types/protocol';
   import { getTuningStep } from '../../lib/stores/tuning.svelte';
   import {
@@ -69,7 +69,10 @@
   // lifecycle is busy, then returns to the confirmed radio observation.
   let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
   // --- Component state ---
-  let scopeConnected = $derived(runtime.scope.hardwareScopeConnected);
+  let audioFft = $derived(runtime.caps?.scopeSource === 'audio_fft');
+  let scopeConnected = $derived(audioFft
+    ? runtime.defaultScopeStatus.transport === 'connected'
+    : runtime.scope.hardwareScopeConnected);
   let scopeDemandOn = $state(true);
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let scopePixels = $state<Uint8Array | null>(null);
@@ -97,8 +100,8 @@
     }
   });
   let dxSpots = $state<DxSpot[]>([]);
-  let spectrumArea: HTMLDivElement | null = null;
-  let waterfallContent: HTMLDivElement | null = null;
+  let spectrumArea = $state<HTMLDivElement | null>(null);
+  let waterfallContent = $state<HTMLDivElement | null>(null);
   type SampleGeometry = Readonly<{
     frameMode: number;
     startFreq: number;
@@ -121,10 +124,10 @@
   let dragging = $state(false);
 
   let centerHz = $derived(
-    startFreq > 0 && endFreq > startFreq ? (startFreq + endFreq) / 2 : 0,
+    startFreq >= 0 && endFreq > startFreq ? (startFreq + endFreq) / 2 : 0,
   );
   let spanHz = $derived(endFreq > startFreq ? endFreq - startFreq : 0);
-  let spectrumAuthority = $derived(toSpectrumAuthority(runtime.state, runtime.caps));
+  let spectrumAuthority = $derived(audioFft ? null : toSpectrumAuthority(runtime.state, runtime.caps));
   // MOR-1497: the grab cursor must not promise a drag the gate will refuse.
   // Mirrors the FULL drag-start gate: frequency authority AND usable sample
   // geometry (before the first scope frame endFreq <= startFreq, so
@@ -199,7 +202,8 @@
 
   let spectrumOptions = $derived<SpectrumOptions>({
     ...defaultSpectrumOptions,
-    spanHz: tuneVisible ? spanHz : 0,
+    spanHz: audioFft || tuneVisible ? spanHz : 0,
+    showRfOverlays: !audioFft,
     centerHz,
     tuneHz,
     passbandHz,
@@ -224,7 +228,12 @@
     { position: 100, label: '-60' },
   ];
 
-  let freqTicks = $derived(deriveFreqTicks(spanHz));
+  let freqTicks = $derived(audioFft && spanHz > 0
+    ? Array.from({ length: 5 }, (_, index) => ({
+        position: index * 25,
+        label: `${Number(((startFreq + spanHz * index / 4) / 1000).toFixed(2))} kHz`,
+      }))
+    : deriveFreqTicks(spanHz));
 
   // Passband overlay position derived from the same geometry as the spectrum renderer.
   // In FIX mode pass tuneLinePct so passband follows the carrier indicator.
@@ -237,7 +246,7 @@
   let pbRightPct = $derived(passbandOverlay?.rightPx ?? 0);
 
   function readAuthority(): SpectrumAuthority | null {
-    return toSpectrumAuthority(runtime.state, runtime.caps);
+    return audioFft ? null : toSpectrumAuthority(runtime.state, runtime.caps);
   }
 
   function completeGestureAuthority(requireRule: boolean): SpectrumAuthority | null {
@@ -370,13 +379,16 @@
 
   function acquireScopeDemand(): void {
     if (scopeLease) return;
-    scopeLease = runtime.acquireHardwareScope('SpectrumPanel');
+    scopeLease = audioFft
+      ? presentationResources.acquire('audio-fft', 'SpectrumPanel')
+      : runtime.acquireHardwareScope('SpectrumPanel');
   }
 
   function releaseScopeDemand(): void {
     const lease = scopeLease;
     scopeLease = null;
-    if (lease) runtime.releaseHardwareScope(lease);
+    if (lease?.resource === 'audio-fft') presentationResources.release(lease);
+    else if (lease) runtime.releaseHardwareScope(lease);
   }
 
   function setScopeDemand(enabled: boolean): void {
@@ -474,38 +486,47 @@
     dragCandidate = null;
   }
 
-  // --- Lifecycle: demand scope runtime + subscribe to frames and DX spots ---
-  onMount(() => {
-    const unsubHardware = runtime.scope.subscribeHardware((frame) => {
-      if (!scopeDemandOn) return;
-      if (frame.mode !== frameScopeMode) frameScopeMode = frame.mode;
-      if (frame.startFreq !== startFreq || frame.endFreq !== endFreq) {
+  $effect(() => {
+    const sourceIsAudio = audioFft;
+    return untrack(() => {
+      fullscreen = false;
+      scopePixels = null;
+      startFreq = 0;
+      endFreq = 0;
+      frameScopeMode = 0;
+      resizeCapture = null;
+      dragCapture = null;
+      dragging = false;
+      dxSpots = [];
+      if (sourceIsAudio) runtime.scope.registerPresentationDriver(presentationResources);
+      const receive = (frame: Parameters<Parameters<typeof runtime.scope.subscribe>[0]>[0]) => {
+        if (!scopeDemandOn) return;
+        frameScopeMode = frame.mode;
         startFreq = frame.startFreq;
         endFreq = frame.endFreq;
-      }
-      scopePixels = frame.pixels;
-      // Direct push to both children — bypasses Svelte reactivity
-      // which can't track Uint8Array changes at 100+ fps
-      spectrumPush?.(frame.pixels);
-      waterfallPush?.(frame.pixels);
+        scopePixels = frame.pixels;
+        spectrumPush?.(frame.pixels);
+        waterfallPush?.(frame.pixels);
+      };
+      const unsubscribe = sourceIsAudio
+        ? runtime.scope.subscribe(receive)
+        : runtime.scope.subscribeHardware(receive);
+      if (scopeDemandOn) acquireScopeDemand();
+      const unsubDx = sourceIsAudio ? () => {} : runtime.subscribeDx((msg) => {
+        if (msg.type === 'dx_spot') {
+          const spot = (msg as unknown as { spot: DxSpot }).spot;
+          if (spot) dxSpots = [...dxSpots.slice(-49), spot];
+        } else if (msg.type === 'dx_spots') {
+          const list = (msg as unknown as { spots: DxSpot[] }).spots;
+          if (Array.isArray(list)) dxSpots = list.slice(-50);
+        }
+      });
+      return () => {
+        unsubscribe();
+        unsubDx();
+        releaseScopeDemand();
+      };
     });
-    acquireScopeDemand();
-
-    const unsubDx = runtime.subscribeDx((msg) => {
-      if (msg.type === 'dx_spot') {
-        const spot = (msg as unknown as { spot: DxSpot }).spot;
-        if (spot) dxSpots = [...dxSpots.slice(-49), spot];
-      } else if (msg.type === 'dx_spots') {
-        const list = (msg as unknown as { spots: DxSpot[] }).spots;
-        if (Array.isArray(list)) dxSpots = list.slice(-50);
-      }
-    });
-
-    return () => {
-      unsubHardware();
-      unsubDx();
-      releaseScopeDemand();
-    };
   });
 </script>
 
@@ -527,12 +548,22 @@
   other `g <key>` targets, which land on a real form control that was already
   in the tab order.
 -->
+{#key audioFft}
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div class="spectrum-panel" class:fullscreen data-waterfall tabindex="-1" onwheel={handleWheel}>
+<div class="spectrum-panel" class:audio-fft={audioFft} class:fullscreen data-waterfall tabindex="-1" onwheel={handleWheel}>
+  {#if audioFft}
+    <div class="audio-source-label">
+      <span>Audio FFT · AF</span>
+      <button type="button" aria-label="Scope viewer" aria-pressed={scopeDemandOn} onclick={() => setScopeDemand(!scopeDemandOn)}>
+        Viewer {scopeDemandOn ? 'ON' : 'OFF'}
+      </button>
+    </div>
+  {:else}
   <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} />
+  {/if}
   <div class="spectrum-with-scales">
     <div class="db-scale">
-      {#each DB_TICKS as tick}
+      {#each audioFft ? [] : DB_TICKS as tick}
         <div class="tick" style="top: {tick.position}%">{tick.label}</div>
       {/each}
     </div>
@@ -542,7 +573,7 @@
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {/if}
-      <BandPlanOverlay {startFreq} {endFreq} visible={showBandPlan} {hiddenLayers} />
+      {#if !audioFft}<BandPlanOverlay {startFreq} {endFreq} visible={showBandPlan} {hiddenLayers} />{/if}
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} onRegisterPush={(fn) => spectrumPush = fn} />
       {#if tuneVisible && spanHz > 0 && pbWidthPct > 0 && canResizePassband}
         <button
@@ -567,8 +598,8 @@
   <div class="waterfall-area">
     <div class="waterfall-scale"></div>
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
-      <WaterfallCanvas options={waterfallOptions} onFreqClick={handleTune} onRegisterPush={(fn) => waterfallPush = fn} />
-      <DxOverlay spots={dxSpots} {startFreq} {endFreq} onTune={handleTune} />
+      <WaterfallCanvas options={waterfallOptions} onFreqClick={audioFft ? undefined : handleTune} onRegisterPush={(fn) => waterfallPush = fn} />
+      {#if !audioFft}<DxOverlay spots={dxSpots} {startFreq} {endFreq} onTune={handleTune} />{/if}
       <!-- Tuning + passband indicator overlays the waterfall -->
       {#if tuneVisible && spanHz > 0}
         {#if pbWidthPct > 0}
@@ -591,9 +622,12 @@
   </div>
 </div>
 
-<EiBiBrowser bind:visible={showEiBi} />
+{#if !audioFft}<EiBiBrowser bind:visible={showEiBi} />{/if}
+{/key}
 
 <style>
+  .audio-source-label { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; color: var(--text-muted); font-size: 12px; }
+  .audio-fft :global(canvas) { cursor: default; }
   .spectrum-panel {
     position: relative;
     display: flex;

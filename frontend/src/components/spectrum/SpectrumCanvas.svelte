@@ -90,7 +90,7 @@
 
 <div class="spectrum-container">
   <canvas bind:this={canvas}></canvas>
-  {#if spanHz > 0}
+  {#if options.showRfOverlays !== false && spanHz > 0}
     <div class="span-indicators">
       <span class="span-left">{formatOffset(spanHz / -2)}</span>
       <span class="span-right">{formatOffset(spanHz / 2)}</span>

@@ -239,6 +239,7 @@ function render(skinId: SkinId): HTMLElement {
 }
 
 beforeEach(() => {
+  vi.mocked(hasAnyScope).mockReturnValue(false);
   txHarness.reset();
   mounted = [];
   h.state = liveState();
@@ -279,6 +280,7 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
   // (see the dedicated meters-suppression test below, which is what actually
   // proves the dock/semantic-surface swap with real meter data).
   it('leaves the rest of the layout intact', () => {
+    vi.mocked(hasAnyScope).mockReturnValue(true);
     const t = render('sdr-test');
     expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
     expect(t.querySelector('.content-left .left-sidebar')).not.toBeNull();
@@ -428,6 +430,7 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
   // channel describe below. `memory` stays — it has no semantic twin at all,
   // so it is the panel that proves suppression did not widen into "the rest".
   it('leaves the rest of the layout intact', () => {
+    vi.mocked(hasAnyScope).mockReturnValue(true);
     const t = render('desktop-v2');
     expect(t.querySelector('.content-left .left-sidebar')).not.toBeNull();
     expect(t.querySelector('.content-right .right-sidebar')).not.toBeNull();
@@ -2405,6 +2408,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
 describe('scopeControls is zone-owned on desktop-v2, retiring the toolbar fact-backed half (MOR-1370, S6b-2)', () => {
   // THE CHANNEL, on the real manifest.
   it('suppresses the fact-backed toolbar half on real desktop-v2', () => {
+    vi.mocked(hasAnyScope).mockReturnValue(true);
     const t = render('desktop-v2');
     const stub = t.querySelector('.spectrum-panel-stub');
     expect(stub?.getAttribute('data-hide-scope-controls')).toBe('true');

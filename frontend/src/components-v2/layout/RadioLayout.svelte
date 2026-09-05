@@ -14,7 +14,7 @@
   
   import { runtime } from '$lib/runtime';
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
-  import { getKeyboardConfig, hasSpectrum } from '$lib/stores/capabilities.svelte';
+  import { getKeyboardConfig, hasAnyScope, hasSpectrum } from '$lib/stores/capabilities.svelte';
   import type { SkinId } from '../../skins/registry';
   import { declaredSurfaces, getLayout } from '../../presentation/layouts/contract';
   // Side-effect import: populates the LAYOUT registry `getLayout` resolves
@@ -272,7 +272,7 @@
 {#snippet sdrRegionContent()}
   <section class="content-row">
     <main class="content-center center-column">
-      {#if hasSpectrum()}
+      {#if hasAnyScope()}
         <div class="spectrum-slot">
           <div class="spectrum-frame">
             <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} />
