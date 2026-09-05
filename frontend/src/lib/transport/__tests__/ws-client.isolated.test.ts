@@ -67,7 +67,8 @@ vi.mock('../../stores/capabilities.svelte', () => ({
   setCapabilities: vi.fn(() => true),
 }));
 
-vi.mock('../http-client', () => ({
+vi.mock('../http-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../http-client')>(),
   fetchCapabilities: vi.fn(() => new Promise(() => {})),
 }));
 

@@ -4,6 +4,7 @@ import { isLiveRadioAvailable, setWsConnected, markStateUpdated, setReconnecting
 import { isValidServerState, matchesCurrentCapabilityTopology, resetRadioState, setRadioState } from '../stores/radio.svelte';
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
+import { authenticatedWsUrl, withoutWsAuthToken } from './ws-url';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export interface ControlSessionTransition {
@@ -218,7 +219,7 @@ export class WsChannel {
   connect(url: string) {
     const rs = this.ws?.readyState;
     if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return;
-    this.url = url;
+    this.url = withoutWsAuthToken(url);
     this.intentionalClose = false;
     // A fresh explicit connect supersedes any stale "reconnect once visible"
     // debt from a previous, unrelated hidden episode.
@@ -228,7 +229,7 @@ export class WsChannel {
 
   private _open() {
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
-    const ws = new WebSocket(this.url);
+    const ws = new WebSocket(authenticatedWsUrl(this.url));
     let socketEpoch = 0;
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
@@ -987,11 +988,7 @@ _ctrl.onMessage((msg) => {
 });
 
 export function connect(url: string = '/api/v1/ws') {
-  const token = typeof globalThis.localStorage?.getItem === 'function'
-    ? globalThis.localStorage.getItem('rigplane-auth-token')
-    : null;
-  const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
-  _ctrl.connect(wsUrl);
+  _ctrl.connect(url);
 }
 
 /** Send a raw JSON message (e.g. subscribe) and register it for re-send on reconnect. */

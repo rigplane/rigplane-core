@@ -74,7 +74,8 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('$lib/transport/http-client', () => ({
+vi.mock('$lib/transport/http-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/transport/http-client')>(),
   fetchCapabilities: mocks.fetchCapabilities,
   startPolling: mocks.startPolling,
   setPollingMultiplier: vi.fn(),

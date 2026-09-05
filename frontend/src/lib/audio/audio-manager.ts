@@ -12,6 +12,7 @@ import { RxPlayer, type RxAudioFocus } from './rx-player';
 import { TxMic, type TxCodec } from './tx-mic';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback } from '../stores/audio.svelte';
+import { authenticatedWsUrl } from '../transport/ws-url';
 import { getCapabilities } from '$lib/stores/capabilities.svelte';
 
 export type AudioFocus = RxAudioFocus;
@@ -254,7 +255,7 @@ class AudioManager {
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/api/v1/audio`;
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(authenticatedWsUrl(url));
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
 
@@ -299,8 +300,8 @@ class AudioManager {
       }
     };
 
-    ws.onerror = (e) => {
-      console.error('[audio-ws] error', e);
+    ws.onerror = () => {
+      console.error('[audio-ws] error');
       ws.close();
     };
 
