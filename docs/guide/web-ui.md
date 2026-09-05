@@ -34,13 +34,14 @@ See the [W3C Secure Contexts specification](https://www.w3.org/TR/secure-context
 and the [MDN getUserMedia reference](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia).
 
 For a remote browser, start the Web UI with Core TLS support using
-`--tls-cert` and `--tls-key` together, with a certificate valid and trusted for the server hostname; `--tls` alone generates self-signed TLS and does not establish browser certificate trust. Install
-the [`tls` extra](installation.md#optional-dependencies) when needed, and open the
-resulting `https://` URL. A browser connected through an SSH loopback tunnel
-may instead use `http://localhost:<forwarded-port>` because loopback is a
-browser-trusted origin; the LAN HTTP URL itself remains insecure. This
-requirement affects browser microphone capture and voice TX; it does not imply
-that every control or receive operation fails over HTTP.
+`--tls-cert` and `--tls-key` together. Use a certificate valid and trusted for
+the server hostname. The `--tls` option alone generates self-signed TLS and
+does not establish browser certificate trust. Install the [`tls` extra](installation.md#optional-dependencies) when needed, and open the resulting
+`https://` URL. A browser connected through an SSH loopback tunnel may instead
+use `http://localhost:<forwarded-port>` because loopback is a browser-trusted
+origin; the LAN HTTP URL itself remains insecure. This requirement affects
+browser microphone capture and voice TX; it does not imply that every control
+or receive operation fails over HTTP.
 
 ## What Runs Where
 
