@@ -55,7 +55,7 @@
   never something computed off the pending display.
 -->
 <script module lang="ts">
-  import type { TxAuxField } from './radio-view-model';
+  import type { DisplayObservedField, TxAuxField } from './radio-view-model';
 
   /** Fixed filter-shape choice set (SHARP/SOFT) — same two options
    *  `FilterPanel`'s shape buttons offer, `[value, label]`. */
@@ -81,8 +81,15 @@
     f.reading.status === 'known' ? String(f.reading.value) : '?';
   const presentationOf = (f: TxAuxField<unknown>): 'confirmed' | 'retained' | 'unknown' =>
     usable(f) ? 'confirmed' : f.reading.status === 'known' ? 'retained' : 'unknown';
-  const numberOf = (f: TxAuxField<number>, fallback: number): number =>
-    f.reading.status === 'known' ? f.reading.value : fallback;
+  const pbtDisplay = (f: DisplayObservedField<number>) => f.display ?? (
+    f.reading.status === 'known'
+      ? { state: usable(f) ? 'current' as const : 'stale' as const, value: f.reading.value }
+      : { state: 'unknown' as const, reason: 'not-observed' as const }
+  );
+  const pbtUsable = (f: DisplayObservedField<number>): boolean => usable(f) && pbtDisplay(f).state === 'current';
+  const numberOf = (f: DisplayObservedField<number>, fallback: number): number =>
+    f.display?.state === 'current' || f.display?.state === 'stale' ? f.display.value
+      : f.reading.status === 'known' ? f.reading.value : fallback;
   /** Never fabricates a selection: `usable` alone cannot narrow `reading` for
    *  the `===` comparison below, so the known-check is repeated explicitly. */
   const isSelected = (f: TxAuxField<unknown>, value: unknown): boolean =>
@@ -134,6 +141,7 @@
    *  header, rule 3), this only routes the already-checked value onward. */
   function changePassband(field: FilterPassbandLevelField, value: number): void {
     if (!filterPassband || !usable(filterPassband[field])) return;
+    if (field !== 'ifShift' && !pbtUsable(filterPassband[field])) return;
     if (field === 'ifShift') onIfShiftChange?.(value);
     else if (field === 'pbtInner') onPbtInnerChange?.(value);
     else onPbtOuterChange?.(value);
@@ -195,6 +203,18 @@
     {/if}
 
     {#if filterPassband}
+      {#snippet passbandRange(field: FilterPassbandLevelField, min: number, max: number, step: number)}
+        {@const display = field === 'ifShift' ? undefined : pbtDisplay(filterPassband[field])}
+        {#key display?.state}
+          <input
+            id={`${pendingFilterId}-${field}-input`} type="range" {min} {max} {step}
+            value={numberOf(filterPassband[field], min)}
+            aria-describedby={display?.state === 'stale' ? `${pendingFilterId}-${field}-description` : undefined}
+            disabled={field === 'ifShift' ? !usable(filterPassband[field]) : !pbtUsable(filterPassband[field])}
+            oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
+          />
+        {/key}
+      {/snippet}
       {#if filterPassband.filterShapeControlStructural}
         <div
           class="filter-choice-group" data-testid="filter-shape"
@@ -212,14 +232,30 @@
       {/if}
       {#each FILTER_PASSBAND_LEVELS as [field, label, min, max, step] (field)}
         {#if field === 'ifShift' ? filterPassband.ifShiftControlStructural : filterPassband[field].availability.structural}
-          {#if (field === 'pbtInner' || field === 'pbtOuter') && filterPassband[field].reading.status !== 'known'}
+          {#if field === 'pbtInner' || field === 'pbtOuter'}
+            {@const display = pbtDisplay(filterPassband[field])}
+            {@const measured = display.state === 'current' || display.state === 'stale'}
+            {@const descriptionId = `${pendingFilterId}-${field}-description`}
             <div
-              class="filter-level" data-testid={`filter-${field}`} role="status"
-              aria-label={`${label}: unavailable; value not observed`}
-              data-disabled-reason={reasonOf(filterPassband[field])} data-presentation="unknown"
+              class="filter-level" data-testid={`filter-${field}`} role="group" aria-label={label}
+              data-disabled-reason={reasonOf(filterPassband[field])}
+              data-presentation={display.state === 'current' ? 'confirmed' : display.state === 'stale' ? 'retained' : 'unknown'}
             >
-              <span class="filter-level-name">{label}</span>
-              <span>Unavailable — value not observed</span>
+              <label class="filter-level-name" for={`${pendingFilterId}-${field}-input`}>{label}</label>
+              <span class="pbt-slot" data-pbt-slot>
+                {#if display.state === 'current' || display.state === 'stale'}
+                  {@render passbandRange(field, min, max, step)}
+                {:else}
+                  <span class="pbt-unknown">{t('core.vfo.state.unknown')}</span>
+                {/if}
+              </span>
+              <output class="pbt-value" aria-live="off">{measured && 'value' in display ? display.value : '—'}</output>
+              <span class="pbt-cue" data-stale-cue title={display.state === 'stale' ? t('core.rxTx.target.reason.stale') : undefined}>
+                {#if display.state === 'stale'}<span aria-hidden="true">†</span>{/if}
+              </span>
+              {#if display.state === 'stale'}
+                <span class="sr-only" id={descriptionId}>{t('core.rxTx.target.reason.stale')}</span>
+              {/if}
             </div>
           {:else}
             <label
@@ -228,12 +264,7 @@
               data-presentation={presentationOf(filterPassband[field])}
             >
               <span class="filter-level-name">{label}</span>
-              <input
-                type="range" {min} {max} {step}
-                value={numberOf(filterPassband[field], min)}
-                disabled={!usable(filterPassband[field])}
-                oninput={(event) => changePassband(field, event.currentTarget.valueAsNumber)}
-              />
+              {@render passbandRange(field, min, max, step)}
               <output>{textOf(filterPassband[field])}</output>
             </label>
           {/if}
@@ -257,6 +288,11 @@
   .filter-choice-group { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .filter-level, .filter-readout { display: flex; align-items: baseline; gap: 0.5rem; }
   .filter-level-name { min-width: 8ch; }
+  .pbt-slot { display: inline-flex; align-items: center; width: 8rem; height: 1.5rem; }
+  .pbt-slot input { width: 100%; margin-inline: 0; }
+  .pbt-unknown { width: 100%; text-align: center; }
+  .pbt-value { min-width: 6ch; font-variant-numeric: tabular-nums; }
+  .pbt-cue { width: 1ch; }
   .filter-choice[aria-pressed='true'] { font-weight: 700; }
   .filter-choice:disabled { cursor: not-allowed; }
   /* MOR-1441 leg 2 — a pending (unconfirmed) target never renders identically

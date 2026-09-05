@@ -533,14 +533,17 @@ describe('unknown PBT has no fabricated numeric semantics (MOR-1705)', () => {
     ['pbtOuter', 'PBT outer', 'onPbtOuterChange'],
   ] as const;
 
-  it.each(PBT_FIELDS)('renders unknown %s as an accessible indeterminate status with no command target', (field, label, handler) => {
+  it.each(PBT_FIELDS)('renders unknown %s as an accessible non-live slot with no command target', (field, label, handler) => {
     const spy = vi.fn();
     const view = withPassbandField(base(), field, { unknown: true });
     withSurface(view, (s) => {
       const group = s.group(`filter-${field}`)!;
-      expect(group.getAttribute('role')).toBe('status');
-      expect(group.getAttribute('aria-label')).toBe(`${label}: unavailable; value not observed`);
-      expect(group.textContent).toContain('Unavailable — value not observed');
+      expect(group.getAttribute('role')).toBe('group');
+      expect(group.getAttribute('aria-label')).toBe(label);
+      expect(group.textContent).toContain('unknown');
+      expect(group.querySelector('[data-pbt-slot]')).not.toBeNull();
+      expect(group.querySelector('[aria-live]:not([aria-live="off"]), [role="status"]')).toBeNull();
+      expect(group.querySelector('output')?.getAttribute('aria-live')).toBe('off');
       expect(group.querySelector('input')).toBeNull();
       expect(group.querySelector('[aria-valuenow]')).toBeNull();
       expect(s.input(`filter-${field}`)).toBeNull();
@@ -738,5 +741,47 @@ describe('the surface never re-derives what the adapter already computed', () =>
     expect(source).not.toMatch(/\$lib\/transport/);
     expect(source).not.toMatch(/audio-manager/);
     expect(source).not.toMatch(/\$lib\/runtime/);
+  });
+});
+
+
+describe('explicit PBT display (MOR-1692)', () => {
+  it.each(['pbtInner', 'pbtOuter'] as const)('renders stale %s numerically with a non-live description and guarded input', (field) => {
+    const current = base(), onChange = vi.fn();
+    current.filterPassband![field] = { reading: { status: 'unknown' }, availability: { structural: true, operational: false }, display: { state: 'stale', value: 425 } };
+    withSurface(current, (s) => {
+      const group = s.group(`filter-${field}`)!, input = s.input(`filter-${field}`)!;
+      expect(input).not.toBeNull(); expect(input.disabled).toBe(true); expect(input.value).toBe('425');
+      expect(Array.from(input.labels ?? []).map((label) => label.textContent)).toContain(field === 'pbtInner' ? 'PBT inner' : 'PBT outer');
+      expect(s.output(`filter-${field}`)?.textContent).toBe('425');
+      expect(s.output(`filter-${field}`)?.getAttribute('aria-live')).toBe('off');
+      const description = document.getElementById(input.getAttribute('aria-describedby')!);
+      expect(description?.textContent).toContain('the last reading is too old to trust');
+      expect(description?.getAttribute('role')).toBeNull(); expect(description?.getAttribute('aria-live')).toBeNull();
+      expect(group.querySelector('[data-stale-cue]')?.textContent).toContain('†');
+      input.value = '900'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+      expect(onChange).not.toHaveBeenCalled();
+    }, { [field === 'pbtInner' ? 'onPbtInnerChange' : 'onPbtOuterChange']: onChange });
+  });
+
+  it('does not confuse current display with a separate operational gate', () => {
+    const current = base();
+    current.filterPassband!.pbtInner = { reading: { status: 'known', value: 0 }, availability: { structural: true, operational: false }, display: { state: 'current', value: 0 } };
+    withSurface(current, (s) => {
+      expect(s.group('filter-pbtInner')!.dataset.presentation).toBe('confirmed');
+      expect(s.input('filter-pbtInner')!.disabled).toBe(true);
+      expect(s.output('filter-pbtInner')!.textContent).toBe('0');
+      expect(s.group('filter-pbtInner')!.querySelector('[data-stale-cue]')?.textContent?.trim()).toBe('');
+    });
+  });
+
+  it('explicit unknown masks a legacy numeric reading and admits no synthetic event', () => {
+    const current = base(), onChange = vi.fn();
+    current.filterPassband!.pbtInner = { ...current.filterPassband!.pbtInner, display: { state: 'unknown', reason: 'invalid-evidence' } };
+    withSurface(current, (s) => {
+      const group = s.group('filter-pbtInner')!;
+      expect(s.input('filter-pbtInner')).toBeNull(); expect(group.querySelector('[aria-valuenow]')).toBeNull();
+      group.dispatchEvent(new Event('input', { bubbles: true })); flushSync(); expect(onChange).not.toHaveBeenCalled();
+    }, { onPbtInnerChange: onChange });
   });
 });

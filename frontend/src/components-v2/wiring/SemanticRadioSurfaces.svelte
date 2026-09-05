@@ -552,7 +552,7 @@
       if (Number.isSafeInteger(generation)) for (const receiver of ['MAIN', 'SUB'] as const) {
         for (const field of ['pbtInner', 'pbtOuter'] as const) {
           const marker = runtime.state?.fieldStatus?.[`${receiver.toLowerCase()}.${field}`]?.lastObservedMonotonic;
-          if (typeof marker === 'number' && Number.isSafeInteger(marker)) {
+          if (typeof marker === 'number' && Number.isFinite(marker) && marker >= 0) {
             const key = pbtFloorKey(generation as number, receiver, field);
             pbtObservationFloors.set(key, Math.max(pbtObservationFloors.get(key) ?? -1, marker as number));
           }
@@ -575,12 +575,15 @@
       const path = `${receiver?.status === 'known' && receiver.receiver === 'SUB' ? 'sub' : 'main'}.${name}`;
       const status = state?.fieldStatus?.[path];
       const observedAt = status?.lastObservedMonotonic;
-      return status?.observed && status.freshness === 'fresh' && status.availability === 'available'
-        && typeof observedAt === 'number' && Number.isSafeInteger(observedAt)
+      const display = canonicalView?.filterPassband?.[name].display;
+      const admitted = boundary !== null && status?.observed
+        && typeof observedAt === 'number' && Number.isFinite(observedAt) && observedAt >= 0
         && observedAt > (typeof generation === 'number' && receiver?.status === 'known'
-          ? pbtObservationFloors.get(pbtFloorKey(generation, receiver.receiver, name)) ?? -1 : -1)
-        ? { status: 'fresh' as const, marker: { source: 'field' as const, value: observedAt as number } }
-        : { status: status?.freshness === 'stale' ? 'stale' as const : 'unavailable' as const };
+          ? pbtObservationFloors.get(pbtFloorKey(generation, receiver.receiver, name)) ?? -1 : -1);
+      return admitted && (display?.state === 'current' || display?.state === 'stale')
+        ? { status: display.state === 'current' ? 'fresh' as const : 'stale' as const,
+          marker: { source: 'field' as const, value: observedAt } }
+        : { status: 'unavailable' as const };
     };
     return { boundary, fields: { pbtInner: field('pbtInner'), pbtOuter: field('pbtOuter') } };
   };
@@ -592,8 +595,7 @@
       const current = canonicalView?.filterPassband?.[field];
       return retained !== null && incoming.status === 'fresh'
         && incoming.marker.source === retained.marker.source && incoming.marker.value === retained.marker.value
-        && current?.reading.status === 'known' && current.reading.value === retained.value
-        && current.availability.operational;
+        && current?.display?.state === 'current' && current.display.value === retained.value;
     };
     const previous = retainedMatchesCanonical('pbtInner') || retainedMatchesCanonical('pbtOuter') ? {
       ...untrack(() => pbtPresentation),
@@ -607,10 +609,20 @@
       filterPassband: {
         ...canonicalView.filterPassband,
         ...(evidence.fields.pbtInner.status !== 'fresh' ? {
-          pbtInner: { reading: { status: 'unknown' as const }, availability: { ...canonicalView.filterPassband.pbtInner.availability, operational: false } },
+          pbtInner: {
+            reading: { status: 'unknown' as const },
+            availability: { ...canonicalView.filterPassband.pbtInner.availability, operational: false },
+            display: evidence.fields.pbtInner.status === 'stale' ? canonicalView.filterPassband.pbtInner.display
+              : { state: 'unknown' as const, reason: 'invalid-evidence' as const },
+          },
         } : {}),
         ...(evidence.fields.pbtOuter.status !== 'fresh' ? {
-          pbtOuter: { reading: { status: 'unknown' as const }, availability: { ...canonicalView.filterPassband.pbtOuter.availability, operational: false } },
+          pbtOuter: {
+            reading: { status: 'unknown' as const },
+            availability: { ...canonicalView.filterPassband.pbtOuter.availability, operational: false },
+            display: evidence.fields.pbtOuter.status === 'stale' ? canonicalView.filterPassband.pbtOuter.display
+              : { state: 'unknown' as const, reason: 'invalid-evidence' as const },
+          },
         } : {}),
       },
     } : canonicalView;
