@@ -196,8 +196,11 @@ issue.
 Pro to inject UI extensions (panels, dock items, keyboard scopes, manifest
 entries) into the open-core frontend.
 
-- The current version constant is `LOCAL_EXTENSION_HOST_API_VERSION = 1` in
-  `host-api.ts`.
+- The current version constant is `LOCAL_EXTENSION_HOST_API_VERSION = 2` in
+  `host-api.ts`, with interface `LocalExtensionHostApiV2`. In `manifest.ts`,
+  the host version is `"2.0"`: an explicit `host_api: "2.0"` declaration is
+  required; omitted, `"1.0"` and unsupported host versions are rejected by
+  `parseLocalExtensionManifest`. The manifest schema remains `version: 1`.
 - Pro consumers call `installLocalExtensionHostApi()` and import types from
   `host-api.ts` and `manifest.ts`.
 - **Additive changes only** between major versions. Adding a new method,

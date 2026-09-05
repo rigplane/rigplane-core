@@ -11,6 +11,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0b1] — Unreleased candidate
+
+### Migration from 2.11.1
+
+- Core 3.0 beta uses selective compatibility. The [migration guide](https://rigplane.dev/migrate/)
+  maps the frozen compatibility decisions to Python, receiver-state, HTTP,
+  extension-host, CLI, profile and rigctld consumer examples. All TX consumers
+  must adopt canonical ownership, admission, completion and OFF; the former
+  leave-keyed lifecycle is not emulated. Momentary PTT and latched TRANSMIT
+  are distinct operations.
+- The package target is `3.0.0b1` in `pyproject.toml` and the editable
+  `rigplane` entry of `uv.lock`. HTTP contract version 1 and the approved
+  extension-host target (numeric 2, manifest `host_api: "2.0"`) are separate
+  contracts. The host requires the explicit new declaration while retaining
+  manifest schema version 1. Installed-candidate compatibility is a separate
+  release gate; no release or full 2.x compatibility is claimed.
+- Core includes SDR preservation against the 2.11.1 behavior baseline.
+  Browser, packaging/rollback and hardware acceptance remain release gates;
+  Pro packaging and release follow separately.
+
+- **Profile aliases retain their released behavior.** The 3.0
+  compatibility bridge restores the deprecated read-only
+  `RadioProfile.vfo_swap_code` and `RadioProfile.vfo_equal_code` properties
+  after their development removal. Their exact released expressions are
+  `swap_main_sub_code or swap_ab_code` and
+  `equal_main_sub_code or equal_ab_code`. New consumers should select the
+  explicit A/B or MAIN/SUB operation appropriate to their radio; see the
+  [migration guide](https://rigplane.dev/migrate/).
+- Icom CTCSS tone/TSQL setters accept the public integer-centiHz `freq_hz`
+  keyword and retain `freq_centihz` as an alternative. Supplying both
+  non-`None` spellings or neither raises `TypeError` before transport; there
+  is no unit scaling. See `src/rigplane/runtime/radio.py: CoreRadio.set_tone_freq`
+  and `CoreRadio.set_tsql_freq`, and the [migration guide](https://rigplane.dev/migrate/).
+
 ### Breaking changes
 
 - **Tone-capable rig profiles must now declare a named CTCSS table (MOR-2129).**
@@ -313,14 +347,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the `Radio` protocol method never took a receiver for this reading —
   so this closes a footgun rather than changing observed behaviour; a caller
   that did pass `receiver=` now gets a `TypeError` instead of a silent SET.
-- **`RadioProfile.vfo_swap_code` and `RadioProfile.vfo_equal_code` are
-  removed** (mechanism-audit D2; both were self-documented deprecated since
-  issue #710). Read `swap_ab_code`/`swap_main_sub_code` (or
-  `equal_ab_code`/`equal_main_sub_code`) directly; the alias resolution the
-  properties performed was `swap_main_sub_code or swap_ab_code` (and the
-  `equal_` equivalent), so a caller that needs the old ordering inlines that
-  expression. No production code in this repository read either property —
-  consumers were tests only.
+
 - **`rigplane.commands.mode`/`tone`/`antenna`/`meters` builders require
   `cmd_map`; there is no hardcoded fallback (MOR-2008, batch 2 of
   `docs/plans/2026-08-29-profile-driven-command-bytes.md`).** All 40
@@ -570,60 +597,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **CLI: `rigplane ptt off` forces an unkey when no lease of its own matches
-  (MOR-1175, MOR-1182).** Under the managed TX runtime a rig keyed by a process
-  that has since died holds a lease no other invocation can match, so the
-  ordinary release was refused and the command warned and exited 0 — the crash
-  recovery `ptt off` exists for was gone. It now escalates to an
-  operator-forced unkey (attributed as such, never as a system release), and
-  its exit code becomes meaningful: `0` only when an unkey reached the wire or
-  was already in flight, `1` — with what the rig may still be doing — when it
-  did not. A *live* lease held by another TX session is refused rather than
-  preempted. `ptt on` is unaffected: its own teardown never escalates.
-
-- **Browser TX surfaces unified (PRs #2125, #2128, #2130, #2134).** Both desktop
-  TxPanel and mobile FAB + landscape strip now key through the single App-owned
-  TX controller with lease-correct gestures; duplicate presentation-local PTT
-  state machines and 3-minute safety timers removed. Operator-visible: re-keying
-  immediately after release waits for fresh authoritative PTT readback (button
-  shows unkeying state in between); latched transmission is released when its
-  panel unmounts, and on mobile also when the device rotates while latched
-  (fail-closed).
-
-- **Max-key-down coverage after the presentation-timer removal (MOR-1220).**
-  The 3-minute presentation-local timers removed above were UI-side and
-  backend-agnostic, so deleting them (MOR-1011/MOR-1012) traded that
-  frontend bound for the managed TX runtime's own supervisor watchdog on the
-  managed path — coverage that only exists where a runtime is armed. A 180s
-  backstop (`BACKEND_MAX_KEY_DOWN_SECONDS`) is now armed around the legacy
-  PTT write on the web UI's Icom poller, so a serial/USB Icom rig keyed from
-  the Web UI is bounded again. Current boundary: managed TX is armed on the
-  LAN `IcomRadio` path only (the supervisor watchdog covers it everywhere,
-  not just Web); serial/USB Icom is legacy, with full managed arm pending
-  MOR-1219; Yaesu CAT and the rigctld-client backend are legacy with no
-  supervisor, pending MOR-1190 (acceptance amended to include the key-down
-  bound; MOR-1190 gates the MOR-1033 FTX-1 hardware cert in the same
-  release). On an unmanaged rig this backstop bounds a key **the web poller
-  itself issued** and no other; see the rigctld entry below for the seat that
-  bounds a `rigctld` key. The CLI hold path (`ptt on --for`) arms no watchdog
-  at all — it unkeys when the hold ends or on Ctrl-C, so a hard-killed
-  process still leaves the rig keyed.
-
-- **Key-down bound for a `rigctld`-issued key on an unmanaged rig
-  (MOR-1904).** A `rigctld` client that keyed a serial/USB Icom, Yaesu CAT or
-  rigctld-client rig and then died left the transmitter up with nothing to
-  time it out: those backends arm no supervisor, MOR-1220's backstop bounds
-  only keys the web poller issued, and rigctld deliberately writes nothing on
-  socket close. `rigctld` now bounds a key it issued itself at the same 180s
-  (`BACKEND_MAX_KEY_DOWN_SECONDS`) and unkeys when it expires. Two
-  differences from the web-poller backstop above: it is cancelled by any PTT
-  write of either polarity from any `rigctld` session, and — unlike MOR-1220,
-  which fires on the deadline whatever the rig is doing — it is also
-  cancelled once the rig is *observed* back in receive by an observation
-  taken after that key. It deliberately outlives the socket that keyed it:
-  a client going away is not evidence the rig came off the air. It is a
-  damage bound only and grants no session any claim on the transmitter;
-  ownership stays with MOR-1219/MOR-1190.
+- **TX consumers migrate to canonical ownership and release.** Earlier
+  development entries described per-consumer leases, poller watchdogs and
+  UI-local teardown behavior that are superseded by the managed TX contract.
+  Use stable-owner WebSocket momentary PTT, explicit latched TRANSMIT only
+  when intended, and canonical ForceOff for unconditional release. Admission
+  is distinct from settlement and observed radio state. The concrete API and
+  timed CLI migration examples, source references and focused witnesses are
+  in the [migration guide](https://rigplane.dev/migrate/).
 
 ### Removed
 
@@ -2581,7 +2562,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.10.2...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...HEAD
+[3.0.0b1]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...HEAD
 [2.10.2]: https://github.com/rigplane/rigplane-core/compare/v2.10.1...v2.10.2
 [2.10.1]: https://github.com/rigplane/rigplane-core/compare/v2.10.0...v2.10.1
 [2.10.0]: https://github.com/rigplane/rigplane-core/compare/v2.9.0...v2.10.0

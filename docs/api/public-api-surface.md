@@ -198,9 +198,9 @@ It is a stable Pro-facing contract — treat it as tier 1 in this document.
 
 From `frontend/src/lib/local-extensions/host-api.ts`:
 
-- `LOCAL_EXTENSION_HOST_API_VERSION` (numeric constant, currently `1`)
+- `LOCAL_EXTENSION_HOST_API_VERSION` (numeric constant, currently `2`)
 - `RadioStateSubscriber` (type)
-- `LocalExtensionHostApiV1` (interface)
+- `LocalExtensionHostApiV2` (interface)
 - `LocalExtensionHostDependencies` (interface)
 - `LocalExtensionRegistration` (interface)
 - `LocalExtensionHostWindow` (interface)
@@ -211,8 +211,8 @@ From `frontend/src/lib/local-extensions/host-api.ts`:
 From `frontend/src/lib/local-extensions/manifest.ts`:
 
 - `LOCAL_EXTENSION_MANIFEST_URL` (constant)
-- `LOCAL_EXTENSION_MANIFEST_VERSION` (numeric constant)
-- `LOCAL_EXTENSION_HOST_API_VERSION` (string version, e.g. `"1.0"`,
+- `LOCAL_EXTENSION_MANIFEST_VERSION` (numeric constant, currently `1`)
+- `LOCAL_EXTENSION_HOST_API_VERSION` (string version, currently `"2.0"`,
   mirrors the numeric constant in `host-api.ts`)
 - `LocalExtensionMount` (type)
 - `LocalExtensionDescriptor` (interface)
@@ -220,6 +220,32 @@ From `frontend/src/lib/local-extensions/manifest.ts`:
 - `LoadManifestOptions` (interface)
 - `parseLocalExtensionManifest` (function)
 - `loadLocalExtensionManifest` (function)
+
+**Host 2 migration.** The manifest schema remains `version: 1`, but an explicit
+`host_api: "2.0"` is required. `parseLocalExtensionManifest` rejects omitted,
+`"1.0"`, malformed and unsupported host declarations. Migrate extension
+commands before declaring the new version. `installLocalExtensionHostApi`
+exposes the same v2 object through `window.rigplaneExtensionHost` and its
+deprecated naming alias; see the [migration guide](../migrate.md) for the
+alias spelling. The alias does not provide v1 behavior.
+
+The default host validates commands through
+`frontend/src/lib/runtime/commands/radio-intents.ts: dispatchRadioIntentWithResult`.
+Only known non-TX commands with exact parameter shapes are accepted, including
+an explicit receiver wherever required. Unknown names, PTT names, extra keys
+and missing required parameters return `false` without dispatch.
+
+`LocalExtensionHostApiV2.sendCommand` and `dispatchCommand` return the current
+client transport boolean. `true` means the current socket accepted the send;
+an offline idempotent command can return `false` while queued with a pending
+lifecycle. Thus `false` is not cancellation or proof that no send can occur
+later. Neither result establishes radio acknowledgement, server admission or
+completion. These paths are exercised by
+`frontend/src/lib/local-extensions/__tests__/host-api.isolated.test.ts` and
+`frontend/src/lib/local-extensions/__tests__/manifest.test.ts`.
+See the [3.0 migration guide](../migrate.md) for examples and the distinct TX
+ownership contract. Package, host API and manifest-schema versions are
+separate; this Core contract does not certify a Pro release.
 
 **Breakage policy.** Additive changes only between major versions. Bump
 `LOCAL_EXTENSION_HOST_API_VERSION` (numeric, in `host-api.ts`) on any
