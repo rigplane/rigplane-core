@@ -164,6 +164,7 @@ class YaesuCatPoller:
         if self._capture_provider_generation is not None:
             self._cancel_deferred_entry("provider binding replaced")
         self._capture_provider_generation = capture
+        self._radio._bind_tuner_provider_generation(capture)
         self._advance_provider_generation = advance
 
     def bind_managed_tx_authority(self, authority: ManagedWriteAdmission) -> None:
@@ -1263,7 +1264,7 @@ class YaesuCatPoller:
             case SetVox(on=on):
                 await radio.set_vox(on)
             case SetTunerStatus(value=value):
-                await radio.set_tuner(value)
+                await radio.set_tuner_status(value)
             case SetMonitor(on=on):
                 await radio.set_monitor_on(on)
             case SetMonitorGain(level=level):

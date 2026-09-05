@@ -958,7 +958,8 @@ get_vox        = { cat = { read = "VX;", parse = "VX{state};" } }
 set_vox        = { cat = { write = "VX{state};" } }
 get_lock       = { cat = { read = "LK;", parse = "LK{state};" } }
 set_lock       = { cat = { write = "LK{state};" } }
-# AC: p1=int/ext, p2=ATU/ATAS, p3=OFF/ON/tune
+# FTX-1 CAT Operation Reference 2508-C, AC table, printed page 6.
+# AC: p1=internal0/external1; p2=ATU0/ATAS2; ATU p3=OFF0/ON1/START3 (2 reserved).
 get_tuner      = { cat = { read = "AC;", parse = "AC{src}{type}{state};" } }
 set_tuner      = { cat = { write = "AC{src}{type}{state};" } }
 # CO: Contour (S-DX) / APF — func: 0=contour on/off, 1=freq, 2=APF on/off, 3=APF freq

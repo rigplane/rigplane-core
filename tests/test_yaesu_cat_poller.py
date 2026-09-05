@@ -1411,7 +1411,7 @@ async def test_yaesu_immediate_hard_block_families_fail_before_dispatch(
     for command in commands:
         radio = make_radio()
         radio.set_ptt = AsyncMock()
-        radio.set_tuner = AsyncMock()
+        radio.set_tuner_status = AsyncMock()
         poller = YaesuCatPoller(radio, callback=lambda _: None)
         if active is not None:
             _set_fresh_ptt_observation(poller, active=active)
@@ -1420,7 +1420,7 @@ async def test_yaesu_immediate_hard_block_families_fail_before_dispatch(
             await poller._execute_command(command)  # noqa: SLF001
 
         radio.set_ptt.assert_not_awaited()
-        radio.set_tuner.assert_not_awaited()
+        radio.set_tuner_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1436,7 +1436,7 @@ async def test_yaesu_emergency_off_commands_bypass_immediate_gate(
     radio = make_radio()
     radio.set_ptt = AsyncMock()
     radio.set_powerstat = AsyncMock()
-    radio.set_tuner = AsyncMock()
+    radio.set_tuner_status = AsyncMock()
     poller = YaesuCatPoller(radio, callback=lambda _: None)
     if active is not None:
         _set_fresh_ptt_observation(poller, active=active)
@@ -1447,7 +1447,7 @@ async def test_yaesu_emergency_off_commands_bypass_immediate_gate(
 
     radio.set_ptt.assert_awaited_once_with(False)
     radio.set_powerstat.assert_awaited_once_with(False)
-    radio.set_tuner.assert_awaited_once_with(0)
+    radio.set_tuner_status.assert_awaited_once_with(0)
 
 
 @pytest.mark.asyncio

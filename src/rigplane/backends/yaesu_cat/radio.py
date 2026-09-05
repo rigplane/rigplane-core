@@ -164,6 +164,7 @@ class YaesuCatRadio:
         """
         self._config: RigConfig = _load_config(profile)
         self._profile_cache: RadioProfile | None = None
+        self._tuner_provider_generation: Callable[[], int] | None = None
         self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
         self._state = RadioState()
         self._audio_bus: AudioBus | None = None
@@ -2486,7 +2487,7 @@ class YaesuCatRadio:
         """Read antenna tuner state (AC) without mutating legacy state.
 
         Returns:
-            0=OFF, 1=ON, 2=tuning, 3=tune-start.
+            Native AC state; interpretation depends on the reported tuner type.
         """
         result = await self._query("get_tuner")
         return int(result["state"])
@@ -2495,12 +2496,12 @@ class YaesuCatRadio:
         """Get antenna tuner state (AC).
 
         Returns:
-            0=OFF, 1=ON, 2=tuning, 3=tune-start.
+            Native AC state; interpretation depends on the reported tuner type.
         """
         return await self.read_tuner()
 
     async def set_tuner(self, state: int, src: int = 0, typ: int = 0) -> None:
-        """Set antenna tuner (AC). state: 0=OFF, 1=ON, 2=tune."""
+        """Write native AC state to the explicitly selected source and type."""
         params = {"src": str(src), "type": str(typ), "state": str(state)}
         if state == 0 or self._local_tx_work is None:
             await self._write("set_tuner", **params)
@@ -2662,13 +2663,70 @@ class YaesuCatRadio:
         """Alias for AdvancedControlCapable compatibility."""
         await self.set_processor(on)
 
+    def _bind_tuner_provider_generation(self, capture: Callable[[], int]) -> None:
+        self._tuner_provider_generation = capture
+
+    async def _read_atu_route(self) -> tuple[str, str, int, Callable[[], bool]]:
+        transport = self._transport
+        reconnects = transport.stats.reconnects
+        writer = transport._writer
+        capture = self._tuner_provider_generation
+        generation = None if capture is None else capture()
+
+        def current() -> bool:
+            return (
+                self._transport is transport
+                and transport.connected
+                and transport.stats.reconnects == reconnects
+                and transport._writer is writer
+                and self._tuner_provider_generation is capture
+                and (capture is None or capture() == generation)
+            )
+
+        result = await self._query("get_tuner")
+        if not current():
+            raise CommandError(
+                "Tuner connection or provider changed during acquisition"
+            )
+        src, typ, state = result.get("src"), result.get("type"), result.get("state")
+        # FTX-1 CAT Operation Reference 2508-C, AC table, printed page 6.
+        native_to_status = {"0": 0, "1": 1, "3": 2}
+        if src not in ("0", "1") or typ != "0" or state not in native_to_status:
+            raise ValueError(f"Unsupported ATU response: {result!r}")
+        return src, typ, native_to_status[state], current
+
     async def get_tuner_status(self) -> int:
-        """AdvancedControlCapable alias. Returns tuner state (0=OFF, 1=ON, 2=tuning)."""
-        return await self.get_tuner()
+        """Return generic ATU status: 0=OFF, 1=ON, 2=tuning/start."""
+        _, _, status, _ = await self._read_atu_route()
+        return status
 
     async def set_tuner_status(self, value: int) -> None:
-        """AdvancedControlCapable alias."""
-        await self.set_tuner(value)
+        """Set 0=OFF, 1=ON, or 2=START using a fresh complete AC response.
+
+        Native ``set_tuner`` retains explicit source/type addressing. This
+        generic call preserves the acquired route; a front-panel selection
+        change between reply and write is not an atomic transaction.
+        """
+        if type(value) is not int or value not in (0, 1, 2):
+            raise ValueError("Tuner value must be 0, 1, or 2")
+
+        async def write(fence_current: Callable[[], bool]) -> None:
+            try:
+                src, typ, _, route_current = await self._read_atu_route()
+            except (ValueError, KeyError) as exc:
+                raise CommandError(f"Cannot acquire ATU route: {exc}") from exc
+            await self._write(
+                "set_tuner",
+                src=src,
+                type=typ,
+                state=str(3 if value == 2 else value),
+                is_current=lambda: route_current() and fence_current(),
+            )
+
+        if value == 0 or self._local_tx_work is None:
+            await write(lambda: True)
+        else:
+            await self._local_tx_work.run(write)
 
     async def send_cw_text(self, text: str) -> None:
         """Send CW text via keyer (KY command), split into 24-character chunks.
