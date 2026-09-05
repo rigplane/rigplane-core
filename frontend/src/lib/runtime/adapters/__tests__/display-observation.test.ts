@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
 import { IC7300_CAPABILITIES as capsFixture, IC7300_STATE as stateFixture } from './fixtures/ic7300-profile';
-import { qualifyDisplayObservation } from '../display-observation';
+import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from '../display-observation';
 
 const fresh: FieldStatus = {
   storePath: 'main.rf_gain', observed: true, freshness: 'fresh', availability: 'available',
@@ -74,5 +74,50 @@ describe('stateless display observation qualifier', () => {
       expect(project(0.7, state)).toEqual({ state: 'unknown', reason: 'identity-unresolved' });
     }
     expect(project(0.2, snapshot({ freshness: 'stale' }))).toEqual({ state: 'stale', value: 0.2 });
+  });
+});
+
+describe('radio-wide display observation qualifier (MOR-2359)', () => {
+  const radioState = (status: Partial<FieldStatus> = {}): ServerState => ({
+    ...snapshot(), fieldStatus: { powerMeter: { ...fresh, ...status } },
+  });
+  const qualify = (state: ServerState | null = radioState(), capabilities: Capabilities | null = caps) =>
+    qualifyRadioDisplayObservation({ state, caps: capabilities, path: 'powerMeter', structural: true, value: 0 });
+
+  it('qualifies a fractional marker and zero without any receiver evidence', () => {
+    expect(qualify({ ...radioState(), active: undefined, main: undefined } as unknown as ServerState))
+      .toEqual({ state: 'current', value: 0 });
+    expect(qualify(radioState({ freshness: 'stale' }))).toEqual({ state: 'stale', value: 0 });
+    expect(qualify(radioState({ availability: 'stale' }))).toEqual({ state: 'stale', value: 0 });
+  });
+  it.each([null, undefined, -1, NaN, Infinity, 0.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid matching provider generation %s', (providerGeneration) => {
+      expect(qualify({ ...radioState(), providerGeneration } as ServerState, { ...caps, providerGeneration } as Capabilities))
+        .toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+    },
+  );
+  it('requires both matching contract identities', () => {
+    for (const state of [null, { ...radioState(), stateContractVersion: undefined }]) {
+      expect(qualify(state)).toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+    }
+    for (const capabilities of [null, { ...caps, providerGeneration: 2 }, { ...caps, stateContractVersion: undefined }]) {
+      expect(qualify(radioState(), capabilities)).toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+    }
+  });
+  it('does not accept receiver paths through the radio-wide entry point', () => {
+    expect(qualifyRadioDisplayObservation({ state: snapshot(), caps, path: 'main.rfGain', structural: true, value: 0 }))
+      .toEqual({ state: 'unknown', reason: 'identity-unresolved' });
+  });
+  it.each([
+    [{}, 'not-observed'], [{ powerMeter: { ...fresh, observed: false } }, 'not-observed'],
+    [{ powerMeter: { ...fresh, lastObservedMonotonic: null } }, 'invalid-evidence'],
+    [{ powerMeter: { ...fresh, availability: 'missing' } }, 'invalid-evidence'],
+  ] as const)('shares evidence validation for %j', (fieldStatus, reason) => {
+    expect(qualify({ ...radioState(), fieldStatus })).toEqual({ state: 'unknown', reason });
+  });
+  it('leaves stale receiver-scoped RF gain qualification unchanged', () => {
+    expect(project(0.7, snapshot({ freshness: 'stale' }))).toEqual({ state: 'stale', value: 0.7 });
+    expect(qualifyDisplayObservation({ state: radioState(), caps, receiver: 'MAIN', path: 'powerMeter', structural: true, value: 0 }))
+      .toEqual({ state: 'unknown', reason: 'identity-unresolved' });
   });
 });
