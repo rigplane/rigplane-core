@@ -17,7 +17,6 @@ reference rather than an early ``from .server import _send_response``.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -50,22 +49,6 @@ async def dispatch_http_request(
     from . import server as _server_mod  # noqa: TID251
 
     _send_response = _server_mod._send_response
-
-    # Auth check for API endpoints
-    if server._config.auth_token and path.startswith("/api/"):
-        auth_header = (headers or {}).get("authorization", "")
-        expected = f"Bearer {server._config.auth_token}"
-        if not hmac.compare_digest(
-            auth_header.encode("utf-8"), expected.encode("utf-8")
-        ):
-            await _send_response(
-                writer,
-                401,
-                "Unauthorized",
-                b'{"error":"unauthorized","message":"Valid auth token required"}',
-                {"Content-Type": "application/json", "WWW-Authenticate": "Bearer"},
-            )
-            return
 
     if path == "/healthz":
         if method not in ("GET", "HEAD"):

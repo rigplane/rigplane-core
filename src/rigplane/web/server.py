@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import gzip as _gzip
-import hmac
 import json
 import logging
 import math
@@ -653,7 +652,7 @@ class WebConfig:
     dx_cluster_host: str = ""
     dx_cluster_port: int = 0
     dx_callsign: str = ""
-    auth_token: str = ""  # empty = no auth required
+    auth_token: str = ""  # deprecated: only the empty compatibility value is accepted
     tls_cert: str = ""  # path to cert PEM (empty = auto self-signed)
     tls_key: str = ""  # path to key PEM (empty = auto self-signed)
     tls: bool = False  # enable TLS (HTTPS with auto self-signed cert)
@@ -667,6 +666,12 @@ class WebConfig:
     # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
     # static MOR-584 per-connection codecs, never switched mid-stream.
     audio_adaptive_egress: bool = False
+
+    def __post_init__(self) -> None:
+        if self.auth_token:
+            raise ValueError(
+                "Application authentication was removed; auth_token must be empty."
+            )
 
 
 class ConnectionManager:
@@ -3211,7 +3216,7 @@ class WebServer:
             "radioAvailable": bool(radio_payload["radioReady"]),
             "backend": backend,
             "health": health,
-            "authRequired": bool(self._config.auth_token),
+            "authRequired": False,
             "message": message,
         }
 
@@ -3357,7 +3362,7 @@ class WebServer:
                 "version": __version__,
                 "bind": self._runtime_bind_payload(),
                 "logPath": self._runtime_log_path,
-                "authRequired": bool(self._config.auth_token),
+                "authRequired": False,
                 "backend": getattr(radio, "backend_id", None)
                 if radio is not None
                 else None,
@@ -5941,20 +5946,6 @@ class WebServer:
         headers: dict[str, str],
         query: dict[str, list[str]] | None = None,
     ) -> None:
-        # Auth check: accept Bearer header or ?token= query param
-        if self._config.auth_token:
-            auth_header = headers.get("authorization", "")
-            token_param = (query or {}).get("token", [""])[0]
-            expected_bearer = f"Bearer {self._config.auth_token}"
-            token_bytes = self._config.auth_token.encode("utf-8")
-            header_ok = hmac.compare_digest(
-                auth_header.encode("utf-8"), expected_bearer.encode("utf-8")
-            )
-            query_ok = hmac.compare_digest(token_param.encode("utf-8"), token_bytes)
-            if not header_ok and not query_ok:
-                await _send_response(writer, 401, "Unauthorized", b"Unauthorized", {})
-                return
-
         ws_key = headers.get("sec-websocket-key", "")
         if not ws_key:
             await _send_response(writer, 400, "Bad Request", b"Missing key", {})

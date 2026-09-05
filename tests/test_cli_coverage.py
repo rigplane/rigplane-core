@@ -814,17 +814,17 @@ def _web_cmd_args(*, web_bridge: str | None) -> argparse.Namespace:
     )
 
 
-def test_web_managed_parser_defaults_to_loopback_and_auth_required() -> None:
+def test_web_managed_parser_defaults_without_auth() -> None:
     parser = _build_parser()
 
-    args = parser.parse_args(["web", "--managed", "--auth-token-file", "token.txt"])
+    args = parser.parse_args(["web", "--managed"])
 
     assert args.command == "web"
     assert args.managed_runtime is True
     assert args.web_host == "127.0.0.1"
     assert args.web_rigctld is True
-    assert args.auth_token == ""
-    assert args.auth_token_file == "token.txt"
+    assert args.auth_token is None
+    assert args.auth_token_file is None
 
 
 def test_station_parser_is_managed_web_runtime() -> None:
@@ -839,106 +839,74 @@ def test_station_parser_is_managed_web_runtime() -> None:
     assert args.web_rigctld is True
 
 
-@pytest.mark.asyncio
-async def test_cmd_web_managed_requires_auth_token(
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("command", [["web"], ["web", "--managed"], ["station"]])
+@pytest.mark.parametrize("option", ["--auth-token", "--auth-token-file"])
+@pytest.mark.parametrize("value", ["synthetic-private-value", ""])
+@pytest.mark.parametrize("joined", [False, True])
+def test_retired_auth_options_reject_before_runtime_without_disclosure(
+    command,
+    option,
+    value,
+    joined,
+    monkeypatch,
+    capsys,
 ) -> None:
-    radio = AsyncMock()
-    args = _web_cmd_args(web_bridge=None)
-    args.managed_runtime = True
-    args.auth_token = ""
-    monkeypatch.delenv("RIGPLANE_AUTH_TOKEN", raising=False)
-
-    rc = await _cmd_web(radio, args)
-
-    assert rc == 1
+    monkeypatch.setenv("ICOM_LOG_FILE", "off")
+    option_args = [f"{option}={value}"] if joined else [option, value]
+    monkeypatch.setattr("sys.argv", ["rigplane", *command, *option_args])
+    with (
+        patch("rigplane.cli._run", return_value=0) as run,
+        patch("rigplane.cli.os._exit", side_effect=AssertionError("runtime reached")),
+        patch("rigplane.cli.logging.basicConfig"),
+        patch("rigplane.cli.signal.signal"),
+        patch("rigplane.cli.create_radio") as create,
+        patch("pathlib.Path.read_text") as read,
+        pytest.raises(SystemExit) as exc,
+    ):
+        main()
+    assert exc.value.code == 2
+    run.assert_not_called()
+    create.assert_not_called()
+    read.assert_not_called()
+    output = capsys.readouterr()
     assert (
-        "Set RIGPLANE_AUTH_TOKEN or pass --auth-token-file" in capsys.readouterr().err
+        "Application authentication was removed; remove --auth-token and --auth-token-file."
+        in output.err
     )
+    assert "synthetic-private-value" not in output.err + output.out
 
 
 @pytest.mark.asyncio
-async def test_cmd_web_managed_uses_auth_token_file(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    radio = AsyncMock()
-    captured: dict[str, object] = {}
-    monkeypatch.setenv("RIGPLANE_AUTH_TOKEN", "env-token")
-    token_file = tmp_path / "token.txt"
-    token_file.write_text(" file-token \n", encoding="utf-8")
+@pytest.mark.parametrize("command", [["web"], ["web", "--managed"], ["station"]])
+@pytest.mark.parametrize("environment", [None, "synthetic-ignored-env"])
+async def test_web_launch_without_application_auth(command, environment, monkeypatch):
+    if environment is None:
+        monkeypatch.delenv("RIGPLANE_AUTH_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("RIGPLANE_AUTH_TOKEN", environment)
+    args = _build_parser().parse_args(command)
+    args.web_rigctld = False
+    captured = {}
 
     class FakeWebServer:
-        def __init__(self, _radio, cfg):
-            captured["cfg"] = cfg
+        def __init__(self, radio, cfg):
+            captured["config"] = cfg
             self._runtime_log_path = None
 
         async def serve_forever(self):
             raise asyncio.CancelledError
 
-    args = _web_cmd_args(web_bridge=None)
-    args.managed_runtime = True
-    args.auth_token = ""
-    args.auth_token_file = str(token_file)
-
     with patch("rigplane.web.server.WebServer", FakeWebServer):
-        assert await _cmd_web(radio, args) == 0
-
-    assert captured["cfg"].auth_token == "file-token"
-
-
-@pytest.mark.asyncio
-async def test_cmd_web_auth_token_precedence_over_file_and_env(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    radio = AsyncMock()
-    captured: dict[str, object] = {}
-    monkeypatch.setenv("RIGPLANE_AUTH_TOKEN", "env-token")
-    token_file = tmp_path / "token.txt"
-    token_file.write_text("file-token\n", encoding="utf-8")
-
-    class FakeWebServer:
-        def __init__(self, _radio, cfg):
-            captured["cfg"] = cfg
-            self._runtime_log_path = None
-
-        async def serve_forever(self):
-            raise asyncio.CancelledError
-
-    args = _web_cmd_args(web_bridge=None)
-    args.managed_runtime = True
-    args.auth_token = "argv-token"
-    args.auth_token_file = str(token_file)
-
-    with patch("rigplane.web.server.WebServer", FakeWebServer):
-        assert await _cmd_web(radio, args) == 0
-
-    assert captured["cfg"].auth_token == "argv-token"
+        assert await _cmd_web(AsyncMock(), args) == 0
+    cfg = captured["config"]
+    managed = command != ["web"]
+    assert cfg.auth_token == ""
+    assert cfg.host == ("127.0.0.1" if managed else "0.0.0.0")
+    assert cfg.emit_startup_event is managed
 
 
 @pytest.mark.asyncio
-async def test_cmd_web_auth_token_file_failure_surfaces(
-    capsys: pytest.CaptureFixture[str],
-    tmp_path,
-) -> None:
-    radio = AsyncMock()
-    missing = tmp_path / "missing-token.txt"
-
-    args = _web_cmd_args(web_bridge=None)
-    args.managed_runtime = True
-    args.auth_token = ""
-    args.auth_token_file = str(missing)
-
-    rc = await _cmd_web(radio, args)
-
-    assert rc == 1
-    assert "failed to read --auth-token-file" in capsys.readouterr().err
-
-
-@pytest.mark.asyncio
-async def test_cmd_web_managed_uses_env_auth_and_loopback_embedded_rigctld(
+async def test_cmd_web_managed_ignores_env_auth_and_keeps_loopback_rigctld(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     radio = AsyncMock()
@@ -977,7 +945,7 @@ async def test_cmd_web_managed_uses_env_auth_and_loopback_embedded_rigctld(
         assert await _cmd_web(radio, args) == 0
 
     cfg = captured["cfg"]
-    assert cfg.auth_token == "env-token"
+    assert cfg.auth_token == ""
     assert cfg.host == "127.0.0.1"
     assert cfg.emit_startup_event is True
     assert captured["runtime_log_path"] == "/tmp/rigplane-managed.log"

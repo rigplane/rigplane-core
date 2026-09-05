@@ -438,12 +438,12 @@ async def test_http_raw_civ_transaction_rejects_read_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_raw_civ_transaction_requires_auth_when_configured() -> None:
+async def test_http_raw_civ_transaction_without_auth_keeps_read_only_guard() -> None:
     radio = _radio()
     radio.send_civ_transaction = AsyncMock()
     srv = WebServer(
         radio,
-        WebConfig(host="127.0.0.1", port=0, auth_token="secret"),
+        WebConfig(host="127.0.0.1", port=0, read_only=True),
     )
 
     writer = await _post_json(
@@ -452,8 +452,8 @@ async def test_http_raw_civ_transaction_requires_auth_when_configured() -> None:
         {"command": 0x1A, "data": "015301", "expect": "ack"},
     )
 
-    assert writer.response_status == 401
-    assert writer.response_body["error"] == "unauthorized"
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == "read_only"
     radio.send_civ_transaction.assert_not_awaited()
 
 
@@ -590,20 +590,22 @@ async def test_http_raw_civ_rejected_in_read_only_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_command_requires_auth_when_configured() -> None:
+async def test_http_command_without_auth_keeps_read_only_guard() -> None:
     srv = WebServer(
         _radio(),
-        WebConfig(host="127.0.0.1", port=0, auth_token="secret"),
+        WebConfig(host="127.0.0.1", port=0, read_only=True),
     )
 
     writer = await _post_json(
         srv,
         "/api/v1/commands",
-        {"name": "set_freq", "params": {"freq": 144_030_000}},
+        {"name": "ptt", "params": {"state": True}},
     )
 
-    assert writer.response_status == 401
-    assert writer.response_body["error"] == "unauthorized"
+    assert writer.response_status == 403
+    assert writer.response_body["error"] == "read_only"
+
+    assert srv.command_queue.drain() == []
 
 
 @pytest.mark.asyncio

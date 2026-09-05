@@ -114,8 +114,8 @@ def _make_reader(data: bytes = b"") -> asyncio.StreamReader:
     return reader
 
 
-def _make_server(host: str = "127.0.0.1", auth_token: str = "") -> WebServer:
-    cfg = WebConfig(host=host, port=8080, auth_token=auth_token)
+def _make_server(host: str = "127.0.0.1") -> WebServer:
+    cfg = WebConfig(host=host, port=8080)
     srv = WebServer(radio=None, config=cfg)
     return srv
 
@@ -577,15 +577,14 @@ async def test_send_after_expiry_returns_404(
 
 
 @pytest.mark.asyncio
-async def test_api_auth_inherited(
+async def test_api_preview_needs_no_application_token(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """When auth_token is configured, /api/v1/diagnose/* requires Bearer auth."""
     _register_test_contributor()
     _stub_dirs(monkeypatch, tmp_path)
-    srv = _make_server(auth_token="t0p-s3cret")
+    srv = _make_server()
     try:
-        # No auth header → 401.
+        # No application token.
         body = json.dumps({"description": "test"}).encode()
         writer = _FakeWriter()
         await srv._handle_http(
@@ -596,16 +595,16 @@ async def test_api_auth_inherited(
             _make_reader(body),
             None,
         )
-        assert writer.response_status == 401
+        assert writer.response_status == 200
 
-        # With correct Bearer → 200.
+        # A retired token-looking header confers no additional authority.
         body = json.dumps({"description": "test"}).encode()
         writer2 = _FakeWriter()
         await srv._handle_http(
             writer2,  # type: ignore[arg-type]
             "POST",
             "/api/v1/diagnose/preview",
-            _post_headers(body, authorization="Bearer t0p-s3cret"),
+            _post_headers(body, authorization="Bearer retired-test-token"),
             _make_reader(body),
             None,
         )
