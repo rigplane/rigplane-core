@@ -22,12 +22,12 @@ vi.mock('$lib/audio/audio-manager', () => ({
 import App from '../App.svelte';
 import { runtime } from '$lib/runtime/frontend-runtime';
 import { disconnectAll } from '$lib/transport/ws-client';
+import { fetchInfo, getAuthHeaders, getAuthToken } from '$lib/transport/http-client';
 
 const credential = 'synthetic-first-entry';
 const caps = { ...capsFixture, stateContractVersion: 1, providerGeneration: 0 };
 const requests: string[] = [];
 let app: ReturnType<typeof mount> | undefined;
-let protectedServer = true;
 const promptMock = vi.fn();
 const fetchMock = vi.fn();
 
@@ -48,23 +48,16 @@ beforeEach(() => {
   document.body.innerHTML = '';
   instances.length = 0;
   requests.length = 0;
-  protectedServer = true;
   vi.stubGlobal('WebSocket', MockWebSocket);
   vi.stubGlobal('prompt', promptMock);
   vi.stubGlobal('fetch', fetchMock);
   vi.spyOn(console, 'error').mockImplementation(() => {});
-  promptMock.mockImplementation(() => {
-    expect(instances).toHaveLength(0);
-    expect(localStorage.getItem('rigplane-auth-token')).toBeNull();
-    return credential;
-  });
   fetchMock.mockImplementation(async (url: string, init: RequestInit) => {
     requests.push(url);
     expect(url.startsWith('/api/v1/')).toBe(true);
     expect(url).not.toContain(credential);
     expect(init.redirect).toBe('error');
-    const authorized = new Headers(init.headers).get('Authorization') === `Bearer ${credential}`;
-    if (protectedServer && !authorized) return response(401);
+    expect(new Headers(init.headers).has('Authorization')).toBe(false);
     return response(200, url.endsWith('/capabilities') ? caps : { version: 'test' });
   });
 });
@@ -77,16 +70,18 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe('first browser authentication through App and the real runtime', () => {
-  it('prompts from empty storage before control WS, then accepts state and capabilities', async () => {
+describe('credential-free App and real runtime startup', () => {
+  it.each([null, credential])('connects and accepts state/capabilities with retired stored token %s', async (stored) => {
+    if (stored) localStorage.setItem('rigplane-auth-token', stored);
+    const reads = vi.spyOn(localStorage, 'getItem');
+    const writes = vi.spyOn(localStorage, 'setItem');
     startApp();
     await settle();
-    expect(promptMock).toHaveBeenCalledExactlyOnceWith('Enter auth token:');
-    expect(requests).toEqual(['/api/v1/info', '/api/v1/info']);
-    expect(localStorage.getItem('rigplane-auth-token')).toBe(credential);
+    expect(promptMock).not.toHaveBeenCalled();
+    expect(requests).toEqual(['/api/v1/info']);
     expect(instances).toHaveLength(1);
     const socket = instances[0];
-    expect(new URL(socket.url).searchParams.get('token')).toBe(credential);
+    expect(new URL(socket.url, 'http://localhost').searchParams.has('token')).toBe(false);
     socket.simulateOpen();
     const state = { ...stateFixture, stateContractVersion: 1, providerGeneration: 0 };
     socket.simulateMessage(JSON.stringify({ type: 'state_update', data: { type: 'full', data: state, stateContractVersion: 1, providerGeneration: 0 } }));
@@ -96,37 +91,15 @@ describe('first browser authentication through App and the real runtime', () => 
     expect(runtime.state?.main.freqHz).toBe(state.main.freqHz);
     expect(runtime.connectionWs).toBe(true);
     expect(document.querySelector('[role="alert"]')).toBeNull();
+    for (const key of ['rigplane-auth-token', 'icom-lan-auth-token']) {
+      expect(reads).not.toHaveBeenCalledWith(key);
+      expect(writes).not.toHaveBeenCalledWith(key, expect.anything());
+    }
   });
 
-  it.each(['valid stored token', 'no-auth server'])('preserves %s startup', async (mode) => {
-    if (mode === 'valid stored token') localStorage.setItem('rigplane-auth-token', credential);
-    else protectedServer = false;
-    startApp();
-    await settle();
-    expect(promptMock).not.toHaveBeenCalled();
-    expect(requests).toEqual(['/api/v1/info']);
-    expect(instances).toHaveLength(1);
-  });
-
-  it.each([null, '', 'synthetic-wrong'])('stops cancelled or rejected input %s without automatic reload', async (answer) => {
-    vi.useFakeTimers();
-    promptMock.mockReturnValue(answer);
-    startApp();
-    await settle();
-    expect(promptMock).toHaveBeenCalledTimes(1);
-    expect(instances).toHaveLength(0);
-    expect(localStorage.getItem('rigplane-auth-token')).toBeNull();
-    expect(document.querySelector('[role="alert"]')?.textContent).toMatch(/reload/i);
-    expect(document.querySelector('.retry-indicator')).toBeNull();
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(promptMock).toHaveBeenCalledTimes(1);
-    expect(requests).toHaveLength(answer ? 2 : 1);
-    vi.useRealTimers();
-  });
-
-  it.each(['network', '503'])('does not turn %s failure into an auth prompt', async (failure) => {
+  it.each(['network', '503', '401'])('does not turn %s failure into an auth prompt', async (failure) => {
     if (failure === 'network') fetchMock.mockRejectedValue(new TypeError('Network unavailable'));
-    else fetchMock.mockResolvedValue(response(503));
+    else fetchMock.mockResolvedValue(response(Number(failure)));
     startApp();
     await settle();
     expect(promptMock).not.toHaveBeenCalled();
@@ -149,12 +122,35 @@ describe('first browser authentication through App and the real runtime', () => 
     expect(instances).toHaveLength(0);
   });
 
-  it('does not request credentials when bootstrap was already cancelled', async () => {
+  it('does not fetch or open WS when bootstrap was already cancelled', async () => {
     const abort = new AbortController();
     abort.abort();
     await expect(runtime.bootstrap(abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(promptMock).not.toHaveBeenCalled();
     expect(instances).toHaveLength(0);
+  });
+
+  it('keeps deprecated helpers empty without accessing browser storage', () => {
+    localStorage.setItem('rigplane-auth-token', credential);
+    const reads = vi.spyOn(localStorage, 'getItem');
+    const writes = vi.spyOn(localStorage, 'setItem');
+    expect(getAuthToken()).toBeNull();
+    expect(getAuthHeaders()).toEqual({});
+    expect(reads).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 503])('reports HTTP %s once without prompting, retrying or persisting', async (status) => {
+    const reads = vi.spyOn(localStorage, 'getItem');
+    const writes = vi.spyOn(localStorage, 'setItem');
+    fetchMock.mockResolvedValue(response(status));
+    await expect(fetchInfo()).rejects.toThrow(`fetchInfo: ${status}`);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/v1/info', {
+      headers: {}, signal: undefined, redirect: 'error',
+    });
+    expect(promptMock).not.toHaveBeenCalled();
+    expect(reads).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
   });
 });

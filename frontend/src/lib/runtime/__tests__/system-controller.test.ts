@@ -129,7 +129,7 @@ describe('SystemController HTTP-polling registration removal (A10)', () => {
   });
 });
 
-describe('SystemController HTTP authentication', () => {
+describe('SystemController credential-free HTTP', () => {
   const fetchMock = vi.fn();
 
   beforeEach(() => {
@@ -143,7 +143,7 @@ describe('SystemController HTTP authentication', () => {
     localStorage.clear();
   });
 
-  it('reads the current token for power commands and preserves each POST body', async () => {
+  it('ignores retired tokens for power commands and preserves each POST body', async () => {
     fetchMock.mockResolvedValue({ ok: true } as Response);
     const { controller } = fixture();
 
@@ -157,7 +157,6 @@ describe('SystemController HTTP authentication', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/radio/power', {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer power-one',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ state: 'on' }),
@@ -165,7 +164,6 @@ describe('SystemController HTTP authentication', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/radio/power', {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer power-two',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ state: 'off' }),
@@ -173,7 +171,7 @@ describe('SystemController HTTP authentication', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       '/api/v1/eibi/identify?freq=14074000',
-      { headers: { Authorization: 'Bearer identify-token' } },
+      { headers: {} },
     );
   });
 
