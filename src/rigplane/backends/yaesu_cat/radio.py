@@ -689,9 +689,21 @@ class YaesuCatRadio:
 
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Return profile-derived support only for an executable operation."""
-        supported = supports_callable(self.profile, command) and callable(
-            getattr(self, command, None)
-        )
+        tuner_dependencies = {
+            "get_tuner_status": ("get_tuner",),
+            "set_tuner_status": ("get_tuner", "set_tuner"),
+        }.get(command)
+        if tuner_dependencies is None:
+            profile_supported = supports_callable(self.profile, command)
+        else:
+            profile_supported = (
+                command not in self.profile.absent_command_names
+                and all(
+                    supports_callable(self.profile, dependency)
+                    for dependency in tuner_dependencies
+                )
+            )
+        supported = profile_supported and callable(getattr(self, command, None))
         if receiver is None:
             return supported
         if not supported or command not in {

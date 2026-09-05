@@ -13,6 +13,7 @@ import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.commands import get_unselected_mode
+from rigplane.core.command_dispatch import prepare_command_intent
 from rigplane.profiles import RadioProfile
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.radio import CoreRadio
@@ -415,6 +416,60 @@ class TestYaesuSupportsCommand:
 
     def test_set_repeater_shift_is_profile_derived_and_executable(self, yaesu_radio):
         assert yaesu_radio.supports_command("set_repeater_shift")
+
+    def test_tuner_aliases_follow_native_dependencies(self, yaesu_radio):
+        assert yaesu_radio.supports_command("get_tuner_status")
+        assert yaesu_radio.supports_command("set_tuner_status")
+        for value in (0, 1, 2):
+            intent = prepare_command_intent(
+                yaesu_radio,
+                "set_tuner_status",
+                {"value": value},
+                source="http",
+            )
+            assert intent.params["value"] == value
+
+    @pytest.mark.parametrize(
+        ("missing", "get_supported", "set_supported"),
+        (("get_tuner", False, False), ("set_tuner", True, False)),
+    )
+    def test_tuner_aliases_require_each_native_command(
+        self, yaesu_radio, missing, get_supported, set_supported
+    ):
+        yaesu_radio._profile_cache = _without(yaesu_radio.profile, missing)
+        assert yaesu_radio.supports_command("get_tuner_status") is get_supported
+        assert yaesu_radio.supports_command("set_tuner_status") is set_supported
+
+    @pytest.mark.parametrize(
+        ("absent", "get_supported", "set_supported"),
+        (("get_tuner", False, False), ("set_tuner", True, False)),
+    )
+    def test_tuner_aliases_reject_absent_native_command(
+        self, yaesu_radio, absent, get_supported, set_supported
+    ):
+        profile = yaesu_radio.profile
+        yaesu_radio._profile_cache = dataclasses.replace(
+            profile,
+            absent_command_names=profile.absent_command_names | {absent},
+        )
+        assert yaesu_radio.supports_command("get_tuner_status") is get_supported
+        assert yaesu_radio.supports_command("set_tuner_status") is set_supported
+
+    @pytest.mark.parametrize("alias", ("get_tuner_status", "set_tuner_status"))
+    def test_tuner_aliases_reject_explicit_generic_absence(self, yaesu_radio, alias):
+        profile = yaesu_radio.profile
+        yaesu_radio._profile_cache = dataclasses.replace(
+            profile,
+            absent_command_names=profile.absent_command_names | {alias},
+        )
+        assert not yaesu_radio.supports_command(alias)
+
+    @pytest.mark.parametrize("alias", ("get_tuner_status", "set_tuner_status"))
+    def test_tuner_aliases_require_public_callable(
+        self, monkeypatch, yaesu_radio, alias
+    ):
+        monkeypatch.setattr(YaesuCatRadio, alias, None)
+        assert not yaesu_radio.supports_command(alias)
 
 
 # ---------------------------------------------------------------------------
