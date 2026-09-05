@@ -599,11 +599,13 @@ async def test_http_command_without_auth_keeps_read_only_guard() -> None:
     writer = await _post_json(
         srv,
         "/api/v1/commands",
-        {"name": "set_freq", "params": {"freq": 144_030_000}},
+        {"name": "ptt", "params": {"state": True}},
     )
 
     assert writer.response_status == 403
     assert writer.response_body["error"] == "read_only"
+
+    assert srv.command_queue.drain() == []
 
 
 @pytest.mark.asyncio

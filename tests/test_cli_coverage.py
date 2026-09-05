@@ -842,11 +842,18 @@ def test_station_parser_is_managed_web_runtime() -> None:
 @pytest.mark.parametrize("command", [["web"], ["web", "--managed"], ["station"]])
 @pytest.mark.parametrize("option", ["--auth-token", "--auth-token-file"])
 @pytest.mark.parametrize("value", ["synthetic-private-value", ""])
+@pytest.mark.parametrize("joined", [False, True])
 def test_retired_auth_options_reject_before_runtime_without_disclosure(
-    command, option, value, monkeypatch, capsys,
+    command,
+    option,
+    value,
+    joined,
+    monkeypatch,
+    capsys,
 ) -> None:
     monkeypatch.setenv("ICOM_LOG_FILE", "off")
-    monkeypatch.setattr("sys.argv", ["rigplane", *command, f"{option}={value}"])
+    option_args = [f"{option}={value}"] if joined else [option, value]
+    monkeypatch.setattr("sys.argv", ["rigplane", *command, *option_args])
     with (
         patch("rigplane.cli._run", return_value=0) as run,
         patch("rigplane.cli.os._exit", side_effect=AssertionError("runtime reached")),
@@ -862,7 +869,10 @@ def test_retired_auth_options_reject_before_runtime_without_disclosure(
     create.assert_not_called()
     read.assert_not_called()
     output = capsys.readouterr()
-    assert "Application authentication was removed; remove --auth-token and --auth-token-file." in output.err
+    assert (
+        "Application authentication was removed; remove --auth-token and --auth-token-file."
+        in output.err
+    )
     assert "synthetic-private-value" not in output.err + output.out
 
 
