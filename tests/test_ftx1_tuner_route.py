@@ -21,6 +21,8 @@ from rigplane.runtime.managed_tx_state import (
     ActuationResult,
     EffectToken,
 )
+from rigplane.web.radio_poller import CommandQueue
+from test_managed_tx_authority import authority as make_authority
 from test_web_ptt_readonly import _make_handler
 from test_yaesu_cat_poller import _set_fresh_ptt_observation
 
@@ -63,6 +65,49 @@ async def test_same_route_off_readback_restore(src: int, path: str) -> None:
     ]
     assert radio._transport.query.await_count == 5
     assert all(call.args == ("AC;",) for call in radio._transport.query.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_managed_handler_admits_off_and_rejects_positive_during_tx() -> None:
+    radio = radio_with_answer("AC101")
+    managed, *_ = make_authority()
+    handler, _ = _make_handler(radio=radio, authority=managed)
+    queue = CommandQueue()
+    handler._server.command_queue = queue
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    poller.bind_provider_generation(
+        capture=lambda: handler._server.command_state_store.provider_generation
+    )
+    poller.bind_managed_tx_authority(managed)
+
+    async def execute(value: int) -> dict[str, object]:
+        pending = asyncio.create_task(
+            handler._enqueue_command("set_tuner_status", {"value": value})
+        )
+        await queue.wait(timeout=0.1)
+        await poller._drain_commands()
+        return await pending
+
+    try:
+        submission = await managed.submit_ptt(True, "owner")
+        await submission.wait_settlement()
+
+        assert await execute(0) == {"value": 0}
+        assert [call.args[0] for call in radio._transport.query.await_args_list] == [
+            "AC;"
+        ]
+        assert [call.args[0] for call in radio._transport.write.await_args_list] == [
+            "AC100;"
+        ]
+
+        with pytest.raises(CommandError, match="transmit authority"):
+            await execute(1)
+        assert radio._transport.query.await_count == 1
+        assert radio._transport.write.await_count == 1
+    finally:
+        release = await managed.submit_ptt(False, "owner")
+        await release.wait_settlement()
+        await managed.close()
 
 
 @pytest.mark.asyncio
