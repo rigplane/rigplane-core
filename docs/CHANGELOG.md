@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Migration from 2.11.1
 
-- Core 3.0 beta uses selective compatibility. The [migration guide](migrate.md)
+- Core 3.0 beta uses selective compatibility. The [migration guide](https://rigplane.dev/migrate/)
   maps the frozen compatibility decisions to Python, receiver-state, HTTP,
   extension-host, CLI, profile and rigctld consumer examples. All TX consumers
   must adopt canonical ownership, admission, completion and OFF; the former
@@ -38,12 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `swap_main_sub_code or swap_ab_code` and
   `equal_main_sub_code or equal_ab_code`. New consumers should select the
   explicit A/B or MAIN/SUB operation appropriate to their radio; see the
-  [migration guide](migrate.md).
+  [migration guide](https://rigplane.dev/migrate/).
 - Icom CTCSS tone/TSQL setters accept the public integer-centiHz `freq_hz`
   keyword and retain `freq_centihz` as an alternative. Supplying both
   non-`None` spellings or neither raises `TypeError` before transport; there
   is no unit scaling. See `src/rigplane/runtime/radio.py: CoreRadio.set_tone_freq`
-  and `CoreRadio.set_tsql_freq`, and the [migration guide](migrate.md).
+  and `CoreRadio.set_tsql_freq`, and the [migration guide](https://rigplane.dev/migrate/).
 
 ### Breaking changes
 
@@ -604,7 +604,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when intended, and canonical ForceOff for unconditional release. Admission
   is distinct from settlement and observed radio state. The concrete API and
   timed CLI migration examples, source references and focused witnesses are
-  in the [migration guide](migrate.md).
+  in the [migration guide](https://rigplane.dev/migrate/).
 
 ### Removed
 
