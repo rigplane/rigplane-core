@@ -22,10 +22,11 @@
   {#each items as item (item.label)}
     {@const tx = item.field.txDisplay}
     {#if tx?.supported}
+      {@const readout = telemetryText(item.field, item.format)}
       {@const fraction = tx.relevance !== 'idle' && tx.observation.state === 'current' ? item.level(tx.observation.value) : 0}
       <div class="tx-scale" data-tx-scale={item.label} role="group"
         aria-label={telemetryDescription(item.label, item.field, item.format)}>
-        <small>{item.label}</small> <span class="readout">{telemetryText(item.field, item.format)}</span>
+        <small>{item.label}</small> <span class="readout" class:long-readout={readout.length > 8}>{readout}</span>
         <svg viewBox={`0 0 ${width} 6`} preserveAspectRatio="none" aria-hidden="true">
           {#each Array(count) as _, index}
             {@const fill = Math.max(0, Math.min(1, fraction * count - index))}
@@ -41,9 +42,10 @@
 </div>
 
 <style>
-  .lcd-tx-scales { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 12px; flex: 1; min-width: 0; max-width: 600px; grid-column: 1 / -1; }
-  .tx-scale { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 12px 6px; gap: 2px 5px; min-width: 0; color: var(--ink-soft); font-size: 10px; line-height: 12px; }
+  .lcd-tx-scales { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 2px; flex: 1; min-width: 0; max-width: 600px; grid-column: 1 / -1; }
+  .tx-scale { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 16px 6px; gap: 2px 0; min-width: 0; color: var(--ink-soft); font-size: 16px; line-height: 16px; }
   small { font: inherit; }
   .readout { text-align: right; white-space: nowrap; }
+  .long-readout { font-size: 14px; }
   svg { display: block; width: 100%; height: 6px; grid-column: 1 / -1; outline: 1px solid var(--ink-ghost); }
 </style>

@@ -238,10 +238,19 @@ for (const viewport of [DESKTOP, NARROW]) for (const [variant, fixture, testId, 
       const protectedNodes = [...display.querySelectorAll('.frequency,.s-meter,.scope-block,.rf-plot,.af-block')];
       const before = protectedNodes.map(box);
       const cells = [...group.querySelectorAll<HTMLElement>('[data-tx-scale]')];
+      const scale = box(stage).width / stage.offsetWidth;
+      const rail = display.querySelector<HTMLElement>('.aux-rail,.telemetry-only,[data-testid="panadapter-telemetry"]')!;
+      const visibleAncestors: Element[] = [];
+      for (let parent = group.parentElement; parent; parent = parent.parentElement) {
+        if (getComputedStyle(parent).overflow !== 'visible') visibleAncestors.push(parent);
+      }
       const geometry = cells.map((cell) => {
         const label = cell.querySelector('small')!, value = cell.querySelector('.readout')!, track = cell.querySelector('svg')!;
         return { label: label.textContent, box: box(cell), textHeight: box(value).height,
-          nativeFontSize: parseFloat(getComputedStyle(value).fontSize),
+          effectiveFont: parseFloat(getComputedStyle(value).fontSize) * scale,
+          labelFont: parseFloat(getComputedStyle(label).fontSize) * scale, labelHeight: box(label).height,
+          trackHeight: box(track).height, railContained: contained(cell, rail),
+          ancestorContained: visibleAncestors.every((parent) => contained(cell, parent)),
           contained: [label, value, track].every((node) => contained(node, cell)) && contained(cell, display),
           overlap: overlap(label, value), overflow: cell.scrollWidth > cell.clientWidth,
           segments: cell.querySelectorAll('[data-tx-segment]').length,
@@ -249,6 +258,18 @@ for (const viewport of [DESKTOP, NARROW]) for (const [variant, fixture, testId, 
           measured: cell.querySelectorAll('[data-tx-fill]').length,
         };
       });
+      // Geometry probes preserve canonical strings; component tests verify formatter/class selection.
+      const longReadouts = ['10000W ?', '255 raw ?'].flatMap((text) => cells.map((cell) => {
+        const value = cell.querySelector<HTMLElement>('.readout')!, label = cell.querySelector('small')!;
+        const previous = value.textContent; value.textContent = text;
+        value.classList.toggle('long-readout', text.length > 8);
+        const result = { text, effectiveFont: parseFloat(getComputedStyle(value).fontSize) * scale,
+          height: box(value).height, overflow: value.scrollWidth > value.clientWidth || cell.scrollWidth > cell.clientWidth,
+          overlap: overlap(label, value), contained: contained(value, cell) && contained(cell, rail),
+          protectedBounds: protectedNodes.map(box) };
+        value.textContent = previous; value.classList.remove('long-readout');
+        return result;
+      }));
       const otherText = [...display.querySelectorAll('small')].filter((node) => ['VD', 'ID', 'COMP'].includes(node.textContent ?? '')).map((node) => node.parentElement!);
       const overlaps = otherText.flatMap((node) => cells.map((cell) => overlap(node, cell)));
       group.style.display = 'none';
@@ -257,23 +278,87 @@ for (const viewport of [DESKTOP, NARROW]) for (const [variant, fixture, testId, 
       group.style.width = '20px'; group.style.flex = 'none';
       const squeezedOverflow = group.scrollWidth > group.clientWidth;
       group.style.removeProperty('width'); group.style.removeProperty('flex');
-      return { group: box(group), geometry, overlaps, squeezedOverflow, before, withoutScales,
+      return { group: box(group), geometry, longReadouts, overlaps, squeezedOverflow, before, withoutScales,
         restored: protectedNodes.map(box), stage: { width: stage.offsetWidth, height: stage.offsetHeight },
         railHeight: display.querySelector<HTMLElement>('.aux-rail,.telemetry-only,[data-testid="panadapter-telemetry"]')!.offsetHeight,
         controls: display.querySelectorAll('button,input,select,[tabindex]').length };
     });
     await testInfo.attach('lcd-tx-geometry', { body: JSON.stringify(result, null, 2), contentType: 'application/json' });
     expect(result.stage).toEqual({ width: 1280, height: nativeHeight });
-    expect(result.railHeight).toBe(variant === 'dominant' ? 35 : variant === 'panadapter' ? 62 : 31);
+    expect(result.railHeight).toBe(variant === 'dominant' ? 39 : variant === 'panadapter' ? 62 : 31);
     expect(result.geometry.map((cell) => cell.label)).toEqual(['PWR', 'SWR', 'ALC']);
     for (const cell of result.geometry) {
       expect(cell.contained).toBe(true); expect(cell.overflow).toBe(false); expect(cell.overlap).toBe(0);
       expect(cell.segments).toBe(20); expect(cell.segmentsVisible).toBe(true); expect(cell.measured).toBe(0);
-      expect(cell.nativeFontSize).toBeGreaterThanOrEqual(10); expect(cell.textHeight).toBeGreaterThan(0);
+      expect(cell.effectiveFont).toBeGreaterThanOrEqual(8); expect(cell.textHeight).toBeGreaterThanOrEqual(8);
+      expect(cell.labelFont).toBeGreaterThanOrEqual(8); expect(cell.labelHeight).toBeGreaterThanOrEqual(8);
+      expect(cell.trackHeight).toBeGreaterThanOrEqual(3); expect(cell.railContained).toBe(true);
+      expect(cell.ancestorContained).toBe(true);
+    }
+    for (const readout of result.longReadouts) {
+      expect(readout.effectiveFont).toBeGreaterThanOrEqual(readout.text.length > 8 ? 7 : 8);
+      expect(readout.height).toBeGreaterThanOrEqual(8); expect(readout.overflow).toBe(false);
+      expect(readout.overlap).toBe(0); expect(readout.contained).toBe(true);
+      expect(readout.protectedBounds).toEqual(result.before);
     }
     expect(result.overlaps.every((area) => area === 0)).toBe(true);
     expect(result.before.length).toBeGreaterThan(3);
     expect(result.withoutScales).toEqual(result.before); expect(result.restored).toEqual(result.before);
     expect(result.squeezedOverflow).toBe(true); expect(result.controls).toBe(0);
+  });
+}
+
+for (const width of [1280, 1100, 1000, 760]) for (const [variant, fixture, , nativeHeight] of LCD_TX_GEOMETRY.filter(([name]) => name === 'dominant' || name === 'panadapter')) {
+  test(`LCD shell fit -- ${variant} -- ${width}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/fixtures/index.html?fixture=${fixture}&theme=v2`);
+    await page.waitForSelector('body[data-harness-ready="true"]');
+    await page.evaluate(() => document.fonts.ready);
+    if (width < 1100) {
+      const row = page.locator('.content-row'), bounds = (await row.boundingBox())!;
+      await page.mouse.move(bounds.x + 1, bounds.y + 1); await page.mouse.wheel(400, 0);
+      await expect.poll(() => row.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
+      await row.evaluate((node) => { node.scrollLeft = 0; });
+    }
+    const result = await page.evaluate(() => {
+      const row = document.querySelector<HTMLElement>('.content-row')!, frame = row.querySelector<HTMLElement>('.lcd-frame')!;
+      const stage = frame.querySelector<HTMLElement>('.scaled-stage')!, holder = frame.querySelector<HTMLElement>('.scaled-stage-holder')!;
+      const border = parseFloat(getComputedStyle(frame).borderLeftWidth), w = stage.offsetWidth, h = stage.offsetHeight;
+      const floor = Math.ceil(Math.max(w * 0.5 + 2 * border, (h * 0.5 + 2 * border) * w / h));
+      const box = (node: Element) => node.getBoundingClientRect();
+      const horizontal = (a: DOMRect, b: DOMRect) => a.left >= b.left - 0.5 && a.right <= b.right + 0.5;
+      const sides = [...row.querySelectorAll<HTMLElement>('.content-left,.content-right')].map((side) => {
+        const controls = [...side.querySelectorAll<HTMLElement>('button,input,select,[tabindex]')].filter((node) => box(node).width > 0);
+        const labels = controls.filter((node) => node.tagName === 'BUTTON').map((node) => {
+          const range = document.createRange(); range.selectNodeContents(node);
+          return horizontal(range.getBoundingClientRect(), box(node));
+        });
+        const control = controls.filter((node) => !node.matches(':disabled')).at(-1)!;
+        control.focus(); control.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        const r = box(control), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return { width: box(side).width, count: controls.length, contained: controls.every((node) => horizontal(box(node), box(side))),
+          labels: labels.every(Boolean), focused: document.activeElement === control, hit: hit === control || control.contains(hit) };
+      });
+      frame.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      const s = box(stage), f = box(frame), inner = box(holder), viewport = box(row);
+      const stageVisible = horizontal(s, inner) && s.top >= inner.top - 0.5 && s.bottom <= inner.bottom + 0.5
+        && horizontal(s, f) && horizontal(s, viewport);
+      const scroll = row.scrollWidth - row.clientWidth, native = { w, h }, center = f.width;
+      // The absence of a resolved stage retains the cockpit/scope grid rule.
+      row.classList.remove('fixed-native-stage');
+      const fallback = getComputedStyle(row).gridTemplateColumns.split(' ').map(parseFloat);
+      row.classList.add('fixed-native-stage'); row.scrollLeft = 0;
+      return { floor, native, center, stageVisible, sides, scroll, fallback };
+    });
+    await testInfo.attach('lcd-shell-fit', { body: JSON.stringify(result), contentType: 'application/json' });
+    expect(result.native).toEqual({ w: 1280, h: nativeHeight });
+    expect(result.center).toBeGreaterThanOrEqual(result.floor); expect(result.stageVisible).toBe(true);
+    expect(result.sides.map((side) => side.count)).toEqual([53, 31]);
+    for (const side of result.sides) {
+      expect(side.width).toBe(width === 1280 ? 228 : width === 1100 ? 217.5 : 216);
+      expect(side.contained && side.labels && side.focused && side.hit).toBe(true);
+    }
+    expect(result.fallback).toEqual([228, width - 476, 228]);
+    expect(result.scroll > 0).toBe(width < 1100);
   });
 }

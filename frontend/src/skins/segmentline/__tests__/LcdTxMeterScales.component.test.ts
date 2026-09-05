@@ -103,3 +103,22 @@ describe('canonical meter calibration', () => {
     } finally { close(); }
   });
 });
+
+for (const calibrated of [false, true]) it(`keeps honest long ${calibrated ? 'calibrated' : 'raw'} uncertainty readouts`, () => {
+  if (calibrated) {
+    const capabilities = caps(); capabilities.meterCalibrations!.power![1].actual = 20000;
+    setCapabilities(capabilities);
+  }
+  const { root, props, close } = render(field({ supported: true, relevance: 'indeterminate',
+    observation: { state: 'current', value: calibrated ? 10000 : 255 } }));
+  try {
+    const cell = root.querySelector('[data-tx-scale="PWR"]')!, readout = cell.querySelector('.readout')!;
+    expect(readout.textContent).toBe(calibrated ? '10000W ?' : '255 raw ?');
+    expect(readout.classList.contains('long-readout')).toBe(!calibrated);
+    expect(cell.getAttribute('aria-label')).toContain(calibrated ? '10000W' : '255 raw');
+    expect(cell.getAttribute('aria-label')).toContain('RF relevance indeterminate');
+    expect(cell.querySelectorAll('[data-tx-fill]')).toHaveLength(calibrated ? 10 : 20);
+    props.power = current(0); flushSync();
+    expect(readout.isConnected).toBe(true); expect(readout.classList.contains('long-readout')).toBe(false);
+  } finally { close(); }
+});
