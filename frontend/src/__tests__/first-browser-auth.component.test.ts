@@ -91,10 +91,8 @@ describe('credential-free App and real runtime startup', () => {
     expect(runtime.state?.main.freqHz).toBe(state.main.freqHz);
     expect(runtime.connectionWs).toBe(true);
     expect(document.querySelector('[role="alert"]')).toBeNull();
-    for (const key of ['rigplane-auth-token', 'icom-lan-auth-token']) {
-      expect(reads).not.toHaveBeenCalledWith(key);
-      expect(writes).not.toHaveBeenCalledWith(key, expect.anything());
-    }
+    expect(reads.mock.calls.filter(([key]) => key.endsWith('auth-token'))).toEqual([]);
+    expect(writes.mock.calls.filter(([key]) => key.endsWith('auth-token'))).toEqual([]);
   });
 
   it.each(['network', '503', '401'])('does not turn %s failure into an auth prompt', async (failure) => {
