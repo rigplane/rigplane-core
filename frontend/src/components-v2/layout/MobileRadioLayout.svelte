@@ -800,12 +800,9 @@
         </CollapsiblePanel>
       </section>
     {/if}
-
-    <!-- Spacer for tuning strip -->
-    <div class="m-bottom-spacer"></div>
   </main>
 
-  <!-- ═══ TUNING STRIP (FIXED BOTTOM) ═══ -->
+  <!-- ═══ TUNING STRIP ═══ -->
   <nav class="m-tuning-strip">
     <button class="m-tune-btn m-tune-fast" onclick={() => tuneBy(-10)}>
       <ChevronsLeft size={18} />
@@ -1198,6 +1195,7 @@
 
   /* ── Base layout ── */
   .m-layout {
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -1373,8 +1371,10 @@
   /* ── Scrollable content ── */
   .m-content {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    scroll-padding-block: 4px;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
@@ -1540,21 +1540,13 @@
     background: var(--v2-bg-card, #222);
   }
 
-  /* ── Bottom spacer ── */
-  .m-bottom-spacer {
-    height: calc(52px + env(safe-area-inset-bottom, 0px));
-    flex-shrink: 0;
-  }
-
   /* ── Tuning strip ── */
   .m-tuning-strip {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
+    position: relative;
+    flex-shrink: 0;
     display: flex;
     align-items: stretch;
-    height: 52px;
+    height: calc(52px + env(safe-area-inset-bottom, 0px));
     padding-bottom: env(safe-area-inset-bottom, 0px);
     background: var(--v2-bg-card, #111);
     border-top: 1px solid var(--v2-border-panel, #333);
