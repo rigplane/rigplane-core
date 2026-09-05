@@ -901,7 +901,7 @@
   /* Receiver/bridge composition ported from v2.11.1 SdrVfoScreen and VfoHeader. */
   .instrument-panel {
     display: flex; align-items: stretch; width: 100%; min-width: 0;
-    background: linear-gradient(180deg, #0a0e14 0%, #05080c 100%);
+    background: linear-gradient(180deg, var(--v2-bg-gradient-start, #0a0e14) 0%, var(--v2-bg-panel, #05080c) 100%);
     border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
   }
   .receiver-instrument { flex: 1 1 490px; min-width: 0; padding: 6px 12px; }
@@ -941,13 +941,13 @@
     font-family: inherit; font-weight: 700; letter-spacing: .04em;
     color: var(--v2-text-secondary, #a0b4c8);
     border: 1px solid rgba(72,96,122,.4);
-    background: linear-gradient(180deg, #202a35 0%, #0b1017 100%);
+    background: linear-gradient(180deg, var(--v2-control-button-gradient-top, #202a35) 0%, var(--v2-control-button-gradient-bottom, #0b1017) 100%);
     box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
   }
   .bridge .fact-toggle { grid-column: 1 / -1; }
   .bridge button:disabled { opacity: .5; }
   .bridge button[aria-pressed='true'], .bridge button[aria-checked='true'] {
-    border-color: var(--v2-accent-cyan, #00d4ff); color: #7cfce5;
+    border-color: var(--v2-accent-cyan, #00d4ff); color: var(--v2-accent-cyan, #7cfce5);
   }
   .bridge .split-digest { flex-wrap: wrap; justify-content: center; font-size: 9px; }
   .bridge .vfo-identity-selectors { flex-direction: column; }
