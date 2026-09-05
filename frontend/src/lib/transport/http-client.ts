@@ -3,7 +3,7 @@ import type { InfoResponse } from '../types/protocol';
 
 const BASE = '/api/v1';
 
-function getStoredToken(): string | null {
+export function getAuthToken(): string | null {
   const storage = globalThis.localStorage;
   if (!storage || typeof storage.getItem !== 'function') {
     return null;
@@ -11,8 +11,8 @@ function getStoredToken(): string | null {
   return storage.getItem('rigplane-auth-token');
 }
 
-function getAuthHeaders(): Record<string, string> {
-  const token = getStoredToken();
+export function getAuthHeaders(): Record<string, string> {
+  const token = getAuthToken();
   if (token) return { Authorization: `Bearer ${token}` };
   return {};
 }
