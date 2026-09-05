@@ -615,9 +615,10 @@ query override is not a persistable workspace choice.
 ### Workspace settings, import and export
 
 In the standard layout, open Settings and expand WORKSPACE. Select layout,
-design language, theme and density there. Language IDs are `studioline`,
+design language and theme there. Language IDs are `studioline`,
 `fieldline` and `segmentline`; a language activates only on compatible
-layouts. Density is clamped to that language's supported values.
+layouts. Density is a supported workspace JSON field, clamped to the active
+language's supported values; WORKSPACE currently has no density picker.
 
 The schema is `WorkspaceV1` in
 `frontend/src/presentation/workspace/contract.ts`. It stores stable IDs and
@@ -632,8 +633,9 @@ Export saves `rigplane-workspace.json`. Import accepts a JSON file or pasted
 JSON and validates the whole document before replacing the workspace. Any
 rejected field prevents the import; the UI reports field/reason details.
 Export includes preserved unknown fields. Reset restores the frozen defaults
-and offers an in-session undo. These operations use `importWorkspace`,
-`exportWorkspace` and `resetWorkspace` in
+and offers an in-session undo for supported presentation settings. Undo does
+not restore pinned command names or preserved unknown fields. These operations
+use `importWorkspace`, `exportWorkspace` and `resetWorkspace` in
 `frontend/src/presentation/workspace/store.svelte.ts`.
 
 Schema versions 1–3 are readable by the current v1 reader. A lossy newer
