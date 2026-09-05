@@ -39,17 +39,19 @@ export function meterFill(field: DisplayValue<number>): number {
     : 0;
 }
 
-export function telemetryText(field: DisplayTelemetry): string {
+const numericTelemetry = (value: number): string => String(Number(value.toFixed(2)));
+
+export function telemetryText(field: DisplayTelemetry, format = numericTelemetry): string {
   const tx = field.txDisplay;
-  if (!tx) return field.state === 'known' ? String(Number(field.value.toFixed(2))) : '?';
+  if (!tx) return field.state === 'known' ? numericTelemetry(field.value) : '?';
   if (!tx.supported) return '?';
   if (tx.relevance === 'idle') return 'IDLE';
   if (tx.observation.state === 'stale') return 'STALE';
   if (tx.observation.state !== 'current') return '?';
-  return `${Number(tx.observation.value.toFixed(2))}${tx.relevance === 'indeterminate' ? ' ?' : ''}`;
+  return `${format(tx.observation.value)}${tx.relevance === 'indeterminate' ? ' ?' : ''}`;
 }
 
-export function telemetryDescription(label: string, field: DisplayTelemetry): string {
+export function telemetryDescription(label: string, field: DisplayTelemetry, format = numericTelemetry): string {
   const tx = field.txDisplay;
   if (!tx) return `${label}: ${field.state === 'known' ? telemetryText(field)
     : field.state === 'unsupported' ? 'Unsupported' : 'Not observed'}`;
@@ -57,7 +59,7 @@ export function telemetryDescription(label: string, field: DisplayTelemetry): st
   if (tx.relevance === 'idle') return `${label}: Not measuring in RX`;
   const cue = tx.relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
   return `${label}: ${cue}${tx.observation.state === 'stale' ? 'Stale observation'
-    : tx.observation.state === 'current' ? `Current observation: ${Number(tx.observation.value.toFixed(2))}` : 'Not observed'}`;
+    : tx.observation.state === 'current' ? `Current observation: ${format(tx.observation.value)}` : 'Not observed'}`;
 }
 
 function envelope(

@@ -135,3 +135,15 @@ for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
       if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toContain('Not observed');
     });
   }
+
+it('delegates only a current TX observation to the optional formatter', () => {
+  const format = (value: number) => `${value}W`;
+  const current: DisplayTelemetry = { state: 'known', value: 207, relevant: true,
+    txDisplay: { supported: true, relevance: 'relevant', observation: { state: 'current', value: 100 } } };
+  expect(telemetryText(current, format)).toBe('100W');
+  expect(telemetryDescription('PWR', current, format)).toBe('PWR: Current observation: 100W');
+  const idle: DisplayTelemetry = { ...current, txDisplay: { supported: true, relevance: 'idle', observation: { state: 'current', value: 100 } } };
+  const forbidden = () => { throw new Error('unmeasured value formatted'); };
+  expect(telemetryText(idle, forbidden)).toBe('IDLE');
+  expect(telemetryDescription('PWR', idle, forbidden)).toBe('PWR: Not measuring in RX');
+});

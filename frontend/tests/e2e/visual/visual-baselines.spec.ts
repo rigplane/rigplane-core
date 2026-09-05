@@ -42,6 +42,7 @@ const FROZEN_CLOCK = new Date('2026-01-01T14:32:00Z');
 interface Spec {
   name: string;
   fixture: string;
+  display?: 'centerstage';
   language?: 'studioline' | 'fieldline';
   mode?: 'light';
   viewport?: typeof DESKTOP;
@@ -89,6 +90,8 @@ const COCKPIT: Spec[] = [
   },
   { name: 'tx-phase-fault--desktop--fieldline', fixture: 'tx-phase-fault', language: 'fieldline' },
   { name: 'peer-split-chassis--desktop', fixture: 'peer-split-chassis', freezeClock: true },
+  { name: 'centerstage--desktop', fixture: 'peer-split-chassis', display: 'centerstage', freezeClock: true },
+  { name: 'centerstage--1100x800', fixture: 'peer-split-chassis', display: 'centerstage', viewport: NARROW, freezeClock: true },
   { name: 'unified-instrument--desktop', fixture: 'lcd-unified-instrument' },
   { name: 'panadapter-first--desktop', fixture: 'lcd-panadapter-first' },
   {
@@ -109,7 +112,8 @@ for (const spec of COCKPIT) {
     await page.setViewportSize(spec.viewport ?? DESKTOP);
     const url = `/fixtures/index.html?fixture=${spec.fixture}&theme=v2`
       + (spec.language ? `&language=${spec.language}` : '')
-      + (spec.mode ? `&mode=${spec.mode}` : '');
+      + (spec.mode ? `&mode=${spec.mode}` : '')
+      + (spec.display ? `&display=${spec.display}` : '');
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForSelector('body[data-harness-ready="true"]');
     await expect(page).toHaveScreenshot(`${spec.name}.png`, { animations: 'disabled', caret: 'hide' });
@@ -200,5 +204,76 @@ for (const compact of [true, false]) for (const stateText of ['IDLE', 'STALE', '
     expect(Math.max(...geometry.oldOverlap.overlaps)).toBeGreaterThan(0);
     expect(geometry.oldOverlap.readings).toEqual(geometry.actual.readings);
     expect(geometry.restored).toEqual(geometry.actual);
+  });
+}
+
+const LCD_TX_GEOMETRY = [
+  ['peer-split', 'peer-split-chassis&display=peer', 'peer-split-display', 540],
+  ['dominant', 'lcd-unified-instrument', 'dominant-unified-display', 540],
+  ['centerstage', 'peer-split-chassis&display=centerstage', 'centerstage-display', 540],
+  ['panadapter', 'lcd-panadapter-first', 'panadapter-display', 594],
+] as const;
+for (const viewport of [DESKTOP, NARROW]) for (const [variant, fixture, testId, nativeHeight] of LCD_TX_GEOMETRY) {
+  test(`LCD TX geometry -- ${variant} -- ${viewport.width}`, async ({ page }, testInfo) => {
+    await page.setViewportSize(viewport);
+    await page.goto(`/fixtures/index.html?fixture=${fixture}&theme=v2`);
+    await page.waitForSelector('body[data-harness-ready="true"]');
+    await page.evaluate(() => document.fonts.ready);
+    const result = await page.getByTestId(testId).evaluate((display) => {
+      const group = display.querySelector<HTMLElement>('[data-testid="lcd-tx-scales"]')!;
+      const stage = display.closest<HTMLElement>('.scaled-stage')!;
+      const box = (node: Element) => {
+        const { x, y, width, height } = node.getBoundingClientRect();
+        return { x, y, width, height };
+      };
+      const overlap = (a: Element, b: Element) => {
+        const aa = a.getBoundingClientRect(), bb = b.getBoundingClientRect();
+        return Math.max(0, Math.min(aa.right, bb.right) - Math.max(aa.left, bb.left))
+          * Math.max(0, Math.min(aa.bottom, bb.bottom) - Math.max(aa.top, bb.top));
+      };
+      const contained = (child: Element, parent: Element) => {
+        const a = child.getBoundingClientRect(), b = parent.getBoundingClientRect();
+        return a.left >= b.left - 0.5 && a.right <= b.right + 0.5 && a.top >= b.top - 0.5 && a.bottom <= b.bottom + 0.5;
+      };
+      const protectedNodes = [...display.querySelectorAll('.frequency,.s-meter,.scope-block,.rf-plot,.af-block')];
+      const before = protectedNodes.map(box);
+      const cells = [...group.querySelectorAll<HTMLElement>('[data-tx-scale]')];
+      const geometry = cells.map((cell) => {
+        const label = cell.querySelector('small')!, value = cell.querySelector('.readout')!, track = cell.querySelector('svg')!;
+        return { label: label.textContent, box: box(cell), textHeight: box(value).height,
+          nativeFontSize: parseFloat(getComputedStyle(value).fontSize),
+          contained: [label, value, track].every((node) => contained(node, cell)) && contained(cell, display),
+          overlap: overlap(label, value), overflow: cell.scrollWidth > cell.clientWidth,
+          segments: cell.querySelectorAll('[data-tx-segment]').length,
+          segmentsVisible: [...cell.querySelectorAll('[data-tx-segment]')].every((node) => box(node).width > 0 && box(node).height > 0),
+          measured: cell.querySelectorAll('[data-tx-fill]').length,
+        };
+      });
+      const otherText = [...display.querySelectorAll('small')].filter((node) => ['VD', 'ID', 'COMP'].includes(node.textContent ?? '')).map((node) => node.parentElement!);
+      const overlaps = otherText.flatMap((node) => cells.map((cell) => overlap(node, cell)));
+      group.style.display = 'none';
+      const withoutScales = protectedNodes.map(box);
+      group.style.removeProperty('display');
+      group.style.width = '20px'; group.style.flex = 'none';
+      const squeezedOverflow = group.scrollWidth > group.clientWidth;
+      group.style.removeProperty('width'); group.style.removeProperty('flex');
+      return { group: box(group), geometry, overlaps, squeezedOverflow, before, withoutScales,
+        restored: protectedNodes.map(box), stage: { width: stage.offsetWidth, height: stage.offsetHeight },
+        railHeight: display.querySelector<HTMLElement>('.aux-rail,.telemetry-only,[data-testid="panadapter-telemetry"]')!.offsetHeight,
+        controls: display.querySelectorAll('button,input,select,[tabindex]').length };
+    });
+    await testInfo.attach('lcd-tx-geometry', { body: JSON.stringify(result, null, 2), contentType: 'application/json' });
+    expect(result.stage).toEqual({ width: 1280, height: nativeHeight });
+    expect(result.railHeight).toBe(variant === 'dominant' ? 35 : variant === 'panadapter' ? 62 : 31);
+    expect(result.geometry.map((cell) => cell.label)).toEqual(['PWR', 'SWR', 'ALC']);
+    for (const cell of result.geometry) {
+      expect(cell.contained).toBe(true); expect(cell.overflow).toBe(false); expect(cell.overlap).toBe(0);
+      expect(cell.segments).toBe(20); expect(cell.segmentsVisible).toBe(true); expect(cell.measured).toBe(0);
+      expect(cell.nativeFontSize).toBeGreaterThanOrEqual(10); expect(cell.textHeight).toBeGreaterThan(0);
+    }
+    expect(result.overlaps.every((area) => area === 0)).toBe(true);
+    expect(result.before.length).toBeGreaterThan(3);
+    expect(result.withoutScales).toEqual(result.before); expect(result.restored).toEqual(result.before);
+    expect(result.squeezedOverflow).toBe(true); expect(result.controls).toBe(0);
   });
 }
