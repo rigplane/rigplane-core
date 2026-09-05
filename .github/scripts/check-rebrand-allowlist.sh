@@ -34,7 +34,7 @@ ALLOWLIST=(
     'docs/contracts/diagnostic-bundle-v2.md'
     # Local-extensions deprecation alias (cross-repo Pro contract).
     'frontend/src/lib/local-extensions/host-api.ts'
-    'frontend/src/lib/local-extensions/__tests__/host-api.test.ts'
+    'frontend/src/lib/local-extensions/__tests__/host-api.isolated.test.ts'
     'frontend/src/lib/api/diagnostics.ts'
     'frontend/src/lib/api/__tests__/diagnostics.test.ts'
     # Vendor-protocol diagram label (parallel to IcomSerial / YaesuCAT —
