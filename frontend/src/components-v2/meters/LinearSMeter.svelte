@@ -440,8 +440,46 @@
 
   let displaySUnit = $derived(calibratedToSUnit(value));
   let displayDbm   = $derived(formatDbm(calibratedToDbm(value)));
+
+  // v2.11.1 SDR SVG geometry; the current calibrated scale still owns positions.
+  const SDR_CELLS = 40;
+  const SDR_CELL_WIDTH = 328 / SDR_CELLS;
+  const SDR_SUB_WIDTH = (SDR_CELL_WIDTH - 2 - 0.5) / 2;
+  const sdrFill = $derived((smoother.value / SEG_COUNT) * SDR_CELLS * 2);
+  const sdrS9 = $derived((rawToSegments(getS9Raw()) / RAW_SEGMENT_DOMAIN) * SDR_CELLS * 2);
+  function sdrColor(index: number): string {
+    const aboveS9 = index >= sdrS9;
+    return index < sdrFill ? (aboveS9 ? '#FF3030' : '#4FB9EC')
+      : (aboveS9 ? '#2a1618' : '#1a2230');
+  }
 </script>
 
+{#if variant === 'sdr-screen'}
+  <svg class="sdr-meter" viewBox="0 0 420 50" preserveAspectRatio="none"
+    data-variant={variant} role="img" aria-label={`S meter ${displaySUnit} ${displayDbm}`}>
+    <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
+      <g font-family="Roboto Mono, monospace" font-size="11" fill="#C8D4E0" font-weight="700">
+        <text x="4" y="14">{displayDbm === 'uncalibrated' ? 'raw' : 'S'}</text>
+        {#each labelMarks as mark}
+          <text x={14 + (rawToSegments(mark.raw) / RAW_SEGMENT_DOMAIN) * 328} y="14"
+            text-anchor="middle" fill={mark.actual > 0 ? '#FF4040' : '#C8D4E0'}>
+            {mark.text.replace(/^S/, '')}
+          </text>
+        {/each}
+      </g>
+      {#each Array(SDR_CELLS * 2) as _, index}
+        <rect data-sdr-segment={index}
+          x={14 + Math.floor(index / 2) * SDR_CELL_WIDTH + (index % 2) * (SDR_SUB_WIDTH + 0.5)}
+          y="22" width={SDR_SUB_WIDTH} height="18" fill={sdrColor(index)} />
+      {/each}
+      <text x="412" y="31" text-anchor="end" fill="#DFFCF5"
+        font-family="Roboto Mono, monospace" font-size="12" font-weight="700">{displaySUnit}</text>
+      {#if displayDbm === 'uncalibrated'}
+        <text x="412" y="46" text-anchor="end" fill="#A0B4C8" font-size="10">uncalibrated</text>
+      {/if}
+    </g>
+  </svg>
+{:else}
 <svg
   viewBox="0 0 600 {TOTAL_HEIGHT}"
   width="100%"
@@ -682,8 +720,10 @@
   >{displayDbm}</text>
   </g>
 </svg>
+{/if}
 
 <style>
+  .sdr-meter { width: 100%; height: 40px; overflow: visible; }
   svg {
     display: block;
   }

@@ -46,6 +46,7 @@
 
   interface Props {
     viewModel: RadioViewModel;
+    appearance?: 'semantic' | 'sdr' | 'standard';
     onSelectVfo?: (target: VfoSelection) => void;
     onToggleSplit?: () => void;
     onToggleDualWatch?: () => void;
@@ -162,7 +163,7 @@
   }
 
   let {
-    viewModel,
+    viewModel, appearance = 'semantic',
     onSelectVfo,
     onToggleSplit,
     onToggleDualWatch,
@@ -503,6 +504,11 @@
   let txFrequencyHz = $derived(
     viewModel.txTarget.status === 'known' ? viewModel.txTarget.frequencyHz : null,
   );
+  function instrumentSlot(receiver: ReceiverId): string {
+    const slot = viewModel.vfos.find((vfo) => vfo.receiver === receiver && vfo.isActiveSlot)?.slot;
+    return slot?.kind === 'slotted' ? slot.id : '—';
+  }
+  let instrumentReceivers = $derived([...new Set(viewModel.vfos.map((vfo) => vfo.receiver))]);
   let receiverIndicators = $derived(
     (viewModel.receiverIndicators ?? []).filter(
       (indicator) => indicatorReceiver === undefined || indicator.receiver === indicatorReceiver,
@@ -510,7 +516,8 @@
   );
 </script>
 
-<div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface">
+<div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance}>
+  {#snippet activeReceiverStatus()}
   {#if showRadioWideFacts && hasDualReceiver}
     <p
       class="active-receiver"
@@ -524,10 +531,10 @@
         : t('core.vfo.activeReceiver.unknown')}
     </p>
   {/if}
+  {/snippet}
+  {#if appearance === 'semantic'}{@render activeReceiverStatus()}{/if}
 
-  {#if showVfoList}
-  <div class="vfo-list" data-testid="vfo-list">
-    {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
+  {#snippet vfoTile(vfo: VfoViewModel, i: number)}
       {@const selectable = isSelectable(vfo)}
       {@const selectDisabled = selectable && (vfo.slot.kind === 'unknown' || disabled)}
       {@const freq = frequencyDisplay(vfo)}
@@ -535,6 +542,8 @@
       <div
         class="vfo-tile"
         class:is-active={vfo.isActive}
+        class:secondary-slot={appearance !== 'semantic' && !vfo.isActiveSlot
+          && viewModel.vfos.filter((item) => item.receiver === vfo.receiver).length > 1}
         data-vfo-tile
         data-vfo-receiver={vfo.receiver}
         data-vfo-slot={slotKey(vfo.slot)}
@@ -550,7 +559,7 @@
         -->
         <span
           class="vfo-freq"
-          {...freq?.attributes ?? {}}
+          {...(appearance === 'semantic' ? freq?.attributes ?? {} : {})}
           data-vfo-freq
           data-freq-tunable={hasTunableFrequency(vfo) && !disabled}
           aria-disabled={hasTunableFrequency(vfo) && disabled ? 'true' : undefined}
@@ -578,7 +587,7 @@
               freq={vfo.frequencyHz ?? 0}
               pendingDisplayHz={pendingHz}
               pendingAnnouncement={pendingHz !== null ? t('core.vfo.freq.pendingAnnouncement') : undefined}
-              compact
+              compact={appearance === 'semantic'}
               active={vfo.isActive}
               receiver={vfo.receiver === 'SUB' ? 'sub' : 'main'}
               onFreqChange={(hz) => tuneFrequency(vfo, hz)}
@@ -642,8 +651,8 @@
           <span class="vfo-label sr-only" data-vfo-label>{vfo.label}</span>
         {/if}
       </div>
-    {/each}
-  </div>
+  {/snippet}
+  {#snippet identitySelectors()}
   {#if relativeIdentityUnknown && relativeReceiver !== null}
     {@const absoluteReason = disabled
       ? t('core.vfo.select.receiverUnavailableReason')
@@ -671,19 +680,14 @@
       {/if}
     </div>
   {/if}
-  {#if receiverIndicators.length > 0}
-    <div class="receiver-indicators" data-testid="vfo-receiver-indicators">
-      {#each receiverIndicators as indicator (indicator.receiver)}
-        <VfoIndicatorRow {indicator} />
-      {/each}
-    </div>
-  {/if}
-  {/if}
+  {/snippet}
 
+  {#snippet radioWideContent()}
   {#if showRadioWideFacts}
     {#if viewModel.radioWideIndicators}
       <VfoIndicatorRow
         radioWide={viewModel.radioWideIndicators}
+        {appearance}
       />
     {/if}
     {@const splitReason = viewModel.split.status === 'unknown' ? t('core.vfo.split.unknownReason') : undefined}
@@ -827,6 +831,51 @@
       </p>
     {/if}
   {/if}
+  {/snippet}
+
+  {#snippet receiverInstrument(receiver: ReceiverId)}
+    <section class="receiver-instrument" data-receiver-instrument={receiver}
+      class:instrument-active={viewModel.vfos.some((vfo) => vfo.receiver === receiver && vfo.isActive)}
+      aria-label={`${receiver} instrument`}>
+      <VfoIndicatorRow indicator={receiverIndicators.find((item) => item.receiver === receiver)} {appearance}
+        slotLabel={instrumentSlot(receiver)}>
+        <div class="freq-stack">
+          {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
+            {#if vfo.receiver === receiver}{@render vfoTile(vfo, i)}{/if}
+          {/each}
+        </div>
+      </VfoIndicatorRow>
+    </section>
+  {/snippet}
+
+  {#if appearance !== 'semantic' && showVfoList}
+    <div class="instrument-panel" data-testid="vfo-instrument-panel">
+      {#if instrumentReceivers[0]}{@render receiverInstrument(instrumentReceivers[0])}{/if}
+      {#if showRadioWideFacts}
+        <div class="bridge" data-instrument-bridge>
+          {@render activeReceiverStatus()}
+          {@render identitySelectors()}
+          {@render radioWideContent()}
+        </div>
+      {/if}
+      {#each instrumentReceivers.slice(1) as receiver (receiver)}
+        {@render receiverInstrument(receiver)}
+      {/each}
+    </div>
+  {:else}
+    {#if showVfoList}
+      <div class="vfo-list" data-testid="vfo-list">
+        {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}{@render vfoTile(vfo, i)}{/each}
+      </div>
+      {@render identitySelectors()}
+      {#if receiverIndicators.length > 0}
+        <div class="receiver-indicators" data-testid="vfo-receiver-indicators">
+          {#each receiverIndicators as indicator (indicator.receiver)}<VfoIndicatorRow {indicator} />{/each}
+        </div>
+      {/if}
+    {/if}
+    {@render radioWideContent()}
+  {/if}
 </div>
 
 <style>
@@ -848,4 +897,71 @@
      — present for screen readers, never painted (the `title` attribute
      already carries the sighted-hover channel). Mirrors `TxAuxSurface`. */
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+  /* Receiver/bridge composition ported from v2.11.1 SdrVfoScreen and VfoHeader. */
+  .instrument-panel {
+    display: flex; align-items: stretch; width: 100%; min-width: 0;
+    background: linear-gradient(180deg, #0a0e14 0%, #05080c 100%);
+    border: 1px solid var(--v2-border-panel, #18222d); border-radius: 4px;
+  }
+  .receiver-instrument { flex: 1 1 490px; min-width: 0; padding: 6px 12px; }
+  .receiver-instrument + .receiver-instrument { border-left: 1px solid var(--v2-border-panel, #18222d); }
+  .bridge {
+    flex: 0 0 180px; min-width: 0; display: flex; flex-direction: column;
+    justify-content: center; gap: 10px; padding: 10px;
+    border-inline: 1px solid var(--v2-border-panel, #18222d);
+  }
+  .freq-stack { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .receiver-instrument .vfo-tile {
+    display: grid; grid-template-columns: 1fr auto; gap: 6px;
+    padding: 0; border: 0; background: transparent;
+  }
+  .receiver-instrument .vfo-role { font-size: 12px; letter-spacing: .1em; }
+  .receiver-instrument .vfo-mode { font-size: 12px; grid-column: 1; }
+  .receiver-instrument .vfo-freq {
+    grid-column: 1 / -1; grid-row: 3; white-space: nowrap; font-weight: 700;
+    font-size: clamp(26px, 3.6vw, 52px); line-height: 1.2; letter-spacing: .01em;
+    color: var(--v2-text-dim, #6f8196); text-align: right; margin: 20px 0 6px;
+  }
+  .receiver-instrument .vfo-freq :global(.freq) { font-size: inherit; line-height: inherit; }
+  .receiver-instrument .is-active .vfo-freq {
+    color: var(--v2-vfo-main-freq-active, #7cfce5);
+    text-shadow: 0 0 12px rgba(124,252,229,.5);
+  }
+  .receiver-instrument .secondary-slot .vfo-freq { font-size: 18px; margin: 2px 0; }
+  .receiver-instrument .vfo-select { justify-self: end; grid-column: 2; grid-row: 1 / 3; }
+  .bridge .fact-toggles, .bridge .vfo-ops { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .bridge .fact-toggle, .bridge .vfo-op, .bridge .vfo-select {
+    min-height: 28px; padding: 4px 6px; border-radius: 3px; font-size: 10px;
+    font-family: inherit; font-weight: 700; letter-spacing: .04em;
+    color: var(--v2-text-secondary, #a0b4c8);
+    border: 1px solid rgba(72,96,122,.4);
+    background: linear-gradient(180deg, #202a35 0%, #0b1017 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+  }
+  .bridge .fact-toggle { grid-column: 1 / -1; }
+  .bridge button:disabled { opacity: .5; }
+  .bridge button[aria-pressed='true'], .bridge button[aria-checked='true'] {
+    border-color: var(--v2-accent-cyan, #00d4ff); color: #7cfce5;
+  }
+  .bridge .split-digest { flex-wrap: wrap; justify-content: center; font-size: 9px; }
+  .bridge .vfo-identity-selectors { flex-direction: column; }
+  [data-vfo-appearance='standard'] .receiver-instrument { padding: 8px; }
+  [data-vfo-appearance='standard'] .instrument-active {
+    border: 1px solid var(--v2-accent-cyan, #00d4ff); border-radius: 4px;
+    box-shadow: 0 0 6px rgba(0,212,255,.3), inset 0 0 16px rgba(0,212,255,.06);
+  }
+  [data-vfo-appearance='standard'] .bridge { flex-basis: 136px; }
+  [data-vfo-appearance='standard'] .vfo-freq { font-size: 26px; margin: 4px 0; text-align: left; }
+  @media (max-width: 1050px) {
+    .instrument-panel { flex-wrap: wrap; }
+    .receiver-instrument { flex-basis: calc(50% - 90px); }
+    .bridge { flex-basis: 150px; }
+    .receiver-instrument .vfo-freq { font-size: 26px; }
+  }
+  @media (max-width: 760px) {
+    .instrument-panel { flex-direction: column; }
+    .receiver-instrument, .bridge { flex-basis: auto; }
+    .bridge { border-inline: 0; border-block: 1px solid var(--v2-border-panel, #18222d); }
+  }
 </style>

@@ -2139,3 +2139,52 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
     }
   });
 });
+
+describe('MOR-2342 historical instrument presentations', () => {
+  it.each(['sdr', 'standard'] as const)('pairs addressed facts and one bridge in %s', (appearance) => {
+    const root = mountSurface({ viewModel: withReceiverIndicators('2/main_sub'), appearance });
+    const panels = root.querySelectorAll('[data-receiver-instrument]');
+    expect(panels).toHaveLength(2);
+    for (const receiver of ['MAIN', 'SUB']) {
+      const panel = root.querySelector(`[data-receiver-instrument="${receiver}"]`)!;
+      expect(panel.querySelector(`[data-vfo-receiver="${receiver}"]`)).not.toBeNull();
+      expect(panel.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(1);
+      expect(panel.querySelector('[data-indicator-receiver]')?.getAttribute('data-indicator-receiver')).toBe(receiver);
+    }
+    expect(root.querySelectorAll('[data-instrument-bridge]')).toHaveLength(1);
+  });
+  it('keeps A/B memories in one receiver instrument with one S-meter', () => {
+    const root = mountSurface({ viewModel: withReceiverIndicators('1/ab'), appearance: 'sdr' });
+    expect(root.querySelectorAll('[data-receiver-instrument]')).toHaveLength(1);
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    expect(root.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(1);
+  });
+});
+
+
+describe('MOR-2342 preserved instrument intents', () => {
+  it.each(['sdr', 'standard'] as const)('tunes the addressed SUB active slot exactly once in %s', (appearance) => {
+    const model = withReceiverIndicators('2/main_sub');
+    const onTuneFrequency = vi.fn();
+    const root = mountSurface({ viewModel: model, appearance, onTuneFrequency });
+    const tile = root.querySelector('[data-vfo-receiver="SUB"][data-vfo-active-slot="true"]')!;
+    const digits = tile.querySelectorAll<HTMLElement>('.digit');
+    const digit = digits[digits.length - 1];
+    digit.click();
+    digit.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+    expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('SUB', 21295001);
+    expect(root.querySelector('[data-vfo-receiver="SUB"][data-vfo-active-slot="false"] .digit')).toBeNull();
+  });
+  it.each(['sdr', 'standard'] as const)('keeps unknown frequency and split inert in %s', (appearance) => {
+    const base = withReceiverIndicators('1/ab');
+    const model: RadioViewModel = { ...base, split: { status: 'unknown' },
+      vfos: base.vfos.map((vfo) => ({ ...vfo, frequencyHz: null })) };
+    const tune = vi.fn(); const split = vi.fn();
+    const root = mountSurface({ viewModel: model, appearance, onTuneFrequency: tune, onToggleSplit: split });
+    expect(root.querySelector('.digit')).toBeNull();
+    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    const toggle = root.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
+    expect(toggle.disabled).toBe(true); toggle.click();
+    expect(split).not.toHaveBeenCalled(); expect(tune).not.toHaveBeenCalled();
+  });
+});
