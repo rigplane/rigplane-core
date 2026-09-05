@@ -261,6 +261,7 @@ export function withModeFilter(fixture: RadioViewModel): RadioViewModel {
   const avail: Availability = { structural: true, operational: true };
   const known = <T>(value: T): ModeFilterField<T> => ({ reading: { status: 'known', value }, availability: avail });
   const modeFilter: ModeFilterViewModel = {
+    activeFilterConfiguration: null,
     currentMode: known('USB'),
     modeChoices: ['USB', 'LSB', 'CW', 'RTTY', 'FM'],
     currentFilter: known(1),
@@ -300,6 +301,7 @@ export function withFilterPassband(fixture: RadioViewModel): RadioViewModel {
     pbtInner: known(0),
     pbtOuter: known(0),
     dataMode: known(0),
+    dataModeChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'D1' }],
   };
   return { ...fixture, filterPassband };
 }

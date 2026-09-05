@@ -167,6 +167,7 @@
   "core.mobile.closeStepPicker": "ステップ選択を閉じる",
 
   "core.modePanel.modInputLabel": "MOD IN",
+  "core.modePanel.dataMode.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.modePanel.modInputAria": "変調入力ソース",
 
   "core.vfo.groupLabel": "VFO",

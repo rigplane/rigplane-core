@@ -29,7 +29,7 @@ import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
   MeterField, MeterRfState, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
-  FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
+  ActiveFilterConfiguration, FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
   BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
   BreakInMode, CwKeyerViewModel, ScopeControlsViewModel,
   ScopeDisplayViewModel, ScopeSourceKind, ScopeHealthState,
@@ -338,6 +338,40 @@ function deriveMeters(
   };
 }
 
+function isDataModeValue(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 3;
+}
+
+function copyFilterConfiguration(
+  config: unknown, labels: readonly string[],
+): ActiveFilterConfiguration | null {
+  if (typeof config !== 'object' || config === null) return null;
+  const c = config as Record<string, unknown>;
+  const hz = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
+  if (!Array.isArray(c.defaults) || c.defaults.some(n => !hz(n)) || typeof c.fixed !== 'boolean'
+    || labels.some(label => typeof label !== 'string' || !label.trim())) return null;
+  const minHz = c.minHz ?? null, maxHz = c.maxHz ?? null, stepHz = c.stepHz ?? null;
+  if ([minHz, maxHz, stepHz].some(n => n !== null && !hz(n))
+    || (typeof minHz === 'number' && typeof maxHz === 'number' && minHz > maxHz)) return null;
+  const table = c.table ?? [], segments = c.segments ?? [];
+  if (!Array.isArray(table) || table.some((n, i) => !hz(n) || (i > 0 && n <= table[i - 1]))
+    || !Array.isArray(segments)) return null;
+  const copiedSegments: { hzMin: number; hzMax: number; stepHz: number; indexMin: number }[] = [];
+  for (const raw of segments) {
+    if (typeof raw !== 'object' || raw === null) return null;
+    const { hzMin, hzMax, stepHz, indexMin } = raw;
+    if (!hz(hzMin) || !hz(hzMax) || hzMin > hzMax || !hz(stepHz)
+      || !Number.isSafeInteger(indexMin) || indexMin < 0) return null;
+    copiedSegments.push({ hzMin, hzMax, stepHz, indexMin });
+  }
+  const defaults = c.defaults;
+  return {
+    slots: labels.map((label, i) => ({ filter: i + 1, label, factoryWidthHz: defaults[i] ?? null })),
+    fixed: c.fixed, minHz: minHz as number | null, maxHz: maxHz as number | null,
+    stepHz: stepHz as number | null, segments: copiedSegments, table: [...table],
+  };
+}
+
 /**
  * Mode/filter facts (MOR-1262 decomposition slice 4A, MOR-1280): current
  * mode, capability-derived mode choice set, current filter selection,
@@ -360,7 +394,7 @@ function deriveMeters(
  * an additional consumer, not a migration (that is slice 4B).
  */
 function deriveModeFilter(
-  state: ServerState | null, caps: Capabilities | null,
+  state: ServerState | null, caps: Capabilities | null, activeId: ReceiverId | null,
 ): ModeFilterViewModel | undefined {
   if (!caps) return undefined;
   const modeChoices = caps.modes ?? [];
@@ -377,11 +411,19 @@ function deriveModeFilter(
   // The active mode-keyed filter config, resolved by the ONE shipped
   // derivation (`resolveFilterModeConfig`) — see the doc comment above.
   const filterConfig = resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode);
+  const activeBase = activeId === 'SUB' ? 'sub' : 'main';
+  const activeRx = activeId === null ? undefined : state?.[activeBase];
+  const dataValue = activeRx?.dataMode;
+  const configObserved = activeId !== null && strictFieldAvailable(state, activeBase + '.mode')
+    && (!hasCap(caps, 'data_mode') || (isDataModeValue(dataValue) && strictFieldAvailable(state, activeBase + '.dataMode')));
+  const activeFilterConfiguration = configObserved
+    ? copyFilterConfiguration(resolveFilterModeConfig(caps, activeRx?.mode, activeRx?.dataMode), filterChoices) : null;
   const widthMin = filterConfig?.minHz ?? filterConfig?.table?.[0] ?? caps.filterWidthMin;
   const widthMax = filterConfig?.maxHz
     ?? (filterConfig?.table?.length ? filterConfig.table[filterConfig.table.length - 1] : undefined)
     ?? caps.filterWidthMax;
   return {
+    activeFilterConfiguration,
     currentMode: txAuxField(hasModes, modeObserved, rx?.mode),
     modeChoices,
     currentFilter: txAuxField(hasFilters, filterObserved, numOrUndef(rx?.filter ?? undefined)),
@@ -443,7 +485,7 @@ function deriveModeFilter(
  *    field's ` ?? 128` fallback the way `toFilterProps` does.
  */
 function deriveFilterPassband(
-  state: ServerState | null, caps: Capabilities | null,
+  state: ServerState | null, caps: Capabilities | null, activeId: ReceiverId | null,
 ): FilterPassbandViewModel | undefined {
   if (!caps) return undefined;
   const hasFilters = (caps.filters ?? []).length > 0;
@@ -458,7 +500,15 @@ function deriveFilterPassband(
   const base = onSub ? 'sub.' : 'main.';
 
   const filterShapeObserved = topFieldAvailable(state, `${base}filterShape`);
-  const dataModeObserved = topFieldAvailable(state, `${base}dataMode`);
+  const dataRx = activeId === null ? undefined : state?.[RECEIVER_KEY[activeId]];
+  const dataValue = dataRx?.dataMode;
+  const dataModeObserved = activeId !== null && isDataModeValue(dataValue) && strictFieldAvailable(state, RECEIVER_KEY[activeId] + '.dataMode');
+  const count = caps.dataModeCount;
+  const dataModeChoices = hasDataModeCap && typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 && count <= 3
+    ? Array.from({ length: count + 1 }, (_, value) => {
+      const label = caps.dataModeLabels?.[String(value)];
+      return { value, label: typeof label === 'string' && label.trim() ? label : null };
+    }) : [];
   const pbtInnerObserved = topFieldAvailable(state, `${base}pbtInner`);
   const pbtOuterObserved = topFieldAvailable(state, `${base}pbtOuter`);
   const ifShiftRawObserved = topFieldAvailable(state, `${base}ifShift`);
@@ -568,7 +618,8 @@ function deriveFilterPassband(
         structural: hasPbtCap && hasPbtRange, value: pbtOuterHz,
       }),
     },
-    dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(rx?.dataMode)),
+    dataModeChoices,
+    dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(dataRx?.dataMode)),
   };
 }
 
@@ -1647,8 +1698,8 @@ export function toRadioViewModel(
   const txAux = deriveTxAux(state, caps);
   const meters = deriveMeters(state, caps, tx);
   const rxAudio = deriveRxAudio(state, caps, facts, modInputSource, rxAudioSnapshot);
-  const modeFilter = deriveModeFilter(state, caps);
-  const filterPassband = deriveFilterPassband(state, caps);
+  const modeFilter = deriveModeFilter(state, caps, activeId);
+  const filterPassband = deriveFilterPassband(state, caps, activeId);
   const dsp = deriveDsp(state, caps);
   const rfFrontEnd = deriveRfFrontEnd(state, caps);
   const band = deriveBand(state, caps, activeId);

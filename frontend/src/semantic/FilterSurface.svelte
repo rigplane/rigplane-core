@@ -106,6 +106,8 @@
      *  active receiver, DISPLAY ONLY (see the file header). `null` when
      *  nothing is pending. */
     pendingFilter?: number | null;
+    pendingDataMode?: number | null;
+    onDataModeChange?: (mode: number) => void;
     onModeChange?: (mode: string) => void;
     onFilterChange?: (filter: number) => void;
     onFilterWidthChange?: (width: number) => void;
@@ -115,11 +117,12 @@
     onPbtOuterChange?: (value: number) => void;
   }
   let {
-    view, pendingFilter = null, onModeChange, onFilterChange, onFilterWidthChange,
+    view, pendingFilter = null, pendingDataMode = null, onDataModeChange, onModeChange, onFilterChange, onFilterWidthChange,
     onFilterShapeChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
   }: Props = $props();
 
   const pendingFilterId = $props.id();
+  const pendingDataModeId = `${pendingFilterId}-data-mode`;
 
   let modeFilter = $derived(view.modeFilter);
   let filterPassband = $derived(view.filterPassband);
@@ -135,6 +138,12 @@
   }
   function selectShape(shape: number): void {
     if (filterPassband && usable(filterPassband.filterShape)) onFilterShapeChange?.(shape);
+  }
+  function selectDataMode(mode: number): void {
+    if (!filterPassband || !usable(filterPassband.dataMode)
+      || filterPassband.dataModeChoices.length < 2
+      || !filterPassband.dataModeChoices.some(choice => choice.value === mode)) return;
+    onDataModeChange?.(mode);
   }
   /** One guarded entry point for all three passband sliders — each still
    *  reads and disables on its OWN field's availability (see the file
@@ -272,10 +281,28 @@
       {/each}
       {#if filterPassband.dataMode.availability.structural}
         <div
-          class="filter-readout" data-testid="filter-data-mode"
+          class={filterPassband.dataModeChoices.length > 1 ? 'filter-choice-group' : 'filter-readout'} data-testid="filter-data-mode"
+          role="group" aria-label={t('core.mobile.sheet.dataMode')}
           data-disabled-reason={reasonOf(filterPassband.dataMode)}
+          data-data-mode-status={pendingDataMode !== null ? 'pending' : presentationOf(filterPassband.dataMode)}
+          aria-describedby={pendingDataMode !== null ? pendingDataModeId : undefined}
         >
-          <span class="filter-level-name">DATA</span><output>{textOf(filterPassband.dataMode)}</output>
+          <span class="filter-level-name">{filterPassband.dataModeChoices.length > 1 ? t('core.mobile.sheet.dataMode') : 'DATA'}</span>
+          <output>{textOf(filterPassband.dataMode)}</output>
+          {#if filterPassband.dataModeChoices.length > 1}
+            {#each filterPassband.dataModeChoices as choice (choice.value)}
+              <button
+                type="button" class="filter-choice" data-testid={`filter-data-mode-${choice.value}`}
+                aria-pressed={isSelected(filterPassband.dataMode, choice.value)}
+                data-pending={pendingDataMode === choice.value}
+                disabled={!usable(filterPassband.dataMode)}
+                onclick={() => selectDataMode(choice.value)}
+              >{choice.label ?? (choice.value === 0 ? 'OFF' : `D${choice.value}`)}</button>
+            {/each}
+          {/if}
+          {#if pendingDataMode !== null}
+            <span id={pendingDataModeId} class="sr-only">{t('core.modePanel.dataMode.pendingAnnouncement')}</span>
+          {/if}
         </div>
       {/if}
     {/if}

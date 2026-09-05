@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateRadioViewModel, type RadioViewModel } from '../radio-view-model';
+import { withModeFilter, withFilterPassband } from '../fixtures/topologies';
 
 function valid(): RadioViewModel {
   return {
@@ -462,5 +463,52 @@ describe('receiver RF gain display facet validation', () => {
     const view = withDisplay({ state: 'current', value: 0 });
     Object.assign(view.receiverIndicators![0].sMeter, { display: { state: 'stale', value: 0 } });
     expect(() => validateRadioViewModel(view)).toThrow();
+  });
+});
+
+
+describe('MOR-2374 strict filter contract', () => {
+  const configuration = {
+    slots: [{ filter: 1, label: 'FIL1', factoryWidthHz: 2400 }, { filter: 2, label: 'FIL2', factoryWidthHz: null }],
+    fixed: false, minHz: 50, maxHz: 3600, stepHz: 50,
+    segments: [{ hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 0 }], table: [50, 100],
+  };
+  const model = () => {
+    const v = withFilterPassband(withModeFilter(valid()));
+    return { ...v, modeFilter: { ...v.modeFilter!, activeFilterConfiguration: configuration },
+      filterPassband: { ...v.filterPassband!, dataModeChoices: [{ value: 0, label: 'OFF' }, { value: 1, label: 'D1' }] } };
+  };
+  it('accepts populated and unavailable forms', () => {
+    expect(validateRadioViewModel(model())).toEqual(model());
+    const unlabeled = model();
+    const metadata = { ...unlabeled, filterPassband: { ...unlabeled.filterPassband, dataModeChoices: [{ value: 0, label: null }] } };
+    expect(validateRadioViewModel(metadata)).toEqual(metadata);
+    const v = model();
+    const unavailable = { ...v, modeFilter: { ...v.modeFilter, activeFilterConfiguration: null },
+      filterPassband: { ...v.filterPassband, dataModeChoices: [] } };
+    expect(validateRadioViewModel(unavailable)).toEqual(unavailable);
+  });
+  it.each([
+    undefined, null, [{ value: 1, label: 'D1' }], [{ value: 0, label: '' }],
+    [{ value: 0, label: 'OFF', raw: true }], [{ value: 0, label: 'OFF' }, { value: 0, label: 'D1' }],
+    [{ value: -1, label: 'OFF' }], [{ value: NaN, label: 'OFF' }],
+    [0, 1, 2, 3, 4].map(value => ({ value, label: 'D' + value })),
+  ])('rejects malformed DATA vocabulary %#', (dataModeChoices) => {
+    const v = model();
+    expect(() => validateRadioViewModel({ ...v, filterPassband: { ...v.filterPassband, dataModeChoices } })).toThrow(TypeError);
+  });
+  it.each([
+    undefined, {}, { ...configuration, raw: true }, { ...configuration, fixed: 1 },
+    { ...configuration, slots: [{ filter: 0, label: 'FIL1', factoryWidthHz: 1 }] },
+    { ...configuration, slots: [{ filter: 1, label: ' ', factoryWidthHz: 1 }] },
+    { ...configuration, slots: [{ filter: 1, label: 'FIL1', factoryWidthHz: -1 }] },
+    { ...configuration, minHz: NaN }, { ...configuration, maxHz: Infinity },
+    { ...configuration, minHz: 4000 }, { ...configuration, stepHz: 0 },
+    { ...configuration, table: [100, 100] }, { ...configuration, table: [-1] },
+    { ...configuration, segments: [{ hzMin: 100, hzMax: 50, stepHz: 10, indexMin: 0 }] },
+    { ...configuration, segments: [{ hzMin: 50, hzMax: 100, stepHz: 10, indexMin: 0, raw: true }] },
+  ])('rejects malformed configuration %#', (activeFilterConfiguration) => {
+    const v = model();
+    expect(() => validateRadioViewModel({ ...v, modeFilter: { ...v.modeFilter, activeFilterConfiguration } })).toThrow(TypeError);
   });
 });

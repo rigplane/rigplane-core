@@ -646,7 +646,7 @@ describe('PBT display observations (MOR-1692)', () => {
     const { display: outerDisplay, ...strictOuter } = result.pbtOuter;
     const absent = { reading: { status: 'unknown' }, availability: { structural: false, operational: false } };
     expect({ ...result, pbtInner: strict, pbtOuter: strictOuter }).toEqual({
-      filterShape: absent, filterShapeControlStructural: false, ifShiftControlStructural: false, dataMode: absent,
+      filterShape: absent, filterShapeControlStructural: false, ifShiftControlStructural: false, dataMode: absent, dataModeChoices: [],
       ifShift: { reading: freshness === 'fresh' ? { status: 'known', value: 225 } : { status: 'unknown' }, availability: { structural: true, operational: freshness === 'fresh' } },
       pbtInner: strict,
       pbtOuter: { reading: { status: 'known', value: 0 }, availability: { structural: true, operational: true } },

@@ -21,7 +21,7 @@ import {
   validateRadioViewModel, type RadioViewModel,
 } from '../../../../semantic/radio-view-model';
 import { topologyFixtures } from '../../../../semantic/fixtures/topologies';
-import { toMemoryPanelProps } from '../../props/panel-props';
+import { resolveFilterModeConfig, toMemoryPanelProps } from '../../props/panel-props';
 import {
   toRadioViewModel, type MetersTxAuthority,
 } from '../radio-view-model-adapter';
@@ -1040,9 +1040,9 @@ describe('RF gain additive display observation', () => {
     };
     return state;
   }
-  it.each([false, true])('preserves every strict model member for stale=%s', (stale) => {
+  it.each([false, true])('preserves legacy strict model members for stale=%s', (stale) => {
     const view = toRadioViewModel(displayState(stale), displayCaps, RECEIVING)!;
-    const strictJson = JSON.stringify(view, (key, value) => key === 'display' ? undefined : value);
+    const strictJson = JSON.stringify(view, (key, value) => ['display', 'activeFilterConfiguration', 'dataModeChoices'].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
     expect(digest).toBe(stale ? 'b4b5cff2b85557e39baa48e4d73c756e12ff026488ffa05a1ef558ca0b3f0507' : '379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');
   });
@@ -1061,5 +1061,114 @@ describe('RF gain additive display observation', () => {
     const view = model(state, { ...displayCaps, capabilities: displayCaps.capabilities.filter((cap) => cap !== 'dual_rx') }, RECEIVING);
     expect(view.receiverIndicators![1].rfGain.availability.operational).toBe(false);
     expect(view.receiverIndicators![1].rfGain.display).toEqual({ state: 'current', value: 0.75 });
+  });
+});
+
+
+describe('MOR-2374 shared DATA and filter configuration', () => {
+  const config = {
+    defaults: [2400], fixed: false, minHz: 50, maxHz: 3600, stepHz: 50,
+    segments: [{ hzMin: 50, hzMax: 500, stepHz: 50, indexMin: 0 }], table: [50, 100, 500],
+  };
+  const dataCaps = (extra: Partial<Capabilities> = {}) => caps({
+    capabilities: [...DUAL, 'data_mode'], modes: ['USB'], filters: ['FIL1', 'FIL2'],
+    dataModeCount: 3, filterConfig: { USB: config }, ...extra,
+  });
+  function state() {
+    const s = observedState();
+    s.fieldStatus = { ...s.fieldStatus, 'main.dataMode': fresh, 'sub.dataMode': fresh };
+    return s;
+  }
+  it.each([0, 1, 3])('offers exactly 0..%i with canonical labels', (count) => {
+    const model = toRadioViewModel(state(), dataCaps({ dataModeCount: count,
+      dataModeLabels: { '0': 'OFF label', '1': 'Digital', '2': '  ', '9': 'stray' } }))!;
+    expect(model.filterPassband!.dataModeChoices).toEqual(Array.from({ length: count + 1 }, (_, value) =>
+      ({ value, label: value === 0 ? 'OFF label' : value === 1 ? 'Digital' : null })));
+    expect(validateRadioViewModel(model)).toEqual(model);
+  });
+  it.each([undefined, -1, 1.5, 4, 1e12, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, '3'])
+    ('rejects malformed or oversized DATA count %s', (dataModeCount) => {
+      expect(toRadioViewModel(state(), dataCaps({ dataModeCount } as Partial<Capabilities>))!
+        .filterPassband!.dataModeChoices).toEqual([]);
+    });
+  it('leaves fallback presentation to the component and does not infer DATA support', () => {
+    expect(toRadioViewModel(state(), dataCaps({ dataModeLabels: undefined }))!.filterPassband!.dataModeChoices)
+      .toEqual([0, 1, 2, 3].map(value => ({ value, label: null })));
+    const fp = toRadioViewModel(state(), dataCaps({ capabilities: DUAL }))!.filterPassband!;
+    expect(fp.dataModeChoices).toEqual([]);
+    expect(fp.dataMode.availability.structural).toBe(false);
+  });
+  it('uses SUB observations for DATA and configuration', () => {
+    const s = state(); s.active = 'SUB'; s.sub!.dataMode = 2;
+    const model = toRadioViewModel(s, dataCaps({ filterConfig: { USB: config,
+      'USB-D': { defaults: [500], fixed: true } } }))!;
+    expect(model.filterPassband!.dataMode.reading).toEqual({ status: 'known', value: 2 });
+    expect(model.modeFilter!.activeFilterConfiguration!.slots[0].factoryWidthHz).toBe(500);
+  });
+  it.each(['active', 'main.dataMode', 'main.mode'])('requires current evidence for %s', (path) => {
+    for (const status of [undefined, stale, { ...fresh, observed: false }]) {
+      const s = state(); s.fieldStatus = { ...s.fieldStatus, [path]: status } as ServerState['fieldStatus'];
+      const model = toRadioViewModel(s, dataCaps())!;
+      expect(model.modeFilter!.activeFilterConfiguration).toBeNull();
+      if (path !== 'main.mode') {
+        expect(model.filterPassband!.dataMode.reading.status).toBe('unknown');
+        expect(model.filterPassband!.dataMode.availability.operational).toBe(false);
+        expect(model.filterPassband!.dataModeChoices).toHaveLength(4);
+      }
+    }
+  });
+  it.each([
+    ['USB', 0, 'USB'], ['USB', 1, 'USB-D'], ['LSB', 0, 'SSB'], ['LSB', 1, 'SSB-D'],
+    ['CW-R', 0, 'CW'], ['RTTY-R', 0, 'RTTY'], ['FM', 0, null],
+  ] as const)('resolves %s DATA %i via the shipped resolver', (mode, dataMode, key) => {
+    const entries = ['USB', 'USB-D', 'SSB', 'SSB-D', 'CW', 'RTTY'];
+    const c = dataCaps({ filterConfig: Object.fromEntries(entries.map((name, i) =>
+      [name, { ...config, defaults: [100 * (i + 1)] }])) });
+    const s = state(); s.main.mode = mode; s.main.dataMode = dataMode;
+    const resolved = resolveFilterModeConfig(c, mode, dataMode);
+    const result = toRadioViewModel(s, c)!.modeFilter!.activeFilterConfiguration;
+    expect(resolved).toBe(key ? c.filterConfig![key] : null);
+    expect(result).toEqual(resolved ? { slots: [
+      { filter: 1, label: 'FIL1', factoryWidthHz: resolved.defaults[0] },
+      { filter: 2, label: 'FIL2', factoryWidthHz: null },
+    ], fixed: resolved.fixed, minHz: resolved.minHz, maxHz: resolved.maxHz, stepHz: resolved.stepHz,
+    segments: resolved.segments, table: resolved.table } : null);
+  });
+  it('copies nested configuration and never fills missing defaults from current width', () => {
+    const c = dataCaps({ filterConfig: { USB: structuredClone(config) } });
+    const s = state(); s.main.filterWidth = 999;
+    const projected = toRadioViewModel(s, c)!.modeFilter!.activeFilterConfiguration!;
+    const saved = structuredClone(projected);
+    expect(projected.slots[1].factoryWidthHz).toBeNull();
+    c.filterConfig!.USB.defaults[0] = 999; c.filterConfig!.USB.segments![0].stepHz = 25;
+    c.filterConfig!.USB.table![0] = 25; c.filters[0] = 'changed';
+    expect(projected).toEqual(saved);
+  });
+  it.each([undefined, NaN, Infinity, -1, 0.5, 4])('withholds missing or invalid observed DATA value %s', (value) => {
+    const s = state(); Object.assign(s.main, { dataMode: value });
+    const model = toRadioViewModel(s, dataCaps())!;
+    expect(model.modeFilter!.activeFilterConfiguration).toBeNull();
+    expect(model.filterPassband!.dataMode.reading.status).toBe('unknown');
+  });
+  it.each([[1, 2], [0, 1]])('preserves observed DATA independently of advertised count %i', (count, value) => {
+    const s = state(); s.main.dataMode = value;
+    const model = toRadioViewModel(s, dataCaps({ dataModeCount: count, filterConfig: { USB: config,
+      'USB-D': { defaults: [500], fixed: true } } }))!;
+    expect(model.filterPassband!.dataMode.reading).toEqual({ status: 'known', value });
+    expect(model.filterPassband!.dataMode.availability.operational).toBe(true);
+    expect(model.modeFilter!.activeFilterConfiguration!.slots[0].factoryWidthHz).toBe(500);
+  });
+  it('permits observed non-DATA mode configuration without DATA evidence', () => {
+    const s = state(); delete s.fieldStatus!['main.dataMode'];
+    expect(toRadioViewModel(s, dataCaps({ capabilities: DUAL }))!.modeFilter!.activeFilterConfiguration).not.toBeNull();
+  });
+  it.each([
+    null, {}, { ...config, fixed: 'yes' }, { ...config, defaults: [-1] },
+    { ...config, minHz: NaN }, { ...config, maxHz: 1 }, { ...config, stepHz: 0 },
+    { ...config, table: [100, 50] }, { ...config, table: [Infinity] },
+    { ...config, segments: [{ hzMin: 50, hzMax: 10, stepHz: 0, indexMin: -1 }] },
+  ])('withholds malformed filter configuration %#', (bad) => {
+    const c = dataCaps({ filterConfig: { USB: bad } } as unknown as Partial<Capabilities>);
+    expect(toRadioViewModel(state(), c)!.modeFilter!.activeFilterConfiguration).toBeNull();
   });
 });

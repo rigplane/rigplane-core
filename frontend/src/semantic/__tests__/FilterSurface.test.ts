@@ -11,6 +11,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { getLocale, setLocale } from '$lib/i18n';
 import FilterSurface, {
   FILTER_PASSBAND_LEVELS, FILTER_SHAPES, type FilterPassbandLevelField,
 } from '../FilterSurface.svelte';
@@ -94,6 +95,7 @@ beforeEach(() => { target = document.createElement('div'); document.body.appendC
 afterEach(() => { target.remove(); });
 
 type Handlers = {
+  onDataModeChange?: (mode: number) => void;
   onModeChange?: (mode: string) => void;
   onFilterChange?: (filter: number) => void;
   onFilterWidthChange?: (width: number) => void;
@@ -103,7 +105,8 @@ type Handlers = {
   onPbtOuterChange?: (value: number) => void;
 };
 
-function render(view: RadioViewModel, handlers: Handlers = {}, extra: { pendingFilter?: number | null } = {}) {
+type PendingProps = { pendingFilter?: number | null; pendingDataMode?: number | null };
+function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingProps = {}) {
   const component = mount(FilterSurface, { target, props: { view, ...extra, ...handlers } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
@@ -121,11 +124,116 @@ function render(view: RadioViewModel, handlers: Handlers = {}, extra: { pendingF
 
 function withSurface(
   view: RadioViewModel, fn: (s: ReturnType<typeof render>) => void, handlers: Handlers = {},
-  extra: { pendingFilter?: number | null } = {},
+  extra: PendingProps = {},
 ): void {
   const s = render(view, handlers, extra);
   try { fn(s); } finally { s.dispose(); }
 }
+
+describe('DATA choices and evidence (MOR-2374)', () => {
+  function dataView(values = [0, 1]): RadioViewModel {
+    const view = base();
+    return { ...view, filterPassband: { ...view.filterPassband!,
+      dataMode: { availability: { structural: true, operational: true }, reading: { status: 'known', value: 0 } },
+      dataModeChoices: values.map(value => ({ value, label: value === 0 ? 'OFF' : `DATA${value}` })),
+    } };
+  }
+
+  it.each([{ values: [0, 1] }, { values: [0, 1, 2, 3] }])('renders capability labels and dispatches explicit choices for $values', ({ values }) => {
+    const onDataModeChange = vi.fn();
+    withSurface(dataView(values), s => {
+      expect(onDataModeChange).not.toHaveBeenCalled();
+      for (const value of values) {
+        const button = s.button('filter-data-mode', value)!;
+        expect(button.textContent).toBe(value === 0 ? 'OFF' : `DATA${value}`);
+        expect(button.getAttribute('aria-pressed')).toBe(String(value === 0));
+        button.click();
+      }
+      expect(onDataModeChange.mock.calls).toEqual(values.map(value => [value]));
+    }, { onDataModeChange });
+  });
+
+  it.each([{ values: [] }, { values: [0] }])('keeps $values readout-only', ({ values }) => {
+    withSurface(dataView(values), s => {
+      expect(s.group('filter-data-mode')!.classList.contains('filter-readout')).toBe(true);
+      expect(s.group('filter-data-mode')!.querySelector('.filter-level-name')!.textContent).toBe('DATA');
+      expect(s.group('filter-data-mode')!.querySelectorAll('button')).toHaveLength(0);
+      expect(s.output('filter-data-mode')!.textContent).toBe('0');
+    });
+  });
+
+  it.each(['unknown', 'stale'] as const)('disables %s DATA without a confirmed selection or forced callback', state => {
+    const onDataModeChange = vi.fn();
+    const view = withPassbandField(dataView(), 'dataMode', state === 'unknown'
+      ? { unknown: true } : { availability: { structural: true, operational: false } });
+    withSurface(view, s => {
+      for (const value of [0, 1]) {
+        const button = s.button('filter-data-mode', value)!;
+        expect(button.disabled).toBe(true);
+        expect(button.getAttribute('aria-pressed')).toBe('false');
+        button.disabled = false;
+        button.click();
+      }
+      expect(onDataModeChange).not.toHaveBeenCalled();
+    }, { onDataModeChange }, { pendingDataMode: 1 });
+  });
+
+  it('preserves current DATA outside the choices while dispatching only explicit destinations', () => {
+    const view = dataView(), onDataModeChange = vi.fn();
+    view.filterPassband!.dataMode.reading = { status: 'known', value: 2 };
+    withSurface(view, s => {
+      expect(s.output('filter-data-mode')!.textContent).toBe('2');
+      for (const value of [0, 1]) {
+        const button = s.button('filter-data-mode', value)!;
+        expect(button.disabled).toBe(false);
+        expect(button.getAttribute('aria-pressed')).toBe('false');
+        button.click();
+      }
+      expect(onDataModeChange.mock.calls).toEqual([[0], [1]]);
+    }, { onDataModeChange });
+  });
+
+  it('renders OFF and Dn when capability labels are absent', () => {
+    const baseView = dataView();
+    const view = { ...baseView, filterPassband: { ...baseView.filterPassband!, dataModeChoices: [0, 1].map(value => ({ value, label: null })) } };
+    withSurface(view, s => {
+      expect(s.button('filter-data-mode', 0)!.textContent).toBe('OFF');
+      expect(s.button('filter-data-mode', 1)!.textContent).toBe('D1');
+    });
+  });
+
+  it('rejects a removed choice even if its old DOM callback is invoked', () => {
+    const view = dataView([0, 1, 2, 3]);
+    const onDataModeChange = vi.fn();
+    withSurface(view, s => {
+      const choices = view.filterPassband!.dataModeChoices as { value: number; label: string }[];
+      choices.pop();
+      s.button('filter-data-mode', 3)!.click();
+      expect(onDataModeChange).not.toHaveBeenCalled();
+      choices.push({ value: 3, label: 'DATA3' });
+      s.button('filter-data-mode', 3)!.click();
+      expect(onDataModeChange).toHaveBeenCalledExactlyOnceWith(3);
+    }, { onDataModeChange });
+  });
+
+  it('keeps pending separate from confirmed with a Japanese accessible announcement', () => {
+    const locale = getLocale();
+    setLocale('ja-JP');
+    try {
+      withSurface(dataView([0, 1, 2, 3]), s => {
+        const group = s.group('filter-data-mode')!;
+        expect(group.getAttribute('aria-label')).toBe('DATA MODE');
+        expect(group.dataset.dataModeStatus).toBe('pending');
+        expect(s.button('filter-data-mode', 0)!.getAttribute('aria-pressed')).toBe('true');
+        expect(s.button('filter-data-mode', 2)!.getAttribute('aria-pressed')).toBe('false');
+        expect(s.button('filter-data-mode', 2)!.dataset.pending).toBe('true');
+        expect(s.button('filter-data-mode', 0)!.dataset.pending).toBe('false');
+        expect(document.getElementById(group.getAttribute('aria-describedby')!)!.textContent)
+          .toBe('保留中、まだ確認されていません');
+      }, {}, { pendingDataMode: 2 });
+    } finally { setLocale(locale); }
+  });
+});
 
 // ── 1. Whole-group gating ───────────────────────────────────────────────────
 
@@ -635,7 +743,7 @@ describe('filterShape renders honest unknown rather than a fabricated default', 
   });
 });
 
-// ── 8. dataMode is an honest readout, never a control ───────────────────────
+// ── 8. DATA readout ────────────────────────────────────────────────────────
 
 describe('dataMode renders as a readout', () => {
   it('shows the known value', () => {
@@ -651,8 +759,9 @@ describe('dataMode renders as a readout', () => {
     });
   });
 
-  it('carries no button or input — it is read-only', () => {
-    withSurface(base(), (s) => {
+  it('carries no button or input when no DATA choices are available', () => {
+    const view = base();
+    withSurface({ ...view, filterPassband: { ...view.filterPassband!, dataModeChoices: [] } }, (s) => {
       const readout = s.group('filter-data-mode')!;
       expect(readout.querySelector('button')).toBeNull();
       expect(readout.querySelector('input')).toBeNull();
