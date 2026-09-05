@@ -326,6 +326,72 @@ describe('WsChannel', () => {
     expect(received).toEqual([currentFrame]);
   });
 
+  it('ignores a delayed close from a socket replaced after intentional disconnect', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const received: ArrayBuffer[] = [];
+    ch.onBinary((frame) => received.push(frame));
+
+    ch.connect('ws://test');
+    const first = instances[0];
+    first.simulateOpen();
+    first.close = vi.fn(() => { first.readyState = MockWebSocket.CLOSED; });
+
+    ch.disconnect();
+    ch.connect('ws://test');
+    const replacement = instances[1];
+    replacement.simulateOpen();
+
+    first.simulateClose(1000, 'delayed close', true);
+    const currentFrame = new ArrayBuffer(2);
+    replacement.simulateMessage(currentFrame);
+    vi.advanceTimersByTime(60_000);
+
+    expect(ch.state).toBe('connected');
+    expect(ch.isConnected()).toBe(true);
+    expect(received).toEqual([currentFrame]);
+    expect(instances).toHaveLength(2);
+  });
+
+  it('keeps one channel across a deferred-close hardware demand reacquisition', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const { ScopeController } = await import('../../runtime/scope-controller.svelte');
+    const { PresentationResourceHost } = await import('../../runtime/resource-host');
+    const ch = new WsChannel();
+    const controller = new ScopeController(() => ch);
+    const host = new PresentationResourceHost<unknown>('orientation-session');
+    host.configure('hardware-scope', {
+      available: true,
+      selected: true,
+      driver: controller.hardwareScopeDriver,
+    });
+
+    const portrait = host.acquire('hardware-scope', 'portrait');
+    await Promise.resolve();
+    await Promise.resolve();
+    const first = instances[0];
+    first.simulateOpen();
+    first.close = vi.fn(() => { first.readyState = MockWebSocket.CLOSED; });
+
+    host.release(portrait);
+    const landscape = host.acquire('hardware-scope', 'landscape');
+    await Promise.resolve();
+    await Promise.resolve();
+    const replacement = instances[1];
+    replacement.simulateOpen();
+
+    first.simulateClose(1000, 'delayed close', true);
+    vi.advanceTimersByTime(60_000);
+
+    expect(host.snapshot('hardware-scope')).toMatchObject({ demand: 1, health: 'streaming' });
+    expect(ch.state).toBe('connected');
+    expect(ch.isConnected()).toBe(true);
+    expect(instances).toHaveLength(2);
+
+    host.release(landscape);
+    await host.teardown();
+  });
+
   it('emits correlated PTT delivery events without fabricating RF state', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
