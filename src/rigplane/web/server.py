@@ -498,8 +498,7 @@ def _notification_payload(
 def _redact_token_in_path(path: str) -> str:
     """Return `path` with any `token=` query value replaced by `***`.
 
-    Prevents auth tokens from leaking into log captures when clients
-    authenticate via the `?token=` query parameter (see issue #948).
+    Retained for log redaction of legacy query values (see issue #948).
     """
     if "token=" not in path:
         return path
