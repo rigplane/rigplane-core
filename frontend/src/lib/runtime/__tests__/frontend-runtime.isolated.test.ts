@@ -17,6 +17,7 @@ import { effect_root, render_effect } from 'svelte/internal/client';
 vi.mock('$lib/transport/http-client', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/transport/http-client')>(),
   fetchCapabilities: vi.fn(),
+  fetchInfo: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({
