@@ -110,7 +110,16 @@ function setState(overrides: Record<string, unknown> = {}): void {
 }
 
 function useDualReceiverCapabilities(): void {
-  setCapabilities({ capabilities: ['data_mode'], receivers: 2, vfoScheme: 'main_sub', stateContractVersion: 1, providerGeneration: 0 } as never);
+  setCapabilities({
+    capabilities: ['data_mode'],
+    receivers: 2,
+    vfoScheme: 'main_sub',
+    audioTx: true,
+    audioTxRoute: 'lan',
+    audioTxRequiredModInputSource: 5,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+  } as never);
 }
 
 function missingStatus() {
@@ -132,7 +141,14 @@ beforeEach(() => {
   vi.mocked(runtime.startTx).mockClear();
   vi.mocked(runtime.stopTx).mockClear();
   resetRadioState();
-  setCapabilities({ capabilities: ['data_mode'], stateContractVersion: 1, providerGeneration: 0 } as never);
+  setCapabilities({
+    capabilities: ['data_mode'],
+    audioTx: true,
+    audioTxRoute: 'lan',
+    audioTxRequiredModInputSource: 5,
+    stateContractVersion: 1,
+    providerGeneration: 0,
+  } as never);
   dismissModInputTxGuard();
 });
 
@@ -149,6 +165,54 @@ describe('armModInputTxGuard (MOR-617)', () => {
 
   it('does not fire when the source is LAN', () => {
     setState({ main: receiver(1), data1ModInput: 5 });
+
+    armModInputTxGuard();
+
+    expect(deriveModInputTxGuardProps().visible).toBe(false);
+  });
+
+  it('does not offer Set LAN for a USB route with no declared required source', () => {
+    setCapabilities({
+      capabilities: ['data_mode'],
+      audioTx: true,
+      audioTxRoute: 'usb',
+      audioTxRequiredModInputSource: null,
+      stateContractVersion: 1,
+      providerGeneration: 0,
+    } as never);
+    setState({ main: receiver(1), data1ModInput: 0 });
+
+    armModInputTxGuard();
+
+    expect(deriveModInputTxGuardProps()).toEqual({
+      visible: false,
+      sourceLabel: null,
+    });
+  });
+
+  it('does not fire when the LAN route has no declared required source', () => {
+    setCapabilities({
+      capabilities: ['data_mode'],
+      audioTx: true,
+      audioTxRoute: 'lan',
+      audioTxRequiredModInputSource: null,
+      stateContractVersion: 1,
+      providerGeneration: 0,
+    } as never);
+    setState({ main: receiver(1), data1ModInput: 0 });
+
+    armModInputTxGuard();
+
+    expect(deriveModInputTxGuardProps().visible).toBe(false);
+  });
+
+  it('does not fire without an audio-route declaration', () => {
+    setCapabilities({
+      capabilities: ['data_mode'],
+      stateContractVersion: 1,
+      providerGeneration: 0,
+    } as never);
+    setState({ main: receiver(1), data1ModInput: 0 });
 
     armModInputTxGuard();
 
@@ -209,6 +273,26 @@ describe('armModInputTxGuard (MOR-617)', () => {
 });
 
 describe('guard clearing (MOR-617)', () => {
+  it('clears a latched LAN warning when the declaration changes to USB', () => {
+    setState({ main: receiver(1), data1ModInput: 0 });
+    armModInputTxGuard();
+    expect(deriveModInputTxGuardProps().visible).toBe(true);
+
+    setCapabilities({
+      capabilities: ['data_mode'],
+      audioTx: true,
+      audioTxRoute: 'usb',
+      audioTxRequiredModInputSource: null,
+      stateContractVersion: 1,
+      providerGeneration: 1,
+    } as never);
+
+    expect(deriveModInputTxGuardProps()).toEqual({
+      visible: false,
+      sourceLabel: null,
+    });
+  });
+
   it('clears when readback reports the source became LAN', () => {
     setState({ main: receiver(1), data1ModInput: 0 });
     armModInputTxGuard();

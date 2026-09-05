@@ -980,6 +980,12 @@
     pointer-events: auto;
   }
 
+  @media (orientation: portrait) {
+    .m-mod-input-warning {
+      right: max(96px, calc(84px + env(safe-area-inset-right, 0px)));
+    }
+  }
+
   /* ── Landscape layout ── */
   .m-landscape {
     position: fixed;

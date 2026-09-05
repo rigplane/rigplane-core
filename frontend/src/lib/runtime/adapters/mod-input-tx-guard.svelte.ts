@@ -1,13 +1,11 @@
 /**
  * MOD-input TX preflight guard (MOR-617, T3 of epic MOR-614).
  *
- * Root cause this guards against: when the active DATA group's MOD-input
- * source is not LAN, network voice TX from the web UI modulates from
- * MIC/ACC/USB instead of the network audio stream — open-mic feedback or
- * dead air. The guard is armed at the moment the web TX audio path starts
- * (see `tx-adapter.startTx`) and surfaces a non-blocking warning with a
- * one-click "Set LAN" fix that reuses the existing per-group SET command
- * (T1/MOR-615 backend, T2/MOR-616 helpers).
+ * When browser TX declares that its audio route requires LAN, the guard
+ * warns if the active DATA group's MOD-input source does not match. It is
+ * armed when the web TX audio path starts (see `tx-adapter.startTx`) and
+ * offers a one-click "Set LAN" fix through the existing per-group SET
+ * command (T1/MOR-615 backend, T2/MOR-616 helpers).
  *
  * Warn-only by design: TX is never blocked and the rig is never changed
  * silently — auto-set is a separate opt-in (T4/MOR-618).
@@ -42,10 +40,8 @@ export interface ModInputTxGuardProps {
 let armed = $state(false);
 
 /**
- * The active receiver group's MOD-input source when it warrants a warning,
- * or null when the guard must stay quiet: no state, no data_mode capability,
- * group not yet read (fieldStatus missing), source unknown (null) or
- * already LAN.
+ * The active receiver group's MOD-input source when a declared LAN route
+ * warrants a warning, or null when the guard must stay quiet.
  */
 function offendingSource(
   state: ServerState | null,
@@ -53,6 +49,10 @@ function offendingSource(
 ): number | null {
   if (!state) return null;
   if (!(caps?.capabilities?.includes('data_mode') ?? false)) return null;
+  if (
+    caps?.audioTxRoute !== 'lan'
+    || caps.audioTxRequiredModInputSource !== LAN_MOD_INPUT_SOURCE
+  ) return null;
   const rx = state.active === 'SUB' ? state.sub : state.main;
   const key = modInputStateKey(rx?.dataMode ?? 0);
   if (getFieldAvailability(state, key) === 'missing') return null;
@@ -62,9 +62,9 @@ function offendingSource(
 }
 
 /**
- * Evaluate the preflight at network-voice-TX start. Arms the warning when
- * the active group's source is known and not LAN; otherwise clears any
- * stale latch. Never blocks the TX path.
+ * Evaluate the preflight at browser-audio-TX start. Arms the warning when
+ * the declared LAN requirement is not met; otherwise clears any stale latch.
+ * Never blocks the TX path.
  */
 export function armModInputTxGuard(): void {
   armed = offendingSource(getRadioState(), getCapabilities()) !== null;
