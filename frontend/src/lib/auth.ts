@@ -1,4 +1,3 @@
-/** @deprecated Core no longer uses application authentication tokens. */
 export function getAuthToken(): string | null {
   return null;
 }
