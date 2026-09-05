@@ -102,13 +102,39 @@ describe('managed App TX host', () => {
     host.dispose();
   });
 
-  it('destroy discharges a started TRANSMIT obligation with exactly one ForceOFF', async () => {
+  it.each(['lifecycle', 'pre-disconnect', 'session-close', 'dispose'] as const)(
+    '%s preserves another client\'s latched TRANSMIT', async (release) => {
+    h.state = { ...idle(), phase: 'active', intent: 'latched', radioTx: 'on', releaseRequired: true };
+    const host = provideManagedAppTxHost(bindings());
+    if (release === 'lifecycle') h.lifecycle!();
+    if (release === 'pre-disconnect') await h.barrier!();
+    if (release === 'session-close') h.session!({ state: 'disconnected', epoch: 5 });
+    if (release === 'dispose') host.dispose();
+    await flush();
+    host.dispose();
+    await flush();
+    expect(h.submit).not.toHaveBeenCalled();
+    expect(h.sendPtt).not.toHaveBeenCalled();
+    expect(h.startAudio).not.toHaveBeenCalled();
+    expect(h.stopAudio).not.toHaveBeenCalled();
+  });
+
+  it.each(['lifecycle', 'pre-disconnect', 'session-close', 'dispose'] as const)(
+    '%s preserves this browser\'s admitted TRANSMIT while cleaning local audio', async (release) => {
     const host = provideManagedAppTxHost(bindings());
     getManagedAppTxController().transmitOn();
     await vi.waitFor(() => expect(h.submit).toHaveBeenCalledWith('transmit_on'));
-    host.dispose(); host.dispose();
-    await vi.waitFor(() => expect(h.submit.mock.calls.map(([operation]) => operation))
-      .toEqual(['transmit_on', 'force_off']));
+    h.state = { ...idle(), phase: 'active', intent: 'latched', radioTx: 'on', releaseRequired: true };
+    host.refreshAuthority();
+    await flush();
+    if (release === 'lifecycle') h.lifecycle!();
+    if (release === 'pre-disconnect') await h.barrier!();
+    if (release === 'session-close') h.session!({ state: 'disconnected', epoch: 5 });
+    if (release === 'dispose') host.dispose();
+    await flush();
+    host.dispose();
+    await flush();
+    expect(h.submit.mock.calls.map(([operation]) => operation)).toEqual(['transmit_on']);
     expect(h.sendPtt).not.toHaveBeenCalled();
     expect(h.stopAudio).toHaveBeenCalledTimes(1);
   });
@@ -124,6 +150,9 @@ describe('managed App TX host', () => {
     expect(h.sendPtt.mock.invocationCallOrder[1]).toBeLessThan(h.submit.mock.invocationCallOrder[0]!);
     host.dispose();
     await flush();
+    expect(h.submit).toHaveBeenCalledExactlyOnceWith('transmit_on');
+    expect(h.sendPtt.mock.calls.map(([operation]) => operation)).toEqual(['ptt_on', 'ptt_off']);
+    expect(h.stopAudio).toHaveBeenCalledTimes(1);
   });
 
   it('makes disposed callbacks and facade actions inert', async () => {
