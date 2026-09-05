@@ -64,6 +64,7 @@ function doubleClick(row: HTMLTableRowElement): void {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   target = document.createElement('div');
   document.body.appendChild(target);
   h.read.mockReset();
@@ -105,9 +106,88 @@ afterEach(() => {
   component = undefined;
   target.remove();
   vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
 describe('MOR-1409 A05b EiBi tune authority', () => {
+  it('authenticates status, bands, and stations with a fresh token read', async () => {
+    localStorage.setItem('rigplane-auth-token', 'status-token');
+    h.fetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/status')) {
+        localStorage.setItem('rigplane-auth-token', 'query-token');
+        return { ok: true, json: async () => ({ loaded: true, languages: [], countries: [] }) } as Response;
+      }
+      if (url.includes('/bands')) {
+        return { ok: true, json: async () => ({ bands: [] }) } as Response;
+      }
+      if (url.includes('/stations')) {
+        return {
+          ok: true,
+          json: async () => ({
+            stations: [{
+              freq_khz: 14_074.125,
+              station: 'Auth Test', language_name: 'English', language: 'E',
+              time_str: '0000-2400', days: '', target: 'Test', country: 'T',
+              band: 'test', remarks: '', on_air: true,
+            }],
+            total: 1,
+            pages: 1,
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    await mountBrowser();
+
+    const calls = h.fetch.mock.calls;
+    expect(calls.find(([url]) => String(url).includes('/status'))?.[1]).toEqual({
+      headers: { Authorization: 'Bearer status-token' },
+    });
+    for (const suffix of ['/bands', '/stations']) {
+      expect(calls.find(([url]) => String(url).includes(suffix))?.[1]).toEqual({
+        headers: { Authorization: 'Bearer query-token' },
+      });
+    }
+  });
+
+  it('authenticates the fetch POST without changing its body or content type', async () => {
+    localStorage.setItem('rigplane-auth-token', 'fetch-token');
+    h.fetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/status')) {
+        return { ok: true, json: async () => ({ loaded: false }) } as Response;
+      }
+      if (url.includes('/fetch')) {
+        return { ok: true, json: async () => ({ status: 'ok' }) } as Response;
+      }
+      if (url.includes('/bands')) {
+        return { ok: true, json: async () => ({ bands: [] }) } as Response;
+      }
+      if (url.includes('/stations')) {
+        return { ok: true, json: async () => ({ stations: [], total: 0, pages: 0 }) } as Response;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    component = mount(EiBiBrowser, { target, props: { visible: true } });
+    flushSync();
+    await vi.waitFor(() => expect(target.querySelector<HTMLButtonElement>('.eibi-fetch-btn')).not.toBeNull());
+
+    target.querySelector<HTMLButtonElement>('.eibi-fetch-btn')!.click();
+
+    await vi.waitFor(() => {
+      expect(h.fetch).toHaveBeenCalledWith('/api/v1/eibi/fetch', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer fetch-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ force: false }),
+      });
+    });
+  });
+
   it('has no direct transport/command edge and binds the reviewed VFO seam', () => {
     const source = readFileSync('src/components/spectrum/EiBiBrowser.svelte', 'utf8');
     expect(source).toContain('getVfoHandlers');

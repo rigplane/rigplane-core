@@ -6,6 +6,7 @@
   import { runtime } from '$lib/runtime/frontend-runtime';
   import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
   import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
+  import { getAuthHeaders } from '$lib/auth';
   import ScopeSettingsPopover from './ScopeSettingsPopover.svelte';
   import {
     SPAN_LABELS, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
@@ -113,8 +114,8 @@
   async function fetchLayers() {
     try {
       const [layerResp, configResp] = await Promise.all([
-        fetch('/api/v1/band-plan/layers'),
-        fetch('/api/v1/band-plan/config'),
+        fetch('/api/v1/band-plan/layers', { headers: getAuthHeaders() }),
+        fetch('/api/v1/band-plan/config', { headers: getAuthHeaders() }),
       ]);
       if (layerResp.ok) {
         const data = await layerResp.json();
@@ -132,7 +133,7 @@
     try {
       const resp = await fetch('/api/v1/band-plan/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ region }),
       });
       if (resp.ok) {
