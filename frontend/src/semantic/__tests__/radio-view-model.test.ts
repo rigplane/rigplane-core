@@ -400,3 +400,36 @@ describe('validateRadioViewModel', () => {
     })).toThrow(TypeError);
   });
 });
+
+
+describe('receiver RF gain display facet validation', () => {
+  function withDisplay(display: unknown): RadioViewModel {
+    const field = { reading: { status: 'unknown' }, availability: { structural: true, operational: false } };
+    return { ...valid(), receiverIndicators: [{
+      receiver: 'MAIN', availability: field.availability,
+      sMeter: field, bandwidthHz: field, agcMode: field, nbActive: field, nrActive: field,
+      notchMode: field, attenuator: field, preamp: field, digiSel: field, ipPlus: field,
+      rfGain: { ...field, display },
+    }] } as RadioViewModel;
+  }
+  it.each([
+    { state: 'current', value: 0 }, { state: 'stale', value: 0.75 },
+    { state: 'unknown', reason: 'not-observed' }, { state: 'unsupported' },
+  ])('round-trips typed RF gain display %j without changing strict facts', (display) => {
+    const view = withDisplay(display);
+    expect(validateRadioViewModel(view)).toEqual(view);
+  });
+  it.each([
+    { state: 'current', value: false }, { state: 'stale', value: Infinity },
+    { state: 'current' }, { state: 'unknown' }, { state: 'unknown', reason: 'made-up' },
+    { state: 'unknown', reason: 'not-observed', value: 0 }, { state: 'unsupported', value: 0 },
+    { state: 'stale', value: 0, permitted: true },
+  ])('rejects malformed display %j', (display) => {
+    expect(() => validateRadioViewModel(withDisplay(display))).toThrow();
+  });
+  it('keeps unmigrated receiver fields strict rather than accepting arbitrary display facets', () => {
+    const view = withDisplay({ state: 'current', value: 0 });
+    Object.assign(view.receiverIndicators![0].sMeter, { display: { state: 'stale', value: 0 } });
+    expect(() => validateRadioViewModel(view)).toThrow();
+  });
+});

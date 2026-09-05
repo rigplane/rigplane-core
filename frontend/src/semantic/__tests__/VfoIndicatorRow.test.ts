@@ -1,3 +1,4 @@
+import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
@@ -197,5 +198,48 @@ describe('MOR-2342 addressed meter appearance', () => {
     const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
     expect(source).toMatch(/\[data-indicator-appearance='standard'\] \.s-meter \{\s*width: 100%; max-width: 600px; height: 58px;/);
     expect(source).toContain("svg[data-variant='vfo-wide']");
+  });
+});
+
+
+describe('RF gain display observation', () => {
+  it.each(['semantic', 'standard', 'sdr'] as const)('keeps the same text and DOM footprint through current/stale/current for %s', (appearance) => {
+    const current = indicator({ rfGain: { ...known(0.75), display: { state: 'current', value: 0.75 } } });
+    const state = new SvelteMap([['indicator', current]]);
+    render({ appearance, get indicator() { return state.get('indicator'); } });
+    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    const marker = node.querySelector('.stale-cue')!;
+    const text = node.textContent;
+    expect(text).toContain('RFG 0.75');
+    expect(getComputedStyle(marker).visibility).toBe('hidden');
+    expect(getComputedStyle(marker).width).toBe('1ch');
+    flushSync(() => state.set('indicator', indicator({ rfGain: {
+      ...unknown<number>(), display: { state: 'stale', value: 0.75 },
+    } })));
+    expect(target.querySelector('[data-indicator-fact="rf-gain"]')).toBe(node);
+    expect(node.querySelector('.stale-cue')).toBe(marker);
+    expect(node.textContent).toBe(text);
+    expect(node.getAttribute('data-state')).toBe('unknown');
+    expect(node.getAttribute('data-display-state')).toBe('stale');
+    expect(node.getAttribute('aria-label')).toContain('stale');
+    expect(getComputedStyle(marker).visibility).toBe('visible');
+    expect(marker.textContent?.trim()).not.toBe('');
+    expect(target.querySelector('[aria-live], button, input')).toBeNull();
+    flushSync(() => state.set('indicator', current));
+    expect(node.textContent).toBe(text);
+    expect(node.getAttribute('data-display-state')).toBe('current');
+    expect(getComputedStyle(marker).visibility).toBe('hidden');
+  });
+  it('does not display a strict fallback default when explicit observation is unknown', () => {
+    render({ indicator: indicator({ rfGain: {
+      ...known(0), display: { state: 'unknown', reason: 'not-observed' },
+    } }) });
+    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    expect(node.textContent).toContain('RFG —');
+    expect(node.textContent).not.toContain('RFG 0');
+  });
+  it('keeps a display-unsupported RFgain absent', () => {
+    render({ indicator: indicator({ rfGain: { ...known(0), display: { state: 'unsupported' } } }) });
+    expect(target.querySelector('[data-indicator-fact="rf-gain"]')).toBeNull();
   });
 });

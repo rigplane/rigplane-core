@@ -134,6 +134,15 @@ export interface TxAuxField<T> {
   reading: TxAuxReading<T>;
   availability: Availability;
 }
+export type DisplayObservation<T> =
+  | { readonly state: 'current' | 'stale'; readonly value: T }
+  | { readonly state: 'unknown'; readonly reason: 'not-observed' | 'invalid-value' | 'invalid-evidence' | 'identity-unresolved' }
+  | { readonly state: 'unsupported' };
+
+export interface DisplayObservedField<T> extends TxAuxField<T> {
+  readonly display?: DisplayObservation<T>;
+}
+
 export type AtuStatus = 'off' | 'on' | 'tuning';
 
 /**
@@ -1018,7 +1027,7 @@ export interface ReceiverIndicatorViewModel {
   notchMode: ReceiverIndicatorField<'off' | 'auto' | 'manual'>;
   attenuator: ReceiverIndicatorField<number>;
   preamp: ReceiverIndicatorField<number>;
-  rfGain: ReceiverIndicatorField<number>;
+  rfGain: DisplayObservedField<number>;
   digiSel: ReceiverIndicatorField<boolean>;
   ipPlus: ReceiverIndicatorField<boolean>;
 }
@@ -1419,6 +1428,38 @@ function validateTxAux(value: unknown, path: string): TxAuxViewModel {
   };
 }
 
+function validateDisplayObservation<T>(
+  value: unknown, path: string, validateValue: (v: unknown, p: string) => T,
+): DisplayObservation<T> {
+  const v = record(value, path);
+  if (v.state === 'current' || v.state === 'stale') {
+    exactKeys(v, ['state', 'value'], path);
+    return { state: v.state, value: validateValue(v.value, `${path}.value`) };
+  }
+  if (v.state === 'unknown') {
+    exactKeys(v, ['state', 'reason'], path);
+    return { state: 'unknown', reason: oneOf(v.reason,
+      ['not-observed', 'invalid-value', 'invalid-evidence', 'identity-unresolved'] as const, `${path}.reason`) };
+  }
+  if (v.state === 'unsupported') {
+    exactKeys(v, ['state'], path);
+    return { state: 'unsupported' };
+  }
+  return invalid(`${path}.state`, "'current' | 'stale' | 'unknown' | 'unsupported'");
+}
+
+function validateDisplayObservedField<T>(
+  value: unknown, path: string, validateValue: (v: unknown, p: string) => T,
+): DisplayObservedField<T> {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'display'], path);
+  const strict = validateTxAuxField({ reading: v.reading, availability: v.availability }, path, validateValue);
+  return {
+    ...strict,
+    ...(v.display !== undefined ? { display: validateDisplayObservation(v.display, `${path}.display`, validateValue) } : {}),
+  };
+}
+
 function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
   const v = record(value, path);
   exactKeys(v, [
@@ -1445,7 +1486,7 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     ),
     attenuator: validateTxAuxField(v.attenuator, `${path}.attenuator`, num),
     preamp: validateTxAuxField(v.preamp, `${path}.preamp`, num),
-    rfGain: validateTxAuxField(v.rfGain, `${path}.rfGain`, num),
+    rfGain: validateDisplayObservedField(v.rfGain, `${path}.rfGain`, num),
     digiSel: validateTxAuxField(v.digiSel, `${path}.digiSel`, bool),
     ipPlus: validateTxAuxField(v.ipPlus, `${path}.ipPlus`, bool),
   };
