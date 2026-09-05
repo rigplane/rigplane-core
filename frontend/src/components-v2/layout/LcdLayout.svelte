@@ -174,12 +174,12 @@
          amber glass (`cockpit`/`scope`) keeps its legacy presentation for
          this slice; MOR-1162 redesigns it. -->
     <div class="content-right">
+      <VfoControlPanel hideVfoFacts />
       {#if !segmentlineStage}
         <div class="semantic-slot">
           <SemanticRadioSurfaces />
         </div>
       {/if}
-      <VfoControlPanel hideVfoFacts />
       <RightSidebar hideTxPanel />
     </div>
   </section>
