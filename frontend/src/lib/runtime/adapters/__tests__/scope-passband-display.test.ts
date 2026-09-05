@@ -347,4 +347,110 @@ describe('coherent RF passband display', () => {
       raw_center: 128, display_min: -1000, display_max: 1000 } };
     expect(project(derived, previous).display.state).toBe('unknown');
   });
+
+  const historyPaths = [
+    ...['main.freqHz', 'main.mode', 'main.filter', 'main.dataMode', 'main'].map((path) => ['single', path]),
+    ...['main.activeSlot', 'main.vfoA', 'main.vfoA.freqHz', 'main.vfoA.mode', 'main.vfoA.filterNum']
+      .map((path) => ['slotted', path]),
+    ['dual', 'active'],
+  ];
+  function historyFixture(topology: string) {
+    const input = fixture();
+    if (topology === 'slotted') slotted(input);
+    if (topology === 'dual') {
+      input.caps!.vfoScheme = 'ab_shared'; input.caps!.receivers = 2; input.caps!.capabilities.push('dual_rx');
+    }
+    return input;
+  }
+  const historyGaps = ['state', 'caps', 'selection', 'leaf', 'unobserved', 'malformed'] as const;
+  it.each(historyPaths.flatMap(([topology, path]) => historyGaps.map((gap) => [topology, path, gap]))) (
+    'preserves %s %s marker/value history across absent or invalid %s', (topology, path, gap) => {
+      const input = historyFixture(topology); const current = project(input);
+      expect(current.display.state).toBe('current');
+      const savedStatus = { ...input.state!.fieldStatus![path] };
+      const savedInput = { state: input.state, caps: input.caps, selection: input.selection };
+      if (gap === 'state' || gap === 'caps' || gap === 'selection') input[gap] = null;
+      if (gap === 'leaf') delete input.state!.fieldStatus![path];
+      if (gap === 'unobserved') status(input, path, { observed: false });
+      if (gap === 'malformed') status(input, path, { lastObservedMonotonic: NaN });
+      const missing = project(input, current);
+      const optionalAncestor = gap === 'leaf' && (path === 'main' || path === 'main.vfoA');
+      expect(missing.display.state).toBe(optionalAncestor ? 'current' : 'unknown');
+      Object.assign(input, savedInput); input.state!.fieldStatus![path] = savedStatus;
+      renew(input, 11, 2); status(input, path, { lastObservedMonotonic: 9 });
+      const regressed = project(input, missing);
+      expect(regressed.display.state).toBe('unknown');
+      expect(regressed.observations[path]).toEqual({ value: current.observations[path].value, marker: 10 });
+      renew(input, 12, 3); status(input, path, { lastObservedMonotonic: 10 });
+      expect(project(input, regressed).display.state).toBe('current');
+    },
+  );
+
+  it.each(['state', 'caps', 'selection'] as const)('allows equal identities after absent %s with renewed geometry/receipt', (gap) => {
+    const input = fixture(); const current = project(input); const saved = input[gap];
+    input[gap] = null; const missing = project(input, current); Object.assign(input, { [gap]: saved });
+    status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
+    status(input, 'main.ifShift', { lastObservedMonotonic: 11 }); receipt(input, 2);
+    expect(project(input, missing).display.state).toBe('current');
+  });
+
+  it.each(['frequency', 'mode', 'filter', 'DATA', 'slot'])('rejects changed %s at an equal marker after missing state', (field) => {
+    const input = fixture(); slotted(input); const current = project(input); const saved = input.state;
+    input.state = null; const missing = project(input, current); input.state = saved;
+    const rx = input.state!.main!;
+    const path = field === 'frequency' ? 'main.vfoA.freqHz' : field === 'mode' ? 'main.vfoA.mode'
+      : field === 'filter' ? 'main.vfoA.filterNum' : field === 'DATA' ? 'main.dataMode' : 'main.activeSlot';
+    if (field === 'frequency') rx.freqHz = rx.vfoA!.freqHz = 14_075_000;
+    if (field === 'mode') rx.mode = rx.vfoA!.mode = 'LSB';
+    if (field === 'filter') rx.filter = rx.vfoA!.filterNum = 2;
+    if (field === 'DATA') rx.dataMode = 1;
+    if (field === 'slot') { rx.activeSlot = 'B'; input.selection = { receiver: 'MAIN', slot: 'B' }; }
+    renew(input, 11, 2); status(input, path, { lastObservedMonotonic: 10 });
+    let previous = project(input, missing);
+    expect(previous.display.state).toBe('unknown');
+    renew(input, 12, 3); status(input, path, { lastObservedMonotonic: 10 });
+    previous = project(input, previous);
+    expect(previous.display.state).toBe('unknown');
+    expect(previous.observations[path]).toEqual(current.observations[path]);
+    renew(input, 13, 4); status(input, path, { lastObservedMonotonic: 11 });
+    expect(project(input, previous).display.state).toBe('current');
+  });
+
+  it('keeps independently advancing high-water markers while other evidence is missing or regressing', () => {
+    const input = fixture(); let previous = project(input);
+    input.state!.main!.mode = 'LSB'; status(input, 'main.mode', { lastObservedMonotonic: 11 });
+    previous = project(input, previous);
+    const shift = input.state!.fieldStatus!['main.ifShift']; delete input.state!.fieldStatus!['main.ifShift'];
+    status(input, 'main.mode', { lastObservedMonotonic: 30 });
+    status(input, 'main.freqHz', { lastObservedMonotonic: 9 });
+    previous = project(input, previous);
+    expect(previous.observations['main.mode'].marker).toBe(30);
+    expect(previous.observations['main.freqHz'].marker).toBe(10);
+    input.state!.fieldStatus!['main.ifShift'] = shift;
+    renew(input, 21, 3); previous = project(input, previous);
+    expect(previous.display.state).toBe('unknown');
+    renew(input, 31, 4); expect(project(input, previous).display.state).toBe('current');
+  });
+
+  it('does not treat an unobserved receiver switch as a positively established new domain', () => {
+    const input = historyFixture('dual'); let previous = project(input);
+    input.state!.active = 'SUB'; input.selection = { receiver: 'SUB', slot: 'single' };
+    status(input, 'active', { observed: false }); receipt(input, 2);
+    previous = project(input, previous);
+    expect(previous.display.state).toBe('unknown'); expect(previous.domain).toBe('[1,"MAIN"]');
+    input.state!.active = 'MAIN'; input.selection = { receiver: 'MAIN', slot: 'single' };
+    renew(input, 11, 3); status(input, 'main.freqHz', { lastObservedMonotonic: 9 });
+    previous = project(input, previous);
+    renew(input, 12, 4); status(input, 'main.freqHz', { lastObservedMonotonic: 9 });
+    expect(project(input, previous).display.state).toBe('unknown');
+  });
+
+  it('drops foreign receiver marker comparisons only after positive receiver qualification', () => {
+    const input = historyFixture('dual'); renew(input, 1000, 1); const current = project(input);
+    input.state!.active = 'SUB'; input.selection = { receiver: 'SUB', slot: 'single' };
+    renew(input, 1, 2); const retired = project(input, current);
+    expect(retired.domain).toBe('[1,"SUB"]');
+    expect(retired.observations).not.toHaveProperty('main.freqHz');
+    renew(input, 2, 3); expect(project(input, retired).display.state).toBe('current');
+  });
 });

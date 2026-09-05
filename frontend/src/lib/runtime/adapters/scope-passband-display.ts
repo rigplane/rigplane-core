@@ -93,6 +93,10 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   const key = selection.receiver === 'MAIN' ? 'main' : 'sub';
   const rx = state[key];
   if (!rx) return result;
+  if (topology.structuralCount === 2) {
+    const receiver = qualifyRadioDisplayObservation({ state, caps, path: 'active', structural: true, value: state.active });
+    if (receiver.state !== 'current' && receiver.state !== 'stale') return result;
+  }
   result.domain = JSON.stringify([state.providerGeneration, selection.receiver]);
   const has = (tag: string) => caps.capabilities.includes(tag);
   const native = has('if_shift');
@@ -241,10 +245,16 @@ export function projectScopePassbandDisplay(
     : next.unsupported ? { state: 'unsupported' }
       : { state: 'unknown', reason: retire ? 'retired' : candidate?.stale ? 'first-stale'
         : candidate ? 'awaiting-evidence' : next.reason };
+  const observations: Record<string, Observation> = next.domain === null || sameDomain
+    ? { ...previous.observations } : {};
+  for (const [path, observation] of Object.entries(next.observations)) {
+    const highWater = observations[path];
+    if (!highWater || observation.marker > highWater.marker) observations[path] = observation;
+  }
   return Object.freeze({
     display: Object.freeze(display), identity: candidate?.identity ?? previous.identity,
     domain: next.domain ?? previous.domain,
-    observations: Object.freeze(regression && sameDomain ? { ...previous.observations } : { ...next.observations }),
+    observations: Object.freeze(observations),
     geometryPaths: Object.freeze([...next.geometryPaths]), receipt: Math.max(previous.receipt, next.receipt),
     floors: active(display) ? null : floors,
   });
