@@ -7,7 +7,7 @@
   import LcdRfPanadapter, {
     type LcdRfPanadapterPassband,
   } from './LcdRfPanadapter.svelte';
-  import { stateText, telemetryText } from './lcd-display-helpers';
+  import { stateText, telemetryText, telemetryDescription } from './lcd-display-helpers';
 
   interface Props {
     model: PeerSplitDisplayModel;
@@ -107,7 +107,8 @@
       <div class="telemetry" data-testid="panadapter-telemetry">
         {#each telemetryItems as item}
           {#if item.field.state !== 'unsupported'}
-            <span class:irrelevant={!item.field.relevant} data-state={item.field.state}>
+            <span class:irrelevant={!item.field.relevant} data-state={item.field.state}
+              role="group" aria-label={telemetryDescription(item.label, item.field)}>
               <small>{item.label}</small> {telemetryText(item.field)}
             </span>
           {/if}

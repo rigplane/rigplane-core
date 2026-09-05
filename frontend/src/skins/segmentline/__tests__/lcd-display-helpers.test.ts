@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type {
-  DisplayOffset, DisplayValue, PeerSplitReceiverDisplay,
+  DisplayOffset, DisplayTelemetry, DisplayValue, PeerSplitReceiverDisplay,
 } from '../../../semantic/radio-display-model';
 import {
   fftInputState,
@@ -9,7 +9,7 @@ import {
   formatOffset,
   meterFill,
   notchIndicators,
-  stateText,
+  stateText, telemetryText, telemetryDescription,
 } from '../lcd-display-helpers';
 
 const known = <T>(value: T): DisplayValue<T> => ({ state: 'known', value });
@@ -107,3 +107,31 @@ describe('LCD display helpers', () => {
     expect(fftInputState(receiver, undefined)).toBe('missing');
   });
 });
+
+it.each([
+  [{ state: 'known', value: 12.345, relevant: false }, '12.35'],
+  [{ state: 'known', value: 0, relevant: true }, '0'],
+  [{ state: 'unknown', relevant: true }, '?'],
+  [{ state: 'unsupported', relevant: false }, '?'],
+] satisfies [DisplayTelemetry, string][])('keeps legacy telemetry formatting %j', (field, text) => {
+  expect(telemetryText(field)).toBe(text);
+});
+
+for (const relevance of ['idle', 'relevant', 'indeterminate'] as const)
+  for (const observation of [{ state: 'current', value: 12.345 }, { state: 'current', value: 0 },
+    { state: 'stale', value: 87.654 }, { state: 'unknown', reason: 'not-observed' }] as const) {
+    it(`formats TX ${relevance}/${observation.state}/${'value' in observation ? observation.value : ''}`, () => {
+      const field: DisplayTelemetry = { state: 'known', value: 207, relevant: true,
+        txDisplay: { supported: true, relevance, observation } };
+      const text = telemetryText(field);
+      const description = telemetryDescription('PWR', field);
+      expect(text).toBe(relevance === 'idle' ? 'IDLE' : observation.state === 'stale' ? 'STALE'
+        : observation.state === 'unknown' ? '?' : `${Number(observation.value.toFixed(2))}${relevance === 'indeterminate' ? ' ?' : ''}`);
+      expect(description).toContain('PWR');
+      expect(description).not.toMatch(/207|87.65/);
+      if (relevance === 'idle') expect(description).toContain('Not measuring in RX');
+      if (relevance === 'indeterminate') expect(description).toContain('RF relevance indeterminate');
+      if (relevance !== 'idle' && observation.state === 'stale') expect(description).toContain('Stale observation');
+      if (relevance !== 'idle' && observation.state === 'unknown') expect(description).toContain('Not observed');
+    });
+  }
