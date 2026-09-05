@@ -179,7 +179,7 @@ needed no re-pin at all. All four `production-design-language` images
 are now independently CI-confirmed clean on the same commit
 (`7da03bf0`).
 
-## Linux re-pin provenance (current — 2026-09-04 MOR-2309 peer-split dual surfaces)
+## Linux re-pin provenance (superseded — 2026-09-04 MOR-2309 peer-split dual surfaces)
 
 | Field | Value |
 | --- | --- |
@@ -199,14 +199,35 @@ are now independently CI-confirmed clean on the same commit
 Only the four named production-root images below were regenerated. No other
 i18n screenshot, production source, fixture, or test changed in this re-pin.
 
+## Linux re-pin provenance (current — 2026-09-05 UTC MOR-2342 upper instruments)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `ced40328a8c9d61156f46e443a79c105247be69c` |
+| CI run / job | [Tests (quick) #33935459868](https://github.com/rigplane/rigplane-core/actions/runs/33935459868) / `101222416351` |
+| Runner | self-hosted Linux `mm-build-core-2` |
+| Context / comparator | Chromium, 1280×800, DPR 1, en-US, UTC; the unchanged production config uses `threshold: 0.2`, `maxDiffPixelRatio: 0.001`. |
+| Source | Byte-identical `actual.png` attachments from `mor-1400-production-visual-diagnostics`; no macOS-generated baseline. |
+| Reason | MOR-2342 restores receiver instrument panels and a central VFO bridge. Design-language typography/FieldLine rails remain active; instrument and button backgrounds use theme tokens in dark and light modes. |
+
+All four scenes are **compared-fail**, inspected and accepted for re-pin:
+StudioLine dark 8,378 changed pixels; StudioLine light 10,005; FieldLine dark
+30,860; FieldLine light 36,712. Diffs are in the upper instrument area;
+sidebars, spectrum and status chrome remain unchanged at the comparator's
+sensitivity. Light actuals were checked for readable text after correcting
+the earlier hardcoded dark background. The unchanged CSS/accessibility
+assertions completed before the four pixel comparisons; the other 39 cases
+passed, including presentation repair. No scene was skipped. A subsequent exact-head run must confirm
+these expectations; this comparison run itself is not a visual PASS.
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `eec78dd32d726e378055f4bd0b00fd911a98b8664e72135b484615d37af3e5d6` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `ce3db6666bcf6178c3c0b1d33471e528f02b38820c4ed6e41b19154cb965a94f` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `89390d83b390d86faa37accfbb97734480fcf7c2d1dd117622f1ef9253e767cb` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `a93b3ac260fcae53e4d9342507da306b1c85dad772882823985b05faca3d35bd` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `b39215c5d22d02048a4cc25ba0a88048c5f845c4177aa63d0bf565b50f29dc05` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `66de99c97321b4291c49132dd184e750a0e99911e7557034d2a1265d0f4cf32a` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `fecfbb0e31620b68a738d65a89a1c841dced9c01fc9746264212c9cf2bc5192d` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `6fd41da9ec97ff6846fa340b9b2b7304687b1d6105589ea78ec2755adcb6ef06` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output
