@@ -458,11 +458,11 @@
   <svg class="sdr-meter" viewBox="0 0 420 50" preserveAspectRatio="none"
     data-variant={variant} role="img" aria-label={`S meter ${displaySUnit} ${displayDbm}`}>
     <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
-      <g font-family="Roboto Mono, monospace" font-size="11" fill="#C8D4E0" font-weight="700">
+      <g font-family="Roboto Mono, monospace" font-size="11" fill="var(--v2-text-primary, #C8D4E0)" font-weight="700">
         <text x="4" y="14">{displayDbm === 'uncalibrated' ? 'raw' : 'S'}</text>
         {#each labelMarks as mark}
           <text x={14 + (rawToSegments(mark.raw) / RAW_SEGMENT_DOMAIN) * 328} y="14"
-            text-anchor="middle" fill={mark.actual > 0 ? '#FF4040' : '#C8D4E0'}>
+            text-anchor="middle" fill={mark.actual > 0 ? 'var(--v2-accent-red, #FF4040)' : 'var(--v2-text-primary, #C8D4E0)'}>
             {mark.text.replace(/^S/, '')}
           </text>
         {/each}
@@ -472,10 +472,10 @@
           x={14 + Math.floor(index / 2) * SDR_CELL_WIDTH + (index % 2) * (SDR_SUB_WIDTH + 0.5)}
           y="22" width={SDR_SUB_WIDTH} height="18" fill={sdrColor(index)} />
       {/each}
-      <text x="412" y="31" text-anchor="end" fill="#DFFCF5"
+      <text x="412" y="31" text-anchor="end" fill="var(--v2-text-primary, #DFFCF5)"
         font-family="Roboto Mono, monospace" font-size="12" font-weight="700">{displaySUnit}</text>
       {#if displayDbm === 'uncalibrated'}
-        <text x="412" y="46" text-anchor="end" fill="#A0B4C8" font-size="10">uncalibrated</text>
+        <text x="412" y="46" text-anchor="end" fill="var(--v2-text-secondary, #A0B4C8)" font-size="10">uncalibrated</text>
       {/if}
     </g>
   </svg>

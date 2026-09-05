@@ -33,7 +33,7 @@ restated shape drifts and a pointer does not.
 | `frontend/src/semantic/radio-view-model.ts` | `RadioViewModel`, `validateRadioViewModel` | The one shape every semantic surface renders. A skin that mounts the semantic vertical never sees raw runtime state — only this. |
 | `frontend/src/lib/runtime/adapters/radio-view-model-adapter.ts` | `toRadioViewModel` | The one function that produces a `RadioViewModel` from live state + capabilities. `SemanticRadioSurfaces.svelte` (below) runs its output through `validateRadioViewModel` in dev/test (MOR-2040), so a shape mismatch throws immediately instead of rendering garbage. |
 | `frontend/src/presentation/languages/contract.ts` | `DesignLanguageManifest`, `DesignLanguageTokens`, `RENDERER_SLOT_NAMES` | What a design language must declare: token groups and renderer slots. Activation is global and orthogonal to which skin is mounted — see `frontend/src/semantic/design-language-renderers.ts`'s header for the `[data-design-language]` mechanism. Neither worked example below registers a new design language. |
-| `frontend/src/presentation/languages/declarations.ts` | `studioline`, `fieldline` | The two registered families — read as worked examples of the contract above, not as more contract. |
+| `frontend/src/presentation/languages/declarations.ts` | `studioline`, `fieldline`, `segmentline` | The three registered families — read as worked examples of the contract above, not as more contract. |
 | `frontend/src/presentation/languages/state-vocabulary.ts` | exported `RF_STATES`, `TX_SESSION_STATES`, `TX_ORIGINS`, `TX_TARGET_STATUSES`, plus the re-exported reason/fault types | The typed `data-*` visual-state vocabulary a design-language stylesheet keys off (landed MOR-2036). Read this before reverse-engineering value sets from `fieldline.css`/`studioline.css` — that module's own header explains why it exists and exactly what it does and does not cover yet. |
 | `frontend/src/presentation/layouts/contract.ts` | `LayoutManifest`, `SEMANTIC_SURFACE_NAMES`, `registerLayout`, `getLayout`, `declaredSurfaces` | Which semantic surfaces a layout may mount, its topology/sizing declaration, and the registry every layout goes through. A name in `SEMANTIC_SURFACE_NAMES` is *declarable*, not necessarily *mounted* — the file's own header lists which names nothing renders through a manifest yet. |
 | `frontend/src/skins/registry.ts` | `SkinId`, `SKIN_LOADERS` (via `loadSkin`), `SKIN_RESOURCE_PLAN` (via `presentationResourcePlan`), `resolveSkinId` | The single place a skin becomes reachable at runtime. `frontend/src/App.svelte` is the only caller of `loadSkin`/`resolveSkinId`. |
@@ -44,10 +44,14 @@ restated shape drifts and a pointer does not.
 
 ### `sdr-test` — the minimal skin
 
-`frontend/src/skins/sdr-test/SdrTestSkin.svelte` is a two-line delegate:
-it mounts `frontend/src/components-v2/layout/RadioLayout.svelte` with
-`skinId="sdr-test"`. Nothing else lives in this skin's own directory that
-is part of the example — see the trap below.
+`frontend/src/skins/sdr-test/SdrTestSkin.svelte` mounts
+`frontend/src/components-v2/layout/RadioLayout.svelte` with `skinId="sdr-test"`
+and imports `frontend/src/skins/desktop-v2/semantic-controls.css`, shared with
+Standard. This opt-in stylesheet owns desktop control chrome; the shell owns
+column geometry and selects the SDR instrument appearance. Neither introduces
+a second state or command path. Workspace and density ownership follow the
+current-contract pointers in
+`docs/plans/2026-07-25-ui-composition-architecture-v3.md`.
 
 `RadioLayout.svelte` is the shared desktop shell (it also backs
 `desktop-v2`). What determines whether it shows the semantic deck instead of
@@ -60,16 +64,10 @@ registered via `registerLayout`). The semantic deck itself is
 `frontend/src/components-v2/wiring/SemanticRadioSurfaces.svelte` — read its
 own header comment; it is the only place the VFO/RX-TX surfaces meet live
 state, and it is manifest-blind by construction (its own composition is
-fixed, regardless of what a manifest declares beyond `vfo`/`rxTx`).
-
-One trap in this exact directory, confirmed against current source rather
-than assumed from comments:
-
-- `SdrTestSkin.svelte`'s own comment says RadioLayout "branches on
-  `skinId === 'sdr-test'`". That described the mechanism before MOR-1313.
-  `RadioLayout.svelte`'s own header comment documents the replacement
-  (the manifest-driven `declaredSurfaces` check described above) — trust
-  that comment over the stale one in `SdrTestSkin.svelte`.
+resolved through the supplied surface plan). For SDR and Standard, it wraps
+declared surfaces in shared `SemanticControlPanel.svelte` presentation and
+groups them into side columns around the scope. The manifest still controls
+which surfaces may mount; appearance does not bypass that gate.
 
 ### `lcd-cockpit` — the skin with its own instruments
 

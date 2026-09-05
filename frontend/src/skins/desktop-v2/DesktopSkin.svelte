@@ -14,6 +14,7 @@
 -->
 <script lang="ts">
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';
+  import './semantic-controls.css';
 </script>
 
 <RadioLayout skinId="desktop-v2" />
