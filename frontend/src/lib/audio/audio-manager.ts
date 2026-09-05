@@ -59,6 +59,7 @@ class AudioManager {
   private txMic: TxMic;
   private _rxEnabled = false;
   private _txEnabled = false;
+  private appliedAudioConfig: Readonly<Partial<AudioRoutingConfig>> | null = null;
   private backoff = BACKOFF_MIN;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
@@ -163,6 +164,15 @@ class AudioManager {
     if (cfg.split_stereo !== undefined) this.rxPlayer.setSplitStereo(cfg.split_stereo);
     if (cfg.main_gain_db !== undefined) this.rxPlayer.setChannelGainDb('main', cfg.main_gain_db);
     if (cfg.sub_gain_db !== undefined) this.rxPlayer.setChannelGainDb('sub', cfg.sub_gain_db);
+    const applied = this.getAudioConfig();
+    this.appliedAudioConfig = Object.freeze({
+      ...this.appliedAudioConfig,
+      ...(cfg.focus !== undefined && cfg.focus === applied.focus ? { focus: applied.focus } : {}),
+      ...(cfg.split_stereo !== undefined ? { split_stereo: applied.split_stereo } : {}),
+      ...(cfg.main_gain_db !== undefined ? { main_gain_db: applied.main_gain_db } : {}),
+      ...(cfg.sub_gain_db !== undefined ? { sub_gain_db: applied.sub_gain_db } : {}),
+    });
+    this.notify();
     // Only the focus + split_stereo pair maps to CI-V; gain is local.
     if (cfg.focus === undefined && cfg.split_stereo === undefined) return;
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -195,6 +205,10 @@ class AudioManager {
       main_gain_db: this.rxPlayer.mainGainDb,
       sub_gain_db: this.rxPlayer.subGainDb,
     };
+  }
+
+  getAppliedAudioConfig(): Readonly<Partial<AudioRoutingConfig>> | null {
+    return this.appliedAudioConfig;
   }
 
   setRxVolume(v: number): void {
