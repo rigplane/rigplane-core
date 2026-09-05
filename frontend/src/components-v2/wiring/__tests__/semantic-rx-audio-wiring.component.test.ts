@@ -113,6 +113,7 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
 
 import { audioManager } from '$lib/audio/audio-manager';
 import { sendCommand } from '$lib/transport/ws-client';
+import { MOD_INPUT_SOURCES, modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
@@ -342,6 +343,74 @@ describe('routing prefs stay unowned by this layer (MOR-1274 carry-forward 2)', 
 });
 
 /* ── (d) the MOD-input remedy, and the untouched warning ───────── */
+
+describe('common MOD-input selector reaches the existing mode handler (MOR-2366)', () => {
+  function selectSource(source: number): HTMLSelectElement {
+    const select = el('mod-select') as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    select.value = String(source);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    return select;
+  }
+
+  it.each(MOD_INPUT_SOURCES)('dispatches the $label source exactly once', ({ value }) => {
+    render();
+    expect(selectSource(value).disabled).toBe(false);
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_data_off_mod_input', { source: value });
+    expect(text('mod-source')).toBe('MOD: LAN');
+    expect(el('mod-input')!.dataset.readiness).toBe('ready');
+  });
+
+  it.each([0, 1, 2, 3])('routes DATA group %i to its own source command', (dataMode) => {
+    const state = liveState();
+    h.state = {
+      ...state, main: { ...state.main, dataMode },
+      [modInputStateKey(dataMode)]: 3,
+      fieldStatus: { ...state.fieldStatus, [modInputStateKey(dataMode)]: fresh },
+    };
+    render();
+    selectSource(1);
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith(modInputCommand(dataMode), { source: 1 });
+  });
+
+  it.each(['active', 'main.dataMode', 'dataOffModInput'])(
+    'preserves command admission when %s becomes unavailable after rendering', (path) => {
+      render();
+      const state = liveState();
+      h.state = {
+        ...state,
+        fieldStatus: { ...state.fieldStatus, [path]: { ...fresh, availability: 'missing' } },
+      };
+      selectSource(3);
+      expect(sendCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  it('renders an unread source as disabled and sends nothing', () => {
+    h.state = liveState({ dataOffModInput: null });
+    render();
+    expect(selectSource(0).disabled).toBe(true);
+    expect(text('mod-source')).toBe('MOD: —');
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 4, null])('preserves admission for invalid DATA group %s', (dataMode) => {
+    render();
+    const state = liveState();
+    h.state = { ...state, main: { ...state.main, dataMode } };
+    selectSource(3);
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('omits the selector without modulation routing capability', () => {
+    h.caps = liveCaps(AUDIO_TAGS.filter((tag) => tag !== 'mod_input_routing'));
+    render();
+    expect(el('surface')).not.toBeNull();
+    expect(el('mod-select')).toBeNull();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+});
 
 describe('a MOD-input mismatch keeps exactly one one-click remedy', () => {
   const mismatched = () => { h.state = liveState({ dataOffModInput: 0 } as Partial<ServerState>); };

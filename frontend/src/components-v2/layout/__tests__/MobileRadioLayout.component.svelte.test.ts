@@ -90,7 +90,10 @@ vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     onChange: () => () => {}, getAppliedAudioConfig: () => null, start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn() },
 }));
-vi.mock('$lib/utils/tx-permit', () => ({ getTxPermit: vi.fn(() => 'allowed') }));
+vi.mock('$lib/utils/tx-permit', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/utils/tx-permit')>(),
+  getTxPermit: vi.fn(() => 'allowed'),
+}));
 vi.mock('$lib/stores/tuning.svelte', () => ({ applyModeDefault: vi.fn() }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasTx: vi.fn(() => true), hasDualReceiver: vi.fn(() => false), hasAnyScope: vi.fn(() => false),
@@ -210,7 +213,10 @@ vi.mock('$lib/runtime/props/panel-props', async (importOriginal) => {
 
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
-import { hasTx, hasDualReceiver } from '$lib/stores/capabilities.svelte';
+import { hasTx, hasDualReceiver, getCapabilities } from '$lib/stores/capabilities.svelte';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
+import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import {
   radio, subscribeRadioState,
 } from '$lib/stores/radio.svelte';
@@ -274,6 +280,44 @@ afterEach(() => {
 });
 
 describe('MobileRadioLayout structure', () => {
+  it('offers the common MOD-input selector in portrait without navigation or TX activity (MOR-2366)', () => {
+    const oldCaps = getCapabilities();
+    vi.mocked(getCapabilities).mockReturnValue({
+      ...oldCaps, model: 'fixture', receivers: 1, vfoScheme: 'ab',
+      capabilities: ['mod_input_routing'],
+    } as Capabilities);
+    const fresh = { storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available' };
+    (radio as unknown as { current: ServerState | null }).current = {
+      active: 'MAIN', main: { mode: 'USB', dataMode: 0 }, dataOffModInput: 5,
+      fieldStatus: { dataOffModInput: fresh },
+    } as unknown as ServerState;
+    try {
+      const t = mountMobile();
+      const deck = t.querySelector('.m-semantic-deck')!;
+      const select = deck.querySelector<HTMLSelectElement>('[data-testid="rx-audio-mod-select"]');
+      expect(select).not.toBeNull();
+      expect(select!.disabled).toBe(false);
+      expect([...select!.options].map((option) => option.text))
+        .toEqual(MOD_INPUT_SOURCES.map((option) => option.label));
+      expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
+      expect(t.querySelectorAll('[data-testid="rx-audio-surface"]')).toHaveLength(1);
+      const navigation = [...t.querySelectorAll('.m-chip')].map((chip) => chip.textContent);
+      const listeners = tx.listenerCount();
+      select!.value = '3';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+      flushSync();
+      expect(radioIntentSpy).toHaveBeenCalledExactlyOnceWith(3);
+      expect(select!.value).toBe('5');
+      expect([...t.querySelectorAll('.m-chip')].map((chip) => chip.textContent)).toEqual(navigation);
+      expect(t.querySelectorAll('[id^="m-chip-panel-"]')).toHaveLength(1);
+      expect(tx.listenerCount()).toBe(listeners);
+      expect(tx.trace()).toEqual([]);
+      expect(wsFrameSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(getCapabilities).mockReturnValue(oldCaps);
+    }
+  });
+
   it('mounts without errors', () => {
     expect(mountMobile().children.length).toBeGreaterThan(0);
   });

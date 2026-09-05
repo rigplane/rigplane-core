@@ -24,6 +24,9 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
+import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
+import { t } from '$lib/i18n';
 import RxAudioSurface, {
   FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
 } from '../RxAudioSurface.svelte';
@@ -65,6 +68,7 @@ type Handlers = {
   onRoutingFocus?: (focus: AudioFocus) => void;
   onRoutingSplit?: (split: boolean) => void;
   onSetModInputLan?: () => void;
+  onModInputChange?: (source: number) => void;
 };
 
 function render(view: RadioViewModel, handlers: Handlers = {}) {
@@ -86,10 +90,10 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports nothing but the fact contract and the pure MOD-input constants', () => {
+  it('imports only the fact contract, MOD-input vocabulary and localization', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)].sort()).toEqual(['$lib/radio/mod-input', './radio-view-model']);
+    expect([...new Set(specifiers)].sort()).toEqual(['$lib/i18n', '$lib/radio/mod-input', './radio-view-model']);
   });
 
   // Kills: `onMount(() => audioManager.startRx())` and every relative of it.
@@ -114,7 +118,7 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
       'view', 'onMonitorMode', 'onAfLevel', 'onRoutingFocus', 'onRoutingSplit',
-      'onSetModInputLan',
+      'onSetModInputLan', 'onModInputChange',
     ]);
   });
 
@@ -417,6 +421,80 @@ describe('routing focus and split are rendered from the facts and emitted absolu
 });
 
 /* ── (e) MOD-input readiness keeps a one-click remedy ──────────── */
+
+describe('MOD-input selection uses observed facts and absolute intents (MOR-2366)', () => {
+  it.each(MOD_INPUT_SOURCES)('offers the full vocabulary and emits $label once', ({ value }) => {
+    const onModInputChange = vi.fn();
+    const r = render(base(), { onModInputChange });
+    const select = r.el('mod-select') as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    expect([...select.options].map((option) => [Number(option.value), option.text]))
+      .toEqual(MOD_INPUT_SOURCES.map((option) => [option.value, option.label]));
+    expect(select.disabled).toBe(false);
+    expect(select.getAttribute('aria-label')).toBe(t('core.modePanel.modInputAria'));
+    expect(select.closest('label')?.textContent).toContain(t('core.modePanel.modInputLabel'));
+    select.value = String(value);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    expect(onModInputChange).toHaveBeenCalledExactlyOnceWith(value);
+    expect(select.value).toBe('5');
+    expect(r.text('mod-source')).toBe('MOD: LAN');
+    r.dispose();
+  });
+
+  it.each([
+    ['unread', unread<number>()],
+    ['unavailable', known(3, DEGRADED)],
+    ['unrecognized', known(99)],
+  ] as const)('keeps %s selection inert even for a synthetic change', (_name, field) => {
+    const onModInputChange = vi.fn();
+    const r = render(withRx({ modInputSource: field }), { onModInputChange });
+    const select = r.el('mod-select') as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    expect(select.disabled).toBe(true);
+    expect(select.value).toBe(field.reading.status === 'known' && field.reading.value === 3 ? '3' : '');
+    if (select.value === '') expect(select.selectedOptions[0].text).toBe(UNKNOWN_TEXT);
+    select.value = '0';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onModInputChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('rejects a source outside the shared vocabulary', () => {
+    const onModInputChange = vi.fn();
+    const r = render(base(), { onModInputChange });
+    const select = r.el('mod-select') as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    select.add(new Option('invalid', '99'));
+    select.value = '99';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onModInputChange).not.toHaveBeenCalled();
+    expect(select.value).toBe('5');
+    r.dispose();
+  });
+
+  it('follows unknown, readback and unavailable transitions without emitting', () => {
+    const facts = new SvelteMap([['view', withRx({ modInputSource: unread<number>() })]]);
+    const onModInputChange = vi.fn();
+    const component = mount(RxAudioSurface, {
+      target, props: { get view() { return facts.get('view')!; }, onModInputChange },
+    });
+    flushSync();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="rx-audio-mod-select"]');
+    expect(select).not.toBeNull();
+    for (const [field, value, disabled] of [
+      [known(4), '4', false], [known(1), '1', false],
+      [known(1, DEGRADED), '1', true], [unread<number>(), '', true],
+    ] as const) {
+      facts.set('view', withRx({ modInputSource: field }));
+      flushSync();
+      expect(select!.value).toBe(value);
+      expect(select!.disabled).toBe(disabled);
+    }
+    expect(onModInputChange).not.toHaveBeenCalled();
+    unmount(component);
+  });
+});
 
 describe('MOD-input readiness is stated, and a mismatch is never a dead end', () => {
   it('names the observed source and reports LAN readiness', () => {
