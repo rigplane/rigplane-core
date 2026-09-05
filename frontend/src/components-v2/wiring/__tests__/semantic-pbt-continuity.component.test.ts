@@ -83,7 +83,72 @@ describe('mounted PBT continuity is fenced by the live control session (MOR-1706
 
   it('does not carry a generation-seven floor into generation-eight marker one', () => {
     accept(state(100, -200, 100)); render(); transition('disconnected', 1); expect(value('pbtInner')).toBeNull();
+    transition('connected', 1);
     expect(setCapabilities(caps(8))).toBe(true); accept(state(900, -900, 1, 8)); flushSync();
     expect(value('pbtInner')).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled(); expect(txHarness.trace()).toEqual([]);
+  });
+});
+
+
+describe('mounted fractional PBT display (MOR-1692)', () => {
+  const update = (inner: number, marker: number, observedMarker: number, stale = false) => {
+    const next = state(inner, 128, marker, 7, 'MAIN', 'fresh', observedMarker);
+    if (stale) next.fieldStatus!['main.pbtInner'] = { ...fresh(observedMarker), freshness: 'stale', availability: 'stale' };
+    accept(next); flushSync();
+  };
+  const row = () => target.querySelector<HTMLElement>('[data-testid="filter-pbtInner"]')!;
+
+  it('keeps the row and slot through fractional stale edges, readback and unknown; rejects synthetic input', () => {
+    update(150, 2, 310658.42975425); render();
+    const wrapper = row(), slot = wrapper.querySelector('[data-pbt-slot]');
+    const confirmed = value('pbtInner'); expect(confirmed).not.toBeNull(); expect(slot).not.toBeNull();
+    update(150, 3, 310658.42975425, true);
+    expect(row()).toBe(wrapper); expect(row().querySelector('[data-pbt-slot]')).toBe(slot);
+    expect(value('pbtInner')).toBe(confirmed); expect(row().dataset.presentation).toBe('retained');
+    const slider = row().querySelector('input')!;
+    expect(slider.disabled).toBe(true); slider.value = '500'; slider.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    expect(h.commands).not.toHaveBeenCalled();
+    update(160, 4, 310659.1);
+    expect(row().dataset.presentation).toBe('confirmed'); expect(value('pbtInner')).not.toBe(confirmed);
+    transition('disconnected', 1, false); transition('connected', 1, false); flushSync();
+    expect(row()).toBe(wrapper); expect(row().querySelector('[data-pbt-slot]')).toBe(slot); expect(value('pbtInner')).toBeNull();
+    update(160, 5, 310659.1, true); expect(value('pbtInner')).toBeNull();
+    update(170, 6, 310659.2, true); expect(value('pbtInner')).not.toBeNull(); expect(row().dataset.presentation).toBe('retained');
+    expect(h.commands).not.toHaveBeenCalled(); expect(txHarness.trace()).toEqual([]);
+  });
+
+  it.each([20.25, 20.0])('rejects a conflicting replay at %s and its synthetic input', (marker) => {
+    update(150, 2, 20.25); render(); const confirmed = value('pbtInner');
+    update(170, 3, marker);
+    const input = row().querySelector('input')!;
+    expect(input.value).toBe(confirmed); expect(input.disabled).toBe(true);
+    input.value = '500'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    expect(h.commands).not.toHaveBeenCalled();
+    update(180, 4, 20.5); expect(row().querySelector('input')!.disabled).toBe(false);
+    expect(value('pbtInner')).not.toBe(confirmed);
+  });
+
+  it('never retains a drag target in place of the observed readback', () => {
+    update(150, 2, 20.25); render(); const confirmed = value('pbtInner');
+    const input = row().querySelector('input')!;
+    input.value = '500'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    expect(h.commands).toHaveBeenCalled(); h.commands.mockClear();
+    update(150, 3, 20.25, true);
+    expect(value('pbtInner')).toBe(confirmed);
+    expect(row().querySelector('output')?.textContent).toBe(confirmed);
+    expect(row().querySelector('input')!.disabled).toBe(true);
+    expect(h.commands).not.toHaveBeenCalled();
+    update(160, 4, 20.5); expect(value('pbtInner')).not.toBe(confirmed);
+  });
+
+  it('admits stale first, respects an unobserved ancestor, and accepts a low new-generation marker', () => {
+    update(150, 2, 10.5, true); render(); expect(value('pbtInner')).not.toBeNull(); expect(row().dataset.presentation).toBe('retained');
+    transition('disconnected', 1); expect(value('pbtInner')).toBeNull();
+    const hidden = state(180, 128, 3, 7, 'MAIN', 'fresh', 11.5);
+    hidden.fieldStatus!.main = { ...fresh(11.5), observed: false };
+    accept(hidden); transition('connected', 1); expect(value('pbtInner')).toBeNull();
+    expect(setCapabilities(caps(8))).toBe(true);
+    accept(state(190, 128, 1, 8, 'MAIN', 'fresh', 0.25)); flushSync();
+    expect(value('pbtInner')).not.toBeNull(); expect(row().dataset.presentation).toBe('confirmed');
   });
 });

@@ -548,8 +548,20 @@ function deriveFilterPassband(
     // dead" doctrine `ifShiftControlStructural` above already established,
     // never a plausible IC-7610-shaped reading manufactured from a
     // module-global store fallback (see the `pbtScale` doc comment above).
-    pbtInner: txAuxField(hasPbtCap && hasPbtRange, pbtInnerObserved, pbtInnerHz),
-    pbtOuter: txAuxField(hasPbtCap && hasPbtRange, pbtOuterObserved, pbtOuterHz),
+    pbtInner: {
+      ...txAuxField(hasPbtCap && hasPbtRange, pbtInnerObserved, pbtInnerHz),
+      display: qualifyDisplayObservation({
+        state, caps, receiver: onSub ? 'SUB' : 'MAIN', path: `${base}pbtInner`,
+        structural: hasPbtCap && hasPbtRange, value: pbtInnerHz,
+      }),
+    },
+    pbtOuter: {
+      ...txAuxField(hasPbtCap && hasPbtRange, pbtOuterObserved, pbtOuterHz),
+      display: qualifyDisplayObservation({
+        state, caps, receiver: onSub ? 'SUB' : 'MAIN', path: `${base}pbtOuter`,
+        structural: hasPbtCap && hasPbtRange, value: pbtOuterHz,
+      }),
+    },
     dataMode: txAuxField(hasDataModeCap, dataModeObserved, numOrUndef(rx?.dataMode)),
   };
 }

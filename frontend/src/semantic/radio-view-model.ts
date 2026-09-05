@@ -387,8 +387,8 @@ export interface FilterPassbandViewModel {
    * fact about the radio MODEL, not a live reading that can itself go stale.
    */
   ifShiftControlStructural: boolean;
-  pbtInner: FilterPassbandField<number>;
-  pbtOuter: FilterPassbandField<number>;
+  pbtInner: DisplayObservedField<number>;
+  pbtOuter: DisplayObservedField<number>;
   dataMode: FilterPassbandField<number>;
 }
 
@@ -1625,8 +1625,8 @@ function validateFilterPassband(value: unknown, path: string): FilterPassbandVie
     filterShapeControlStructural: bool(v.filterShapeControlStructural, `${path}.filterShapeControlStructural`),
     ifShift: validateTxAuxField(v.ifShift, `${path}.ifShift`, num),
     ifShiftControlStructural: bool(v.ifShiftControlStructural, `${path}.ifShiftControlStructural`),
-    pbtInner: validateTxAuxField(v.pbtInner, `${path}.pbtInner`, num),
-    pbtOuter: validateTxAuxField(v.pbtOuter, `${path}.pbtOuter`, num),
+    pbtInner: validateDisplayObservedField(v.pbtInner, `${path}.pbtInner`, num),
+    pbtOuter: validateDisplayObservedField(v.pbtOuter, `${path}.pbtOuter`, num),
     dataMode: validateTxAuxField(v.dataMode, `${path}.dataMode`, num),
   };
 }
