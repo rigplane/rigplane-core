@@ -2562,8 +2562,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b1...HEAD
-[3.0.0b1]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...v3.0.0b1
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...HEAD
+[3.0.0b1]: https://github.com/rigplane/rigplane-core/compare/v2.11.1...HEAD
 [2.10.2]: https://github.com/rigplane/rigplane-core/compare/v2.10.1...v2.10.2
 [2.10.1]: https://github.com/rigplane/rigplane-core/compare/v2.10.0...v2.10.1
 [2.10.0]: https://github.com/rigplane/rigplane-core/compare/v2.9.0...v2.10.0

@@ -225,8 +225,9 @@ From `frontend/src/lib/local-extensions/manifest.ts`:
 `host_api: "2.0"` is required. `parseLocalExtensionManifest` rejects omitted,
 `"1.0"`, malformed and unsupported host declarations. Migrate extension
 commands before declaring the new version. `installLocalExtensionHostApi`
-exposes the same v2 object as `window.rigplaneExtensionHost` and the deprecated
-`window.icomLanExtensionHost`; the latter does not provide v1 behavior.
+exposes the same v2 object through `window.rigplaneExtensionHost` and its
+deprecated naming alias; see the [migration guide](../migrate.md) for the
+alias spelling. The alias does not provide v1 behavior.
 
 The default host validates commands through
 `frontend/src/lib/runtime/commands/radio-intents.ts: dispatchRadioIntentWithResult`.
