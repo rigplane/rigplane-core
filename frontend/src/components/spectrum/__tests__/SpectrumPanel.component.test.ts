@@ -4,7 +4,7 @@
  * child component slots, and event wiring.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
+import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -132,7 +132,10 @@ const runtimeHarness = vi.hoisted(() => {
     get state() { return state.currentState; },
     get caps() { return state.currentCaps; },
     onTxAudioDied: () => () => {},
+    defaultScopeStatus: { transport: 'connected' },
     scope: {
+      registerPresentationDriver: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
       get hardwareScopeConnected() { return state.mockScopeConnected; },
       subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
         state.capturedHardwareFrame = handler;
@@ -264,6 +267,7 @@ const appTxHostHarness = vi.hoisted(() => ({
 }));
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
+  presentationResources: { acquire: vi.fn(() => ({ resource: 'audio-fft', id: 1 })), release: vi.fn() },
   runtime: runtimeHarness.runtime,
 }));
 
@@ -1360,5 +1364,26 @@ describe('StatusBar default scope status consumption', () => {
     ['connected', 'green'],
   ] as const)('%s uses the %s tone', (state, expected) => {
     expect(indicatorTone(state)).toBe(expected);
+  });
+});
+
+
+describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
+  const scopeControls = createRawSnippet(() => ({ render: () => '<div data-testid="hosted-scope-probe">Semantic scope probe</div>' }));
+  it('renders the opaque snippet once inside the hardware toolbar', () => {
+    const target = mountPanel({ hideScopeControls: true, scopeControls });
+    expect(target.querySelectorAll('[data-testid="hosted-scope-probe"]')).toHaveLength(1);
+    expect(target.querySelector('[data-testid="hosted-scope-probe"]')?.closest('.spectrum-toolbar')).not.toBeNull();
+    expect(target.querySelector('.settings-group')).toBeNull();
+  });
+  it('keeps audio FFT source label and Viewer without rendering the hardware snippet', () => {
+    runtimeHarness.state.currentCaps = { scopeSource: 'audio_fft' };
+    const target = mountPanel({ hideScopeControls: true, scopeControls });
+    expect(target.querySelector('[data-testid="hosted-scope-probe"]')).toBeNull();
+    expect(target.querySelector('.spectrum-toolbar')).toBeNull();
+    expect(target.querySelector('.audio-source-label')?.textContent).toContain('Audio FFT · AF');
+    const viewer = target.querySelector<HTMLButtonElement>('[aria-label="Scope viewer"]')!;
+    expect(viewer.textContent).toContain('Viewer ON'); viewer.click(); flushSync(); expect(viewer.textContent).toContain('Viewer OFF');
+    expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
   });
 });

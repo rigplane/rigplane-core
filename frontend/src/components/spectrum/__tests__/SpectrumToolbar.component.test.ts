@@ -4,7 +4,7 @@
  * from the merged spectrum selector while actions use the bound scope family.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync, tick } from 'svelte';
+import { createRawSnippet, mount, unmount, flushSync, tick } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -775,16 +775,43 @@ describe('source and enforcement boundary', () => {
     expect(contract).not.toContain('  { path = "src/components/spectrum/EiBiBrowser.svelte", count = 1, owner = "MOR-1409" },');
   });
 
-  it('releases the old popover hash pin while keeping all Toolbar CSS byte-frozen', () => {
+  it('keeps the selector boundaries and pins the scoped toolbar CSS', () => {
     const popover = readFileSync(popoverPath, 'utf8');
     expect(popover).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
     expect(popover).toContain('bindSemanticSurfaceHandlers().scopeControls');
     expect(popover).not.toMatch(/stores\/radio\.svelte|sendCommand|\?\? false/);
     const source = readFileSync(sourcePath, 'utf8');
     const cssHash = createHash('sha256').update(source.slice(source.indexOf('<style>'))).digest('hex');
-    // MOR-1486: `.auto-badge` (the passive 'A' glyph) was removed and
-    // `.auto-step-toggle.active` (the new real toggle's amber styling) was
-    // added — this hash is re-pinned to that legitimate CSS change.
-    expect(cssHash).toBe('42438ae899f89f4f7b6aef982755c1e1e166945a98b5cb1d6cb246c4eef96e57');
+    // MOR-2358 adds host-scoped wrapping for the semantic scope surface.
+    expect(cssHash).toBe('d6c52fd99646af0b741c16241a2e6f1efb2ef016063ec93ef0e0fea2378f6931');
+  });
+});
+
+
+describe('semantic scope host (MOR-2358)', () => {
+  const scopeControls = createRawSnippet(() => ({ render: () => '<div data-testid="semantic-scope-probe">Semantic scope</div>' }));
+  it.each([
+    [true, true, true, true], [false, true, true, false],
+    [true, false, true, false], [true, true, false, false],
+  ])('scope=%s, suppression=%s, snippet=%s gates host=%s', (scope, hidden, snippet, hosted) => {
+    capabilityHarness.scope = scope;
+    const target = mountToolbar({ hideScopeControls: hidden, scopeControls: snippet ? scopeControls : undefined });
+    expect(target.querySelectorAll('[data-testid="semantic-scope-probe"]')).toHaveLength(hosted ? 1 : 0);
+    expect(target.querySelector('.semantic-scope-controls-host') !== null).toBe(hosted);
+  });
+
+  it('preserves local controls and suppresses the legacy radio subtree with the host', () => {
+    const target = mountToolbar({ hideScopeControls: true, scopeControls });
+    expect(target.querySelectorAll('.semantic-scope-controls-host')).toHaveLength(1);
+    for (const label of ['CTR', 'FIX', 'S-C', 'S-F', 'HOLD', 'DUAL', 'MAIN']) expect(button(target, label)).toBeUndefined();
+    expect(target.querySelector('.settings-group')).toBeNull();
+    for (const label of ['AUTO', 'AVG', 'PEAK', 'BANDS']) expect(button(target, label)).toBeDefined();
+    for (const label of ['STEP', 'VIEW', 'BRT']) expect(target.textContent).toContain(label);
+    expect(target.querySelector('.toolbar-select')).not.toBeNull(); expect(target.querySelector('.icon-btn')).not.toBeNull();
+    const step = buttons(target).find((item) => item.title === 'Increase tuning step')!; step.click();
+    button(target, 'AVG')!.click(); button(target, 'PEAK')!.click(); flushSync();
+    expect(tuningHarness.adjustTuningStep).toHaveBeenCalledExactlyOnceWith('up');
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
 });

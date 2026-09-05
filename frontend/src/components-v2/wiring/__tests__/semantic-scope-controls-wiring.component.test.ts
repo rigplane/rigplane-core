@@ -24,7 +24,8 @@
  *   (c) the default path (no `scope` capability) stays byte-identical.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
+import SpectrumPanelStub from '../../layout/__tests__/SpectrumPanelStub.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -83,14 +84,14 @@ import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/suppor
 // S5/S6-pre subtraction asymmetry, since `useSurfacePlan()` falls back to
 // `NO_PLAN` on a standalone mount.
 import {
-  desktopV2Layout, dualReceiverCockpitLayout,
+  desktopV2Layout, dualReceiverCockpitLayout, sdrTestLayout,
 } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' } as const;
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** A radio that has observed every `scopeControls` leaf — every field this
@@ -146,7 +147,7 @@ let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let txHarness: ManagedAppTxHarness;
 
-function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan): void {
+function render(props: { strips?: 'single' | 'dual'; regions?: boolean; scopeControlsInRegionContent?: boolean; regionContent?: Snippet<[Snippet | undefined]> } = {}, plan?: SurfacePlan): void {
   target = document.createElement('div');
   document.body.appendChild(target);
   const context = plan === undefined
@@ -371,5 +372,84 @@ describe('desktop-v2 declares a REAL scope-controls zone; the cockpit mounts not
   it('still mounts nothing in the dual-receiver cockpit — its manifest is untouched by this slice', () => {
     render({ strips: 'dual' }, planFor(dualReceiverCockpitLayout, {}));
     expect(el('scope-controls-surface')).toBeNull();
+  });
+});
+
+
+describe('SDR hosted semantic scope controls (MOR-2358)', () => {
+  const regionContent = createRawSnippet<[Snippet | undefined]>((scopeControls) => ({
+    render: () => '<div class="spectrum-toolbar" data-testid="scope-toolbar-host"></div>',
+    setup(element) {
+      const child = mount(SpectrumPanelStub, { target: element, props: { scopeControls: scopeControls?.() } });
+      return () => { unmount(child); };
+    },
+  }));
+  const plan = (fields: Record<string, unknown> = {}) => resolveSurfacePlan(sdrTestLayout, readWorkspace({ version: 1, ...fields }).workspace);
+  const hosted = () => render({ regions: true, scopeControlsInRegionContent: true, regionContent }, plan());
+
+  it('moves exactly one zoned surface into region content with no former center sibling', () => {
+    hosted();
+    expect(target.querySelectorAll('[data-testid="scope-controls-surface"]')).toHaveLength(1);
+    const surface = el('scope-controls-surface')!;
+    expect(surface.closest('[data-zone-id="scope-controls"]')).not.toBeNull();
+    expect(surface.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
+  });
+
+  it.each([
+    ['scope-mode-2', 0, 'set_scope_mode', { mode: 2 }],
+    ['scope-hold', 0, 'set_scope_hold', { on: true }],
+    ['scope-ref', 1, 'set_scope_ref', { ref: 0 }],
+  ] as const)('hosted %s dispatches exactly the existing command', (id, index, command, params) => {
+    hosted();
+    const element = el(id)!;
+    const control = element.tagName === 'BUTTON' ? element : element.querySelectorAll('button')[index]!;
+    expect(control.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
+    control.click(); flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith(command, params);
+  });
+
+  it.each([0, 1, 2, 3, null])('preserves the semantic mode applicability matrix for mode %s', (mode) => {
+    const source = liveState({ scopeControls: { ...liveState().scopeControls!, mode: mode ?? 0 } });
+    if (mode === null) source.fieldStatus!['scopeControls.mode'] = { ...fresh, observed: false, freshness: 'unknown', availability: 'missing' };
+    useState(source); hosted();
+    for (const name of ['mode', 'speed', 'hold', 'ref', 'dual', 'receiver', 'duringTx', 'centerType', 'vbwNarrow', 'rbw']) {
+      const leaf = el(`scope-${name}`); expect(leaf).not.toBeNull();
+      expect(leaf!.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
+    }
+    expect(el('scope-edge') !== null).toBe(mode === 1 || mode === 3);
+    expect(el('scope-span') !== null).toBe(mode === 0 || mode === 2);
+    if (mode === null) expect((el('scope-mode-0') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it.each(['stale', 'unobserved'] as const)('keeps a supported %s leaf disabled and rejects a synthetic click', (status) => {
+    const source = liveState();
+    source.fieldStatus!['scopeControls.hold'] = { ...fresh, observed: status !== 'unobserved', freshness: status === 'stale' ? 'stale' : 'unknown', availability: status === 'stale' ? 'stale' : 'missing' };
+    useState(source); hosted();
+    const hold = el('scope-hold') as HTMLButtonElement;
+    expect(hold.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull(); expect(hold.disabled).toBe(true);
+    hold.dispatchEvent(new MouseEvent('click', { bubbles: true })); flushSync(); expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('removes unsupported receiver leaves while keeping the supported surface hosted', () => {
+    h.caps = liveCaps(['scope']); hosted();
+    expect(target.querySelectorAll('[data-testid="scope-controls-surface"]')).toHaveLength(1);
+    expect(el('scope-controls-surface')!.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
+    expect(el('scope-dual')).toBeNull(); expect(el('scope-receiver')).toBeNull();
+  });
+
+  it('honors regions plan subtraction without a bare fallback', () => {
+    render({ regions: true, scopeControlsInRegionContent: true, regionContent }, plan({ visibleSurfaces: { 'scope-controls': [] } }));
+    expect(el('scope-toolbar-host')).not.toBeNull(); expect(el('scope-controls-surface')).toBeNull();
+  });
+
+  it('keeps the surface when the placement flag has no region-content consumer', () => {
+    render({ regions: true, scopeControlsInRegionContent: true }, plan());
+    expect(el('scope-controls-surface')?.closest('[data-zone-id="scope-controls"]')).not.toBeNull();
+    expect(target.querySelectorAll('[data-testid="scope-controls-surface"]')).toHaveLength(1);
+  });
+
+  it('leaves standalone non-regions rendering unchanged', () => {
+    render({ scopeControlsInRegionContent: true, regionContent });
+    expect(el('scope-controls-surface')).not.toBeNull(); expect(el('scope-toolbar-host')).toBeNull();
   });
 });

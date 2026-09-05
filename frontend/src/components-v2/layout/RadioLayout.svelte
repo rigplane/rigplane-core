@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, type Snippet } from 'svelte';
   import '../theme/index';
   import { setTheme, getTheme, setVfoTheme, getVfoTheme } from '../theme/theme-switcher';
   
@@ -14,7 +14,7 @@
   
   import { runtime } from '$lib/runtime';
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
-  import { getKeyboardConfig, hasAnyScope, hasSpectrum } from '$lib/stores/capabilities.svelte';
+  import { getKeyboardConfig, getScopeSource, hasAnyScope, hasSpectrum } from '$lib/stores/capabilities.svelte';
   import type { SkinId } from '../../skins/registry';
   import { declaredSurfaces, getLayout } from '../../presentation/layouts/contract';
   // Side-effect import: populates the LAYOUT registry `getLayout` resolves
@@ -79,6 +79,9 @@
   // zone, and letting a subtraction bring the legacy twin back would be
   // force-show through the back door — the one thing the plan may never do.
   let declared = $derived(declaredSurfaces(getLayout(skinId)));
+  let scopeControlsInRegionContent = $derived(
+    skinId === 'sdr-test' && declared.has('scopeControls') && hasSpectrum() && getScopeSource() === 'hardware',
+  );
   let semanticDeck = $derived(declared.has('vfo'));
   // R9 — ONE key/unkey authority, and this line is where that count is decided.
   //
@@ -269,13 +272,13 @@
   });
 </script>
 
-{#snippet sdrRegionContent()}
+{#snippet sdrRegionContent(scopeControls: Snippet | undefined)}
   <section class="content-row">
     <main class="content-center center-column">
       {#if hasAnyScope()}
         <div class="spectrum-slot">
           <div class="spectrum-frame">
-            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} />
+            <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} {scopeControls} />
           </div>
         </div>
       {/if}
@@ -302,7 +305,7 @@
 
     <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
       {#if semanticDeck}
-        <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent}
+        <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent} {scopeControlsInRegionContent}
           regionExtras={desktopRegionExtras} vfoAppearance={skinId === 'sdr-test' ? 'sdr' : 'standard'} />
       {/if}
     </section>

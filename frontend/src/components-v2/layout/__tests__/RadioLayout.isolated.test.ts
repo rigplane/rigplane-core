@@ -350,7 +350,10 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
 }));
 
-import { hasDualReceiver } from '$lib/stores/capabilities.svelte';
+import { getScopeSource, hasAnyScope, hasDualReceiver, hasSpectrum } from '$lib/stores/capabilities.svelte';
+import { sdrTestLayout } from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -362,10 +365,10 @@ let components: ReturnType<typeof mount>[] = [];
  */
 const UNDECLARED = 'no-such-layout' as SkinId;
 
-function mountLayout(skinId: SkinId = 'desktop-v2') {
+function mountLayout(skinId: SkinId = 'desktop-v2', plan?: SurfacePlan) {
   const t = document.createElement('div');
   document.body.appendChild(t);
-  const component = mount(RadioLayout, { target: t, props: { skinId } });
+  const component = mount(RadioLayout, { target: t, props: { skinId }, context: plan ? new Map([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]) : undefined });
   flushSync();
   components.push(component);
   return t;
@@ -377,6 +380,9 @@ beforeEach(() => {
   radio.current = null;
   rt.state = null;
   vi.mocked(hasDualReceiver).mockReturnValue(false);
+  vi.mocked(getScopeSource).mockReturnValue(null);
+  vi.mocked(hasSpectrum).mockReturnValue(true);
+  vi.mocked(hasAnyScope).mockReturnValue(true);
   vi.mocked(resolveSkinId).mockReturnValue('desktop-v2');
   // JSDOM defaults to 0x0 — force desktop dimensions so isMobile stays false
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1440 });
@@ -663,5 +669,33 @@ describe('RadioLayout with radioState', () => {
     radio.current = sampleState as any;
     const t = mountLayout(UNDECLARED);
     expect(t.querySelector('.bottom-dock [data-testid="meters-dock-panel"]')).not.toBeNull();
+  });
+});
+
+
+describe('SDR hardware scope snippet routing (MOR-2358)', () => {
+  it.each([
+    ['sdr-test', 'hardware', true, true],
+    ['desktop-v2', 'hardware', true, false],
+    ['sdr-test', 'audio_fft', true, false],
+    ['sdr-test', null, true, false],
+    ['sdr-test', 'hardware', false, false],
+    [UNDECLARED, 'hardware', true, false],
+  ] as const)('%s / %s / spectrum %s selects hosted placement %s', (skin, source, spectrum, expected) => {
+    vi.mocked(getScopeSource).mockReturnValue(source);
+    vi.mocked(hasSpectrum).mockReturnValue(spectrum);
+    const target = mountLayout(skin);
+    const stub = target.querySelector('.spectrum-panel-stub'); expect(stub).not.toBeNull();
+    expect(stub?.getAttribute('data-has-scope-controls')).toBe(String(expected));
+    expect(stub?.getAttribute('data-hide-scope-controls')).toBe(String(skin !== UNDECLARED));
+  });
+
+  it('keeps declaration-derived suppression when the workspace subtracts scope controls', () => {
+    vi.mocked(getScopeSource).mockReturnValue('hardware');
+    const plan = resolveSurfacePlan(sdrTestLayout, readWorkspace({ version: 1, visibleSurfaces: { 'scope-controls': [] } }).workspace);
+    const target = mountLayout('sdr-test', plan);
+    const stub = target.querySelector('.spectrum-panel-stub');
+    expect(stub?.getAttribute('data-has-scope-controls')).toBe('true');
+    expect(stub?.getAttribute('data-hide-scope-controls')).toBe('true');
   });
 });
