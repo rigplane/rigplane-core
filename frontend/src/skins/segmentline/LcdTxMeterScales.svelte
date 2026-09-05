@@ -42,7 +42,7 @@
 </div>
 
 <style>
-  .lcd-tx-scales { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 2px; flex: 1; min-width: 0; max-width: 600px; grid-column: 1 / -1; }
+  .lcd-tx-scales { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 1px; flex: 1; min-width: 0; max-width: 600px; grid-column: 1 / -1; }
   .tx-scale { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 16px 6px; gap: 2px 0; min-width: 0; color: var(--ink-soft); font-size: 16px; line-height: 16px; }
   small { font: inherit; }
   .readout { text-align: right; white-space: nowrap; }

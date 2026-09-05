@@ -218,7 +218,12 @@ for (const viewport of [DESKTOP, NARROW]) for (const [variant, fixture, testId, 
     await page.setViewportSize(viewport);
     await page.goto(`/fixtures/index.html?fixture=${fixture}&theme=v2`);
     await page.waitForSelector('body[data-harness-ready="true"]');
-    await page.evaluate(() => document.fonts.ready);
+    const fonts = await page.evaluate(async () => {
+      const loaded = await document.fonts.load('16px "Share Tech Mono"', 'PWR SWR ALC IDLE STALE 10000W ? 255 raw ?');
+      await document.fonts.ready;
+      return loaded.map((font) => ({ family: font.family, status: font.status }));
+    });
+    expect(fonts).toEqual([{ family: 'Share Tech Mono', status: 'loaded' }]);
     const result = await page.getByTestId(testId).evaluate((display) => {
       const group = display.querySelector<HTMLElement>('[data-testid="lcd-tx-scales"]')!;
       const stage = display.closest<HTMLElement>('.scaled-stage')!;
@@ -263,8 +268,10 @@ for (const viewport of [DESKTOP, NARROW]) for (const [variant, fixture, testId, 
         const value = cell.querySelector<HTMLElement>('.readout')!, label = cell.querySelector('small')!;
         const previous = value.textContent; value.textContent = text;
         value.classList.toggle('long-readout', text.length > 8);
-        const result = { text, effectiveFont: parseFloat(getComputedStyle(value).fontSize) * scale,
-          height: box(value).height, overflow: value.scrollWidth > value.clientWidth || cell.scrollWidth > cell.clientWidth,
+        const range = document.createRange(); range.selectNodeContents(value);
+        const renderedWidth = range.getBoundingClientRect().width, availableWidth = box(value).width;
+        const result = { text, renderedWidth, availableWidth, font: getComputedStyle(value).fontFamily, effectiveFont: parseFloat(getComputedStyle(value).fontSize) * scale,
+          height: box(value).height, overflow: renderedWidth > availableWidth || value.scrollWidth > value.clientWidth || cell.scrollWidth > cell.clientWidth,
           overlap: overlap(label, value), contained: contained(value, cell) && contained(cell, rail),
           protectedBounds: protectedNodes.map(box) };
         value.textContent = previous; value.classList.remove('long-readout');
@@ -297,7 +304,7 @@ for (const viewport of [DESKTOP, NARROW]) for (const [variant, fixture, testId, 
     }
     for (const readout of result.longReadouts) {
       expect(readout.effectiveFont).toBeGreaterThanOrEqual(readout.text.length > 8 ? 7 : 8);
-      expect(readout.height).toBeGreaterThanOrEqual(8); expect(readout.overflow).toBe(false);
+      expect(readout.height).toBeGreaterThanOrEqual(8); expect(readout.overflow, JSON.stringify({ ...readout, protectedBounds: undefined, fonts })).toBe(false);
       expect(readout.overlap).toBe(0); expect(readout.contained).toBe(true);
       expect(readout.protectedBounds).toEqual(result.before);
     }
