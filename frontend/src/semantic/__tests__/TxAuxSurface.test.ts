@@ -630,6 +630,12 @@ describe('level intents reach the caller with the field and the raw value', () =
 });
 
 describe('seven TX/VOX levels consume command feedback', () => {
+  it('declares the adopted native range source feedback-integrated without changing debt inventory', () => {
+    const source = readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8');
+    expect(source.match(/'feedback-policy': 'feedback-integrated'/g)).toHaveLength(1);
+    expect(source).toContain('{...feedbackIntegratedRange}');
+  });
+
   it.each(FEEDBACK_LEVELS)('uses canonical %s feedback and preserves its raw native input', (
     field, _control, canonical,
   ) => {
@@ -656,7 +662,16 @@ describe('seven TX/VOX levels consume command feedback', () => {
     expect(r.input(field).disabled).toBe(true);
     expect(r.input(field).dataset.commandPhase).toBe('unavailable');
     expect(r.row(field).querySelector('output')?.textContent).toContain('?');
-    expect(r.row(field).querySelector('[data-command-status]')?.textContent).toContain('unavailable');
+    const status = r.row(field).querySelector<HTMLElement>('[data-command-status]')!;
+    expect(status.textContent).toContain('unavailable');
+    expect(status.classList).toContain('sr-only');
+    expect(r.input(field).title).toBe('Not yet observed');
+    const descriptionId = r.input(field).getAttribute('aria-describedby')!;
+    expect(r.row(field).querySelector(`#${descriptionId}`)?.textContent).toBe('Not yet observed');
+    expect(r.input(field).getAttribute('aria-valuetext')).toContain('unavailable');
+    const visible = r.row(field).cloneNode(true) as HTMLElement;
+    visible.querySelectorAll('.sr-only').forEach((node) => node.remove());
+    expect(visible.textContent).not.toContain('unavailable');
     r.input(field).value = String(field === 'voxDelay' ? 7 : 200);
     r.input(field).dispatchEvent(new Event('input', { bubbles: true }));
     expect(r.onLevelChange).not.toHaveBeenCalled();
@@ -676,6 +691,7 @@ describe('seven TX/VOX levels consume command feedback', () => {
       expect(r.input('micGain').getAttribute('aria-busy')).toBe('true');
       expect(r.row('micGain').querySelector('[data-canonical-value]')?.textContent).toContain('50%');
       expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain('78%');
+      expect(r.row('micGain').querySelector('[data-command-status]')?.classList).not.toContain('sr-only');
       r.dispose();
     },
   );
@@ -694,7 +710,15 @@ describe('seven TX/VOX levels consume command feedback', () => {
     expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain(
       phase.replaceAll('-', ' '),
     );
+    expect(r.row('micGain').querySelector('[data-command-status]')?.classList).not.toContain('sr-only');
     if (error !== null) expect(r.row('micGain').textContent).toContain(error);
+    if (error !== null) {
+      const status = r.row('micGain').querySelector<HTMLElement>('[data-command-status]')!;
+      expect(status.textContent).toContain('requested 78%');
+      expect(status.textContent).toContain('confirmed 50%');
+      expect(status.textContent).toContain(error);
+      expect(getComputedStyle(status).overflow).not.toBe('hidden');
+    }
     expect(r.row('micGain').querySelectorAll('[data-tx-aux-feedback-status]')).toHaveLength(1);
     r.dispose();
   });

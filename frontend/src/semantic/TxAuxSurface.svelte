@@ -215,6 +215,7 @@
   };
   const levelRow = (field: TxAuxFeedbackLevelField) =>
     TX_AUX_LEVELS.find(([candidate]) => candidate === field)!;
+  const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
   function feedbackLevelInput(field: TxAuxFeedbackLevelField): Readonly<ContinuousScalarInput> {
     const current = txAux?.[field];
     const [, , min, max, step] = levelRow(field);
@@ -391,6 +392,7 @@
             <span class="tx-aux-name">{label}</span>
             <input
               type="range" {min} {max} {step} value={display ?? min}
+              {...feedbackIntegratedRange}
               title={feedbackReason(field)}
               aria-describedby={feedbackReason(field) === undefined
                 ? undefined : `${reasonIdPrefix}-${field}`}
@@ -408,7 +410,11 @@
               <span id={`${reasonIdPrefix}-${field}`} class="sr-only">{feedbackReason(field)}</span>
             {/if}
             <output data-canonical-value>{formattedLevel(field, levelView.canonical)}</output>
-            {#if status !== ''}<span data-command-status class:command-pending={levelView.busy}>{status}</span>{/if}
+            {#if status !== ''}<span
+              data-command-status
+              class:command-pending={levelView.busy}
+              class:sr-only={levelView.phase === 'unavailable'}
+            >{status}</span>{/if}
             {#if announcement !== null}
               {#key announcement.eventKey}
                 <span
