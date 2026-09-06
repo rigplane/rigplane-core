@@ -1,6 +1,8 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import LinearSMeter from '../LinearSMeter.svelte';
@@ -52,6 +54,18 @@ function mountMeter(props: ComponentProps<typeof LinearSMeter>) {
   return target;
 }
 
+function mountReactiveMeter(props: ComponentProps<typeof LinearSMeter>) {
+  const state: ComponentProps<typeof LinearSMeter> = proxy({ ...props });
+  const target = document.createElement('div');
+  document.body.appendChild(target);
+  roots.push(target);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const component = mount(LinearSMeter as any, { target, props: state });
+  flushSync();
+  components.push(component);
+  return { target, state };
+}
+
 afterEach(() => {
   components.forEach((component) => unmount(component));
   roots.forEach((root) => root.remove());
@@ -62,6 +76,25 @@ afterEach(() => {
 
 function segmentRects(target: HTMLElement): SVGRectElement[] {
   return Array.from(target.querySelectorAll('[data-segment]')) as SVGRectElement[];
+}
+
+function renderedFillFraction(target: HTMLElement): number {
+  const segments = segmentRects(target);
+  const fills = Array.from(target.querySelectorAll('[data-meter-fill]')) as SVGRectElement[];
+  const last = fills.at(-1);
+  if (!last) return 0;
+  const index = Number(last.getAttribute('data-meter-fill'));
+  const segmentWidth = Number(segments[index].getAttribute('width'));
+  return (index + Number(last.getAttribute('width')) / segmentWidth) / segments.length;
+}
+
+function renderedPeakFraction(target: HTMLElement): number | null {
+  const segments = segmentRects(target);
+  const peak = target.querySelector('[data-meter-peak]');
+  if (!peak || segments.length < 2) return null;
+  const barX = Number(segments[0].getAttribute('x'));
+  const pitch = Number(segments[1].getAttribute('x')) - barX;
+  return (Number(peak.getAttribute('x1')) - barX) / (pitch * segments.length);
 }
 
 // MOR-2250 added `toneBelowS9`/`toneAboveS9` to `MeterDisplay`; these
@@ -116,6 +149,38 @@ describe('LinearSMeter display prop', () => {
 
     expect(firstAboveS9).toBe(Math.round((11 / 20) * 12));
     expect(firstAboveS9).not.toBe(11);
+  });
+
+  it('remaps retained fill and peak fractions when segmentCount changes without a new reading', () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: true,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }) as unknown as typeof window.matchMedia;
+    try {
+      const { target, state } = mountReactiveMeter({
+        value: 0,
+        display: geometry(20, 1),
+      });
+
+      state.value = -27;
+      flushSync();
+      expect(renderedFillFraction(target)).toBeCloseTo(5.5 / 20);
+      expect(renderedPeakFraction(target)).toBeCloseTo(11 / 20);
+
+      state.display = geometry(12, 3);
+      flushSync();
+      expect(renderedFillFraction(target)).toBeCloseTo(5.5 / 20);
+      expect(renderedPeakFraction(target)).toBeCloseTo(11 / 20);
+
+      state.display = geometry(20, 1);
+      flushSync();
+      expect(renderedFillFraction(target)).toBeCloseTo(5.5 / 20);
+      expect(renderedPeakFraction(target)).toBeCloseTo(11 / 20);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
   });
 
   // MOR-2214 fix cycle 2: at segmentCount: 1 the single segment's own fill

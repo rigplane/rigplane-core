@@ -88,7 +88,7 @@
   $effect(() => {
     const continuitySource = source;
     const continuitySession = session;
-    const smoothTarget = value === null ? null : valueToSegments(value, SEG_COUNT);
+    const smoothTarget = value === null ? null : valueToSegments(value, SEG_COUNT) / SEG_COUNT;
     untrack(() => ballistics.sync({
       sample: value, smoothTarget, peakEnabled: showPeak,
       source: continuitySource, session: continuitySession,
@@ -113,11 +113,12 @@
 
   // ── Reactive display values ─────────────────────────────────────────────────
   const measuredFault = $derived(value !== null && fault);
-  let fullSegs = $derived(value === null ? 0 : Math.floor(ballistics.view.smoothedValue));
+  let smoothedSegs = $derived(ballistics.view.smoothedValue * SEG_COUNT);
+  let fullSegs = $derived(value === null ? 0 : Math.floor(smoothedSegs));
   let fracSeg  = $derived(
     value === null
       ? 0
-      : ballistics.view.smoothedValue - Math.floor(ballistics.view.smoothedValue),
+      : smoothedSegs - Math.floor(smoothedSegs),
   );
 </script>
 

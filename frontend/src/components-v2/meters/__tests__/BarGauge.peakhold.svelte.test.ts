@@ -119,6 +119,40 @@ describe('BarGauge peak-hold marker (MOR-1282)', () => {
     flushSync();
     expect(markerCount(t)).toBe(0);
   });
+
+  it('clamps rendered fill while retaining an over-range peak sample through decay', () => {
+    const { t, state } = mountReactive({
+      value: 1.5, label: 'Po', displayValue: '150W', showPeak: true,
+    });
+    vi.advanceTimersByTime(600);
+    flushSync();
+    expect(fillCount(t)).toBe(10);
+    expect(markerX(t)).toBe(253);
+
+    state.value = 1.6;
+    state.displayValue = '160W';
+    flushSync();
+    state.value = 0;
+    state.displayValue = '0W';
+    flushSync();
+    vi.advanceTimersByTime(300);
+    flushSync();
+
+    // The freshly retained 1.6 sample has only decayed to 1.28, so visual clamping
+    // keeps the marker at the right edge. Clamping the peak sample itself
+    // to 1 would instead move the marker inward on this first decay step.
+    expect(markerX(t)).toBe(253);
+  });
+
+  it('clamps below-range smoothing and peak projection at the left edge', () => {
+    const { t } = mountReactive({
+      value: -0.5, label: 'Po', displayValue: '0W', showPeak: true,
+    });
+    vi.advanceTimersByTime(100);
+    flushSync();
+    expect(fillCount(t)).toBe(0);
+    expect(markerX(t)).toBe(43);
+  });
 });
 
 it('null empties immediately and clears old fill/peak before a smaller sample', () => {
