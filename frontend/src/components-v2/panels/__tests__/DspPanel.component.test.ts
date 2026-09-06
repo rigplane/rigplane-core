@@ -309,6 +309,50 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     ['notchFilter', 'set_notch_filter', { value: 127, receiver: 0 }, 127],
     ['agcTimeConstant', 'set_agc_time_constant', { value: 4, receiver: 0 }, 4],
   ] as const;
+  const modalLanes = [
+    ['NB', 'NB Level', 'hbar'],
+    ['NB', 'NB Width', 'hbar'],
+    ['NOTCH', 'Notch Position', 'hbar'],
+    ['AGC-T', 'AGC Time', 'discrete'],
+  ] as const;
+
+  function closeModal(t: HTMLElement): void {
+    t.querySelector<HTMLButtonElement>('[aria-label="Close DSP settings"]')!.click();
+    flushSync();
+  }
+
+  function assertModalFeedback(
+    t: HTMLElement,
+    expectedPhase: string,
+    expectedText: string | null,
+  ): void {
+    for (const [button, label, renderer] of modalLanes) {
+      openLongPressModal(t, button);
+      const control = t.querySelector<HTMLElement>(`[aria-label="${label}"]`)!;
+      expect(control.dataset.commandPhase).toBe(expectedPhase);
+      const owner = control.closest(renderer === 'hbar' ? '.vc-hbar' : '.vc-discrete')!;
+      if (renderer === 'discrete') {
+        if (expectedText === null) {
+          const current = owner.querySelector('[data-control-feedback-current-status]');
+          if (expectedPhase === 'unavailable') {
+            expect(current?.textContent).toBe('Control unavailable');
+          } else {
+            expect(current).toBeNull();
+          }
+        } else {
+          expect(owner.querySelector('[data-control-feedback-current-status]')?.textContent)
+            .toContain(expectedText);
+        }
+        expect(owner.querySelector('[data-control-feedback-status]')).toBeNull();
+      } else if (expectedText === null) {
+        expect(owner.querySelector('[data-control-feedback-status]')).toBeNull();
+      } else {
+        expect(owner.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
+        expect(owner.querySelector('[data-control-feedback-status]')?.textContent).toContain(expectedText);
+      }
+      closeModal(t);
+    }
+  }
 
   it('routes both NB lanes independently through their existing raw handlers', () => {
     const t = mountPanel({ nbActive: true, nbLevel: 128, nbWidth: 63 });
@@ -364,6 +408,43 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     }
   });
 
+  it('keeps all four hidden terminal facts current, clears them, and accepts fresh replacements', () => {
+    for (const [field, name, params] of lanes) {
+      const command = beginCommand({
+        id: `old-${field}`, name, params, originalEpoch: 1, timeoutMs: 5_000,
+      });
+      failCommand(command.id, command.originalEpoch, 1, `old ${field} failure`);
+    }
+    const t = mountPanel({ nbActive: true, notchMode: 'manual', notchFreq: 126 });
+
+    assertModalFeedback(t, 'failed', 'old');
+    assertModalFeedback(t, 'failed', 'old');
+
+    runtimeState.session = { state: 'disconnected', epoch: 1 };
+    runtimeState.notify();
+    flushSync();
+    assertModalFeedback(t, 'unavailable', null);
+    expect(t.textContent).not.toContain('old');
+
+    runtimeState.state = qualifiedState(2, 4);
+    runtimeState.caps = qualifiedCaps(4);
+    runtimeState.session = { state: 'connected', epoch: 2 };
+    mockProps.nbLevelMax = 200;
+    runtimeState.notify();
+    mockProjection.notify();
+    flushSync();
+    assertModalFeedback(t, 'idle', null);
+
+    for (const [field, name, params] of lanes) {
+      const command = beginCommand({
+        id: `new-${field}`, name, params, originalEpoch: 2, timeoutMs: 5_000,
+      });
+      failCommand(command.id, command.originalEpoch, 2, `new ${field} failure`);
+    }
+    flushSync();
+    assertModalFeedback(t, 'failed', 'new');
+  });
+
   it('requires the exact same-field observation to be newer than ACK', () => {
     const command = beginCommand({
       id: 'exact-nb-level', name: 'set_nb_level', params: { level: 129, receiver: 0 },
@@ -390,32 +471,40 @@ describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
     expect(getDspControlFeedback('nbLevel').phase).toBe('confirmed');
   });
 
-  it('invalidates a deferred dispatch on authority loss and recovers in place', () => {
-    vi.useFakeTimers();
-    const t = mountPanel({ nbActive: true });
-    openLongPressModal(t, 'NB');
-    vi.useFakeTimers();
-    const slider = t.querySelector<HTMLElement>('[aria-label="NB Level"]')!;
-    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  it.each([
+    ['NB', 'NB Level', 'onNbLevelChange', { nbActive: true, nbLevel: 128 }, 129],
+    ['NB', 'NB Width', 'onNbWidthChange', { nbActive: true, nbWidth: 63 }, 64],
+    ['NOTCH', 'Notch Position', 'onNotchFreqChange', { notchMode: 'manual', notchFreq: 127 }, 128],
+    ['AGC-T', 'AGC Time', 'onAgcTimeChange', { agcTimeConstant: 3 }, 4],
+  ] as const)(
+    'invalidates deferred %s work on authority loss and recovers in place',
+    (button, label, handler, props, expected) => {
+      vi.useFakeTimers();
+      const t = mountPanel(props);
+      openLongPressModal(t, button);
+      vi.useFakeTimers();
+      const slider = t.querySelector<HTMLElement>(`[aria-label="${label}"]`)!;
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
 
-    runtimeState.session = { state: 'disconnected', epoch: 1 };
-    runtimeState.notify();
-    flushSync();
-    vi.advanceTimersByTime(50);
-    expect(slider.getAttribute('aria-disabled')).toBe('true');
-    expect(mockHandlers.onNbLevelChange).not.toHaveBeenCalled();
+      runtimeState.session = { state: 'disconnected', epoch: 1 };
+      runtimeState.notify();
+      flushSync();
+      vi.advanceTimersByTime(50);
+      expect(slider.getAttribute('aria-disabled')).toBe('true');
+      expect(mockHandlers[handler]).not.toHaveBeenCalled();
 
-    runtimeState.state = qualifiedState(2, 4);
-    runtimeState.caps = qualifiedCaps(4);
-    runtimeState.session = { state: 'connected', epoch: 2 };
-    runtimeState.notify();
-    flushSync();
-    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-    vi.advanceTimersByTime(50);
-    expect(slider.getAttribute('aria-disabled')).toBe('false');
-    expect(mockHandlers.onNbLevelChange).toHaveBeenCalledExactlyOnceWith(129);
-    vi.useRealTimers();
-  });
+      runtimeState.state = qualifiedState(2, 4);
+      runtimeState.caps = qualifiedCaps(4);
+      runtimeState.session = { state: 'connected', epoch: 2 };
+      runtimeState.notify();
+      flushSync();
+      slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      vi.advanceTimersByTime(50);
+      expect(slider.getAttribute('aria-disabled')).toBe('false');
+      expect(mockHandlers[handler]).toHaveBeenCalledExactlyOnceWith(expected);
+      vi.useRealTimers();
+    },
+  );
 });
 
 describe('DspPanel manual-notch position (MOR-1633)', () => {

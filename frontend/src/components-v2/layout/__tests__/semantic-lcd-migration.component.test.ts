@@ -21,6 +21,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 let txHarness: ManagedAppTxHarness;
@@ -87,6 +88,7 @@ const h = vi.hoisted(() => {
           get caps() { subscribe(); return h.caps; },
           get scope() { return h.scope; },
           connectionStatus: 'disconnected',
+          controlSession: Object.freeze({ state: 'disconnected', epoch: -1 }) satisfies ControlSessionSnapshot,
           radioPowerOn: null,
           connection: { status: 'disconnected', radioPowerOn: null },
           audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },

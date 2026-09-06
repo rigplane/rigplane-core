@@ -11,7 +11,6 @@
     toggleNrMode,
     toggleNotchMode,
     isNrActive,
-    isNotchActive,
   } from './dsp-panel-logic';
 
   import {
@@ -195,7 +194,6 @@
   let notchOptions = $derived(buildNotchOptions());
 
   let nrActive = $derived(isNrActive(nrMode));
-  let notchToggleActive = $derived(isNotchActive(notchMode));
 
   type ModalId = 'nr' | 'nb' | 'notch' | 'agc';
   let openModal = $state<ModalId | null>(null);

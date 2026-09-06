@@ -79,6 +79,8 @@ describe('MOR-2423 DSP scalar feedback wiring contract', () => {
     expect(source).toContain("command: 'set_nb_width'");
     expect(source).toContain("command: 'set_notch_filter'");
     expect(source).toContain("command: 'set_agc_time_constant'");
+    expect(source.match(/const view = binding\.view;/g)).toHaveLength(1);
+    expect(source).not.toContain('notchToggleActive');
   });
 });
 
@@ -304,6 +306,60 @@ describe('MOR-2423 supplied feedback phase projection', () => {
       phase === 'idle' || phase === 'unavailable' ? 0 : 1,
     );
   });
+
+  it.each([
+    ['nbLevel', { nbActive: true }, 'NB', 'NB Level', 'hbar'],
+    ['nbWidth', { nbActive: true }, 'NB', 'NB Width', 'hbar'],
+    ['notchFilter', { notchMode: 'manual', notchFreq: 127 }, 'NOTCH', 'Notch Position', 'hbar'],
+    ['agcTimeConstant', { agcTimeConstant: 4 }, 'AGC-T', 'AGC Time', 'discrete'],
+  ] as const)(
+    'retains hidden %s failure facts across repeated modal opens without a second live owner',
+    (field, props, buttonLabel, controlLabel, renderer) => {
+      feedbackOverrides.set(field, {
+        phase: 'failed', busy: false, target: null, requestedTarget: 4,
+        outcome: { phase: 'failed', error: `${field} rejected` },
+        lifecycleId: `${field}-life`, transitionId: `${field}-failed`,
+      });
+      const t = mountPanel(props);
+
+      const open = () => {
+        const button = getFillButtons(t).find((candidate) =>
+          candidate.textContent?.trim().startsWith(buttonLabel));
+        if (buttonLabel === 'AGC-T') {
+          button?.click();
+        } else {
+          vi.useFakeTimers();
+          button?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+          vi.advanceTimersByTime(600);
+          vi.useRealTimers();
+        }
+        flushSync();
+      };
+      const assertCurrent = () => {
+        const control = t.querySelector<HTMLElement>(`[aria-label="${controlLabel}"]`)!;
+        expect(control.dataset.commandPhase).toBe('failed');
+        if (renderer === 'discrete') {
+          expect(t.querySelector('[data-control-feedback-current-status]')?.textContent)
+            .toContain(`${field} rejected`);
+          expect(t.querySelector('[data-control-feedback-status]')).toBeNull();
+        } else {
+          expect(control.closest('.vc-hbar')?.querySelectorAll('[data-control-feedback-status]'))
+            .toHaveLength(1);
+          expect(control.closest('.vc-hbar')?.querySelector('[data-control-feedback-status]')?.textContent)
+            .toContain(`${field} rejected`);
+        }
+      };
+
+      open();
+      assertCurrent();
+      t.querySelector<HTMLButtonElement>('[aria-label="Close DSP settings"]')!.click();
+      flushSync();
+      expect(t.querySelector(`[aria-label="${controlLabel}"]`)).toBeNull();
+
+      open();
+      assertCurrent();
+    },
+  );
 });
 
 describe('Notch toggle', () => {
