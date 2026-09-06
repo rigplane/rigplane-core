@@ -102,6 +102,7 @@ import MetersSurface from '../../../semantic/MetersSurface.svelte';
 const h = vi.hoisted(() => ({
   state: null as ServerState | null,
   caps: null as Capabilities | null,
+  authoritySubscribers: new Set<(next: { state: ServerState | null; caps: Capabilities | null; session: { state: 'connected'; epoch: 1 } }) => void>(),
   txController: null as ManagedAppTxController | null,
 }));
 vi.mock('$lib/runtime', () => ({
@@ -109,6 +110,11 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
     get connectionAudio() { return false; },
     get defaultScopeStatus() {
@@ -338,6 +344,7 @@ const SCENES: readonly Scene[] = [
       const { cleanup } = mountInto(SemanticRadioSurfaces, { strips: 'dual' });
       return { cleanup: () => {
         cleanup();
+        expect(h.authoritySubscribers.size).toBe(0);
         expect(txHarness.listenerCount()).toBe(0);
         expect(txHarness.trace()).toEqual([]);
         h.state = null; h.caps = null; h.txController = null;

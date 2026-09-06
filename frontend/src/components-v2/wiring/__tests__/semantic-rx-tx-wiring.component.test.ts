@@ -14,6 +14,7 @@ type Snapshot = {
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
   snapshot: null as unknown,
   listeners: new Set<(next: unknown) => void>(),
   start: vi.fn(),
@@ -39,6 +40,11 @@ vi.mock('$lib/runtime', () => ({
   runtime: {
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an
     // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
     // browser stream keeps every fixture below on its pre-1279 path.
@@ -234,6 +240,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
   document.body.innerHTML = '';
 });
 
