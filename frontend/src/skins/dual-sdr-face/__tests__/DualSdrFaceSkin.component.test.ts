@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { mount, tick, unmount } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CANONICAL_LAYOUT_MODES, type CanonicalLayoutMode } from '../../../presentation/layout-mode';
+import { TEST_INSTRUMENTS } from '../../../components-v2/layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 
 const lifecycle = vi.hoisted(() => ({
   acquire: vi.fn(() => ({ resource: 'hardware-scope', token: Symbol('lease') })),
@@ -77,9 +78,10 @@ describe('DualSdrFaceSkin production entrypoint', () => {
         isMobile: false,
         hasAnyScope: true,
       });
-      const Component = await loadSkin(skinId);
       const target = document.createElement('div');
-      const mounted = mount(Component, { target });
+      const mounted = skinId === 'desktop-v2' || skinId === 'sdr-test'
+        ? mount(await loadSkin(skinId), { target, props: { instruments: TEST_INSTRUMENTS } })
+        : mount(await loadSkin(skinId), { target });
 
       const selector = target.querySelector<HTMLSelectElement>(
         'select[data-testid="skin-navigation-probe"]',
