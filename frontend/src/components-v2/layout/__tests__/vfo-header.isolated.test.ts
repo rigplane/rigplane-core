@@ -22,7 +22,7 @@ vi.mock('../../panels/vfo/DualVfoDisplay.svelte', () => ({
     return {};
   },
 }));
-vi.mock('../../vfo/VfoPanel.svelte', () => ({
+vi.mock('../../vfo/LegacyVfoPanelAdapter.svelte', () => ({
   default: function VfoPanelStub(_anchor: unknown, props: Record<string, any>) {
     childHarness.vfoPanelProps = props;
     return {};

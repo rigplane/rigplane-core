@@ -39,10 +39,11 @@
   import { t } from '$lib/i18n';
   import { vfoEqualLabel, vfoSwapLabel } from '../components-v2/vfo/vfo-ops-utils';
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
+  import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
-  import type { BooleanFact, DisplayObservation, RadioViewModel, VfoViewModel } from './radio-view-model';
+  import type { BooleanFact, DisplayObservation, RadioViewModel, ReceiverIndicatorViewModel, VfoViewModel } from './radio-view-model';
 
   interface Props {
     viewModel: RadioViewModel;
@@ -471,6 +472,54 @@
       (indicator) => indicatorReceiver === undefined || indicator.receiver === indicatorReceiver,
     ),
   );
+
+  function standardBadges(indicator: ReceiverIndicatorViewModel | undefined) {
+    if (!indicator) return [];
+    const badges: { label: string; active: boolean; color: 'cyan' | 'orange' | 'muted'; state: string }[] = [];
+    const numeric = (name: string, field: ReceiverIndicatorViewModel['bandwidthHz'], unit = '') => {
+      if (!field.availability.structural) return;
+      const reading = field.reading;
+      const value = reading.status === 'known' && Number.isFinite(reading.value) ? reading.value : null;
+      badges.push({ label: `${name} ${value ?? '—'}${value !== null ? unit : ''}`, active: value !== null, color: value !== null ? 'cyan' : 'muted', state: reading.status });
+    };
+    const toggle = (name: string, field: ReceiverIndicatorViewModel['nbActive']) => {
+      if (!field.availability.structural) return;
+      const value = field.reading.status === 'known' ? field.reading.value : null;
+      badges.push({ label: `${name} ${value === null ? '—' : value ? 'ON' : 'OFF'}`, active: value === true, color: value === null ? 'muted' : 'cyan', state: value === null ? 'unknown' : value ? 'on' : 'off' });
+    };
+    numeric('BW', indicator.bandwidthHz, ' Hz');
+    if (indicator.agcMode.availability.structural) {
+      const reading = indicator.agcMode.reading;
+      const value = reading.status === 'known' ? reading.value : null;
+      badges.push({ label: `AGC ${value ?? '—'}`, active: value !== null, color: value === null ? 'muted' : 'cyan', state: reading.status });
+    }
+    toggle('NB', indicator.nbActive); toggle('NR', indicator.nrActive);
+    if (indicator.notchMode.availability.structural) {
+      const reading = indicator.notchMode.reading;
+      const value = reading.status === 'known' ? reading.value : null;
+      badges.push({ label: `NOTCH ${value?.toUpperCase() ?? '—'}`, active: value !== null && value !== 'off', color: value === null ? 'muted' : 'orange', state: reading.status });
+    }
+    numeric('ATT', indicator.attenuator, ' dB'); numeric('P.AMP', indicator.preamp);
+    toggle('IP+', indicator.ipPlus); toggle('DIGI-SEL', indicator.digiSel);
+    if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
+      const shown = displayValue(indicator.rfGain.display, indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null);
+      badges.push({ label: `RFG ${shown ?? '—'}${indicator.rfGain.display?.state === 'stale' ? ' †' : ''}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
+    }
+    return badges;
+  }
+
+  function standardBand(vfo: VfoViewModel): string | null {
+    const band = viewModel.band?.currentBand;
+    return vfo.isActive && band?.availability.structural && band.availability.operational
+      && band.reading.status === 'known' ? band.reading.value : null;
+  }
+
+  function standardRit(vfo: VfoViewModel): { active: boolean; offset: number } | undefined {
+    const wide = viewModel.radioWideIndicators;
+    if (!vfo.isActive || !wide || wide.ritActive.reading.status !== 'known'
+      || wide.ritOffset.reading.status !== 'known') return undefined;
+    return { active: wide.ritActive.reading.value, offset: wide.ritOffset.reading.value };
+  }
 </script>
 
 <div class="vfo-surface" role="group" aria-label={groupLabel ?? t('core.vfo.groupLabel')} data-testid="vfo-surface" data-vfo-appearance={appearance}>
@@ -815,9 +864,67 @@
     </section>
   {/snippet}
 
+  {#snippet standardInstrument(receiver: ReceiverId)}
+    {@const records = viewModel.vfos.filter((item) => item.receiver === receiver)}
+    {@const activeSlot = records.find((item) => item.isActiveSlot)}
+    {@const dominant = activeSlot ?? (records.length === 1 ? records[0] : undefined)}
+    {@const indicator = receiverIndicators.find((item) => item.receiver === receiver)}
+    {@const choices = viewModel.vfos.flatMap((choice, index) =>
+        choice.receiver === receiver && choice !== dominant
+          ? [{
+              key: String(index), receiver: choice.receiver === 'SUB' ? 'sub' as const : 'main' as const,
+              slot: slotKey(choice.slot), label: roleLabel(choice),
+              frequencyText: formatFrequency(displayValue(choice.display?.frequencyHz, choice.frequencyHz)),
+              active: choice.isActive, activeSlot: choice.isActiveSlot, txTarget: choice.isTxTarget,
+              disabled: disabled || choice.slot.kind === 'unknown' || choice.slot.kind === 'relative',
+              reason: choice.slot.kind === 'relative' ? identityOnlyReasonText() : selectReasonText(choice),
+            }]
+          : [])}
+    <section class="receiver-instrument standard-receiver" data-receiver-instrument={receiver}
+      data-testid="vfo-indicator-row" data-indicator-receiver={receiver}
+      data-indicator-operational={indicator?.availability.operational}
+      aria-label={`${receiver} receiver indicators`}>
+      <div class="vfo-tile" class:is-active={dominant?.isActive}
+        data-indicator-receiver={receiver} data-vfo-dominant={dominant ? 'known' : 'unknown'}
+        data-vfo-tile={dominant ? '' : undefined} data-vfo-receiver={dominant ? receiver : undefined}
+        data-vfo-slot={dominant ? slotKey(dominant.slot) : undefined}
+        data-vfo-active={dominant?.isActive} data-vfo-active-slot={dominant?.isActiveSlot}
+        data-vfo-tx-target={dominant?.isTxTarget}>
+        <VfoPanel
+          receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={receiver}
+          slotTag={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
+          freq={dominant?.frequencyHz ?? null}
+          displayHz={dominant ? displayValue(dominant.display?.frequencyHz, dominant.frequencyHz) : null}
+          pendingDisplayHz={dominant ? pendingFrequencyHz?.[receiver] ?? null : null}
+          frequencyState={dominant?.display?.frequencyHz.state ?? (dominant?.frequencyHz == null ? 'unknown' : 'current')}
+          staleReason={t('core.rxTx.target.reason.stale')}
+          contextKey={`${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`}
+          frequencyDisabled={!dominant || readoutDisabled(dominant)}
+          mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
+          filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}
+          sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
+            && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
+          meterPresent={indicator?.sMeter.availability.structural ?? false}
+          meterOperational={indicator?.sMeter.availability.operational ?? false}
+          isActive={dominant?.isActive ?? false} badgeItems={standardBadges(indicator)}
+          bandText={dominant ? standardBand(dominant) : null}
+          rit={dominant ? standardRit(dominant) : undefined} slotChoices={choices}
+          onFreqChange={dominant ? (hz) => tuneFrequency(dominant, hz) : undefined}
+          onSelectSlot={(key) => {
+            const choice = viewModel.vfos[Number(key)];
+            if (choice) selectVfo(choice);
+          }}
+        />
+      </div>
+    </section>
+  {/snippet}
+
   {#if appearance !== 'semantic' && showVfoList}
     <div class="instrument-panel" data-testid="vfo-instrument-panel">
-      {#if instrumentReceivers[0]}{@render receiverInstrument(instrumentReceivers[0])}{/if}
+      {#if instrumentReceivers[0]}
+        {#if appearance === 'standard'}{@render standardInstrument(instrumentReceivers[0])}
+        {:else}{@render receiverInstrument(instrumentReceivers[0])}{/if}
+      {/if}
       {#if showRadioWideFacts}
         <div class="bridge" data-instrument-bridge>
           {@render activeReceiverStatus()}
@@ -826,7 +933,8 @@
         </div>
       {/if}
       {#each instrumentReceivers.slice(1) as receiver (receiver)}
-        {@render receiverInstrument(receiver)}
+        {#if appearance === 'standard'}{@render standardInstrument(receiver)}
+        {:else}{@render receiverInstrument(receiver)}{/if}
       {/each}
     </div>
   {:else}
@@ -945,6 +1053,10 @@
   [data-vfo-appearance='standard'] .receiver-instrument :where(.vfo-tile) {
     grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
+  }
+  [data-vfo-appearance='standard'] .receiver-instrument > :where(.vfo-tile) {
+    display: block;
+    inline-size: 100%;
   }
   [data-vfo-appearance='standard'] .vfo-role { grid-column: 1; grid-row: 1; }
   [data-vfo-appearance='standard'] .vfo-mode {

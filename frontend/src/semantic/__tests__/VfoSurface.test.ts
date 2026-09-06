@@ -60,7 +60,7 @@ describe('VFO qualified display continuity', () => {
       mode: state === 'current' ? 'USB' : null, filter: state === 'current' ? 'FIL1' : null,
     })) };
   }
-  it.each(['semantic', 'sdr', 'standard'] as const)('%s retains primitive/digits/cue through freshness-only transitions', (appearance) => {
+  it.each(['semantic', 'sdr'] as const)('%s retains primitive/digits/cue through freshness-only transitions', (appearance) => {
     const model = writable(view('current'));
     const live = fromStore(model);
     const onTuneFrequency = vi.fn();
@@ -92,6 +92,14 @@ describe('VFO qualified display continuity', () => {
     digits.at(-1)!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     digits.at(-1)!.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
     expect(onTuneFrequency).toHaveBeenCalledExactlyOnceWith('MAIN', 14250001);
+  });
+  it('standard keeps a stale observed value visible but removes arithmetic when confirmed truth is absent', () => {
+    const onTuneFrequency = vi.fn();
+    const root = mountSurface({ viewModel: view('stale'), appearance: 'standard', onTuneFrequency });
+    expect(root.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('14.250.000');
+    expect(root.querySelector('.digit')).toBeNull();
+    expect(root.querySelector('[data-vfo-stale-cue]')?.getAttribute('aria-hidden')).toBe('false');
+    expect(onTuneFrequency).not.toHaveBeenCalled();
   });
   it('renders first stale, unknown, unsupported and readonly slots without fabricating frequency', () => {
     const root = mountSurface({ viewModel: view('stale') });
@@ -2305,6 +2313,93 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(source).toContain('grid-template-columns: auto auto minmax(0, 1fr) auto;');
     expect(source).toContain('font-size: clamp(34px, 3vw, 44px)');
     expect(source).toContain('.secondary-slot .vfo-freq { font-size: 18px;');
+  });
+
+  it('mounts the surviving Standard VfoPanel with honest meter states', () => {
+    const base = withReceiverIndicators('1/single');
+    const standard = mountSurface({ viewModel: base, appearance: 'standard' });
+    expect(standard.querySelector('.panel .panel-header')).not.toBeNull();
+    expect(standard.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('data-operational')).toBe('true');
+    expect(standard.querySelector('[data-testid="receiver-s-meter"] svg')?.textContent).toContain('0');
+
+    const indicator = base.receiverIndicators![0];
+    const unknown = mountSurface({
+      viewModel: { ...base, receiverIndicators: [{ ...indicator, sMeter: {
+        reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      } }] }, appearance: 'standard',
+    });
+    expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toContain('unknown');
+
+    const absent = mountSurface({
+      viewModel: { ...base, receiverIndicators: [{ ...indicator, sMeter: {
+        reading: { status: 'unknown' }, availability: { structural: false, operational: false },
+      } }] }, appearance: 'standard',
+    });
+    expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
+  });
+
+  it('keeps four absolute records and selects the exact Standard receiver slot', () => {
+    const onSelectVfo = vi.fn();
+    const root = mountSurface({
+      viewModel: withReceiverIndicators('2/main_sub'), appearance: 'standard', onSelectVfo,
+    });
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(4);
+    root.querySelector<HTMLButtonElement>('[data-vfo-receiver="SUB"][data-vfo-slot="B"]')?.click();
+    expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'SUB', slot: { kind: 'slotted', id: 'B' } });
+  });
+
+  it('retains a structural receiver and both records when active-slot identity is unknown', () => {
+    const base = withReceiverIndicators('1/ab');
+    const onSelectVfo = vi.fn();
+    const viewModel: RadioViewModel = {
+      ...base,
+      activeReceiver: { status: 'unknown' },
+      vfos: base.vfos.map((vfo) => ({ ...vfo, isActive: false, isActiveSlot: false })),
+    };
+    const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
+    expect(root.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
+    expect(root.querySelector('[data-vfo-dominant="unknown"] [data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    expect(Array.from(root.querySelectorAll('[data-vfo-slot]')).map((node) => node.getAttribute('data-vfo-slot'))).toEqual(['A', 'B']);
+    root.querySelector<HTMLButtonElement>('[data-vfo-slot="B"]')?.click();
+    expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' } });
+  });
+
+  it('retains an unknown secondary record as disabled, reasoned, and inert', () => {
+    const base = withReceiverIndicators('1/ab');
+    const onSelectVfo = vi.fn();
+    const viewModel: RadioViewModel = {
+      ...base,
+      vfos: [base.vfos[0], { ...base.vfos[1], slot: { kind: 'unknown' } }],
+    };
+    const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    const unknown = root.querySelector<HTMLButtonElement>('[data-vfo-slot="unknown"]')!;
+    expect(unknown).not.toBeNull();
+    expect(unknown.disabled).toBe(true);
+    expect(unknown.title).toContain("has not confirmed this VFO's A/B identity");
+    unknown.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onSelectVfo).not.toHaveBeenCalled();
+  });
+
+  it('retains a relative secondary record as disabled, reasoned, and inert', () => {
+    const base = withReceiverIndicators('1/ab');
+    const onSelectVfo = vi.fn();
+    const viewModel: RadioViewModel = {
+      ...base,
+      vfos: [
+        { ...base.vfos[0], slot: { kind: 'relative', role: 'selected' } },
+        { ...base.vfos[1], slot: { kind: 'relative', role: 'unselected' } },
+      ],
+    };
+    const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    const relative = root.querySelector<HTMLButtonElement>('[data-vfo-slot="unselected"]')!;
+    expect(relative).not.toBeNull();
+    expect(relative.disabled).toBe(true);
+    expect(relative.title).toContain('has not confirmed which VFO is A and which is B');
+    relative.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onSelectVfo).not.toHaveBeenCalled();
   });
 });
 

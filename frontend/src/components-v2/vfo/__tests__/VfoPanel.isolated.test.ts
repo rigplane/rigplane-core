@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import VfoPanel from '../VfoPanel.svelte';
+import LegacyVfoPanelAdapter from '../LegacyVfoPanelAdapter.svelte';
 import { formatBadges, formatRitOffset } from '../vfo-utils';
 
 // ---------------------------------------------------------------------------
@@ -134,10 +136,20 @@ import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabi
 
 let components: ReturnType<typeof mount>[] = [];
 
-function mountPanel(props: ComponentProps<typeof VfoPanel>) {
+function mountPanel(props: ComponentProps<typeof VfoPanel> | ComponentProps<typeof LegacyVfoPanelAdapter>) {
   const t = document.createElement('div');
   document.body.appendChild(t);
-  const component = mount(VfoPanel, { target: t, props });
+  const Component = 'receiverLabel' in props ? VfoPanel : LegacyVfoPanelAdapter;
+  const component = mount(Component as typeof VfoPanel, { target: t, props: props as ComponentProps<typeof VfoPanel> });
+  flushSync();
+  components.push(component);
+  return t;
+}
+
+function mountLegacyPanel(props: ComponentProps<typeof LegacyVfoPanelAdapter>) {
+  const t = document.createElement('div');
+  document.body.appendChild(t);
+  const component = mount(LegacyVfoPanelAdapter, { target: t, props });
   flushSync();
   components.push(component);
   return t;
@@ -154,7 +166,7 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-const baseProps: ComponentProps<typeof VfoPanel> = {
+const baseProps: ComponentProps<typeof LegacyVfoPanelAdapter> = {
   receiver: 'main',
   freq: 14074000,
   mode: 'USB',
@@ -354,33 +366,104 @@ describe('callbacks', () => {
 
 describe('receiverLabel / vfoSlotLabel integration', () => {
   it('uses receiverLabel("MAIN") for receiver=main', () => {
-    mountPanel({ ...baseProps, receiver: 'main' });
+    mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('MAIN');
   });
 
   it('uses receiverLabel("SUB") for receiver=sub', () => {
-    mountPanel({ ...baseProps, receiver: 'sub' });
+    mountLegacyPanel({ ...baseProps, receiver: 'sub' });
     expect(vi.mocked(receiverLabel)).toHaveBeenCalledWith('SUB');
   });
 
   it('uses vfoSlotLabel("A") for receiver=main', () => {
-    mountPanel({ ...baseProps, receiver: 'main' });
+    mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(vi.mocked(vfoSlotLabel)).toHaveBeenCalledWith('A');
   });
 
   it('uses vfoSlotLabel("B") for receiver=sub', () => {
-    mountPanel({ ...baseProps, receiver: 'sub' });
+    mountLegacyPanel({ ...baseProps, receiver: 'sub' });
     expect(vi.mocked(vfoSlotLabel)).toHaveBeenCalledWith('B');
   });
 
   it('renders the receiver label in the header', () => {
     vi.mocked(receiverLabel).mockReturnValue('MAIN');
-    const t = mountPanel({ ...baseProps, receiver: 'main' });
+    const t = mountLegacyPanel({ ...baseProps, receiver: 'main' });
     expect(t.querySelector('.vfo-label')?.textContent?.trim()).toBe('MAIN');
   });
 
   it('reads band ranges through getCapabilities()', () => {
-    mountPanel(baseProps);
+    mountLegacyPanel(baseProps);
     expect(vi.mocked(getCapabilities)).toHaveBeenCalled();
+  });
+});
+
+describe('explicit presentation contract', () => {
+  const explicit = {
+    receiver: 'main' as const,
+    receiverLabel: 'MAIN',
+    slotTag: 'A',
+    freq: 14_074_000,
+    displayHz: 14_075_000,
+    pendingDisplayHz: 14_076_000,
+    contextKey: '2/main_sub:MAIN:A',
+    frequencyDisabled: false,
+    mode: 'USB',
+    filter: 'FIL1',
+    sValue: 0,
+    meterPresent: true,
+    meterOperational: true,
+    isActive: true,
+    badgeItems: [],
+  } satisfies ComponentProps<typeof VfoPanel>;
+
+  it('uses confirmed truth as the tuning base while display and pending remain presentation-only', () => {
+    const onFreqChange = vi.fn();
+    const t = mountPanel({ ...explicit, onFreqChange });
+    expect(t.querySelector('.freq')?.textContent?.replace(/\s/g, '')).toBe('14.076.000');
+    const digits = t.querySelectorAll<HTMLElement>('.digit');
+    digits[digits.length - 1]?.click();
+    digits[digits.length - 1]?.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_074_001);
+  });
+
+  it('does not mount an arithmetic frequency control when confirmed truth is unknown', () => {
+    const t = mountPanel({ ...explicit, freq: null, displayHz: null, pendingDisplayHz: null });
+    expect(t.querySelector('.digit')).toBeNull();
+    expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
+  });
+
+  it('keeps the established wrapper hook and the real frequency control in tab order', () => {
+    const t = mountPanel(explicit);
+    expect(t.querySelector('[data-vfo-freq]')?.classList.contains('vfo-freq')).toBe(true);
+    expect(t.querySelector('.freq')?.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('keeps known zero distinct from unknown and structural absence', () => {
+    const known = mountPanel(explicit);
+    expect(known.querySelector('svg')?.getAttribute('aria-label') ?? '').not.toContain('?');
+    const unknown = mountPanel({ ...explicit, sValue: null, meterOperational: false });
+    expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toContain('S meter unknown');
+    const absent = mountPanel({ ...explicit, meterPresent: false });
+    expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
+  });
+
+  it('emits the exact explicit slot choice key without inventing A/B', () => {
+    const onSelectSlot = vi.fn();
+    const t = mountPanel({
+      ...explicit,
+      slotChoices: [{
+        key: 'SUB:B', receiver: 'sub', slot: 'B', label: 'SUB B',
+        frequencyText: '21.295.000', active: false, activeSlot: false,
+        txTarget: false, disabled: false,
+      }],
+      onSelectSlot,
+    });
+    t.querySelector<HTMLButtonElement>('[data-vfo-select]')?.click();
+    expect(onSelectSlot).toHaveBeenCalledExactlyOnceWith('SUB:B');
+  });
+
+  it('contains no capability, runtime, or store imports', () => {
+    const source = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
+    expect(source).not.toMatch(/stores\/|runtime\/|capabilities/);
   });
 });

@@ -1,54 +1,90 @@
+<script module lang="ts">
+  let sequence = 0;
+</script>
+
 <script lang="ts">
   import LinearSMeter from '../meters/LinearSMeter.svelte';
   import FrequencyDisplayInteractive from '../../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import { StatusIndicator } from '$lib/Button';
-  import { getCapabilities, receiverLabel, vfoSlotLabel } from '$lib/stores/capabilities.svelte';
-  import { findActiveBand } from '../controls/band-utils';
-  import { formatBadges, formatRitOffset } from './vfo-utils';
+  import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
+  import { formatRitOffset } from './vfo-utils';
   import type { VfoLayoutProfile } from '../layout/vfo-layout-tokens';
+
+  export interface VfoPanelBadge {
+    label: string;
+    active: boolean;
+    color?: string;
+    state?: string;
+  }
+
+  export interface VfoPanelSlotChoice {
+    key: string;
+    receiver: 'main' | 'sub';
+    slot: string;
+    label: string;
+    frequencyText: string;
+    active: boolean;
+    activeSlot: boolean;
+    txTarget: boolean;
+    disabled: boolean;
+    reason?: string;
+  }
 
   interface Props {
     receiver: 'main' | 'sub';
-    freq: number;
-    mode: string;
-    filter: string;
-    sValue: number;
+    receiverLabel: string;
+    slotTag: string;
+    freq: number | null;
+    displayHz?: number | null;
+    pendingDisplayHz?: number | null;
+    frequencyState?: 'current' | 'stale' | 'unknown' | 'unsupported';
+    staleReason?: string;
+    contextKey?: string;
+    frequencyDisabled?: boolean;
+    mode: string | null;
+    filter: string | null;
+    sValue: number | null;
+    meterPresent?: boolean;
+    meterOperational?: boolean;
     isActive: boolean;
-    badges: Record<string, boolean | string>;
+    badgeItems: readonly VfoPanelBadge[];
+    bandText?: string | null;
     rit?: { active: boolean; offset: number };
+    slotChoices?: readonly VfoPanelSlotChoice[];
     layoutProfile?: VfoLayoutProfile;
     onModeClick?: () => void;
-    onVfoClick?: () => void;
     onFreqChange?: (freq: number) => void;
+    onSelectSlot?: (key: string) => void;
   }
 
   let {
-    receiver,
-    freq,
-    mode,
-    filter,
-    sValue,
+    receiver, receiverLabel, slotTag, freq, displayHz, pendingDisplayHz = null,
+    frequencyState = 'current', staleReason, contextKey, frequencyDisabled = false,
+    mode, filter, sValue, meterPresent = true, meterOperational,
     isActive,
-    badges,
-    rit,
+    badgeItems, bandText, rit, slotChoices = [],
     layoutProfile = 'baseline',
     onModeClick,
-    onVfoClick,
     onFreqChange,
+    onSelectSlot,
   }: Props = $props();
 
-  let slot = $derived<'A' | 'B'>(receiver === 'main' ? 'A' : 'B');
-  let label = $derived(receiverLabel(receiver === 'main' ? 'MAIN' : 'SUB'));
-  let slotTag = $derived(vfoSlotLabel(slot).replace(/^VFO /, ''));
-  let activeBand = $derived(findActiveBand(freq, getCapabilities()?.freqRanges ?? []));
-  let badgeItems = $derived(formatBadges(badges, receiver));
   let meterVariant = $derived(layoutProfile === 'wide' ? 'vfo-wide' : 'vfo');
+  let staleDisplay = $derived(frequencyState === 'stale');
+  const staleId = `vfo-panel-stale-${++sequence}`;
   let receiverChromeVars = $derived({
     '--receiver-accent': `var(--v2-receiver-${receiver}-accent)`,
     '--receiver-control-border': `var(--v2-vfo-${receiver}-control-border)`,
     '--receiver-control-glow': `var(--v2-vfo-${receiver}-control-glow)`,
     '--receiver-panel-glow-outer': `var(--v2-vfo-${receiver}-panel-glow-outer)`,
   });
+
+  function formatFrequency(hz: number | null | undefined): string {
+    if (hz === null || hz === undefined || !Number.isFinite(hz)) return '—';
+    const groups = groupDigitsForDisplay(splitFrequencyToDigits(hz));
+    return [groups.mhz, groups.khz, groups.hz]
+      .map((group) => group.map((digit) => digit.char).join('')).join('.');
+  }
 </script>
 
 <div
@@ -59,7 +95,7 @@
 >
   <div class="panel-header">
     <div class="header-title-group">
-      <span class="vfo-label">{label}</span>
+      <span class="vfo-label">{receiverLabel}</span>
     </div>
 
     <div class="header-badges">
@@ -69,13 +105,34 @@
   </div>
 
   <div class="smeter-row panel-meter">
-    <LinearSMeter value={sValue} compact label={slotTag} variant={meterVariant} />
+    {#if meterPresent}
+      <div data-testid="receiver-s-meter" data-receiver={receiver}
+        data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
+        aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
+        <LinearSMeter value={Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} />
+      </div>
+    {/if}
   </div>
 
   <div class="panel-body">
     <div class="display-row">
       <div class="freq-row">
-        <FrequencyDisplayInteractive {freq} active={isActive} {receiver} {onFreqChange} />
+        <span class="vfo-freq" data-vfo-freq data-display-state={frequencyState} class:display-unknown={displayHz === null}
+          aria-describedby={staleDisplay ? staleId : undefined}>
+          {#if freq !== null && Number.isFinite(freq)}
+            <FrequencyDisplayInteractive
+              {freq} {displayHz} {pendingDisplayHz} {contextKey}
+              disabled={frequencyDisabled || frequencyState !== 'current'}
+              active={isActive} {receiver} {onFreqChange} vfoFreqHook={false}
+            />
+          {:else}
+            <span class="freq unknown-frequency">{formatFrequency(pendingDisplayHz ?? displayHz)}</span>
+          {/if}
+        </span>
+        <span id={staleId} data-vfo-stale-cue class="stale-cue" aria-hidden={!staleDisplay}
+          class:stale={staleDisplay} title={staleDisplay ? staleReason : undefined}>
+          <span aria-hidden="true">†</span><span class="sr-only">{staleReason}</span>
+        </span>
       </div>
 
       {#if rit?.active}
@@ -95,7 +152,7 @@
         title={`Change mode (current: ${mode})`}
       >
         <StatusIndicator
-          label={mode}
+          label={mode ?? '—'}
           active={true}
           color="cyan"
           size="default"
@@ -104,19 +161,39 @@
 
       <StatusIndicator label={slotTag} active={false} color="muted" size="default" />
 
-      {#if activeBand}
-        <StatusIndicator label={activeBand} active={true} color="cyan" size="default" />
+      {#if bandText}
+        <StatusIndicator label={bandText} active={true} color="cyan" size="default" />
       {/if}
 
-      <StatusIndicator label={filter} active={true} color="cyan" size="default" />
+      <StatusIndicator label={filter ?? '—'} active={filter !== null} color={filter === null ? 'muted' : 'cyan'} size="default" />
 
       {#each badgeItems as item (item.label)}
-        <StatusIndicator
-          label={item.label}
-          active={item.active}
-          color={item.color as 'cyan' | 'green' | 'amber' | 'orange' | 'red' | 'muted'}
-          size="default"
-        />
+        <span data-indicator-fact={item.label.split(' ')[0]?.toLowerCase()} data-state={item.state}>
+          <StatusIndicator
+            label={item.label}
+            active={item.active}
+            color={(item.color ?? 'cyan') as 'cyan' | 'green' | 'amber' | 'orange' | 'red' | 'muted'}
+            size="default"
+          />
+        </span>
+      {/each}
+
+      {#each slotChoices as choice (choice.key)}
+        <button
+          type="button" class="slot-choice" data-vfo-tile data-vfo-select
+          data-vfo-receiver={choice.receiver === 'sub' ? 'SUB' : 'MAIN'}
+          data-vfo-slot={choice.slot} data-vfo-active={choice.active}
+          data-vfo-active-slot={choice.activeSlot} data-vfo-tx-target={choice.txTarget}
+          disabled={choice.disabled} title={choice.reason}
+          aria-describedby={choice.reason ? `${staleId}-choice-${choice.key}` : undefined}
+          onclick={() => onSelectSlot?.(choice.key)}
+        >
+          <span class="vfo-role">{choice.label}</span>
+          <span class="vfo-freq">{choice.frequencyText}</span>
+        </button>
+        {#if choice.reason}
+          <span id={`${staleId}-choice-${choice.key}`} class="sr-only">{choice.reason}</span>
+        {/if}
       {/each}
     </div>
   </div>
@@ -216,6 +293,36 @@
     padding: 0 var(--vfo-panel-meter-pad-x, 6px);
   }
 
+  .panel-meter > div { width: 100%; height: 100%; }
+
+  .stale-cue { visibility: hidden; inline-size: 1ch; font-size: 10px; }
+  .stale-cue.stale { visibility: visible; }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+
+  .slot-choice {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    padding: 1px 4px;
+    border: 1px solid var(--v2-border-soft);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--v2-text-muted);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .slot-choice:first-of-type { margin-inline-start: auto; }
+
+  .slot-choice:disabled { opacity: 0.55; cursor: not-allowed; }
+  .slot-choice .vfo-role { font-size: 8px; }
+  .slot-choice .vfo-freq { font-size: 9px; }
+
   .mode-badge-wrapper {
     cursor: pointer;
     display: inline-flex;
@@ -254,9 +361,19 @@
     min-width: 0;
   }
 
-  .freq-row :global(.freq) {
+  .vfo-freq {
+    inline-size: 6.1em;
+    max-inline-size: 100%;
     font-size: var(--vfo-frequency-size, 24px);
     letter-spacing: var(--vfo-frequency-letter-spacing, 0.03em);
+  }
+
+  .vfo-freq :global(.freq.interactive) {
+    font: inherit;
+    font-variant-numeric: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    text-shadow: inherit;
   }
 
   .freq-row :global(.sep) {
@@ -312,7 +429,7 @@
 
 
   @media (max-width: 1280px) {
-    .freq-row :global(.freq) {
+    .vfo-freq {
       font-size: 44px;
     }
   }
@@ -323,7 +440,7 @@
       align-items: flex-start;
     }
 
-    .freq-row :global(.freq) {
+    .vfo-freq {
       font-size: 32px;
     }
 
