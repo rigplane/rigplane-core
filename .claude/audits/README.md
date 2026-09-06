@@ -34,6 +34,14 @@ choice controls; a final whole-path audit remains outstanding.
   native-consumer authority still need explicit contracts. No implementation
   or final whole-path completion claim.
 
+## 2026-09-06 — CW and current Filter Width (tree `53b27aebbed6a8e27114c442a7420d589af23876`)
+
+- [2026-09-06-mechanism-audit-cw-filter-feedback.md](2026-09-06-mechanism-audit-cw-filter-feedback.md)
+  — bounded CW scalar and legacy current Filter Width decision: shared owners
+  are cleared; provider-routing, table-truth and full-feedback adoption remain
+  bounded gaps. No implementation completion, universal provider timing, or
+  all-controls claim.
+
 ## 2026-09-03 — Icom lower-executor lifetime (draft, source `4e4c1782`)
 
 - [2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md](2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md)
