@@ -112,28 +112,47 @@ export function createFrequencyInteractionLease(
   isCurrent: () => boolean,
 ): FrequencyInteractionLease {
   let revoked = false;
-  function active(): boolean {
-    return !revoked && activeRevocation.get(owner) === revoke && isCurrent();
-  }
-  function revoke(): void {
-    if (revoked) return;
-    revoked = true;
-    if (activeRevocation.get(owner) !== revoke) return;
-    activeRevocation.delete(owner);
+  let resetGeneration = 0;
+  function clearOwner(): void {
+    resetGeneration += 1;
     resetInteraction.get(owner)?.();
   }
+  function deferOwnerReset(): void {
+    const generation = ++resetGeneration;
+    queueMicrotask(() => {
+      if (generation === resetGeneration && revoked && !activeRevocation.has(owner)) clearOwner();
+    });
+  }
+  function latch(resetNow: boolean): void {
+    const owned = activeRevocation.get(owner) === revoke;
+    revoked = true;
+    if (owned) activeRevocation.delete(owner);
+    if (resetNow && (owned || !activeRevocation.has(owner))) clearOwner();
+    else if (!activeRevocation.has(owner)) deferOwnerReset();
+  }
+  function active(resetNow = false): boolean {
+    if (revoked || activeRevocation.get(owner) !== revoke) return false;
+    if (isCurrent()) return true;
+    latch(resetNow);
+    return false;
+  }
+  function revoke(): void {
+    latch(true);
+  }
 
-  activeRevocation.get(owner)?.();
+  const previous = activeRevocation.get(owner);
+  if (previous) previous();
+  else resetInteraction.get(owner)?.();
   activeRevocation.set(owner, revoke);
   const interaction: FrequencyInteraction = {
     get inert() { return !active() || owner.inert; },
     get selectedDigitIndex() { return active() ? owner.selectedDigitIndex : null; },
     get hoveredDigitIndex() { return active() ? owner.hoveredDigitIndex : null; },
-    handleWheel(digit, event) { if (active()) owner.handleWheel(digit, event); },
-    handleDigitClick(digit, event) { if (active()) owner.handleDigitClick(digit, event); },
-    handleKeyDown(event) { if (active()) owner.handleKeyDown(event); },
-    handleDigitEnter(digit) { if (active()) owner.handleDigitEnter(digit); },
-    handleDigitLeave() { if (active()) owner.handleDigitLeave(); },
+    handleWheel(digit, event) { if (active(true)) owner.handleWheel(digit, event); },
+    handleDigitClick(digit, event) { if (active(true)) owner.handleDigitClick(digit, event); },
+    handleKeyDown(event) { if (active(true)) owner.handleKeyDown(event); },
+    handleDigitEnter(digit) { if (active(true)) owner.handleDigitEnter(digit); },
+    handleDigitLeave() { if (active(true)) owner.handleDigitLeave(); },
     isSelected: (digit) => active() && owner.isSelected(digit),
     isHovered: (digit) => active() && owner.isHovered(digit),
   };

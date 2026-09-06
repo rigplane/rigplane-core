@@ -164,6 +164,16 @@ describe('frequency renderer lifetime', () => {
       .toBe('pending');
     first.handleDigitClick(digit, new MouseEvent('click'));
 
+    context.set('B');
+    expect(first.inert).toBe(true);
+    context.set('A');
+    const aBaWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    first.handleDigitClick(digit, new MouseEvent('click'));
+    first.handleWheel(digit, aBaWheel);
+    expect(aBaWheel.defaultPrevented).toBe(false);
+    expect(first.inert).toBe(true);
+    expect(onFreqChange).not.toHaveBeenCalled();
+
     selectedFrequency.current = undefined;
     const beforeCleanup = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
     first.handleWheel(digit, beforeCleanup);
@@ -194,7 +204,7 @@ describe('frequency renderer lifetime', () => {
     expect(onFreqChange).toHaveBeenCalledTimes(1);
   });
 
-  it('makes a retained facade synchronously inert and permanently revokes it across A-B-A', () => {
+  it('latches the first authority mismatch across A-B-A until a fresh lease attaches', async () => {
     const onFreqChange = vi.fn();
     const { owner, digit } = interactionOwner({ onFreqChange });
     let authority = 'A';
@@ -203,29 +213,36 @@ describe('frequency renderer lifetime', () => {
     const retainedWheel = first.interaction.handleWheel;
 
     retainedClick(digit, new MouseEvent('click'));
+    first.interaction.handleDigitEnter(digit);
     expect(first.interaction.selectedDigitIndex).toBe(digit.digitIndex);
+    expect(first.interaction.hoveredDigitIndex).toBe(digit.digitIndex);
     authority = 'B';
-    const staleWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
-    retainedWheel(digit, staleWheel);
-    expect(staleWheel.defaultPrevented).toBe(false);
-    expect(onFreqChange).not.toHaveBeenCalled();
-    expect(first.interaction).toMatchObject({
-      inert: true, selectedDigitIndex: null, hoveredDigitIndex: null,
-    });
-
-    const second = createFrequencyInteractionLease(owner, () => authority === 'B');
-    expect(owner.selectedDigitIndex).toBeNull();
-    authority = 'A';
-    retainedClick(digit, new MouseEvent('click'));
-    retainedWheel(digit, new WheelEvent('wheel', { deltaY: -1, cancelable: true }));
     expect(first.interaction.inert).toBe(true);
+    authority = 'A';
+
+    const staleWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    const staleKey = new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true });
+    retainedClick(digit, new MouseEvent('click'));
+    first.interaction.handleDigitEnter(digit);
+    retainedWheel(digit, staleWheel);
+    first.interaction.handleKeyDown(staleKey);
+    first.interaction.handleDigitLeave();
+    expect(staleWheel.defaultPrevented).toBe(false);
+    expect(staleKey.defaultPrevented).toBe(false);
+    expect(first.interaction.inert).toBe(true);
+    expect(first.interaction.selectedDigitIndex).toBeNull();
+    expect(first.interaction.hoveredDigitIndex).toBeNull();
+    expect(first.interaction.isSelected(digit)).toBe(false);
+    expect(first.interaction.isHovered(digit)).toBe(false);
     expect(onFreqChange).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(owner.selectedDigitIndex).toBeNull();
+    expect(owner.hoveredDigitIndex).toBeNull();
 
     const live = createFrequencyInteractionLease(owner, () => authority === 'A');
     live.interaction.handleDigitClick(digit, new MouseEvent('click'));
     live.interaction.handleWheel(digit, new WheelEvent('wheel', { deltaY: -1, cancelable: true }));
     expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
-    second.revoke();
     live.revoke();
   });
 
