@@ -269,6 +269,7 @@ export function createContinuousScalar(
   let activeGesture: { renderer: number; token: number } | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let wheelTimer: ReturnType<typeof setTimeout> | null = null;
+  let invalidationGeneration = 0;
   let presentationState: Readonly<ControlFeedbackPresentationState> = {
     announcedTransitionIds: [],
   };
@@ -282,6 +283,7 @@ export function createContinuousScalar(
   }
 
   function clearTransient(): void {
+    invalidationGeneration += 1;
     clearTimers();
     draft = null;
     draftCanonical = null;
@@ -321,9 +323,10 @@ export function createContinuousScalar(
     return input;
   }
 
-  function dispatch(candidate: number, authority: AuthorityIdentity): void {
+  function dispatch(candidate: number, authority: AuthorityIdentity, generation: number): void {
     const input = current();
-    if (!destroyed && sameAuthority(authority, authorityOf(input)) && editable(input)) {
+    if (!destroyed && generation === invalidationGeneration
+      && sameAuthority(authority, authorityOf(input)) && editable(input)) {
       input.request(candidate);
     }
   }
@@ -339,6 +342,7 @@ export function createContinuousScalar(
     if (normalized === null || !Number.isFinite(normalized)
       || normalized < input.domain.min || normalized > input.domain.max) return false;
     const authority = authorityOf(input);
+    const generation = invalidationGeneration;
     draft = normalized;
     draftCanonical = canonicalOf(input);
     interaction = source;
@@ -350,12 +354,12 @@ export function createContinuousScalar(
     }
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
-      dispatch(normalized, authority);
+      dispatch(normalized, authority, generation);
     } else {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        if (renderer === activeRenderer) dispatch(normalized, authority);
+        if (renderer === activeRenderer) dispatch(normalized, authority, generation);
       }, mode.debounceMs);
     }
     return true;

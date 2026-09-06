@@ -277,14 +277,20 @@ describe('continuous scalar authority and feedback reconciliation', () => {
     expect(scalar.view.draft).toBe(2_900);
   });
 
-  it.each(['failed', 'timed-out', 'cancelled', 'superseded'] as const)(
-    'cancels pre-%s work once and permits a fresh pointer gesture', (phase) => {
+  it.each([
+    ['failed', 'key'], ['timed-out', 'reset'],
+    ['cancelled', 'key'], ['superseded', 'reset'],
+  ] as const)(
+    'cancels pre-%s %s work once and permits a fresh pointer gesture', (phase, source) => {
       vi.useFakeTimers();
-      const { scalar, request, update } = commandSetup();
+      const { scalar, request, update } = commandSetup(undefined, {
+        domain: { ...DOMAIN, defaultValue: 2_700 },
+      });
       const lease = scalar.attachRenderer();
       const staleToken = lease.beginPointer()!;
       lease.pointer(staleToken, 2_600);
-      expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+      if (source === 'key') expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+      else lease.reset();
       expect(scalar.view.draft).toBe(2_700);
 
       const terminal = feedback(phase, {
@@ -294,6 +300,8 @@ describe('continuous scalar authority and feedback reconciliation', () => {
         outcome: { phase, error: 'radio rejected' },
       });
       update({ feedback: terminal });
+      vi.advanceTimersByTime(50);
+      expect(request.mock.calls).toEqual([[2_600]]);
       expect(scalar.view).toMatchObject({
         feedback: terminal,
         draft: null,
@@ -305,7 +313,6 @@ describe('continuous scalar authority and feedback reconciliation', () => {
       const freshToken = lease.beginPointer();
       expect(freshToken).not.toBeNull();
       lease.pointer(freshToken!, 2_800);
-      vi.advanceTimersByTime(100);
       expect(request.mock.calls).toEqual([[2_600], [2_800]]);
       vi.useRealTimers();
     },
@@ -323,19 +330,20 @@ describe('continuous scalar authority and feedback reconciliation', () => {
       domain: { ...DOMAIN, defaultValue: 2_700 }, feedback: terminal,
     });
     expect(scalar.view.error).toBe('retained');
-    update({ feedback: {
-      ...terminal, phase: 'idle', busy: false, transitionId: 'idle-after-retained',
-    } });
     const lease = scalar.attachRenderer();
     const token = lease.beginPointer()!;
     lease.pointer(token, 2_600);
+    update({ feedback: {
+      ...terminal, phase: 'idle', busy: false, transitionId: 'idle-after-retained',
+    } });
+    lease.pointer(token, 2_620);
     lease.nativeInput(2_650);
     lease.wheel({ direction: 1, fine: true });
     lease.key({ key: 'ArrowRight', fine: false });
     vi.advanceTimersByTime(50);
     lease.reset();
     vi.advanceTimersByTime(50);
-    expect(request.mock.calls).toEqual([[2_600], [2_650], [2_660], [2_800], [2_700]]);
+    expect(request.mock.calls).toEqual([[2_600], [2_620], [2_650], [2_660], [2_800], [2_700]]);
     vi.useRealTimers();
   });
 
