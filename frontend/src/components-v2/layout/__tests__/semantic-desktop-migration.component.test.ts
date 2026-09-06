@@ -128,7 +128,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
 }));
 
-import RadioLayout from '../RadioLayout.svelte';
+import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
 import SemanticRadioSurfaces from '../../wiring/SemanticRadioSurfaces.svelte';
 import { getCapabilities, hasAnyScope, hasCapability } from '$lib/stores/capabilities.svelte';
 import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixtures/topologies';

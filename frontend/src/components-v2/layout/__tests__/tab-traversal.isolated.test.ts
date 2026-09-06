@@ -159,7 +159,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
 }));
 
-import RadioLayout from '../RadioLayout.svelte';
+import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 

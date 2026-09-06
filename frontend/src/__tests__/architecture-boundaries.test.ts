@@ -514,12 +514,24 @@ describe('v3 package boundaries (MOR-1061)', () => {
     expect(hits).toBeGreaterThan(0);
   });
 
-  it('allows the sdr-test entrypoint to import RadioLayout (its actual import)', async () => {
+  it('allows the sdr-test entrypoint to import its layout and instrument-composition type', async () => {
     const hits = await restrictedImportHits(
-      `<script lang="ts">\n  import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';\n</script>`,
+      `<script lang="ts">\n`
+        + `  import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';\n`
+        + `  import type { InstrumentComposition } from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';\n`
+        + `</script>`,
       'src/skins/sdr-test/SdrTestSkin.svelte',
     );
     expect(hits).toBe(0);
+  });
+
+  it('keeps SemanticRadioSurfaces out of the replaceable RadioLayout shell', () => {
+    const source = readFileSync(
+      path.join(FRONTEND_ROOT, 'src/components-v2/layout/RadioLayout.svelte'),
+      'utf8',
+    );
+    expect(source).not.toMatch(/import\s+SemanticRadioSurfaces\s+from/);
+    expect(source).not.toMatch(/<SemanticRadioSurfaces\b/);
   });
 
   // ── MOR-2039: skins tightened to the panels tier ───────────────────────

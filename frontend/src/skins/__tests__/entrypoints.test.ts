@@ -69,14 +69,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SkinId } from '../registry';
 
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
+const mountedInstrumentInputs = vi.hoisted(() => [] as unknown[]);
 const mountedLcdVariants = vi.hoisted(() => [] as Array<
   'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first'
 >);
 const mobileLayoutMounts = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
-  default: (_anchor: unknown, props: { skinId?: SkinId }) => {
+  default: (_anchor: unknown, props: { skinId?: SkinId; instruments: unknown }) => {
     if (props.skinId) mountedSkinIds.push(props.skinId);
+    mountedInstrumentInputs.push(props.instruments);
   },
 }));
 
@@ -103,6 +105,7 @@ const components: Record<string, unknown>[] = [];
 afterEach(() => {
   while (components.length) unmount(components.pop()!);
   mountedSkinIds.length = 0;
+  mountedInstrumentInputs.length = 0;
   mountedLcdVariants.length = 0;
   mobileLayoutMounts.count = 0;
 });
@@ -161,8 +164,10 @@ describe('desktop skin entrypoints', () => {
   it.each(radioLayoutSkinIds)('mounts RadioLayout with its own stable skin ID (%s)', async (skinId) => {
     const Component = await loadSkin(skinId);
     const target = document.createElement('div');
-    components.push(mount(Component, { target }));
+    const instruments = { skinId, marker: Symbol(skinId) };
+    components.push(mount(Component, { target, props: { instruments } }));
     expect(mountedSkinIds).toEqual([skinId]);
+    expect(mountedInstrumentInputs).toEqual([instruments]);
   });
 });
 
