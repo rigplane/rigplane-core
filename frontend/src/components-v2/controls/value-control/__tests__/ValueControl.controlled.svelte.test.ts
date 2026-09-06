@@ -201,6 +201,90 @@ function knobCommandBinding(
 describe('ValueControl controlled HBar rendering', () => {
   it.each([
     ['built-in', undefined],
+    ['selected custom HBar', { name: 'request-handoff-hbar', hbar: HBarRenderer }],
+  ] as const)('hands an ended command-bound pointer request to truth through the %s route', (_route, skin) => {
+    const request = vi.fn();
+    const feedback = new SvelteMap([['value', commandFeedback({
+      confirmed: 0.5,
+      target: null,
+      requestedTarget: null,
+      phase: 'idle',
+      busy: false,
+      lifecycleId: null,
+      transitionId: null,
+      scope: { control: 'rf-gain', receiver: 0 },
+    })]]);
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'command-feedback' as const,
+        command: 'set_rf_gain',
+        domain: { min: 0, max: 1, step: 0.01, defaultValue: 0, fineStepDivisor: 10 },
+        enabled: true,
+        request,
+        feedback: feedback.get('value')!,
+      }),
+      createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 50 }),
+    );
+    const { target } = mountReactive({
+      binding, label: 'RF Gain', renderer: 'hbar', skin,
+      displayFn: (value: number) => `${Math.round(value * 100)}%`,
+    });
+    const control = slider(target) as HTMLElement & {
+      setPointerCapture: (id: number) => void;
+      hasPointerCapture: (id: number) => boolean;
+      releasePointerCapture: (id: number) => void;
+    };
+    control.setPointerCapture = vi.fn();
+    control.hasPointerCapture = vi.fn(() => true);
+    control.releasePointerCapture = vi.fn();
+    vi.spyOn(target.querySelector('.vc-hbar') as HTMLElement, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 100 } as DOMRect);
+
+    control.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, clientX: 70, pointerId: 7,
+    }));
+    control.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7 }));
+    flushSync();
+    expect(request).toHaveBeenCalledOnce();
+    expect(Math.round(request.mock.calls[0][0] * 255)).toBe(179);
+    expect(visibleValue(target)).toBe('70%');
+    expect(fill(target)).toContain('--vc-fill-percent: 70');
+    expect(control.getAttribute('aria-valuenow')).toBe('0.5');
+
+    feedback.set('value', commandFeedback({
+      confirmed: 0.5,
+      target: 179 / 255,
+      requestedTarget: 179 / 255,
+      phase: 'awaiting-confirmation',
+      busy: true,
+      lifecycleId: 'rf-179',
+      transitionId: 'rf-awaiting-179',
+      scope: { control: 'rf-gain', receiver: 0 },
+    }));
+    flushSync();
+    expect(visibleValue(target)).toBe('50%');
+    expect(fill(target)).toContain('--vc-fill-percent: 50%');
+    expect(control.getAttribute('aria-valuenow')).toBe('0.5');
+
+    feedback.set('value', commandFeedback({
+      confirmed: 0.8,
+      target: null,
+      requestedTarget: null,
+      phase: 'idle',
+      busy: false,
+      lifecycleId: null,
+      transitionId: null,
+      scope: { control: 'rf-gain', receiver: 0 },
+    }));
+    flushSync();
+    expect(visibleValue(target)).toBe('80%');
+    expect(fill(target)).toContain('--vc-fill-percent: 80%');
+    expect(control.getAttribute('aria-valuenow')).toBe('0.8');
+    binding.destroy();
+  });
+
+  it.each([
+    ['built-in', undefined],
     ['selected custom HBar', { name: 'test-hbar', hbar: HBarRenderer }],
   ] as const)('forwards semantic value projection through the %s route', (_route, skin) => {
     const request = vi.fn();
