@@ -1,6 +1,17 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { ValueControl } from '../controls/value-control';
   import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import {
+    createContinuousPair,
+    createLegacyContinuousPairPolicy,
+    type ContinuousPairInput,
+  } from '../../primitives/scalar/continuous-pair.svelte';
+  import {
+    createContinuousScalar,
+    createHBarContinuousScalarPolicy,
+    type ContinuousScalarInput,
+  } from '../../primitives/scalar/continuous-scalar.svelte';
   import DualParamRenderer from '../controls/value-control/DualParamRenderer.svelte';
   import AttenuatorControl from '../controls/AttenuatorControl.svelte';
   import { HardwareButton } from '$lib/Button';
@@ -10,6 +21,7 @@
 
   import {
     deriveRfFrontEndProps, getRfFrontEndHandlers, getPreampArmed, getAttenuatorArmed,
+    getRfSqlControlFeedback,
   } from '$lib/runtime/adapters/panel-adapters';
 
   const handlers = getRfFrontEndHandlers();
@@ -25,8 +37,6 @@
   let attArmed = $derived(getAttenuatorArmed());
   const armedIdBase = $props.id();
 
-  let rfGain = $derived(p.rfGain);
-  let squelch = $derived(p.squelch);
   let att = $derived(p.att);
   let pre = $derived(p.pre);
   let preDisabled = $derived(p.preDisabled);
@@ -49,45 +59,95 @@
   let showRfSqlDual = $derived(showRfGain && showSquelch);
   let visible = $derived(shouldShowPanel(showRfGain, showAtt, showPre, showSquelch));
 
+  const rfSqlDomain = Object.freeze({
+    min: 0, max: 1, step: 0.01, defaultValue: 0, fineStepDivisor: 10,
+  });
+  let rfSqlFeedback = $derived(getRfSqlControlFeedback());
+  function rfSqlPairInput(): Readonly<ContinuousPairInput> {
+    const common = {
+      domain: rfSqlDomain,
+      enabled: showRfSqlDual,
+      requestRf: onRfGainChange,
+      requestSql: onSquelchChange,
+    };
+    if (rfSqlFeedback === null) return {
+      ...common,
+      evidence: 'reading',
+      ownerKey: 'legacy-rf-sql:authority-unresolved',
+      enabled: false,
+      rf: { reading: { status: 'unknown' }, availability: 'unavailable' },
+      sql: { reading: { status: 'unknown' }, availability: 'unavailable' },
+    };
+    return {
+      ...common,
+      evidence: 'command-feedback',
+      rf: rfSqlFeedback.rf,
+      sql: rfSqlFeedback.sql,
+    };
+  }
+  function rfGainInput(): Readonly<ContinuousScalarInput> {
+    const common = { domain: rfSqlDomain, request: onRfGainChange };
+    if (rfSqlFeedback === null) return {
+      ...common,
+      evidence: 'reading',
+      ownerKey: 'legacy-rf-gain:authority-unresolved',
+      enabled: false,
+      reading: { status: 'unknown' },
+    };
+    return {
+      ...common,
+      evidence: 'command-feedback',
+      enabled: showRfGain && !showRfSqlDual,
+      command: rfSqlFeedback.rf.command,
+      feedback: rfSqlFeedback.rf.feedback,
+    };
+  }
+  const rfSqlBinding = createContinuousPair(
+    rfSqlPairInput,
+    createLegacyContinuousPairPolicy({ keyboardDebounceMs: 0 }),
+  );
+  const rfGainBinding = createContinuousScalar(
+    rfGainInput,
+    createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 50 }),
+  );
+  onDestroy(() => {
+    rfSqlBinding.destroy();
+    rfGainBinding.destroy();
+  });
+
   let attValues = $derived(p.attValues);
   let attLabels = $derived(p.attLabels);
   let preOptions = $derived(p.preOptions);
   const rfGainShortcut = getShortcutHint('adjust_rf_gain');
   const attShortcut = getShortcutHint('cycle_att');
   const preShortcut = getShortcutHint('cycle_preamp');
+  const displayRfGain = (value: number): string => Number.isFinite(value)
+    ? normalizedPercentDisplay(value) : '—';
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
 </script>
 
 {#if visible}
   <div class="controls">
     {#if showRfSqlDual}
       <DualParamRenderer
-        rfValue={rfGain}
-        sqlValue={squelch}
-        min={0}
-        max={1}
-        step={0.01}
+        binding={rfSqlBinding}
         rfAccentColor="#22C55E"
         sqlAccentColor="#F59E0B"
         shortcutHint={rfGainShortcut}
         title={rfGainShortcut}
-        onRfChange={onRfGainChange}
-        onSqlChange={onSquelchChange}
         variant="hardware-illuminated"
       />
     {:else if showRfGain}
       <div data-control="rf-gain">
         <ValueControl
-          value={rfGain}
-          min={0}
-          max={1}
-          step={0.01}
+          {...feedbackIntegratedControl}
+          binding={rfGainBinding}
           label="RF Gain"
           renderer="hbar"
-          displayFn={normalizedPercentDisplay}
+          displayFn={displayRfGain}
           accentColor="#22C55E"
           shortcutHint={rfGainShortcut}
           title={rfGainShortcut}
-          onChange={onRfGainChange}
           variant="hardware-illuminated"
         />
       </div>
