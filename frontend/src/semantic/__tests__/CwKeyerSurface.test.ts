@@ -141,7 +141,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
    *  This check regexes THIS file's specifiers only, so that premise is
    *  pinned one level down by `pressed-of.test.ts`'s `'has no runtime
    *  import'` case (verify-MOR-1358 F1) — the two together are the closure. */
-  it('imports nothing but the fact contract and the shared pressedOf helper', () => {
+  it('imports only the allow-listed fact, presentation and numeric dependencies', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
     // MOR-1474: `$lib/i18n` added for the operator-legible `t()` catalog
@@ -152,6 +152,8 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './radio-view-model', './pressed-of',
       '../primitives/control-feedback/control-feedback-presentation',
+      '../primitives/scalar/committed-scalar.svelte',
+      '../components-v2/controls/value-control/value-control-core',
     ]);
   });
 
@@ -417,6 +419,32 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('breakInDelay', 111);
     r.dispose();
+  });
+
+  it('keeps draft and announcement state independent across mounted instances', () => {
+    const secondTarget = document.createElement('div'); document.body.appendChild(secondTarget);
+    const current = feedback('failed', {
+      requestedTarget: 111, transitionId: 'shared-transition', outcome: { phase: 'failed' },
+    });
+    const first = mount(CwKeyerSurface, {
+      target, props: { view: base(), breakInDelayFeedback: current },
+    });
+    const second = mount(CwKeyerSurface, {
+      target: secondTarget, props: { view: base(), breakInDelayFeedback: { ...current } },
+    });
+    flushSync();
+    const firstInput = target.querySelector<HTMLInputElement>(
+      '[data-testid="cw-keyer-breakInDelay"] input',
+    )!;
+    firstInput.value = '90'; firstInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const secondInput = secondTarget.querySelector<HTMLInputElement>(
+      '[data-testid="cw-keyer-breakInDelay"] input',
+    )!;
+    expect([firstInput.value, secondInput.value]).toEqual(['90', '64']);
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent).toContain('111');
+    expect(secondTarget.querySelector('[data-control-feedback-status]')?.textContent).toContain('111');
+    unmount(first); unmount(second); secondTarget.remove();
   });
 
   it.each([
