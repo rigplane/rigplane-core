@@ -184,6 +184,43 @@ export const KEY_SPEED_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> 
   matches: (confirmed: number, target: number) => confirmed === target,
 });
 
+export type TxAuxCommandFeedbackField =
+  | 'micGain' | 'driveGain' | 'voxGain' | 'antiVoxGain' | 'voxDelay'
+  | 'compressorLevel' | 'monitorGain';
+type TxAuxCommandFeedbackIntent =
+  | 'set_mic_gain' | 'set_drive_gain' | 'set_vox_gain' | 'set_anti_vox_gain'
+  | 'set_vox_delay' | 'set_compressor_level' | 'set_monitor_gain';
+
+function rawTxAuxCommandDescriptor(
+  intentName: TxAuxCommandFeedbackIntent,
+  control: string,
+  field: TxAuxCommandFeedbackField,
+): StateBackedCommandDescriptor<number> {
+  const target = (command: Pick<CommandLifecycle, 'params'>): number | null =>
+    exactSafeIntegerTarget(command, 'level');
+  return Object.freeze({
+    intentName, repeatPolicy: 'latest-target-wins' as const,
+    scope: (command: Pick<CommandLifecycle, 'params'>) => target(command) === null
+      ? null : Object.freeze({ control, receiver: 0 as const }),
+    fieldPath: () => field,
+    target,
+    confirmed: (state: ServerState) => safeInteger(state[field]),
+    matches: (confirmed: number, requested: number) => confirmed === requested,
+  });
+}
+
+export const TX_AUX_COMMAND_DESCRIPTORS = Object.freeze({
+  micGain: rawTxAuxCommandDescriptor('set_mic_gain', 'mic-gain', 'micGain'),
+  driveGain: rawTxAuxCommandDescriptor('set_drive_gain', 'drive-gain', 'driveGain'),
+  voxGain: rawTxAuxCommandDescriptor('set_vox_gain', 'vox-gain', 'voxGain'),
+  antiVoxGain: rawTxAuxCommandDescriptor('set_anti_vox_gain', 'anti-vox-gain', 'antiVoxGain'),
+  voxDelay: rawTxAuxCommandDescriptor('set_vox_delay', 'vox-delay', 'voxDelay'),
+  compressorLevel: rawTxAuxCommandDescriptor(
+    'set_compressor_level', 'compressor-level', 'compressorLevel',
+  ),
+  monitorGain: rawTxAuxCommandDescriptor('set_monitor_gain', 'monitor-level', 'monitorGain'),
+}) satisfies Readonly<Record<TxAuxCommandFeedbackField, StateBackedCommandDescriptor<number>>>;
+
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
   new Map([
     [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
@@ -192,6 +229,9 @@ export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, Stat
     [SQUELCH_COMMAND_DESCRIPTOR.intentName, SQUELCH_COMMAND_DESCRIPTOR],
     [CW_PITCH_COMMAND_DESCRIPTOR.intentName, CW_PITCH_COMMAND_DESCRIPTOR],
     [KEY_SPEED_COMMAND_DESCRIPTOR.intentName, KEY_SPEED_COMMAND_DESCRIPTOR],
+    ...Object.values(TX_AUX_COMMAND_DESCRIPTORS).map(
+      descriptor => [descriptor.intentName, descriptor] as const,
+    ),
   ]);
 export const getStateBackedCommandDescriptor = (intentName: string): StateBackedCommandDescriptor<unknown> | undefined =>
   (STATE_BACKED_COMMAND_DESCRIPTORS as ReadonlyMap<string, StateBackedCommandDescriptor<unknown>>).get(intentName);
