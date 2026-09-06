@@ -90,10 +90,15 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports only the fact contract, MOD-input vocabulary and localization', () => {
+  it('imports only facts, MOD-input vocabulary, localization and control behavior', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)].sort()).toEqual(['$lib/i18n', '$lib/radio/mod-input', './radio-view-model']);
+    expect([...new Set(specifiers)].sort()).toEqual([
+      '$lib/i18n', '$lib/radio/mod-input',
+      '../primitives/control-instruments/control-instrument-behavior', './radio-view-model',
+    ]);
+    expect(CODE).toContain('bindAbsoluteChoiceInstrument');
+    expect(CODE).toContain('bindChoiceInstrument');
   });
 
   // Kills: `onMount(() => audioManager.startRx())` and every relative of it.
@@ -400,6 +405,20 @@ describe('routing focus and split are rendered from the facts and emitted absolu
     r.dispose();
   });
 
+  it('allows an absolute focus choice while the saved preference is unread', () => {
+    const onRoutingFocus = vi.fn();
+    const r = render(
+      withRx({ routingFocus: unread<AudioFocus>(DEGRADED) }), { onRoutingFocus },
+    );
+    r.el('focus-main')!.click();
+    flushSync();
+    expect(onRoutingFocus).toHaveBeenCalledExactlyOnceWith('main');
+    for (const focus of FOCUS_CHOICES) {
+      expect(r.el(`focus-${focus}`)!.getAttribute('aria-checked')).toBe('false');
+    }
+    r.dispose();
+  });
+
   it.each(SPLIT_CHOICES)('checks exactly the observed split %s', (value, label) => {
     const r = render(withRx({ routingSplit: known(value) }));
     expect(r.el(`split-${label}`)!.getAttribute('aria-checked')).toBe('true');
@@ -492,6 +511,24 @@ describe('MOD-input selection uses observed facts and absolute intents (MOR-2366
       expect(select!.disabled).toBe(disabled);
     }
     expect(onModInputChange).not.toHaveBeenCalled();
+    unmount(component);
+  });
+
+  it('refuses a stale DOM selection and restores the latest observed source', () => {
+    const facts = new SvelteMap([['view', base()]]);
+    const onModInputChange = vi.fn();
+    const component = mount(RxAudioSurface, {
+      target, props: { get view() { return facts.get('view')!; }, onModInputChange },
+    });
+    flushSync();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="rx-audio-mod-select"]')!;
+    facts.set('view', withRx({ modInputSource: known(1, DEGRADED) }));
+    flushSync();
+    select.value = '4';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    expect(onModInputChange).not.toHaveBeenCalled();
+    expect(select.value).toBe('1');
     unmount(component);
   });
 });

@@ -55,6 +55,7 @@
   import type {
     BandChoice, BandField, DisabledReasonCode, RadioViewModel,
   } from './radio-view-model';
+  import { bindAbsoluteChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
 
   /** The ONE rendering of "not measured". Never a band name, never a number. */
   export const UNKNOWN_TEXT = '—';
@@ -262,10 +263,15 @@
     entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '',
   );
 
-  function selectBand(choice: BandChoice): void {
-    if (!receiverKnown) return;
-    onSelectBand?.(choice.name, choice.defaultHz, choice.bsrCode);
-  }
+  const bandChoiceBehavior = bindAbsoluteChoiceInstrument<string>(() => ({
+    choices: band?.bandChoices.map((choice) => choice.name) ?? [],
+    selected: band?.currentBand.reading.status === 'known' ? band.currentBand.reading.value : undefined,
+    available: receiverKnown && band !== undefined,
+    invoke: (name) => {
+      const choice = band?.bandChoices.find((candidate) => candidate.name === name);
+      if (choice) onSelectBand?.(choice.name, choice.defaultHz, choice.bsrCode);
+    },
+  }));
   function commitFrequency(): void {
     if (!entryReady || interpretedHz === null) return;
     onEnterFrequency?.(interpretedHz);
@@ -353,9 +359,9 @@
           <button
             type="button" class="band-choice" data-testid={`band-choice-${choice.name}`}
             data-default-permit={choice.defaultHzTxPermit.status}
-            aria-pressed={isCurrent(band.currentBand, choice.name)}
-            disabled={!receiverKnown}
-            onclick={() => selectBand(choice)}
+            aria-pressed={bandChoiceBehavior.isSelected(choice.name)}
+            disabled={!bandChoiceBehavior.available}
+            onclick={() => bandChoiceBehavior.invoke(choice.name)}
           >{choice.name}
             <small data-testid={`band-choice-permit-${choice.name}`}
             >{defaultPermitLabel(choice)}</small></button>

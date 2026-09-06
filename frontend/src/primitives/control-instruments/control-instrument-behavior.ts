@@ -34,6 +34,15 @@ interface ChoiceInput<T, Feedback> extends BindingInput<T, Feedback> {
   readonly invoke: (value: T) => void;
 }
 
+export interface AbsoluteChoiceInput<T, Feedback> {
+  readonly choices: readonly T[];
+  readonly selected: T | undefined;
+  readonly available: boolean;
+  readonly blocked?: boolean;
+  readonly invoke: (value: T) => void;
+  readonly feedback?: Feedback;
+}
+
 const canInvoke = <T>(input: BindingInput<T, unknown>): input is BindingInput<T, unknown> & {
   readonly field: InstrumentField<T> & { readonly reading: Readonly<{ status: 'known'; value: T }> };
 } => input.blocked !== true
@@ -90,22 +99,59 @@ export interface ChoiceInstrumentBehavior<T, Feedback> {
   invoke(value: T): void;
 }
 
-export function bindChoiceInstrument<T, Feedback = never>(
-  current: () => ChoiceInput<T, Feedback>,
+interface ChoiceBehaviorInput<T, Feedback> {
+  readonly choices: readonly T[];
+  readonly selected: T | undefined;
+  readonly available: boolean;
+  readonly blocked?: boolean;
+  readonly invoke: (value: T) => void;
+  readonly feedback?: Feedback;
+}
+
+const offered = <T>(choices: readonly T[], value: T): boolean =>
+  choices.some(choice => Object.is(choice, value));
+
+function bindChoiceBehavior<T, Feedback>(
+  current: () => ChoiceBehaviorInput<T, Feedback>,
 ): ChoiceInstrumentBehavior<T, Feedback> {
-  const offered = (choices: readonly T[], value: T): boolean => choices.some(choice => Object.is(choice, value));
   return {
-    get available() { return canInvoke(current()); },
+    get available() {
+      const input = current();
+      return input.available && input.blocked !== true;
+    },
     get selected() {
       const input = current();
-      return input.field?.reading.status === 'known' && offered(input.choices, input.field.reading.value)
-        ? input.field.reading.value : undefined;
+      return input.selected !== undefined && offered(input.choices, input.selected)
+        ? input.selected : undefined;
     },
     get feedback() { return current().feedback; },
     isSelected(value) { return this.selected !== undefined && Object.is(this.selected, value); },
     invoke(value) {
       const input = current();
-      if (canInvoke(input) && offered(input.choices, value)) input.invoke(value);
+      if (input.available && input.blocked !== true && offered(input.choices, value)) {
+        input.invoke(value);
+      }
     },
   };
+}
+
+export function bindChoiceInstrument<T, Feedback = never>(
+  current: () => ChoiceInput<T, Feedback>,
+): ChoiceInstrumentBehavior<T, Feedback> {
+  return bindChoiceBehavior(() => {
+    const input = current();
+    return {
+      choices: input.choices,
+      selected: input.field?.reading.status === 'known' ? input.field.reading.value : undefined,
+      available: canInvoke(input),
+      invoke: input.invoke,
+      feedback: input.feedback,
+    };
+  });
+}
+
+export function bindAbsoluteChoiceInstrument<T, Feedback = never>(
+  current: () => AbsoluteChoiceInput<T, Feedback>,
+): ChoiceInstrumentBehavior<T, Feedback> {
+  return bindChoiceBehavior(current);
 }

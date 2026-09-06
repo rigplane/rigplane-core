@@ -123,6 +123,10 @@
 </script>
 
 <script lang="ts">
+  import {
+    bindAbsoluteChoiceInstrument, bindToggleInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
+
   interface Props {
     view: RadioViewModel;
     tx: TxAuthoritySnapshot;
@@ -136,22 +140,20 @@
    *  a single-port radio gets no empty panel and no zone had to learn about it. */
   let ant = $derived(view.antenna);
   let blocked = $derived(antennaSwitchBlocks(view, tx));
-  /** Rule (4). */
-  let currentPort = $derived(ant ? valueOf(ant.txAntenna) : undefined);
-
-  /** The handler half of rule (1). The port choice is ABSOLUTE, so it does not
-   *  need the current reading and is deliberately NOT gated on it — a radio
-   *  that never reported its port must still be able to select one; that is a
-   *  readability gap, not a hazard. The hazard gate is `blocked`. */
-  function selectPort(port: number): void {
-    if (ant && blocked.length === 0) onSelectPort?.(port);
-  }
-  /** RX-ANT is a RELATIVE toggle computed from the current value, so it needs
-   *  an observed reading as well — and `rxAnt`'s own `operational` flag
-   *  already carries "the TX port it belongs to was observed" (MOR-1295). */
-  function toggleRxAnt(): void {
-    if (ant && blocked.length === 0 && usable(ant.rxAnt)) onToggleRxAnt?.();
-  }
+  const portBehavior = bindAbsoluteChoiceInstrument<number>(() => ({
+    choices: ANTENNA_PORTS,
+    selected: ant ? valueOf(ant.txAntenna) : undefined,
+    available: ant !== undefined,
+    blocked: blocked.length > 0,
+    invoke: (port) => onSelectPort?.(port),
+  }));
+  /** RX-ANT remains relative: its own known boolean is required before the
+   *  existing zero-argument callback may invert it downstream. */
+  const rxAntBehavior = bindToggleInstrument(() => ({
+    field: ant?.rxAnt,
+    blocked: blocked.length > 0,
+    invoke: () => onToggleRxAnt?.(),
+  }));
 </script>
 
 {#if ant}
@@ -167,9 +169,9 @@
         <button
           type="button" role="radio" class="antenna-choice"
           data-testid={`antenna-port-${port}`} data-port={port}
-          aria-checked={currentPort === port} aria-describedby={blockedId}
-          disabled={blocked.length > 0}
-          onclick={() => selectPort(port)}
+          aria-checked={portBehavior.isSelected(port)} aria-describedby={blockedId}
+          disabled={!portBehavior.available}
+          onclick={() => portBehavior.invoke(port)}
         >ANT {port}</button>
       {/each}
       <output data-testid="antenna-port-value">{textOf(ant.txAntenna)}</output>
@@ -180,8 +182,8 @@
         <button
           type="button" class="antenna-choice" data-testid="antenna-rx-toggle"
           aria-pressed={pressedOf(ant.rxAnt)} aria-describedby={blockedId}
-          disabled={blocked.length > 0 || !usable(ant.rxAnt)}
-          onclick={toggleRxAnt}
+          disabled={!rxAntBehavior.available}
+          onclick={() => rxAntBehavior.invoke()}
         >RX-ANT: {textOf(ant.rxAnt)}</button>
       </div>
     {/if}

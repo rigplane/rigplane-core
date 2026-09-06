@@ -124,11 +124,16 @@ describe('the antenna surface owns no state and no TX authority (R9)', () => {
   // specifiers only, so that premise is pinned one level down by
   // `pressed-of.test.ts`'s `'has no runtime import'` case (verify-MOR-1358
   // F1) — the two together are the closure.
-  it('imports nothing but the fact contract and the shared RX/TX vocabulary', () => {
+  it('imports only facts, shared TX vocabulary and control behavior', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
     expect([...new Set(specifiers)].sort())
-      .toEqual(['./pressed-of', './radio-view-model', './rx-tx-surface']);
+      .toEqual([
+        '../primitives/control-instruments/control-instrument-behavior',
+        './pressed-of', './radio-view-model', './rx-tx-surface',
+      ]);
+    expect(CODE).toContain('bindAbsoluteChoiceInstrument');
+    expect(CODE).toContain('bindToggleInstrument');
   });
 
   // Kills: a lifecycle hook, an effect, or a dynamic import that could reach a
@@ -228,6 +233,21 @@ describe('an unread TX port renders as unknown, never as ANT 1 (CF3)', () => {
     expect(r.btn('port-2')!.getAttribute('aria-checked')).toBe('true');
     expect(r.btn('port-1')!.getAttribute('aria-checked')).toBe('false');
     expect(r.text('port-value')).toBe('2');
+    r.dispose();
+  });
+
+  it('permits an absolute port choice while the current port is unread', () => {
+    const onSelectPort = vi.fn();
+    const r = render(
+      withAnt({ txAntenna: unread<number>(DEGRADED) }), RECEIVING, { onSelectPort },
+    );
+    expect(r.btn('port-2')!.disabled).toBe(false);
+    r.btn('port-2')!.click();
+    flushSync();
+    expect(onSelectPort).toHaveBeenCalledExactlyOnceWith(2);
+    for (const port of ANTENNA_PORTS) {
+      expect(r.btn(`port-${port}`)!.getAttribute('aria-checked')).toBe('false');
+    }
     r.dispose();
   });
 

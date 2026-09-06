@@ -31,6 +31,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import BandSurface, {
   activeReceiverUnconfirmedReason, reasonLabel, UNKNOWN_TEXT, unresolvedReason,
   defaultPermitLabel, mhz,
@@ -110,13 +111,17 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
   // import beyond `./radio-view-model` — pure operator-wording lookup
   // (`t()`), never a second fact derivation. See the two tests below for
   // the narrowed guard this replaces.
-  it('imports nothing but the fact contract, plus the i18n wording lookup', () => {
+  it('imports only facts, i18n wording and control behavior', () => {
     // MOR-1448 review F6: quote-agnostic — a double-quoted import must be
     // caught exactly like a single-quoted one, not slip past a single-quote
     // -only pattern.
     const specifiers = [...CODE.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)]).toEqual(['$lib/i18n', './radio-view-model']);
+    expect([...new Set(specifiers)]).toEqual([
+      '$lib/i18n', './radio-view-model',
+      '../primitives/control-instruments/control-instrument-behavior',
+    ]);
+    expect(CODE).toContain('bindAbsoluteChoiceInstrument');
   });
 
   it('never mentions the permit derivation, the band plan or a capability read', () => {
@@ -592,11 +597,34 @@ describe('defaultHzTxPermit is never presented as band-wide permission (carry-fo
   });
 
   it('presses nothing while the current band is unread', () => {
-    const r = render(withB({ currentBand: unreadBand() }));
+    const onSelectBand = vi.fn();
+    const r = render(withB({ currentBand: unreadBand() }), { onSelectBand });
     for (const name of ['40m', '20m', 'MW']) {
       expect(r.el(`choice-${name}`)!.getAttribute('aria-pressed')).toBe('false');
     }
+    r.btn('choice-20m')!.click();
+    flushSync();
+    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m', 14195000, 5);
     r.dispose();
+  });
+
+  it('re-resolves the current offered payload when an existing band button invokes', () => {
+    const facts = new SvelteMap([['view', base()]]);
+    const onSelectBand = vi.fn();
+    const component = mount(BandSurface, {
+      target, props: { get view() { return facts.get('view')!; }, onSelectBand },
+    });
+    flushSync();
+    const button = target.querySelector<HTMLButtonElement>('[data-testid="band-choice-20m"]')!;
+    const nextChoices = facts.get('view')!.band!.bandChoices.map((choice) => choice.name === '20m'
+      ? { ...choice, defaultHz: 14225000, bsrCode: 7 }
+      : choice);
+    facts.set('view', withB({ bandChoices: nextChoices }));
+    flushSync();
+    button.click();
+    flushSync();
+    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m', 14225000, 7);
+    unmount(component);
   });
 });
 
