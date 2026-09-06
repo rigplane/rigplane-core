@@ -177,6 +177,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 // MOR-1082: the REAL manifests, through the app-wide registration barrel, and
 // the REAL resolution seam — the plans below are what App would hand down.
 import {
@@ -266,6 +267,17 @@ function render(
   return reactiveProps;
 }
 
+function renderHostedDesktop(): void {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
+  component = mount(HostedRadioLayoutFixture, {
+    target,
+    context: new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+  });
+  flushSync();
+}
+
 function push(next: ManagedAppTxServerSnapshot): void {
   txHarness.emitServerSnapshot(next);
   flushSync();
@@ -305,6 +317,38 @@ afterEach(() => {
   resetCommandLifecycle();
   expect(h.sessionSubscriber).toBeNull();
   document.body.innerHTML = '';
+});
+
+describe('L1 hosted desktop TX auxiliary composition', () => {
+  it('places all eight scalar handles independently beside one finite/TUNE remainder', () => {
+    renderHostedDesktop();
+
+    const fields = [
+      'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain', 'voxDelay',
+      'compressorLevel', 'monitorLevel',
+    ] as const;
+    const zone = q('[data-zone-id="tx-aux"]');
+    const remainder = q('[data-testid="tx-aux-surface"]');
+    const grid = q('.tx-aux-scalar-grid');
+
+    expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
+    expect(zone).not.toBeNull();
+    expect(remainder?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
+    expect(grid?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
+    expect(grid?.querySelectorAll(':scope > .tx-aux-scalar-seat')).toHaveLength(8);
+
+    for (const field of fields) {
+      const seat = grid?.querySelector(`:scope > .tx-aux-scalar-seat[data-field="${field}"]`);
+      expect(seat, `${field} seat`).not.toBeNull();
+      expect(seat?.querySelector(`[data-testid="tx-aux-${field}"]`)).not.toBeNull();
+      expect(target.querySelectorAll(`[data-testid="tx-aux-${field}"]`)).toHaveLength(1);
+    }
+
+    expect(remainder?.querySelector('.tx-aux-scalar-grid')).toBeNull();
+    expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
+    expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(4);
+  });
 });
 
 // ── 1. The structural gate: absent group ⇒ no surface, no element drift ────

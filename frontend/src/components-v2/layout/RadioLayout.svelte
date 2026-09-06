@@ -302,23 +302,23 @@
   </div>
 {/snippet}
 
-{#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic')}
-  {@render instruments.vfo(appearance)}
-  {@render instruments.rxTx()}
+{#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic', allowBare = false)}
+  {@render instruments.vfo(appearance, allowBare)}
+  {@render instruments.rxTx(allowBare)}
   {@render instruments.txFaultRecovery()}
   {@render instruments.modInputTxWarning()}
-  {@render instruments.rxAudio()}
-  {@render instruments.rfFrontEnd()}
-  {@render instruments.filter()}
-  {@render instruments.dsp()}
-  {@render instruments.band()}
-  {@render instruments.antenna()}
-  {@render instruments.ritXitScan()}
-  {@render instruments.cwKeyer()}
-  {@render instruments.scopeControls()}
-  {@render instruments.scopeDisplay()}
-  {@render instruments.txAuxControls(txAuxScalars)}
-  {@render instruments.meters()}
+  {@render instruments.rxAudio(allowBare)}
+  {@render instruments.rfFrontEnd(allowBare)}
+  {@render instruments.filter(allowBare)}
+  {@render instruments.dsp(allowBare)}
+  {@render instruments.band(allowBare)}
+  {@render instruments.antenna(allowBare)}
+  {@render instruments.ritXitScan(allowBare)}
+  {@render instruments.cwKeyer(allowBare)}
+  {@render instruments.scopeControls(allowBare)}
+  {@render instruments.scopeDisplay(allowBare)}
+  {@render instruments.txAuxControls(txAuxScalars, allowBare)}
+  {@render instruments.meters(allowBare)}
 {/snippet}
 
 {#if skinId === 'mobile'}
@@ -372,7 +372,7 @@
 
   <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
     {#if semanticDeck}
-      {@render semanticDeckContent(skinId === 'desktop-v2' ? 'standard' : 'semantic')}
+      {@render semanticDeckContent(skinId === 'desktop-v2' ? 'standard' : 'semantic', true)}
     {:else}
       <VfoHeader
         {mainVfo}

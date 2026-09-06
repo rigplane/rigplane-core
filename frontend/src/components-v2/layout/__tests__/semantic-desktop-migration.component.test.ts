@@ -129,11 +129,12 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 }));
 
 import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
+import RawRadioLayout from '../RadioLayout.svelte';
 import SemanticRadioSurfaces from '../../wiring/SemanticRadioSurfaces.svelte';
 import { getCapabilities, hasAnyScope, hasCapability } from '$lib/stores/capabilities.svelte';
 import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixtures/topologies';
 import {
-  registerLayout, type LayoutManifest, type SemanticSurfaceName,
+  getLayout, registerLayout, type LayoutManifest, type SemanticSurfaceName,
 } from '../../../presentation/layouts/contract';
 // Barrel, for the same reason `skins/dual-receiver-cockpit/__tests__/
 // DualReceiverCockpit.component.test.ts` uses it: a real registered manifest to
@@ -252,7 +253,9 @@ let mounted: ReturnType<typeof mount>[] = [];
 function render(skinId: SkinId): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  mounted.push(mount(RadioLayout, { target, props: { skinId } }));
+  mounted.push(getLayout(skinId) === undefined
+    ? mount(RawRadioLayout as typeof RadioLayout, { target, props: { skinId } })
+    : mount(RadioLayout, { target, props: { skinId } }));
   flushSync();
   return target;
 }
@@ -274,10 +277,12 @@ afterEach(() => {
 });
 
 describe('the migrated desktop layout owns VFO/TX through the semantic surfaces', () => {
-  it('renders both surfaces inside the receiver deck', () => {
+  it('renders both surfaces in the receiver deck beneath one hosted composition', () => {
     const t = render('sdr-test');
     const deck = t.querySelector('.receiver-deck')!;
-    expect(deck.querySelector('[data-testid="semantic-radio-surfaces"]')).not.toBeNull();
+    const host = t.querySelector('[data-testid="semantic-radio-surfaces"]');
+    expect(host).not.toBeNull();
+    expect(host!.contains(deck)).toBe(true);
     expect(deck.querySelector('[data-testid="vfo-surface"]')).not.toBeNull();
     expect(deck.querySelector('[data-testid="rx-tx-surface"]')).not.toBeNull();
   });
@@ -394,7 +399,9 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
   it('mounts the semantic surfaces in the receiver deck', () => {
     const t = render('desktop-v2');
     const deck = t.querySelector('.receiver-deck')!;
-    expect(deck.querySelector('[data-testid="semantic-radio-surfaces"]')).not.toBeNull();
+    const host = t.querySelector('[data-testid="semantic-radio-surfaces"]');
+    expect(host).not.toBeNull();
+    expect(host!.contains(deck)).toBe(true);
     expect(deck.querySelector('[data-testid="vfo-surface"]')).not.toBeNull();
     expect(deck.querySelector('[data-testid="rx-tx-surface"]')).not.toBeNull();
   });

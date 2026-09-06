@@ -19,21 +19,21 @@
   export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
   export interface InstrumentComposition {
-    readonly vfo: CompositionSnippet<[InstrumentVfoAppearance]>;
-    readonly rxTx: CompositionSnippet;
-    readonly txAuxControls: CompositionSnippet<[CompositionSnippet]>;
+    readonly vfo: CompositionSnippet<[appearance: InstrumentVfoAppearance, allowBare?: boolean]>;
+    readonly rxTx: CompositionSnippet<[allowBare?: boolean]>;
+    readonly txAuxControls: CompositionSnippet<[scalarLayout: CompositionSnippet, allowBare?: boolean]>;
     readonly txAuxScalars: CompositionTxAuxScalarHandles;
-    readonly meters: CompositionSnippet;
-    readonly rxAudio: CompositionSnippet;
-    readonly rfFrontEnd: CompositionSnippet;
-    readonly filter: CompositionSnippet;
-    readonly dsp: CompositionSnippet;
-    readonly band: CompositionSnippet;
-    readonly antenna: CompositionSnippet;
-    readonly ritXitScan: CompositionSnippet;
-    readonly cwKeyer: CompositionSnippet;
-    readonly scopeDisplay: CompositionSnippet;
-    readonly scopeControls: CompositionSnippet;
+    readonly meters: CompositionSnippet<[allowBare?: boolean]>;
+    readonly rxAudio: CompositionSnippet<[allowBare?: boolean]>;
+    readonly rfFrontEnd: CompositionSnippet<[allowBare?: boolean]>;
+    readonly filter: CompositionSnippet<[allowBare?: boolean]>;
+    readonly dsp: CompositionSnippet<[allowBare?: boolean]>;
+    readonly band: CompositionSnippet<[allowBare?: boolean]>;
+    readonly antenna: CompositionSnippet<[allowBare?: boolean]>;
+    readonly ritXitScan: CompositionSnippet<[allowBare?: boolean]>;
+    readonly cwKeyer: CompositionSnippet<[allowBare?: boolean]>;
+    readonly scopeDisplay: CompositionSnippet<[allowBare?: boolean]>;
+    readonly scopeControls: CompositionSnippet<[allowBare?: boolean]>;
     readonly txFaultRecovery: CompositionSnippet;
     readonly modInputTxWarning: CompositionSnippet;
     readonly managedScope: CompositionManagedScopeRegion | undefined;
@@ -1606,58 +1606,58 @@
   >
   {#snippet children(txAuxScalars)}
   {#snippet txAuxBody()}{@render txAuxSurface(txAuxScalars)}{/snippet}
-  {#snippet hostedVfo(appearance: InstrumentVfoAppearance)}
+  {#snippet hostedVfo(appearance: InstrumentVfoAppearance, allowBare = allowBareSurfaces)}
     {#snippet body()}{@render vfoSurface(appearance)}{/snippet}
-    {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBareSurfaces)}
+    {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBare)}
   {/snippet}
-  {#snippet hostedRxTx()}
-    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), rxTxSurface, allowBareSurfaces)}
+  {#snippet hostedRxTx(allowBare = allowBareSurfaces)}
+    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), rxTxSurface, allowBare)}
   {/snippet}
-  {#snippet hostedTxAux(scalarLayout: Snippet)}
+  {#snippet hostedTxAux(scalarLayout: Snippet, allowBare = allowBareSurfaces)}
     {#snippet body()}
       {@render txAuxSurface(txAuxScalars, false)}
       {@render scalarLayout()}
     {/snippet}
-    {@render zoned('txAux', view?.txAux !== undefined, body, allowBareSurfaces)}
+    {@render zoned('txAux', view?.txAux !== undefined, body, allowBare)}
   {/snippet}
-  {#snippet hostedMeters()}
-    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
+  {#snippet hostedMeters(allowBare = allowBareSurfaces)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBare)}
   {/snippet}
-  {#snippet hostedRxAudio()}
-    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
+  {#snippet hostedRxAudio(allowBare = allowBareSurfaces)}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBare)}
   {/snippet}
-  {#snippet hostedRfFrontEnd()}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
+  {#snippet hostedRfFrontEnd(allowBare = allowBareSurfaces)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBare)}
   {/snippet}
-  {#snippet hostedFilter()}
+  {#snippet hostedFilter(allowBare = allowBareSurfaces)}
     {@render zoned(
       'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
-      filterSurface, allowBareSurfaces,
+      filterSurface, allowBare,
     )}
   {/snippet}
-  {#snippet hostedDsp()}
-    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
+  {#snippet hostedDsp(allowBare = allowBareSurfaces)}
+    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBare)}
   {/snippet}
-  {#snippet hostedBand()}
-    {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
+  {#snippet hostedBand(allowBare = allowBareSurfaces)}
+    {@render zoned('band', view?.band !== undefined, bandSurface, allowBare)}
   {/snippet}
-  {#snippet hostedAntenna()}
-    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
+  {#snippet hostedAntenna(allowBare = allowBareSurfaces)}
+    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBare)}
   {/snippet}
-  {#snippet hostedRitXitScan()}
+  {#snippet hostedRitXitScan(allowBare = allowBareSurfaces)}
     {@render zoned(
       'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined,
-      ritXitScanSurface, allowBareSurfaces,
+      ritXitScanSurface, allowBare,
     )}
   {/snippet}
-  {#snippet hostedCwKeyer()}
-    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
+  {#snippet hostedCwKeyer(allowBare = allowBareSurfaces)}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBare)}
   {/snippet}
-  {#snippet hostedScopeDisplay()}
-    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBareSurfaces)}
+  {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
   {/snippet}
-  {#snippet hostedScopeControls()}
-    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBareSurfaces)}
+  {#snippet hostedScopeControls(allowBare = allowBareSurfaces)}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBare)}
   {/snippet}
 
   {#if hostedChildren}
