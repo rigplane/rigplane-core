@@ -7,7 +7,7 @@
  * Add new panel adapters here as panels are migrated to self-wiring.
  */
 
-import { runtime } from '../frontend-runtime';
+import { runtime, type ControlSessionSnapshot } from '../frontend-runtime';
 import {
   toAgcProps, toModeProps, toAntennaProps,
   toRfFrontEndProps, toRitXitProps, toScanProps,
@@ -36,6 +36,8 @@ import { recordQsy } from './qsy-history-adapter';
 import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR,
   FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  RF_GAIN_COMMAND_DESCRIPTOR,
+  SQUELCH_COMMAND_DESCRIPTOR,
   getCommandLifecycles,
   isCommandLifecycleSuperseded,
   type CommandLifecycle,
@@ -46,6 +48,7 @@ import {
 import { currentControlSessionEpoch } from '../commands/radio-intents';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import { qualifyDisplayObservation } from './display-observation';
 
 // Re-export types for panel imports
 export type {
@@ -370,6 +373,72 @@ export function getFilterWidthControlFeedback(): Readonly<ControlFeedback<number
     FILTER_WIDTH_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
     { control: 'filter-width', receiver }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
   );
+}
+
+type RfSqlFeedbackLane = Readonly<{
+  command: string;
+  feedback: Readonly<ControlFeedback<number>>;
+}>;
+
+/** One qualified receiver/session snapshot for the two-lane RF/SQL owner. */
+export function getRfSqlControlFeedback(
+  currentControlSession: ControlSessionSnapshot,
+): Readonly<{ rf: RfSqlFeedbackLane; sql: RfSqlFeedbackLane }> | null {
+  const sessionState = currentControlSession.state;
+  const sessionEpoch = currentControlSession.epoch;
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const stateGeneration = state?.providerGeneration;
+  if (sessionState !== 'connected'
+    || !Number.isSafeInteger(sessionEpoch) || sessionEpoch < 0
+    || state === null || caps === null
+    || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
+    || !Number.isSafeInteger(stateGeneration) || (stateGeneration as number) < 0
+    || caps.providerGeneration !== stateGeneration) return null;
+
+  const view = toRadioViewModel(state, caps);
+  if (view === null || view.activeReceiver.status !== 'known') return null;
+  const receiver = view.activeReceiver.receiver;
+  const receiverEntries = view.receiverIndicators?.filter((entry) => entry.receiver === receiver) ?? [];
+  if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) return null;
+  const receiverIndex: 0 | 1 = receiver === 'SUB' ? 1 : 0;
+  const receiverState = receiver === 'SUB' ? state.sub : state.main;
+  const base = receiver === 'SUB' ? 'sub' : 'main';
+  const tags = Array.isArray(caps.capabilities) ? caps.capabilities : [];
+
+  const lane = (
+    command: 'set_rf_gain' | 'set_squelch',
+    descriptor: StateBackedCommandDescriptor<number>,
+    control: 'rf-gain' | 'squelch',
+    leaf: 'rfGain' | 'squelch',
+    structural: boolean,
+  ): RfSqlFeedbackLane => {
+    const scope = { control, receiver: receiverIndex } as const;
+    const feedback = projectControlFeedback(
+      descriptor, state, commands, scope, sessionEpoch, isCommandLifecycleSuperseded,
+    );
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver, path: `${base}.${leaf}`, structural,
+      value: receiverState?.[leaf],
+    });
+    const qualified = observation.state === 'current' ? feedback : Object.freeze({
+      ...feedback,
+      confirmed: null, target: null, requestedTarget: null,
+      phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+      outcome: null, lifecycleId: null, transitionId: null,
+    });
+    return Object.freeze({ command, feedback: qualified });
+  };
+
+  return Object.freeze({
+    rf: lane(
+      'set_rf_gain', RF_GAIN_COMMAND_DESCRIPTOR, 'rf-gain', 'rfGain', tags.includes('rf_gain'),
+    ),
+    sql: lane(
+      'set_squelch', SQUELCH_COMMAND_DESCRIPTOR, 'squelch', 'squelch', tags.includes('squelch'),
+    ),
+  });
 }
 
 function filterWidthPresentation(

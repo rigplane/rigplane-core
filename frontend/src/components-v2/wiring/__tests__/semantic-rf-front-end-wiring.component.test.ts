@@ -38,6 +38,9 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import {
+  acknowledgeCommand, beginCommand, confirmCommand, failCommand, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 
 
 const h = vi.hoisted(() => ({
@@ -51,6 +54,8 @@ const h = vi.hoisted(() => ({
   squelch: vi.fn(),
   digiSel: vi.fn(),
   ipPlus: vi.fn(),
+  session: { state: 'connected' as 'connected' | 'disconnected' | 'reconnecting', epoch: 7 },
+  sessionListeners: new Set<(next: { state: 'connected' | 'disconnected' | 'reconnecting'; epoch: number }) => void>(),
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -60,6 +65,10 @@ vi.mock('$lib/runtime', () => ({
     get caps() { return h.caps; },
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
     get connectionAudio() { return false; },
+    get controlSession() { return h.session; },
+    subscribeControlSession(handler: (next: typeof h.session) => void) {
+      h.sessionListeners.add(handler); return () => h.sessionListeners.delete(handler);
+    },
     // MOR-1312 slice 12B (rebase fix): the wiring now also hands the adapter
     // a scope-display snapshot (the FIFTH argument). This file tests
     // rfFrontEnd, so this stays on its pre-1312 path regardless of these
@@ -71,6 +80,12 @@ vi.mock('$lib/runtime', () => ({
       };
     },
     get scope() { return { hardwareScopeConnected: false }; },
+  },
+}));
+vi.mock('$lib/runtime/frontend-runtime', () => ({
+  runtime: {
+    get state() { return h.state; },
+    get caps() { return h.caps; },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -173,7 +188,10 @@ import { desktopV2Layout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 5,
+};
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** Every rfFrontEnd raw field the MOR-1292/1293 adapter reads, all observed fresh. */
@@ -194,6 +212,7 @@ function liveState(withRfFrontEnd: boolean): ServerState {
     ...(withRfFrontEnd ? RF_FRONT_END_STATE : {}),
   });
   return {
+    stateContractVersion: 1, providerGeneration: 3,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
@@ -205,6 +224,7 @@ function liveState(withRfFrontEnd: boolean): ServerState {
 // combined-knob describe block below passes 'combined' explicitly, so every
 // pre-existing test in this file keeps exercising the unchanged two-slider path.
 const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'combined'): Capabilities => ({
+  stateContractVersion: 1, providerGeneration: 3,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: withRfFrontEnd
     ? ['audio', 'tx', 'dual_rx', 'preamp', 'attenuator', 'rf_gain', 'squelch', 'digisel', 'ip_plus']
@@ -240,6 +260,9 @@ beforeEach(() => {
   h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
+  h.session = { state: 'connected', epoch: 7 };
+  h.sessionListeners.clear();
+  resetCommandLifecycle();
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -250,6 +273,8 @@ afterEach(() => {
   component = null;
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
+  expect(h.sessionListeners.size).toBe(0);
+  resetCommandLifecycle();
   document.body.innerHTML = '';
 });
 
@@ -405,6 +430,37 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(el('rf-sql')).not.toBeNull();
     expect(el('rfGain')).toBeNull();
     expect(el('squelch')).toBeNull();
+    expect(el('rf-sql')!.dataset.feedbackIntegration).toBe('command-feedback');
+  });
+
+  it('fails closed through explicit null when the actual control session is disconnected', () => {
+    h.caps = liveCaps(true, 'combined');
+    h.session = { state: 'disconnected', epoch: 8 };
+    render();
+    const group = el('rf-sql')!;
+    expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
+    expect(group.querySelector('input')!.disabled).toBe(true);
+    expect(group.textContent).toContain('?');
+  });
+
+  it('projects real lifecycle phases and independent terminal outcomes into the mounted pair', () => {
+    h.caps = liveCaps(true, 'combined');
+    const rf = beginCommand({
+      id: 'mounted-rf', name: 'set_rf_gain', params: { level: 128, receiver: 0 }, originalEpoch: 7,
+    });
+    const sql = beginCommand({
+      id: 'mounted-sql', name: 'set_squelch', params: { level: 51, receiver: 0 }, originalEpoch: 7,
+    });
+    rf.providerGeneration = 3; sql.providerGeneration = 3;
+    render();
+    expect(el('rf-sql')!.dataset.rfCommandPhase).toBe('submitted');
+    expect(el('rf-sql')!.dataset.sqlCommandPhase).toBe('submitted');
+    acknowledgeCommand(rf.id, 7, 7); acknowledgeCommand(sql.id, 7, 7); flushSync();
+    expect(el('rf-sql')!.dataset.rfCommandPhase).toBe('awaiting-confirmation');
+    confirmCommand(rf.id, 7, 7); failCommand(sql.id, 7, 7, 'denied'); flushSync();
+    expect(el('rf-sql')!.dataset.rfCommandPhase).toBe('confirmed');
+    expect(el('rf-sql')!.dataset.sqlCommandPhase).toBe('failed');
+    expect(el('rf-sql')!.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
   });
 
   it('keeps rendering the two separate sliders when the profile omits the declaration', () => {

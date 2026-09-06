@@ -1252,7 +1252,7 @@ class YaesuCatPoller:
             case SetKeySpeed(speed=speed):
                 await radio.set_keyer_speed(speed)
             case SetCwPitch(value=value):
-                await radio.set_key_pitch(value)
+                await radio.set_cw_pitch(value)
             case SetBreakIn(mode=mode):
                 await radio.set_break_in(bool(mode))
 

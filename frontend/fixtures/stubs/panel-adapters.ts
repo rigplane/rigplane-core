@@ -42,6 +42,11 @@ export function getFilterWidthControlFeedback() {
   });
 }
 
+/** The offline fixture has no qualified RF/SQL command-feedback authority. */
+export function getRfSqlControlFeedback(_controlSession: unknown): null {
+  return null;
+}
+
 /**
  * MOR-1441 — `SemanticRadioSurfaces.svelte` now also imports
  * `getPendingFrequencyHz` from the real `panel-adapters` module. Per this

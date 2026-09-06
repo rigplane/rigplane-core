@@ -62,6 +62,7 @@ from rigplane.web.radio_poller import (
     CommandQueue,
     SelectVfo,
     SetBand,
+    SetCwPitch,
     SetFreq,
     SetMode,
     SetSplit,
@@ -3233,6 +3234,52 @@ async def test_fast_poll_reads_tx_meters_when_ptt_active() -> None:
 # ---------------------------------------------------------------------------
 # Command queue: future exception propagation
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pitch_hz", "expected_frame"),
+    [(300, "KP00;"), (700, "KP40;"), (1050, "KP75;")],
+)
+async def test_ftx1_queued_cw_pitch_uses_hz_semantic_setter(
+    pitch_hz: int,
+    expected_frame: str,
+) -> None:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.write = AsyncMock()  # noqa: SLF001
+    queue = CommandQueue()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=False)
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetCwPitch(pitch_hz), future=future)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    assert future.result() is None
+    radio._transport.write.assert_awaited_once_with(expected_frame)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pitch_hz", [299, 1051])
+async def test_ftx1_queued_cw_pitch_rejects_out_of_range_without_cat_write(
+    pitch_hz: int,
+) -> None:
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    radio._transport._connected = True  # noqa: SLF001
+    radio._transport.write = AsyncMock()  # noqa: SLF001
+    queue = CommandQueue()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    _set_fresh_ptt_observation(poller, active=False)
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetCwPitch(pitch_hz), future=future)
+
+    await poller._drain_commands()  # noqa: SLF001
+
+    error = future.exception()
+    assert isinstance(error, ValueError)
+    assert "300-1050" in str(error)
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
 
 
 @pytest.mark.asyncio
