@@ -505,6 +505,8 @@ export function runAssertions(
       // Retained inert readouts keep focus context but are not native Tab stops.
       || (el.matches('div.freq[role="group"][aria-disabled="true"][tabindex="-1"]')
         && el.closest('[data-vfo-freq][data-freq-tunable="false"]') !== null)
+      // Inert semantic sliders expose their value but are not Tab stops.
+      || el.matches('[role="slider"][aria-disabled="true"][tabindex="-1"]')
       // A named radiogroup keeps exactly one enabled radio in the Tab order;
       // arrow keys move focus among its other operable, programmatic stops.
       || isValidRovingRadio(el))

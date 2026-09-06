@@ -22,6 +22,9 @@ describe('fixture focus assertion retained readout exception', () => {
       + inert.replace('aria-disabled="true"', 'aria-disabled="false"').replace('tabindex="-1"', 'tabindex="0"')
       + '</span>')).toBe(true);
   });
+  it('admits an inert semantic slider', () => {
+    expect(admitted('<div role="slider" aria-disabled="true" tabindex="-1"></div>')).toBe(true);
+  });
   it.each([
     ['enabled frequency', wrap(inert.replace('aria-disabled="true"', 'aria-disabled="false"'))],
     ['enabled VFO hook', wrap(inert).replace('data-freq-tunable="false"', 'data-freq-tunable="true"')],
