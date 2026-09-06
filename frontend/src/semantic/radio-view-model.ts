@@ -18,6 +18,7 @@
 import type { VfoScheme } from '$lib/types/capabilities';
 import type { NrLevelProjection } from '$lib/radio/filter-controls';
 import type { FrequencyPermit, TxPermit } from '$lib/utils/tx-permit';
+import type { MeterSourceIdentity as PrimitiveMeterSourceIdentity } from '../primitives/meters/meter-ballistics.svelte';
 import { invalid, record, exactKeys, str } from './validator-primitives';
 
 export type ReceiverId = 'MAIN' | 'SUB';
@@ -186,10 +187,17 @@ export interface TxAuxViewModel {
  * authority's conclusion, it never computes one.
  */
 export type MeterReading = { status: 'known'; value: number } | { status: 'unknown' };
+export type MeterSourcePath =
+  | 'main.sMeter' | 'sub.sMeter'
+  | 'powerMeter' | 'swrMeter' | 'alcMeter' | 'compMeter' | 'vdMeter' | 'idMeter';
+export type MeterSourceIdentity = Readonly<
+  Omit<PrimitiveMeterSourceIdentity, 'path'> & { readonly path: MeterSourcePath }
+>;
 export interface MeterField {
   reading: MeterReading;
   availability: Availability;
   relevant: boolean;
+  source?: MeterSourceIdentity | null;
 }
 
 export interface DisplayObservedMeterField extends MeterField {
@@ -1366,10 +1374,43 @@ function validateDisabledReason(value: unknown, path: string): DisabledReason {
 }
 
 const METER_RF_STATES: readonly MeterRfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
+const METER_SOURCE_PATHS: readonly MeterSourcePath[] = [
+  'main.sMeter', 'sub.sMeter', 'powerMeter', 'swrMeter', 'alcMeter', 'compMeter', 'vdMeter', 'idMeter',
+];
+type MeterSourceExpectation = 'signal' | Exclude<MeterSourcePath, 'main.sMeter' | 'sub.sMeter'>;
 
-function validateMeterField(value: unknown, path: string): MeterField {
+function validateMeterSource(
+  value: unknown, path: string, expected: MeterSourceExpectation,
+): MeterSourceIdentity {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant'], path);
+  exactKeys(v, ['providerGeneration', 'scope', 'receiver', 'path'], path);
+  if (typeof v.providerGeneration !== 'number'
+    || !Number.isSafeInteger(v.providerGeneration) || v.providerGeneration < 0) {
+    invalid(`${path}.providerGeneration`, 'a non-negative safe integer');
+  }
+  const scope = oneOf(v.scope, ['radio', 'receiver'] as const, `${path}.scope`);
+  const receiver = v.receiver === null
+    ? null : oneOf(v.receiver, ['MAIN', 'SUB'] as const, `${path}.receiver`);
+  const sourcePath = oneOf(v.path, METER_SOURCE_PATHS, `${path}.path`);
+  const source: MeterSourceIdentity = {
+    providerGeneration: v.providerGeneration, scope, receiver, path: sourcePath,
+  };
+  if (expected === 'signal') {
+    const coherent = scope === 'receiver'
+      && ((receiver === 'MAIN' && sourcePath === 'main.sMeter')
+        || (receiver === 'SUB' && sourcePath === 'sub.sMeter'));
+    if (!coherent) invalid(path, 'a canonical MAIN/main.sMeter or SUB/sub.sMeter receiver source');
+  } else if (scope !== 'radio' || receiver !== null || sourcePath !== expected) {
+    invalid(path, `the canonical radio source for ${expected}`);
+  }
+  return source;
+}
+
+function validateMeterField(
+  value: unknown, path: string, expectedSource: MeterSourceExpectation,
+): MeterField {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'source'], path);
   const r = record(v.reading, `${path}.reading`);
   let reading: MeterReading;
   if (r.status === 'known') {
@@ -1385,13 +1426,21 @@ function validateMeterField(value: unknown, path: string): MeterField {
     reading,
     availability: validateAvailability(v.availability, `${path}.availability`),
     relevant: bool(v.relevant, `${path}.relevant`),
+    ...(v.source !== undefined
+      ? { source: v.source === null ? null : validateMeterSource(v.source, `${path}.source`, expectedSource) }
+      : {}),
   };
 }
 
-function validateDisplayObservedMeterField(value: unknown, path: string): DisplayObservedMeterField {
+function validateDisplayObservedMeterField(
+  value: unknown, path: string, expectedSource: MeterSourceExpectation,
+): DisplayObservedMeterField {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant', 'display'], path);
-  const strict = validateMeterField({ reading: v.reading, availability: v.availability, relevant: v.relevant }, path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'display', 'source'], path);
+  const strict = validateMeterField({
+    reading: v.reading, availability: v.availability, relevant: v.relevant,
+    ...(v.source !== undefined ? { source: v.source } : {}),
+  }, path, expectedSource);
   return {
     ...strict,
     ...(v.display !== undefined ? { display: validateDisplayObservation(v.display, `${path}.display`, num) } : {}),
@@ -1408,13 +1457,13 @@ function validateMeters(value: unknown, path: string): MetersViewModel {
   ], path);
   return {
     rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`),
-    signal: validateMeterField(v.signal, `${path}.signal`),
-    power: validateDisplayObservedMeterField(v.power, `${path}.power`),
-    swr: validateDisplayObservedMeterField(v.swr, `${path}.swr`),
-    alc: validateDisplayObservedMeterField(v.alc, `${path}.alc`),
-    compression: validateMeterField(v.compression, `${path}.compression`),
-    drainVoltage: validateMeterField(v.drainVoltage, `${path}.drainVoltage`),
-    drainCurrent: validateMeterField(v.drainCurrent, `${path}.drainCurrent`),
+    signal: validateMeterField(v.signal, `${path}.signal`, 'signal'),
+    power: validateDisplayObservedMeterField(v.power, `${path}.power`, 'powerMeter'),
+    swr: validateDisplayObservedMeterField(v.swr, `${path}.swr`, 'swrMeter'),
+    alc: validateDisplayObservedMeterField(v.alc, `${path}.alc`, 'alcMeter'),
+    compression: validateMeterField(v.compression, `${path}.compression`, 'compMeter'),
+    drainVoltage: validateMeterField(v.drainVoltage, `${path}.drainVoltage`, 'vdMeter'),
+    drainCurrent: validateMeterField(v.drainCurrent, `${path}.drainCurrent`, 'idMeter'),
   };
 }
 

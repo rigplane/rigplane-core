@@ -1,7 +1,20 @@
+export type MeterSourceIdentity = Readonly<{
+  providerGeneration: number;
+  scope: 'radio' | 'receiver';
+  receiver: 'MAIN' | 'SUB' | null;
+  path: string;
+}>;
+
+export type MeterContinuitySession = Readonly<{
+  controlSessionEpoch: number;
+}>;
+
 export type MeterBehaviorInput = Readonly<{
   sample: number | null;
   smoothTarget: number | null;
   peakEnabled: boolean;
+  source?: MeterSourceIdentity | null;
+  session?: MeterContinuitySession | null;
 }>;
 
 export interface MeterBallisticsView {
@@ -240,6 +253,17 @@ export function createMeterBallistics<State>(
   let peakEnabled = $state(false);
   let projectionNow = $state(host.now());
   let started = false;
+  let continuityMode: 'legacy' | 'qualified' | null = null;
+  let continuitySource: MeterSourceIdentity | undefined;
+  let continuitySession: MeterContinuitySession | undefined;
+
+  const sameSource = (left: MeterSourceIdentity, right: MeterSourceIdentity): boolean =>
+    left.providerGeneration === right.providerGeneration
+    && left.scope === right.scope
+    && left.receiver === right.receiver
+    && left.path === right.path;
+  const sameSession = (left: MeterContinuitySession, right: MeterContinuitySession): boolean =>
+    left.controlSessionEpoch === right.controlSessionEpoch;
 
   function peakCurrent(): number {
     return policy.peakSource === 'sample' ? sample : smoother.value;
@@ -268,6 +292,27 @@ export function createMeterBallistics<State>(
     sync(input) {
       peakEnabled = input.peakEnabled;
       projectionNow = host.now();
+      if (input.source === null || input.session === null) {
+        sample = 0;
+        smoother.reset(0);
+        channel.reset();
+        continuityMode = null;
+        continuitySource = undefined;
+        continuitySession = undefined;
+        lifecycle.reconcile();
+        return;
+      }
+
+      const qualified = input.source !== undefined && input.session !== undefined;
+      const boundary = qualified
+        ? continuityMode !== 'qualified'
+          || continuitySource === undefined || !sameSource(continuitySource, input.source)
+          || continuitySession === undefined || !sameSession(continuitySession, input.session)
+        : continuityMode === 'qualified';
+      continuityMode = qualified ? 'qualified' : 'legacy';
+      continuitySource = qualified ? input.source : undefined;
+      continuitySession = qualified ? input.session : undefined;
+
       if (input.sample === null || input.smoothTarget === null) {
         sample = 0;
         smoother.reset(0);
@@ -276,7 +321,12 @@ export function createMeterBallistics<State>(
         return;
       }
       sample = input.sample;
-      smoother.update(input.smoothTarget);
+      if (boundary) {
+        smoother.reset(input.smoothTarget);
+        channel.reset();
+      } else {
+        smoother.update(input.smoothTarget);
+      }
       if (peakEnabled) {
         channel.observe(peakCurrent(), projectionNow, lifecycle.reducedMotion);
       }

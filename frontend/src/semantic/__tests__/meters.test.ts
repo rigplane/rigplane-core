@@ -20,7 +20,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  validateRadioViewModel, type MeterField, type MeterRfState, type MetersViewModel,
+  validateRadioViewModel, type MeterField, type MeterRfState, type MeterSourceIdentity,
+  type MetersViewModel,
 } from '../radio-view-model';
 import { topologyFixtures, withMeters } from '../fixtures/topologies';
 import { rfState, type RfState, type TxAuthoritySnapshot } from '../rx-tx-surface';
@@ -63,6 +64,57 @@ describe('target meter display observation contract (MOR-2359)', () => {
       expect(() => validateRadioViewModel(withDisplay(meter, display)))
         .toThrow(new RegExp(`\\$\\.meters\\.${meter}\\.display`));
     }
+  });
+});
+
+describe('meter source identity contract (MOR-2400)', () => {
+  const SOURCES = {
+    signal: { providerGeneration: 7, scope: 'receiver', receiver: 'MAIN', path: 'main.sMeter' },
+    power: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'powerMeter' },
+    swr: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'swrMeter' },
+    alc: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'alcMeter' },
+    compression: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'compMeter' },
+    drainVoltage: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'vdMeter' },
+    drainCurrent: { providerGeneration: 7, scope: 'radio', receiver: null, path: 'idMeter' },
+  } as const satisfies Record<keyof Omit<MetersViewModel, 'rfState'>, MeterSourceIdentity>;
+
+  function withSource(meter: keyof typeof SOURCES, source: unknown) {
+    const view = withMeters(base);
+    return {
+      ...view,
+      meters: { ...view.meters, [meter]: { ...view.meters![meter], source } },
+    };
+  }
+
+  it('preserves omission and explicit null as different states', () => {
+    const omitted = withMeters(base);
+    expect(validateRadioViewModel(omitted).meters!.signal).not.toHaveProperty('source');
+    expect(validateRadioViewModel(withSource('signal', null)).meters!.signal.source).toBeNull();
+  });
+
+  it.each(Object.entries(SOURCES) as [keyof typeof SOURCES, MeterSourceIdentity][])(
+    'round-trips the canonical source for %s', (meter, source) => {
+      expect(validateRadioViewModel(withSource(meter, source)).meters![meter].source).toEqual(source);
+    },
+  );
+
+  it('accepts the canonical SUB receiver source only on signal', () => {
+    const source = { providerGeneration: 8, scope: 'receiver', receiver: 'SUB', path: 'sub.sMeter' };
+    expect(validateRadioViewModel(withSource('signal', source)).meters!.signal.source).toEqual(source);
+  });
+
+  it.each([
+    ['unsafe generation', 'power', { ...SOURCES.power, providerGeneration: Number.MAX_SAFE_INTEGER + 1 }],
+    ['negative generation', 'power', { ...SOURCES.power, providerGeneration: -1 }],
+    ['extra key', 'power', { ...SOURCES.power, provider: 'rigctld' }],
+    ['wrong radio path', 'power', SOURCES.swr],
+    ['receiver source on radio field', 'power', SOURCES.signal],
+    ['radio source on receiver field', 'signal', SOURCES.power],
+    ['crossed receiver and path', 'signal', { ...SOURCES.signal, receiver: 'SUB' }],
+    ['open path', 'signal', { ...SOURCES.signal, path: 'main.noiseMeter' }],
+  ] as const)('rejects %s', (_label, meter, source) => {
+    expect(() => validateRadioViewModel(withSource(meter, source)))
+      .toThrow(new RegExp(`\\$\\.meters\\.${meter}\\.source`));
   });
 });
 

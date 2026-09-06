@@ -5,7 +5,9 @@ import {
   createFrameStepPeakStrategy,
   createMeterBallistics,
   createMeterBallisticsGroup,
+  type MeterContinuitySession,
   type MeterMotionHost,
+  type MeterSourceIdentity,
   type MeterSmoother,
 } from '../meter-ballistics.svelte';
 
@@ -135,6 +137,15 @@ function elapsedSetup(reduced = false) {
   return { host, smoother, meter, update, display };
 }
 
+const MAIN_SOURCE = {
+  providerGeneration: 1, scope: 'receiver', receiver: 'MAIN', path: 'main.sMeter',
+} as const satisfies MeterSourceIdentity;
+const SUB_SOURCE = {
+  providerGeneration: 1, scope: 'receiver', receiver: 'SUB', path: 'sub.sMeter',
+} as const satisfies MeterSourceIdentity;
+const SESSION_1 = { controlSessionEpoch: 1 } as const satisfies MeterContinuitySession;
+const SESSION_2 = { controlSessionEpoch: 2 } as const satisfies MeterContinuitySession;
+
 const GROUP_KEYS = ['po', 'swr', 'alc', 'id'] as const;
 
 function groupSetup(reduced = false) {
@@ -246,6 +257,101 @@ describe('createMeterBallistics frame-step strategy', () => {
     expect(host.activeFrames).toBe(0);
     meter.stop();
     expect(host.listenerCount).toBe(0);
+  });
+});
+
+describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
+  it('keeps the omitted-source legacy path byte-for-behavior compatible', () => {
+    const { meter, smoother } = frameSetup();
+    meter.sync({ sample: 10, smoothTarget: 10, peakEnabled: true });
+    meter.sync({ sample: 2, smoothTarget: 2, peakEnabled: true });
+    expect(smoother.reset).not.toHaveBeenCalled();
+    expect(smoother.update).toHaveBeenCalledTimes(2);
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 10 });
+  });
+
+  it('always observes repeated samples from the same qualified source', () => {
+    const { meter, smoother } = frameSetup();
+    meter.sync({
+      sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    vi.mocked(smoother.update).mockClear();
+    vi.mocked(smoother.reset).mockClear();
+    meter.sync({
+      sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    meter.sync({
+      sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    expect(smoother.update).toHaveBeenCalledTimes(2);
+    expect(smoother.reset).not.toHaveBeenCalled();
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 10 });
+  });
+
+  it('re-seeds smoothing and peak state when source identity changes', () => {
+    const { meter, smoother } = frameSetup();
+    meter.sync({
+      sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    meter.sync({
+      sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    expect(meter.view.peakValue).toBe(10);
+    vi.mocked(smoother.reset).mockClear();
+    meter.sync({
+      sample: 3, smoothTarget: 3, peakEnabled: true, source: SUB_SOURCE, session: SESSION_1,
+    });
+    expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(3);
+    expect(meter.view).toEqual({ smoothedValue: 3, peakValue: 3 });
+  });
+
+  it('re-seeds on a control-session epoch change even when source identity is unchanged', () => {
+    const { meter, smoother } = frameSetup();
+    meter.sync({
+      sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    meter.sync({
+      sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    vi.mocked(smoother.reset).mockClear();
+    meter.sync({
+      sample: 4, smoothTarget: 4, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_2,
+    });
+    expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(4);
+    expect(meter.view).toEqual({ smoothedValue: 4, peakValue: 4 });
+  });
+
+  it('gives explicit null precedence over transitional undefined and clears immediately', () => {
+    const { meter, smoother } = frameSetup();
+    meter.sync({
+      sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    meter.sync({ sample: 8, smoothTarget: 8, peakEnabled: true, source: null });
+    expect(smoother.reset).toHaveBeenLastCalledWith(0);
+    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null });
+
+    meter.sync({
+      sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    meter.sync({ sample: 8, smoothTarget: 8, peakEnabled: true, session: null });
+    expect(smoother.reset).toHaveBeenLastCalledWith(0);
+    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: null });
+  });
+
+  it('clears prior history when entering or leaving qualified mode', () => {
+    const { meter, smoother } = frameSetup();
+    meter.sync({ sample: 10, smoothTarget: 10, peakEnabled: true });
+    meter.sync({
+      sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2 });
+    meter.sync({
+      sample: 9, smoothTarget: 9, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    vi.mocked(smoother.reset).mockClear();
+    meter.sync({ sample: 3, smoothTarget: 3, peakEnabled: true });
+    expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(3);
+    expect(meter.view).toEqual({ smoothedValue: 3, peakValue: 3 });
   });
 });
 

@@ -124,6 +124,46 @@ describe('meters TX truth comes from the App TX authority (R9 / MOR-1235)', () =
   });
 });
 
+describe('canonical meter source identity (MOR-2400)', () => {
+  it('emits the already-qualified generation, scope, receiver, and closed path for all seven meters', () => {
+    const meters = model(meterState(), caps(), TX).meters!;
+    expect(Object.fromEntries(
+      (['signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent'] as const)
+        .map((field) => [field, meters[field].source]),
+    )).toEqual({
+      signal: { providerGeneration: 1, scope: 'receiver', receiver: 'MAIN', path: 'main.sMeter' },
+      power: { providerGeneration: 1, scope: 'radio', receiver: null, path: 'powerMeter' },
+      swr: { providerGeneration: 1, scope: 'radio', receiver: null, path: 'swrMeter' },
+      alc: { providerGeneration: 1, scope: 'radio', receiver: null, path: 'alcMeter' },
+      compression: { providerGeneration: 1, scope: 'radio', receiver: null, path: 'compMeter' },
+      drainVoltage: { providerGeneration: 1, scope: 'radio', receiver: null, path: 'vdMeter' },
+      drainCurrent: { providerGeneration: 1, scope: 'radio', receiver: null, path: 'idMeter' },
+    });
+  });
+
+  it('follows the active signal receiver and emits null for every noncurrent field', () => {
+    const dualCaps = caps({
+      receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['scope', 'audio', 'tx', 'dual_rx'],
+    });
+    const onSub = meterState({
+      active: 'SUB',
+      sub: { freqHz: 7100000, mode: 'LSB', filter: 1, sMeter: 60 } as ServerState['main'],
+    });
+    expect(model(onSub, dualCaps, RX).meters!.signal.source).toEqual({
+      providerGeneration: 1, scope: 'receiver', receiver: 'SUB', path: 'sub.sMeter',
+    });
+
+    const state = meterState();
+    const fieldStatus = Object.fromEntries(METER_PATHS.map((path) => [path, stale]));
+    const meters = model({ ...state, fieldStatus }, caps(), TX).meters!;
+    for (const field of [
+      meters.signal, meters.power, meters.swr, meters.alc, meters.compression,
+      meters.drainVoltage, meters.drainCurrent,
+    ]) expect(field.source).toBeNull();
+  });
+});
+
 describe('target meter display provenance (MOR-2359)', () => {
   const targets = [['power', 'powerMeter'], ['swr', 'swrMeter'], ['alc', 'alcMeter']] as const;
   const observed = { ...fresh, lastObservedMonotonic: 310658.42975425 };
@@ -185,6 +225,9 @@ describe('target meter display provenance (MOR-2359)', () => {
           expect(strict).toEqual({
             reading: operational ? { status: 'known', value: state[path] } : { status: 'unknown' },
             availability: { structural: true, operational }, relevant,
+            source: operational
+              ? { providerGeneration: 1, scope: 'radio', receiver: null, path }
+              : null,
           });
         }
         for (const meter of ['signal', 'compression', 'drainVoltage', 'drainCurrent'] as const) {
@@ -244,7 +287,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     const meters = model(meterState({ alcMeter: undefined }), caps(), TX).meters!;
     expect(meters.alc).toEqual({
       reading: { status: 'unknown' }, availability: { structural: false, operational: false }, relevant: true,
-      display: { state: 'unsupported' },
+      display: { state: 'unsupported' }, source: null,
     });
   });
 
@@ -254,7 +297,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     }), caps(), TX).meters!;
     expect(meters.swr).toEqual({
       reading: { status: 'unknown' }, availability: { structural: true, operational: false }, relevant: true,
-      display: { state: 'stale', value: 20 },
+      display: { state: 'stale', value: 20 }, source: null,
     });
   });
 
@@ -363,6 +406,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       reading: { status: 'unknown' },
       availability: { structural: true, operational: false },
       relevant: true,
+      source: null,
     });
   });
 
@@ -376,6 +420,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       reading: { status: 'unknown' },
       availability: { structural: true, operational: false },
       relevant: true,
+      source: null,
     });
   });
 

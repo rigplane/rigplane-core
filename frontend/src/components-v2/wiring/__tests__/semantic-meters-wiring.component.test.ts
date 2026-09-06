@@ -21,12 +21,15 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
   txController: null as ManagedAppTxController | null,
+  session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
+  sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
   noop: vi.fn(),
 }));
 
@@ -35,6 +38,11 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return h.session; },
+    subscribeControlSession(handler: (next: ControlSessionSnapshot) => void) {
+      h.sessionSubscriber = handler;
+      return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
+    },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an
     // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
     // browser stream keeps every fixture below on its pre-1279 path.
@@ -208,9 +216,19 @@ function push(next: ManagedAppTxServerSnapshot): void {
   flushSync();
 }
 
+function pushSession(next: ControlSessionSnapshot): void {
+  h.session = next;
+  h.sessionSubscriber?.(next);
+  flushSync();
+}
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 /** SVG elements have `.dataset` too, but don't satisfy `q`'s `HTMLElement` bound. */
 const qSvg = (sel: string) => target.querySelector(sel) as SVGSVGElement | null;
+const signalFillCount = (): number => qSvg('[data-testid="meter-signal"] svg')!
+  .querySelectorAll('[data-meter-fill]').length;
+const signalHasPeak = (): boolean => qSvg('[data-testid="meter-signal"] svg')!
+  .querySelector('[data-meter-peak]') !== null;
 const rfState = (): string | undefined => q('[data-testid="meters-surface"]')!.dataset.rfState;
 /** `data-meter -> data-relevant` for every rendered tile. */
 const relevance = (): Record<string, string> => Object.fromEntries(
@@ -223,6 +241,8 @@ beforeEach(() => {
   h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
+  h.session = { state: 'connected', epoch: 1 };
+  h.sessionSubscriber = null;
   h.noop.mockReset();
 });
 
@@ -231,6 +251,7 @@ afterEach(() => {
   component = null;
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
+  expect(h.sessionSubscriber).toBeNull();
   document.body.innerHTML = '';
 });
 
@@ -305,6 +326,48 @@ describe('the meters surface mounts only when the view model carries the group',
     expect(q('[data-testid="meters-surface"]')).not.toBeNull();
     expect(q('[data-testid="meter-signal"]')!.dataset.observed).toBe('false');
     expect(q('[data-testid="meter-drainVoltage"]')!.dataset.observed).toBe('false');
+  });
+
+  it('re-seeds the mounted S-meter immediately at source, session, provider, and disconnect boundaries', () => {
+    const signalState = (
+      active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
+    ): ServerState => {
+      const state = liveState(true);
+      const key = active === 'MAIN' ? 'main' : 'sub';
+      return {
+        ...state, active, providerGeneration,
+        [key]: { ...state[key], sMeter },
+      } as ServerState;
+    };
+
+    h.state = signalState('MAIN', 240);
+    render();
+    const mainFill = signalFillCount();
+    expect(mainFill).toBeGreaterThan(0);
+
+    h.state = signalState('SUB', 180);
+    push({});
+    const subFill = signalFillCount();
+    expect(subFill).toBeLessThan(mainFill);
+    expect(signalHasPeak()).toBe(false);
+
+    h.state = signalState('SUB', 120);
+    push({});
+    expect(signalFillCount()).toBe(subFill);
+    pushSession({ state: 'connected', epoch: 2 });
+    const nextSessionFill = signalFillCount();
+    expect(nextSessionFill).toBeLessThan(subFill);
+    expect(signalHasPeak()).toBe(false);
+
+    h.state = signalState('SUB', 60, 2);
+    h.caps = { ...liveCaps(true), providerGeneration: 2 };
+    push({});
+    expect(signalFillCount()).toBeLessThan(nextSessionFill);
+    expect(signalHasPeak()).toBe(false);
+
+    pushSession({ state: 'disconnected', epoch: 3 });
+    expect(signalFillCount()).toBe(0);
+    expect(signalHasPeak()).toBe(false);
   });
 
   // MUTATION KILLED: giving the meters surface a `data-zone-id` of its own.
