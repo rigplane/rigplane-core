@@ -1,0 +1,19 @@
+{
+  "name": "@rigplane/component-kit-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "peerDependencies": {
+    "svelte": ">=5.45.2 <6"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/types/component-kit-api/src/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  }
+}
