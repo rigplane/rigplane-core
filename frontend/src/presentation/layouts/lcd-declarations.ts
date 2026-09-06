@@ -6,10 +6,10 @@
  * per family: the remaining migrations (MOR-1067/93/94) land beside this one
  * without three tickets editing the same declaration block.
  *
- * A manifest is a DECLARATION, never behaviour. `loader` names the existing
- * skin entrypoint with no change to it; `stageSizing` records the assignment
- * MOR-1160 froze without implementing it — the shared ScaledStage primitive
- * owns measurement and the transform (MOR-1160 constraint 1), never a layout.
+ * A manifest is a DECLARATION, never behaviour. `stageSizing` records the
+ * assignment MOR-1160 froze without implementing it — the shared ScaledStage
+ * primitive owns measurement and the transform (MOR-1160 constraint 1), never
+ * a layout. Runtime components resolve only through `skins/registry.loadSkin`.
  */
 import { registerLayout, type LayoutManifest } from './contract';
 
@@ -46,7 +46,6 @@ export const lcdCockpitLayout: LayoutManifest = {
   schemaVersion: 1,
   id: 'lcd-cockpit',
   displayName: 'LCD Cockpit',
-  loader: () => import('../../skins/lcd-cockpit/LcdCockpitSkin.svelte'),
   zones: LCD_ZONES,
   compatibleTopologies: LCD_TOPOLOGIES,
   requiredSemanticSurfaces: ['vfo', 'rxTx'],
@@ -63,7 +62,6 @@ export const lcdScopeLayout: LayoutManifest = {
   schemaVersion: 1,
   id: 'lcd-scope',
   displayName: 'LCD Scope',
-  loader: () => import('../../skins/lcd-scope/LcdScopeSkin.svelte'),
   zones: LCD_ZONES,
   compatibleTopologies: LCD_TOPOLOGIES,
   requiredSemanticSurfaces: ['vfo', 'rxTx'],

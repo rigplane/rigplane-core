@@ -1,5 +1,5 @@
 /**
- * Layout manifest v1 schema, runtime validator, and compiled registry
+ * Layout manifest v1 schema, runtime validator, and manifest registry
  * (MOR-1066) — the other side of the design-language handshake in
  * `../languages/contract.ts` (matched against a layout id by
  * `../workspace/activation.ts: designLanguageActivation`).
@@ -10,7 +10,6 @@
  * presentation/ zone (MOR-1061) bans runtime/capability/transport/command
  * imports here and in every manifest.
  */
-import type { Component } from 'svelte';
 import { isValidLanguageId as isValidProductId } from '../languages/contract';
 
 /** Semantic surfaces a layout may mount (MOR-1062/1065 reference vertical;
@@ -92,15 +91,6 @@ export interface LayoutManifest {
   readonly schemaVersion: 1;
   readonly id: string;
   readonly displayName: string;
-  // `Component<any>`, not the bare `Component` (implicitly `Component<{}>`):
-  // MOR-2253 slice 1 gave `PeerSplitLayout.svelte` required `canvasW`/
-  // `canvasH` props (its former native-size constants, now the shell's
-  // job), and `Props` is checked contravariantly here — a loader whose
-  // component requires props is not assignable to one requiring none. The
-  // validator only ever checks `typeof manifest.loader === 'function'`
-  // (below), never the loaded component's prop shape, so this widens
-  // nothing this contract actually enforces.
-  readonly loader: () => Promise<{ default: Component<any> }>;
   readonly zones: readonly LayoutZone[];
   readonly compatibleTopologies: readonly TopologyClass[];
   readonly requiredSemanticSurfaces: readonly SemanticSurfaceName[];
@@ -129,7 +119,7 @@ export interface LayoutManifest {
 }
 
 const TOP_LEVEL_KEYS: readonly PropertyKey[] = [
-  'schemaVersion', 'id', 'displayName', 'loader', 'zones',
+  'schemaVersion', 'id', 'displayName', 'zones',
   'compatibleTopologies', 'requiredSemanticSurfaces', 'stageSizing', 'fallbackLayoutId',
 ];
 
@@ -150,8 +140,7 @@ function allIn<T>(values: readonly T[], allowed: readonly T[]): boolean {
 }
 
 /** JSON.stringify-replacer idiom mirrored from the design-language contract's
- *  findCapabilityLikeKey: walks every nested key, skips function values — the
- *  `loader` closure's import specifier is invisible to it, by design. */
+ *  findCapabilityLikeKey: walks every nested key and skips function values. */
 const FORBIDDEN_MANIFEST_KEY_MARKERS = ['capability', 'capabilities', 'radiomodel', 'vendor', 'manufacturer', 'firmware'];
 function findCapabilityLikeKey(manifest: LayoutManifest): string | null {
   let hit: string | null = null;
@@ -166,8 +155,7 @@ function findCapabilityLikeKey(manifest: LayoutManifest): string | null {
  *  import (`./`, `../`), the `$lib/` alias, a bare `src/` reference, or an
  *  absolute path — the forms a real component specifier takes in this
  *  codebase. Not exhaustive (any string could theoretically resolve as a
- *  module elsewhere), but the compiled `loader` closure is the only field
- *  meant to carry one, and the scan never sees inside a function value. */
+ *  module elsewhere), but no manifest field is allowed to carry one. */
 const MODULE_PATH_VALUE_PATTERN = /^(\.{1,2}\/|\$lib\/|src\/|\/)/;
 function findModulePathLikeValue(manifest: LayoutManifest): string | null {
   let hit: string | null = null;
@@ -237,7 +225,6 @@ export function validateLayoutManifest(manifest: LayoutManifest): void {
       `Layout "${id}" has unknown top-level key(s) — only [${TOP_LEVEL_KEYS.join(', ')}] are allowed.`) ||
     (manifest.schemaVersion !== 1 && `Layout "${id}" schemaVersion must be 1.`) ||
     (!isValidProductId(id) && `Layout id "${id}" fails naming policy: kebab-case, no vendor/geographic marker.`) ||
-    (typeof manifest.loader !== 'function' && `Layout "${id}" must declare a compiled Svelte loader function.`) ||
     validateZones(id, manifest.zones) ||
     (manifest.compatibleTopologies.length === 0 &&
       `Layout "${id}" must declare at least one compatible topology class.`) ||
@@ -253,7 +240,7 @@ export function validateLayoutManifest(manifest: LayoutManifest): void {
   if (problem) throw new LayoutValidationError(problem);
 }
 
-// ── Compiled registry. Count-agnostic: any manifest passing validation
+// ── Manifest registry. Count-agnostic: any manifest passing validation
 // registers, same as the design-language registry (MOR-1072 precedent).
 
 const registry = new Map<string, LayoutManifest>();
@@ -261,8 +248,8 @@ const registry = new Map<string, LayoutManifest>();
 /**
  * Validates then registers `manifest`. Rejects a duplicate ID — unlike the
  * design-language registry's overwrite semantics, a silently swapped layout
- * loader can replace what is already resolved on screen, so MOR-1066 treats
- * "duplicate IDs" as its own rejection class rather than an overwrite.
+ * definition can replace the semantic declaration already in use, so MOR-1066
+ * treats "duplicate IDs" as its own rejection class rather than an overwrite.
  */
 export function registerLayout(manifest: LayoutManifest): void {
   validateLayoutManifest(manifest);

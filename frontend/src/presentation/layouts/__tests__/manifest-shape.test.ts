@@ -135,8 +135,14 @@ describe('capability-fork and module-path rejection', () => {
     expect(() => validateLayoutManifest(manifest)).toThrow(/module-path-shaped value/);
   });
 
-  it('does not flag the compiled loader itself — JSON.stringify never sees inside a function', () => {
-    expect(() => validateLayoutManifest(validLayoutManifest())).not.toThrow();
+  // Kills: retaining the superseded manifest loader as a tolerated escape
+  // hatch after loadSkin became the single runtime component authority.
+  it('rejects the retired executable loader field as an unknown top-level key', () => {
+    const manifest = {
+      ...validLayoutManifest(),
+      loader: () => Promise.resolve({ default: {} }),
+    };
+    expect(() => validateLayoutManifest(manifest as never)).toThrow(/unknown top-level key/);
   });
 
   // Kills: unknown-top-level-key rejection missing or checking a subset of keys.
@@ -177,7 +183,6 @@ describe('exact-key discipline pins (MOR-1072 N1 lesson, review cycle 1 F2)', ()
       schemaVersion = 1 as const;
       id = 'testlayout';
       displayName = 'Test Layout';
-      loader = () => Promise.resolve({ default: {} as never });
       zones = [{ id: 'main', surfaces: ['vfo', 'rxTx'] as const }];
       compatibleTopologies = ['1/single'] as const;
       requiredSemanticSurfaces = ['vfo', 'rxTx'] as const;

@@ -8,7 +8,7 @@
  * the exported object, so a manifest that is written but never registered
  * fails here. Each test's doc line names the mutation it exists to kill.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { declaredSurfaces, getLayout } from '../contract';
 // Barrel-only, never '../desktop-declarations' directly — the M7 lesson
@@ -38,11 +38,6 @@ describe('the desktop-v2 entrypoint is registered in the real registry', () => {
     expect(loaders).toContain("'desktop-v2':");
     expect(source).toContain("if (layoutPreference === 'standard') return 'desktop-v2';");
     expect(source).toContain("return 'desktop-v2';");
-  });
-
-  // Kills: a manifest that declares no compiled loader at all.
-  it('declares a compiled loader', () => {
-    expect(typeof desktopV2Layout.loader).toBe('function');
   });
 });
 
@@ -90,7 +85,7 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   // `skinId === 'sdr-test'` boolean MOR-1266 pinned as still-present and
   // MOR-1313 removed. A reintroduced id fork would leave this manifest
   // decorative again while every registry assertion above stayed green. Read
-  // as TEXT for the same reason as the loader pin below (no DOM tree needed).
+  // as TEXT because no DOM tree is needed.
   it('RadioLayout.svelte derives suppression from the manifest, not from a skin id', () => {
     const source = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
     expect(source).toContain('let declared = $derived(declaredSurfaces(getLayout(skinId)));');
@@ -104,30 +99,6 @@ describe('declared zones now drive the DOM (MOR-1263 step 2, MOR-1313)', () => {
   it('its zones flatten to the surfaces the shell suppresses legacy twins for', () => {
     expect([...declaredSurfaces(getLayout('desktop-v2'))].sort())
       .toEqual(['antenna', 'band', 'cwKeyer', 'dsp', 'filter', 'meters', 'rfFrontEnd', 'ritXitScan', 'rxAudio', 'rxTx', 'scopeControls', 'scopeDisplay', 'txAux', 'vfo']);
-  });
-});
-
-describe('loader identity — pins the real desktop-v2 entrypoint (verify.md N1)', () => {
-  // Kills: repointing the manifest's OWN `loader` closure at a different,
-  // real, loadable skin (e.g. `SdrTestSkin.svelte`) — the adversarial
-  // verification's surviving mutant (V3). `typeof loader === 'function'`
-  // above and the `skins/registry.ts` reachability check earlier both stay
-  // green under that mutation, because neither ties THIS manifest's loader
-  // to the file it actually names. Read as TEXT — the same idiom as every
-  // other module-specifier pin in this suite — because invoking the loader
-  // would pull in RadioLayout.svelte's full import graph, which this suite
-  // avoids importing wholesale.
-  it('the manifest loader names DesktopSkin.svelte, not a sibling skin entrypoint', () => {
-    const source = readFileSync('src/presentation/layouts/desktop-declarations.ts', 'utf8');
-    const match = source.match(/loader:\s*\(\)\s*=>\s*import\(['"]([^'"]+)['"]\)/);
-    expect(match?.[1]).toBe('../../skins/desktop-v2/DesktopSkin.svelte');
-  });
-
-  // Belt-and-braces: the specifier must resolve to a real file too — guards
-  // against a typo'd path that would only fail at runtime, in the browser,
-  // never in this suite.
-  it('the loader specifier resolves to a real file on disk', () => {
-    expect(existsSync('src/skins/desktop-v2/DesktopSkin.svelte')).toBe(true);
   });
 });
 

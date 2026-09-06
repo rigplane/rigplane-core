@@ -134,7 +134,6 @@ export const desktopV2Layout: LayoutManifest = {
   schemaVersion: 1,
   id: 'desktop-v2',
   displayName: 'Desktop',
-  loader: () => import('../../skins/desktop-v2/DesktopSkin.svelte'),
   zones: DESKTOP_V2_ZONES,
   /**
    * All four canonical classes. `VfoHeader` branches on `hasDualReceiver()`

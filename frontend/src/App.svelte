@@ -125,10 +125,7 @@
   });
 
   // MOR-1082 — the workspace's per-zone `visibleSurfaces`/`zoneOrder`, resolved
-  // against the ACTIVE layout manifest and handed down as a getter. App is the
-  // only place that can do this: the semantic wiring must not import a layout
-  // manifest (that closes the manifest → loader → skin → wiring cycle the
-  // MOR-1068 wiring documents), and this is where the layout id already lives.
+  // against the ACTIVE layout manifest and handed down as a getter.
   // A getter, so a consumer's `$derived` re-runs when either input changes.
   provideSurfacePlan(() => {
     const manifest = getLayout(skinId);

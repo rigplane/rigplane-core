@@ -32,7 +32,6 @@ export const dualReceiverCockpitLayout: LayoutManifest = {
   schemaVersion: 1,
   id: 'dual-receiver-cockpit',
   displayName: 'Dual Receiver Cockpit',
-  loader: () => import('../../skins/dual-receiver-cockpit/DualReceiverCockpit.svelte'),
   // Declaration order IS rendered order, pinned end to end against the
   // mounted shell (MOR-1067 verification F6 — before this, not one id was
   // shared with the DOM and nothing asserted the correspondence). `global`

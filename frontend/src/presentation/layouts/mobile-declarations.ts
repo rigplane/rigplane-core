@@ -5,11 +5,10 @@
  * Kept in its own file so `./declarations.ts` carries one aggregation line per
  * family, alongside `./lcd-declarations.ts` (MOR-1092).
  *
- * A manifest is a DECLARATION, never behaviour. `loader` names the existing
- * skin entrypoint with no change to it, and `stageSizing` records the
+ * A manifest is a DECLARATION, never behaviour. `stageSizing` records the
  * assignment MOR-1160 froze without implementing it — the shared ScaledStage
  * primitive owns measurement and the transform (MOR-1160 constraint 1), never
- * a layout.
+ * a layout. Runtime components resolve only through `skins/registry.loadSkin`.
  * In particular this manifest does NOT take over the shell's own orientation
  * handling: `isLandscape` still drives which PTT surface is mounted, and that
  * is live safety behaviour, not a sizing declaration.
@@ -45,7 +44,6 @@ export const mobileLayout: LayoutManifest = {
   schemaVersion: 1,
   id: 'mobile',
   displayName: 'Mobile',
-  loader: () => import('../../skins/mobile/MobileSkin.svelte'),
   zones: MOBILE_ZONES,
   // All four canonical classes: the shell renders VFO A unconditionally and
   // gates the MAIN/SUB selector and the SUB readout on `hasDualReceiver`, so

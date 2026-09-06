@@ -17,7 +17,6 @@ export const sdrTestLayout: LayoutManifest = {
   schemaVersion: 1,
   id: 'sdr-test',
   displayName: 'SDR Test',
-  loader: () => import('../../skins/sdr-test/SdrTestSkin.svelte'),
   // MOR-1346: `meters` is its own zone, never merged into another one, so a
   // persisted `visibleSurfaces` entry recorded for a zone before `meters`
   // joined it cannot silently hide it (`resolveZone`'s allow-list

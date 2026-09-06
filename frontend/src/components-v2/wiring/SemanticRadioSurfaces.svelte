@@ -83,12 +83,9 @@
    *
    * MOR-1068: in `'dual'` the composed blocks carry `data-zone-id` values
    * drawn from the `dual-receiver-cockpit` layout manifest's declared zones
-   * (`presentation/layouts/dual-receiver-cockpit.ts`). The manifest is the
-   * authority and is NOT imported here — importing it would close a cycle
-   * (manifest -> loader -> skin -> wiring) and let a wiring change register a
-   * layout. The two descriptions are held together by a test that reads the
-   * ids out of the real registry and requires exactly these in the rendered
-   * tree (MOR-1067 verification F6).
+   * (`presentation/layouts/dual-receiver-cockpit.ts`). A test reads the ids out
+   * of the real registry and requires exactly these in the rendered tree
+   * (MOR-1067 verification F6).
    */
   interface Props {
     strips?: 'single' | 'dual';

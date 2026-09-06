@@ -1,7 +1,7 @@
 /**
  * MOR-1092 — the two LCD/scope presentation entrypoints registered as v1
  * layout manifests and resolved through the REAL registry (MOR-1066), not a
- * fixture registry and not a stub loader.
+ * fixture registry.
  *
  * What this file is for: the manifest is the only place the LCD entrypoints
  * declare their identity, the semantic zones they mount and the MOR-1160
@@ -45,15 +45,6 @@ describe('the LCD entrypoints are registered in the real registry', () => {
     const lcdSkinIds = [...loaders.matchAll(/'(lcd-[a-z-]+)':/g)].map((m) => m[1]).sort();
     expect(lcdSkinIds).toEqual(['lcd-cockpit', 'lcd-scope']);
     for (const skinId of lcdSkinIds) expect(getLayout(skinId)).toBeDefined();
-  });
-
-  // Kills: a manifest that declares no compiled loader at all. That the
-  // loader reaches the REAL entrypoint — and renders the migrated LCD — is
-  // proved by mounting it in
-  // `components-v2/layout/__tests__/semantic-lcd-migration.component.test.ts`;
-  // this file runs outside the DOM environment that whole tree needs.
-  it.each(LCD_LAYOUTS)('"%s" declares a compiled loader', (_id, manifest) => {
-    expect(typeof manifest.loader).toBe('function');
   });
 });
 

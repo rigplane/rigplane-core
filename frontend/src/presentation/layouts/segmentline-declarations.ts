@@ -58,7 +58,6 @@ export const peerSplitLayout: LayoutManifest = {
   schemaVersion: 1,
   id: 'peer-split',
   displayName: 'Peer Split',
-  loader: () => import('../../skins/segmentline/PeerSplitLayout.svelte'),
   // One zone: `vfo` + `rxTx`, mounted by `PeerSplitLayout.svelte`'s
   // `<SemanticRadioSurfaces strips="dual" />` (MOR-2155). The dual
   // composition hardcodes its own `primary-vfo`/`secondary-vfo`/`global`/
@@ -82,7 +81,6 @@ export const unifiedInstrumentLayout: LayoutManifest = {
   schemaVersion: 1,
   id: 'unified-instrument',
   displayName: 'Unified Instrument',
-  loader: () => import('../../skins/lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte'),
   zones: [{
     id: 'peer-columns',
     surfaces: ['vfo', 'rxTx'],
@@ -103,7 +101,6 @@ export const panadapterFirstLayout: LayoutManifest = {
   schemaVersion: 1,
   id: 'panadapter-first',
   displayName: 'Panadapter First',
-  loader: () => import('../../skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte'),
   zones: [{
     id: 'peer-columns',
     surfaces: ['vfo', 'rxTx'],

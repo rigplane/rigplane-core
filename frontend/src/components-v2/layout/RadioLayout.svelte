@@ -87,9 +87,8 @@
   // R9 — ONE key/unkey authority, and this line is where that count is decided.
   //
   // It follows the DECK, not the `rxTx` declaration, and the asymmetry is
-  // deliberate: `SemanticRadioSurfaces` is manifest-BLIND by design (importing a
-  // manifest there would close the MOR-1068 cycle), so its single composition is
-  // a hardcoded `['vfo', 'rxTx']` — mounting the semantic deck ALWAYS brings
+  // deliberate: `SemanticRadioSurfaces` has a hardcoded single composition of
+  // `['vfo', 'rxTx']` — mounting the semantic deck ALWAYS brings
   // exactly one `<RxTxSurface>` with it, whatever the manifest declared. Gating
   // the sidebars' TX twin on `declared.has('rxTx')` instead would therefore let
   // the two disagree: a manifest declaring `vfo` WITHOUT `rxTx` (which

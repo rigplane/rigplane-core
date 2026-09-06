@@ -32,8 +32,4 @@ describe('the dual-receiver-cockpit real registration', () => {
     ]);
     expect(dualReceiverCockpitLayout.requiredSemanticSurfaces).toEqual(['vfo', 'rxTx']);
   });
-
-  it('has a compiled Svelte loader', async () => {
-    expect(typeof dualReceiverCockpitLayout.loader).toBe('function');
-  });
 });

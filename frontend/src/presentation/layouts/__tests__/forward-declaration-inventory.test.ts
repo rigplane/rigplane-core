@@ -46,8 +46,7 @@ import { desktopV2Layout, sdrTestLayout } from '../declarations';
 // `mobile-registration.test.ts`) register their own probe manifests into it
 // — `listLayoutIds()` would make this file's inventory depend on cross-file
 // execution order. The barrel's own export surface has no such cross-file
-// state. Same derivation as `loader-identity-inventory.test.ts`'s
-// `BARREL_MANIFESTS` (MOR-2060).
+// state (MOR-2060).
 import * as layoutDeclarationsBarrel from '../declarations';
 
 /** Every manifest currently registered by the barrel (mirrors
