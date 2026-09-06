@@ -22,9 +22,6 @@ describe('fixture focus assertion retained readout exception', () => {
       + inert.replace('aria-disabled="true"', 'aria-disabled="false"').replace('tabindex="-1"', 'tabindex="0"')
       + '</span>')).toBe(true);
   });
-  it('admits an inert semantic slider', () => {
-    expect(admitted('<div role="slider" aria-disabled="true" tabindex="-1"></div>')).toBe(true);
-  });
   it.each([
     ['enabled frequency', wrap(inert.replace('aria-disabled="true"', 'aria-disabled="false"'))],
     ['enabled VFO hook', wrap(inert).replace('data-freq-tunable="false"', 'data-freq-tunable="true"')],
@@ -86,6 +83,23 @@ describe('fixture focus assertion roving radiogroup exception', () => {
       + '<div role="radiogroup" aria-label="Inner">'
       + '<button role="radio" tabindex="0">Inner radio</button>'
       + '</div></div>'],
+  ])('rejects %s', (_label, html) => {
+    expect(admitted(html)).toBe(false);
+  });
+});
+
+describe('fixture focus assertion inert slider exception', () => {
+  const slider = '<div role="slider" aria-disabled="true" tabindex="-1" aria-label="RF power"></div>';
+
+  it('admits an aria-disabled slider outside the sequential Tab order', () => {
+    expect(admitted(slider)).toBe(true);
+  });
+
+  it.each([
+    ['enabled slider', slider.replace('aria-disabled="true"', 'aria-disabled="false"')],
+    ['malformed tabindex', slider.replace('tabindex="-1"', 'tabindex="-2"')],
+    ['hidden slider', slider.replace('role="slider"', 'role="slider" aria-hidden="true"')],
+    ['hidden slider ancestor', `<section aria-hidden="true">${slider}</section>`],
   ])('rejects %s', (_label, html) => {
     expect(admitted(html)).toBe(false);
   });

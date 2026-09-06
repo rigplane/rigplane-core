@@ -94,6 +94,10 @@ function isValidRovingRadio(el: HTMLElement): boolean {
     && enabledPeers.filter((peer) => peer.getAttribute('tabindex') === '0').length === 1;
 }
 
+function isInertSlider(el: HTMLElement): boolean {
+  return el.matches('[role="slider"][aria-disabled="true"][tabindex="-1"]');
+}
+
 /** MOR-1087 item 5 — WCAG contrast ratio on a real `getComputedStyle()`
  *  `rgb()`/`rgba()` string (same formula the `studioline`/`fieldline`
  *  `tokens.test.ts` arithmetic uses on the DECLARED palette; this measures
@@ -505,11 +509,12 @@ export function runAssertions(
       // Retained inert readouts keep focus context but are not native Tab stops.
       || (el.matches('div.freq[role="group"][aria-disabled="true"][tabindex="-1"]')
         && el.closest('[data-vfo-freq][data-freq-tunable="false"]') !== null)
-      // Inert semantic sliders expose their value but are not Tab stops.
-      || el.matches('[role="slider"][aria-disabled="true"][tabindex="-1"]')
       // A named radiogroup keeps exactly one enabled radio in the Tab order;
       // arrow keys move focus among its other operable, programmatic stops.
-      || isValidRovingRadio(el))
+      || isValidRovingRadio(el)
+      // Value-control renderers retain an inert focus anchor without exposing
+      // the disabled slider in the sequential Tab order.
+      || isInertSlider(el))
       && el.closest('[aria-hidden="true"]') === null),
     `${controls().length} focusable controls`);
 
