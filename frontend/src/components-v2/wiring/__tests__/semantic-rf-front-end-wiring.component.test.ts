@@ -42,6 +42,17 @@ import {
   acknowledgeCommand, beginCommand, confirmCommand, failCommand, resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
 
+type TestControlSession = {
+  state: 'connected' | 'disconnected' | 'reconnecting'; epoch: number;
+};
+type TestCommandDelivery = {
+  commandId: string; kind: 'transport-sent' | 'ack' | 'response-ok' | 'response-error' | 'error';
+  originalEpoch: number; eventEpoch: number; error?: string; cancelled?: boolean;
+};
+type TestLifecycleDelivery = {
+  commandId: string; kind: 'held' | 'superseded' | 'timed-out' | 'failed';
+  originalEpoch: number; eventEpoch: number; reason?: string; expiresAt?: number; error?: string;
+};
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
@@ -54,8 +65,39 @@ const h = vi.hoisted(() => ({
   squelch: vi.fn(),
   digiSel: vi.fn(),
   ipPlus: vi.fn(),
-  session: { state: 'connected' as 'connected' | 'disconnected' | 'reconnecting', epoch: 7 },
-  sessionListeners: new Set<(next: { state: 'connected' | 'disconnected' | 'reconnecting'; epoch: number }) => void>(),
+  session: { state: 'connected', epoch: 7 } as TestControlSession,
+  sessionListeners: new Set<(next: TestControlSession) => void>(),
+  sentCommands: [] as Array<{
+    name: string; params: Record<string, unknown>; id: string; originalEpoch: number;
+  }>,
+  deliveryListeners: new Set<(event: TestCommandDelivery) => void>(),
+  lifecycleDeliveryListeners: new Set<(event: TestLifecycleDelivery) => void>(),
+  transportSessionListeners: new Set<(next: TestControlSession) => void>(),
+}));
+
+vi.mock('$lib/transport/ws-client', () => ({
+  getControlSession: () => h.session,
+  sendCommand(name: string, params: Record<string, unknown>, id?: string) {
+    if (id === undefined) throw new Error('radio intent did not supply a command id');
+    h.sentCommands.push({ name, params, id, originalEpoch: h.session.epoch });
+    return true;
+  },
+  onCommandDelivery(handler: (event: TestCommandDelivery) => void) {
+    h.deliveryListeners.add(handler);
+    return () => h.deliveryListeners.delete(handler);
+  },
+  onCommandLifecycleDelivery(
+    handler: (event: TestLifecycleDelivery) => void,
+  ) {
+    h.lifecycleDeliveryListeners.add(handler);
+    return () => h.lifecycleDeliveryListeners.delete(handler);
+  },
+  onControlSessionTransition(
+    handler: (event: TestControlSession) => void,
+  ) {
+    h.transportSessionListeners.add(handler);
+    return () => h.transportSessionListeners.delete(handler);
+  },
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -133,10 +175,23 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
       onManualNotchWidthChange: h.noop, onAgcTimeChange: h.noop,
     }),
     makeAgcHandlers: () => ({ onAgcModeChange: h.noop }),
-    makeRfFrontEndHandlers: () => ({
-      onAttChange: h.att, onPreChange: h.pre, onRfGainChange: h.rfGain,
-      onSquelchChange: h.squelch, onDigiSelToggle: h.digiSel, onIpPlusToggle: h.ipPlus,
-    }),
+    makeRfFrontEndHandlers: () => {
+      const shipped = actual.makeRfFrontEndHandlers();
+      return {
+        onAttChange: h.att,
+        onPreChange: h.pre,
+        onRfGainChange: (level: number) => {
+          h.rfGain(level);
+          shipped.onRfGainChange(level);
+        },
+        onSquelchChange: (level: number) => {
+          h.squelch(level);
+          shipped.onSquelchChange(level);
+        },
+        onDigiSelToggle: h.digiSel,
+        onIpPlusToggle: h.ipPlus,
+      };
+    },
     // MOR-1307 slice 7B: the band-select intent the band surface composes.
     // This fixture declares no band capability, so it is never reachable —
     // same stand-in role as the noop handlers above.
@@ -179,6 +234,8 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 // MOR-1366 (S7), N1 fold (verify-MOR-1365 ruling item 3): the REAL manifest +
 // the REAL resolution seam, mirroring `semantic-scope-display-wiring
 // .component.test.ts`'s S6a context-injection recipe — the only way to prove
@@ -254,6 +311,77 @@ function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan):
 
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 const el = (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
+let acceptedState: ServerState;
+
+function acceptedStoreState(state: ServerState): ServerState {
+  const receiver = (value: ServerState['main']) => ({
+    ...value,
+    dataMode: value.dataMode ?? 0,
+    sMeter: value.sMeter ?? 0,
+    att: value.att ?? 0,
+    preamp: value.preamp ?? 0,
+    nb: value.nb ?? false,
+    nr: value.nr ?? false,
+    afLevel: value.afLevel ?? 0.5,
+    rfGain: value.rfGain ?? 0.8,
+    squelch: value.squelch ?? 0.1,
+  });
+  return {
+    ...state,
+    revision: state.revision ?? 1,
+    stateRevision: state.stateRevision ?? 1,
+    freshnessRevision: state.freshnessRevision ?? 1,
+    observationSeq: state.observationSeq ?? 1,
+    updatedAt: state.updatedAt ?? '2026-09-06T00:00:00.000Z',
+    tunerStatus: state.tunerStatus ?? 0,
+    connection: state.connection
+      ?? { rigConnected: true, radioReady: true, controlConnected: true },
+    main: receiver(state.main),
+    sub: receiver(state.sub ?? state.main),
+  };
+}
+
+function observedMainLevels(
+  state: ServerState,
+  levels: Readonly<{ rfGain?: number; squelch?: number }>,
+  marker: number,
+): ServerState {
+  const next = {
+    ...state,
+    main: { ...state.main, ...levels },
+    fieldStatus: {
+      ...state.fieldStatus,
+      ...(levels.rfGain === undefined ? {} : {
+        'main.rfGain': { ...state.fieldStatus?.['main.rfGain'], lastObservedMonotonic: marker },
+      }),
+      ...(levels.squelch === undefined ? {} : {
+        'main.squelch': { ...state.fieldStatus?.['main.squelch'], lastObservedMonotonic: marker },
+      }),
+    },
+  } as ServerState;
+  h.state = next;
+  acceptedState = {
+    ...acceptedState,
+    revision: (acceptedState.revision ?? 0) + 1,
+    stateRevision: (acceptedState.stateRevision ?? 0) + 1,
+    freshnessRevision: (acceptedState.freshnessRevision ?? 0) + 1,
+    observationSeq: (acceptedState.observationSeq ?? 0) + 1,
+    updatedAt: `2026-09-06T00:00:0${marker}.000Z`,
+    main: { ...acceptedState.main, ...levels },
+    fieldStatus: next.fieldStatus,
+  };
+  expect(setRadioState(acceptedState)).toBe(true);
+  return next;
+}
+
+function acknowledgeSent(command: (typeof h.sentCommands)[number]): void {
+  for (const listener of h.deliveryListeners) listener({
+    commandId: command.id,
+    kind: 'ack',
+    originalEpoch: command.originalEpoch,
+    eventEpoch: command.originalEpoch,
+  });
+}
 
 beforeEach(() => {
   txHarness = new ManagedAppTxHarness();
@@ -262,7 +390,13 @@ beforeEach(() => {
   h.caps = liveCaps(true);
   h.session = { state: 'connected', epoch: 7 };
   h.sessionListeners.clear();
+  h.sentCommands.length = 0;
   resetCommandLifecycle();
+  resetRadioState();
+  clearCapabilities();
+  expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+  acceptedState = acceptedStoreState(h.state as ServerState);
+  expect(setRadioState(acceptedState)).toBe(true);
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -275,6 +409,8 @@ afterEach(() => {
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionListeners.size).toBe(0);
   resetCommandLifecycle();
+  resetRadioState();
+  clearCapabilities();
   document.body.innerHTML = '';
 });
 
@@ -523,6 +659,54 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(el('rfGain')!.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
     expect(el('squelch')!.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
     expect(el('squelch')!.textContent).toContain('denied');
+  });
+
+  it('retires a native RF draft after real raw-command confirmation and follows later truth while SQL is pending', () => {
+    render();
+    const rfInput = el('rfGain')!.querySelector('input')!;
+    const sqlInput = el('squelch')!.querySelector('input')!;
+
+    rfInput.value = '0.7';
+    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
+    expect(h.sentCommands).toHaveLength(1);
+    const rfCommand = h.sentCommands[0];
+    expect(rfCommand).toMatchObject({
+      name: 'set_rf_gain', params: { level: 179, receiver: 0 }, originalEpoch: 7,
+    });
+    expect(el('rfGain')!.dataset.commandPhase).toBe('submitted');
+
+    acknowledgeSent(rfCommand);
+    flushSync();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('awaiting-confirmation');
+    let state = observedMainLevels(h.state as ServerState, { rfGain: 179 / 255 }, 6);
+    flushSync();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
+
+    sqlInput.value = '0.6';
+    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(153);
+    expect(h.sentCommands).toHaveLength(2);
+    const sqlCommand = h.sentCommands[1];
+    expect(sqlCommand).toMatchObject({
+      name: 'set_squelch', params: { level: 153, receiver: 0 }, originalEpoch: 7,
+    });
+
+    state = observedMainLevels(state, { rfGain: 204 / 255 }, 7);
+    acknowledgeSent(sqlCommand);
+    flushSync();
+    expect(el('rfGain')!.querySelector('input')!.valueAsNumber).toBe(0.8);
+    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
+    expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(el('squelch')!.querySelector('input')!.valueAsNumber).toBe(0.6);
+
+    observedMainLevels(state, { squelch: 153 / 255 }, 8);
+    flushSync();
+    expect(el('squelch')!.dataset.commandPhase).toBe('confirmed');
+    expect(h.rfGain).toHaveBeenCalledTimes(1);
+    expect(h.squelch).toHaveBeenCalledTimes(1);
   });
 
   it('routes separate endpoint requests once through the unchanged raw conversion seam', () => {

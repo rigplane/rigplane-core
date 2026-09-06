@@ -432,6 +432,53 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     target.remove();
   });
 
+  it('retires only the represented lane draft and follows later same-authority canonical truth', () => {
+    const feedback = new SvelteMap<string, PairFeedback>([['current', pairFeedback()]]);
+    const onLevelChange = vi.fn();
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(RfFrontEndSurface, { target, props: {
+      view: base(), onLevelChange,
+      get rfSqlFeedback() { return feedback.get('current')!; },
+    } });
+    flushSync();
+    const rfInput = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rfGain"] input')!;
+    const sqlInput = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-squelch"] input')!;
+    rfInput.value = '0.7';
+    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
+    sqlInput.value = '0.6';
+    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledTimes(2);
+
+    feedback.set('current', pairFeedback({
+      rf: {
+        target: 179 / 255, requestedTarget: 179 / 255, phase: 'awaiting-confirmation',
+        busy: true, lifecycleId: 'rf-179', transitionId: 'rf-awaiting-179',
+      },
+    }));
+    flushSync();
+    expect(sqlInput.valueAsNumber).toBe(0.6);
+
+    feedback.set('current', pairFeedback({
+      rf: {
+        confirmed: 179 / 255, requestedTarget: 179 / 255, phase: 'confirmed',
+        lifecycleId: 'rf-179', transitionId: 'rf-confirmed-179',
+        outcome: { phase: 'confirmed' },
+      },
+    }));
+    flushSync();
+    feedback.set('current', pairFeedback({ rf: { confirmed: 204 / 255 } }));
+    flushSync();
+    expect(rfInput.valueAsNumber).toBe(0.8);
+    expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent)
+      .toBe('80%');
+    expect(sqlInput.valueAsNumber).toBe(0.6);
+    expect(onLevelChange).toHaveBeenCalledTimes(2);
+    unmount(component);
+    target.remove();
+  });
+
   it('owns and destroys two independent native scalar bindings', () => {
     const source = readFileSync('src/semantic/RfFrontEndSurface.svelte', 'utf8');
     expect(source).toMatch(

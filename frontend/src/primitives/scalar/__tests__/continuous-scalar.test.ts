@@ -22,6 +22,13 @@ const DOMAIN: ScalarDomain = {
   defaultValue: 2_400,
   fineStepDivisor: 10,
 };
+const NORMALIZED_DOMAIN: ScalarDomain = {
+  min: 0,
+  max: 1,
+  step: 0.01,
+  defaultValue: null,
+  fineStepDivisor: 10,
+};
 
 const feedback = (
   phase: CommandScalarFeedback['phase'] = 'idle',
@@ -435,6 +442,35 @@ describe('continuous scalar source policies', () => {
     expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     lease.wheel({ direction: 1, fine: false });
     expect(request).toHaveBeenCalledTimes(1);
+
+    const ambiguous = readingSetup(nativeRangeContinuousScalarPolicy, {
+      domain: {
+        min: 1_000_000_000_000, max: 1_000_000_000_001, step: 0.0005,
+        defaultValue: null, fineStepDivisor: 10,
+      },
+      reading: { status: 'known', value: 1_000_000_000_000 },
+    });
+    ambiguous.scalar.attachRenderer().nativeInput(1_000_000_000_000.0004);
+    expect(ambiguous.request).toHaveBeenCalledExactlyOnceWith(1_000_000_000_000.0005);
+  });
+
+  it.each([
+    ['exact decimal lattice point', NORMALIZED_DOMAIN, 0.7, 0.7],
+    ['shifted-minimum lattice point', { ...NORMALIZED_DOMAIN, min: 0.2 }, 0.3, 0.3],
+    ['negative lattice point', { ...NORMALIZED_DOMAIN, min: -1 }, -0.3, -0.3],
+    ['positive half-step tie', NORMALIZED_DOMAIN, 0.705, 0.71],
+    ['negative half-step tie', { ...DOMAIN, min: -1_000, max: 1_000 }, -150, -100],
+    ['lower bound clamp', NORMALIZED_DOMAIN, -0.1, 0],
+    ['upper bound clamp', NORMALIZED_DOMAIN, 1.1, 1],
+    ['non-finite rejection', NORMALIZED_DOMAIN, Number.NaN, null],
+  ] as const)('normalizes native input with stable %s behavior', (_name, domain, candidate, expected) => {
+    const { scalar, request } = readingSetup(nativeRangeContinuousScalarPolicy, {
+      domain,
+      reading: { status: 'known', value: domain.min },
+    });
+    scalar.attachRenderer().nativeInput(candidate);
+    if (expected === null) expect(request).not.toHaveBeenCalled();
+    else expect(request).toHaveBeenCalledExactlyOnceWith(expected);
   });
 
   it('keeps optimistic and confirmed HBar display/base policies explicit', () => {
@@ -512,9 +548,10 @@ describe('continuous scalar source policies', () => {
 });
 
 describe('continuous scalar authority and feedback reconciliation', () => {
-  it('does not abort a live drag for changing same-authority pending feedback', () => {
+  it('does not let an earlier native request abort a live drag on new pending feedback', () => {
     const { scalar, request, update, read } = commandSetup();
     const lease = scalar.attachRenderer();
+    lease.nativeInput(2_500);
     const token = lease.beginPointer()!;
     lease.pointer(token, 2_700);
 
@@ -528,7 +565,7 @@ describe('continuous scalar authority and feedback reconciliation', () => {
       transitionId: 'awaiting-1',
     } });
     lease.pointer(token, 2_900);
-    expect(request.mock.calls).toEqual([[2_700], [2_900]]);
+    expect(request.mock.calls).toEqual([[2_500], [2_700], [2_900]]);
     expect(scalar.view.draft).toBe(2_900);
   });
 
@@ -614,6 +651,133 @@ describe('continuous scalar authority and feedback reconciliation', () => {
       outcome: { phase: 'confirmed' },
     }) });
     expect(scalar.view).toMatchObject({ canonical: 2_700, draft: null, displayed: 2_700, interaction: 'idle' });
+  });
+
+  it('hands a native draft to newly represented quantized command evidence and follows later truth', () => {
+    const initial = feedback('idle', {
+      confirmed: 0.5,
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const { scalar, update } = commandSetup(nativeRangeContinuousScalarPolicy, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: initial,
+    });
+    const lease = scalar.attachRenderer();
+    lease.nativeInput(0.7);
+    const localDraft = scalar.view.draft;
+    expect(localDraft).not.toBeNull();
+
+    update({ feedback: { ...initial, scope: { ...initial.scope } } });
+    expect(scalar.view.draft).toBe(localDraft);
+
+    update({ feedback: feedback('awaiting-confirmation', {
+      confirmed: 0.5,
+      target: 179 / 255,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-179',
+      transitionId: 'rf-awaiting-179',
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({
+      draft: null,
+      target: 179 / 255,
+      canonical: 0.5,
+      phase: 'awaiting-confirmation',
+      interaction: 'idle',
+    });
+
+    update({ feedback: feedback('confirmed', {
+      confirmed: 179 / 255,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-179',
+      transitionId: 'rf-confirmed-179',
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ canonical: 179 / 255, draft: null });
+    update({ feedback: feedback('idle', {
+      confirmed: 204 / 255,
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ canonical: 0.8, draft: null, displayed: 0.8 });
+  });
+
+  it('keeps request B while terminal A is retained or cloned, then hands off only to B evidence', () => {
+    const terminalA = feedback('confirmed', {
+      confirmed: 0.5,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-a',
+      transitionId: 'rf-a-confirmed',
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const { scalar, update } = commandSetup(nativeRangeContinuousScalarPolicy, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: terminalA,
+    });
+    const lease = scalar.attachRenderer();
+    expect(scalar.view.phase).toBe('confirmed');
+    lease.nativeInput(0.8);
+    expect(scalar.view.draft).toBe(0.8);
+
+    update({ feedback: { ...terminalA, scope: { ...terminalA.scope } } });
+    expect(scalar.view).toMatchObject({ draft: 0.8, phase: 'confirmed' });
+
+    update({ feedback: feedback('submitted', {
+      confirmed: 0.5,
+      target: 204 / 255,
+      requestedTarget: 204 / 255,
+      lifecycleId: 'rf-b',
+      transitionId: 'rf-b-submitted',
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({
+      draft: null,
+      target: 0.8,
+      phase: 'submitted',
+      interaction: 'idle',
+    });
+  });
+
+  it('keeps request B when delayed terminal A arrives before B feedback', () => {
+    const pendingA = feedback('awaiting-confirmation', {
+      confirmed: 0.5,
+      target: 179 / 255,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-a',
+      transitionId: 'rf-a-awaiting',
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const { scalar, update } = commandSetup(nativeRangeContinuousScalarPolicy, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: pendingA,
+    });
+    const lease = scalar.attachRenderer();
+    lease.nativeInput(0.8);
+    expect(scalar.view.draft).toBe(0.8);
+
+    update({ feedback: feedback('failed', {
+      confirmed: 0.5,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-a',
+      transitionId: 'rf-a-failed',
+      outcome: { phase: 'failed', error: 'late A' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: 0.8, phase: 'failed' });
+
+    update({ feedback: feedback('submitted', {
+      confirmed: 0.5,
+      target: 204 / 255,
+      requestedTarget: 204 / 255,
+      lifecycleId: 'rf-b',
+      transitionId: 'rf-b-submitted',
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: null, target: 0.8, phase: 'submitted' });
   });
 
   it('reconciles reading updates as canonical values, not invented authority sessions', () => {

@@ -351,10 +351,25 @@ export function createBipolarContinuousScalarPolicy(
   return Object.freeze(policy);
 }
 
+function nativeLatticeCandidate(value: number, domain: ScalarDomain): boolean {
+  if (!validDomain(domain) || !Number.isFinite(value)
+    || value < domain.min || value > domain.max) return false;
+  const offset = value - domain.min;
+  const index = Math.round(offset / domain.step);
+  const product = index * domain.step;
+  const errorBound = Number.EPSILON * (
+    Math.abs(value) + Math.abs(domain.min) + Math.abs(offset) + Math.abs(product)
+  );
+  return Number.isFinite(offset) && Number.isSafeInteger(index) && Number.isFinite(product)
+    && Number.isFinite(errorBound) && errorBound < domain.step / 2
+    && Math.abs(offset - product) <= errorBound;
+}
+
 const nativeRangePolicy: ContinuousScalarPolicy = {
   name: 'native-range',
   preview: 'optimistic',
-  normalize: (value, domain) => snap(value, domain, domain.step),
+  normalize: (value, domain) => nativeLatticeCandidate(value, domain)
+    ? value : snap(value, domain, domain.step),
   wheel: () => null,
   key: () => null,
   reset: (domain) => domain.defaultValue ?? domain.min,
@@ -460,6 +475,7 @@ export function createContinuousScalar(
   let presentationState: Readonly<ControlFeedbackPresentationState> = {
     announcedTransitionIds: [],
   };
+  let nativeRequest: Readonly<{ observedLifecycleId: string | null }> | null = null;
   let destroyed = false;
 
   function clearTimers(): void {
@@ -476,6 +492,7 @@ export function createContinuousScalar(
     draftCanonical = null;
     interaction = 'idle';
     activeGesture = null;
+    nativeRequest = null;
   }
 
   function reconcile(input: Readonly<ContinuousScalarInput>): void {
@@ -486,14 +503,29 @@ export function createContinuousScalar(
       presentationState = { announcedTransitionIds: [] };
     }
     lastAuthority = authority;
+    const representedNativeRequest = nativeRequest !== null
+      && input.evidence === 'command-feedback'
+      && input.feedback.lifecycleId !== null
+      && input.feedback.lifecycleId !== nativeRequest.observedLifecycleId;
+    if (representedNativeRequest) {
+      draft = null;
+      draftCanonical = null;
+      interaction = 'idle';
+      nativeRequest = null;
+    }
     const terminal = terminalIdentity(input);
     if (terminal !== null && !sameAuthority(handledTerminal, terminal)) {
-      clearTransient();
+      const belongsToObservedOlderLifecycle = nativeRequest !== null
+        && nativeRequest.observedLifecycleId !== null
+        && input.evidence === 'command-feedback'
+        && input.feedback.lifecycleId === nativeRequest.observedLifecycleId;
+      if (!belongsToObservedOlderLifecycle) clearTransient();
       handledTerminal = terminal;
     } else if (input.evidence === 'command-feedback') {
       if (draft !== null && Object.is(canonicalOf(input), draft)) {
         draft = null;
         draftCanonical = null;
+        nativeRequest = null;
         if (interaction !== 'pointer' && interaction !== 'wheel') interaction = 'idle';
       }
     } else if (draft !== null && interaction !== 'pointer' && interaction !== 'wheel'
@@ -552,10 +584,15 @@ export function createContinuousScalar(
       if (source !== 'pointer') interaction = 'idle';
       return true;
     }
+    if (source !== 'native-input') nativeRequest = null;
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
+      nativeRequest = source === 'native-input' && input.evidence === 'command-feedback'
+        ? { observedLifecycleId: input.feedback.lifecycleId }
+        : null;
       dispatch(normalized, authority, generation);
     } else {
+      if (source === 'native-input') nativeRequest = null;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
@@ -621,6 +658,7 @@ export function createContinuousScalar(
       beginPointer(): number | null {
         const input = current();
         if (destroyed || renderer !== activeRenderer || !editable(input)) return null;
+        nativeRequest = null;
         const token = ++gestureSequence;
         activeGesture = { renderer, token };
         interaction = 'pointer';
