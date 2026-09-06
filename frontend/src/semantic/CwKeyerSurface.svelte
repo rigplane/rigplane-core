@@ -129,6 +129,10 @@
   } from '../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../primitives/scalar/committed-scalar.svelte';
   import { clamp, snapToStep } from '../primitives/scalar/value-control-core';
+  import {
+    bindChoiceInstrument,
+    bindToggleInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
   import type { RadioViewModel } from './radio-view-model';
 
   type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
@@ -164,6 +168,33 @@
   );
   const mutexed = (field: 'apf' | 'twinPeak'): boolean =>
     view.disabledReasons.some((r) => r.field === `cwKeyer.${field}`);
+  const reversePaddleToggle = bindToggleInstrument(() => ({
+    field: cw?.reversePaddle,
+    // The handler owns its zero-argument inversion; the binding's next value
+    // is intentionally not forwarded.
+    invoke: () => onReversePaddleToggle?.(),
+  }));
+  const twinPeakToggle = bindToggleInstrument(() => ({
+    field: cw?.twinPeak,
+    blocked: mutexed('twinPeak'),
+    // The handler owns its zero-argument inversion; the binding's next value
+    // is intentionally not forwarded.
+    invoke: () => onTwinPeakToggle?.(),
+  }));
+  const apfChoice = bindChoiceInstrument(() => {
+    const field = cw?.apf;
+    return {
+      field: field === undefined ? undefined : {
+        availability: field.availability,
+        reading: field.reading.status === 'known'
+          ? { status: 'known' as const, value: field.reading.value > 0 }
+          : { status: 'unknown' as const },
+      },
+      blocked: mutexed('apf'),
+      choices: APF_CHOICES.map(([, on]) => on),
+      invoke: (on: boolean) => onApfOn?.(on),
+    };
+  });
 
   /** The handler half of every gate. `disabled` alone is not enough: a design
    *  language may restyle these controls, and a programmatic click must not
@@ -296,15 +327,6 @@
     event.preventDefault();
     cancelBreakInDelay(event.currentTarget);
   }
-  function setApf(on: boolean): void {
-    if (cw && usable(cw.apf) && !mutexed('apf')) onApfOn?.(on);
-  }
-  function toggleTwinPeak(): void {
-    if (cw && usable(cw.twinPeak) && !mutexed('twinPeak')) onTwinPeakToggle?.();
-  }
-  function toggleReversePaddle(): void {
-    if (cw && usable(cw.reversePaddle)) onReversePaddleToggle?.();
-  }
   function requestRxFrequencyCorrection(): void {
     if (autoTuneAvailable) onAutoTune?.();
   }
@@ -407,8 +429,8 @@
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-reverse-paddle"
         aria-pressed={pressedOf(cw.reversePaddle)}
-        disabled={!usable(cw.reversePaddle)}
-        onclick={toggleReversePaddle}
+        disabled={!reversePaddleToggle.available}
+        onclick={() => reversePaddleToggle.invoke()}
       >Reverse paddle: {textOf(cw.reversePaddle)}</button>
     {/if}
 
@@ -426,10 +448,9 @@
           <button
             type="button" role="radio" class="cw-keyer-choice"
             data-testid={`cw-keyer-apf-${label}`}
-            aria-checked={cw.apf.reading.status === 'known'
-              && (cw.apf.reading.value > 0) === on}
-            disabled={!usable(cw.apf) || mutexed('apf')}
-            onclick={() => setApf(on)}
+            aria-checked={apfChoice.isSelected(on)}
+            disabled={!apfChoice.available}
+            onclick={() => apfChoice.invoke(on)}
           >APF {label}</button>
         {/each}
         <output data-testid="cw-keyer-apf-value">{textOf(cw.apf)}</output>
@@ -445,8 +466,8 @@
         <button
           type="button" class="cw-keyer-toggle" data-testid="cw-keyer-twin-peak-toggle"
           aria-pressed={pressedOf(cw.twinPeak)}
-          disabled={!usable(cw.twinPeak) || mutexed('twinPeak')}
-          onclick={toggleTwinPeak}
+          disabled={!twinPeakToggle.available}
+          onclick={() => twinPeakToggle.invoke()}
         >TPF: {textOf(cw.twinPeak)}</button>
         {#if mutexed('twinPeak')}
           <!-- Rule 4: RTTY is named, so a permanently-disabled control in a

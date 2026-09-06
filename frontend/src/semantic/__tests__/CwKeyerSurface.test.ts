@@ -159,7 +159,17 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
       '../primitives/scalar/value-control-core',
+      '../primitives/control-instruments/control-instrument-behavior',
     ]);
+  });
+
+  it('uses current-input bindings for APF, Twin Peak and reverse paddle', () => {
+    expect(CODE).toContain('const apfChoice = bindChoiceInstrument');
+    expect(CODE).toContain('const twinPeakToggle = bindToggleInstrument');
+    expect(CODE).toContain('const reversePaddleToggle = bindToggleInstrument');
+    expect(CODE).toContain('value: field.reading.value > 0');
+    expect(CODE).toContain('invoke: () => onTwinPeakToggle?.()');
+    expect(CODE).toContain('invoke: () => onReversePaddleToggle?.()');
   });
 
   // Kills: `onMount(() => …)` and every relative of it, plus a dynamic import

@@ -78,6 +78,10 @@
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import { exactDecimalNumber } from '$lib/types/exact-decimal';
   import type { ControlDomain } from '$lib/types/capabilities';
+  import {
+    bindActionInstrument,
+    bindToggleInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -127,13 +131,34 @@
    *  gate: it is honest about what it is from the moment it exists. */
   let selectedType = $state(DEFAULT_SCAN_TYPE);
 
-  // F2 (fix round, verify-MOR-1308): gated on the field's OWN observation,
-  // not just the wrong-VFO guard — mirrors `TxAuxSurface.svelte`'s `toggle`.
-  // Firing over an unobserved reading arms a guess at the command bus
-  // (`makeRitXitHandlers().onRitToggle`'s `?? false` optimism), exactly the
-  // re-loosening the B-wave criterion forbids.
-  function toggleRit(): void { if (rx && activeKnown && usable(rx.ritActive)) onRitToggle?.(); }
-  function toggleXit(): void { if (rx && activeKnown && usable(rx.xitActive)) onXitToggle?.(); }
+  const ritToggle = bindToggleInstrument(() => ({
+    field: rx?.ritActive,
+    blocked: !activeKnown,
+    // The handler owns its zero-argument inversion; the binding's next value
+    // is intentionally not forwarded.
+    invoke: () => onRitToggle?.(),
+  }));
+  const xitToggle = bindToggleInstrument(() => ({
+    field: rx?.xitActive,
+    blocked: !activeKnown,
+    // The handler owns its zero-argument inversion; the binding's next value
+    // is intentionally not forwarded.
+    invoke: () => onXitToggle?.(),
+  }));
+  const scanToggle = bindToggleInstrument(() => ({
+    field: sc?.scanning,
+    invoke: (next) => {
+      if (next) onScanStart?.(selectedType);
+      else onScanStop?.();
+    },
+  }));
+  const resumeCycle = bindActionInstrument(() => ({
+    field: sc?.scanResumeMode,
+    invoke: () => {
+      if (sc?.scanResumeMode.reading.status !== 'known') return;
+      onResumeModeChange?.(0xD0 | ((sc.scanResumeMode.reading.value + 1) % 4));
+    },
+  }));
   function changeOffset(displayHz: number): void {
     if (!canAdjustOffset || !Number.isFinite(displayHz)) return;
     let raw = displayHz;
@@ -165,21 +190,6 @@
   // unlike the toggles, it never reads a guessed value to decide what to
   // send. Still gated on `activeKnown` (S3b — no receiver to attribute it to).
   function clear(): void { if (activeKnown) onClear?.(); }
-  function toggleScan(): void {
-    if (!sc || !usable(sc.scanning)) return;
-    if (scanningOn) { onScanStop?.(); return; }
-    // MOR-1495 review R2: START no longer depends on an OBSERVED scanType
-    // (see file header) — it always sends the operator/default selection.
-    onScanStart?.(selectedType);
-  }
-  function cycleResume(): void {
-    if (!sc || !usable(sc.scanResumeMode) || sc.scanResumeMode.reading.status !== 'known') return;
-    // F1 (fix round, verify-MOR-1308): the fact is the `& 0x0F` masked value
-    // (8A), but the wire wants the full CI-V byte — the backend validates
-    // `scan_set_resume: mode must be 0xD0-0xD3` (control.py:2283-2289). Same
-    // split `ScanPanel.svelte` makes between `rm.value` and `rm.value & 0x0F`.
-    onResumeModeChange?.(0xD0 | ((sc.scanResumeMode.reading.value + 1) % 4));
-  }
 </script>
 
 {#if rx || sc}
@@ -189,13 +199,13 @@
         {#if rx.ritActive.availability.structural}
           <button
             type="button" data-testid="ritxit-rit-toggle" aria-pressed={pressedOf(rx.ritActive)}
-            disabled={!activeKnown || !usable(rx.ritActive)} onclick={toggleRit}
+            disabled={!ritToggle.available} onclick={() => ritToggle.invoke()}
           >RIT</button>
         {/if}
         {#if rx.xitActive.availability.structural}
           <button
             type="button" data-testid="ritxit-xit-toggle" aria-pressed={pressedOf(rx.xitActive)}
-            disabled={!activeKnown || !usable(rx.xitActive)} onclick={toggleXit}
+            disabled={!xitToggle.available} onclick={() => xitToggle.invoke()}
           >XIT</button>
         {/if}
         <label class="offset" data-testid="ritxit-offset"
@@ -223,8 +233,8 @@
           <span data-testid="scan-status" data-observed={usable(sc.scanning)}>{textOf(sc.scanning)}</span>
           <button
             type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
-            disabled={!usable(sc.scanning)}
-            onclick={toggleScan}
+            disabled={!scanToggle.available}
+            onclick={() => scanToggle.invoke()}
           >{scanningOn ? 'STOP' : 'START'}</button>
         {/if}
         {#if sc.scanType.availability.structural}
@@ -233,8 +243,8 @@
         {#if sc.scanResumeMode.availability.structural}
           <output data-testid="scan-resume-value">{textOf(sc.scanResumeMode)}</output>
           <button
-            type="button" data-testid="scan-resume-cycle" disabled={!usable(sc.scanResumeMode)}
-            onclick={cycleResume}
+            type="button" data-testid="scan-resume-cycle" disabled={!resumeCycle.available}
+            onclick={() => resumeCycle.invoke()}
           >RESUME ▶</button>
         {/if}
       </div>
