@@ -74,6 +74,29 @@ function createFakeSmoother(initial = 0): MeterSmoother & { set(value: number): 
   };
 }
 
+function createMotionAwareSmoother(host: TestHost): MeterSmoother {
+  let current = 0;
+  let target = 0;
+  let unsubscribe: (() => void) | undefined;
+  return {
+    get value() { return current; },
+    update(value) {
+      target = value;
+      if (host.prefersReducedMotion()) current = target;
+    },
+    reset(value) { current = target = value; },
+    start() {
+      unsubscribe = host.onReducedMotionChange((reduced) => {
+        if (reduced) current = target;
+      });
+    },
+    stop() {
+      unsubscribe?.();
+      unsubscribe = undefined;
+    },
+  };
+}
+
 function frameSetup(options: { reduced?: boolean; decrement?: () => number } = {}) {
   const host = createHost(options.reduced);
   const smoother = createFakeSmoother();
@@ -173,6 +196,30 @@ describe('createMeterBallistics frame-step strategy', () => {
     meter.sync({ sample: 2, smoothTarget: 2, peakEnabled: true });
     expect(meter.view.peakValue).toBe(2);
   });
+
+  it('captures the smoother snap when reduced motion turns on before the next frame', () => {
+    const host = createHost(false);
+    const smoother = createMotionAwareSmoother(host);
+    const meter = createMeterBallistics(smoother, host, {
+      peakSource: 'smoothed',
+      ticker: { kind: 'animation-frame' },
+      peak: createFrameStepPeakStrategy({
+        holdMilliseconds: 1000,
+        decrementPerFrame: () => 1,
+      }),
+    });
+    meter.sync({ sample: 10, smoothTarget: 10, peakEnabled: true });
+    meter.start();
+    expect(meter.view).toEqual({ smoothedValue: 0, peakValue: 0 });
+
+    host.setReduced(true);
+    expect(meter.view).toEqual({ smoothedValue: 10, peakValue: 10 });
+    meter.sync({ sample: 2, smoothTarget: 2, peakEnabled: true });
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 10 });
+    expect(host.activeFrames).toBe(0);
+    meter.stop();
+    expect(host.listenerCount).toBe(0);
+  });
 });
 
 describe('createMeterBallistics elapsed-envelope strategy', () => {
@@ -222,6 +269,17 @@ describe('createMeterBallistics elapsed-envelope strategy', () => {
     expect(meter.view.peakValue).toBe(1);
     meter.sync({ sample: 0.2, smoothTarget: 2, peakEnabled: true });
     expect(meter.view.peakValue).toBe(0.2);
+  });
+
+  it('does not observe Bar sample state on preference flips', () => {
+    const { host, meter, update } = elapsedSetup();
+    meter.sync({ sample: 1, smoothTarget: 10, peakEnabled: true });
+    meter.start();
+    update.mockClear();
+    host.setReduced(true);
+    host.setReduced(false);
+    expect(update).not.toHaveBeenCalled();
+    expect(host.activeIntervals).toBe(1);
   });
 });
 

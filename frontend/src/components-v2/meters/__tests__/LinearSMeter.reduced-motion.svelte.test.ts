@@ -321,12 +321,31 @@ describe('LinearSMeter — prefers-reduced-motion (MOR-1233)', () => {
 });
 
 describe('LinearSMeter — runtime prefers-reduced-motion flips (MOR-1233 fix cycle 1, F1/F2)', () => {
+  it('holds a pending high sample when reduced motion turns ON before its first frame', () => {
+    const { setMatches, restore } = mockReducedMotion(false);
+    try {
+      const { target, state } = mountReactive({ value: 20 });
+      flushSync();
+
+      setMatches(true);
+      state.value = 0;
+      flushSync();
+
+      expect(peakLineCount(target)).toBe(1);
+      expect(rafSpy).toHaveBeenCalledTimes(2);
+      expect(cafSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
+    }
+  });
+
   it('KILL F1: stops both live loops when reduced motion turns ON mid-session', () => {
     const { setMatches, restore } = mockReducedMotion(false);
     try {
       mountReactive({ value: 20 });
       flushSync();
       rafSpy.mockClear();
+      cafSpy.mockClear();
 
       // OS preference flips to "reduce" while both loops (ballistics +
       // peak-hold) are already scheduled.

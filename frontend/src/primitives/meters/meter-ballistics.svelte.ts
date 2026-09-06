@@ -188,6 +188,10 @@ export function createMeterBallistics<State>(
       reduced = host.prefersReducedMotion();
       unsubscribe = host.onReducedMotionChange((nextReduced) => {
         reduced = nextReduced;
+        if (nextReduced && peakEnabled && peakState !== undefined && policy.peakSource === 'smoothed') {
+          projectionNow = host.now();
+          peakState = policy.peak.observe(peakState, smoother.value, projectionNow, true);
+        }
         reconcileSchedule();
       });
       ensureSchedule();
