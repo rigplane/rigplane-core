@@ -25,14 +25,14 @@
   } from './tx-aux-scalar';
 
   interface Props {
-    view: RadioViewModel;
+    view: RadioViewModel | null;
     levelFeedback?: TxAuxLevelFeedback;
     onLevelChange?: (field: TxAuxLevelField, value: number) => void;
     children: Snippet<[TxAuxScalarHandles]>;
   }
 
   let { view, levelFeedback, onLevelChange, children }: Props = $props();
-  let txAux = $derived(view.txAux);
+  let txAux = $derived(view?.txAux);
 
   const LEVEL_COMMAND: Readonly<Record<TxAuxFeedbackLevelField, string>> = {
     micGain: 'set_mic_gain', driveGain: 'set_drive_gain', voxGain: 'set_vox_gain',

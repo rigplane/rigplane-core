@@ -14,6 +14,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -252,14 +254,16 @@ let component: ReturnType<typeof mount> | null = null;
 function render(
   props: { strips?: 'single' | 'dual' } = {},
   plan?: SurfacePlan,
-): void {
+) {
   target = document.createElement('div');
   document.body.appendChild(target);
   const context = plan === undefined
     ? undefined
     : new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]);
-  component = mount(SemanticRadioSurfaces, { target, props, context });
+  const reactiveProps = proxy(props);
+  component = mount(SemanticRadioSurfaces, { target, props: reactiveProps, context });
   flushSync();
+  return reactiveProps;
 }
 
 function push(next: ManagedAppTxServerSnapshot): void {
@@ -410,6 +414,21 @@ describe('the txAux surface mounts only when the view model carries the group', 
     expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
   });
 
+  it('consumes eight scalar handles and one finite/TUNE remainder across composition swaps', () => {
+    const props = render({ strips: 'single' });
+    const assertExactComposition = () => {
+      const root = q<HTMLElement>('[data-testid="tx-aux-surface"]')!;
+      expect(root.querySelectorAll('.tx-aux-level [role="slider"]')).toHaveLength(8);
+      for (const id of ['atu', 'vox', 'compressor', 'monitor', 'atu-tune']) {
+        expect(root.querySelectorAll(`[data-testid="tx-aux-${id}"]`), id).toHaveLength(1);
+      }
+    };
+    assertExactComposition();
+    props.strips = 'dual';
+    flushSync();
+    assertExactComposition();
+  });
+
   // MOR-1336 (S4) UPDATE: the cockpit manifest DOES declare a `tx-aux` zone
   // now (`presentation/layouts/dual-receiver-cockpit.ts`) — what this pin
   // still proves is the STANDALONE-mount path: with no resolved plan handed
@@ -555,15 +574,14 @@ describe('every txAux intent reaches its own command-bus handler', () => {
   // map — e.g. mic gain wired to the drive-gain command. Each case asserts
   // its own spy fired AND that it is the only one that did.
   it.each([
-    ['rfPower', 0.5, () => h.rfPower], ['micGain', 200, () => h.micGain],
-    ['driveGain', 100, () => h.driveGain], ['voxGain', 77, () => h.voxGain],
-    ['antiVoxGain', 12, () => h.antiVoxGain], ['voxDelay', 5, () => h.voxDelay],
-    ['compressorLevel', 33, () => h.compLevel], ['monitorLevel', 99, () => h.monLevel],
+    ['rfPower', 0.81, () => h.rfPower], ['micGain', 129, () => h.micGain],
+    ['driveGain', 129, () => h.driveGain], ['voxGain', 51, () => h.voxGain],
+    ['antiVoxGain', 31, () => h.antiVoxGain], ['voxDelay', 11, () => h.voxDelay],
+    ['compressorLevel', 41, () => h.compLevel], ['monitorLevel', 61, () => h.monLevel],
   ] as const)('routes the "%s" level with its raw value', (field, value, spy) => {
     render();
-    const input = q<HTMLInputElement>(`[data-testid="tx-aux-${field}"] input`)!;
-    input.value = String(value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = q<HTMLElement>(`[data-testid="tx-aux-${field}"] [role="slider"]`)!;
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     flushSync();
     expect(spy()).toHaveBeenCalledExactlyOnceWith(value);
     const others = [h.rfPower, h.micGain, h.driveGain, h.voxGain, h.antiVoxGain,
@@ -594,16 +612,16 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
       });
       render();
       const row = q<HTMLElement>(`[data-testid="tx-aux-${semanticField}"]`)!;
-      const input = row.querySelector<HTMLInputElement>('input')!;
+      const input = row.querySelector<HTMLElement>('[role="slider"]')!;
       expect(input.dataset.commandPhase).toBe('submitted');
-      expect(input.valueAsNumber).toBe(requested);
+      expect(input.getAttribute('aria-valuenow')).toBe(String(canonical));
       expect(row.querySelector('[data-canonical-value]')?.textContent).toContain(
         semanticField === 'voxDelay' ? `${(canonical * 0.1).toFixed(1)}s` : `${Math.round(canonical / 255 * 100)}%`,
       );
       expect(row.dataset.feedbackControl).toBe(control);
       for (const [otherSemantic] of FEEDBACK_LANES) {
         if (otherSemantic !== semanticField) {
-          expect(q<HTMLInputElement>(`[data-testid="tx-aux-${otherSemantic}"] input`)!
+          expect(q<HTMLElement>(`[data-testid="tx-aux-${otherSemantic}"] [role="slider"]`)!
             .dataset.commandPhase).toBe('idle');
         }
       }
@@ -616,7 +634,7 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
       id: 'mic-feedback', name: descriptor.intentName, params: { level: 200 }, originalEpoch: 7,
     });
     render();
-    const input = () => q<HTMLInputElement>('[data-testid="tx-aux-micGain"] input')!;
+    const input = () => q<HTMLElement>('[data-testid="tx-aux-micGain"] [role="slider"]')!;
     expect(input().dataset.commandPhase).toBe('submitted');
     acknowledgeCommand(command.id, 7, 7);
     flushSync();
@@ -637,13 +655,13 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
     pushRadioState(observed(2, 200, 'stale'));
     pushSession({ state: 'connected', epoch: 7 });
     expect(input().dataset.commandPhase).toBe('unavailable');
-    expect(input().disabled).toBe(true);
+    expect(input().getAttribute('aria-disabled')).toBe('true');
     expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
     pushRadioState(observed(3, 200, 'fresh'));
     expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
     pushSession({ state: 'connected', epoch: 7 });
     expect(input().dataset.commandPhase).toBe('confirmed');
-    expect(input().valueAsNumber).toBe(200);
+    expect(input().getAttribute('aria-valuenow')).toBe('200');
     expect(input().closest('[data-testid]')?.querySelector('[data-command-status]')?.textContent)
       .toContain('confirmed');
     expect(TX_AUX_COMMAND_DESCRIPTORS.micGain.scope(command)?.receiver).toBe(0);
@@ -651,7 +669,7 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
 
   it('fails closed and recovers in place across provider and session replacement', () => {
     render();
-    const input = () => q<HTMLInputElement>('[data-testid="tx-aux-monitorLevel"] input')!;
+    const input = () => q<HTMLElement>('[data-testid="tx-aux-monitorLevel"] [role="slider"]')!;
     expect(input().dataset.commandPhase).toBe('idle');
     const original = input();
 
@@ -659,22 +677,21 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
     h.caps = { ...liveCaps(true), providerGeneration: 2 } as Capabilities;
     pushSession({ state: 'disconnected', epoch: 8 });
     expect(input()).toBe(original);
-    expect(input().disabled).toBe(true);
+    expect(input().getAttribute('aria-disabled')).toBe('true');
     expect(input().dataset.commandPhase).toBe('unavailable');
 
     pushSession({ state: 'connected', epoch: 8 });
     expect(input()).toBe(original);
-    expect(input().disabled).toBe(false);
+    expect(input().getAttribute('aria-disabled')).toBe('false');
     expect(input().dataset.commandPhase).toBe('idle');
-    expect(input().valueAsNumber).toBe(60);
+    expect(input().getAttribute('aria-valuenow')).toBe('60');
   });
 
   it('emits only the selected lane handler and no PTT, TUNE, toggle or lifecycle side effect', () => {
     render();
-    for (const [semanticField, _accessor, _control, _canonical, requested] of FEEDBACK_LANES) {
-      const input = q<HTMLInputElement>(`[data-testid="tx-aux-${semanticField}"] input`)!;
-      input.value = String(requested);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+    for (const [semanticField] of FEEDBACK_LANES) {
+      const input = q<HTMLElement>(`[data-testid="tx-aux-${semanticField}"] [role="slider"]`)!;
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     }
     flushSync();
     expect([h.micGain, h.driveGain, h.voxGain, h.antiVoxGain, h.voxDelay, h.compLevel, h.monLevel]
