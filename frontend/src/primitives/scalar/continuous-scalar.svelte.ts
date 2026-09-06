@@ -69,6 +69,8 @@ export interface ContinuousScalarPolicy {
 }
 
 export interface ContinuousScalarViewBase {
+  readonly domain: Readonly<ScalarDomain>;
+  readonly domainValid: boolean;
   readonly canonical: number | null;
   readonly draft: number | null;
   readonly displayed: number | null;
@@ -218,7 +220,6 @@ function sameAuthority(left: AuthorityIdentity | null, right: AuthorityIdentity)
 }
 
 function canonicalOf(input: Readonly<ContinuousScalarInput>): number | null {
-  if (!validDomain(input.domain)) return null;
   if (input.evidence === 'reading') {
     return input.reading.status === 'known' && Number.isFinite(input.reading.value)
       ? input.reading.value : null;
@@ -235,8 +236,21 @@ function validCommandFeedback(feedback: Readonly<CommandScalarFeedback>): boolea
 }
 
 function editable(input: Readonly<ContinuousScalarInput>): boolean {
-  if (!input.enabled || canonicalOf(input) === null) return false;
+  if (!input.enabled || !validDomain(input.domain) || canonicalOf(input) === null) return false;
   return input.evidence === 'reading' || validCommandFeedback(input.feedback);
+}
+
+function snapshotDomain(domain: ScalarDomain): Readonly<ScalarDomain> {
+  const common = {
+    min: domain.min,
+    max: domain.max,
+    step: domain.step,
+    defaultValue: domain.defaultValue,
+    fineStepDivisor: domain.fineStepDivisor,
+  };
+  return Object.freeze(domain.keyboardStep === undefined
+    ? common
+    : { ...common, keyboardStep: domain.keyboardStep });
 }
 
 const TERMINAL_FAILURES: ReadonlySet<ScalarPhase> = new Set([
@@ -373,6 +387,8 @@ export function createContinuousScalar(
     const canonical = canonicalOf(input);
     const displayed = policy.preview === 'optimistic' && draft !== null ? draft : canonical;
     const common = {
+      domain: snapshotDomain(input.domain),
+      domainValid: validDomain(input.domain),
       canonical,
       draft,
       displayed,
