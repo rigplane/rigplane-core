@@ -253,7 +253,8 @@ describe('command lifecycle store', () => {
         'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
         'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
         'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
-        'set_compressor_level', 'set_monitor_gain',
+        'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
+        'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
       ]);
       expect(rfMain).toEqual({ control: 'rf-gain', receiver: 0 });
       expect(rfSub).toEqual({ control: 'rf-gain', receiver: 1 });
@@ -367,7 +368,8 @@ describe('command lifecycle store', () => {
         'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
         'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
         'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
-        'set_compressor_level', 'set_monitor_gain',
+        'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
+        'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
       ]);
       const pitchScope = store.CW_PITCH_COMMAND_DESCRIPTOR.scope({ params: { value: 640 } })!;
       const speedScope = store.KEY_SPEED_COMMAND_DESCRIPTOR.scope({ params: { speed: 27 } })!;
@@ -518,6 +520,147 @@ describe('command lifecycle store', () => {
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 7));
       expect(status()).toBe('confirmed');
+    });
+  });
+
+  describe('raw DSP state-backed descriptors', () => {
+    const receiverRegistrations = [
+      ['nbLevel', 'set_nb_level', 'nb-level', 'level'],
+      ['notchFilter', 'set_notch_filter', 'notch-position', 'value'],
+      ['manualNotchWidth', 'set_manual_notch_width', 'manual-notch-width', 'value'],
+      ['agcTimeConstant', 'set_agc_time_constant', 'agc-time', 'value'],
+    ] as const;
+
+    it.each(receiverRegistrations)('registers %s with exact MAIN and SUB raw scopes', (
+      field, intentName, control, param,
+    ) => {
+      const descriptor = store.DSP_COMMAND_DESCRIPTORS[field];
+      const main = descriptor.scope({ params: { [param]: -12, receiver: 0 } })!;
+      const sub = descriptor.scope({ params: { [param]: 2048, receiver: 1 } })!;
+      expect(descriptor.intentName).toBe(intentName);
+      expect(store.getStateBackedCommandDescriptor(intentName)).toBe(descriptor);
+      expect(main).toEqual({ control, receiver: 0 });
+      expect(sub).toEqual({ control, receiver: 1 });
+      expect(descriptor.fieldPath(main)).toBe(`main.${field}`);
+      expect(descriptor.fieldPath(sub)).toBe(`sub.${field}`);
+      expect(descriptor.target({ params: { [param]: -12, receiver: 0 } })).toBe(-12);
+      expect(descriptor.confirmed({ main: { [field]: -12 } } as never, main)).toBe(-12);
+      expect(descriptor.matches(2048, 2048)).toBe(true);
+      expect(descriptor.matches(2047, 2048)).toBe(false);
+    });
+
+    it('registers NB Width as one raw global lane with stable receiver-zero identity', () => {
+      const descriptor = store.DSP_COMMAND_DESCRIPTORS.nbWidth;
+      const scope = descriptor.scope({ params: { level: 255 } })!;
+      expect(descriptor.intentName).toBe('set_nb_width');
+      expect(store.getStateBackedCommandDescriptor('set_nb_width')).toBe(descriptor);
+      expect(scope).toEqual({ control: 'nb-width', receiver: 0 });
+      expect(descriptor.fieldPath(scope)).toBe('nbWidth');
+      expect(descriptor.target({ params: { level: -1 } })).toBe(-1);
+      expect(descriptor.confirmed({ active: 'SUB', nbWidth: 255 } as ServerState, scope)).toBe(255);
+    });
+
+    it('rejects malformed DSP envelopes without coercion or throwing', () => {
+      const inherited = Object.create({ level: 10, receiver: 0 }) as Record<string, unknown>;
+      const throwing = Object.defineProperty({ receiver: 0 }, 'level', {
+        enumerable: true, get: () => { throw new Error('read'); },
+      });
+      const ownKeysTrap = new Proxy({}, { ownKeys: () => { throw new Error('keys'); } });
+      for (const params of [
+        {}, inherited, { level: true, receiver: 0 }, { level: '10', receiver: 0 },
+        { level: 10.5, receiver: 0 }, { level: 10, receiver: false },
+        { level: 10, receiver: 2 }, { level: 10, receiver: 0, extra: true },
+        { level: 10, receiver: 0, [Symbol('extra')]: true }, throwing, ownKeysTrap,
+      ]) {
+        expect(store.DSP_COMMAND_DESCRIPTORS.nbLevel.scope({ params })).toBeNull();
+        expect(store.DSP_COMMAND_DESCRIPTORS.nbLevel.target({ params })).toBeNull();
+      }
+      for (const params of [
+        {}, { level: true }, { level: '10' }, { level: 10.5 },
+        { level: 10, receiver: 0 }, { level: 10, extra: true }, ownKeysTrap,
+      ]) {
+        expect(store.DSP_COMMAND_DESCRIPTORS.nbWidth.scope({ params })).toBeNull();
+        expect(store.DSP_COMMAND_DESCRIPTORS.nbWidth.target({ params })).toBeNull();
+      }
+    });
+
+    it.each([
+      ['set_nb_level', 'main.nbLevel', 'level', 50, 49, 0],
+      ['set_notch_filter', 'sub.notchFilter', 'value', -20, -19, 1],
+      ['set_manual_notch_width', 'main.manualNotchWidth', 'value', 3, 2, 0],
+      ['set_agc_time_constant', 'sub.agcTimeConstant', 'value', 900, 899, 1],
+      ['set_nb_width', 'nbWidth', 'level', 64, 63, null],
+    ] as const)('confirms %s only from a newer fresh exact field observation', (
+      name, path, param, target, mismatch, receiver,
+    ) => {
+      const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
+        stateContractVersion: 1, providerGeneration: 3, active: receiver === 1 ? 'SUB' : 'MAIN',
+        main: receiver === 0 ? { [path.split('.')[1]]: value } : {},
+        sub: receiver === 1 ? { [path.split('.')[1]]: value } : {},
+        ...(receiver === null ? { nbWidth: value } : {}),
+        fieldStatus: { [path]: {
+          observed: true, freshness, availability: 'available', lastObservedMonotonic: marker,
+        } },
+      } as unknown as ServerState);
+      emitState(observed(mismatch, 4));
+      const params = receiver === null ? { [param]: target } : { [param]: target, receiver };
+      const command = store.beginCommand({ id: name, name, params, originalEpoch: 7 });
+      store.acknowledgeCommand(command.id, 7, 7);
+      const status = () => store.getCommandLifecycle(command.id, 7)?.status;
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 4));
+      emitState(observed(mismatch, 5));
+      emitState(observed(target, 6, 'stale'));
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 7));
+      expect(status()).toBe('confirmed');
+    });
+
+    it('keeps global NB Width identity fixed while receiver controls and fields stay independent', () => {
+      const widthA = store.beginCommand({
+        id: 'width-a', name: 'set_nb_width', params: { level: 20 }, originalEpoch: 7,
+      });
+      const levelMain = store.beginCommand({
+        id: 'level-main', name: 'set_nb_level', params: { level: 30, receiver: 0 }, originalEpoch: 7,
+      });
+      const levelSub = store.beginCommand({
+        id: 'level-sub', name: 'set_nb_level', params: { level: 40, receiver: 1 }, originalEpoch: 7,
+      });
+      store.beginCommand({ id: 'width-b', name: 'set_nb_width', params: { level: 50 }, originalEpoch: 7 });
+      expect(store.isCommandLifecycleSuperseded(widthA)).toBe(true);
+      expect(store.isCommandLifecycleSuperseded(levelMain)).toBe(false);
+      expect(store.isCommandLifecycleSuperseded(levelSub)).toBe(false);
+      expect(store.DSP_COMMAND_DESCRIPTORS.nbWidth.scope({ params: { level: 50 } }))
+        .toEqual({ control: 'nb-width', receiver: 0 });
+    });
+
+    it('does not confirm receiver or global DSP commands from the wrong field path', () => {
+      emitState({
+        providerGeneration: 3, active: 'SUB', nbWidth: 20,
+        main: { nbLevel: 40 }, sub: { nbLevel: 30 },
+        fieldStatus: {
+          nbWidth: { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+          'main.nbLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+          'sub.nbLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+        },
+      } as unknown as ServerState);
+      store.beginCommand({
+        id: 'sub-level', name: 'set_nb_level', params: { level: 40, receiver: 1 }, originalEpoch: 7,
+      });
+      store.beginCommand({ id: 'global-width', name: 'set_nb_width', params: { level: 40 }, originalEpoch: 7 });
+      store.acknowledgeCommand('sub-level', 7, 7);
+      store.acknowledgeCommand('global-width', 7, 7);
+      emitState({
+        providerGeneration: 3, active: 'MAIN', nbWidth: 20,
+        main: { nbLevel: 40 }, sub: { nbLevel: 30 },
+        fieldStatus: {
+          nbWidth: { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 },
+          'main.nbLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 },
+          'sub.nbLevel': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 },
+        },
+      } as unknown as ServerState);
+      expect(store.getCommandLifecycle('sub-level', 7)?.status).toBe('acknowledged');
+      expect(store.getCommandLifecycle('global-width', 7)?.status).toBe('acknowledged');
     });
   });
 });

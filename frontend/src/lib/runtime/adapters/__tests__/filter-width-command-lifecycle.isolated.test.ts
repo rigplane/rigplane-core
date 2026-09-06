@@ -61,7 +61,7 @@ import {
 } from '../panel-adapters';
 import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR, CW_PITCH_COMMAND_DESCRIPTOR, FILTER_WIDTH_COMMAND_DESCRIPTOR,
-  KEY_SPEED_COMMAND_DESCRIPTOR,
+  DSP_COMMAND_DESCRIPTORS, KEY_SPEED_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR,
   STATE_BACKED_COMMAND_DESCRIPTORS,
   TX_AUX_COMMAND_DESCRIPTORS,
@@ -109,7 +109,8 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
       'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
       'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
-      'set_compressor_level', 'set_monitor_gain',
+      'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
+      'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
     ]);
     expect(RADIO_INTENT_NAMES).toContain(FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName);
     const main = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 0 } }))!;
@@ -509,6 +510,11 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
       ['set_vox_delay', TX_AUX_COMMAND_DESCRIPTORS.voxDelay],
       ['set_compressor_level', TX_AUX_COMMAND_DESCRIPTORS.compressorLevel],
       ['set_monitor_gain', TX_AUX_COMMAND_DESCRIPTORS.monitorGain],
+      ['set_nb_level', DSP_COMMAND_DESCRIPTORS.nbLevel],
+      ['set_nb_width', DSP_COMMAND_DESCRIPTORS.nbWidth],
+      ['set_notch_filter', DSP_COMMAND_DESCRIPTORS.notchFilter],
+      ['set_manual_notch_width', DSP_COMMAND_DESCRIPTORS.manualNotchWidth],
+      ['set_agc_time_constant', DSP_COMMAND_DESCRIPTORS.agcTimeConstant],
     ]);
     const scope = BREAK_IN_DELAY_COMMAND_DESCRIPTOR.scope(delayCommand());
     expect(scope).toEqual({ control: 'break-in-delay', receiver: 0 });
