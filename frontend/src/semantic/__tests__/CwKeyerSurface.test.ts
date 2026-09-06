@@ -42,11 +42,13 @@ import { t } from '$lib/i18n';
 import type {
   ControlFeedbackPresentationInput, PresentationPhase,
 } from '../../primitives/control-feedback/control-feedback-presentation';
+import type { CommandScalarFeedback } from '../../primitives/scalar/continuous-scalar.svelte';
 
 type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
   readonly sessionEpoch?: number;
   readonly scope?: Readonly<{ control: string; receiver: number; slot?: string }>;
 };
+type CwLevelFeedback = Readonly<CommandScalarFeedback>;
 
 const SOURCE = readFileSync('src/semantic/CwKeyerSurface.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
@@ -84,6 +86,8 @@ type Handlers = {
   onTwinPeakToggle?: () => void;
   onReversePaddleToggle?: () => void;
   breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
+  cwPitchFeedback?: CwLevelFeedback;
+  keySpeedFeedback?: CwLevelFeedback;
   onAutoTune?: () => void;
 };
 
@@ -131,6 +135,37 @@ const feedback = (
   confirmed: 64, target: null, requestedTarget: null, phase,
   transitionId: null, outcome: null, ...over,
 });
+const cwFeedback = (
+  control: 'cw-pitch' | 'keyer-speed',
+  phase: PresentationPhase = 'idle',
+  over: Partial<CommandScalarFeedback> = {},
+): CwLevelFeedback => Object.freeze({
+  confirmed: 600, target: null, requestedTarget: null, phase,
+  busy: ['submitted', 'queued', 'dispatched', 'awaiting-confirmation'].includes(phase),
+  availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  providerGeneration: 1, sessionEpoch: 1,
+  scope: Object.freeze({ control, receiver: 0 as const }),
+  repeatPolicy: 'latest-target-wins', ...over,
+});
+
+function renderReactiveCwLevels(
+  pitch: CwLevelFeedback = cwFeedback('cw-pitch'),
+  speed: CwLevelFeedback = cwFeedback('keyer-speed', 'idle', { confirmed: 24 }),
+) {
+  const onLevelChange = vi.fn();
+  const props = proxy({
+    view: base(), onLevelChange, cwPitchFeedback: pitch, keySpeedFeedback: speed,
+  });
+  const component = mount(CwKeyerSurface, { target, props });
+  flushSync();
+  const input = (field: 'pitchHz' | 'keyerSpeed') => target.querySelector<HTMLInputElement>(
+    `[data-testid="cw-keyer-${field}"] input`,
+  )!;
+  const row = (field: 'pitchHz' | 'keyerSpeed') => target.querySelector<HTMLElement>(
+    `[data-testid="cw-keyer-${field}"]`,
+  )!;
+  return { dispose: () => unmount(component), input, row, onLevelChange, props };
+}
 
 /* ── (a) the surface is not a key path ────────────────────────── */
 
@@ -156,8 +191,10 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     // widen this file's reach any more than `./pressed-of` does.
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './radio-view-model', './pressed-of',
+      'svelte',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
+      '../primitives/scalar/continuous-scalar.svelte',
       '../primitives/scalar/value-control-core',
       '../primitives/control-instruments/control-instrument-behavior',
     ]);
@@ -174,10 +211,12 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
 
   // Kills: `onMount(() => …)` and every relative of it, plus a dynamic import
   // used to smuggle in the controller.
-  it('declares no lifecycle hook and no effect', () => {
-    for (const forbidden of ['onMount', 'onDestroy', '$effect', 'import(']) {
+  it('allows cleanup-only lifecycle ownership without a mount-time dispatch path', () => {
+    expect(CODE).toContain('onDestroy');
+    for (const forbidden of ['onMount', 'import(', 'sendCommand']) {
       expect(CODE).not.toContain(forbidden);
     }
+    expect(CODE).not.toMatch(/onDestroy\s*\([^)]*=>[\s\S]*?(?:onLevelChange|nativeInput)\s*\(/);
   });
 
   // Kills: (a) a key path, (c) a second permit derivation. Neither the key
@@ -198,7 +237,8 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
       'view', 'onBreakInMode', 'onLevelChange', 'onApfOn', 'onTwinPeakToggle',
-      'onReversePaddleToggle', 'breakInDelayFeedback', 'autoTuneAvailable', 'onAutoTune',
+      'onReversePaddleToggle', 'breakInDelayFeedback', 'cwPitchFeedback',
+      'keySpeedFeedback', 'autoTuneAvailable', 'onAutoTune',
     ]);
   });
 
@@ -278,6 +318,130 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       'level:keyerSpeed:48', 'level:pitchHz:900', 'level:breakInDelay:255',
       'reversePaddle', 'apf:false', 'apf:true', 'twinPeak',
     ]);
+    r.dispose();
+  });
+});
+
+/* ── MOR-2411 — native CW scalar feedback ownership ──────────── */
+
+describe('CW pitch and keyer speed own independent command feedback', () => {
+  it('treats explicit unavailable feedback as authoritative over retained raw readings', () => {
+    const unavailable = (control: 'cw-pitch' | 'keyer-speed'): CwLevelFeedback => cwFeedback(
+      control, 'unavailable', {
+        confirmed: null, availability: 'unavailable', sessionEpoch: 2,
+      },
+    );
+    const r = renderReactiveCwLevels(unavailable('cw-pitch'), unavailable('keyer-speed'));
+    for (const field of ['pitchHz', 'keyerSpeed'] as const) {
+      expect(r.input(field).disabled).toBe(true);
+      expect(r.input(field).dataset.commandPhase).toBe('unavailable');
+      expect(r.row(field).dataset.observed).toBe('false');
+      expect(r.row(field).textContent).toContain(UNKNOWN_TEXT);
+      slide(r.input(field), Number(r.input(field).max));
+    }
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('maps each native input immediately and exactly once to its own setting intent', () => {
+    const r = renderReactiveCwLevels();
+    slide(r.input('pitchHz'), 725);
+    slide(r.input('keyerSpeed'), 31);
+    expect(r.onLevelChange.mock.calls).toEqual([
+      ['pitchHz', 725], ['keyerSpeed', 31],
+    ]);
+    expect(r.input('pitchHz').value).toBe('725');
+    expect(r.input('keyerSpeed').value).toBe('31');
+    r.dispose();
+  });
+
+  it.each([
+    ['idle', false, 600, null],
+    ['submitted', true, 600, null],
+    ['queued', true, 600, null],
+    ['dispatched', true, 600, null],
+    ['awaiting-confirmation', true, 600, null],
+    ['confirmed', false, 725, 'confirmed'],
+    ['failed', false, 600, 'failed'],
+    ['timed-out', false, 600, 'timed-out'],
+    ['cancelled', false, 600, 'cancelled'],
+    ['superseded', false, 600, 'superseded'],
+  ] as const)('projects pitch phase %s through its scalar owner', (phase, busy, shown, outcome) => {
+    const active = busy;
+    const terminal = outcome === null ? null : {
+      phase: outcome, ...(outcome === 'failed' ? { error: 'pitch rejected' } : {}),
+    };
+    const pitch = cwFeedback('cw-pitch', phase, {
+      confirmed: phase === 'confirmed' ? 725 : 600,
+      target: active ? 725 : null,
+      requestedTarget: phase === 'idle' ? null : 725,
+      lifecycleId: phase === 'idle' ? null : 'pitch-command',
+      transitionId: phase === 'idle' ? null : `pitch-${phase}`,
+      outcome: terminal,
+    });
+    const r = renderReactiveCwLevels(pitch);
+    expect(r.input('pitchHz').value).toBe(String(shown));
+    expect(r.input('pitchHz').dataset.commandPhase).toBe(phase);
+    expect(r.input('pitchHz').getAttribute('aria-busy')).toBe(String(busy));
+    if (phase === 'failed') expect(r.row('pitchHz').textContent).toContain('pitch rejected');
+    r.dispose();
+  });
+
+  it('keeps mixed phases, errors and polite announcements lane-local and nonduplicated', () => {
+    const pitch = cwFeedback('cw-pitch', 'failed', {
+      requestedTarget: 725, lifecycleId: 'pitch-command', transitionId: 'pitch-failed',
+      outcome: { phase: 'failed', error: 'pitch rejected' },
+    });
+    const speed = cwFeedback('keyer-speed', 'timed-out', {
+      confirmed: 24, requestedTarget: 31, lifecycleId: 'speed-command',
+      transitionId: 'speed-timeout', outcome: { phase: 'timed-out' },
+    });
+    const r = renderReactiveCwLevels(pitch, speed);
+    expect(r.input('pitchHz').dataset.commandPhase).toBe('failed');
+    expect(r.input('keyerSpeed').dataset.commandPhase).toBe('timed-out');
+    expect(r.row('pitchHz').textContent).toContain('pitch rejected');
+    const announcements = [...target.querySelectorAll<HTMLElement>(
+      '[data-cw-feedback-status]',
+    )];
+    expect(announcements).toHaveLength(2);
+    expect(announcements.map((node) => node.dataset.feedbackLane).sort())
+      .toEqual(['keyerSpeed', 'pitchHz']);
+    expect(announcements.every((node) => node.getAttribute('aria-live') === 'polite')).toBe(true);
+    r.dispose();
+  });
+
+  it('clears a rapid optimistic target when either lane receives replacement authority', () => {
+    const r = renderReactiveCwLevels();
+    slide(r.input('pitchHz'), 650);
+    slide(r.input('pitchHz'), 700);
+    slide(r.input('keyerSpeed'), 31);
+    expect(r.input('pitchHz').value).toBe('700');
+    expect(r.input('keyerSpeed').value).toBe('31');
+
+    r.props.cwPitchFeedback = cwFeedback('cw-pitch', 'unavailable', {
+      confirmed: null, availability: 'unavailable', providerGeneration: 2, sessionEpoch: 2,
+    });
+    r.props.keySpeedFeedback = cwFeedback('keyer-speed', 'idle', {
+      confirmed: 22, providerGeneration: 2, sessionEpoch: 2,
+    });
+    flushSync();
+    expect(r.input('pitchHz').disabled).toBe(true);
+    expect(r.input('pitchHz').value).toBe('300');
+    expect(r.input('keyerSpeed').value).toBe('22');
+    expect(r.onLevelChange.mock.calls).toEqual([
+      ['pitchHz', 650], ['pitchHz', 700], ['keyerSpeed', 31],
+    ]);
+    r.dispose();
+  });
+
+  it('retains reading compatibility when both optional feedback props are omitted', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { onLevelChange });
+    expect(r.input('pitchHz')?.dataset.commandPhase).toBeUndefined();
+    expect(r.input('keyerSpeed')?.dataset.commandPhase).toBeUndefined();
+    slide(r.input('pitchHz')!, 725);
+    slide(r.input('keyerSpeed')!, 31);
+    expect(onLevelChange.mock.calls).toEqual([['pitchHz', 725], ['keyerSpeed', 31]]);
     r.dispose();
   });
 });

@@ -47,6 +47,7 @@ const h = vi.hoisted(() => ({
   rxEnabled: true,
   txController: null as ManagedAppTxController | null,
   session: { state: 'connected' as ControlSessionTransition['state'], epoch: 1 },
+  sessionSubscriber: undefined as ((event: ControlSessionTransition) => void) | undefined,
   delivery: undefined as ((event: CommandDeliveryEvent) => void) | undefined,
   transition: undefined as ((event: ControlSessionTransition) => void) | undefined,
 }));
@@ -74,6 +75,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return h.session; },
+    subscribeControlSession(handler: (event: ControlSessionTransition) => void) {
+      h.sessionSubscriber = handler;
+      return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = undefined; };
+    },
     get audio() { return h.audio; },
     get connectionAudio() { return h.audioConnected; },
     get rxEnabled() { return h.rxEnabled; },
@@ -240,6 +246,23 @@ function advanceDelay(value: number, marker: number): void {
   flushSync();
 }
 
+function advanceCw(cwPitch: number, keySpeed: number, marker: number): void {
+  const state = liveState({
+    cwPitch, keySpeed, revision: marker, stateRevision: marker,
+    freshnessRevision: marker, observationSeq: marker,
+  });
+  state.fieldStatus = {
+    ...state.fieldStatus,
+    cwPitch: { ...fresh, freshness: 'fresh' as const, availability: 'available' as const,
+      lastObservedMonotonic: marker },
+    keySpeed: { ...fresh, freshness: 'fresh' as const, availability: 'available' as const,
+      lastObservedMonotonic: marker },
+  };
+  h.state = state;
+  setRadioState(state);
+  flushSync();
+}
+
 function delayInput(): HTMLInputElement {
   return el('breakInDelay')!.querySelector('input') as HTMLInputElement;
 }
@@ -249,6 +272,18 @@ function submitDelay(value: number): string {
   input.value = String(value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
+  flushSync();
+  return vi.mocked(sendCommand).mock.calls.at(-1)![2] as string;
+}
+
+function cwInput(field: 'pitchHz' | 'keyerSpeed'): HTMLInputElement {
+  return el(field)!.querySelector('input') as HTMLInputElement;
+}
+
+function submitCw(field: 'pitchHz' | 'keyerSpeed', value: number): string {
+  const input = cwInput(field);
+  input.value = String(value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
   flushSync();
   return vi.mocked(sendCommand).mock.calls.at(-1)![2] as string;
 }
@@ -266,6 +301,7 @@ beforeEach(() => {
   useState(liveState());
   h.caps = liveCaps(CW_TAGS);
   h.session = { state: 'connected', epoch: 1 };
+  h.sessionSubscriber = undefined;
   vi.mocked(sendCommand).mockClear();
   resetCommandLifecycle();
 });
@@ -276,6 +312,7 @@ afterEach(() => {
   document.body.innerHTML = '';
   resetCommandLifecycle();
   vi.useRealTimers();
+  expect(h.sessionSubscriber).toBeUndefined();
 });
 
 /* ── (a) THE NO-KEY-PATH PIN ───────────────────────────────────── */
@@ -287,6 +324,60 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(el('surface')).not.toBeNull();
     expect(el('break-in-full')!.hasAttribute('disabled')).toBe(false);
     expect(sendCommand).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
+  });
+
+  it('projects independent native CW feedback from intent through confirmation and failure', () => {
+    render();
+    expect(cwInput('pitchHz').dataset.commandPhase).toBe('idle');
+    expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('idle');
+
+    const pitchId = submitCw('pitchHz', 725);
+    expect(sendCommand).toHaveBeenLastCalledWith(
+      'set_cw_pitch', { value: 725 }, pitchId,
+    );
+    const speedId = submitCw('keyerSpeed', 31);
+    expect(sendCommand).toHaveBeenLastCalledWith(
+      'set_key_speed', { speed: 31 }, speedId,
+    );
+    expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
+    expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('submitted');
+
+    deliver(pitchId, 'ack');
+    deliver(speedId, 'ack');
+    expect(cwInput('pitchHz').dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('awaiting-confirmation');
+
+    advanceCw(725, 24, 11);
+    expect(cwInput('pitchHz').dataset.commandPhase).toBe('confirmed');
+    expect(cwInput('pitchHz').value).toBe('725');
+    expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('awaiting-confirmation');
+    deliver(speedId, 'response-error', 'speed rejected');
+    expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('failed');
+    expect(cwInput('keyerSpeed').value).toBe('24');
+    expect(el('keyerSpeed')!.textContent).toContain('speed rejected');
+    expect(txHarness.trace()).toEqual([]);
+  });
+
+  it('keeps the newest CW target and invalidates both lanes on session replacement', () => {
+    render();
+    const oldId = submitCw('pitchHz', 650);
+    const latestId = submitCw('pitchHz', 700);
+    submitCw('keyerSpeed', 31);
+    deliver(oldId, 'response-error', 'late superseded failure');
+    expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
+    expect(cwInput('pitchHz').value).toBe('700');
+    expect(getCommandLifecycle(latestId, 1)?.status).toBe('pending');
+
+    h.session = { state: 'disconnected', epoch: 2 };
+    h.transition!({ state: 'disconnected', epoch: 2 });
+    h.sessionSubscriber!({ state: 'disconnected', epoch: 2 });
+    flushSync();
+    for (const field of ['pitchHz', 'keyerSpeed'] as const) {
+      expect(cwInput(field).disabled).toBe(true);
+      expect(cwInput(field).dataset.commandPhase).toBe('unavailable');
+      expect(el(field)!.dataset.observed).toBe('false');
+    }
     expect(txHarness.trace()).toEqual([]);
   });
 

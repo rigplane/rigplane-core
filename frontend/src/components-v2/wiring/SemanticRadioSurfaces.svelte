@@ -26,7 +26,7 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getFilterWidthControlFeedback,
-    getRfSqlControlFeedback,
+    getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
     getSystemHandlers, getDataModeArmed,
@@ -724,6 +724,8 @@
     activeReceiverIndex === null ? null : getPendingFilterSelection(activeReceiverIndex),
   );
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
+  let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
+  let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
   let pendingPreamp = $derived(
@@ -1391,6 +1393,8 @@
       <CwKeyerSurface
         {view}
         {breakInDelayFeedback}
+        {cwPitchFeedback}
+        {keySpeedFeedback}
         {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
         onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
