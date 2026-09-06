@@ -60,6 +60,27 @@ export function getFilterWidthControlFeedback() {
   });
 }
 
+const txAuxControls = Object.freeze({
+  micGain: 'mic-gain',
+  driveGain: 'drive-gain',
+  voxGain: 'vox-gain',
+  antiVoxGain: 'anti-vox-gain',
+  voxDelay: 'vox-delay',
+  compressorLevel: 'compressor-level',
+  monitorGain: 'monitor-level',
+} as const);
+
+/** Offline fixtures never fabricate radio-global TX/VOX feedback authority. */
+export function getTxAuxControlFeedback(field: keyof typeof txAuxControls) {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: txAuxControls[field], receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
 /** The offline fixture has no qualified RF/SQL command-feedback authority. */
 export function getRfSqlControlFeedback(_controlSession: unknown): null {
   return null;
