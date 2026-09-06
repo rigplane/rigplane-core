@@ -63,6 +63,7 @@ const h = vi.hoisted(() => ({
   ipPlus: vi.fn(),
   session: { state: 'connected', epoch: 7 } as TestControlSession,
   sessionListeners: new Set<(next: TestControlSession) => void>(),
+  authorityListeners: new Set<(next: { state: unknown; caps: unknown; session: TestControlSession }) => void>(),
   sentCommands: [] as Array<{
     name: string; params: Record<string, unknown>; id: string; originalEpoch: number;
   }>,
@@ -107,6 +108,11 @@ vi.mock('$lib/runtime', () => ({
     subscribeControlSession(handler: (next: typeof h.session) => void) {
       h.sessionListeners.add(handler); return () => h.sessionListeners.delete(handler);
     },
+    subscribeControlAuthority(handler: (next: { state: unknown; caps: unknown; session: TestControlSession }) => void) {
+      h.authorityListeners.add(handler);
+      handler({ state: h.state, caps: h.caps, session: h.session });
+      return () => { h.authorityListeners.delete(handler); };
+    },
     // MOR-1312 slice 12B (rebase fix): the wiring now also hands the adapter
     // a scope-display snapshot (the FIFTH argument). This file tests
     // rfFrontEnd, so this stays on its pre-1312 path regardless of these
@@ -124,6 +130,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (next: { state: unknown; caps: unknown; session: TestControlSession }) => void) {
+      h.authorityListeners.add(handler);
+      handler({ state: h.state, caps: h.caps, session: h.session });
+      return () => { h.authorityListeners.delete(handler); };
+    },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -310,6 +321,11 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 const el = (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
 let acceptedState: ServerState;
 
+function publishAuthority(): void {
+  const next = { state: h.state, caps: h.caps, session: h.session };
+  for (const listener of h.authorityListeners) listener(next);
+}
+
 function acceptedStoreState(state: ServerState): ServerState {
   const receiver = (value: ServerState['main']) => ({
     ...value,
@@ -368,6 +384,7 @@ function observedMainLevels(
     fieldStatus: next.fieldStatus,
   };
   expect(setRadioState(acceptedState)).toBe(true);
+  publishAuthority();
   return next;
 }
 
@@ -405,6 +422,7 @@ afterEach(() => {
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionListeners.size).toBe(0);
+  expect(h.authorityListeners.size).toBe(0);
   resetCommandLifecycle();
   resetRadioState();
   clearCapabilities();
@@ -541,6 +559,7 @@ describe('the surface mounts only when the view model carries the group', () => 
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     h.state = liveState(true);
     (h.state as unknown as { ptt: boolean }).ptt = true;
+    publishAuthority();
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
   });
@@ -614,6 +633,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
 
     h.session = { state: 'disconnected', epoch: 8 };
     for (const listener of h.sessionListeners) listener(h.session);
+    publishAuthority();
     flushSync();
     expect([rfInput.disabled, sqlInput.disabled]).toEqual([true, true]);
     expect(el('rfGain')!.textContent).toContain('?');
@@ -621,6 +641,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
 
     h.session = { state: 'connected', epoch: 9 };
     for (const listener of h.sessionListeners) listener(h.session);
+    publishAuthority();
     flushSync();
     expect([rfInput.disabled, sqlInput.disabled]).toEqual([false, false]);
     expect(rfInput.valueAsNumber).toBe(0.8);

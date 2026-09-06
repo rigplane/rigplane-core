@@ -21,6 +21,7 @@ import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
   txController: null as ManagedAppTxController | null,
   noop: vi.fn(),
   nrMode: vi.fn(),
@@ -41,6 +42,11 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an App-owned
     // RX-audio snapshot (the FOURTH argument). Muted with no browser stream
     // keeps every fixture below off the rxAudio path — this file tests dsp.
@@ -254,6 +260,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
