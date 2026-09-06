@@ -190,20 +190,37 @@ describe('production receiver-indicator partitioning', () => {
     expect(hasPeak()).toBe(false);
   });
 
-  it('stops mounted meter schedulers and the control-session join on unmount', () => {
+  it.each([
+    ['dual semantic receiver strip', { strips: 'dual' }],
+    ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
+  ] as const)('stops every %s meter scheduler and the control-session join on unmount', (_name, props) => {
     vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
       matches: false, media: query, onchange: null,
       addEventListener: vi.fn(), removeEventListener: vi.fn(),
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
     }));
-    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
-    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
-    render(caps('main_sub', 2));
-    expect(requestFrame).toHaveBeenCalled();
+    let nextFrameId = 0;
+    const requestedFrameIds = new Set<number>();
+    const outstandingFrameIds = new Set<number>();
+    const cancelledFrameIds = new Set<number>();
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => {
+      const frameId = ++nextFrameId;
+      requestedFrameIds.add(frameId);
+      outstandingFrameIds.add(frameId);
+      return frameId;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((frameId) => {
+      cancelledFrameIds.add(frameId);
+      outstandingFrameIds.delete(frameId);
+    });
+    render(caps('main_sub', 2), state(), {}, props);
+    expect(requestedFrameIds.size).toBeGreaterThan(0);
+    expect(outstandingFrameIds).toEqual(requestedFrameIds);
     unmount(component!);
     component = null;
-    expect(cancelFrame).toHaveBeenCalled();
     expect(h.sessionSubscriber).toBeNull();
+    expect(outstandingFrameIds).toEqual(new Set());
+    expect(cancelledFrameIds).toEqual(requestedFrameIds);
   });
 
   it('passes the complete Filter Width feedback projection through production wiring', () => {
