@@ -129,7 +129,10 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 
 const { default: PeerSplitLayout } = await import('../PeerSplitLayout.svelte');
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 0,
+};
 
 /** 2/ab_shared — one of `peer-split`'s two declared compatible topologies
  *  (`presentation/layouts/segmentline-declarations.ts`), also the FTX-1's
@@ -137,13 +140,14 @@ const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability
 function abSharedState(): ServerState {
   const paths = ['active', 'split', 'dualWatch', 'txTarget',
     'main.freqHz', 'main.mode', 'main.filter', 'sub.freqHz', 'sub.mode', 'sub.filter',
-    'powerMeter', 'swrMeter', 'main.sMeter', 'sub.sMeter'];
+    'powerMeter', 'swrMeter', 'vdMeter', 'main.sMeter', 'sub.sMeter'];
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
     main: { freqHz: 14250000, mode: 'USB', filter: 1, sMeter: -12 },
     sub: { freqHz: 146520000, mode: 'FM', filter: 1, sMeter: -30 },
-    powerMeter: 0, swrMeter: 10,
+    powerMeter: 0, swrMeter: 10, vdMeter: 200,
     fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
   } as unknown as ServerState;
 }
@@ -228,6 +232,8 @@ describe('the peer-split chassis mounts', () => {
     expect(glass!.querySelector('[data-testid="peer-split-display"]')).not.toBeNull();
     expect(glass!.querySelectorAll('[data-testid="lcd-peer-column"]')).toHaveLength(2);
     expect(glass!.querySelector('[data-testid="peer-split-clock"]')).toBeNull();
+    expect(glass!.querySelectorAll('.receiver-column > .s-meter[data-state="known"]')).toHaveLength(2);
+    expect(glass!.querySelector('.telemetry [aria-label="VD: 200"][data-state="known"]')).not.toBeNull();
   });
 
   it.each([

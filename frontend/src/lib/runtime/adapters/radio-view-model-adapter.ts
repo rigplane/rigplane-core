@@ -35,6 +35,7 @@ import type {
   ScopeDisplayViewModel, ScopeSourceKind, ScopeHealthState,
   ReceiverIndicatorViewModel, TxTargetViewModel,
   RadioWideIndicatorsViewModel, DualActionBlockViewModel,
+  DisplayObservation,
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
@@ -272,11 +273,13 @@ function meterRfState(tx: MetersTxAuthority): MeterRfState {
   return tx.radioTx === 'off' && tx.txRisk === 'none' ? 'receiving' : 'unknown';
 }
 
-function meterField(structural: boolean, fieldFresh: boolean, raw: unknown, relevant: boolean): MeterField {
-  const operational = structural && fieldFresh;
-  const value = numOrUndef(raw);
+function meterField(
+  structural: boolean, observation: DisplayObservation<number>, relevant: boolean,
+  receiverOperational = true,
+): MeterField {
+  const operational = structural && receiverOperational && observation.state === 'current';
   return {
-    reading: operational && value !== undefined ? { status: 'known', value } : { status: 'unknown' },
+    reading: operational ? { status: 'known', value: observation.value } : { status: 'unknown' },
     availability: { structural, operational },
     relevant,
   };
@@ -302,39 +305,65 @@ function meterField(structural: boolean, fieldFresh: boolean, raw: unknown, rele
  */
 function deriveMeters(
   state: ServerState | null, caps: Capabilities | null, tx: MetersTxAuthority | null | undefined,
+  activeId: ReceiverId | null,
+  structuralReceivers: readonly ReceiverId[],
+  operationalReceivers: readonly ReceiverId[],
 ): MetersViewModel | undefined {
   if (!tx || !state) return undefined;
   const rfState = meterRfState(tx);
   const onTx = rfState !== 'receiving';
   const hasTx = caps?.tx ?? false;
-  // Mirrors the shipped dock's own active-receiver read (`RadioLayout.svelte`):
-  // the S-meter follows the receiver the operator is listening to.
-  const onSub = state.active === 'SUB';
-  const rx = onSub ? state.sub : state.main;
-  const sPath = onSub ? 'sub.sMeter' : 'main.sMeter';
   const { powerMeter, swrMeter, alcMeter, compMeter, vdMeter, idMeter } = state;
-  const raws = [rx?.sMeter, powerMeter, swrMeter, alcMeter, compMeter, vdMeter, idMeter];
+  const signalRaws = structuralReceivers.map((receiver) => state[RECEIVER_KEY[receiver]]?.sMeter);
+  const raws = [...signalRaws, powerMeter, swrMeter, alcMeter, compMeter, vdMeter, idMeter];
   if (!raws.some((v) => v !== undefined)) return undefined;
-  const txMeter = (raw: unknown, path: string): MeterField =>
-    meterField(hasTx && raw !== undefined, topFieldAvailable(state, path), raw, onTx);
-  const displayTxMeter = (raw: unknown, path: string) => ({
-    ...txMeter(raw, path),
-    display: qualifyRadioDisplayObservation({
-      state, caps, path, structural: hasTx && raw !== undefined, value: numOrUndef(raw),
-    }),
+  const displayTxMeter = (raw: unknown, path: string) => {
+    const structural = hasTx && raw !== undefined;
+    const display = qualifyRadioDisplayObservation({
+      state, caps, path, structural, value: numOrUndef(raw),
+    });
+    return { ...meterField(structural, display, onTx), display };
+  };
+  const signalStructural = activeId === null
+    ? signalRaws.some((raw) => raw !== undefined)
+    : structuralReceivers.includes(activeId) && state[RECEIVER_KEY[activeId]]?.sMeter !== undefined;
+  const signalRaw = activeId === null ? undefined : state[RECEIVER_KEY[activeId]]?.sMeter;
+  const signalObservation: DisplayObservation<number> = activeId === null
+    ? { state: 'unknown', reason: 'identity-unresolved' }
+    : qualifyDisplayObservation({
+      state, caps, receiver: activeId, path: `${RECEIVER_KEY[activeId]}.sMeter`,
+      structural: signalStructural, value: numOrUndef(signalRaw),
+    });
+  const compressionStructural = hasTx && compMeter !== undefined;
+  const compressionObservation = qualifyRadioDisplayObservation({
+    state, caps, path: 'compMeter', structural: compressionStructural,
+    value: numOrUndef(compMeter),
+  });
+  const drainVoltageStructural = vdMeter !== undefined;
+  const drainVoltageObservation = qualifyRadioDisplayObservation({
+    state, caps, path: 'vdMeter', structural: drainVoltageStructural,
+    value: numOrUndef(vdMeter),
+  });
+  const drainCurrentStructural = hasTx && idMeter !== undefined;
+  const drainCurrentObservation = qualifyRadioDisplayObservation({
+    state, caps, path: 'idMeter', structural: drainCurrentStructural,
+    value: numOrUndef(idMeter),
   });
   return {
     rfState,
-    signal: meterField(rx?.sMeter !== undefined, topFieldAvailable(state, sPath), rx?.sMeter, !onTx),
+    signal: meterField(
+      signalStructural, signalObservation, !onTx,
+      activeId !== null && operationalReceivers.includes(activeId),
+    ),
     power: displayTxMeter(powerMeter, 'powerMeter'),
     swr: displayTxMeter(swrMeter, 'swrMeter'),
     alc: displayTxMeter(alcMeter, 'alcMeter'),
-    compression: txMeter(compMeter, 'compMeter'),
+    compression: meterField(compressionStructural, compressionObservation, onTx),
     // Vd is the station's supply rail, not a TX reading: it is worth showing
     // in every RF state (the dock keeps it on instantaneous display for the
     // same reason), so it is structurally gated but never relevance-gated.
-    drainVoltage: meterField(vdMeter !== undefined, topFieldAvailable(state, 'vdMeter'), vdMeter, true),
-    drainCurrent: txMeter(idMeter, 'idMeter'),
+    drainVoltage: meterField(drainVoltageStructural, drainVoltageObservation, true),
+    drainCurrent: meterField(drainCurrentStructural, drainCurrentObservation, onTx),
   };
 }
 
@@ -787,11 +816,11 @@ function deriveRfFrontEnd(
  * groups above: those groups answer a different question and would mirror
  * MAIN onto SUB when the active receiver changes.
  *
- * Admission is the owner-recorded leaf rule exactly: the leaf itself must be
+ * Non-S members retain the owner-recorded leaf rule: the leaf itself must be
  * `seen()` and the existing ancestor-aware `topFieldAvailable()` gate must
- * also pass. The latter preserves the current global absent-key semantics;
- * composing the two here makes a missing leaf unknown and lets a stale parent
- * veto an otherwise-fresh leaf without changing `field-status.ts`.
+ * also pass. S-meter is the deliberate qualified exception: it additionally
+ * requires matching provider identity, valid evidence and value, and a
+ * `current` observation. Global absent-key semantics remain unchanged.
  */
 function deriveReceiverIndicators(
   state: ServerState | null,
@@ -837,6 +866,10 @@ function deriveReceiverIndicators(
     const agcMode = agcOrdinal === undefined
       ? undefined
       : (caps.agcLabels?.[String(agcOrdinal)] ?? agcOrdinal);
+    const sMeterObservation = qualifyDisplayObservation({
+      state, caps, receiver, path: path('sMeter'), structural: true,
+      value: numOrUndef(rx?.sMeter),
+    });
 
     return {
       receiver,
@@ -844,7 +877,10 @@ function deriveReceiverIndicators(
       // Every structural receiver owns one S-meter shell. The reading stays
       // unknown until its own leaf passes the strict gate; numeric zero is a
       // valid calibrated S9 reading and is preserved by numOrUndef.
-      sMeter: strictField(true, 'sMeter', numOrUndef(rx?.sMeter)),
+      sMeter: txAuxField(
+        true, receiverOperational && sMeterObservation.state === 'current',
+        sMeterObservation.state === 'current' ? sMeterObservation.value : undefined,
+      ),
       bandwidthHz: strictField(hasFilters, 'filterWidth', numOrUndef(rx?.filterWidth)),
       agcMode: strictField(hasAgc, 'agc', agcMode),
       nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),
@@ -1696,7 +1732,9 @@ export function toRadioViewModel(
   // from "has the group" to any consumer that inventories keys — same
   // reasoning as the validator's own omission below `validateRadioViewModel`.
   const txAux = deriveTxAux(state, caps);
-  const meters = deriveMeters(state, caps, tx);
+  const meters = deriveMeters(
+    state, caps, tx, activeId, topology.structuralReceivers, topology.operationalReceivers,
+  );
   const rxAudio = deriveRxAudio(state, caps, facts, modInputSource, rxAudioSnapshot);
   const modeFilter = deriveModeFilter(state, caps, activeId);
   const filterPassband = deriveFilterPassband(state, caps, activeId);

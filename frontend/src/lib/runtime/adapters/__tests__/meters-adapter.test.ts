@@ -20,6 +20,7 @@ import { toRadioViewModel, type MetersTxAuthority } from '../radio-view-model-ad
 function caps(overrides: Partial<Capabilities> = {}): Capabilities {
   return {
     model: 'fixture', scope: true, audio: true, tx: true, capabilities: ['scope', 'audio', 'tx'],
+    stateContractVersion: 1, providerGeneration: 1,
     receivers: 1, vfoScheme: 'single', freqRanges: [], modes: [], filters: [],
     audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
     webrtc: { available: false, enabled: false },
@@ -28,8 +29,18 @@ function caps(overrides: Partial<Capabilities> = {}): Capabilities {
   } as Capabilities;
 }
 
-const fresh: FieldStatus = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
-const stale: FieldStatus = { storePath: 'x', observed: true, freshness: 'stale', availability: 'stale' };
+const fresh: FieldStatus = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 0,
+};
+const stale: FieldStatus = {
+  storePath: 'x', observed: true, freshness: 'stale', availability: 'stale',
+  lastObservedMonotonic: 0,
+};
+const METER_PATHS = [
+  'main.sMeter', 'sub.sMeter', 'powerMeter', 'swrMeter', 'alcMeter',
+  'compMeter', 'vdMeter', 'idMeter',
+] as const;
 
 /** The RX authority: positively observed OFF with zero TX risk. */
 const RX: MetersTxAuthority = { radioTx: 'off', txRisk: 'none' };
@@ -38,6 +49,7 @@ const TX: MetersTxAuthority = { radioTx: 'on', txRisk: 'confirmed-on' };
 
 function meterState(overrides: Partial<ServerState> = {}): ServerState {
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14195000 },
     main: {
@@ -48,6 +60,7 @@ function meterState(overrides: Partial<ServerState> = {}): ServerState {
     fieldStatus: {
       active: fresh, split: fresh, dualWatch: fresh, txTarget: fresh,
       'main.freqHz': fresh, 'main.mode': fresh, 'main.filter': fresh,
+      ...Object.fromEntries(METER_PATHS.map((path) => [path, fresh])),
     },
     ...overrides,
   } as ServerState;
@@ -114,10 +127,9 @@ describe('meters TX truth comes from the App TX authority (R9 / MOR-1235)', () =
 describe('target meter display provenance (MOR-2359)', () => {
   const targets = [['power', 'powerMeter'], ['swr', 'swrMeter'], ['alc', 'alcMeter']] as const;
   const observed = { ...fresh, lastObservedMonotonic: 310658.42975425 };
-  const capabilities = caps({ stateContractVersion: 1, providerGeneration: 1 });
+  const capabilities = caps();
   function stateWith(status: Partial<FieldStatus> = {}): ServerState {
     return meterState({
-      stateContractVersion: 1, providerGeneration: 1,
       fieldStatus: { ...meterState().fieldStatus,
         ...Object.fromEntries(targets.map(([, path]) => [path, { ...observed, ...status }])),
       },
@@ -168,7 +180,8 @@ describe('target meter display provenance (MOR-2359)', () => {
         for (const [meter, path] of targets) {
           const { display, ...strict } = meters[meter];
           expect(display).toBeDefined();
-          const operational = !('freshness' in status && status.freshness === 'stale');
+          const operational = status.observed !== false
+            && !('freshness' in status && status.freshness === 'stale');
           expect(strict).toEqual({
             reading: operational ? { status: 'known', value: state[path] } : { status: 'unknown' },
             availability: { structural: true, operational }, relevant,
@@ -241,22 +254,140 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     }), caps(), TX).meters!;
     expect(meters.swr).toEqual({
       reading: { status: 'unknown' }, availability: { structural: true, operational: false }, relevant: true,
-      display: { state: 'unknown', reason: 'identity-unresolved' },
+      display: { state: 'stale', value: 20 },
     });
   });
 
   it('follows the active receiver for the S-meter, with its own field status', () => {
+    const dualCaps = caps({
+      receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['scope', 'audio', 'tx', 'dual_rx'],
+    });
     const onSub = meterState({
       active: 'SUB',
       sub: { freqHz: 7100000, mode: 'LSB', filter: 1, sMeter: 60 } as ServerState['main'],
     });
-    expect(model(onSub, caps(), RX).meters!.signal.reading).toEqual({ status: 'known', value: 60 });
+    expect(model(onSub, dualCaps, RX).meters!.signal.reading).toEqual({ status: 'known', value: 60 });
     const staleSub = meterState({
       active: 'SUB',
       sub: { freqHz: 7100000, mode: 'LSB', filter: 1, sMeter: 60 } as ServerState['main'],
       fieldStatus: { ...meterState().fieldStatus, 'sub.sMeter': stale },
     });
-    expect(model(staleSub, caps(), RX).meters!.signal.reading).toEqual({ status: 'unknown' });
+    expect(model(staleSub, dualCaps, RX).meters!.signal.reading).toEqual({ status: 'unknown' });
+  });
+
+  it.each(METER_PATHS.filter((path) => path !== 'sub.sMeter'))(
+    'requires current leaf evidence for %s while preserving its structural shell', (path) => {
+      const state = meterState();
+      const fieldStatus = { ...state.fieldStatus };
+      delete fieldStatus[path];
+      const meters = model({ ...state, fieldStatus }, caps(), TX).meters!;
+      const field = path === 'main.sMeter' ? meters.signal
+        : path === 'powerMeter' ? meters.power
+          : path === 'swrMeter' ? meters.swr
+            : path === 'alcMeter' ? meters.alc
+              : path === 'compMeter' ? meters.compression
+                : path === 'vdMeter' ? meters.drainVoltage : meters.drainCurrent;
+      expect(field.reading).toEqual({ status: 'unknown' });
+      expect(field.availability).toEqual({ structural: true, operational: false });
+    },
+  );
+
+  it.each(METER_PATHS.filter((path) => path !== 'sub.sMeter'))(
+    'keeps stale %s structurally present but non-operational', (path) => {
+      const state = meterState({
+        fieldStatus: { ...meterState().fieldStatus, [path]: stale },
+      });
+      const meters = model(state, caps(), TX).meters!;
+      const field = path === 'main.sMeter' ? meters.signal
+        : path === 'powerMeter' ? meters.power
+          : path === 'swrMeter' ? meters.swr
+            : path === 'alcMeter' ? meters.alc
+              : path === 'compMeter' ? meters.compression
+                : path === 'vdMeter' ? meters.drainVoltage : meters.drainCurrent;
+      expect(field.reading).toEqual({ status: 'unknown' });
+      expect(field.availability).toEqual({ structural: true, operational: false });
+    },
+  );
+
+  it.each([
+    ['provider mismatch', { providerGeneration: 2 }],
+    ['contract mismatch', { stateContractVersion: 2 }],
+  ] as const)('%s fences every canonical reading without removing shells', (_label, capabilityOverride) => {
+    const meters = model(meterState(), caps(capabilityOverride), TX).meters!;
+    for (const field of [
+      meters.signal, meters.power, meters.swr, meters.alc, meters.compression,
+      meters.drainVoltage, meters.drainCurrent,
+    ]) {
+      expect(field.reading).toEqual({ status: 'unknown' });
+      expect(field.availability).toEqual({ structural: true, operational: false });
+    }
+  });
+
+  it.each([undefined, NaN, Infinity, -1])(
+    'rejects invalid observation marker %s for every canonical reading', (lastObservedMonotonic) => {
+      const state = meterState();
+      const fieldStatus = Object.fromEntries(METER_PATHS.map((path) => [
+        path, { ...fresh, lastObservedMonotonic },
+      ]));
+      const meters = model({ ...state, fieldStatus }, caps(), TX).meters!;
+      expect([
+        meters.signal, meters.power, meters.swr, meters.alc, meters.compression,
+        meters.drainVoltage, meters.drainCurrent,
+      ].every((field) => field.reading.status === 'unknown')).toBe(true);
+    },
+  );
+
+  it('preserves valid zero for all seven canonical readings', () => {
+    const state = meterState({
+      main: { ...meterState().main, sMeter: 0 },
+      powerMeter: 0, swrMeter: 0, alcMeter: 0, compMeter: 0, vdMeter: 0, idMeter: 0,
+    });
+    const meters = model(state, caps(), TX).meters!;
+    expect([
+      meters.signal, meters.power, meters.swr, meters.alc, meters.compression,
+      meters.drainVoltage, meters.drainCurrent,
+    ].map((field) => field.reading)).toEqual(Array(7).fill({ status: 'known', value: 0 }));
+  });
+
+  it('keeps an unresolved dual active receiver as an unknown supported signal shell', () => {
+    const state = meterState({
+      fieldStatus: { ...meterState().fieldStatus, active: { ...fresh, observed: false } },
+      sub: { ...meterState().main, sMeter: 60 },
+    });
+    const dualCaps = caps({
+      receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['scope', 'audio', 'tx', 'dual_rx'],
+    });
+    expect(model(state, dualCaps, RX).meters!.signal).toEqual({
+      reading: { status: 'unknown' },
+      availability: { structural: true, operational: false },
+      relevant: true,
+    });
+  });
+
+  it('does not select raw SUB signal when SUB is structurally non-operational', () => {
+    const state = meterState({
+      active: 'SUB',
+      sub: { ...meterState().main, sMeter: 60 },
+    });
+    const signal = model(state, caps({ receivers: 2, vfoScheme: 'main_sub' }), RX).meters!.signal;
+    expect(signal).toEqual({
+      reading: { status: 'unknown' },
+      availability: { structural: true, operational: false },
+      relevant: true,
+    });
+  });
+
+  it('ignores a stray raw SUB signal outside the canonical single-receiver topology', () => {
+    const state = meterState({
+      active: 'SUB',
+      main: { freqHz: 14195000, mode: 'USB', filter: 1 } as ServerState['main'],
+      sub: { ...meterState().main, sMeter: 60 },
+      powerMeter: undefined, swrMeter: undefined, alcMeter: undefined,
+      compMeter: undefined, vdMeter: undefined, idMeter: undefined,
+    });
+    expect(model(state, caps(), RX).meters).toBeUndefined();
   });
 
   it('degrades a malformed raw value (wrong JS type) to unknown rather than coercing', () => {

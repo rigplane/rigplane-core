@@ -213,6 +213,24 @@ function liveState(): unknown {
   };
 }
 
+function useQualifiedMainSMeter(rawState: unknown, value = 120): void {
+  const state = rawState as {
+    main: Record<string, unknown>;
+    fieldStatus: Record<string, unknown>;
+  };
+  h.state = {
+    ...state,
+    stateContractVersion: 1,
+    providerGeneration: 1,
+    main: { ...state.main, sMeter: value },
+    fieldStatus: {
+      ...state.fieldStatus,
+      'main.sMeter': { ...fresh, lastObservedMonotonic: 0 },
+    },
+  };
+  h.caps = { ...(h.caps as object), stateContractVersion: 1, providerGeneration: 1 };
+}
+
 /** One representative capability set per canonical topology fixture id. */
 function capsFor(id: TopologyFixtureId): Capabilities {
   const scheme = topologyFixtures[id].vfoScheme;
@@ -331,8 +349,7 @@ describe('the migrated desktop layout owns VFO/TX through the semantic surfaces'
   // `desktop-v2` block below for why a bare fixture (no meter fields at all)
   // would prove nothing about suppression.
   it('drops the legacy meters dock in favour of the semantic meters surface', () => {
-    const state = liveState() as { main: Record<string, unknown> };
-    h.state = { ...state, main: { ...state.main, sMeter: 120 } };
+    useQualifiedMainSMeter(liveState());
     const t = render('sdr-test');
     expect(t.querySelector('.bottom-dock')).toBeNull();
     expect(t.querySelector('[data-testid="meters-dock-panel"]')).toBeNull();
@@ -399,8 +416,7 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
   // at all, so it would pass this assertion vacuously (both the dock and the
   // semantic surface self-gate away) and prove nothing about suppression.
   it('drops the legacy meters dock in favour of the semantic meters surface', () => {
-    const state = liveState() as { main: Record<string, unknown> };
-    h.state = { ...state, main: { ...state.main, sMeter: 120 } };
+    useQualifiedMainSMeter(liveState());
     const t = render('desktop-v2');
     expect(t.querySelector('.bottom-dock')).toBeNull();
     expect(t.querySelector('[data-testid="meters-dock-panel"]')).toBeNull();
@@ -1228,13 +1244,13 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
         bands: [{ name: '20m', start: 14_000_000, end: 14_350_000, default: 14_225_000 }],
       }],
     } as Capabilities;
-    const state = liveState() as { main: Record<string, unknown> };
+    const state = liveState() as Record<string, unknown>;
     h.state = {
       ...state,
-      main: { ...state.main, sMeter: 120 },
       scanning: false, scanType: 0x34, scanResumeMode: 1,
       txAntenna: 1, rxAntenna1: 0, ritOn: false, ritTx: false, ritFreq: 0,
     };
+    useQualifiedMainSMeter(h.state);
   });
 
   it('uses the SDR region sequence while regions=false keeps the previous surface sequence', () => {
