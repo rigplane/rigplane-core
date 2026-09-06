@@ -10,9 +10,10 @@ Covers:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -23,7 +24,13 @@ from rigplane.commands._codec import (
     hz_to_table_index,
     table_index_to_hz,
 )
-from rigplane.profiles import resolve_radio_profile
+from rigplane.core.exceptions import CommandError
+from rigplane.profiles import (
+    FilterWidthRule,
+    FilterWidthSegment,
+    RadioProfile,
+    resolve_radio_profile,
+)
 from rigplane.radio import IcomRadio
 from rigplane.radio_protocol import DspControlCapable
 from rigplane.rig_loader import load_rig
@@ -640,3 +647,242 @@ async def test_rigctld_filter_width_passband_round_trip() -> None:
     assert get_resp.ok
     assert get_resp.values[0] == "USB"
     assert get_resp.values[1] == "2400"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7610", "IC-705", "IC-9700", "IC-7300"])
+async def test_filter_preflight_shipped_rules_match_setter_bytes(model: str) -> None:
+    radio = _connected_icom(model=model)
+    radio.send_civ = AsyncMock()
+    profile = radio._profile
+    assert profile.filter_config
+    for mode, rule in profile.filter_config.items():
+        radio._radio_state.main.mode = mode
+        if rule.fixed:
+            with pytest.raises(CommandError) as error:
+                profile.encode_filter_width(2400, mode)
+            assert str(error.value) == (
+                f"set_filter_width is unsupported for fixed-width mode {mode}"
+            )
+            with pytest.raises(CommandError, match="unsupported for fixed-width mode"):
+                await radio.set_filter_width(2400)
+            radio.send_civ.assert_not_awaited()
+            continue
+        examples = (
+            [(200, b"\x00"), (6000, b"\x29"), (10000, b"\x49")]
+            if mode == "AM"
+            else [(50, b"\x00"), (500, b"\x09"), (600, b"\x10"), (2400, b"\x28")]
+            + ([(2700, b"\x31")] if mode.startswith("RTTY") else [(3600, b"\x40")])
+        )
+        for width, expected in examples:
+            assert profile.encode_filter_width(width, mode) == expected
+            await radio.set_filter_width(width)
+            if model == "IC-7610":
+                radio.send_civ.assert_awaited_once_with(
+                    0x29, data=b"\x00\x1a\x03" + expected, wait_response=False
+                )
+            else:
+                radio.send_civ.assert_awaited_once_with(
+                    0x1A, sub=0x03, data=expected, wait_response=False
+                )
+            radio.send_civ.reset_mock()
+
+
+@pytest.mark.parametrize(
+    ("keys", "mode", "data_mode", "expected"),
+    [
+        (("USB", "USB-D", "SSB", "SSB-D"), "usb", 0, b"\x00"),
+        (("USB", "USB-D", "SSB", "SSB-D"), "usb", 3, b"\x01"),
+        (("USB", "SSB-D"), "USB", 1, b"\x00"),
+        (("SSB", "SSB-D"), "LSB", 0, b"\x00"),
+        (("SSB", "SSB-D"), "LSB", 2, b"\x01"),
+        (("CW", "CW-R"), "CW-R", 0, b"\x01"),
+        (("CW",), "CW-R", 0, b"\x00"),
+        (("RTTY",), "RTTY-R", 0, b"\x00"),
+    ],
+)
+def test_filter_preflight_preserves_mode_data_resolution(
+    keys: tuple[str, ...], mode: str, data_mode: int, expected: bytes
+) -> None:
+    profile = replace(
+        resolve_radio_profile(model="IC-7610"),
+        filter_config={
+            key: FilterWidthRule(segments=(FilterWidthSegment(50, 50, 50, index),))
+            for index, key in enumerate(keys)
+        },
+    )
+    assert profile.encode_filter_width(50, mode, data_mode=data_mode) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rule", "width", "error_type", "message"),
+    [
+        (
+            FilterWidthRule(fixed=True),
+            20,
+            CommandError,
+            "set_filter_width is unsupported for fixed-width mode USB",
+        ),
+        (
+            FilterWidthRule(
+                min_hz=100, max_hz=200, segments=(FilterWidthSegment(50, 500, 50, 0),)
+            ),
+            50,
+            CommandError,
+            "set_filter_width value must be 100-200 Hz for USB, got 50",
+        ),
+        (
+            FilterWidthRule(
+                min_hz=100, max_hz=200, segments=(FilterWidthSegment(50, 500, 50, 0),)
+            ),
+            250,
+            CommandError,
+            "set_filter_width value must be 100-200 Hz for USB, got 250",
+        ),
+        (
+            None,
+            20,
+            CommandError,
+            "set_filter_width value must be 50-9999 Hz for USB, got 20",
+        ),
+        (
+            None,
+            2400,
+            CommandError,
+            "set_filter_width has no filter-width mapping for mode USB",
+        ),
+        (
+            FilterWidthRule(),
+            2400,
+            CommandError,
+            "set_filter_width has no filter-width mapping for mode USB",
+        ),
+        (
+            FilterWidthRule(segments=(FilterWidthSegment(50, 500, 50, 0),)),
+            75,
+            CommandError,
+            "Filter width 75 is not aligned to 50 Hz steps",
+        ),
+        (
+            FilterWidthRule(
+                segments=(
+                    FilterWidthSegment(50, 500, 50, 0),
+                    FilterWidthSegment(600, 3600, 100, 10),
+                )
+            ),
+            550,
+            CommandError,
+            "Filter width 550 is outside the configured segments",
+        ),
+        (
+            FilterWidthRule(segments=(FilterWidthSegment(50, 500, 50, 100),)),
+            50,
+            ValueError,
+            "BCD value must fit in 1 byte(s), got 100",
+        ),
+        (
+            FilterWidthRule(segments=(FilterWidthSegment(50, 500, 50, -1),)),
+            50,
+            ValueError,
+            "BCD value must be non-negative, got -1",
+        ),
+    ],
+)
+async def test_filter_preflight_preserves_refusal_before_any_wire_write(
+    rule: FilterWidthRule | None, width: int, error_type: type[Exception], message: str
+) -> None:
+    radio = _connected_icom()
+    radio._profile = replace(
+        radio._profile, filter_config={} if rule is None else {"USB": rule}
+    )
+    radio._radio_state.sub.mode = "USB"
+    radio.send_civ = AsyncMock()
+    radio._send_civ_expect = AsyncMock()
+    with pytest.raises(error_type) as pure_error:
+        radio._profile.encode_filter_width(width, "USB")
+    with pytest.raises(error_type) as setter_error:
+        await radio.set_filter_width(width, receiver=1)
+    for error in (pure_error, setter_error):
+        assert type(error.value) is error_type
+        assert str(error.value) == message
+    assert type(pure_error.value.__cause__) is type(setter_error.value.__cause__)
+    radio.send_civ.assert_not_awaited()
+    radio._send_civ_expect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("width", [2400.0, 2400.5, "2400", None, True])
+async def test_filter_preflight_does_not_coerce_previous_width_domain(
+    width: object,
+) -> None:
+    radio = _connected_icom()
+    radio._radio_state.main.mode = "USB"
+    radio.send_civ = AsyncMock()
+    with pytest.raises((CommandError, TypeError, ValueError)) as pure_error:
+        radio._profile.encode_filter_width(width, "USB")  # type: ignore[arg-type]
+    with pytest.raises(type(pure_error.value)) as setter_error:
+        await radio.set_filter_width(width)  # type: ignore[arg-type]
+    assert str(pure_error.value) == str(setter_error.value)
+    radio.send_civ.assert_not_awaited()
+
+
+@pytest.mark.parametrize("width", [50, 250])
+def test_filter_preflight_uses_profile_bounds_when_rule_omits_them(width: int) -> None:
+    profile = replace(
+        resolve_radio_profile(model="IC-7610"),
+        filter_width_min=100,
+        filter_width_max=200,
+        filter_config={
+            "USB": FilterWidthRule(segments=(FilterWidthSegment(50, 500, 50, 0),))
+        },
+    )
+    with pytest.raises(CommandError) as error:
+        profile.encode_filter_width(width, "USB")
+    assert (
+        str(error.value)
+        == f"set_filter_width value must be 100-200 Hz for USB, got {width}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receiver", [0, 1])
+async def test_filter_preflight_setter_delegates_selected_context_and_payload(
+    receiver: int,
+) -> None:
+    radio = _connected_icom()
+    radio._radio_state.main.mode = "USB"
+    radio._radio_state.sub.mode = "RTTY"
+    radio._radio_state.main.data_mode = 1
+    radio._radio_state.sub.data_mode = 3
+    radio.send_civ = AsyncMock()
+    with patch.object(
+        RadioProfile, "encode_filter_width", autospec=True, return_value=b"\x77"
+    ) as encode:
+        await radio.set_filter_width(2400, receiver=receiver)
+    encode.assert_called_once_with(
+        radio._profile,
+        2400,
+        "RTTY" if receiver else "USB",
+        data_mode=3 if receiver else 1,
+    )
+    radio.send_civ.assert_awaited_once_with(
+        0x29, data=bytes([receiver, 0x1A, 0x03, 0x77]), wait_response=False
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admission", ["connection", "receiver", "support"])
+async def test_filter_preflight_remains_after_runtime_admission(admission: str) -> None:
+    radio = _connected_icom()
+    radio.send_civ = AsyncMock()
+    receiver = 2 if admission == "receiver" else 0
+    if admission == "connection":
+        radio._check_connected = Mock(side_effect=CommandError("disconnected"))
+    elif admission == "support":
+        radio._profile = replace(radio._profile, command_names=frozenset())
+    with patch.object(RadioProfile, "encode_filter_width", autospec=True) as encode:
+        with pytest.raises(CommandError):
+            await radio.set_filter_width(2400, receiver=receiver)
+        encode.assert_not_called()
+    radio.send_civ.assert_not_awaited()
