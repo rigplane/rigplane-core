@@ -61,12 +61,6 @@
   /** Honest text: an unread fact reads as unknown, never as a stale value. */
   export const textOf = (f: RfFrontEndField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
-  /** Same freshness discipline as `textOf`, but a KNOWN level reading is
-   *  formatted against its declared `[min, max]` domain (MOR-1447) instead of
-   *  `String()`-ing the raw wire fraction. */
-  const levelTextOf = (f: RfFrontEndField<number>, min: number, max: number): string =>
-    f.reading.status === 'known' ? formatKnownLevel(f.reading.value, min, max) : UNKNOWN_TEXT;
-
   /** `[field, label, min, max, step]`. The radio's own normalized 0..1
    *  reading (a wire-protocol FRACTION, not the raw 0-255 wire unit) — same
    *  discipline as `TxAuxSurface.TX_AUX_LEVELS`. Rescaled to the raw 0-255
@@ -111,6 +105,11 @@
     type CommandFeedbackContinuousPairInput, type ContinuousPairInput,
     type ContinuousPairRendererLease, type ContinuousPairView,
   } from '../primitives/scalar/continuous-pair.svelte';
+  import {
+    createContinuousScalar, nativeRangeContinuousScalarPolicy,
+    type ContinuousScalarInput, type ContinuousScalarRendererLease,
+    type ContinuousScalarView,
+  } from '../primitives/scalar/continuous-scalar.svelte';
   import {
     bindChoiceInstrument,
     bindToggleInstrument,
@@ -194,12 +193,13 @@
     && !!rf?.rfGain.availability.structural
     && !!rf?.squelch.availability.structural,
   );
+  const rfSqlDomain = {
+    min: RF_SQL_MIN, max: RF_SQL_MAX, step: RF_SQL_STEP,
+    defaultValue: null, fineStepDivisor: 10,
+  } as const;
   function rfSqlInput(): Readonly<ContinuousPairInput> {
     const common = {
-      domain: {
-        min: RF_SQL_MIN, max: RF_SQL_MAX, step: RF_SQL_STEP,
-        defaultValue: null, fineStepDivisor: 10,
-      },
+      domain: rfSqlDomain,
       requestRf: (value: number) => requestPairLevel('rfGain', value),
       requestSql: (value: number) => requestPairLevel('squelch', value),
     };
@@ -235,16 +235,81 @@
       },
     };
   }
+  type RfSqlLane = 'rf' | 'sql';
+  const laneForField = (field: RfFrontEndLevelField): RfSqlLane =>
+    field === 'rfGain' ? 'rf' : 'sql';
+  const separateLevelRendered = (field: RfFrontEndLevelField): boolean =>
+    !combinedUsable && !!rf?.[field].availability.structural;
+  function separateLevelInput(field: RfFrontEndLevelField): Readonly<ContinuousScalarInput> {
+    const common = {
+      domain: rfSqlDomain,
+      request: (value: number) => requestPairLevel(field, value),
+    };
+    if (rfSqlFeedback === null) return {
+      ...common,
+      evidence: 'reading',
+      ownerKey: `rf-sql:feedback-integrated:authority-unresolved:${field}`,
+      enabled: false,
+      reading: { status: 'unknown' },
+    };
+    if (rfSqlFeedback !== undefined) {
+      const lane = rfSqlFeedback[laneForField(field)];
+      return {
+        ...common,
+        evidence: 'command-feedback',
+        enabled: separateLevelRendered(field),
+        command: lane.command,
+        feedback: lane.feedback,
+      };
+    }
+    const fact = rf?.[field];
+    return {
+      ...common,
+      evidence: 'reading',
+      ownerKey: JSON.stringify([
+        'rf-sql:compatibility-reading', field, view.topologyId, view.activeReceiver.status,
+        view.activeReceiver.status === 'known' ? view.activeReceiver.receiver : null,
+      ]),
+      enabled: separateLevelRendered(field) && !!fact?.availability.operational,
+      reading: fact?.reading ?? { status: 'unknown' },
+    };
+  }
   const rfSqlPair = createContinuousPair(rfSqlInput, nativeRangeContinuousPairPolicy);
+  const rfGainScalar = createContinuousScalar(
+    () => separateLevelInput('rfGain'), nativeRangeContinuousScalarPolicy,
+  );
+  const squelchScalar = createContinuousScalar(
+    () => separateLevelInput('squelch'), nativeRangeContinuousScalarPolicy,
+  );
   let rfSqlLease: ContinuousPairRendererLease | null = $state(null);
   let rfSqlView: Readonly<ContinuousPairView> = $state(untrack(() => rfSqlPair.view));
+  let rfGainLease: ContinuousScalarRendererLease | null = $state(null);
+  let rfGainView: Readonly<ContinuousScalarView> = $state(untrack(() => rfGainScalar.view));
+  let squelchLease: ContinuousScalarRendererLease | null = $state(null);
+  let squelchView: Readonly<ContinuousScalarView> = $state(untrack(() => squelchScalar.view));
   $effect(() => {
     const lease = rfSqlPair.attachRenderer();
     rfSqlLease = lease;
     return () => lease.dispose();
   });
   $effect(() => {
+    const lease = rfGainScalar.attachRenderer();
+    rfGainLease = lease;
+    return () => lease.dispose();
+  });
+  $effect(() => {
+    const lease = squelchScalar.attachRenderer();
+    squelchLease = lease;
+    return () => lease.dispose();
+  });
+  $effect(() => {
     rfSqlView = rfSqlLease === null ? rfSqlPair.view : rfSqlLease.view;
+  });
+  $effect(() => {
+    rfGainView = rfGainLease === null ? rfGainScalar.view : rfGainLease.view;
+  });
+  $effect(() => {
+    squelchView = squelchLease === null ? squelchScalar.view : squelchLease.view;
   });
   let combinedNormX = $derived(rfSqlView.displayedPosition ?? RF_SQL_MIN);
   const FEEDBACK_INTEGRATED_RANGE = { 'feedback-policy': 'feedback-integrated' } as const;
@@ -273,7 +338,33 @@
       : formatKnownLevel(view.canonical, RF_SQL_MIN, RF_SQL_MAX);
     return `${phase}${target}; confirmed ${confirmed}${view.error === null ? '' : `: ${view.error}`}`;
   };
-  onDestroy(() => rfSqlPair.destroy());
+  const separateLevelLease = (field: RfFrontEndLevelField): ContinuousScalarRendererLease | null =>
+    field === 'rfGain' ? rfGainLease : squelchLease;
+  const separateLevelView = (field: RfFrontEndLevelField): Readonly<ContinuousScalarView> =>
+    field === 'rfGain' ? rfGainView : squelchView;
+  const separateLevelValue = (view: Readonly<ContinuousScalarView>): number | null =>
+    view.draft
+      ?? (view.evidence === 'command-feedback' ? view.feedback.target : null)
+      ?? view.canonical;
+  const separateLevelText = (view: Readonly<ContinuousScalarView>): string => {
+    const value = separateLevelValue(view);
+    return value === null ? UNKNOWN_TEXT : formatKnownLevel(value, RF_SQL_MIN, RF_SQL_MAX);
+  };
+  const separateLevelStatus = (view: Readonly<ContinuousScalarView>): string => {
+    if (view.evidence !== 'command-feedback') return '';
+    const phase = view.phase.charAt(0).toUpperCase() + view.phase.slice(1).replaceAll('-', ' ');
+    const requested = view.feedback.target ?? view.feedback.requestedTarget;
+    const target = requested === null ? ''
+      : ` ${formatKnownLevel(requested, RF_SQL_MIN, RF_SQL_MAX)}`;
+    const confirmed = view.canonical === null ? UNKNOWN_TEXT
+      : formatKnownLevel(view.canonical, RF_SQL_MIN, RF_SQL_MAX);
+    return `${phase}${target}; confirmed ${confirmed}${view.error === null ? '' : `: ${view.error}`}`;
+  };
+  onDestroy(() => {
+    rfSqlPair.destroy();
+    rfGainScalar.destroy();
+    squelchScalar.destroy();
+  });
 </script>
 
 {#if rf}
@@ -366,18 +457,36 @@
     {:else}
       {#each RF_FRONT_END_LEVELS as [field, label, min, max, step] (field)}
         {#if rf[field].availability.structural}
+          {@const levelView = separateLevelView(field)}
+          {@const levelValue = separateLevelValue(levelView)}
           <label
             class="rf-front-end-level" data-testid={`rf-front-end-${field}`}
-            data-observed={usable(rf[field])}
+            data-feedback-integration={feedbackIntegration}
+            data-observed={levelView.canonical !== null}
+            data-command-phase={levelView.phase ?? undefined}
+            aria-busy={levelView.busy}
           >
             <span class="rf-front-end-name">{label}</span>
             <input
               type="range" {min} {max} {step}
-              value={rf[field].reading.status === 'known' ? rf[field].reading.value : 0}
-              disabled={!usable(rf[field])}
-              oninput={(event) => changeLevel(field, event.currentTarget.valueAsNumber)}
+              {...FEEDBACK_INTEGRATED_RANGE}
+              value={levelValue ?? min}
+              disabled={!levelView.editable}
+              data-scalar-evidence={levelView.evidence}
+              oninput={(event) => separateLevelLease(field)?.nativeInput(event.currentTarget.valueAsNumber)}
             />
-            <output>{levelTextOf(rf[field], min, max)}</output>
+            <output>{separateLevelText(levelView)}</output>
+            {#if levelView.evidence === 'command-feedback'}
+              <output data-testid={`rf-front-end-${field}-status`}>
+                {separateLevelStatus(levelView)}
+              </output>
+            {/if}
+            {#if levelView.announcement !== null}
+              <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+                data-control-feedback-status data-feedback-lane={laneForField(field)}>
+                {levelView.announcement}
+              </span>
+            {/if}
           </label>
         {/if}
       {/each}

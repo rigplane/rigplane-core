@@ -316,6 +316,9 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
   // pins reads `main.rfGain` back as the literal `0.8196078431372549`.
   it('renders a known RF-gain reading as a rounded percent, not the raw wire float', () => {
     const r = render(withRf({ rfGain: known(0.8196078431372549) }));
+    expect(r.el('rfGain')!.dataset.feedbackIntegration).toBe('compatibility-reading');
+    expect(r.el('rfGain')!.querySelector('input')!.getAttribute('feedback-policy'))
+      .toBe('feedback-integrated');
     expect(r.text('rfGain')).toContain('82%');
     expect(r.text('rfGain')).not.toContain('0.8196078431372549');
     r.dispose();
@@ -325,6 +328,167 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     const r = render(withRf({ squelch: known(0.2) }));
     expect(r.text('squelch')).toContain('20%');
     r.dispose();
+  });
+
+  it('treats explicit null as unresolved for both separate controls without raw fallback', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { rfSqlFeedback: null, onLevelChange });
+    for (const field of ['rfGain', 'squelch'] as const) {
+      const group = r.el(field)!;
+      const input = group.querySelector('input')!;
+      expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
+      expect(group.dataset.observed).toBe('false');
+      expect(input.disabled).toBe(true);
+      expect(group.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
+      input.value = '0.5';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    flushSync();
+    expect(onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('keeps command-feedback values, phases, and eligibility independent per separate lane', () => {
+    const onLevelChange = vi.fn();
+    const feedback = pairFeedback({
+      rf: {
+        target: 0.75, requestedTarget: 0.75, phase: 'awaiting-confirmation', busy: true,
+        lifecycleId: 'rf-pending', transitionId: 'rf-awaiting',
+      },
+      sql: {
+        confirmed: null, availability: 'unavailable', phase: 'unavailable',
+      },
+    });
+    const r = render(withRf({ rfGain: known(0.1), squelch: known(0.9) }), {
+      rfSqlFeedback: feedback, onLevelChange,
+    });
+    const rfGroup = r.el('rfGain')!;
+    const sqlGroup = r.el('squelch')!;
+    const rfInput = rfGroup.querySelector('input')!;
+    const sqlInput = sqlGroup.querySelector('input')!;
+    expect(rfGroup.dataset.feedbackIntegration).toBe('command-feedback');
+    expect(rfGroup.dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(rfGroup.getAttribute('aria-busy')).toBe('true');
+    expect(rfGroup.dataset.observed).toBe('true');
+    expect(rfInput.valueAsNumber).toBe(0.75);
+    expect(rfGroup.querySelector('output')?.textContent).toBe('75%');
+    expect(rfInput.disabled).toBe(false);
+    expect(sqlGroup.dataset.commandPhase).toBe('unavailable');
+    expect(sqlGroup.dataset.observed).toBe('false');
+    expect(sqlGroup.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
+    expect(sqlInput.disabled).toBe(true);
+    rfInput.value = '0.55';
+    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
+    sqlInput.value = '0.4';
+    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0.55);
+    r.dispose();
+  });
+
+  it('keeps the surviving separate lane eligible for a structurally incomplete combined profile', () => {
+    const onLevelChange = vi.fn();
+    const r = render(withRf({ squelch: unread(OFF) }), {
+      controlModel: 'combined',
+      rfSqlFeedback: pairFeedback({ rf: { target: 0.4, requestedTarget: 0.4 } }),
+      onLevelChange,
+    });
+    expect(r.el('rf-sql')).toBeNull();
+    expect(r.el('squelch')).toBeNull();
+    const rfInput = r.el('rfGain')!.querySelector('input')!;
+    expect(rfInput.disabled).toBe(false);
+    expect(rfInput.valueAsNumber).toBe(0.4);
+    rfInput.value = '0.3';
+    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0.3);
+    r.dispose();
+  });
+
+  it('invalidates separate drafts and announcements across provider and null authority replacement', () => {
+    const feedback = new SvelteMap<string, PairFeedback>([['current', pairFeedback()]]);
+    const onLevelChange = vi.fn();
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(RfFrontEndSurface, { target, props: {
+      view: base(), onLevelChange,
+      get rfSqlFeedback() { return feedback.get('current') ?? null; },
+    } });
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rfGain"] input')!;
+    input.value = '0.9';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(input.valueAsNumber).toBe(0.9);
+    feedback.set('current', pairFeedback({ rf: { confirmed: 0.4 } }, 4));
+    flushSync();
+    expect(input.valueAsNumber).toBe(0.4);
+    expect(target.querySelectorAll('[data-testid="rf-front-end-rfGain"] [data-control-feedback-status]')).toHaveLength(0);
+    feedback.delete('current');
+    flushSync();
+    expect(input.disabled).toBe(true);
+    expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent).toBe(UNKNOWN_TEXT);
+    unmount(component);
+    target.remove();
+  });
+
+  it('retires only the represented lane draft and follows later same-authority canonical truth', () => {
+    const feedback = new SvelteMap<string, PairFeedback>([['current', pairFeedback()]]);
+    const onLevelChange = vi.fn();
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(RfFrontEndSurface, { target, props: {
+      view: base(), onLevelChange,
+      get rfSqlFeedback() { return feedback.get('current')!; },
+    } });
+    flushSync();
+    const rfInput = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rfGain"] input')!;
+    const sqlInput = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-squelch"] input')!;
+    rfInput.value = '0.7';
+    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
+    sqlInput.value = '0.6';
+    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange).toHaveBeenCalledTimes(2);
+
+    feedback.set('current', pairFeedback({
+      rf: {
+        target: 179 / 255, requestedTarget: 179 / 255, phase: 'awaiting-confirmation',
+        busy: true, lifecycleId: 'rf-179', transitionId: 'rf-awaiting-179',
+      },
+    }));
+    flushSync();
+    expect(sqlInput.valueAsNumber).toBe(0.6);
+
+    feedback.set('current', pairFeedback({
+      rf: {
+        confirmed: 179 / 255, requestedTarget: 179 / 255, phase: 'confirmed',
+        lifecycleId: 'rf-179', transitionId: 'rf-confirmed-179',
+        outcome: { phase: 'confirmed' },
+      },
+    }));
+    flushSync();
+    feedback.set('current', pairFeedback({ rf: { confirmed: 204 / 255 } }));
+    flushSync();
+    expect(rfInput.valueAsNumber).toBe(0.8);
+    expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent)
+      .toBe('80%');
+    expect(sqlInput.valueAsNumber).toBe(0.6);
+    expect(onLevelChange).toHaveBeenCalledTimes(2);
+    unmount(component);
+    target.remove();
+  });
+
+  it('owns and destroys two independent native scalar bindings', () => {
+    const source = readFileSync('src/semantic/RfFrontEndSurface.svelte', 'utf8');
+    expect(source).toMatch(
+      /const rfGainScalar = createContinuousScalar\([\s\S]*?'rfGain'[\s\S]*?nativeRangeContinuousScalarPolicy/,
+    );
+    expect(source).toMatch(
+      /const squelchScalar = createContinuousScalar\([\s\S]*?'squelch'[\s\S]*?nativeRangeContinuousScalarPolicy/,
+    );
+    expect(source).toMatch(/rfGainScalar\.destroy\(\)/);
+    expect(source).toMatch(/squelchScalar\.destroy\(\)/);
   });
 });
 
