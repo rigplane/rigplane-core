@@ -40,12 +40,14 @@ import {
   KEY_SPEED_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR,
   SQUELCH_COMMAND_DESCRIPTOR,
+  TX_AUX_COMMAND_DESCRIPTORS,
   getCommandLifecycles,
   isCommandLifecycleSuperseded,
   type CommandLifecycle,
   type ControlFeedbackScope,
   type StateBackedCommandDescriptor,
   type StateBackedRepeatPolicy,
+  type TxAuxCommandFeedbackField,
 } from '$lib/stores/commands.svelte';
 import { currentControlSessionEpoch } from '../commands/radio-intents';
 import type { ServerState } from '$lib/types/state';
@@ -437,6 +439,48 @@ export function getKeySpeedControlFeedback(
   return getGlobalCwControlFeedback(
     currentControlSession, KEY_SPEED_COMMAND_DESCRIPTOR, 'keyer-speed', 'keySpeed',
   );
+}
+
+export type TxAuxControlFeedbackField = TxAuxCommandFeedbackField;
+const TX_AUX_FEEDBACK_CAPABILITIES: Readonly<Record<
+  TxAuxControlFeedbackField, readonly string[]
+>> = Object.freeze({
+  micGain: Object.freeze(['tx']),
+  driveGain: Object.freeze(['tx', 'drive_gain']),
+  voxGain: Object.freeze(['tx', 'vox']),
+  antiVoxGain: Object.freeze(['tx', 'vox']),
+  voxDelay: Object.freeze(['tx', 'vox']),
+  compressorLevel: Object.freeze(['tx', 'compressor']),
+  monitorGain: Object.freeze(['tx', 'monitor']),
+});
+
+/** Qualified radio-global TX/VOX feedback; receiver 0 is only stable identity. */
+export function getTxAuxControlFeedback(
+  field: TxAuxControlFeedbackField,
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const descriptor = TX_AUX_COMMAND_DESCRIPTORS[field];
+  const scope = descriptor.scope({ params: { level: 0 } })!;
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const structural = TX_AUX_FEEDBACK_CAPABILITIES[field].every(tag => tags.includes(tag));
+    const observation = qualifyRadioDisplayObservation({
+      state, caps, path: field, structural, value: state?.[field],
+    });
+    return session.state === 'connected' && epoch >= 0
+      && observation.state === 'current' && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
 }
 
 type RfSqlFeedbackLane = Readonly<{

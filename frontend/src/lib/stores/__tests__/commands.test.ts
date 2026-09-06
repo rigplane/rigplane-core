@@ -251,7 +251,9 @@ describe('command lifecycle store', () => {
 
       expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
         'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
-        'set_cw_pitch', 'set_key_speed',
+        'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
+        'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
+        'set_compressor_level', 'set_monitor_gain',
       ]);
       expect(rfMain).toEqual({ control: 'rf-gain', receiver: 0 });
       expect(rfSub).toEqual({ control: 'rf-gain', receiver: 1 });
@@ -363,7 +365,9 @@ describe('command lifecycle store', () => {
     it('registers exact global scopes, fields, targets, and canonical values', () => {
       expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
         'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
-        'set_cw_pitch', 'set_key_speed',
+        'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
+        'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
+        'set_compressor_level', 'set_monitor_gain',
       ]);
       const pitchScope = store.CW_PITCH_COMMAND_DESCRIPTOR.scope({ params: { value: 640 } })!;
       const speedScope = store.KEY_SPEED_COMMAND_DESCRIPTOR.scope({ params: { speed: 27 } })!;
@@ -420,6 +424,96 @@ describe('command lifecycle store', () => {
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 4));
       emitState(observed(mismatch, 5));
+      emitState(observed(target, 6, 'stale'));
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 7));
+      expect(status()).toBe('confirmed');
+    });
+  });
+
+  describe('raw TX/VOX state-backed descriptors', () => {
+    const registrations = [
+      ['micGain', 'set_mic_gain', 'mic-gain', 128],
+      ['driveGain', 'set_drive_gain', 'drive-gain', 127],
+      ['voxGain', 'set_vox_gain', 'vox-gain', 64],
+      ['antiVoxGain', 'set_anti_vox_gain', 'anti-vox-gain', 192],
+      ['voxDelay', 'set_vox_delay', 'vox-delay', 10],
+      ['compressorLevel', 'set_compressor_level', 'compressor-level', 96],
+      ['monitorGain', 'set_monitor_gain', 'monitor-level', 160],
+    ] as const;
+
+    it.each(registrations)('registers %s as exact raw global command %s', (
+      field, intentName, control, midpoint,
+    ) => {
+      const descriptor = store.TX_AUX_COMMAND_DESCRIPTORS[field];
+      const scope = descriptor.scope({ params: { level: midpoint } })!;
+      expect(descriptor.intentName).toBe(intentName);
+      expect(store.getStateBackedCommandDescriptor(intentName)).toBe(descriptor);
+      expect(scope).toEqual({ control, receiver: 0 });
+      expect(descriptor.fieldPath(scope)).toBe(field);
+      for (const value of [0, midpoint, field === 'voxDelay' ? 20 : 255]) {
+        expect(descriptor.target({ params: { level: value } })).toBe(value);
+        expect(descriptor.confirmed({ [field]: value } as unknown as ServerState, scope)).toBe(value);
+        expect(descriptor.matches(value, value)).toBe(true);
+      }
+      expect(descriptor.matches(midpoint + 1, midpoint)).toBe(false);
+    });
+
+    it('rejects malformed level envelopes for every TX/VOX descriptor', () => {
+      const inherited = Object.create({ level: 10 }) as Record<string, unknown>;
+      const throwing = Object.defineProperty({}, 'level', {
+        enumerable: true, get: () => { throw new Error('read'); },
+      });
+      const ownKeysTrap = new Proxy({}, { ownKeys: () => { throw new Error('keys'); } });
+      const malformed = [
+        {}, inherited, { level: true }, { level: '10' }, { level: 10.5 },
+        { level: Number.POSITIVE_INFINITY }, { level: Number.MAX_VALUE },
+        { level: 10, receiver: 0 }, { level: 10, extra: true },
+        { level: 10, [Symbol('extra')]: true }, throwing, ownKeysTrap,
+      ];
+      for (const descriptor of Object.values(store.TX_AUX_COMMAND_DESCRIPTORS)) {
+        for (const params of malformed) {
+          expect(descriptor.scope({ params })).toBeNull();
+          expect(descriptor.target({ params })).toBeNull();
+        }
+      }
+    });
+
+    it('supersedes only the same TX/VOX control while independent controls remain live', () => {
+      const micA = store.beginCommand({
+        id: 'mic-a', name: 'set_mic_gain', params: { level: 100 }, originalEpoch: 7,
+      });
+      const drive = store.beginCommand({
+        id: 'drive', name: 'set_drive_gain', params: { level: 100 }, originalEpoch: 7,
+      });
+      const micB = store.beginCommand({
+        id: 'mic-b', name: 'set_mic_gain', params: { level: 200 }, originalEpoch: 7,
+      });
+      expect(store.isCommandLifecycleSuperseded(micA)).toBe(true);
+      expect(store.isCommandLifecycleSuperseded(micB)).toBe(false);
+      expect(store.isCommandLifecycleSuperseded(drive)).toBe(false);
+    });
+
+    it.each(registrations)('confirms %s only from a newer fresh exact raw observation', (
+      field, intentName, _control, target,
+    ) => {
+      const observed = (
+        value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh',
+      ): ServerState => ({
+        stateContractVersion: 1, providerGeneration: 3, [field]: value,
+        fieldStatus: { [field]: {
+          observed: true, freshness, availability: 'available', lastObservedMonotonic: marker,
+        } },
+      } as unknown as ServerState);
+      emitState(observed(target - 1, 4));
+      const command = store.beginCommand({
+        id: intentName, name: intentName, params: { level: target }, originalEpoch: 7,
+      });
+      store.acknowledgeCommand(command.id, 7, 7);
+      const status = () => store.getCommandLifecycle(command.id, 7)?.status;
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 4));
+      emitState(observed(target - 1, 5));
       emitState(observed(target, 6, 'stale'));
       expect(status()).toBe('acknowledged');
       emitState(observed(target, 7));
