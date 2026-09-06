@@ -26,6 +26,14 @@ choice controls; a final whole-path audit remains outstanding.
 - [2026-09-06-mechanism-audit-finite-choice.md](2026-09-06-mechanism-audit-finite-choice.md)
   — finite-choice observation, eligibility and feedback-boundary evidence.
 
+## 2026-09-06 — RF/SQL feedback decision (tree `5a4cee2cd734ae31c76eb48397b6df6a062043ea`)
+
+- [2026-09-06-mechanism-audit-rf-sql-feedback.md](2026-09-06-mechanism-audit-rf-sql-feedback.md)
+  — bounded supplemental RF/SQL feedback decision: normalized exact matching
+  and one-binding-one-lease are cleared; admission, provider continuity and
+  native-consumer authority still need explicit contracts. No implementation
+  or final whole-path completion claim.
+
 ## 2026-09-03 — Icom lower-executor lifetime (draft, source `4e4c1782`)
 
 - [2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md](2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md)
