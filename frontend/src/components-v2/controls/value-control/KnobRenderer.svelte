@@ -17,6 +17,7 @@
   import {
     projectScalarRenderPresentation,
     type LegacyReadingPresentation,
+    type ScalarAccessibilityPresentation,
   } from './scalar-render-presentation';
 
   interface Props {
@@ -38,6 +39,7 @@
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
+    accessibility?: ScalarAccessibilityPresentation;
     legacy?: LegacyReadingPresentation;
   }
 
@@ -60,6 +62,7 @@
     unit = '',
     shortcutHint = null,
     title = null,
+    accessibility,
     legacy,
   }: Props = $props();
 
@@ -134,7 +137,7 @@
   let displayValue = $derived(renderedValue === null
     ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
     : displayFn ? displayFn(renderedValue) : String(renderedValue) + (unit ? unit : ''));
-  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
+  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy, accessibility));
 
   function handlePointerDown(e: PointerEvent) {
     const token = lease.beginPointer();
@@ -220,6 +223,7 @@
     aria-valuemin={view.domainValid ? view.domain.min : undefined}
     aria-valuemax={view.domainValid ? view.domain.max : undefined}
     aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
+    aria-valuetext={accessibility?.valueText?.trim() ? accessibility.valueText : undefined}
     aria-disabled={!view.editable}
     aria-busy={renderPresentation.attributes['aria-busy']}
     aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
