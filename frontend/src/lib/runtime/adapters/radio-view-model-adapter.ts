@@ -816,11 +816,11 @@ function deriveRfFrontEnd(
  * groups above: those groups answer a different question and would mirror
  * MAIN onto SUB when the active receiver changes.
  *
- * Admission is the owner-recorded leaf rule exactly: the leaf itself must be
+ * Non-S members retain the owner-recorded leaf rule: the leaf itself must be
  * `seen()` and the existing ancestor-aware `topFieldAvailable()` gate must
- * also pass. The latter preserves the current global absent-key semantics;
- * composing the two here makes a missing leaf unknown and lets a stale parent
- * veto an otherwise-fresh leaf without changing `field-status.ts`.
+ * also pass. S-meter is the deliberate qualified exception: it additionally
+ * requires matching provider identity, valid evidence and value, and a
+ * `current` observation. Global absent-key semantics remain unchanged.
  */
 function deriveReceiverIndicators(
   state: ServerState | null,
