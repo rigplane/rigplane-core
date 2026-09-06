@@ -12,7 +12,7 @@ const h = vi.hoisted(() => ({
   txController: null as ManagedAppTxController | null,
   main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(), split: vi.fn(),
   dualWatch: vi.fn(), speak: vi.fn(),
-  filterWidthFeedback: vi.fn(),
+  filterWidthFeedback: vi.fn(), cwPitchFeedback: vi.fn(), keySpeedFeedback: vi.fn(),
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
 }));
@@ -55,6 +55,8 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getDataModeArmed: () => ({ armed: false, value: null }),
   getBreakInDelayControlFeedback: () => null,
   getFilterWidthControlFeedback: h.filterWidthFeedback,
+  getCwPitchControlFeedback: h.cwPitchFeedback,
+  getKeySpeedControlFeedback: h.keySpeedFeedback,
   getPendingFrequencyHz: () => null,
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
@@ -134,6 +136,20 @@ beforeEach(() => {
     phase: 'unavailable', busy: false, availability: 'unavailable',
     outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
     scope: Object.freeze({ control: 'filter-width', receiver: 0 }),
+    repeatPolicy: 'latest-target-wins',
+  }));
+  h.cwPitchFeedback.mockReturnValue(Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable', busy: false, availability: 'unavailable',
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: 'cw-pitch', receiver: 0 }),
+    repeatPolicy: 'latest-target-wins',
+  }));
+  h.keySpeedFeedback.mockReturnValue(Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable', busy: false, availability: 'unavailable',
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: 'keyer-speed', receiver: 0 }),
     repeatPolicy: 'latest-target-wins',
   }));
   for (const mock of [
@@ -232,6 +248,25 @@ describe('production receiver-indicator partitioning', () => {
     expect(h.filterWidthFeedback()).toMatchObject({
       phase: 'unavailable', availability: 'unavailable',
       scope: { control: 'filter-width', receiver: 0 },
+    });
+  });
+
+  it('keeps the complete panel-adapter facade while wiring both CW lanes to the live session', () => {
+    const source = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
+    expect(source).toMatch(
+      /cwPitchFeedback\s*=\s*\$derived\(getCwPitchControlFeedback\(controlSession\)\)/,
+    );
+    expect(source).toMatch(
+      /keySpeedFeedback\s*=\s*\$derived\(getKeySpeedControlFeedback\(controlSession\)\)/,
+    );
+    expect(source).toMatch(
+      /<CwKeyerSurface[\s\S]*?\{cwPitchFeedback\}[\s\S]*?\{keySpeedFeedback\}[\s\S]*?\/>/,
+    );
+    expect(h.cwPitchFeedback()).toMatchObject({
+      phase: 'unavailable', scope: { control: 'cw-pitch', receiver: 0 },
+    });
+    expect(h.keySpeedFeedback()).toMatchObject({
+      phase: 'unavailable', scope: { control: 'keyer-speed', receiver: 0 },
     });
   });
 
