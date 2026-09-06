@@ -35,7 +35,9 @@ import {
 import { recordQsy } from './qsy-history-adapter';
 import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR,
+  CW_PITCH_COMMAND_DESCRIPTOR,
   FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  KEY_SPEED_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR,
   SQUELCH_COMMAND_DESCRIPTOR,
   getCommandLifecycles,
@@ -48,7 +50,7 @@ import {
 import { currentControlSessionEpoch } from '../commands/radio-intents';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
-import { qualifyDisplayObservation } from './display-observation';
+import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 
 // Re-export types for panel imports
 export type {
@@ -372,6 +374,68 @@ export function getFilterWidthControlFeedback(): Readonly<ControlFeedback<number
   return projectControlFeedback(
     FILTER_WIDTH_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
     { control: 'filter-width', receiver }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
+  );
+}
+
+type GlobalCwControl = 'cw-pitch' | 'keyer-speed';
+type GlobalCwField = 'cwPitch' | 'keySpeed';
+
+function unavailableControlFeedback(
+  feedback: Readonly<ControlFeedback<number>>,
+): Readonly<ControlFeedback<number>> {
+  return Object.freeze({
+    ...feedback, confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null,
+  });
+}
+
+function getGlobalCwControlFeedback(
+  currentControlSession: ControlSessionSnapshot | undefined,
+  descriptor: StateBackedCommandDescriptor<number>,
+  control: GlobalCwControl,
+  field: GlobalCwField,
+): Readonly<ControlFeedback<number>> {
+  // These canonical-store reads must precede every unavailable/session return:
+  // they are the legacy panel's reactive invalidation across a WS replacement.
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const scope = { control, receiver: 0 } as const;
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const observation = qualifyRadioDisplayObservation({
+      state, caps, path: field,
+      structural: caps?.capabilities.includes('cw') === true,
+      value: state?.[field],
+    });
+    return session.state === 'connected' && epoch >= 0
+      && observation.state === 'current' && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+/** Radio-global CW Pitch projection; receiver 0 is only a stable scope encoding. */
+export function getCwPitchControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getGlobalCwControlFeedback(
+    currentControlSession, CW_PITCH_COMMAND_DESCRIPTOR, 'cw-pitch', 'cwPitch',
+  );
+}
+
+/** Radio-global Keyer Speed projection; receiver 0 is only a stable scope encoding. */
+export function getKeySpeedControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getGlobalCwControlFeedback(
+    currentControlSession, KEY_SPEED_COMMAND_DESCRIPTOR, 'keyer-speed', 'keySpeed',
   );
 }
 

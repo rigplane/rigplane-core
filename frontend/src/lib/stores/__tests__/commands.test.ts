@@ -251,6 +251,7 @@ describe('command lifecycle store', () => {
 
       expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
         'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+        'set_cw_pitch', 'set_key_speed',
       ]);
       expect(rfMain).toEqual({ control: 'rf-gain', receiver: 0 });
       expect(rfSub).toEqual({ control: 'rf-gain', receiver: 1 });
@@ -355,6 +356,74 @@ describe('command lifecycle store', () => {
       expect(current().status).toBe('acknowledged');
       emitState(snapshot(128 / 255, 7));
       expect(current().status).toBe('confirmed');
+    });
+  });
+
+  describe('global CW state-backed descriptors', () => {
+    it('registers exact global scopes, fields, targets, and canonical values', () => {
+      expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
+        'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+        'set_cw_pitch', 'set_key_speed',
+      ]);
+      const pitchScope = store.CW_PITCH_COMMAND_DESCRIPTOR.scope({ params: { value: 640 } })!;
+      const speedScope = store.KEY_SPEED_COMMAND_DESCRIPTOR.scope({ params: { speed: 27 } })!;
+      expect(pitchScope).toEqual({ control: 'cw-pitch', receiver: 0 });
+      expect(speedScope).toEqual({ control: 'keyer-speed', receiver: 0 });
+      expect(store.CW_PITCH_COMMAND_DESCRIPTOR.fieldPath(pitchScope)).toBe('cwPitch');
+      expect(store.KEY_SPEED_COMMAND_DESCRIPTOR.fieldPath(speedScope)).toBe('keySpeed');
+      expect(store.CW_PITCH_COMMAND_DESCRIPTOR.target({ params: { value: 640 } })).toBe(640);
+      expect(store.KEY_SPEED_COMMAND_DESCRIPTOR.target({ params: { speed: 27 } })).toBe(27);
+      expect(store.CW_PITCH_COMMAND_DESCRIPTOR.confirmed({ cwPitch: 650 } as ServerState, pitchScope)).toBe(650);
+      expect(store.KEY_SPEED_COMMAND_DESCRIPTOR.confirmed({ keySpeed: 28 } as ServerState, speedScope)).toBe(28);
+      expect(store.CW_PITCH_COMMAND_DESCRIPTOR.matches(640, 640)).toBe(true);
+      expect(store.KEY_SPEED_COMMAND_DESCRIPTOR.matches(27, 28)).toBe(false);
+    });
+
+    it.each([
+      ['pitch', () => store.CW_PITCH_COMMAND_DESCRIPTOR, 'value'],
+      ['speed', () => store.KEY_SPEED_COMMAND_DESCRIPTOR, 'speed'],
+    ] as const)('rejects every malformed %s envelope without throwing', (_name, descriptorOf, key) => {
+      const descriptor = descriptorOf();
+      const inherited = Object.create({ [key]: 24 }) as Record<string, unknown>;
+      const throwing = Object.defineProperty({}, key, {
+        enumerable: true, get: () => { throw new Error('read'); },
+      });
+      const ownKeysTrap = new Proxy({}, { ownKeys: () => { throw new Error('keys'); } });
+      for (const params of [
+        {}, inherited, { [key]: '24' }, { [key]: true }, { [key]: 24.5 },
+        { [key]: Number.POSITIVE_INFINITY }, { [key]: Number.MAX_VALUE },
+        { [key]: 24, extra: true }, { [key]: 24, [Symbol('extra')]: true }, throwing, ownKeysTrap,
+      ]) {
+        expect(descriptor.scope({ params })).toBeNull();
+        expect(descriptor.target({ params })).toBeNull();
+      }
+    });
+
+    it.each([
+      ['set_cw_pitch', 'cwPitch', 'value', 640, 650],
+      ['set_key_speed', 'keySpeed', 'speed', 27, 28],
+    ] as const)('confirms %s only after a newer fresh exact field observation', (
+      name, field, param, target, mismatch,
+    ) => {
+      const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
+        stateContractVersion: 1, providerGeneration: 3, [field]: value,
+        fieldStatus: { [field]: {
+          observed: true, freshness, availability: 'available', lastObservedMonotonic: marker,
+        } },
+      } as unknown as ServerState);
+      emitState(observed(mismatch, 4));
+      store.beginCommand({
+        id: name, name, params: { [param]: target }, originalEpoch: 7,
+      });
+      store.acknowledgeCommand(name, 7, 7);
+      const status = () => store.getCommandLifecycle(name, 7)?.status;
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 4));
+      emitState(observed(mismatch, 5));
+      emitState(observed(target, 6, 'stale'));
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 7));
+      expect(status()).toBe('confirmed');
     });
   });
 });

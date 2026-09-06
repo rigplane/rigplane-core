@@ -65,6 +65,19 @@ const safeInteger = (value: unknown): number | null =>
 const providerGeneration = (value: unknown): number | null =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 
+function exactSafeIntegerTarget(
+  command: Pick<CommandLifecycle, 'params'>, key: string,
+): number | null {
+  try {
+    const params = command.params;
+    return Reflect.ownKeys(params).length === 1
+      && Object.prototype.hasOwnProperty.call(params, key)
+      ? safeInteger(params[key]) : null;
+  } catch {
+    return null;
+  }
+}
+
 type NormalizedLevelCommand = Readonly<{ receiver: 0 | 1; target: number }>;
 function normalizedLevelCommand(
   command: Pick<CommandLifecycle, 'params'>,
@@ -147,12 +160,38 @@ export const SQUELCH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = 
   matches: (confirmed: number, target: number) => confirmed === target,
 });
 
+const cwPitchTarget = (command: Pick<CommandLifecycle, 'params'>): number | null =>
+  exactSafeIntegerTarget(command, 'value');
+export const CW_PITCH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_cw_pitch', repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => cwPitchTarget(command) === null
+    ? null : Object.freeze({ control: 'cw-pitch', receiver: 0 }),
+  fieldPath: () => 'cwPitch',
+  target: cwPitchTarget,
+  confirmed: (state: ServerState) => safeInteger(state.cwPitch),
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
+const keySpeedTarget = (command: Pick<CommandLifecycle, 'params'>): number | null =>
+  exactSafeIntegerTarget(command, 'speed');
+export const KEY_SPEED_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_key_speed', repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => keySpeedTarget(command) === null
+    ? null : Object.freeze({ control: 'keyer-speed', receiver: 0 }),
+  fieldPath: () => 'keySpeed',
+  target: keySpeedTarget,
+  confirmed: (state: ServerState) => safeInteger(state.keySpeed),
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
   new Map([
     [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
     [BREAK_IN_DELAY_COMMAND_DESCRIPTOR.intentName, BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
     [RF_GAIN_COMMAND_DESCRIPTOR.intentName, RF_GAIN_COMMAND_DESCRIPTOR],
     [SQUELCH_COMMAND_DESCRIPTOR.intentName, SQUELCH_COMMAND_DESCRIPTOR],
+    [CW_PITCH_COMMAND_DESCRIPTOR.intentName, CW_PITCH_COMMAND_DESCRIPTOR],
+    [KEY_SPEED_COMMAND_DESCRIPTOR.intentName, KEY_SPEED_COMMAND_DESCRIPTOR],
   ]);
 export const getStateBackedCommandDescriptor = (intentName: string): StateBackedCommandDescriptor<unknown> | undefined =>
   (STATE_BACKED_COMMAND_DESCRIPTORS as ReadonlyMap<string, StateBackedCommandDescriptor<unknown>>).get(intentName);

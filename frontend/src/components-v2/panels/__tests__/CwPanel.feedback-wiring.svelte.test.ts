@@ -3,6 +3,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { flushSync, mount, unmount } from 'svelte';
 import { setLocale } from '$lib/i18n';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
+import type { CommandLifecycle } from '$lib/stores/commands.svelte';
 const props = $state({
   cwPitch: 600, keySpeed: 12, breakIn: 1, breakInDelay: 64, apfMode: 0,
   twinPeak: false, currentMode: 'CW', apfDisabled: false, tpfDisabled: false,
@@ -17,22 +20,66 @@ const feedback = $state({
   sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 },
   repeatPolicy: 'latest-target-wins',
 } as ControlFeedback<number>);
+const fresh = () => ({
+  storePath: 'fixture', observed: true, freshness: 'fresh' as const,
+  availability: 'available' as const, lastObservedMonotonic: 5,
+});
+const connectedState = (): ServerState => ({
+  stateContractVersion: 1, providerGeneration: 3, active: 'MAIN',
+  cwPitch: 600, keySpeed: 12, main: {}, sub: {},
+  fieldStatus: { cwPitch: fresh(), keySpeed: fresh() },
+} as unknown as ServerState);
+const connectedCaps = (): Capabilities => ({
+  stateContractVersion: 1, providerGeneration: 3, capabilities: ['cw'],
+} as unknown as Capabilities);
+const canonical = $state({
+  state: connectedState() as ServerState | null,
+  caps: connectedCaps() as Capabilities | null,
+  session: { state: 'connected' as 'connected' | 'disconnected', epoch: 1 },
+});
+const lifecycle = $state({ commands: [] as CommandLifecycle[] });
+const cwCommand = (
+  name: 'set_cw_pitch' | 'set_key_speed', status: CommandLifecycle['status'],
+): CommandLifecycle => ({
+  id: name, name, params: name === 'set_cw_pitch' ? { value: 650 } : { speed: 28 },
+  originalEpoch: 1, eventEpoch: 1, providerGeneration: 3,
+  createdAt: 1, updatedAt: 1, timeoutMs: 5_000, status,
+  ...(status === 'failed' ? { error: 'radio rejected' } : {}),
+});
 let CwPanel: typeof import('../CwPanel.svelte').default;
 let component: ReturnType<typeof mount> | null = null, target: HTMLDivElement;
 beforeAll(async () => {
-  vi.doMock('$lib/runtime/adapters/panel-adapters', () => ({
+  vi.doMock('$lib/runtime/frontend-runtime', () => ({ runtime: {
+    get state() { return canonical.state; },
+    get caps() { return canonical.caps; },
+    get controlSession() { return canonical.session; },
+  } }));
+  vi.doMock('$lib/stores/commands.svelte', async (importOriginal) => ({
+    ...await importOriginal<typeof import('$lib/stores/commands.svelte')>(),
+    getCommandLifecycles: () => lifecycle.commands,
+    isCommandLifecycleSuperseded: () => false,
+  }));
+  vi.doMock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => ({
+    ...await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>(),
     deriveCwProps: () => props, getCwHandlers: () => handlers,
     getBreakInDelayControlFeedback: () => feedback,
   }));
   CwPanel = (await import('../CwPanel.svelte')).default;
 });
-afterAll(() => vi.doUnmock('$lib/runtime/adapters/panel-adapters'));
+afterAll(() => {
+  vi.doUnmock('$lib/runtime/adapters/panel-adapters');
+  vi.doUnmock('$lib/runtime/frontend-runtime');
+  vi.doUnmock('$lib/stores/commands.svelte');
+});
 afterEach(() => {
   if (component) unmount(component);
   component = null; target?.remove(); setLocale('en-US');
   Object.assign(feedback, { confirmed: 64, target: null, requestedTarget: null, phase: 'idle',
     busy: false, availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
     sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 } });
+  canonical.state = connectedState(); canonical.caps = connectedCaps();
+  canonical.session = { state: 'connected', epoch: 1 };
+  lifecycle.commands = [];
 });
 function render() {
   target = document.createElement('div'); document.body.appendChild(target);
@@ -41,7 +88,48 @@ function render() {
   const live = () => target.querySelector<HTMLElement>('[data-testid="cw-break-in-delay-live"]');
   return { input, live };
 }
+function vcValue(label: string): string {
+  const headers = [...target.querySelectorAll('.vc-header')];
+  const header = headers.find((entry) => entry.querySelector('.vc-label')?.textContent === label);
+  return header?.querySelector('.vc-value')?.textContent ?? '';
+}
 describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
+  it('projects independent Pitch and Speed phases without replacing canonical truth', () => {
+    render();
+    const pitch = target.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!;
+    const speed = target.querySelector<HTMLElement>('[aria-label="Key Speed"]')!;
+    lifecycle.commands = [cwCommand('set_cw_pitch', 'failed'), cwCommand('set_key_speed', 'acknowledged')];
+    flushSync();
+    expect([pitch.dataset.commandPhase, pitch.getAttribute('aria-busy')]).toEqual(['failed', 'false']);
+    expect([speed.dataset.commandPhase, speed.getAttribute('aria-busy')])
+      .toEqual(['awaiting-confirmation', 'true']);
+    expect([vcValue('CW Pitch'), vcValue('Key Speed')]).toEqual(['600 Hz', '12 WPM']);
+    expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
+  });
+
+  it('drops pre-request CW work on canonical-store disconnect and recovers from fresh truth', () => {
+    vi.useFakeTimers(); handlers.onCwPitchChange.mockClear(); handlers.onKeySpeedChange.mockClear();
+    render();
+    const pitch = target.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!;
+    const speed = target.querySelector<HTMLElement>('[aria-label="Key Speed"]')!;
+    pitch.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    speed.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    canonical.state = null; canonical.caps = null;
+    canonical.session = { state: 'disconnected', epoch: 1 }; flushSync();
+    vi.advanceTimersByTime(50);
+    expect([pitch.getAttribute('aria-disabled'), speed.getAttribute('aria-disabled')]).toEqual(['true', 'true']);
+    expect([handlers.onCwPitchChange.mock.calls, handlers.onKeySpeedChange.mock.calls]).toEqual([[], []]);
+
+    canonical.session = { state: 'connected', epoch: 2 };
+    canonical.caps = { ...connectedCaps(), providerGeneration: 4 };
+    canonical.state = { ...connectedState(), providerGeneration: 4 }; flushSync();
+    speed.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(speed.getAttribute('aria-disabled')).toBe('false');
+    expect(handlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(13);
+    vi.useRealTimers();
+  });
+
   it('keeps normalized input local until one native change commits it', () => {
     handlers.onBreakInDelayChange.mockClear(); const r = render();
     Object.defineProperty(r.input(), 'valueAsNumber', { configurable: true, value: 111.4 });

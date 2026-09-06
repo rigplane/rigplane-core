@@ -86,6 +86,7 @@ import {
   setWsConnected,
 } from '../../stores/connection.svelte';
 import { resetRadioState, setRadioState } from '../../stores/radio.svelte';
+import { clearCapabilities } from '../../stores/capabilities.svelte';
 
 beforeEach(() => {
   radioStoreMock.current = null;
@@ -1102,6 +1103,28 @@ describe('control channel singleton', () => {
       { state: 'connecting', epoch: 0 },
       { state: 'connected', epoch: 1 },
     ]);
+  });
+
+  it('clears canonical stores before publishing a disconnected session', async () => {
+    const { connect, disconnect, onControlSessionTransition } = await import('../ws-client');
+    radioStoreMock.current = makeState();
+    vi.mocked(resetRadioState).mockClear();
+    vi.mocked(clearCapabilities).mockClear();
+    const observed: Array<{ state: ServerStateWithObservation | null; capsCleared: boolean }> = [];
+    const unsubscribe = onControlSessionTransition((transition) => {
+      if (transition.state === 'disconnected') observed.push({
+        state: radioStoreMock.current,
+        capsCleared: vi.mocked(clearCapabilities).mock.calls.length === 1,
+      });
+    });
+
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    instances[0].simulateClose();
+
+    expect(observed).toEqual([{ state: null, capsCleared: true }]);
+    unsubscribe();
+    disconnect();
   });
 
   it('keeps the seeded snapshot byte-identical for representative three-argument dispatches', async () => {
