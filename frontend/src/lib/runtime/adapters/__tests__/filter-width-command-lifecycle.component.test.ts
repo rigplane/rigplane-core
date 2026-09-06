@@ -6,7 +6,7 @@ import { getFilterWidthControlFeedback } from '../panel-adapters';
 
 type Command = {
   id: string; name: string; params: { width: number; receiver: 0 | 1 };
-  createdAt: number; originalEpoch: number;
+  providerGeneration: number; createdAt: number; originalEpoch: number;
   status: 'pending' | 'acknowledged' | 'confirmed';
 };
 const h = vi.hoisted(() => ({
@@ -32,6 +32,7 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({ toRadioViewMo
 function observed(width: number, active: 'MAIN' | 'SUB' = 'MAIN', otherWidth = 2400) {
   const path = active === 'MAIN' ? 'main.filterWidth' : 'sub.filterWidth';
   return {
+    providerGeneration: 3,
     active,
     main: { filterWidth: active === 'MAIN' ? width : otherWidth },
     sub: { filterWidth: active === 'SUB' ? width : otherWidth },
@@ -67,7 +68,7 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
     const refresh = (mounted[0] as { refresh: () => void }).refresh;
     expect(probe.dataset).toMatchObject({ phase: 'idle', confirmed: '2400', target: '' });
 
-    h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
+    h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 }, providerGeneration: 3, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
     refresh(); flushSync();
     expect(probe.dataset).toMatchObject({ phase: 'acknowledged', confirmed: '2400', target: '3000' });
 
@@ -84,7 +85,7 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
   it('exposes the complete descriptor evidence without collapsing requested into confirmed truth', () => {
     h.state = observed(2400);
     h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 },
-      createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
+      providerGeneration: 3, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
     expect(getFilterWidthControlFeedback()).toMatchObject({
       confirmed: 2400, target: 3000, requestedTarget: 3000,
       phase: 'awaiting-confirmation', busy: true, availability: 'available',
@@ -95,7 +96,7 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
 
   it('keeps SUB command evidence isolated from MAIN projection', () => {
     h.state = observed(2800, 'MAIN', 2400);
-    h.commands = [{ id: 'sub', name: 'set_filter_width', params: { width: 2800, receiver: 1 }, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
+    h.commands = [{ id: 'sub', name: 'set_filter_width', params: { width: 2800, receiver: 1 }, providerGeneration: 3, createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
     expect(render().dataset).toMatchObject({ phase: 'idle', confirmed: '2800', target: '' });
   });
 });
