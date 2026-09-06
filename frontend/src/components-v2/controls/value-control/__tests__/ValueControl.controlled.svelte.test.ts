@@ -163,6 +163,21 @@ describe('ValueControl controlled HBar rendering', () => {
     expect(slider(target).getAttribute('aria-valuenow')).toBe('20');
   });
 
+  it('makes a cancelled pointer token inert before a later move event', () => {
+    const onChange = vi.fn();
+    const { target } = mountReactive({ ...baseProps, onChange });
+    vi.spyOn(target.querySelector('.vc-hbar') as HTMLElement, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 100 } as DOMRect);
+    const control = slider(target) as HTMLElement & { setPointerCapture?: (pointerId: number) => void };
+    control.setPointerCapture = vi.fn();
+
+    control.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 50, pointerId: 1 }));
+    control.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+    control.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 80, pointerId: 1 }));
+
+    expect(onChange.mock.calls).toEqual([[50]]);
+  });
+
   it('uses canonical value for controlled keyboard arithmetic until the parent accepts', () => {
     const onChange = vi.fn();
     const { target } = mountReactive({ ...baseProps, optimistic: false, onChange });
@@ -214,5 +229,17 @@ describe('ValueControl controlled HBar rendering', () => {
     expect(onChange).toHaveBeenCalledWith(30);
     expect(visibleValue(target)).toContain('30');
     expect(fill(target)).toContain('--vc-fill-percent: 30%');
+  });
+
+  it('revokes a live disabled HBar binding even when a key event is forced through', () => {
+    const onChange = vi.fn();
+    const { state, target } = mountReactive({ ...baseProps, onChange });
+    state.disabled = true;
+    flushSync();
+
+    slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

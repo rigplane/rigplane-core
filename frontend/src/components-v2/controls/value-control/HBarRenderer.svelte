@@ -1,24 +1,31 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import type {
+    ContinuousScalarBinding,
+    ContinuousScalarRendererLease,
+    ContinuousScalarView,
+  } from '../../../primitives/scalar/continuous-scalar.svelte';
   import './value-control.css';
   import {
     getFillPercent,
     calculateClickValue,
-    calculateDragValue,
-    handleKeyboardStep,
-    handleWheelStep,
-    debounce,
-    clamp,
-    snapToStep,
   } from '../../../primitives/scalar/value-control-core';
 
+  /**
+   * Raw feedback fields predate the scalar evidence contract.  They remain
+   * renderer decoration for LegacyHBarAdapter only and never enter a binding.
+   */
+  interface LegacyPresentation {
+    readonly feedbackPhase: string | null;
+    readonly feedbackBusy: boolean | undefined;
+    readonly feedbackDescription: string | null;
+    readonly feedbackStatus: string | null;
+  }
+
   interface Props {
-    value: number;
+    binding: ContinuousScalarBinding;
     min: number;
     max: number;
     step: number;
-    defaultValue?: number;
-    fineStepDivisor?: number;
     label: string;
     displayFn?: (v: number) => string;
     fillColor?: string;
@@ -29,26 +36,17 @@
     showLabel?: boolean;
     compact?: boolean;
     variant?: 'modern' | 'hardware' | 'hardware-illuminated';
-    onChange: (value: number) => void;
-    debounceMs?: number;
-    disabled?: boolean;
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
-    optimistic?: boolean;
-    feedbackPhase?: string | null;
-    feedbackBusy?: boolean;
-    feedbackDescription?: string | null;
-    feedbackStatus?: string | null;
+    legacyPresentation?: LegacyPresentation;
   }
 
   let {
-    value,
+    binding,
     min,
     max,
     step,
-    defaultValue,
-    fineStepDivisor = 10,
     label,
     displayFn,
     fillColor,
@@ -59,156 +57,107 @@
     showLabel = true,
     compact = false,
     variant = 'modern',
-    onChange,
-    debounceMs = 0,
-    disabled = false,
     unit = '',
     shortcutHint = null,
     title = null,
-    optimistic = true,
-    feedbackPhase = null,
-    feedbackBusy,
-    feedbackDescription = null,
-    feedbackStatus = null,
+    legacyPresentation,
   }: Props = $props();
 
   const feedbackDescriptionId = $props.id();
 
   let containerEl: HTMLDivElement | null = $state(null);
-  let isDragging = $state(false);
-  let wheelLocked = $state(false);
-  let wheelUnlockTimer: ReturnType<typeof setTimeout> | null = null;
-  let dragStartValue = $state(0);
-  let dragStartX = $state(0);
-  let localValue = $state(untrack(() => value));
+  let activePointer: { id: number; token: number; target: HTMLElement } | null = null;
+  let lease: ContinuousScalarRendererLease | null = $state(null);
 
-  function markWheelActive() {
-    wheelLocked = true;
-    if (wheelUnlockTimer) clearTimeout(wheelUnlockTimer);
-    wheelUnlockTimer = setTimeout(() => {
-      wheelLocked = false;
-      wheelUnlockTimer = null;
-    }, 300);
-  }
-
-  // Sync from parent value ONLY when idle (no drag, no wheel)
-  let prevValue = untrack(() => value);
   $effect(() => {
-    const v = value;
-    if (v !== prevValue) {
-      prevValue = v;
-      if (!isDragging && !wheelLocked) {
-        localValue = v;
+    const nextLease = binding.attachRenderer();
+    lease = nextLease;
+    return () => {
+      if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+        activePointer.target.releasePointerCapture(activePointer.id);
       }
-    }
+      activePointer = null;
+      nextLease.dispose();
+    };
   });
 
-  // Derived values
-  // A controlled HBar may request a target without presenting it as accepted.
-  // The canonical parent prop remains both render source and interaction base.
-  let renderedValue = $derived(optimistic ? localValue : value);
-  let fillPercent = $derived(getFillPercent(renderedValue, min, max));
-  let effectiveDefault = $derived(defaultValue ?? min);
+  // Reading a lease reconciles its owner. Keep that mutable reconciliation in
+  // an effect, then render the resulting snapshot as ordinary Svelte state.
+  let view = $state<ContinuousScalarView | null>(null);
+  $effect(() => {
+    view = lease?.view ?? binding.view;
+  });
+  let renderedValue = $derived(view?.displayed ?? null);
+  let fillPercent = $derived(renderedValue === null
+    ? 0
+    : getFillPercent(renderedValue, min, max));
   let effectiveFill = $derived(fillGradient
     ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
     : (fillColor ?? accentColor));
-  let displayValue = $derived(displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
-  
-  // Adaptive wheel multiplier based on range (normalize to ~255 baseline)
-  let adaptiveWheelMultiplier = $derived(Math.max(1, Math.ceil((max - min) / 255)));
-
-  // Debounced change handler
-  let debouncedOnChange = $derived.by<(...args: unknown[]) => void>(() => {
-    if (debounceMs > 0) {
-      return debounce((v: number) => onChange(v), debounceMs) as (...args: unknown[]) => void;
-    }
-    return ((v: number) => onChange(v)) as (...args: unknown[]) => void;
-  });
-
-  function emitChange(newValue: number, immediate = false) {
-    if (optimistic && newValue !== localValue) {
-      localValue = newValue;
-    }
-    if (newValue !== value) {
-      if (immediate) {
-        onChange(newValue);
-      } else {
-        debouncedOnChange(newValue);
-      }
-    }
-  }
+  let displayValue = $derived(renderedValue === null
+    ? '—'
+    : displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
 
   function handlePointerDown(e: PointerEvent) {
-    if (disabled || !containerEl) return;
+    if (!containerEl || !lease) return;
+    const token = lease.beginPointer();
+    if (token === null) return;
 
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
+    activePointer = { id: e.pointerId, token, target };
 
-    isDragging = true;
-    dragStartX = e.clientX;
-
-    // Calculate value from click position
     const rect = containerEl.getBoundingClientRect();
     const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
-    dragStartValue = newValue;
-    emitChange(newValue, true);
+    lease.pointer(token, newValue);
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!isDragging || disabled || !containerEl) return;
+    if (!activePointer || activePointer.id !== e.pointerId || !containerEl || !lease) return;
 
     const rect = containerEl.getBoundingClientRect();
     const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
-    emitChange(newValue, true);
+    lease.pointer(activePointer.token, newValue);
   }
 
   function handlePointerUp(e: PointerEvent) {
-    if (!isDragging) return;
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease?.endPointer(activePointer.token);
+    activePointer = null;
+  }
 
-    const target = e.currentTarget as HTMLElement;
-    target.releasePointerCapture(e.pointerId);
-    isDragging = false;
+  function handlePointerCancel(e: PointerEvent) {
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease?.cancelPointer(activePointer.token);
+    activePointer = null;
   }
 
   function handleWheel(e: WheelEvent) {
-    if (disabled) return;
+    if (!view?.editable || !lease) return;
     e.preventDefault();
-
-    // Use adaptive multiplier for consistent scroll speed across ranges
-    const wheelMultiplier = e.shiftKey ? 1 : (4 * adaptiveWheelMultiplier);
-    const effectiveStep = e.shiftKey ? step / fineStepDivisor : step * wheelMultiplier;
-    const direction = e.deltaY > 0 ? -1 : 1;
-    const newValue = clamp(
-      snapToStep(renderedValue + direction * effectiveStep, effectiveStep, min),
-      min,
-      max,
-    );
-    if (optimistic) localValue = newValue;
-    markWheelActive();
-    onChange(newValue);
+    lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (disabled) return;
-
-    const newValue = handleKeyboardStep(renderedValue, e.key, step, fineStepDivisor, min, max, e.shiftKey);
-    if (newValue !== null) {
-      e.preventDefault();
-      emitChange(newValue);
-    }
+    if (lease?.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 
   function handleDoubleClick() {
-    if (disabled) return;
-    emitChange(effectiveDefault);
+    lease?.reset();
   }
 </script>
 
 <div
   class="vc-hbar"
   class:compact
-  class:disabled
+  class:disabled={!view?.editable}
   class:hardware={variant === 'hardware'}
   class:hw-illum={variant === 'hardware-illuminated'}
   bind:this={containerEl}
@@ -230,19 +179,19 @@
   <div
     class="vc-track-container"
     role="slider"
-    tabindex={disabled ? -1 : 0}
+    tabindex={view?.editable ? 0 : -1}
     aria-label={label}
     aria-valuemin={min}
     aria-valuemax={max}
-    aria-valuenow={value}
-    aria-disabled={disabled}
-    aria-busy={feedbackBusy}
-    aria-describedby={feedbackDescription ? feedbackDescriptionId : undefined}
-    data-command-phase={feedbackPhase ?? undefined}
+    aria-valuenow={view?.canonical ?? undefined}
+    aria-disabled={!view?.editable}
+    aria-busy={legacyPresentation?.feedbackBusy}
+    aria-describedby={legacyPresentation?.feedbackDescription ? feedbackDescriptionId : undefined}
+    data-command-phase={legacyPresentation?.feedbackPhase ?? undefined}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
-    onpointercancel={handlePointerUp}
+    onpointercancel={handlePointerCancel}
     onwheel={handleWheel}
     onkeydown={handleKeyDown}
     ondblclick={handleDoubleClick}
@@ -271,17 +220,17 @@
       <div class="vc-thumb" aria-hidden="true"></div>
     {/if}
   </div>
-  {#if feedbackDescription}
-    <span id={feedbackDescriptionId} class="sr-only">{feedbackDescription}</span>
+  {#if legacyPresentation?.feedbackDescription}
+    <span id={feedbackDescriptionId} class="sr-only">{legacyPresentation.feedbackDescription}</span>
   {/if}
-  {#if feedbackStatus}
+  {#if legacyPresentation?.feedbackStatus}
     <span
       class="sr-only"
       role="status"
       aria-live="polite"
       aria-atomic="true"
       data-control-feedback-status
-    >{feedbackStatus}</span>
+    >{legacyPresentation.feedbackStatus}</span>
   {/if}
 </div>
 

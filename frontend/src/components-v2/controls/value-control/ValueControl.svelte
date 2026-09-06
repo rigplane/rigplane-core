@@ -1,5 +1,5 @@
 <script lang="ts">
-  import HBarRenderer from './HBarRenderer.svelte';
+  import LegacyHBarAdapter from './LegacyHBarAdapter.svelte';
   import BipolarRenderer from './BipolarRenderer.svelte';
   import KnobRenderer from './KnobRenderer.svelte';
   import DiscreteRenderer from './DiscreteRenderer.svelte';
@@ -138,8 +138,8 @@
     tickStyle,
   });
 
-  // This is intentionally not part of commonProps: skin and non-HBar renderer
-  // contracts remain unchanged.
+  // Built-in HBars move through the reading-evidence adapter. Custom hbar skins
+  // remain on the legacy raw-prop seam until their own binding migration.
   let hbarProps = $derived({
     ...commonProps,
     optimistic,
@@ -168,7 +168,7 @@
     <SkinRenderer {...commonProps} />
   {/if}
 {:else if renderer === 'hbar'}
-  <HBarRenderer {...hbarProps} />
+  <LegacyHBarAdapter {...hbarProps} />
 {:else if renderer === 'bipolar'}
   <BipolarRenderer {...commonProps} />
 {:else if renderer === 'knob'}
