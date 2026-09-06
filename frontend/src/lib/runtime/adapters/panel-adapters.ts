@@ -490,13 +490,14 @@ type RfSqlFeedbackLane = Readonly<{
 
 /** One qualified receiver/session snapshot for the two-lane RF/SQL owner. */
 export function getRfSqlControlFeedback(
-  currentControlSession: ControlSessionSnapshot,
+  currentControlSession?: ControlSessionSnapshot,
 ): Readonly<{ rf: RfSqlFeedbackLane; sql: RfSqlFeedbackLane }> | null {
-  const sessionState = currentControlSession.state;
-  const sessionEpoch = currentControlSession.epoch;
   const state = runtime.state;
   const caps = runtime.caps;
   const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const sessionState = session.state;
+  const sessionEpoch = session.epoch;
   const stateGeneration = state?.providerGeneration;
   if (sessionState !== 'connected'
     || !Number.isSafeInteger(sessionEpoch) || sessionEpoch < 0

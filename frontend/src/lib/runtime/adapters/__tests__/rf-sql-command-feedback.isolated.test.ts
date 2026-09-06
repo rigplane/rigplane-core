@@ -10,6 +10,8 @@ const h = vi.hoisted(() => ({
   stateReads: 0,
   capsReads: 0,
   commandReads: 0,
+  sessionReads: 0,
+  session: { state: 'connected' as 'connected' | 'disconnected', epoch: 7 },
   active: 'MAIN' as 'MAIN' | 'SUB' | null,
   operational: true,
   project: vi.fn(),
@@ -19,6 +21,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
     get state() { h.stateReads += 1; return h.state; },
     get caps() { h.capsReads += 1; return h.caps; },
+    get controlSession() { h.sessionReads += 1; return h.session; },
   },
 }));
 vi.mock('$lib/stores/commands.svelte', async (importOriginal) => ({
@@ -79,8 +82,23 @@ const connected = { state: 'connected' as const, epoch: 7 };
 describe('qualified RF/SQL command feedback', () => {
   afterEach(() => {
     h.state = null; h.caps = null; h.commands = [];
-    h.stateReads = 0; h.capsReads = 0; h.commandReads = 0;
+    h.stateReads = 0; h.capsReads = 0; h.commandReads = 0; h.sessionReads = 0;
+    h.session = { state: 'connected', epoch: 7 };
     h.active = 'MAIN'; h.operational = true; h.project.mockClear();
+  });
+
+  it('defaults to runtime session after capturing every reactive dependency before guards', () => {
+    h.session = { state: 'disconnected', epoch: -1 };
+    expect(getRfSqlControlFeedback()).toBeNull();
+    expect([h.stateReads, h.capsReads, h.commandReads, h.sessionReads]).toEqual([1, 1, 1, 1]);
+
+    h.state = state(); h.caps = caps();
+    h.session = { state: 'connected', epoch: 7 };
+    expect(getRfSqlControlFeedback()).toMatchObject({
+      rf: { feedback: { confirmed: 0.5, sessionEpoch: 7 } },
+      sql: { feedback: { confirmed: 0.2, sessionEpoch: 7 } },
+    });
+    expect([h.stateReads, h.capsReads, h.commandReads, h.sessionReads]).toEqual([2, 2, 2, 2]);
   });
 
   it('captures one state/caps/list/session authority and freezes normalized lanes', () => {
@@ -105,6 +123,7 @@ describe('qualified RF/SQL command feedback', () => {
     expect(Object.isFrozen(pair)).toBe(true);
     expect(Object.isFrozen(pair.rf)).toBe(true);
     expect(Object.isFrozen(pair.rf.feedback)).toBe(true);
+    expect(Object.isFrozen(pair.sql.feedback)).toBe(true);
   });
 
   it.each([

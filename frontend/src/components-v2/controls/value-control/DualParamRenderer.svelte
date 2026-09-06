@@ -1,23 +1,16 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
+  import type {
+    ContinuousPairBinding,
+    ContinuousPairLaneView,
+    ContinuousPairRendererLease,
+    ContinuousPairView,
+  } from '../../../primitives/scalar/continuous-pair.svelte';
+  import { clamp } from '../../../primitives/scalar/value-control-core';
   import './value-control.css';
-  import {
-    clamp,
-    snapToStep,
-    debounce,
-    dualParamValuesFromNormX,
-    dualParamThumbPercent,
-    dualParamDeviationFromValues,
-    dualParamStepAlongAxis,
-  } from '../../../primitives/scalar/value-control-core';
 
   interface Props {
-    rfValue: number;
-    sqlValue: number;
-    min?: number;
-    max?: number;
-    step?: number;
-    fineStepDivisor?: number;
+    binding: ContinuousPairBinding;
     rfLabel?: string;
     sqlLabel?: string;
     rfAccentColor?: string;
@@ -25,21 +18,12 @@
     trackColor?: string;
     showValues?: boolean;
     variant?: 'modern' | 'hardware' | 'hardware-illuminated';
-    onRfChange: (v: number) => void;
-    onSqlChange: (v: number) => void;
-    debounceMs?: number;
-    disabled?: boolean;
     shortcutHint?: string | null;
     title?: string | null;
   }
 
   let {
-    rfValue,
-    sqlValue,
-    min = 0,
-    max = 255,
-    step = 1,
-    fineStepDivisor = 10,
+    binding,
     rfLabel = 'RF',
     sqlLabel = 'SQL',
     rfAccentColor = '#22C55E',
@@ -47,175 +31,124 @@
     trackColor = 'var(--v2-bg-gradient-start)',
     showValues = true,
     variant = 'hardware-illuminated',
-    onRfChange,
-    onSqlChange,
-    debounceMs = 0,
-    disabled = false,
     shortcutHint = null,
     title = null,
   }: Props = $props();
 
   let containerEl: HTMLDivElement | null = $state(null);
-  let isDragging = $state(false);
-  let wheelLocked = $state(false);
-  let wheelUnlockTimer: ReturnType<typeof setTimeout> | null = null;
-  let localRf = $state(untrack(() => rfValue));
-  let localSql = $state(untrack(() => sqlValue));
+  let activePointer: { id: number; token: number; target: HTMLElement } | null = null;
+  const initialBinding = untrack(() => binding);
+  let attachedBinding = initialBinding;
+  let lease: ContinuousPairRendererLease = initialBinding.attachRenderer();
+  let view = $state<ContinuousPairView | null>(null);
 
-  function markWheelActive() {
-    wheelLocked = true;
-    if (wheelUnlockTimer) clearTimeout(wheelUnlockTimer);
-    wheelUnlockTimer = setTimeout(() => {
-      wheelLocked = false;
-      wheelUnlockTimer = null;
-    }, 300);
+  function releaseActivePointer(): void {
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
   }
 
-  let prevRf = untrack(() => rfValue);
-  let prevSql = untrack(() => sqlValue);
-  $effect(() => {
-    const r = rfValue;
-    const s = sqlValue;
-    if (isDragging || wheelLocked) {
-      if (r !== prevRf) prevRf = r;
-      if (s !== prevSql) prevSql = s;
-      return;
-    }
-    if (r !== prevRf) {
-      prevRf = r;
-      localRf = r;
-    }
-    if (s !== prevSql) {
-      prevSql = s;
-      localSql = s;
-    }
+  onDestroy(() => {
+    releaseActivePointer();
+    lease.dispose();
   });
 
-  let thumbPct = $derived(dualParamThumbPercent(localRf, localSql, min, max));
-  let absDeviation = $derived(dualParamDeviationFromValues(localRf, localSql, min, max));
+  $effect.pre(() => {
+    if (binding !== attachedBinding) {
+      releaseActivePointer();
+      lease.dispose();
+      attachedBinding = binding;
+      lease = binding.attachRenderer();
+    }
+    view = lease.view;
+  });
 
-  /** Display values as 0–100% instead of raw 0–255. */
-  let displayRf = $derived(max > min ? Math.round((localRf - min) / (max - min) * 100) : 0);
-  let displaySql = $derived(max > min ? Math.round((localSql - min) / (max - min) * 100) : 0);
+  function laneValue(lane: ContinuousPairLaneView): number | null {
+    if (lane.evidence === 'command-feedback' && lane.feedback.target !== null) {
+      return lane.feedback.target;
+    }
+    return lane.localRequested ?? lane.canonical;
+  }
+
+  function percent(value: number | null, snapshot: ContinuousPairView | null): number | null {
+    if (value === null || snapshot === null || !snapshot.domainValid) return null;
+    const span = snapshot.domain.max - snapshot.domain.min;
+    return span > 0 ? Math.round((value - snapshot.domain.min) / span * 100) : null;
+  }
+
+  let thumbPct = $derived(view?.displayedPosition === null || view?.displayedPosition === undefined
+    ? 50 : clamp(view.displayedPosition, 0, 1) * 100);
+  let displayRf = $derived(view === null ? null : percent(laneValue(view.lanes.rf), view));
+  let displaySql = $derived(view === null ? null : percent(laneValue(view.lanes.sql), view));
+  let absDeviation = $derived(Math.abs(thumbPct - 50) / 50);
   let fillRatio = $derived(absDeviation);
   let rfFillWidth = $derived(Math.max(0, 50 - thumbPct));
   let sqlFillWidth = $derived(Math.max(0, thumbPct - 50));
   let slitAccent = $derived(thumbPct <= 50 ? rfAccentColor : sqlAccentColor);
+  let ariaNow = $derived(view?.position === null || view?.position === undefined
+    ? undefined : Math.round(view.position * 100));
+  let rfLane = $derived(view?.lanes.rf ?? null);
+  let sqlLane = $derived(view?.lanes.sql ?? null);
 
-  let adaptiveWheelMultiplier = $derived(Math.max(1, Math.ceil((max - min) / 255)));
-
-  let debouncedRf = $derived.by<(...args: unknown[]) => void>(() => {
-    if (debounceMs > 0) {
-      return debounce((v: number) => onRfChange(v), debounceMs) as (...args: unknown[]) => void;
-    }
-    return ((v: number) => onRfChange(v)) as (...args: unknown[]) => void;
-  });
-
-  let debouncedSql = $derived.by<(...args: unknown[]) => void>(() => {
-    if (debounceMs > 0) {
-      return debounce((v: number) => onSqlChange(v), debounceMs) as (...args: unknown[]) => void;
-    }
-    return ((v: number) => onSqlChange(v)) as (...args: unknown[]) => void;
-  });
-
-  function emitPair(nextRf: number, nextSql: number, immediate: boolean) {
-    if (nextRf !== localRf) localRf = nextRf;
-    if (nextSql !== localSql) localSql = nextSql;
-    if (nextRf !== rfValue) {
-      if (immediate) onRfChange(nextRf);
-      else debouncedRf(nextRf);
-    }
-    if (nextSql !== sqlValue) {
-      if (immediate) onSqlChange(nextSql);
-      else debouncedSql(nextSql);
-    }
-  }
-
-  function normX(clientX: number): number {
-    if (!containerEl) return 0;
+  function normX(clientX: number): number | null {
+    if (!containerEl) return null;
     const rect = containerEl.getBoundingClientRect();
+    if (!Number.isFinite(rect.width) || rect.width <= 0) return null;
     return clamp((clientX - rect.left) / rect.width, 0, 1);
   }
 
-  function applyNormX(nx: number, immediate: boolean) {
-    const { rf, sql } = dualParamValuesFromNormX(nx, min, max, step);
-    emitPair(rf, sql, immediate);
-  }
-
   function handlePointerDown(e: PointerEvent) {
-    if (disabled || !containerEl) return;
+    if (!containerEl || view === null) return;
+    const token = lease.beginPointer();
+    if (token === null) return;
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
-    isDragging = true;
-    applyNormX(normX(e.clientX), true);
+    activePointer = { id: e.pointerId, token, target };
+    const candidate = normX(e.clientX);
+    if (candidate !== null) lease.pointer(token, candidate);
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!isDragging || disabled || !containerEl) return;
-    applyNormX(normX(e.clientX), true);
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    const candidate = normX(e.clientX);
+    if (candidate !== null) lease.pointer(activePointer.token, candidate);
   }
 
   function handlePointerUp(e: PointerEvent) {
-    if (!isDragging) return;
-    const target = e.currentTarget as HTMLElement;
-    target.releasePointerCapture(e.pointerId);
-    isDragging = false;
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    const token = activePointer.token;
+    releaseActivePointer();
+    lease.endPointer(token);
+  }
+
+  function handlePointerCancel(e: PointerEvent) {
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    const token = activePointer.token;
+    releaseActivePointer();
+    lease.cancelPointer(token);
   }
 
   function handleWheel(e: WheelEvent) {
-    if (disabled || !containerEl) return;
+    if (view === null || !view.editable) return;
     e.preventDefault();
-    const wheelMultiplier = e.shiftKey ? 1 : 4 * adaptiveWheelMultiplier;
-    const wheelStep = e.shiftKey ? step / fineStepDivisor : step * wheelMultiplier;
-    const direction = (e.deltaY > 0 ? -1 : 1) as 1 | -1;
-    const { rf, sql } = dualParamStepAlongAxis(
-      localRf,
-      localSql,
-      direction,
-      wheelStep,
-      fineStepDivisor,
-      min,
-      max,
-      false,
-    );
-    localRf = rf;
-    localSql = sql;
-    markWheelActive();
-    if (rf !== rfValue) onRfChange(rf);
-    if (sql !== sqlValue) onSqlChange(sql);
+    lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (disabled) return;
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    const direction = (e.key === 'ArrowRight' ? 1 : -1) as 1 | -1;
-    const { rf, sql } = dualParamStepAlongAxis(
-      localRf,
-      localSql,
-      direction,
-      step,
-      fineStepDivisor,
-      min,
-      max,
-      e.shiftKey,
-    );
-    if (rf === localRf && sql === localSql) return;
-    e.preventDefault();
-    emitPair(rf, sql, false);
+    if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 
   function handleDoubleClick() {
-    if (disabled) return;
-    emitPair(max, min, true);
+    lease.reset();
   }
-
-  let ariaNow = $derived(Math.round(thumbPct));
 </script>
 
+{#if view !== null}
 <div
   class="vc-dual"
-  class:disabled
+  class:disabled={!view.editable}
   class:hw-illum={variant === 'hardware-illuminated'}
   class:hardware={variant === 'hardware'}
   bind:this={containerEl}
@@ -233,26 +166,37 @@
 >
   {#if showValues}
     <div class="vc-header">
-      <span class="vc-label-rf">{rfLabel}<span class="vc-num">{displayRf}%</span></span>
-      <span class="vc-label-sql"><span class="vc-num">{displaySql}%</span>{sqlLabel}</span>
+      <span class="vc-label-rf">{rfLabel}<span class="vc-num">{displayRf === null ? '—' : `${displayRf}%`}</span></span>
+      <span class="vc-label-sql"><span class="vc-num">{displaySql === null ? '—' : `${displaySql}%`}</span>{sqlLabel}</span>
     </div>
   {/if}
 
   <div
     class="vc-track-container"
     role="slider"
-    tabindex={disabled ? -1 : 0}
+    tabindex={view.editable ? 0 : -1}
     data-control="rf-sql-dual"
     aria-label="RF gain and squelch (single control). Center is default; left reduces RF; right adds squelch."
     aria-valuemin={0}
     aria-valuemax={100}
     aria-valuenow={ariaNow}
-    aria-valuetext="RF {displayRf}%, squelch {displaySql}%"
-    aria-disabled={disabled}
+    aria-valuetext="RF {displayRf === null ? '—' : `${displayRf}%`}, squelch {displaySql === null ? '—' : `${displaySql}%`}"
+    aria-disabled={!view.editable}
+    aria-busy={view.busy}
+    data-rf-command-phase={rfLane?.phase ?? undefined}
+    data-sql-command-phase={sqlLane?.phase ?? undefined}
+    data-rf-confirmed={rfLane?.canonical ?? undefined}
+    data-rf-target={rfLane?.evidence === 'command-feedback' ? rfLane.feedback.target ?? '' : undefined}
+    data-rf-requested={rfLane?.evidence === 'command-feedback' ? rfLane.feedback.requestedTarget ?? '' : undefined}
+    data-rf-error={rfLane?.error ?? undefined}
+    data-sql-confirmed={sqlLane?.canonical ?? undefined}
+    data-sql-target={sqlLane?.evidence === 'command-feedback' ? sqlLane.feedback.target ?? '' : undefined}
+    data-sql-requested={sqlLane?.evidence === 'command-feedback' ? sqlLane.feedback.requestedTarget ?? '' : undefined}
+    data-sql-error={sqlLane?.error ?? undefined}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
-    onpointercancel={handlePointerUp}
+    onpointercancel={handlePointerCancel}
     onwheel={handleWheel}
     onkeydown={handleKeyDown}
     ondblclick={handleDoubleClick}
@@ -295,7 +239,14 @@
     <span class="axis-gap"></span>
     <span class="axis-sql">{sqlLabel}</span>
   </div>
+  {#if rfLane?.announcement}
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-control-feedback-status>{rfLane.announcement}</span>
+  {/if}
+  {#if sqlLane?.announcement}
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-control-feedback-status>{sqlLane.announcement}</span>
+  {/if}
 </div>
+{/if}
 
 <style>
   .vc-dual {

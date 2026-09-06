@@ -632,8 +632,7 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     unmount(component); target.remove();
   });
 
-  // Per-field change guard (verifier follow-up R1, mirrors
-  // `DualParamRenderer.svelte`'s `emitPair`): only a field whose mapped
+  // Per-field change guard (verifier follow-up R1): only a field whose mapped
   // value actually differs from its current confirmed reading emits. `base()`
   // starts at rfGain=known(1)/squelch=known(0) — the knob's own "center, at
   // rest" position — so each case below is chosen to isolate exactly ONE

@@ -116,6 +116,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getFilterWidthControlFeedback: () => mockFilterWidthFeedback,
   deriveRfFrontEndProps: () => mockRfProps,
   getRfFrontEndHandlers: () => mockRfHandlers,
+  getRfSqlControlFeedback: () => null,
   getPreampArmed: () => mockPreArmed,
   getAttenuatorArmed: () => mockAttArmed,
   deriveDspProps: () => mockDspProps,
