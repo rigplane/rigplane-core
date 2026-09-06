@@ -19,6 +19,7 @@ type Authority = Readonly<{
 }>;
 
 const h = vi.hoisted(() => ({
+  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
   events: [] as string[],
   hostInstances: [] as Array<{
     authorities: Array<Authority | null>;
@@ -103,6 +104,11 @@ vi.mock('$lib/runtime', async () => {
       onTxAudioDied: () => () => {},
       get state() { return radio.current; },
       get caps() { return getCapabilities(); },
+      subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+        h.authoritySubscribers.add(handler);
+        handler({ state: radio.current, caps: getCapabilities(), session: { state: 'connected', epoch: 1 } });
+        return () => { h.authoritySubscribers.delete(handler); };
+      },
       get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
       get connectionAudio() { return false; },
       get defaultScopeStatus() {
@@ -135,7 +141,7 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 }));
 
 import { radio, resetRadioState } from '$lib/stores/radio.svelte';
-import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { clearCapabilities, getCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
@@ -182,6 +188,11 @@ const readonlyDisplay = createRawSnippet<[RadioViewModel, LcdSpectrumFrame?]>(
     return { render: () => '<output data-testid="lcd-display"></output>' };
   },
 ) as Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
+
+function publishAuthority(): void {
+  const next = { state: radio.current, caps: getCapabilities(), session: { state: 'connected' as const, epoch: 1 as const } };
+  for (const subscriber of h.authoritySubscribers) subscriber(next);
+}
 
 const audioFrame: LcdSpectrumFrame = Object.freeze({
   source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh',
@@ -232,6 +243,7 @@ afterEach(() => {
   component?.$destroy();
   component = null;
   flushSync();
+  expect(h.authoritySubscribers.size).toBe(0);
   resetRadioState();
   clearCapabilities();
   vi.restoreAllMocks();
@@ -284,11 +296,13 @@ describe('MOR-2329 semantic LCD display-frame binding', () => {
     expect(h.events).toEqual(['acquire:hardware-scope']);
 
     radio.current = liveState(8, 'SUB');
+    publishAuthority();
     flushSync();
     expect(host.authorities.at(-1)).toBeNull();
     expect(h.events).toEqual(['acquire:hardware-scope']);
 
     expect(setCapabilities(liveCaps(8))).toBe(true);
+    publishAuthority();
     flushSync();
     expect(host.authorities.at(-1)).toEqual({
       source: 'hardware', receiver: 'SUB', providerGeneration: 8,

@@ -34,6 +34,7 @@ import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
   txController: null as ManagedAppTxController | null,
   audio: { muted: false, rxEnabled: true, volume: 42 },
   audioConnected: true,
@@ -72,6 +73,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return h.audio; },
     get connectionAudio() { return h.audioConnected; },
     get rxEnabled() { return h.rxEnabled; },
@@ -158,6 +164,12 @@ let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let txHarness: ManagedAppTxHarness;
 
+function publishAuthority(): void {
+  for (const subscriber of h.authoritySubscribers) {
+    subscriber({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+  }
+}
+
 function render(props: { strips?: 'single' | 'dual' } = {}): void {
   target = document.createElement('div');
   document.body.appendChild(target);
@@ -188,6 +200,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
@@ -407,6 +420,7 @@ describe('the band surface composes the shipped command vocabulary', () => {
     const before = el('surface')!.outerHTML;
     txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     h.state = liveState({ ptt: true } as Partial<ServerState>);
+    publishAuthority();
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
   });

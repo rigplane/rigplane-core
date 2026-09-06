@@ -28,6 +28,12 @@ const DEFAULT_SCOPE_STATUS = {
   lifecycle: 'inactive' as const, transport: 'disconnected' as const, frameSeen: false,
 };
 const FIXTURE_CONTROL_SESSION = Object.freeze({ state: 'connected' as const, epoch: 1 });
+type FixtureAuthoritySubscriber = (next: Readonly<{
+  state: typeof harness.state;
+  caps: typeof harness.caps;
+  session: typeof FIXTURE_CONTROL_SESSION;
+}>) => void;
+const fixtureAuthoritySubscribers = new Set<FixtureAuthoritySubscriber>();
 
 type FixturePresentationResource = 'hardware-scope' | 'audio-fft';
 type FixturePresentationLease = Readonly<{
@@ -106,6 +112,11 @@ export const runtime = {
   get controlSession() { return FIXTURE_CONTROL_SESSION; },
   subscribeControlSession(_handler: (next: typeof FIXTURE_CONTROL_SESSION) => void) {
     return () => {};
+  },
+  subscribeControlAuthority(handler: FixtureAuthoritySubscriber) {
+    fixtureAuthoritySubscribers.add(handler);
+    handler(Object.freeze({ state: harness.state, caps: harness.caps, session: FIXTURE_CONTROL_SESSION }));
+    return () => { fixtureAuthoritySubscribers.delete(handler); };
   },
   get audio() {
     const { rxEnabled, volume, muted } = harness.audioRuntime;
