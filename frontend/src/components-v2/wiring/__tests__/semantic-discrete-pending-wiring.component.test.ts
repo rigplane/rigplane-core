@@ -62,13 +62,18 @@ vi.mock('$lib/transport/ws-client', async (importOriginal) => {
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioState, resetRadioState } from '$lib/stores/radio.svelte';
-import { acknowledgeCommand, getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import {
+  acknowledgeCommand, failCommand, getCommandLifecycles, resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 import { dispatchRadioIntent } from '$lib/runtime/commands/radio-intents';
 import { sendCommand } from '$lib/transport/ws-client';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 const PROVIDER_GENERATION = 0;
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh' as const, availability: 'available' as const };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh' as const,
+  availability: 'available' as const, lastObservedMonotonic: 1,
+};
 
 /**
  * Single-receiver (IC-7300/FTX-1-shaped) fixture — the live-bench topology
@@ -299,6 +304,45 @@ describe('discrete pending markers reach the mounted DOM over the real wiring pa
     // accessor (e.g. reading `pendingPreamp` here) would mark every choice,
     // or none, rather than the one actually in flight.
     expect(q('[data-testid="filter-select-1"]')!.dataset.pending).toBe('false');
+  });
+
+  it('clears the native Filter Width announcement when its real-store evidence becomes unavailable', () => {
+    vi.useFakeTimers();
+    try {
+      render();
+      const input = q<HTMLInputElement>('[data-testid="filter-width"] input')!;
+      expect(input.disabled).toBe(false);
+      input.value = '3000';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      vi.advanceTimersByTime(201);
+      flushSync();
+
+      const command = getCommandLifecycles().find(candidate => candidate.name === 'set_filter_width');
+      expect(command).toBeDefined();
+      failCommand(command!.id, command!.originalEpoch, command!.originalEpoch, 'radio refused width');
+      flushSync();
+
+      const first = q<HTMLElement>('[data-testid="filter-width"] [data-control-feedback-status]');
+      expect(first).not.toBeNull();
+      expect(sendCommand).toHaveBeenCalledExactlyOnceWith(
+        'set_filter_width', { width: 3000, receiver: 0 }, expect.any(String),
+      );
+
+      const unavailable = liveState();
+      expect(setRadioState({
+        ...unavailable, revision: 2, stateRevision: 2, freshnessRevision: 2, observationSeq: 2,
+        fieldStatus: {
+          ...unavailable.fieldStatus,
+          'main.filterWidth': { ...fresh, observed: false, lastObservedMonotonic: 2 },
+        },
+      })).toBe(true);
+      flushSync();
+
+      expect(q('[data-testid="filter-width"] [data-control-feedback-status]')).toBeNull();
+      expect(sendCommand).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('marks the clicked preamp choice pending while set_preamp is in flight (RfFrontEndSurface)', () => {

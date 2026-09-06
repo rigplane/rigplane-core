@@ -718,6 +718,85 @@ describe('full Filter Width scalar feedback', () => {
     }) });
   });
 
+  it('retains an issued status only while its presentation authority is unchanged', () => {
+    const state = new SvelteMap<string, Readonly<CommandScalarFeedback>>();
+    state.set('feedback', widthFeedback('failed', {
+      requestedTarget: 3000, outcome: { phase: 'failed', error: 'radio refused width' },
+      lifecycleId: '7:width', transitionId: '7:width:failed',
+    }));
+    const surface = render(base(), {}, {
+      get filterWidthFeedback() { return state.get('feedback')!; },
+    });
+    try {
+      const status = surface.group('filter-width')!.querySelector('[data-control-feedback-status]')!;
+      const frozen = status.textContent;
+
+      flushSync(() => state.set('feedback', widthFeedback('idle', { confirmed: 2500 })));
+
+      const retained = surface.group('filter-width')!.querySelector('[data-control-feedback-status]');
+      expect(retained).toBe(status);
+      expect(retained?.textContent).toBe(frozen);
+
+      flushSync(() => state.set('feedback', widthFeedback('unavailable', {
+        confirmed: null, availability: 'unavailable',
+      })));
+
+      expect(surface.group('filter-width')!.querySelector('[data-control-feedback-status]')).toBeNull();
+    } finally { void surface.dispose(); }
+  });
+
+  it.each([
+    ['provider', { providerGeneration: 2 }],
+    ['session', { sessionEpoch: 8 }],
+    ['scope', { scope: { control: 'filter-width', receiver: 1 as const } }],
+  ])('clears an issued status when %s authority is replaced without a fresh event', (_name, authority) => {
+    const state = new SvelteMap<string, Readonly<CommandScalarFeedback>>();
+    state.set('feedback', widthFeedback('failed', {
+      providerGeneration: 1, requestedTarget: 3000,
+      outcome: { phase: 'failed', error: 'radio refused width' },
+      lifecycleId: '7:width', transitionId: '7:width:failed',
+    }));
+    const surface = render(base(), {}, {
+      get filterWidthFeedback() { return state.get('feedback')!; },
+    });
+    try {
+      expect(surface.group('filter-width')!.querySelector('[data-control-feedback-status]')).not.toBeNull();
+
+      flushSync(() => state.set('feedback', widthFeedback('idle', {
+        providerGeneration: 1, ...authority,
+      })));
+
+      expect(surface.group('filter-width')!.querySelector('[data-control-feedback-status]')).toBeNull();
+    } finally { void surface.dispose(); }
+  });
+
+  it('replaces the live node for a fresh same-text event under replacement authority', () => {
+    const state = new SvelteMap<string, Readonly<CommandScalarFeedback>>();
+    const failure = {
+      requestedTarget: 3000, outcome: { phase: 'failed' as const, error: 'radio refused width' },
+      lifecycleId: 'width', transitionId: 'width:failed',
+    };
+    state.set('feedback', widthFeedback('failed', {
+      ...failure, providerGeneration: 1, sessionEpoch: 7,
+    }));
+    const surface = render(base(), {}, {
+      get filterWidthFeedback() { return state.get('feedback')!; },
+    });
+    try {
+      const first = surface.group('filter-width')!.querySelector('[data-control-feedback-status]')!;
+
+      flushSync(() => state.set('feedback', widthFeedback('failed', {
+        ...failure, providerGeneration: 2, sessionEpoch: 8,
+      })));
+
+      const statuses = surface.group('filter-width')!.querySelectorAll('[data-control-feedback-status]');
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]).not.toBe(first);
+      expect(statuses[0].textContent).toBe('Failed: 3000: radio refused width');
+      expect(statuses[0].textContent?.match(/radio refused width/g)).toHaveLength(1);
+    } finally { void surface.dispose(); }
+  });
+
   it('makes forced input inert when feedback is unavailable', () => {
     const request = vi.fn();
     withSurface(base(), (surface) => {

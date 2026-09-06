@@ -161,10 +161,44 @@
   let filterWidthLease: ContinuousScalarRendererLease | null = $state(null);
   const initialFilterWidthView = untrack(() => filterWidthScalar.view);
   let filterWidthView: Readonly<ContinuousScalarView> = $state(initialFilterWidthView);
-  const statusOf = (current: Readonly<ContinuousScalarView>): string | null =>
-    current.announcement === null ? null
-      : current.error === null ? current.announcement : `${current.announcement}: ${current.error}`;
-  let filterWidthAnnouncement: string | null = $state(statusOf(initialFilterWidthView));
+  type IssuedFilterWidthAnnouncement = Readonly<{
+    authorityKey: string;
+    eventKey: string;
+    text: string;
+  }>;
+  function filterWidthAuthorityKey(current: Readonly<ContinuousScalarView>): string {
+    const domain = current.domain;
+    const shared = [
+      current.evidence, current.editable, domain.min, domain.max, domain.step,
+      domain.defaultValue, domain.fineStepDivisor, domain.keyboardStep,
+    ];
+    if (current.evidence === 'reading') {
+      return JSON.stringify([...shared, current.reading.status]);
+    }
+    const feedback = current.feedback;
+    return JSON.stringify([
+      ...shared, feedback.providerGeneration ?? null, feedback.sessionEpoch,
+      feedback.availability, feedback.scope.control, feedback.scope.receiver, feedback.scope.slot,
+    ]);
+  }
+  function nextFilterWidthAnnouncement(
+    current: Readonly<ContinuousScalarView>,
+    previous: IssuedFilterWidthAnnouncement | null,
+  ): IssuedFilterWidthAnnouncement | null {
+    const authorityKey = filterWidthAuthorityKey(current);
+    const issued = current.presentation?.politeAnnouncement;
+    if (issued === null || issued === undefined || current.announcement === null) {
+      return previous?.authorityKey === authorityKey ? previous : null;
+    }
+    return Object.freeze({
+      authorityKey,
+      eventKey: JSON.stringify([authorityKey, issued.transitionId]),
+      text: current.error === null ? current.announcement : `${current.announcement}: ${current.error}`,
+    });
+  }
+  let filterWidthAnnouncement: IssuedFilterWidthAnnouncement | null = $state(
+    nextFilterWidthAnnouncement(initialFilterWidthView, null),
+  );
   $effect(() => {
     const lease = filterWidthScalar.attachRenderer();
     filterWidthLease = lease;
@@ -174,8 +208,9 @@
     const next = filterWidthLease === null
       ? filterWidthScalar.view : filterWidthLease.view;
     filterWidthView = next;
-    const status = statusOf(next);
-    if (status !== null) filterWidthAnnouncement = status;
+    filterWidthAnnouncement = nextFilterWidthAnnouncement(
+      next, untrack(() => filterWidthAnnouncement),
+    );
   });
   onDestroy(() => filterWidthScalar.destroy());
   function modeInstrument() {
@@ -273,8 +308,10 @@
           />
           <output>{textOf(modeFilter.filterWidth)}</output>
           {#if filterWidthAnnouncement !== null}
-            <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
-              data-control-feedback-status>{filterWidthAnnouncement}</span>
+            {#key filterWidthAnnouncement.eventKey}
+              <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+                data-control-feedback-status>{filterWidthAnnouncement.text}</span>
+            {/key}
           {/if}
         </label>
       {/if}
