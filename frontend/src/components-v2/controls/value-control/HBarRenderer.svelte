@@ -33,6 +33,7 @@
     unit = '',
     shortcutHint = null,
     title = null,
+    accessibility,
     legacy,
     valueProjection,
     issuedStatusPresentation,
@@ -98,7 +99,9 @@
   let displayValue = $derived(renderedValue === null
     ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
     : displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
-  let renderPresentation = $derived(view == null ? null : projectScalarRenderPresentation(view, legacy));
+  let renderPresentation = $derived(
+    view == null ? null : projectScalarRenderPresentation(view, legacy, accessibility),
+  );
   $effect(() => {
     const snapshot = view;
     if (issuedStatusPresentation === undefined || snapshot == null
@@ -237,7 +240,9 @@
     aria-valuemin={view.domainValid ? view.domain.min : undefined}
     aria-valuemax={view.domainValid ? view.domain.max : undefined}
     aria-valuenow={ariaValueNow}
-    aria-valuetext={valueProjection === undefined ? undefined : displayValue}
+    aria-valuetext={accessibility?.valueText?.trim()
+      ? accessibility.valueText
+      : valueProjection === undefined ? undefined : displayValue}
     aria-disabled={!view.editable}
     aria-busy={renderPresentation.attributes['aria-busy']}
     aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
