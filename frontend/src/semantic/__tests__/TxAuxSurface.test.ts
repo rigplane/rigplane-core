@@ -17,6 +17,8 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import TxAuxSurface, {
   TX_AUX_LEVELS, TX_AUX_TOGGLES,
   type TxAuxLevelField, type TxAuxToggleField,
@@ -24,6 +26,7 @@ import TxAuxSurface, {
 import { topologyFixtures, withTxAux } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, TxAuxViewModel } from '../radio-view-model';
 import { blockedLabel, keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
+import type { CommandScalarFeedback } from '../../primitives/scalar/continuous-scalar.svelte';
 
 const IDLE_RX: TxAuthoritySnapshot = {
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -65,7 +68,33 @@ type Handlers = {
   onToggle?: (field: TxAuxToggleField) => void;
   onLevelChange?: (field: TxAuxLevelField, value: number) => void;
   onAtuTune?: () => void;
+  levelFeedback?: TxAuxFeedbackRecord;
 };
+
+const FEEDBACK_LEVELS = [
+  ['micGain', 'mic-gain', 128], ['driveGain', 'drive-gain', 128],
+  ['voxGain', 'vox-gain', 50], ['antiVoxGain', 'anti-vox-gain', 30],
+  ['voxDelay', 'vox-delay', 20], ['compressorLevel', 'compressor-level', 10],
+  ['monitorLevel', 'monitor-level', 128],
+] as const;
+type FeedbackLevelField = (typeof FEEDBACK_LEVELS)[number][0];
+type TxAuxFeedbackRecord = Readonly<Record<FeedbackLevelField, Readonly<CommandScalarFeedback>>>;
+const feedback = (
+  control: string, confirmed: number, phase: CommandScalarFeedback['phase'] = 'idle',
+  over: Partial<CommandScalarFeedback> = {},
+): Readonly<CommandScalarFeedback> => Object.freeze({
+  confirmed, target: null, requestedTarget: null, phase,
+  busy: ['submitted', 'queued', 'dispatched', 'awaiting-confirmation'].includes(phase),
+  availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  providerGeneration: 1, sessionEpoch: 1,
+  scope: Object.freeze({ control, receiver: 0 as const }),
+  repeatPolicy: 'latest-target-wins', ...over,
+});
+const feedbackRecord = (
+  replace: Partial<Record<FeedbackLevelField, Readonly<CommandScalarFeedback>>> = {},
+): TxAuxFeedbackRecord => Object.fromEntries(FEEDBACK_LEVELS.map(([field, control, value]) => [
+  field, replace[field] ?? feedback(control, value),
+])) as unknown as TxAuxFeedbackRecord;
 
 function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = {}) {
   const component = mount(TxAuxSurface, { target, props: { view, tx, ...handlers } });
@@ -88,6 +117,18 @@ function withSurface(
 ): void {
   const s = render(view, tx, handlers);
   try { fn(s); } finally { s.dispose(); }
+}
+
+function renderReactiveFeedback(initial: TxAuxFeedbackRecord = feedbackRecord()) {
+  const onLevelChange = vi.fn();
+  const props = proxy({ view: base(), tx: snap(), onLevelChange, levelFeedback: initial });
+  const component = mount(TxAuxSurface, { target, props });
+  flushSync();
+  const row = (field: FeedbackLevelField) => target.querySelector<HTMLElement>(
+    `[data-testid="tx-aux-${field}"]`,
+  )!;
+  const input = (field: FeedbackLevelField) => row(field).querySelector('input')!;
+  return { dispose: () => unmount(component), row, input, onLevelChange, props };
 }
 
 /** `disabled` for a <button>, or for the <input> a level control wraps. */
@@ -585,6 +626,116 @@ describe('level intents reach the caller with the field and the raw value', () =
       expect(s.input('micGain')!.valueAsNumber).toBe(128);
       expect(s.input('voxDelay')!.valueAsNumber).toBe(20);
     });
+  });
+});
+
+describe('seven TX/VOX levels consume command feedback', () => {
+  it.each(FEEDBACK_LEVELS)('uses canonical %s feedback and preserves its raw native input', (
+    field, _control, canonical,
+  ) => {
+    const r = renderReactiveFeedback();
+    const input = r.input(field);
+    expect(input.valueAsNumber).toBe(canonical);
+    expect(input.dataset.commandPhase).toBe('idle');
+    expect(input.getAttribute('aria-busy')).toBe('false');
+    input.value = field === 'voxDelay' ? '7' : '177';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith(field, input.valueAsNumber);
+    r.dispose();
+  });
+
+  it.each(FEEDBACK_LEVELS)(
+    'keeps supplied unavailable %s evidence unavailable instead of borrowing the view reading', (
+      field, control, canonical,
+    ) => {
+    const unavailable = feedback(control, canonical, 'unavailable', {
+      confirmed: null, availability: 'unavailable', providerGeneration: 2, sessionEpoch: 2,
+    });
+    const r = renderReactiveFeedback(feedbackRecord({ [field]: unavailable }));
+    expect(r.input(field).disabled).toBe(true);
+    expect(r.input(field).dataset.commandPhase).toBe('unavailable');
+    expect(r.row(field).querySelector('output')?.textContent).toContain('?');
+    expect(r.row(field).querySelector('[data-command-status]')?.textContent).toContain('unavailable');
+    r.input(field).value = String(field === 'voxDelay' ? 7 : 200);
+    r.input(field).dispatchEvent(new Event('input', { bubbles: true }));
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+    },
+  );
+
+  it.each(['submitted', 'queued', 'dispatched', 'awaiting-confirmation'] as const)(
+    'shows an optimistic target while %s without replacing canonical truth', (phase) => {
+      const pending = feedback('mic-gain', 128, phase, {
+        target: 200, requestedTarget: 200, lifecycleId: 'mic-command',
+        transitionId: `mic-${phase}`,
+      });
+      const r = renderReactiveFeedback(feedbackRecord({ micGain: pending }));
+      expect(r.input('micGain').valueAsNumber).toBe(200);
+      expect(r.input('micGain').dataset.commandPhase).toBe(phase);
+      expect(r.input('micGain').getAttribute('aria-busy')).toBe('true');
+      expect(r.row('micGain').querySelector('[data-canonical-value]')?.textContent).toContain('50%');
+      expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain('78%');
+      r.dispose();
+    },
+  );
+
+  it.each([
+    ['confirmed', 200, null], ['failed', 128, 'radio refused'],
+    ['timed-out', 128, null], ['cancelled', 128, null], ['superseded', 128, null],
+  ] as const)('settles %s visibly on canonical truth', (phase, canonical, error) => {
+    const terminal = feedback('mic-gain', canonical, phase, {
+      requestedTarget: 200, lifecycleId: 'mic-command', transitionId: `mic-${phase}`,
+      outcome: { phase, ...(error === null ? {} : { error }) },
+    });
+    const r = renderReactiveFeedback(feedbackRecord({ micGain: terminal }));
+    expect(r.input('micGain').valueAsNumber).toBe(canonical);
+    expect(r.input('micGain').getAttribute('aria-busy')).toBe('false');
+    expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain(
+      phase.replaceAll('-', ' '),
+    );
+    if (error !== null) expect(r.row('micGain').textContent).toContain(error);
+    expect(r.row('micGain').querySelectorAll('[data-tx-aux-feedback-status]')).toHaveLength(1);
+    r.dispose();
+  });
+
+  it.each(FEEDBACK_LEVELS)(
+    'announces one %s transition once and resets retained speech on authority replacement', (
+      field, control, canonical,
+    ) => {
+    const requested = field === 'voxDelay' ? 7 : 200;
+    const failed = (generation: number, session: number) => feedback(control, canonical, 'failed', {
+      requestedTarget: requested, lifecycleId: `${field}-command`, transitionId: `${field}-failed`,
+      providerGeneration: generation, sessionEpoch: session,
+      outcome: { phase: 'failed', error: 'radio refused' },
+    });
+    const r = renderReactiveFeedback(feedbackRecord({ [field]: failed(1, 1) }));
+    const status = () => r.row(field).querySelector<HTMLElement>(
+      '[data-tx-aux-feedback-status]',
+    );
+    const first = status()!;
+    r.props.levelFeedback = feedbackRecord({ [field]: failed(1, 1) });
+    flushSync();
+    expect(status()).toBe(first);
+    expect(r.row(field).querySelectorAll('[data-tx-aux-feedback-status]')).toHaveLength(1);
+    r.props.levelFeedback = feedbackRecord({ [field]: failed(2, 2) });
+    flushSync();
+    expect(status()).not.toBe(first);
+    expect(status()?.getAttribute('aria-live')).toBe('polite');
+    expect(r.row(field).querySelectorAll('[data-tx-aux-feedback-status]')).toHaveLength(1);
+    r.dispose();
+    },
+  );
+
+  it('retains the named reading compatibility path when feedback is omitted', () => {
+    const onLevelChange = vi.fn();
+    withSurface(base(), snap(), (s) => {
+      expect(s.input('micGain')?.dataset.commandPhase).toBeUndefined();
+      expect(s.input('micGain')?.valueAsNumber).toBe(128);
+      s.input('micGain')!.value = '177';
+      s.input('micGain')!.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('micGain', 177);
+    }, { onLevelChange });
   });
 });
 
