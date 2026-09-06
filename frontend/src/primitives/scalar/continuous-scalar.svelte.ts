@@ -63,6 +63,7 @@ export interface ContinuousScalarPolicy {
   key(current: number, event: ScalarKeyInput, domain: ScalarDomain): number | null;
   reset(domain: ScalarDomain): number | null;
   dispatch(source: ScalarSource): ScalarDispatchMode;
+  dispatchesCanonical(source: ScalarSource): boolean;
   readonly wheelIdleMs: 0 | 300;
   describeTarget(value: number): string;
 }
@@ -172,6 +173,7 @@ export function createHBarContinuousScalarPolicy(
     ),
     reset: (domain) => domain.defaultValue ?? domain.min,
     dispatch: (source) => source === 'keyboard' || source === 'reset' ? debounce : 'immediate',
+    dispatchesCanonical: (source) => source === 'wheel',
     wheelIdleMs: 300,
     describeTarget: options.describeTarget ?? String,
   };
@@ -186,6 +188,7 @@ const nativeRangePolicy: ContinuousScalarPolicy = {
   key: () => null,
   reset: (domain) => domain.defaultValue ?? domain.min,
   dispatch: () => 'immediate',
+  dispatchesCanonical: () => true,
   wheelIdleMs: 0,
   describeTarget: String,
 };
@@ -240,6 +243,17 @@ const TERMINAL_FAILURES: ReadonlySet<ScalarPhase> = new Set([
   'failed', 'timed-out', 'cancelled', 'superseded',
 ]);
 
+function terminalIdentity(input: Readonly<ContinuousScalarInput>): AuthorityIdentity | null {
+  if (input.evidence === 'reading') return null;
+  const outcomePhase = input.feedback.outcome?.phase;
+  const phase = outcomePhase !== undefined && TERMINAL_FAILURES.has(outcomePhase)
+    ? outcomePhase
+    : TERMINAL_FAILURES.has(input.feedback.phase) ? input.feedback.phase : null;
+  return phase === null ? null : Object.freeze([
+    ...authorityOf(input), input.feedback.lifecycleId ?? input.feedback.transitionId, phase,
+  ]);
+}
+
 export function createContinuousScalar(
   read: () => Readonly<ContinuousScalarInput>,
   policy: Readonly<ContinuousScalarPolicy>,
@@ -248,6 +262,7 @@ export function createContinuousScalar(
   let interaction = $state<'idle' | ScalarSource>('idle');
   let draftCanonical: number | null = null;
   let lastAuthority: AuthorityIdentity | null = null;
+  let handledTerminal: AuthorityIdentity | null = null;
   let activeRenderer: number | null = null;
   let rendererSequence = 0;
   let gestureSequence = 0;
@@ -278,14 +293,16 @@ export function createContinuousScalar(
     const authority = authorityOf(input);
     if (lastAuthority !== null && !sameAuthority(lastAuthority, authority)) {
       clearTransient();
+      handledTerminal = null;
       presentationState = { announcedTransitionIds: [] };
     }
     lastAuthority = authority;
-    if (input.evidence === 'command-feedback') {
-      if (TERMINAL_FAILURES.has(input.feedback.phase)
-        || (input.feedback.outcome !== null && TERMINAL_FAILURES.has(input.feedback.outcome.phase))) {
-        clearTransient();
-      } else if (draft !== null && Object.is(canonicalOf(input), draft)) {
+    const terminal = terminalIdentity(input);
+    if (terminal !== null && !sameAuthority(handledTerminal, terminal)) {
+      clearTransient();
+      handledTerminal = terminal;
+    } else if (input.evidence === 'command-feedback') {
+      if (draft !== null && Object.is(canonicalOf(input), draft)) {
         draft = null;
         draftCanonical = null;
         if (interaction !== 'pointer' && interaction !== 'wheel') interaction = 'idle';
@@ -325,6 +342,12 @@ export function createContinuousScalar(
     draft = normalized;
     draftCanonical = canonicalOf(input);
     interaction = source;
+    if (!policy.dispatchesCanonical(source) && Object.is(normalized, draftCanonical)) {
+      draft = null;
+      draftCanonical = null;
+      if (source !== 'pointer') interaction = 'idle';
+      return true;
+    }
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
       dispatch(normalized, authority);

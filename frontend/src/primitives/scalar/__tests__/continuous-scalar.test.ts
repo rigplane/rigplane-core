@@ -207,6 +207,33 @@ describe('continuous scalar source policies', () => {
     expect(confirmed.request).toHaveBeenLastCalledWith(2_410);
   });
 
+  it('suppresses HBar pointer, key, and reset at canonical but still sends boundary wheel', () => {
+    const policy = createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 0 });
+    const atMax = readingSetup(policy, {
+      domain: { ...DOMAIN, defaultValue: 5_000 },
+      reading: { status: 'known', value: 5_000 },
+    });
+    const lease = atMax.scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 5_000);
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    lease.reset();
+    expect(atMax.request).not.toHaveBeenCalled();
+    lease.wheel({ direction: 1, fine: false });
+    expect(atMax.request).toHaveBeenCalledExactlyOnceWith(5_000);
+    lease.dispose();
+
+    const pending = commandSetup(policy, { feedback: feedback('submitted', {
+      target: 2_700, requestedTarget: 2_700, lifecycleId: 'pending-target',
+    }) });
+    const pendingLease = pending.scalar.attachRenderer();
+    const pendingToken = pendingLease.beginPointer()!;
+    pendingLease.pointer(pendingToken, 2_700);
+    pendingLease.pointer(pendingToken, 2_700);
+    expect(pending.request.mock.calls).toEqual([[2_700], [2_700]]);
+    pendingLease.dispose();
+  });
+
   it('uses caller debounce for HBar keys and reset but not pointer or wheel', () => {
     vi.useFakeTimers();
     const { scalar, request } = commandSetup();
@@ -224,7 +251,7 @@ describe('continuous scalar source policies', () => {
     vi.advanceTimersByTime(49);
     expect(request).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(1);
-    expect(request).toHaveBeenLastCalledWith(2_400);
+    expect(request).toHaveBeenLastCalledWith(2_800);
     vi.useRealTimers();
   });
 });
@@ -251,15 +278,17 @@ describe('continuous scalar authority and feedback reconciliation', () => {
   });
 
   it.each(['failed', 'timed-out', 'cancelled', 'superseded'] as const)(
-    'cancels draft and timers on %s while preserving outcome evidence', (phase) => {
+    'cancels pre-%s work once and permits a fresh pointer gesture', (phase) => {
       vi.useFakeTimers();
       const { scalar, request, update } = commandSetup();
       const lease = scalar.attachRenderer();
+      const staleToken = lease.beginPointer()!;
+      lease.pointer(staleToken, 2_600);
       expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
-      expect(scalar.view.draft).toBe(2_500);
+      expect(scalar.view.draft).toBe(2_700);
 
       const terminal = feedback(phase, {
-        requestedTarget: 2_500,
+        requestedTarget: 2_700,
         lifecycleId: 'life-1',
         transitionId: `${phase}-1`,
         outcome: { phase, error: 'radio rejected' },
@@ -272,11 +301,43 @@ describe('continuous scalar authority and feedback reconciliation', () => {
         error: 'radio rejected',
         phase,
       });
+      lease.pointer(staleToken, 2_900);
+      const freshToken = lease.beginPointer();
+      expect(freshToken).not.toBeNull();
+      lease.pointer(freshToken!, 2_800);
       vi.advanceTimersByTime(100);
-      expect(request).not.toHaveBeenCalled();
+      expect(request.mock.calls).toEqual([[2_600], [2_800]]);
       vi.useRealTimers();
     },
   );
+
+  it('keeps every intent path live when a handled terminal outcome survives a phase change', () => {
+    vi.useFakeTimers();
+    const terminal = feedback('failed', {
+      requestedTarget: 2_500,
+      lifecycleId: 'life-retained',
+      transitionId: 'failed-retained',
+      outcome: { phase: 'failed', error: 'retained' },
+    });
+    const { scalar, request, update } = commandSetup(undefined, {
+      domain: { ...DOMAIN, defaultValue: 2_700 }, feedback: terminal,
+    });
+    expect(scalar.view.error).toBe('retained');
+    update({ feedback: {
+      ...terminal, phase: 'idle', busy: false, transitionId: 'idle-after-retained',
+    } });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 2_600);
+    lease.nativeInput(2_650);
+    lease.wheel({ direction: 1, fine: true });
+    lease.key({ key: 'ArrowRight', fine: false });
+    vi.advanceTimersByTime(50);
+    lease.reset();
+    vi.advanceTimersByTime(50);
+    expect(request.mock.calls).toEqual([[2_600], [2_650], [2_660], [2_800], [2_700]]);
+    vi.useRealTimers();
+  });
 
   it('retires an optimistic draft when confirmation reaches it', () => {
     const { scalar, update } = commandSetup(nativeRangeContinuousScalarPolicy);
