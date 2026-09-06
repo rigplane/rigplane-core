@@ -612,6 +612,14 @@
   const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
   const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
   let controlSession = $state(readControlSession?.() ?? { state: 'disconnected' as const, epoch: -1 });
+  let frequencyLifetimeKey = $derived.by(() => {
+    void canonicalView;
+    const stateGeneration = runtime.state?.providerGeneration;
+    const capsGeneration = runtime.caps?.providerGeneration;
+    const matchedGeneration = Number.isSafeInteger(stateGeneration)
+      && stateGeneration === capsGeneration ? stateGeneration : 'unmatched';
+    return `${controlSession.state}:${controlSession.epoch}:${matchedGeneration}`;
+  });
   let meterContinuitySession: MeterContinuitySession | null = $derived(
     controlSession.state === 'connected'
       && Number.isSafeInteger(controlSession.epoch) && controlSession.epoch >= 0
@@ -894,6 +902,7 @@
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
               continuitySession={meterContinuitySession}
+              {frequencyLifetimeKey}
               {pendingFrequencyHz}
             />
           </div>
@@ -931,6 +940,7 @@
             onSelectMainReceiver={vfo.onMainVfoClick}
             onSelectSubReceiver={vfo.onSubVfoClick}
             onSpeak={systemIntents.onSpeak}
+            {frequencyLifetimeKey}
           />
         </div>
       {/if}
@@ -963,6 +973,7 @@
         onSelectSubReceiver={vfo.onSubVfoClick}
         onSpeak={systemIntents.onSpeak}
         continuitySession={meterContinuitySession}
+        {frequencyLifetimeKey}
         {pendingFrequencyHz}
       />
     {/if}

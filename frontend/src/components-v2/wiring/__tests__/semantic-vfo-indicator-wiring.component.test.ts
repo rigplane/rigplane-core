@@ -179,6 +179,28 @@ afterEach(() => {
 
 describe('production receiver-indicator partitioning', () => {
   it.each([
+    ['dual receiver strip', { strips: 'dual' }, '[data-testid="channel-strip-MAIN"] .digit'],
+    ['single VFO surface', { strips: 'single' }, '.vfo-tile .digit'],
+  ] as const)('rotates the %s frequency authority on session and provider identity', (
+    _name, props, digitSelector,
+  ) => {
+    render(caps('main_sub', 2), state(), {}, props);
+    const digit = () => target.querySelector<HTMLElement>(digitSelector)!;
+
+    digit().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(target.querySelector('.freq .selected')).not.toBeNull();
+    pushSession({ state: 'connected', epoch: 2 });
+    expect(target.querySelector('.freq .selected')).toBeNull();
+
+    digit().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(target.querySelector('.freq .selected')).not.toBeNull();
+    pushMeter(50, 2);
+    expect(target.querySelector('.freq .selected')).toBeNull();
+  });
+
+  it.each([
     ['dual semantic receiver strip', { strips: 'dual' }],
     ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
   ] as const)('re-seeds %s at equal-value session and provider boundaries', (_name, props) => {

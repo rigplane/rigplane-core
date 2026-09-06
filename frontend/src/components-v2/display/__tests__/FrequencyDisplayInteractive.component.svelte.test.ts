@@ -5,6 +5,12 @@ import type { ComponentProps } from 'svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import FrequencyDisplayInteractive from '../../../primitives/frequency/FrequencyDisplayInteractive.svelte';
+import {
+  createFrequencyInteraction,
+  createFrequencyInteractionLease,
+  type FrequencyInteraction,
+} from '../../../primitives/frequency/frequency-interaction.svelte';
+import { projectFrequencyReadout } from '../../../primitives/frequency/frequency-readout';
 // Static import while the stores below are imported dynamically per test:
 // safe ONLY while `panel-props` stays a pure state→props module with no store
 // imports. If a projection ever starts reading a store, move this into the
@@ -102,6 +108,7 @@ function makeMinimalState(overrides: Partial<ServerState> = {}): ServerState {
 }
 
 let components: ReturnType<typeof mount>[] = [];
+let roots: (() => void)[] = [];
 
 function mountDisplay(props: ComponentProps<typeof FrequencyDisplayInteractive>): HTMLElement {
   const t = document.createElement('div');
@@ -110,6 +117,79 @@ function mountDisplay(props: ComponentProps<typeof FrequencyDisplayInteractive>)
   flushSync();
   return t;
 }
+
+function interactionOwner(options: { disabled?: boolean; onFreqChange?: (hz: number) => void } = {}) {
+  const model = projectFrequencyReadout({ confirmedHz: 14_250_000 });
+  let owner!: FrequencyInteraction;
+  roots.push($effect.root(() => {
+    owner = createFrequencyInteraction({
+      confirmedHz: 14_250_000,
+      digits: model.digits,
+      disabled: options.disabled ?? false,
+      minFreq: 0,
+      maxFreq: 999_000_000,
+      onFreqChange: options.onFreqChange,
+    });
+  }));
+  flushSync();
+  return { owner, digit: model.digits.find((candidate) => candidate.multiplier === 1_000)! };
+}
+
+describe('frequency renderer lifetime', () => {
+  it('makes a retained facade synchronously inert and permanently revokes it across A-B-A', () => {
+    const onFreqChange = vi.fn();
+    const { owner, digit } = interactionOwner({ onFreqChange });
+    let authority = 'A';
+    const first = createFrequencyInteractionLease(owner, () => authority === 'A');
+    const retainedClick = first.interaction.handleDigitClick;
+    const retainedWheel = first.interaction.handleWheel;
+
+    retainedClick(digit, new MouseEvent('click'));
+    expect(first.interaction.selectedDigitIndex).toBe(digit.digitIndex);
+    authority = 'B';
+    const staleWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    retainedWheel(digit, staleWheel);
+    expect(staleWheel.defaultPrevented).toBe(false);
+    expect(onFreqChange).not.toHaveBeenCalled();
+    expect(first.interaction).toMatchObject({
+      inert: true, selectedDigitIndex: null, hoveredDigitIndex: null,
+    });
+
+    const second = createFrequencyInteractionLease(owner, () => authority === 'B');
+    expect(owner.selectedDigitIndex).toBeNull();
+    authority = 'A';
+    retainedClick(digit, new MouseEvent('click'));
+    retainedWheel(digit, new WheelEvent('wheel', { deltaY: -1, cancelable: true }));
+    expect(first.interaction.inert).toBe(true);
+    expect(onFreqChange).not.toHaveBeenCalled();
+
+    const live = createFrequencyInteractionLease(owner, () => authority === 'A');
+    live.interaction.handleDigitClick(digit, new MouseEvent('click'));
+    live.interaction.handleWheel(digit, new WheelEvent('wheel', { deltaY: -1, cancelable: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
+    second.revoke();
+    live.revoke();
+  });
+
+  it('keeps a real disabled no-writer interaction passive before and after revoke', () => {
+    const { owner, digit } = interactionOwner({ disabled: true });
+    const lease = createFrequencyInteractionLease(owner, () => true);
+    const wheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    lease.interaction.handleDigitClick(digit, new MouseEvent('click'));
+    lease.interaction.handleDigitEnter(digit);
+    lease.interaction.handleWheel(digit, wheel);
+    lease.interaction.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    lease.interaction.handleDigitLeave();
+    expect(wheel.defaultPrevented).toBe(false);
+    expect(lease.interaction).toMatchObject({
+      inert: true, selectedDigitIndex: null, hoveredDigitIndex: null,
+    });
+    expect(lease.interaction.isSelected(digit)).toBe(false);
+    expect(lease.interaction.isHovered(digit)).toBe(false);
+    lease.revoke();
+    expect(lease.interaction.inert).toBe(true);
+  });
+});
 
 describe('display-only frequency and disabled arithmetic', () => {
   it.each([{ freq: null, disabled: false }, { freq: 14250000, disabled: true }])('rejects every gesture with %j', (authority) => {
@@ -168,6 +248,8 @@ beforeEach(async () => {
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
+  roots.forEach((dispose) => dispose());
+  roots = [];
   document.body.innerHTML = '';
 });
 

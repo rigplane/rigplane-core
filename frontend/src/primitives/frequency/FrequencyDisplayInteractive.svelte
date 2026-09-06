@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
   import StandardFrequencyReadout from './StandardFrequencyReadout.svelte';
-  import { createFrequencyInteraction } from './frequency-interaction.svelte';
+  import {
+    createFrequencyInteraction, createFrequencyInteractionLease,
+  } from './frequency-interaction.svelte';
   import { projectFrequencyReadout } from './frequency-readout';
 
   interface Props {
@@ -86,7 +89,7 @@
     pendingDisplayHz,
     pendingAnnouncement,
   }));
-  const interaction = createFrequencyInteraction({
+  const owner = createFrequencyInteraction({
     get confirmedHz() { return freq; },
     get digits() { return model.digits; },
     get disabled() { return disabled; },
@@ -96,12 +99,26 @@
     get maxFreq() { return maxFreq; },
     get onFreqChange() { return onFreqChange; },
   });
+  let attachedContextKey = untrack(() => contextKey);
+  const attachLease = (key: string | undefined) => createFrequencyInteractionLease(
+    owner,
+    () => Object.is(contextKey, key),
+  );
+  let lease = $state.raw(attachLease(attachedContextKey));
+  $effect.pre(() => {
+    const nextContextKey = contextKey;
+    if (Object.is(nextContextKey, attachedContextKey)) return;
+    lease.revoke();
+    attachedContextKey = nextContextKey;
+    lease = attachLease(nextContextKey);
+  });
+  onDestroy(() => lease.revoke());
 </script>
 
 <StandardFrequencyReadout
   {model}
   presentation="interactive"
-  {interaction}
+  interaction={lease.interaction}
   {compact}
   {active}
   {receiver}
