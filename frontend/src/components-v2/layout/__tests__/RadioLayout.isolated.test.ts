@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 
 const txHarness = new ManagedAppTxHarness({ stale: true });
 import { mount, unmount, flushSync } from 'svelte';
@@ -47,6 +48,7 @@ vi.mock('../../../lib/runtime/frontend-runtime', () => ({
     onTxAudioDied: () => () => {},
     caps: { scope: true },
     connectionStatus: 'disconnected',
+    controlSession: Object.freeze({ state: 'disconnected', epoch: -1 }) satisfies ControlSessionSnapshot,
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
     audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
