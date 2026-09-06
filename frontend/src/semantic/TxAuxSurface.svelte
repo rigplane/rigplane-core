@@ -30,57 +30,22 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
-  import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   import { disabledReasonText } from './disabled-reason';
-  import type { CommandScalarFeedback } from '../primitives/scalar/continuous-scalar.svelte';
+  import { TX_AUX_LEVELS, type TxAuxScalarHandles } from './tx-aux-scalar';
+  export {
+    TX_AUX_FEEDBACK_LEVELS,
+    TX_AUX_LEVELS,
+    type TxAuxFeedbackLevelField,
+    type TxAuxLevelFeedback,
+    type TxAuxLevelField,
+  } from './tx-aux-scalar';
 
   /** On/off controls, `[field, label]`. ATU's reading is a three-state enum,
    *  the rest are booleans; `pressedOf` normalises both to one aria state. */
   export const TX_AUX_TOGGLES = [
     ['atu', 'ATU'], ['vox', 'VOX'], ['compressor', 'COMP'], ['monitor', 'MON'],
   ] as const;
-  /** `[field, label, min, max, step, format]` — every row is a 6-tuple (kept
-   *  uniform for `it.each` typing, not a mix of 5- and 6-element tuples) but
-   *  `format` is `undefined` for most fields. The slider bound and step are
-   *  RAW wire units (the MOR-1244 contract applies no normalisation, so
-   *  these are exactly the ranges `TxPanel`/`VoxPanel` have always used: RF
-   *  power 0..1, VOX delay 0..20, everything else 0..255 — rescaling the
-   *  VALUE here would silently move a level).
-   *
-   *  `format` is the DISPLAY-only convention (MOR-1452). An `undefined` row
-   *  gets the default — a percent of ITS OWN `min`/`max` (the SAME two
-   *  values bound to `<input min max>` a few lines below, not a duplicated
-   *  literal) via `rawToPercentDisplay`. That default is built at
-   *  `levelTextOf`'s call site, not stored per-row, precisely so it cannot
-   *  drift from a row's declared domain the way a bare `rawToPercentDisplay`
-   *  reference silently would (that reference reads ITS OWN [0,255] default
-   *  args, not the row's — invisible for every field that happens to declare
-   *  exactly 0..255, wrong the moment one doesn't; caught in review).
-   *
-   *  `voxDelay` overrides the default: its raw units are 0.1s steps (`20` ⇒
-   *  2.0s), a genuine duration, not a level fraction — a percent of it is
-   *  meaningless. Mirrors `VoxPanel.svelte`'s own `delayDisplay`, the
-   *  existing precedent for this exact field. */
-  export const TX_AUX_LEVELS = [
-    ['rfPower', 'RF power', 0, 1, 0.01, undefined],
-    ['micGain', 'Mic gain', 0, 255, 1, undefined],
-    ['driveGain', 'Drive gain', 0, 255, 1, undefined],
-    ['voxGain', 'VOX gain', 0, 255, 1, undefined],
-    ['antiVoxGain', 'Anti-VOX', 0, 255, 1, undefined],
-    ['voxDelay', 'VOX delay', 0, 20, 1, (v: number) => `${(v * 0.1).toFixed(1)}s`],
-    ['compressorLevel', 'COMP level', 0, 255, 1, undefined],
-    ['monitorLevel', 'MON level', 0, 255, 1, undefined],
-  ] as const;
   export type TxAuxToggleField = (typeof TX_AUX_TOGGLES)[number][0];
-  export type TxAuxLevelField = (typeof TX_AUX_LEVELS)[number][0];
-  export const TX_AUX_FEEDBACK_LEVELS = [
-    'micGain', 'driveGain', 'voxGain', 'antiVoxGain', 'voxDelay',
-    'compressorLevel', 'monitorLevel',
-  ] as const;
-  export type TxAuxFeedbackLevelField = (typeof TX_AUX_FEEDBACK_LEVELS)[number];
-  export type TxAuxLevelFeedback = Readonly<Record<
-    TxAuxFeedbackLevelField, Readonly<CommandScalarFeedback>
-  >>;
 
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it has been observed. */
   const usable = (f: TxAuxField<unknown>): boolean =>
@@ -111,49 +76,24 @@
     f.reading.status !== 'known' ? '?'
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
         : String(f.reading.value);
-  /** Same freshness discipline as `textOf`, but a KNOWN level reading is run
-   *  through its `format` (MOR-1452) instead of `String()`-ing the raw wire
-   *  value — e.g. RF power reading back as "80%" instead of the literal
-   *  `0.5529411764705883`, and mic gain as "50%" instead of `128`. Absent a
-   *  per-row override, the default is built HERE, from the SAME `min`/`max`
-   *  the caller destructured for this field's `<input>` bounds — never a
-   *  bare `rawToPercentDisplay` reference, which would silently ignore them. */
-  const levelTextOf = (
-    f: TxAuxField<number>,
-    min: number,
-    max: number,
-    format?: (v: number) => string,
-  ): string => {
-    if (f.reading.status !== 'known') return '?';
-    return (format ?? ((v: number) => rawToPercentDisplay(v, min, max)))(f.reading.value);
-  };
-  const numberOf = (f: TxAuxField<number>, fallback: number): number =>
-    f.reading.status === 'known' ? f.reading.value : fallback;
-
   /** Per-instance DOM id, so several mounted surfaces keep distinct aria targets. */
   let sequence = 0;
 </script>
 
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
   import '../components-v2/controls/control-button.css';
-  import {
-    createContinuousScalar, nativeRangeContinuousScalarPolicy,
-    type ContinuousScalarInput, type ContinuousScalarRendererLease,
-    type ContinuousScalarView,
-  } from '../primitives/scalar/continuous-scalar.svelte';
   import type { RadioViewModel } from './radio-view-model';
   import { blockedLabel, keyBlockedReasons, type TxAuthoritySnapshot } from './rx-tx-surface';
 
   interface Props {
     view: RadioViewModel;
     tx: TxAuthoritySnapshot;
+    scalarHandles: TxAuxScalarHandles;
+    showScalars?: boolean;
     onToggle?: (field: TxAuxToggleField) => void;
-    onLevelChange?: (field: TxAuxLevelField, value: number) => void;
     onAtuTune?: () => void;
-    levelFeedback?: TxAuxLevelFeedback;
   }
-  let { view, tx, onToggle, onLevelChange, onAtuTune, levelFeedback }: Props = $props();
+  let { view, tx, scalarHandles, showScalars = true, onToggle, onAtuTune }: Props = $props();
 
   const blockedId = `tx-aux-blocked-${++sequence}`;
   /** MOR-1422: prefix for the per-field hidden reason text `aria-describedby`
@@ -205,109 +145,6 @@
   function toggle(field: TxAuxToggleField): void {
     if (txAux && usable(txAux[field])) onToggle?.(field);
   }
-  function level(field: TxAuxLevelField, value: number): void {
-    if (txAux && usable(txAux[field])) onLevelChange?.(field, value);
-  }
-  const LEVEL_COMMAND: Readonly<Record<TxAuxFeedbackLevelField, string>> = {
-    micGain: 'set_mic_gain', driveGain: 'set_drive_gain', voxGain: 'set_vox_gain',
-    antiVoxGain: 'set_anti_vox_gain', voxDelay: 'set_vox_delay',
-    compressorLevel: 'set_compressor_level', monitorLevel: 'set_monitor_gain',
-  };
-  const levelRow = (field: TxAuxFeedbackLevelField) =>
-    TX_AUX_LEVELS.find(([candidate]) => candidate === field)!;
-  const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
-  function feedbackLevelInput(field: TxAuxFeedbackLevelField): Readonly<ContinuousScalarInput> {
-    const current = txAux?.[field];
-    const [, , min, max, step] = levelRow(field);
-    const common = {
-      domain: { min, max, step, defaultValue: null, fineStepDivisor: 1 },
-      enabled: current !== undefined && usable(current),
-      request: (value: number) => level(field, value),
-    } as const;
-    if (levelFeedback !== undefined) return {
-      ...common, evidence: 'command-feedback', feedback: levelFeedback[field],
-      command: LEVEL_COMMAND[field],
-    };
-    return {
-      ...common, evidence: 'reading', ownerKey: `tx-aux-${field}-reading`,
-      reading: current?.reading.status === 'known'
-        ? { status: 'known', value: current.reading.value } : { status: 'unknown' },
-    };
-  }
-  const levelScalars = Object.fromEntries(TX_AUX_FEEDBACK_LEVELS.map(field => [
-    field, createContinuousScalar(
-      () => feedbackLevelInput(field), nativeRangeContinuousScalarPolicy,
-    ),
-  ])) as Record<TxAuxFeedbackLevelField, ReturnType<typeof createContinuousScalar>>;
-  const levelLeases = Object.fromEntries(TX_AUX_FEEDBACK_LEVELS.map(field => [
-    field, levelScalars[field].attachRenderer(),
-  ])) as Record<TxAuxFeedbackLevelField, ContinuousScalarRendererLease>;
-  const readLevelViews = () => Object.fromEntries(TX_AUX_FEEDBACK_LEVELS.map(field => [
-    field, levelLeases[field].view,
-  ])) as Record<TxAuxFeedbackLevelField, Readonly<ContinuousScalarView>>;
-  type IssuedAnnouncement = Readonly<{ authorityKey: string; eventKey: string; text: string }>;
-  const authorityKey = (current: Readonly<ContinuousScalarView>): string => current.evidence === 'reading'
-    ? JSON.stringify(['reading', current.editable, current.reading.status])
-    : JSON.stringify([
-      current.evidence, current.editable, current.feedback.providerGeneration ?? null,
-      current.feedback.sessionEpoch, current.feedback.availability,
-      current.feedback.scope.control, current.feedback.scope.receiver,
-      current.feedback.scope.slot ?? null,
-    ]);
-  function nextAnnouncement(
-    current: Readonly<ContinuousScalarView>, previous: IssuedAnnouncement | null,
-  ): IssuedAnnouncement | null {
-    const authority = authorityKey(current);
-    const issued = current.presentation?.politeAnnouncement;
-    if (issued === null || issued === undefined || current.announcement === null) {
-      return previous?.authorityKey === authority ? previous : null;
-    }
-    return {
-      authorityKey: authority, eventKey: JSON.stringify([authority, issued.transitionId]),
-      text: current.error === null ? current.announcement : `${current.announcement}: ${current.error}`,
-    };
-  }
-  const initialLevelViews = untrack(readLevelViews);
-  let levelViews = $state(initialLevelViews);
-  let levelAnnouncements = $state(Object.fromEntries(TX_AUX_FEEDBACK_LEVELS.map(field => [
-    field, nextAnnouncement(initialLevelViews[field], null),
-  ])) as Record<TxAuxFeedbackLevelField, IssuedAnnouncement | null>);
-  $effect(() => {
-    const nextViews = readLevelViews();
-    const nextAnnouncements = Object.fromEntries(TX_AUX_FEEDBACK_LEVELS.map(field => [
-      field, nextAnnouncement(nextViews[field], untrack(() => levelAnnouncements[field])),
-    ])) as Record<TxAuxFeedbackLevelField, IssuedAnnouncement | null>;
-    levelViews = nextViews;
-    levelAnnouncements = nextAnnouncements;
-  });
-  onDestroy(() => {
-    for (const field of TX_AUX_FEEDBACK_LEVELS) {
-      levelLeases[field].dispose();
-      levelScalars[field].destroy();
-    }
-  });
-  const displayedLevel = (current: Readonly<ContinuousScalarView>): number | null =>
-    current.draft ?? (current.evidence === 'command-feedback' && current.busy
-      ? current.target : null) ?? current.canonical;
-  const formattedLevel = (field: TxAuxFeedbackLevelField, value: number | null): string => {
-    if (value === null) return '?';
-    const [, , min, max, , format] = levelRow(field);
-    return (format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)))(value);
-  };
-  const statusText = (field: TxAuxFeedbackLevelField): string => {
-    const current = levelViews[field];
-    if (current.evidence !== 'command-feedback' || current.phase === 'idle') return '';
-    const [, label] = levelRow(field);
-    const target = current.feedback.target ?? current.feedback.requestedTarget;
-    const requested = target === null ? '' : `; requested ${formattedLevel(field, target)}`;
-    const confirmed = `; confirmed ${formattedLevel(field, current.canonical)}`;
-    const error = current.error === null ? '' : `; ${current.error}`;
-    return `${label}: ${current.phase.replaceAll('-', ' ')}${requested}${confirmed}${error}`;
-  };
-  const feedbackReason = (
-    field: TxAuxFeedbackLevelField,
-  ): string | undefined => levelViews[field].editable
-    ? undefined : reasonTextOf(txAux?.[field] ?? view.txAux![field]) ?? 'Not yet observed';
   /** The handler half of the TUNE gate. `disabled` alone is not enough: a
    *  design language may restyle this control, and a programmatic click must
    *  not start a carrier the key intent would have been refused. */
@@ -358,75 +195,12 @@
       {/if}
     </div>
 
-    {#each TX_AUX_LEVELS as [field, label, min, max, step, format] (field)}
-      {#if txAux[field].availability.structural}
-        {#if field === 'rfPower'}
-          <label
-            class="tx-aux-level" data-testid={`tx-aux-${field}`} data-field={field}
-            data-disabled-reason={reasonOf(txAux[field])}
-          >
-            <span class="tx-aux-name">{label}</span>
-            <input
-              type="range" {min} {max} {step}
-              value={numberOf(txAux[field], min)}
-              title={reasonTextOf(txAux[field])} aria-describedby={reasonIdOf(field, txAux[field])}
-              disabled={!usable(txAux[field])}
-              oninput={(event) => level(field, event.currentTarget.valueAsNumber)}
-            />
-            {#if reasonTextOf(txAux[field]) !== undefined}
-              <span id={reasonIdOf(field, txAux[field])} class="sr-only">{reasonTextOf(txAux[field])}</span>
-            {/if}
-            <output>{levelTextOf(txAux[field], min, max, format)}</output>
-          </label>
-        {:else}
-          {@const levelView = levelViews[field]}
-          {@const display = displayedLevel(levelView)}
-          {@const announcement = levelAnnouncements[field]}
-          {@const status = statusText(field)}
-          <label
-            class="tx-aux-level" data-testid={`tx-aux-${field}`} data-field={field}
-            data-disabled-reason={levelView.editable ? undefined : 'field-not-observed'}
-            data-feedback-control={levelView.evidence === 'command-feedback'
-              ? levelView.feedback.scope.control : undefined}
-          >
-            <span class="tx-aux-name">{label}</span>
-            <input
-              type="range" {min} {max} {step} value={display ?? min}
-              {...feedbackIntegratedRange}
-              title={feedbackReason(field)}
-              aria-describedby={feedbackReason(field) === undefined
-                ? undefined : `${reasonIdPrefix}-${field}`}
-              disabled={!levelView.editable}
-              data-command-phase={levelView.phase ?? undefined}
-              aria-busy={levelView.evidence === 'command-feedback' ? levelView.busy : undefined}
-              aria-valuenow={levelView.evidence === 'command-feedback' && display !== null
-                ? display : undefined}
-              aria-valuetext={levelView.evidence === 'command-feedback'
-                ? `${label}: ${formattedLevel(field, display)}${status === '' ? '' : `; ${status}`}`
-                : undefined}
-              oninput={(event) => levelLeases[field].nativeInput(event.currentTarget.valueAsNumber)}
-            />
-            {#if feedbackReason(field) !== undefined}
-              <span id={`${reasonIdPrefix}-${field}`} class="sr-only">{feedbackReason(field)}</span>
-            {/if}
-            <output data-canonical-value>{formattedLevel(field, levelView.canonical)}</output>
-            {#if status !== ''}<span
-              data-command-status
-              class:command-pending={levelView.busy}
-              class:sr-only={levelView.phase === 'unavailable'}
-            >{status}</span>{/if}
-            {#if announcement !== null}
-              {#key announcement.eventKey}
-                <span
-                  class="sr-only" role="status" aria-live="polite" aria-atomic="true"
-                  data-tx-aux-feedback-status data-feedback-lane={field}
-                >{announcement.text}</span>
-              {/key}
-            {/if}
-          </label>
-        {/if}
-      {/if}
-    {/each}
+    {#if showScalars}
+      {#each TX_AUX_LEVELS as [field] (field)}
+        {@const scalar = scalarHandles[field]}
+        {@render scalar()}
+      {/each}
+    {/if}
 
     {#if txAux.atu.availability.structural}
       <ul class="tx-aux-blocked" id={blockedId} data-testid="tx-aux-tune-blocked">
@@ -441,8 +215,6 @@
      sole state channel (MOR-977, forced-colors). */
   .tx-aux-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .tx-aux-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .tx-aux-level { display: flex; align-items: baseline; gap: 0.5rem; }
-  .tx-aux-name { min-width: 8ch; }
   .tx-aux-blocked { margin: 0; padding-inline-start: 1.2em; }
   .tx-aux-blocked:empty { display: none; }
   /* MOR-1422: the `aria-describedby` target for a disabled control's reason
