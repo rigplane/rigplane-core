@@ -425,7 +425,7 @@ describe('the txAux surface mounts only when the view model carries the group', 
     + 'div span span span span span span button div span span div span span span span span span span span span span span span span span button '
     + 'div span span span span span span button div section header strong div div div '
     + 'section header strong div div div section div span '
-    + 'div button button div button button p span span section p span span span p div button button '
+    + 'div button button div div button button p span span section p span span span p div button button '
     + 'ul section div button button button label span input output div button button button output '
     + 'div button button output';
 
@@ -449,6 +449,9 @@ describe('the txAux surface mounts only when the view model carries the group', 
       expect(cue.children).toHaveLength(2);
       expect(cue.getAttribute('aria-hidden')).toBe('true');
     }
+    const receiverGroup = target.querySelector('[role="radiogroup"][aria-label="Active receiver"]');
+    expect(receiverGroup).not.toBeNull();
+    expect(receiverGroup?.querySelectorAll('[role="radio"]')).toHaveLength(2);
     expect(outline()).toBe(DEFAULT_PATH_OUTLINE);
   });
 

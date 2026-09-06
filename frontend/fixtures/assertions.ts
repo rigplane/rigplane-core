@@ -69,6 +69,35 @@ function visible(el: HTMLElement): boolean {
 const controls = (): HTMLElement[] =>
   qa<HTMLElement>('button, input, select, a[href], [tabindex]');
 
+function isOperableRadio(el: HTMLElement): boolean {
+  return el.getAttribute('role') === 'radio'
+    && !el.matches(':disabled')
+    && el.getAttribute('aria-disabled') !== 'true';
+}
+
+function hasAccessibleGroupName(group: HTMLElement): boolean {
+  if (group.getAttribute('aria-label')?.trim()) return true;
+  return (group.getAttribute('aria-labelledby') ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .some((id) => document.getElementById(id)?.textContent?.trim());
+}
+
+function isValidRovingRadio(el: HTMLElement): boolean {
+  if (!isOperableRadio(el) || el.getAttribute('tabindex') !== '-1') return false;
+  const group = el.closest<HTMLElement>('[role="radiogroup"]');
+  if (!group || !hasAccessibleGroupName(group)) return false;
+  const enabledPeers = [...group.querySelectorAll<HTMLElement>('[role="radio"]')]
+    .filter((peer) => peer.closest('[role="radiogroup"]') === group && isOperableRadio(peer));
+  return enabledPeers.every((peer) => ['0', '-1'].includes(peer.getAttribute('tabindex') ?? ''))
+    && enabledPeers.filter((peer) => peer.getAttribute('tabindex') === '0').length === 1;
+}
+
+function isInertSlider(el: HTMLElement): boolean {
+  return el.matches('[role="slider"][aria-disabled="true"][tabindex="-1"]');
+}
+
 /** MOR-1087 item 5 — WCAG contrast ratio on a real `getComputedStyle()`
  *  `rgb()`/`rgba()` string (same formula the `studioline`/`fieldline`
  *  `tokens.test.ts` arithmetic uses on the DECLARED palette; this measures
@@ -479,7 +508,13 @@ export function runAssertions(
     controls().every((el) => (Number(el.getAttribute('tabindex') ?? '0') >= 0
       // Retained inert readouts keep focus context but are not native Tab stops.
       || (el.matches('div.freq[role="group"][aria-disabled="true"][tabindex="-1"]')
-        && el.closest('[data-vfo-freq][data-freq-tunable="false"]') !== null))
+        && el.closest('[data-vfo-freq][data-freq-tunable="false"]') !== null)
+      // A named radiogroup keeps exactly one enabled radio in the Tab order;
+      // arrow keys move focus among its other operable, programmatic stops.
+      || isValidRovingRadio(el)
+      // Value-control renderers retain an inert focus anchor without exposing
+      // the disabled slider in the sequential Tab order.
+      || isInertSlider(el))
       && el.closest('[aria-hidden="true"]') === null),
     `${controls().length} focusable controls`);
 

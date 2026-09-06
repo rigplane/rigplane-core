@@ -51,6 +51,7 @@ const LIVE_SCOPE_STATUS: ScopeStatus = {
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
   txController: null as ManagedAppTxController | null,
   noop: vi.fn(),
   scopeStatus: {
@@ -66,6 +67,11 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
     get connectionAudio() { return false; },
     // MOR-1312 slice 12B: the wiring's `scopeDisplaySnapshot` (the FIFTH
@@ -227,6 +233,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';

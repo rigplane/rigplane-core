@@ -30,6 +30,7 @@ const h = vi.hoisted(() => {
   const box = {
     state: null as unknown,
     caps: null as unknown,
+    authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: ControlSessionSnapshot }) => void>(),
     audioFft: false,
     /** [resource, consumer] pairs, in order, against the fake App session. */
     acquired: [] as [string, string][],
@@ -86,6 +87,14 @@ const h = vi.hoisted(() => {
         return {
           get state() { subscribe(); return h.state; },
           get caps() { subscribe(); return h.caps; },
+          subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+            h.authoritySubscribers.add(handler);
+            handler({
+              state: h.state, caps: h.caps,
+              session: { state: 'disconnected', epoch: -1 },
+            });
+            return () => { h.authoritySubscribers.delete(handler); };
+          },
           get scope() { return h.scope; },
           connectionStatus: 'disconnected',
           controlSession: Object.freeze({ state: 'disconnected', epoch: -1 }) satisfies ControlSessionSnapshot,
@@ -107,6 +116,14 @@ const h = vi.hoisted(() => {
     },
   };
 });
+
+function publishAuthority(): void {
+  const next = {
+    state: h.state, caps: h.caps,
+    session: { state: 'disconnected' as const, epoch: -1 },
+  };
+  for (const subscriber of h.authoritySubscribers) subscriber(next);
+}
 
 vi.mock('../../../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
   const stub = await import('./SpectrumPanelStub.svelte');
@@ -281,6 +298,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mounted.forEach((c) => unmount(c));
+  expect(h.authoritySubscribers.size).toBe(0);
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
 });
@@ -406,6 +424,7 @@ describe('no dead-panel regression in the retained legacy glass (MOR-557 class)'
     expect(digits()).toBe('14.250.000');
 
     h.state = liveState(21300000);
+    publishAuthority();
     h.notify();
     flushSync();
     expect(digits()).toBe('21.300.000');
@@ -420,6 +439,7 @@ describe('no dead-panel regression in the retained legacy glass (MOR-557 class)'
     expect(labels()).not.toContain('TUNE');
 
     h.caps = capsFor('2/main_sub', ['tuner']);
+    publishAuthority();
     h.notify();
     flushSync();
     expect(labels()).toContain('TUNE');

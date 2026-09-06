@@ -32,6 +32,7 @@ import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
   txController: null as ManagedAppTxController | null,
 }));
 
@@ -67,6 +68,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return { muted: false, rxEnabled: true, volume: 42 }; },
     get connectionAudio() { return true; },
     get rxEnabled() { return true; },
@@ -204,6 +210,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
 });

@@ -30,6 +30,7 @@ const h = vi.hoisted(() => ({
   txController: null as ManagedAppTxController | null,
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
+  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: ControlSessionSnapshot }) => void>(),
   noop: vi.fn(),
 }));
 
@@ -42,6 +43,11 @@ vi.mock('$lib/runtime', () => ({
     subscribeControlSession(handler: (next: ControlSessionSnapshot) => void) {
       h.sessionSubscriber = handler;
       return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
+    },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({ state: h.state, caps: h.caps, session: h.session });
+      return () => { h.authoritySubscribers.delete(handler); };
     },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an
     // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
@@ -213,12 +219,14 @@ function render(props: { strips?: 'single' | 'dual' } = {}): void {
 
 function push(next: ManagedAppTxServerSnapshot): void {
   txHarness.emitServerSnapshot(next);
+  for (const subscriber of h.authoritySubscribers) subscriber({ state: h.state, caps: h.caps, session: h.session });
   flushSync();
 }
 
 function pushSession(next: ControlSessionSnapshot): void {
   h.session = next;
   h.sessionSubscriber?.(next);
+  for (const subscriber of h.authoritySubscribers) subscriber({ state: h.state, caps: h.caps, session: h.session });
   flushSync();
 }
 
@@ -257,6 +265,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionSubscriber).toBeNull();

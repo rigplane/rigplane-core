@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   txAuxFeedback: vi.fn(),
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
+  authoritySubscribers: new Set<(next: { state: ServerState | null; caps: Capabilities | null; session: ControlSessionSnapshot }) => void>(),
 }));
 const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
 const group = new Proxy({}, { get: () => h.noop });
@@ -33,6 +34,11 @@ vi.mock('$lib/runtime', () => ({
     subscribeControlSession(handler: (next: ControlSessionSnapshot) => void) {
       h.sessionSubscriber = handler;
       return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
+    },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({ state: h.state, caps: h.caps, session: h.session });
+      return () => { h.authoritySubscribers.delete(handler); };
     },
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
     get connectionAudio() { return false; },
@@ -125,7 +131,9 @@ function render(
   component = mount(SemanticRadioSurfaces, { target, props }); flushSync();
 }
 function pushSession(next: ControlSessionSnapshot): void {
-  h.session = next; h.sessionSubscriber?.(next); flushSync();
+  h.session = next; h.sessionSubscriber?.(next);
+  for (const subscriber of h.authoritySubscribers) subscriber({ state: h.state, caps: h.caps, session: h.session });
+  flushSync();
 }
 function pushMeter(value: number, providerGeneration = 1): void {
   const next = state({ providerGeneration });
@@ -133,6 +141,7 @@ function pushMeter(value: number, providerGeneration = 1): void {
   h.state = next;
   h.caps = { ...caps('main_sub', 2), providerGeneration };
   txHarness.emitServerSnapshot({});
+  for (const subscriber of h.authoritySubscribers) subscriber({ state: h.state, caps: h.caps, session: h.session });
   flushSync();
 }
 const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')]
@@ -184,6 +193,7 @@ afterEach(() => {
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionSubscriber).toBeNull();
+  expect(h.authoritySubscribers.size).toBe(0);
   selectedFrequency.current = undefined;
   clearRetainedInteractions();
   document.body.innerHTML = '';
