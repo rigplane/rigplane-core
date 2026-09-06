@@ -18,12 +18,15 @@
 
 <button
   type="button" role="checkbox" data-testid="alternate-toggle"
-  aria-checked={toggleBehavior.confirmed}
+  aria-checked={toggleBehavior.confirmed ?? 'mixed'}
   disabled={!toggleBehavior.available}
   onclick={() => toggleBehavior.invoke()}
 >Toggle</button>
 
-<div role="grid" aria-label="Alternative choices">
+<div
+  class="alternate-choice-grid" role="radiogroup" aria-label="Alternative choices"
+  data-testid="alternate-choices" style:display="grid"
+>
   {#each choices as choice (choice)}
     <button
       type="button" role="radio" data-testid={`alternate-choice-${choice}`}
@@ -33,3 +36,7 @@
     >{choice}</button>
   {/each}
 </div>
+
+<style>
+  .alternate-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
+</style>
