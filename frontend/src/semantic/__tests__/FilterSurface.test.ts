@@ -510,25 +510,10 @@ describe('choice fields emit the caller intent only when usable', () => {
     });
   });
 
-  /**
-   * MOR-1304 fix round (verify-MOR-1304 F3) — `HTMLElement.click()` is a
-   * no-op on a `disabled` button in jsdom (and in every real browser): the
-   * click-activation steps never run, so the handler's OWN guard
-   * (`usable(...)` in `selectMode`/`selectFilter`/`selectShape`) is never
-   * actually exercised — `disabled` alone would satisfy an assertion that
-   * `onXChange` was never called, even with the guard deleted. Dispatching
-   * the `MouseEvent` directly bypasses that suppression and reaches the
-   * `onclick` handler regardless of `disabled`, so these tests can tell
-   * "the button is disabled" apart from "the guard inside the handler holds"
-   * — MF3/MF12/MF13 in the verify report, each SURVIVED under `.click()`.
-   */
   function forceClick(button: HTMLButtonElement): void {
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   }
 
-  // MUTATION KILLED (MF3): `selectMode`'s `usable(modeFilter.currentMode)`
-  // guard dropped — clicking would arm a guess rather than a confirmed
-  // selection.
   it('emits nothing when the mode is clicked on an unobserved reading', () => {
     const onModeChange = vi.fn();
     const view = withModeFilterField(base(), 'currentMode', { unknown: true });
@@ -539,8 +524,6 @@ describe('choice fields emit the caller intent only when usable', () => {
     }, { onModeChange });
   });
 
-  // MUTATION KILLED (MF12): `selectFilter`'s `usable(modeFilter.currentFilter)`
-  // guard dropped.
   it('emits nothing when a filter is clicked on an unobserved reading', () => {
     const onFilterChange = vi.fn();
     const view = withModeFilterField(base(), 'currentFilter', { unknown: true });
@@ -551,8 +534,6 @@ describe('choice fields emit the caller intent only when usable', () => {
     }, { onFilterChange });
   });
 
-  // MUTATION KILLED (MF13): `selectShape`'s `usable(filterPassband.filterShape)`
-  // guard dropped.
   it('emits nothing when a shape is clicked on an unobserved reading', () => {
     const onFilterShapeChange = vi.fn();
     const view = withPassbandField(base(), 'filterShape', { unknown: true });

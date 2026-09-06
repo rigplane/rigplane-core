@@ -180,14 +180,6 @@ describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', 
     r.dispose();
   });
 
-  /**
-   * The `usable()` gate is structural && operational && known — a field can
-   * be `reading.status === 'known'` (a stale, previously-observed value)
-   * while `operational: false` (unwritable right now). These three pin THAT
-   * half specifically: a guard that checks only `status === 'known'` (a
-   * plausible partial mutation) still passes the tests above but must fail
-   * these, since none of them is unread.
-   */
   const STALE: Availability = { structural: true, operational: false };
 
   it('refuses a choice click on a KNOWN but operationally-stale field', () => {

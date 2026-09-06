@@ -30,8 +30,8 @@
 
   Two-level availability (MOR-977/1256): `structural: false` renders
   NOTHING; a present-but-unusable control stays visible and disabled rather
-  than guessing a value. `aria-pressed`/`aria-checked` are OMITTED (never
-  `"false"`) on an unread field — `TxAuxSurface.svelte`'s `pressedOf` shape.
+  than guessing a value. An unread toggle omits `aria-pressed`; unselected
+  radio choices expose `aria-checked="false"`.
 -->
 <script module lang="ts">
   import type { ScopeControlsField } from './radio-view-model';
