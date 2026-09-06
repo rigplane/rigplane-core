@@ -1,26 +1,28 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
+  import type {
+    ContinuousScalarBinding,
+    ContinuousScalarRendererLease,
+    ContinuousScalarView,
+  } from '../../../primitives/scalar/continuous-scalar.svelte';
   import './value-control.css';
   import {
     getFillPercent,
     calculateClickValue,
-    handleKeyboardStep,
-    clamp,
     snapToStep,
-    debounce,
     valueToPosition,
     enumerateDiscreteValues,
   } from '../../../primitives/scalar/value-control-core';
+  import {
+    projectScalarRenderPresentation,
+    type LegacyReadingPresentation,
+  } from './scalar-render-presentation';
 
   interface Props {
-    value: number;
-    min: number;
-    max: number;
-    step: number;
-    defaultValue?: number;
-    fineStepDivisor?: number;
+    binding: ContinuousScalarBinding;
     label: string;
     displayFn?: (v: number) => string;
+    unknownDisplay?: string;
     fillColor?: string;
     fillGradient?: string[];
     trackColor?: string;
@@ -29,9 +31,6 @@
     showLabel?: boolean;
     compact?: boolean;
     variant?: 'modern' | 'hardware' | 'hardware-illuminated';
-    onChange: (value: number) => void;
-    debounceMs?: number;
-    disabled?: boolean;
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
@@ -40,17 +39,15 @@
     showAllTicks?: boolean;
     /** Visual style for discrete step marks. */
     tickStyle?: 'ruler' | 'led' | 'notch';
+    dimmed?: boolean;
+    legacy?: LegacyReadingPresentation;
   }
 
   let {
-    value,
-    min,
-    max,
-    step,
-    defaultValue,
-    fineStepDivisor = 10,
+    binding,
     label,
     displayFn,
+    unknownDisplay,
     fillColor,
     fillGradient,
     trackColor = 'var(--v2-bg-gradient-start)',
@@ -59,50 +56,71 @@
     showLabel = true,
     compact = false,
     variant = 'modern',
-    onChange,
-    debounceMs = 0,
-    disabled = false,
     unit = '',
     shortcutHint = null,
     title = null,
     tickLabels = [],
     showAllTicks = true,
     tickStyle = 'notch',
+    dimmed,
+    legacy,
   }: Props = $props();
 
-  let containerEl: HTMLDivElement | null = $state(null);
-  let isDragging = $state(false);
-  let wheelLocked = $state(false);
-  let wheelUnlockTimer: ReturnType<typeof setTimeout> | null = null;
-  let localValue = $state(untrack(() => value));
+  const feedbackDescriptionId = $props.id();
 
-  function markWheelActive() {
-    wheelLocked = true;
-    if (wheelUnlockTimer) clearTimeout(wheelUnlockTimer);
-    wheelUnlockTimer = setTimeout(() => {
-      wheelLocked = false;
-      wheelUnlockTimer = null;
-    }, 300);
-  }
+  let containerEl: HTMLDivElement | null = $state(null);
+  let activePointer: { id: number; token: number; target: HTMLElement } | null = null;
+  const initialBinding = untrack(() => binding);
+  let attachedBinding = initialBinding;
+  let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
 
   $effect(() => {
-    if (!isDragging && !wheelLocked) {
-      localValue = value;
+    if (binding === attachedBinding) return;
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
     }
+    activePointer = null;
+    lease.dispose();
+    attachedBinding = binding;
+    lease = binding.attachRenderer();
+  });
+  onDestroy(() => {
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
+    lease.dispose();
   });
 
-  let fillPercent = $derived(getFillPercent(localValue, min, max));
-  let effectiveDefault = $derived(defaultValue ?? min);
+  let view = $state<ContinuousScalarView>(untrack(() => lease.view));
+  let skipViewAssignment = true;
+  $effect(() => {
+    const next = lease.view;
+    if (skipViewAssignment) {
+      skipViewAssignment = false;
+    } else {
+      view = next;
+    }
+  });
+  let renderedValue = $derived(view.displayed);
+  let fillPercent = $derived(!view.domainValid || renderedValue === null
+    ? 0
+    : getFillPercent(renderedValue, view.domain.min, view.domain.max));
   let effectiveFill = $derived(
     fillGradient
       ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
       : (fillColor ?? accentColor),
   );
-  let displayValue = $derived(
-    displayFn ? displayFn(localValue) : `${localValue}${unit ? '\u00a0' + unit : ''}`,
-  );
+  let displayValue = $derived(renderedValue === null
+    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
+    : displayFn ? displayFn(renderedValue)
+      : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
+  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
+  let effectiveDimmed = $derived(dimmed ?? !view.editable);
 
   let tickItems = $derived.by(() => {
+    if (!view.domainValid) return [];
+    const { min, max, step } = view.domain;
     const steps = enumerateDiscreteValues(min, max, step);
     if (showAllTicks) {
       return steps.map((v, i) => ({
@@ -140,102 +158,71 @@
 
   let hasTickLabels = $derived(tickItems.some((t) => t.label.length > 0));
 
-  let debouncedOnChange = $derived.by<(...args: unknown[]) => void>(() => {
-    if (debounceMs > 0) {
-      return debounce((v: number) => onChange(v), debounceMs) as (...args: unknown[]) => void;
-    }
-    return ((v: number) => onChange(v)) as (...args: unknown[]) => void;
-  });
-
-  function emitChange(newValue: number, immediate = false) {
-    if (newValue !== localValue) {
-      localValue = newValue;
-    }
-    if (newValue !== value) {
-      if (immediate) {
-        onChange(newValue);
-      } else {
-        debouncedOnChange(newValue);
-      }
-    }
-  }
-
   function handlePointerDown(e: PointerEvent) {
-    if (disabled || !containerEl) return;
+    if (!containerEl) return;
+    const token = lease.beginPointer();
+    if (token === null) return;
 
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
-
-    isDragging = true;
+    activePointer = { id: e.pointerId, token, target };
 
     const rect = containerEl.getBoundingClientRect();
-    const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
-    emitChange(newValue, true);
+    const domain = view.domain;
+    const newValue = calculateClickValue(
+      e.clientX, rect.left, rect.width, domain.min, domain.max, domain.step,
+    );
+    lease.pointer(token, newValue);
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!isDragging || disabled || !containerEl) return;
+    if (!activePointer || activePointer.id !== e.pointerId || !containerEl) return;
 
     const rect = containerEl.getBoundingClientRect();
-    const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
-    emitChange(newValue, true);
+    const domain = view.domain;
+    const newValue = calculateClickValue(
+      e.clientX, rect.left, rect.width, domain.min, domain.max, domain.step,
+    );
+    lease.pointer(activePointer.token, newValue);
   }
 
   function handlePointerUp(e: PointerEvent) {
-    if (!isDragging) return;
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease.endPointer(activePointer.token);
+    activePointer = null;
+  }
 
-    const target = e.currentTarget as HTMLElement;
-    target.releasePointerCapture(e.pointerId);
-    isDragging = false;
+  function handlePointerCancel(e: PointerEvent) {
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease.cancelPointer(activePointer.token);
+    activePointer = null;
   }
 
   function handleWheel(e: WheelEvent) {
-    if (disabled) return;
+    if (!view.editable) return;
     e.preventDefault();
-
-    const fine = e.shiftKey && fineStepDivisor > 0;
-    const effectiveStep = fine ? step / fineStepDivisor : step;
-    const direction = e.deltaY > 0 ? -1 : 1;
-    const newValue = clamp(
-      snapToStep(localValue + direction * effectiveStep, effectiveStep, min),
-      min,
-      max,
-    );
-    localValue = newValue;
-    markWheelActive();
-    onChange(newValue);
+    lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (disabled) return;
-
-    const newValue = handleKeyboardStep(
-      localValue,
-      e.key,
-      step,
-      fineStepDivisor,
-      min,
-      max,
-      e.shiftKey,
-    );
-    if (newValue !== null) {
-      e.preventDefault();
-      emitChange(newValue);
-    }
+    if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 
-  function handleDoubleClick() {
-    if (disabled) return;
-    if (defaultValue === undefined) return;
-    emitChange(effectiveDefault);
-  }
+  function handleDoubleClick() { lease.reset(); }
 </script>
 
 <div
   class="vc-hbar vc-discrete"
   class:compact
-  class:disabled
+  class:interaction-disabled={!view.editable}
+  class:dimmed={effectiveDimmed}
   class:hardware={variant === 'hardware'}
   class:hw-illum={variant === 'hardware-illuminated'}
   bind:this={containerEl}
@@ -260,16 +247,19 @@
   <div
     class="vc-track-container"
     role="slider"
-    tabindex={disabled ? -1 : 0}
+    tabindex={view.editable ? 0 : -1}
     aria-label={label}
-    aria-valuemin={min}
-    aria-valuemax={max}
-    aria-valuenow={value}
-    aria-disabled={disabled}
+    aria-valuemin={view.domainValid ? view.domain.min : undefined}
+    aria-valuemax={view.domainValid ? view.domain.max : undefined}
+    aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
+    aria-disabled={!view.editable}
+    aria-busy={renderPresentation.attributes['aria-busy']}
+    aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
+    data-command-phase={renderPresentation.attributes['data-command-phase'] ?? undefined}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
-    onpointercancel={handlePointerUp}
+    onpointercancel={handlePointerCancel}
     onwheel={handleWheel}
     onkeydown={handleKeyDown}
     ondblclick={handleDoubleClick}
@@ -282,7 +272,7 @@
               {#each tickItems as t (t.value)}
                 <div
                   class="vc-discrete-led-segment"
-                  class:active={t.value <= localValue + 1e-9}
+                  class:active={renderedValue !== null && t.value <= renderedValue + 1e-9}
                 ></div>
               {/each}
             </div>
@@ -308,7 +298,7 @@
           {#each tickItems as t (t.value)}
             <div
               class="vc-discrete-ruler-tick"
-              class:active={t.value <= localValue + 1e-9}
+              class:active={renderedValue !== null && t.value <= renderedValue + 1e-9}
               class:major={t.rulerMajor}
               style:left="{t.percent}%"
             ></div>
@@ -322,7 +312,7 @@
             {#each tickItems as t (t.value)}
               <div
                 class="vc-discrete-led-segment"
-                class:active={t.value <= localValue + 1e-9}
+                class:active={renderedValue !== null && t.value <= renderedValue + 1e-9}
               ></div>
             {/each}
           </div>
@@ -345,7 +335,7 @@
           {#each tickItems as t (t.value)}
             <div
               class="vc-discrete-ruler-tick"
-              class:active={t.value <= localValue + 1e-9}
+              class:active={renderedValue !== null && t.value <= renderedValue + 1e-9}
               class:major={t.rulerMajor}
               style:left="{t.percent}%"
             ></div>
@@ -360,7 +350,7 @@
             {#each tickItems as t (t.value)}
               <div
                 class="vc-discrete-led-segment"
-                class:active={t.value <= localValue + 1e-9}
+                class:active={renderedValue !== null && t.value <= renderedValue + 1e-9}
               ></div>
             {/each}
           </div>
@@ -382,7 +372,7 @@
           {#each tickItems as t (t.value)}
             <div
               class="vc-discrete-ruler-tick"
-              class:active={t.value <= localValue + 1e-9}
+              class:active={renderedValue !== null && t.value <= renderedValue + 1e-9}
               class:major={t.rulerMajor}
               style:left="{t.percent}%"
             ></div>
@@ -394,6 +384,19 @@
       {/if}
     {/if}
   </div>
+
+  {#if renderPresentation.description !== null}
+    <span id={feedbackDescriptionId} class="sr-only">{renderPresentation.description}</span>
+  {/if}
+  {#if renderPresentation.status !== null}
+    <span
+      class="sr-only"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-control-feedback-status
+    >{renderPresentation.status}{renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}</span>
+  {/if}
 
   {#if hasTickLabels}
     <div class="vc-discrete-label-row" aria-hidden="true">
@@ -437,8 +440,16 @@
     font-family: 'Roboto Mono', monospace;
   }
 
-  .disabled {
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+
+  .dimmed {
     opacity: 0.4;
+  }
+
+  .interaction-disabled {
     pointer-events: none;
   }
 

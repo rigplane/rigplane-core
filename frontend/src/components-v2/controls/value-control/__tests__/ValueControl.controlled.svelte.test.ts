@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import ValueControl from '../ValueControl.svelte';
+import DiscreteRenderer from '../DiscreteRenderer.svelte';
 import {
   createBipolarContinuousScalarPolicy,
   createContinuousScalar,
+  createDiscreteContinuousScalarPolicy,
   createHBarContinuousScalarPolicy,
   type CommandScalarFeedback,
   type ContinuousScalarBinding,
@@ -129,6 +131,20 @@ function bipolarBinding(value: number, request: (value: number) => void): Contin
       request,
     }),
     createBipolarContinuousScalarPolicy({ debounceMs: 0 }),
+  );
+}
+
+function discreteBinding(value: number, request: (value: number) => void): ContinuousScalarBinding {
+  return createContinuousScalar(
+    () => ({
+      evidence: 'reading',
+      reading: { status: 'known', value },
+      ownerKey: `external-discrete-${value}`,
+      domain: { min: 0, max: 10, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      enabled: true,
+      request,
+    }),
+    createDiscreteContinuousScalarPolicy({ debounceMs: 0 }),
   );
 }
 
@@ -495,8 +511,10 @@ describe('ValueControl controlled Bipolar rendering', () => {
     });
     const control = slider(target) as HTMLElement & {
       setPointerCapture?: (pointerId: number) => void;
+      releasePointerCapture?: (pointerId: number) => void;
     };
     control.setPointerCapture = vi.fn();
+    control.releasePointerCapture = vi.fn();
     vi.spyOn(target.querySelector('.vc-bipolar') as HTMLElement, 'getBoundingClientRect')
       .mockReturnValue({ left: 0, width: 100 } as DOMRect);
 
@@ -626,5 +644,339 @@ describe('ValueControl controlled Bipolar rendering', () => {
     flushSync();
     expect(visibleValue(target)).toBe('UNKNOWN');
     expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+  });
+});
+
+describe('ValueControl controlled Discrete rendering', () => {
+  it('keeps a raw unknown reading undimmed but noninteractive without numeric value ARIA', () => {
+    const onChange = vi.fn();
+    const { target } = mountReactive({
+      value: Number.NaN,
+      min: 0,
+      max: 100,
+      step: 10,
+      disabled: false,
+      label: 'Unknown raw Discrete',
+      renderer: 'discrete',
+      onChange,
+    });
+    const wrapper = target.querySelector('.vc-discrete')!;
+    const control = slider(target);
+
+    expect(wrapper.classList.contains('dimmed')).toBe(false);
+    expect(wrapper.classList.contains('disabled')).toBe(false);
+    expect(wrapper.classList.contains('interaction-disabled')).toBe(true);
+    expect(control.getAttribute('aria-valuenow')).toBeNull();
+    expect(control.getAttribute('aria-disabled')).toBe('true');
+    expect(control.getAttribute('tabindex')).toBe('-1');
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    control.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('dims an explicitly disabled raw Discrete without changing owner editability', () => {
+    const { target } = mountReactive({
+      value: 20,
+      min: 0,
+      max: 100,
+      step: 10,
+      disabled: true,
+      label: 'Disabled raw Discrete',
+      renderer: 'discrete',
+      onChange: vi.fn(),
+    });
+
+    expect(target.querySelector('.vc-discrete')?.classList.contains('dimmed')).toBe(true);
+    expect(target.querySelector('.vc-discrete')?.classList.contains('interaction-disabled')).toBe(true);
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+    expect(slider(target).getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('retains default noneditable dimming for a direct external binding', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading',
+        reading: { status: 'unknown' },
+        ownerKey: 'external-unknown-discrete',
+        domain: { min: 0, max: 100, step: 10, defaultValue: null, fineStepDivisor: 10 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createDiscreteContinuousScalarPolicy({ debounceMs: 0 }),
+    );
+    const { target } = mountReactive({
+      binding,
+      label: 'External unknown Discrete',
+      renderer: 'discrete',
+    });
+
+    expect(target.querySelector('.vc-discrete')?.classList.contains('dimmed')).toBe(true);
+    expect(target.querySelector('.vc-discrete')?.classList.contains('interaction-disabled')).toBe(true);
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+    binding.destroy();
+  });
+
+  it('keeps pending owner work intact when direct renderer dimming changes', () => {
+    vi.useFakeTimers();
+    const request = vi.fn();
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading',
+        reading: { status: 'known', value: 20 },
+        ownerKey: 'direct-cosmetic-discrete',
+        domain: { min: 0, max: 100, step: 10, defaultValue: null, fineStepDivisor: 10 },
+        enabled: true,
+        request,
+      }),
+      createDiscreteContinuousScalarPolicy({ debounceMs: 50 }),
+    );
+    const state = $state({
+      binding,
+      label: 'Direct cosmetic Discrete',
+      dimmed: false,
+    });
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    roots.push(target);
+    const component = mount(DiscreteRenderer, { target, props: state });
+    components.push(component);
+    flushSync();
+
+    try {
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state.dimmed = true;
+      flushSync();
+      expect(target.querySelector('.vc-discrete')?.classList.contains('dimmed')).toBe(true);
+      expect(target.querySelector('.vc-discrete')?.classList.contains('interaction-disabled')).toBe(false);
+      expect(slider(target).getAttribute('aria-disabled')).toBe('false');
+      expect(slider(target).getAttribute('tabindex')).toBe('0');
+      expect(visibleValue(target)).toBe('30');
+
+      vi.advanceTimersByTime(50);
+      expect(request).toHaveBeenCalledExactlyOnceWith(30);
+    } finally {
+      binding.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['optimistic', false],
+    ['keyboardStep', 5],
+  ] as const)('keeps a pending Discrete request when ignored raw %s changes', (prop, next) => {
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      const { state, target } = mountReactive({
+        value: 20,
+        min: 0,
+        max: 100,
+        step: 10,
+        keyboardStep: 40,
+        optimistic: true,
+        label: 'Ignored authority input',
+        renderer: 'discrete',
+        debounceMs: 50,
+        onChange,
+      });
+
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state[prop] = next;
+      flushSync();
+      vi.advanceTimersByTime(50);
+
+      expect(onChange).toHaveBeenCalledExactlyOnceWith(30);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a Discrete pointer draft and reconciles rejected wheel state at expiry', () => {
+    vi.useFakeTimers();
+    const onChange = vi.fn();
+    const { target } = mountReactive({
+      value: 4,
+      min: 0,
+      max: 10,
+      step: 1,
+      label: 'Discrete lifecycle',
+      renderer: 'discrete',
+      debounceMs: 0,
+      onChange,
+    });
+    const control = slider(target) as HTMLElement & {
+      setPointerCapture?: (pointerId: number) => void;
+      releasePointerCapture?: (pointerId: number) => void;
+    };
+    control.setPointerCapture = vi.fn();
+    control.releasePointerCapture = vi.fn();
+    vi.spyOn(target.querySelector('.vc-discrete') as HTMLElement, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 100 } as DOMRect);
+
+    control.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, clientX: 80, pointerId: 1,
+    }));
+    control.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+    control.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, clientX: 100, pointerId: 1,
+    }));
+    flushSync();
+    expect(onChange.mock.calls).toEqual([[8]]);
+    expect(visibleValue(target)).toBe('4');
+
+    control.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+    flushSync();
+    expect(onChange).toHaveBeenLastCalledWith(5);
+    expect(visibleValue(target)).toBe('5');
+    vi.advanceTimersByTime(300);
+    flushSync();
+    expect(visibleValue(target)).toBe('4');
+    vi.useRealTimers();
+  });
+
+  it('replaces HBar with Discrete on the same external owner and revokes retained callbacks', () => {
+    const request = vi.fn();
+    const binding = discreteBinding(4, request);
+    const { state, target } = mountReactive({ binding, label: 'Replaceable', renderer: 'hbar' });
+    const retainedHBar = slider(target);
+
+    state.renderer = 'discrete';
+    flushSync();
+    expect(target.querySelector('.vc-discrete')).not.toBeNull();
+    expect(visibleValue(target)).toBe('4');
+
+    retainedHBar.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).not.toHaveBeenCalled();
+    slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).toHaveBeenCalledExactlyOnceWith(5);
+
+    const retainedLease = binding.attachRenderer();
+    expect(retainedLease.beginPointer()).not.toBeNull();
+    retainedLease.dispose();
+    binding.destroy();
+  });
+
+  it('preserves full command feedback and one-shot announcement identity in Discrete', () => {
+    const binding = commandBinding(vi.fn(), {
+      phase: 'failed',
+      busy: false,
+      outcome: { phase: 'failed', error: 'radio rejected' },
+      transitionId: 'failed-discrete',
+    });
+    const { state, target } = mountReactive({ binding, label: 'Feedback', renderer: 'hbar' });
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('Failed: 30 Hz: radio rejected');
+
+    state.renderer = 'discrete';
+    flushSync();
+    const replacement = slider(target);
+    expect(replacement.getAttribute('data-command-phase')).toBe('failed');
+    expect(replacement.getAttribute('aria-busy')).toBe('false');
+    const descriptionId = replacement.getAttribute('aria-describedby');
+    expect(target.querySelector(`#${descriptionId}`)?.textContent).toBe('30 Hz');
+    expect(target.querySelector('[data-control-feedback-status]')).toBeNull();
+    binding.destroy();
+  });
+
+  it.each([
+    [Number.POSITIVE_INFINITY, '+INF'],
+    [Number.NEGATIVE_INFINITY, '-INF'],
+    [Number.NaN, 'NAN'],
+  ] as const)('keeps exact legacy formatting for nonfinite Discrete input %s', (value, expected) => {
+    const { target } = mountReactive({
+      value,
+      min: 0,
+      max: 10,
+      step: 1,
+      label: 'Nonfinite',
+      renderer: 'discrete',
+      onChange: vi.fn(),
+      displayFn: (candidate: number) => Number.isNaN(candidate) ? 'NAN'
+        : candidate === Number.POSITIVE_INFINITY ? '+INF' : '-INF',
+    });
+
+    expect(visibleValue(target)).toBe(expected);
+    expect(slider(target).getAttribute('aria-valuenow')).toBeNull();
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('distinguishes known invalid-domain Discrete evidence from an unknown reading', () => {
+    const { state, target } = mountReactive({
+      value: 4,
+      min: 0,
+      max: Number.NaN,
+      step: 1,
+      label: 'Domain',
+      renderer: 'discrete',
+      onChange: vi.fn(),
+      displayFn: (candidate: number) => Number.isNaN(candidate) ? 'UNKNOWN' : `KNOWN:${candidate}`,
+    });
+
+    expect(visibleValue(target)).toBe('KNOWN:4');
+    expect(slider(target).getAttribute('aria-valuenow')).toBeNull();
+    state.value = Number.NaN;
+    flushSync();
+    expect(visibleValue(target)).toBe('UNKNOWN');
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+  });
+});
+
+describe('ValueControl raw effective behavior authority', () => {
+  it('keeps a pending Bipolar request when ignored raw optimistic changes', () => {
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      const { state, target } = mountReactive({
+        value: 0,
+        min: -100,
+        max: 100,
+        step: 5,
+        optimistic: true,
+        label: 'Ignored Bipolar preview',
+        renderer: 'bipolar',
+        debounceMs: 50,
+        onChange,
+      });
+
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state.optimistic = false;
+      flushSync();
+      vi.advanceTimersByTime(50);
+
+      expect(onChange).toHaveBeenCalledExactlyOnceWith(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a pending HBar request when raw optimistic changes effective preview', () => {
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      const { state, target } = mountReactive({
+        ...baseProps,
+        optimistic: true,
+        debounceMs: 50,
+        onChange,
+      });
+
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state.optimistic = false;
+      flushSync();
+      vi.advanceTimersByTime(50);
+
+      expect(onChange).not.toHaveBeenCalled();
+      expect(visibleValue(target)).toContain('20');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

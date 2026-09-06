@@ -5,6 +5,7 @@ import ValueControl from '../ValueControl.svelte';
 import {
   createBipolarContinuousScalarPolicy,
   createContinuousScalar,
+  createDiscreteContinuousScalarPolicy,
   createHBarContinuousScalarPolicy,
 } from '../../../../primitives/scalar/continuous-scalar.svelte';
 
@@ -84,6 +85,31 @@ describe('ValueControl wrapper', () => {
     expect(getSlider(target).getAttribute('aria-valuemax')).toBe('100');
     expect(target.querySelector('.vc-bipolar')?.getAttribute('style'))
       .toContain('--vc-current: 37.5%');
+    binding.destroy();
+  });
+
+  it('renders a caller-owned Discrete binding synchronously without raw bounds', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 4 },
+        ownerKey: 'direct-discrete',
+        domain: { min: 0, max: 8, step: 1, defaultValue: null, fineStepDivisor: 10 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createDiscreteContinuousScalarPolicy({ debounceMs: 0 }),
+    );
+
+    const target = mountControl({
+      binding, label: 'Direct discrete', renderer: 'discrete', tickStyle: 'led',
+    });
+
+    expect(getValueDisplay(target)?.textContent).toBe('4');
+    expect(getSlider(target).getAttribute('aria-valuemin')).toBe('0');
+    expect(getSlider(target).getAttribute('aria-valuemax')).toBe('8');
+    expect(target.querySelector('.vc-discrete')?.getAttribute('style'))
+      .toContain('--vc-fill-percent: 50%');
     binding.destroy();
   });
 
