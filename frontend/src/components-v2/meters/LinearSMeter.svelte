@@ -54,7 +54,6 @@
   import { DEFAULT_METER_DISPLAY } from './meter-display';
   import {
     projectSignalMeter,
-    rawToSegments,
     type SignalMeterProjection,
   } from './smeter-scale';
 
@@ -120,10 +119,8 @@
   const isWideVfoVariant = $derived(variant === 'vfo-wide');
 
   // ── Segment geometry ────────────────────────────────────────────────────────
-  // `smeter-scale.ts`'s rawToSegments and projected motion fractions use a
-  // fixed 0-20 source domain, independent of how many visual segments this
-  // component draws. RAW_SEGMENT_DOMAIN keeps dense raw ticks on that source
-  // scale while the projection feeds normalized display motion below.
+  // Projected fractions are independent of how many visual segments this
+  // component draws; this component only maps them onto its local geometry.
   const RAW_SEGMENT_DOMAIN = 20;
   const SEG_COUNT = $derived(display.segmentCount);
   const SEG_GAP = $derived(display.segmentGapPx);
@@ -139,12 +136,6 @@
 
   function fractionToX(fraction: number): number {
     return BAR_X + fraction * SEG_COUNT * (SEG_W + SEG_GAP);
-  }
-
-  // x position (from bar left) for a given raw value — rawToSegments(raw) is
-  // on the fixed RAW_SEGMENT_DOMAIN, rescaled here onto SEG_COUNT segments.
-  function rawToX(raw: number): number {
-    return fractionToX(rawToSegments(raw) / RAW_SEGMENT_DOMAIN);
   }
 
   // Index of the first visual segment at or above the projected S9 anchor,
@@ -246,58 +237,6 @@
 
   // ── Label marks ─────────────────────────────────────────────────────────────
   let labelMarks = $derived(signalProjection.marks);
-
-  // ── Tick marks ──────────────────────────────────────────────────────────────
-  // Generate dense ticks: 9 subdivisions between each labeled S-unit position,
-  // with the 5th tick (midpoint) slightly taller.
-  type TickKind = 'major' | 'mid' | 'minor';
-  interface Tick { raw: number; kind: TickKind; color: string }
-
-  function generateTicks(): Tick[] {
-    const ticks: Tick[] = [];
-    const anchors = signalProjection.marks.map((m) => ({ raw: m.raw, actual: m.actual }));
-    const first = anchors[0];
-
-    if (!first || first.raw > 0) {
-      anchors.unshift({ raw: 0, actual: -54 });
-    }
-
-    function colorForActual(actual: number): string {
-      if (actual <= 0) return 'var(--v2-text-bright)';
-      if (actual <= 20) return 'var(--v2-accent-yellow)';
-      if (actual <= 40) return 'var(--v2-accent-orange-alt)';
-      return 'var(--v2-accent-red-alt)';
-    }
-
-    function addSubdivisions(startRaw: number, endRaw: number, startActual: number, endActual: number) {
-      // Major tick at start
-      ticks.push({ raw: startRaw, kind: 'major', color: colorForActual(startActual) });
-      // 9 subdivision ticks between start and end
-      const step = (endRaw - startRaw) / 10;
-      const actualStep = (endActual - startActual) / 10;
-      for (let j = 1; j <= 9; j++) {
-        const raw = startRaw + step * j;
-        const kind: TickKind = j === 5 ? 'mid' : 'minor';
-        ticks.push({ raw, kind, color: colorForActual(startActual + actualStep * j) });
-      }
-    }
-
-    for (let i = 0; i < anchors.length - 1; i++) {
-      addSubdivisions(
-        anchors[i].raw,
-        anchors[i + 1].raw,
-        anchors[i].actual,
-        anchors[i + 1].actual,
-      );
-    }
-    // Final tick at max
-    const last = anchors[anchors.length - 1];
-    ticks.push({ raw: last.raw, kind: 'major', color: colorForActual(last.actual) });
-
-    return ticks;
-  }
-
-  let tickMarks = $derived(generateTicks());
 
   // ── Layout (switches between full / compact) ────────────────────────────────
   //   When label is present: label at top → meter shifted down
@@ -501,8 +440,8 @@
   {/each}
 
   <!-- Tick marks -->
-  {#each tickMarks as t}
-    {@const tx = rawToX(t.raw)}
+  {#each signalProjection.ticks as t}
+    {@const tx = fractionToX(t.fraction)}
     {@const y1 = t.kind === 'major' ? TICK_MAJOR_Y1 : t.kind === 'mid' ? TICK_MID_Y1 : TICK_MINOR_Y1}
     {@const y2 = t.kind === 'major' ? TICK_MAJOR_Y2 : t.kind === 'mid' ? TICK_MID_Y2 : TICK_MINOR_Y2}
     {@const sw = t.kind === 'major' ? 1.2 : t.kind === 'mid' ? 0.9 : 0.6}

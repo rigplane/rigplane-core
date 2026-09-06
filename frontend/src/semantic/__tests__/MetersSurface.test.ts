@@ -657,6 +657,19 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
     { raw: 240, actual: 40, label: 'S9+40' },
   ];
 
+  const REPLACEMENT_S_METER_CAL = [
+    { raw: 0, actual: -60, label: 'S0' },
+    { raw: 20, actual: -50, label: 'S1' },
+    { raw: 40, actual: -48, label: 'S2' },
+    { raw: 90, actual: -30, label: 'S3' },
+    { raw: 110, actual: -20, label: 'S5' },
+    { raw: 125, actual: -10, label: 'S7' },
+    { raw: 150, actual: 0, label: 'S9' },
+    { raw: 175, actual: 10, label: 'S9+10' },
+    { raw: 200, actual: 20, label: 'S9+20' },
+    { raw: 250, actual: 40, label: 'S9+40' },
+  ];
+
   it('projects a known nonuniform reading identically into fieldline and the real LinearSMeter, distinct from unknown', () => {
     const caps = makeFaultCaps();
     caps.meterCalibrations!.s_meter = NONUNIFORM_S_METER_CAL;
@@ -685,6 +698,64 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
         expect(tile.textContent).toContain('S ?');
       });
     } finally {
+      clearCapabilities();
+      delete document.documentElement.dataset.designLanguage;
+      window.matchMedia = originalMatchMedia;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('refreshes descriptor, readout, fill, labels, and dense ticks coherently on a retained capability update', () => {
+    const initialCaps = makeFaultCaps();
+    initialCaps.meterCalibrations!.s_meter = NONUNIFORM_S_METER_CAL;
+    setCapabilities(initialCaps);
+    document.documentElement.dataset.designLanguage = 'fieldline';
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: true,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }) as unknown as typeof window.matchMedia;
+
+    const props: { view: RadioViewModel } = proxy({ view: withRaw(base(), 'signal', -48) });
+    const component = mount(MetersSurface, { target, props });
+    flushSync();
+    const tickXs = () => [...target.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
+      .filter((line) => line.getAttribute('y2') === '36')
+      .map((line) => Number(line.getAttribute('x1')));
+    const labelX = (text: string) => Number([...target.querySelectorAll<SVGTextElement>('text')]
+      .find((label) => label.textContent === text)?.getAttribute('x'));
+
+    try {
+      const tile = target.querySelector<HTMLElement>('[data-testid="meter-signal"]')!;
+      const retainedSvg = tile.querySelector('svg')!;
+      const initialTicks = tickXs();
+      const initialPlus20 = labelX('+20');
+      expect(tile.dataset.dlLitCount).toBe('1');
+      expect(tile.querySelectorAll('[data-meter-fill]')).toHaveLength(1);
+      expect(tile.textContent).toContain('S1');
+
+      const replacementCaps = makeFaultCaps();
+      replacementCaps.meterCalibrations!.s_meter = REPLACEMENT_S_METER_CAL;
+      setCapabilities(replacementCaps);
+      flushSync();
+
+      const replacementTicks = tickXs();
+      const replacementPlus20 = labelX('+20');
+      const majorTickXs = [...tile.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
+        .filter((line) => line.getAttribute('y1') === '24' && line.getAttribute('y2') === '36')
+        .map((line) => Number(line.getAttribute('x1')));
+      expect(retainedSvg.isConnected).toBe(true);
+      expect(tile.querySelector('svg')).toBe(retainedSvg);
+      expect(tile.dataset.dlLitCount).toBe('2');
+      expect(tile.querySelectorAll('[data-meter-fill]')).toHaveLength(2);
+      expect(tile.textContent).toContain('S2');
+      expect(replacementTicks).not.toEqual(initialTicks);
+      expect(replacementPlus20).not.toBe(initialPlus20);
+      expect(majorTickXs.some((x) => Math.abs(x - replacementPlus20) < 1e-9)).toBe(true);
+      expect(majorTickXs.some((x) => Math.abs(x - labelX('S9')) < 1e-9)).toBe(true);
+    } finally {
+      unmount(component);
       clearCapabilities();
       delete document.documentElement.dataset.designLanguage;
       window.matchMedia = originalMatchMedia;

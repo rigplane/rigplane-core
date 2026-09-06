@@ -330,8 +330,13 @@ describe('LinearSMeter calibrated S-meter domain', () => {
       .toThrow(/exactly one of projection or value/);
   });
 
-  it('renders an exact supplied projection without consulting a replacement calibration', () => {
+  it('keeps every dense tick and the S1 label on the supplied projection after calibration replacement', () => {
     const projection = projectSignalMeter(-48);
+    const beforeReplacement = mountMeter({ projection });
+    const denseTickXs = (target: HTMLElement) => [...target.querySelectorAll<SVGLineElement>('line')]
+      .filter((line) => line.getAttribute('y2') === '38')
+      .map((line) => Number(line.getAttribute('x1')));
+    const expectedTickXs = denseTickXs(beforeReplacement);
     clearCapabilities();
 
     const projected = mountMeter({ projection });
@@ -341,19 +346,26 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     expect(projected.textContent).not.toContain('uncalibrated');
     expect(legacy.textContent).toContain('uncalibrated');
     expect(legacy.textContent).not.toContain('\u2212121 dBm');
+
+    const s1Label = [...projected.querySelectorAll<SVGTextElement>('text')]
+      .find((label) => label.textContent === 'S1')!;
+    const majorTickXs = [...projected.querySelectorAll<SVGLineElement>('line')]
+      .filter((line) => line.getAttribute('y1') === '18' && line.getAttribute('y2') === '38')
+      .map((line) => Number(line.getAttribute('x1')));
+    expect(denseTickXs(projected)).toEqual(expectedTickXs);
+    expect(majorTickXs[1]).toBeCloseTo(Number(s1Label.getAttribute('x')));
   });
 
-  it('positions labeled marks from the projection while dense ticks retain the raw facade mapping', () => {
+  it('positions both labeled marks and dense ticks from the supplied projection fractions', () => {
     const source = readFileSync(
       resolve(process.cwd(), 'src/components-v2/meters/LinearSMeter.svelte'),
       'utf8',
     );
     expect(source).toMatch(/labelMarks\s*=\s*\$derived\(signalProjection\.marks\)/);
     expect(source).toMatch(/x=\{fractionToX\(m\.fraction\)\}/);
-    expect(source).toMatch(
-      /function rawToX\(raw: number\)[\s\S]*?rawToSegments\(raw\)\s*\/\s*RAW_SEGMENT_DOMAIN/,
-    );
-    expect(source).toMatch(/\{@const tx = rawToX\(t\.raw\)\}/);
+    expect(source).toMatch(/\{#each signalProjection\.ticks as t\}/);
+    expect(source).toMatch(/\{@const tx = fractionToX\(t\.fraction\)\}/);
+    expect(source).not.toMatch(/\brawToSegments\b|function rawToX\b/);
   });
 });
 

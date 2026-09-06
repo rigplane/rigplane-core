@@ -44,25 +44,27 @@ describe('projectSignalMeter', () => {
     const projection = projectSignalMeter(-48);
 
     expect(Object.keys(projection).sort()).toEqual([
-      'marks', 'motionFraction', 'primaryText', 's9Fraction', 'secondaryText',
+      'marks', 'motionFraction', 'primaryText', 's9Fraction', 'secondaryText', 'ticks',
     ]);
     expect(projection.motionFraction).toBeCloseTo(11 / 9 / 20);
     expect(projection.primaryText).toBe('S1');
     expect(projection.secondaryText).toBe('\u2212121 dBm');
     expect(projection.s9Fraction).toBe(11 / 20);
-    expect(projection.marks.map(({ raw, actual, text }) => ({ raw, actual, text }))).toEqual([
-      { raw: 26, actual: -48, text: 'S1' },
-      { raw: 52, actual: -36, text: 'S3' },
-      { raw: 78, actual: -24, text: 'S5' },
-      { raw: 103, actual: -12, text: 'S7' },
-      { raw: 130, actual: 0, text: 'S9' },
-      { raw: 165, actual: 10, text: '+10' },
-      { raw: 200, actual: 20, text: '+20' },
-      { raw: 240, actual: 40, text: '+40' },
+    expect(projection.marks.map(({ actual, text }) => ({ actual, text }))).toEqual([
+      { actual: -48, text: 'S1' },
+      { actual: -36, text: 'S3' },
+      { actual: -24, text: 'S5' },
+      { actual: -12, text: 'S7' },
+      { actual: 0, text: 'S9' },
+      { actual: 10, text: '+10' },
+      { actual: 20, text: '+20' },
+      { actual: 40, text: '+40' },
     ]);
     expect(Object.keys(projection.marks[0]).sort()).toEqual([
-      'actual', 'color', 'fraction', 'raw', 'text',
+      'actual', 'color', 'fraction', 'text',
     ]);
+    expect(Object.keys(projection.ticks[0]).sort()).toEqual(['color', 'fraction', 'kind']);
+    expect(projection.ticks).toHaveLength(81);
     expect(projection.marks[0].fraction).toBeCloseTo(11 / 9 / 20);
     expect(projection.marks[4].fraction).toBe(11 / 20);
     expect(projection.marks.at(-1)?.fraction).toBe(1);
@@ -79,6 +81,7 @@ describe('projectSignalMeter', () => {
       s9Fraction: 11 / 20,
     });
     expect(unknown.marks).toEqual(zero.marks);
+    expect(unknown.ticks).toEqual(zero.ticks);
     expect(zero.motionFraction).toBe(11 / 20);
     expect(zero.primaryText).toBe('S9');
     expect(zero.secondaryText).toBe('\u221273 dBm');
@@ -110,6 +113,35 @@ describe('projectSignalMeter', () => {
     ]);
   });
 
+  it('maps dense subdivisions through hidden calibration knots', () => {
+    const hiddenKnotCal = [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 30, actual: -48, label: 'S1' },
+      { raw: 35, actual: -42, label: 'S2' },
+      { raw: 80, actual: -36, label: 'S3' },
+      { raw: 100, actual: -24, label: 'S5' },
+      { raw: 120, actual: -12, label: 'S7' },
+      { raw: 140, actual: 0, label: 'S9' },
+      { raw: 180, actual: 20, label: 'S9+20' },
+      { raw: 240, actual: 40, label: 'S9+40' },
+    ];
+    setCapabilities({
+      ...capabilities(),
+      meterCalibrations: { s_meter: hiddenKnotCal },
+    });
+
+    const projection = projectSignalMeter(-42);
+    const halfwayBetweenLabeledS1AndS3 = (
+      projection.marks[0].fraction + projection.marks[1].fraction
+    ) / 2;
+    const expectedThroughHiddenS2 = (2 + (55 - 35) / (80 - 35)) / 9 * 11 / 20;
+
+    // Tick 15 is the raw-55 midpoint between labeled S1/raw-30 and S3/raw-80.
+    expect(projection.ticks[15]).toMatchObject({ kind: 'mid' });
+    expect(projection.ticks[15].fraction).toBeCloseTo(expectedThroughHiddenS2);
+    expect(projection.ticks[15].fraction).not.toBeCloseTo(halfwayBetweenLabeledS1AndS3);
+  });
+
   it.each([
     [-999, 0, 'S0', '\u2212127 dBm'],
     [999, 1, 'S9+40', '\u221233 dBm'],
@@ -133,5 +165,8 @@ describe('projectSignalMeter', () => {
     expect(projection.secondaryText).toBe('uncalibrated');
     expect(projection.s9Fraction).toBe(11 / 20);
     expect(projection.marks).toEqual([]);
+    expect(projection.ticks).toEqual([
+      { fraction: 0, kind: 'major', color: 'var(--v2-text-bright)' },
+    ]);
   });
 });
