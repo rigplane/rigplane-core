@@ -226,12 +226,16 @@ describe('createMeterBallistics frame-step strategy', () => {
 
   it('keeps a static reduced-motion peak and re-seats it on the next expired sync', () => {
     const { host, meter } = frameSetup({ reduced: true });
-    meter.sync({ sample: 10, smoothTarget: 10, peakEnabled: true });
+    meter.sync({
+      sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     meter.start();
     expect(host.activeFrames).toBe(0);
     host.advance(1001);
     expect(meter.view.peakValue).toBe(10);
-    meter.sync({ sample: 2, smoothTarget: 2, peakEnabled: true });
+    meter.sync({
+      sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     expect(meter.view.peakValue).toBe(2);
   });
 
@@ -281,14 +285,23 @@ describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
       sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
     });
     meter.sync({
-      sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+      sample: 2, smoothTarget: 3, peakEnabled: true,
+      source: { ...MAIN_SOURCE }, session: { ...SESSION_1 },
     });
     expect(smoother.update).toHaveBeenCalledTimes(2);
+    expect(smoother.update).toHaveBeenLastCalledWith(3);
     expect(smoother.reset).not.toHaveBeenCalled();
-    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 10 });
+    expect(meter.view).toEqual({ smoothedValue: 3, peakValue: 10 });
   });
 
-  it('re-seeds smoothing and peak state when source identity changes', () => {
+  it.each([
+    ['provider generation', { ...MAIN_SOURCE, providerGeneration: 2 }, SESSION_1],
+    ['scope', { ...MAIN_SOURCE, scope: 'radio' }, SESSION_1],
+    ['receiver', { ...MAIN_SOURCE, receiver: 'SUB' }, SESSION_1],
+    ['path', { ...MAIN_SOURCE, path: 'sub.sMeter' }, SESSION_1],
+    ['control-session epoch', MAIN_SOURCE, SESSION_2],
+  ] as readonly [string, MeterSourceIdentity, MeterContinuitySession][])(
+    're-seeds same-value history when only %s changes', (_label, nextSource, nextSession) => {
     const { meter, smoother } = frameSetup();
     meter.sync({
       sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
@@ -298,27 +311,50 @@ describe('createMeterBallistics continuity boundaries (MOR-2400)', () => {
     });
     expect(meter.view.peakValue).toBe(10);
     vi.mocked(smoother.reset).mockClear();
+    vi.mocked(smoother.update).mockClear();
     meter.sync({
-      sample: 3, smoothTarget: 3, peakEnabled: true, source: SUB_SOURCE, session: SESSION_1,
+      sample: 2, smoothTarget: 2, peakEnabled: true, source: nextSource, session: nextSession,
     });
-    expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(3);
-    expect(meter.view).toEqual({ smoothedValue: 3, peakValue: 3 });
+    expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(2);
+    expect(smoother.update).not.toHaveBeenCalled();
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2 });
   });
 
-  it('re-seeds on a control-session epoch change even when source identity is unchanged', () => {
-    const { meter, smoother } = frameSetup();
+  it.each([
+    ['frame-step', frameSetup],
+    ['elapsed-envelope', elapsedSetup],
+  ] as const)('re-seeds same-value source replacement through the %s strategy', (_label, setup) => {
+    const { meter, smoother } = setup();
     meter.sync({
       sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
     });
     meter.sync({
       sample: 2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
     });
+    expect(meter.view.peakValue).toBe(10);
     vi.mocked(smoother.reset).mockClear();
     meter.sync({
-      sample: 4, smoothTarget: 4, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_2,
+      sample: 2, smoothTarget: 2, peakEnabled: true, source: SUB_SOURCE, session: SESSION_1,
     });
-    expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(4);
-    expect(meter.view).toEqual({ smoothedValue: 4, peakValue: 4 });
+    expect(smoother.reset).toHaveBeenCalledExactlyOnceWith(2);
+    expect(meter.view).toEqual({ smoothedValue: 2, peakValue: 2 });
+  });
+
+  it.each([
+    ['frame-step', frameSetup],
+    ['elapsed-envelope', elapsedSetup],
+  ] as const)('keeps qualified manual reset owned by the %s strategy', (_label, setup) => {
+    const { meter } = setup();
+    meter.sync({
+      sample: 10, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    meter.resetPeak();
+    expect(meter.view.peakValue).toBeNull();
+    meter.sync({
+      sample: 2, smoothTarget: 2, peakEnabled: true,
+      source: { ...MAIN_SOURCE }, session: { ...SESSION_1 },
+    });
+    expect(meter.view.peakValue).toBe(2);
   });
 
   it('gives explicit null precedence over transitional undefined and clears immediately', () => {
@@ -381,26 +417,38 @@ describe('createMeterBallistics elapsed-envelope strategy', () => {
 
   it('hides without clearing state and reset remains clear until a new sync', () => {
     const { meter } = elapsedSetup();
-    meter.sync({ sample: 1, smoothTarget: 10, peakEnabled: true });
-    meter.sync({ sample: 0.2, smoothTarget: 2, peakEnabled: false });
+    meter.sync({
+      sample: 1, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
+    meter.sync({
+      sample: 0.2, smoothTarget: 2, peakEnabled: false, source: MAIN_SOURCE, session: SESSION_1,
+    });
     expect(meter.view.peakValue).toBeNull();
-    meter.sync({ sample: 0.2, smoothTarget: 2, peakEnabled: true });
+    meter.sync({
+      sample: 0.2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     expect(meter.view.peakValue).toBe(1);
     meter.resetPeak();
     expect(meter.view.peakValue).toBeNull();
     expect(meter.view.peakValue).toBeNull();
-    meter.sync({ sample: 0.2, smoothTarget: 2, peakEnabled: true });
+    meter.sync({
+      sample: 0.2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     expect(meter.view.peakValue).toBe(0.2);
   });
 
   it('uses static reduced-motion projection and re-seats only on genuine sync', () => {
     const { host, meter } = elapsedSetup(true);
-    meter.sync({ sample: 1, smoothTarget: 10, peakEnabled: true });
+    meter.sync({
+      sample: 1, smoothTarget: 10, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     meter.start();
     expect(host.activeIntervals).toBe(0);
     host.advance(2000);
     expect(meter.view.peakValue).toBe(1);
-    meter.sync({ sample: 0.2, smoothTarget: 2, peakEnabled: true });
+    meter.sync({
+      sample: 0.2, smoothTarget: 2, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     expect(meter.view.peakValue).toBe(0.2);
   });
 
@@ -514,7 +562,9 @@ describe('createMeterBallistics scheduling lifecycle', () => {
     ['interval', elapsedSetup, 'activeIntervals'],
   ] as const)('keeps one %s schedule across preference flips and tears down once', (_name, setup, count) => {
     const { host, meter, smoother } = setup();
-    meter.sync({ sample: 1, smoothTarget: 1, peakEnabled: true });
+    meter.sync({
+      sample: 1, smoothTarget: 1, peakEnabled: true, source: MAIN_SOURCE, session: SESSION_1,
+    });
     meter.start();
     expect(smoother.start).toHaveBeenCalledTimes(1);
     expect(host[count]).toBe(1);

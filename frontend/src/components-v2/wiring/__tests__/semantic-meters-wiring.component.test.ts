@@ -253,6 +253,7 @@ afterEach(() => {
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionSubscriber).toBeNull();
   document.body.innerHTML = '';
+  vi.unstubAllGlobals();
 });
 
 // ── 1. The structural gate: absent group ⇒ no surface, no element drift ────
@@ -329,6 +330,11 @@ describe('the meters surface mounts only when the view model carries the group',
   });
 
   it('re-seeds the mounted S-meter immediately at source, session, provider, and disconnect boundaries', () => {
+    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+      matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+    }));
     const signalState = (
       active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
     ): ServerState => {
@@ -339,34 +345,50 @@ describe('the meters surface mounts only when the view model carries the group',
         [key]: { ...state[key], sMeter },
       } as ServerState;
     };
+    const setSignal = (
+      active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
+    ): void => {
+      h.state = signalState(active, sMeter, providerGeneration);
+      h.caps = { ...liveCaps(true), providerGeneration };
+      push({});
+    };
+    const signalObserved = (): string | undefined =>
+      q('[data-testid="meter-signal"]')!.dataset.observed;
+    const armPeak = (active: 'MAIN' | 'SUB', providerGeneration = 1): number => {
+      setSignal(active, 240, providerGeneration);
+      setSignal(active, 60, providerGeneration);
+      expect(signalObserved()).toBe('true');
+      expect(signalHasPeak()).toBe(true);
+      return signalFillCount();
+    };
 
     h.state = signalState('MAIN', 240);
     render();
-    const mainFill = signalFillCount();
-    expect(mainFill).toBeGreaterThan(0);
-
-    h.state = signalState('SUB', 180);
-    push({});
-    const subFill = signalFillCount();
-    expect(subFill).toBeLessThan(mainFill);
+    const receiverFill = armPeak('MAIN');
+    setSignal('SUB', 60);
+    expect(signalObserved()).toBe('true');
+    expect(signalFillCount()).toBe(receiverFill);
     expect(signalHasPeak()).toBe(false);
 
-    h.state = signalState('SUB', 120);
-    push({});
-    expect(signalFillCount()).toBe(subFill);
+    const sessionFill = armPeak('SUB');
     pushSession({ state: 'connected', epoch: 2 });
-    const nextSessionFill = signalFillCount();
-    expect(nextSessionFill).toBeLessThan(subFill);
+    expect(signalObserved()).toBe('true');
+    expect(signalFillCount()).toBe(sessionFill);
     expect(signalHasPeak()).toBe(false);
 
-    h.state = signalState('SUB', 60, 2);
-    h.caps = { ...liveCaps(true), providerGeneration: 2 };
-    push({});
-    expect(signalFillCount()).toBeLessThan(nextSessionFill);
+    const providerFill = armPeak('SUB');
+    setSignal('SUB', 60, 2);
+    expect(signalObserved()).toBe('true');
+    expect(signalFillCount()).toBe(providerFill);
     expect(signalHasPeak()).toBe(false);
 
+    const reconnectFill = armPeak('SUB', 2);
     pushSession({ state: 'disconnected', epoch: 3 });
     expect(signalFillCount()).toBe(0);
+    expect(signalHasPeak()).toBe(false);
+    pushSession({ state: 'connected', epoch: 4 });
+    expect(signalObserved()).toBe('true');
+    expect(signalFillCount()).toBe(reconnectFill);
     expect(signalHasPeak()).toBe(false);
   });
 

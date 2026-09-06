@@ -1,10 +1,10 @@
 /**
  * MOR-1262 decomposition slice 2A — `meters` fact-group adapter derivation.
  *
- * Companion to `radio-view-model-adapter.test.ts` (MOR-1065) and
- * `tx-aux-adapter.test.ts` (MOR-1244), neither of which this file modifies.
- * Those files never pass a TX authority snapshot, so `deriveMeters` declines
- * to emit for them and their exact-key-list assertions stand unchanged.
+ * Companion to `radio-view-model-adapter.test.ts` (MOR-1065), whose RF-gain
+ * cases pass a TX authority and therefore receive meters. That suite owns a
+ * source-normalized legacy digest; this focused suite owns exact meter-source
+ * projection. `tx-aux-adapter.test.ts` remains outside this group's fanout.
  *
  * The first describe block is the SAFETY block (invariant R9, MOR-1235): the
  * discriminating pair proves the group's TX truth comes from the App TX
