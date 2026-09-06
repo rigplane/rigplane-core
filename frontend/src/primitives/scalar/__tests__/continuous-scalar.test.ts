@@ -155,7 +155,7 @@ describe('continuous scalar contract', () => {
       editable: false,
       phase: 'failed',
       error: 'radio rejected',
-      presentation: { targetDescription: '2700' },
+      presentation: { targetDescription: '2700', currentStatus: 'Failed: 2700' },
     });
   });
 
@@ -206,10 +206,16 @@ describe('continuous scalar contract', () => {
       requested: 2_800,
       phase: 'awaiting-confirmation',
       busy: true,
-      presentation: { attributes: { 'aria-busy': 'true' } },
+      presentation: {
+        attributes: { 'aria-busy': 'true' },
+        currentStatus: 'Awaiting confirmation: 2800',
+      },
       announcement: 'Awaiting confirmation: 2800',
     });
-    expect(scalar.view.announcement).toBeNull();
+    expect(scalar.view).toMatchObject({
+      presentation: { currentStatus: 'Awaiting confirmation: 2800' },
+      announcement: null,
+    });
 
     const malformed = feedback('submitted', {
       confirmed: Number.POSITIVE_INFINITY,
@@ -1291,17 +1297,84 @@ describe('continuous scalar deferred work', () => {
       feedback: terminal,
     });
     const stale = scalar.attachRenderer();
-    expect(stale.view.announcement).toBe('Failed: 2500');
+    expect(stale.view).toMatchObject({
+      presentation: { currentStatus: 'Failed: 2500' },
+      announcement: 'Failed: 2500',
+    });
+    expect(stale.view).toMatchObject({
+      presentation: { currentStatus: 'Failed: 2500' },
+      announcement: null,
+    });
     const staleToken = stale.beginPointer()!;
     stale.pointer(staleToken, 2_700);
     expect(scalar.view.draft).toBe(2_700);
 
     update({ feedback: feedback('idle', { providerGeneration: 4 }) });
-    expect(scalar.view).toMatchObject({ draft: null, announcement: null });
+    expect(scalar.view).toMatchObject({
+      draft: null,
+      presentation: { currentStatus: null },
+      announcement: null,
+    });
     stale.pointer(staleToken, 2_800);
     expect(scalar.view.draft).toBeNull();
     stale.nativeInput(2_900);
     expect(scalar.view.draft).toBe(2_900);
+  });
+
+  it.each([
+    ['provider', { feedback: feedback('idle', { providerGeneration: 4 }) }, null, null, null],
+    ['session', { feedback: feedback('idle', { sessionEpoch: 8 }) }, null, null, null],
+    ['scope', {
+      feedback: feedback('failed', {
+        scope: { control: 'filter-width', receiver: 1, slot: 'main' },
+        requestedTarget: 2_600,
+        transitionId: 'new-scope-failed',
+        outcome: { phase: 'failed', error: 'new receiver rejected' },
+      }),
+    }, 'Failed: 2600', 'new receiver rejected', 'Failed: 2600'],
+    ['domain', { domain: { ...DOMAIN, max: 4_000 }, feedback: feedback('idle') }, null, null, null],
+    ['availability', {
+      feedback: feedback('unavailable', { confirmed: null, availability: 'unavailable' }),
+    }, 'Control unavailable', null, null],
+  ] as const)(
+    'projects only current facts after %s replacement',
+    (_label, replacement, expectedStatus, expectedError, expectedAnnouncement) => {
+      const { scalar, update } = commandSetup(nativeRangeContinuousScalarPolicy, {
+        feedback: feedback('failed', {
+          requestedTarget: 2_500,
+          transitionId: 'old-failed',
+          outcome: { phase: 'failed', error: 'old failure' },
+        }),
+      });
+      expect(scalar.view.presentation?.currentStatus).toBe('Failed: 2500');
+
+      update(replacement);
+
+      const replaced = scalar.view;
+      expect(replaced.presentation?.currentStatus).toBe(expectedStatus);
+      expect(replaced.presentation?.currentStatus).not.toBe('Failed: 2500');
+      expect(replaced.error).toBe(expectedError);
+      expect(replaced.announcement).toBe(expectedAnnouncement);
+    },
+  );
+
+  it('removes current command status when authority changes to an unknown reading', () => {
+    const request = vi.fn<(value: number) => void>();
+    let current: ContinuousScalarInput = commandInput(request, {
+      feedback: feedback('failed', {
+        requestedTarget: 2_500,
+        transitionId: 'command-failed',
+        outcome: { phase: 'failed', error: 'radio rejected' },
+      }),
+    });
+    const scalar = createContinuousScalar(() => current, nativeRangeContinuousScalarPolicy);
+    expect(scalar.view.presentation?.currentStatus).toBe('Failed: 2500');
+
+    current = readingInput(request, { reading: { status: 'unknown' } });
+
+    expect(scalar.view).toMatchObject({
+      evidence: 'reading', canonical: null, presentation: null, announcement: null, error: null,
+    });
   });
 
   it.each([

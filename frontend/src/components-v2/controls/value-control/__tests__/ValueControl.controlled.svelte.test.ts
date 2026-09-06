@@ -1165,26 +1165,47 @@ describe('ValueControl controlled Discrete rendering', () => {
     binding.destroy();
   });
 
-  it('preserves full command feedback and one-shot announcement identity in Discrete', () => {
-    const binding = commandBinding(vi.fn(), {
+  it.each([
+    ['built-in', undefined],
+    ['selected custom Discrete', { name: 'persistent-status-discrete', discrete: DiscreteRenderer }],
+  ] as const)('preserves current feedback without replaying old live status in %s', (_route, skin) => {
+    const request = vi.fn();
+    const owner = commandBinding(request, {
       phase: 'failed',
       busy: false,
       outcome: { phase: 'failed', error: 'radio rejected' },
       transitionId: 'failed-discrete',
     });
-    const { state, target } = mountReactive({ binding, label: 'Feedback', renderer: 'hbar' });
+    let viewReads = 0;
+    const binding = countViewReads(owner, () => { viewReads += 1; });
+    const { state, target } = mountReactive({
+      binding, label: 'Feedback', renderer: 'hbar', skin,
+    });
+    expect(viewReads).toBe(1);
+    const retainedHBar = slider(target);
     expect(target.querySelector('[data-control-feedback-status]')?.textContent)
       .toBe('Failed: 30 Hz: radio rejected');
 
     state.renderer = 'discrete';
     flushSync();
     const replacement = slider(target);
+    expect(viewReads).toBe(3);
     expect(replacement.getAttribute('data-command-phase')).toBe('failed');
     expect(replacement.getAttribute('aria-busy')).toBe('false');
-    const descriptionId = replacement.getAttribute('aria-describedby');
-    expect(target.querySelector(`#${descriptionId}`)?.textContent).toBe('30 Hz');
+    const describedIds = replacement.getAttribute('aria-describedby')?.split(' ') ?? [];
+    expect(describedIds).toHaveLength(2);
+    expect(describedIds.map((id) => target.querySelector(`#${id}`)?.textContent))
+      .toEqual(['30 Hz', 'Failed: 30 Hz: radio rejected']);
+    const currentStatus = target.querySelector('[data-control-feedback-current-status]');
+    expect(currentStatus?.getAttribute('role')).toBeNull();
+    expect(currentStatus?.getAttribute('aria-live')).toBeNull();
     expect(target.querySelector('[data-control-feedback-status]')).toBeNull();
-    binding.destroy();
+
+    retainedHBar.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).not.toHaveBeenCalled();
+    replacement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).toHaveBeenCalledExactlyOnceWith(30);
+    owner.destroy();
   });
 
   it.each([

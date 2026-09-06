@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(), split: vi.fn(),
   dualWatch: vi.fn(), speak: vi.fn(),
   filterWidthFeedback: vi.fn(), cwPitchFeedback: vi.fn(), keySpeedFeedback: vi.fn(),
+  txAuxFeedback: vi.fn(),
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
 }));
@@ -57,6 +58,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getFilterWidthControlFeedback: h.filterWidthFeedback,
   getCwPitchControlFeedback: h.cwPitchFeedback,
   getKeySpeedControlFeedback: h.keySpeedFeedback,
+  getTxAuxControlFeedback: h.txAuxFeedback,
   getPendingFrequencyHz: () => null,
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
@@ -150,6 +152,14 @@ beforeEach(() => {
     phase: 'unavailable', busy: false, availability: 'unavailable',
     outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
     scope: Object.freeze({ control: 'keyer-speed', receiver: 0 }),
+    repeatPolicy: 'latest-target-wins',
+  }));
+  h.txAuxFeedback.mockImplementation((field: string) => Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable', busy: false, availability: 'unavailable',
+    outcome: null, lifecycleId: null, transitionId: null,
+    providerGeneration: null, sessionEpoch: h.session.epoch,
+    scope: Object.freeze({ control: field, receiver: 0 as const }),
     repeatPolicy: 'latest-target-wins',
   }));
   for (const mock of [
