@@ -146,7 +146,7 @@ function interactionOwner(options: { disabled?: boolean; onFreqChange?: (hz: num
 }
 
 describe('frequency renderer lifetime', () => {
-  it('revokes the actual external renderer across replacement, context A-B-A, and unmount', () => {
+  it('revokes the actual external renderer across replacement, context A-B-A, and unmount', async () => {
     selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
     const context = writable('A');
     const liveContext = fromStore(context);
@@ -173,10 +173,24 @@ describe('frequency renderer lifetime', () => {
     expect(aBaWheel.defaultPrevented).toBe(false);
     expect(first.inert).toBe(true);
     expect(onFreqChange).not.toHaveBeenCalled();
+    flushSync();
+    const recovered = retainedInteractions().at(-1)!;
+    expect(recovered).not.toBe(first);
+    expect(root.querySelector('[data-alternate-frequency-readout]')).not.toBeNull();
+    recovered.handleDigitClick(digit, new MouseEvent('click'));
+    await Promise.resolve();
+    expect(recovered.selectedDigitIndex).toBe(digit.digitIndex);
+    recovered.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
+    onFreqChange.mockClear();
+    const staleRecoveredWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    first.handleWheel(digit, staleRecoveredWheel);
+    expect(staleRecoveredWheel.defaultPrevented).toBe(false);
+    expect(onFreqChange).not.toHaveBeenCalled();
 
     selectedFrequency.current = undefined;
     const beforeCleanup = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
-    first.handleWheel(digit, beforeCleanup);
+    recovered.handleWheel(digit, beforeCleanup);
     expect(beforeCleanup.defaultPrevented).toBe(false);
     expect(onFreqChange).not.toHaveBeenCalled();
     context.set('B');
@@ -188,6 +202,7 @@ describe('frequency renderer lifetime', () => {
     flushSync();
     const second = retainedInteractions().at(-1)!;
     expect(second).not.toBe(first);
+    expect(second).not.toBe(recovered);
     first.handleDigitClick(digit, new MouseEvent('click'));
     first.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
     expect(onFreqChange).not.toHaveBeenCalled();

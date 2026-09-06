@@ -114,7 +114,8 @@
   $effect.pre(() => {
     const nextContextKey = contextKey;
     const nextRenderer = selectedRenderer;
-    if (Object.is(nextContextKey, attachedContextKey) && nextRenderer === attachedRenderer) return;
+    if (Object.is(nextContextKey, attachedContextKey)
+      && nextRenderer === attachedRenderer && !lease.revoked) return;
     lease.revoke();
     attachedContextKey = nextContextKey;
     attachedRenderer = nextRenderer;

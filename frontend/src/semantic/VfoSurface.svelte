@@ -904,7 +904,7 @@
           pendingDisplayHz={dominant ? pendingFrequencyHz?.[receiver] ?? null : null}
           frequencyState={dominant?.display?.frequencyHz.state ?? (dominant?.frequencyHz == null ? 'unknown' : 'current')}
           staleReason={t('core.rxTx.target.reason.stale')}
-          contextKey={`${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`}
+          contextKey={`${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`}
           frequencyDisabled={!dominant || readoutDisabled(dominant)}
           mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
           filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}

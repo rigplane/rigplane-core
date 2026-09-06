@@ -26,6 +26,7 @@ export interface FrequencyInteraction {
 
 export interface FrequencyInteractionLease {
   readonly interaction: FrequencyInteraction;
+  readonly revoked: boolean;
   revoke(): void;
 }
 
@@ -156,5 +157,5 @@ export function createFrequencyInteractionLease(
     isSelected: (digit) => active() && owner.isSelected(digit),
     isHovered: (digit) => active() && owner.isHovered(digit),
   };
-  return { interaction, revoke };
+  return { interaction, get revoked() { return revoked; }, revoke };
 }

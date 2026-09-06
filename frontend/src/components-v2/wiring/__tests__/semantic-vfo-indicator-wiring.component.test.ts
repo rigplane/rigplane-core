@@ -195,6 +195,7 @@ describe('production receiver-indicator partitioning', () => {
   it.each([
     ['dual receiver strip', { strips: 'dual' }],
     ['single VFO surface', { strips: 'single' }],
+    ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
   ] as const)('rotates the %s frequency authority on session and provider identity', (
     _name, props,
   ) => {
