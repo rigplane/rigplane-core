@@ -190,7 +190,10 @@
       field?.availability.structural && field.availability.operational
         ? 'available' as const : 'unavailable' as const;
     return {
-      evidence: 'reading', ownerKey: 'semantic-rf-sql',
+      evidence: 'reading', ownerKey: JSON.stringify([
+        view.topologyId, view.activeReceiver.status,
+        view.activeReceiver.status === 'known' ? view.activeReceiver.receiver : null,
+      ]),
       domain: {
         min: RF_SQL_MIN, max: RF_SQL_MAX, step: RF_SQL_STEP,
         defaultValue: null, fineStepDivisor: 10,
@@ -219,6 +222,7 @@
   $effect(() => {
     rfSqlView = rfSqlLease === null ? rfSqlPair.view : rfSqlLease.view;
   });
+  let combinedNormX = $derived(rfSqlView.displayedPosition ?? RF_SQL_MIN);
   onDestroy(() => rfSqlPair.destroy());
 </script>
 
@@ -279,7 +283,7 @@
         <span class="rf-front-end-name">RF/SQL</span>
         <input
           type="range" min={RF_SQL_MIN} max={RF_SQL_MAX} step={RF_SQL_STEP}
-          value={rfSqlView.displayedPosition ?? RF_SQL_MIN}
+          value={combinedNormX}
           disabled={!rfSqlView.editable}
           data-pair-evidence={rfSqlView.evidence}
           oninput={(event) => rfSqlLease?.nativeInput(event.currentTarget.valueAsNumber)}

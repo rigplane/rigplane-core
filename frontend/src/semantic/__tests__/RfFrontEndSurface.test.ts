@@ -14,6 +14,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import RfFrontEndSurface, {
   DISABLED_REASON_LABEL, RF_FRONT_END_LEVELS, RF_FRONT_END_TOGGLES, UNKNOWN_TEXT,
 } from '../RfFrontEndSurface.svelte';
@@ -386,6 +387,39 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
       ['squelch', 0],
     ]);
     r.dispose();
+  });
+
+  it('clears identical lane draft and request state when receiver topology is replaced', () => {
+    const views = new SvelteMap([['current', base()]]);
+    const onLevelChange = vi.fn();
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(RfFrontEndSurface, {
+      target,
+      props: {
+        get view() { return views.get('current')!; },
+        controlModel: 'combined', onLevelChange,
+      },
+    });
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rf-sql"] input')!;
+    input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(input.valueAsNumber).toBe(1);
+
+    views.set('current', withRfFrontEnd(topologyFixtures['2/ab_shared']));
+    flushSync();
+    expect(input.valueAsNumber).toBe(0.5);
+    input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange.mock.calls).toEqual([
+      ['squelch', 1],
+      ['squelch', 1],
+    ]);
+    unmount(component);
+    target.remove();
   });
 
   it('a hard-right drag emits ONLY squelch — RF is already at max, unchanged (owner semantics: "hard right = SQL max (RF max)")', () => {
