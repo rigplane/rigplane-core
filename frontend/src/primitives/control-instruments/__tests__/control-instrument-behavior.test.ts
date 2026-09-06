@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  bindActionInstrument, bindChoiceInstrument, bindToggleInstrument,
+  bindAbsoluteChoiceInstrument, bindActionInstrument, bindChoiceInstrument, bindToggleInstrument,
   type InstrumentField,
 } from '../control-instrument-behavior';
 
@@ -77,5 +77,76 @@ describe('control-instrument behavior bindings', () => {
     expect(behavior.selected).toBe(2);
     behavior.invoke(3);
     expect(invoke).toHaveBeenCalledExactlyOnceWith(3);
+  });
+
+  it('keeps known-field selection independent from availability and permits offered targets', () => {
+    let field = unavailable(9);
+    const invoke = vi.fn();
+    const behavior = bindChoiceInstrument(() => ({ field, choices: [1, 2], invoke }));
+
+    expect(behavior.selected).toBeUndefined();
+    expect(behavior.available).toBe(false);
+    field = usable(9);
+    behavior.invoke(1);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('separates absolute invocation eligibility from an unknown canonical selection', () => {
+    const invoke = vi.fn();
+    const behavior = bindAbsoluteChoiceInstrument(() => ({
+      choices: ['local', 'live'] as const, selected: undefined, available: true, invoke,
+    }));
+
+    expect(behavior.available).toBe(true);
+    expect(behavior.selected).toBeUndefined();
+    expect(behavior.isSelected('live')).toBe(false);
+    behavior.invoke('live');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('live');
+    expect(behavior.selected).toBeUndefined();
+  });
+
+  it('rechecks absolute blockers and offered membership at invocation time', () => {
+    let choices = [1, 2] as readonly number[];
+    let blocked = false;
+    const invoke = vi.fn();
+    const behavior = bindAbsoluteChoiceInstrument(() => ({
+      choices, selected: 2, available: true, blocked, invoke,
+    }));
+
+    choices = [2, 3];
+    behavior.invoke(1);
+    blocked = true;
+    expect(behavior.available).toBe(false);
+    expect(behavior.selected).toBe(2);
+    behavior.invoke(3);
+    blocked = false;
+    behavior.invoke(3);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(3);
+  });
+
+  it('uses exact membership and never substitutes an invoked target for selection', () => {
+    const invoke = vi.fn();
+    const behavior = bindAbsoluteChoiceInstrument<number | boolean>(() => ({
+      choices: [1, true], selected: 1, available: true, invoke,
+    }));
+
+    expect(behavior.isSelected(1)).toBe(true);
+    expect(behavior.isSelected(true)).toBe(false);
+    behavior.invoke(true);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(true);
+    expect(behavior.selected).toBe(1);
+  });
+
+  it('forwards arbitrary absolute-choice feedback by identity without manufacturing it', () => {
+    const feedback = { phase: 'submitted', target: 'live' } as const;
+    const present = bindAbsoluteChoiceInstrument(() => ({
+      choices: ['live'], selected: undefined, available: true, feedback, invoke: vi.fn(),
+    }));
+    const absent = bindAbsoluteChoiceInstrument(() => ({
+      choices: ['live'], selected: undefined, available: true, invoke: vi.fn(),
+    }));
+
+    expect(present.feedback).toBe(feedback);
+    expect(absent.feedback).toBeUndefined();
   });
 });

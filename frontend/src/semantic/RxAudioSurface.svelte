@@ -78,13 +78,14 @@
   /** Honest text: an unread fact reads as unknown, never as a default. */
   export const textOf = (f: RxAudioField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
-  const isValue = (f: RxAudioField<unknown>, value: unknown): boolean =>
-    f.reading.status === 'known' && f.reading.value === value;
 </script>
 
 <script lang="ts">
   import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
+  import {
+    bindAbsoluteChoiceInstrument, bindChoiceInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
 
   interface Props {
     view: RadioViewModel;
@@ -104,21 +105,48 @@
    *  a radio with no audio chain gets no empty panel and no zone had to learn
    *  about it. */
   let rx = $derived(view.rxAudio);
-  let modInputValue = $derived(
+  /** Rule (3): the FACT, not a capability re-derivation. */
+  let liveOffered = $derived(rx?.liveAudio.structural === true);
+  const monitorBehavior = bindAbsoluteChoiceInstrument<MonitorMode>(() => ({
+    choices: MONITOR_MODES.filter((mode) => mode !== 'live' || liveOffered),
+    selected: rx?.monitorMode,
+    available: rx !== undefined,
+    invoke: (mode) => onMonitorMode?.(mode),
+  }));
+  const focusBehavior = bindAbsoluteChoiceInstrument<AudioFocus>(() => ({
+    choices: FOCUS_CHOICES,
+    selected: rx?.routingFocus.reading.status === 'known'
+      ? rx.routingFocus.reading.value : undefined,
+    available: rx?.routingFocus.availability.structural === true,
+    invoke: (focus) => onRoutingFocus?.(focus),
+  }));
+  const splitBehavior = bindAbsoluteChoiceInstrument<boolean>(() => ({
+    choices: SPLIT_CHOICES.map(([value]) => value),
+    selected: rx?.routingSplit.reading.status === 'known'
+      ? rx.routingSplit.reading.value : undefined,
+    available: rx?.routingSplit.availability.structural === true,
+    invoke: (split) => onRoutingSplit?.(split),
+  }));
+  let modInputRecognized = $derived(
     rx?.modInputSource.reading.status === 'known'
-      && modInputSourceLabel(rx.modInputSource.reading.value) !== null
-      ? String(rx.modInputSource.reading.value) : '',
+      && modInputSourceLabel(rx.modInputSource.reading.value) !== null,
   );
-  let modInputUsable = $derived(!!rx && usable(rx.modInputSource) && modInputValue !== '');
+  const modInputBehavior = bindChoiceInstrument<number>(() => ({
+    field: rx?.modInputSource,
+    choices: MOD_INPUT_SOURCES.map((option) => option.value),
+    blocked: !modInputRecognized,
+    invoke: (source) => onModInputChange?.(source),
+  }));
+  let modInputValue = $derived(
+    modInputBehavior.selected === undefined ? '' : String(modInputBehavior.selected),
+  );
 
   function changeModInput(select: HTMLSelectElement): void {
     const value = select.value;
     const source = MOD_INPUT_SOURCES.find((option) => String(option.value) === value);
     select.value = modInputValue;
-    if (modInputUsable && source) onModInputChange?.(source.value);
+    if (source) modInputBehavior.invoke(source.value);
   }
-  /** Rule (3): the FACT, not a capability re-derivation. */
-  let liveOffered = $derived(rx?.liveAudio.structural === true);
   /** MOR-1384 — the v2 `RxAudioPanel` link-lost readout, restored from the SAME
    *  underlying fact (`liveAudio.operational` is `runtime.connectionAudio`, the
    *  identical audio-WS health the retired panel read as `isAudioConnected`).
@@ -153,8 +181,9 @@
             type="button" role="radio" class="rx-audio-choice"
             data-testid={`rx-audio-monitor-${mode}`} data-mode={mode}
             data-live-link={mode === 'live' ? rx.liveAudio.operational : undefined}
-            aria-checked={rx.monitorMode === mode}
-            onclick={() => onMonitorMode?.(mode)}
+            aria-checked={monitorBehavior.isSelected(mode)}
+            disabled={!monitorBehavior.available}
+            onclick={() => monitorBehavior.invoke(mode)}
           >{mode}</button>
         {/if}
       {/each}
@@ -194,8 +223,9 @@
           <button
             type="button" role="radio" class="rx-audio-choice"
             data-testid={`rx-audio-focus-${focus}`}
-            aria-checked={isValue(rx.routingFocus, focus)}
-            onclick={() => onRoutingFocus?.(focus)}
+            aria-checked={focusBehavior.isSelected(focus)}
+            disabled={!focusBehavior.available}
+            onclick={() => focusBehavior.invoke(focus)}
           >{focus}</button>
         {/each}
         <output data-testid="rx-audio-focus-value">{textOf(rx.routingFocus)}</output>
@@ -211,8 +241,9 @@
           <button
             type="button" role="radio" class="rx-audio-choice"
             data-testid={`rx-audio-split-${label}`}
-            aria-checked={isValue(rx.routingSplit, value)}
-            onclick={() => onRoutingSplit?.(value)}
+            aria-checked={splitBehavior.isSelected(value)}
+            disabled={!splitBehavior.available}
+            onclick={() => splitBehavior.invoke(value)}
           >split {label}</button>
         {/each}
         <output data-testid="rx-audio-split-value">{textOf(rx.routingSplit)}</output>
@@ -231,7 +262,7 @@
             data-testid="rx-audio-mod-select"
             aria-label={t('core.modePanel.modInputAria')}
             value={modInputValue}
-            disabled={!modInputUsable}
+            disabled={!modInputBehavior.available}
             onchange={(event) => changeModInput(event.currentTarget)}
           >
             {#if modInputValue === ''}
