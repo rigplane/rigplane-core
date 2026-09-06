@@ -26,17 +26,12 @@ import {
   getMeterRedline,
 } from '$lib/runtime/adapters/capabilities-adapter';
 import type { MeterCalPoint } from '$lib/runtime/adapters/capabilities-adapter';
-// `formatSMeter`'s calibrated branch defers to the one table-driven S-unit
-// reader (MOR-2024) instead of keeping a second copy of that math here.
-// `isSmeterCalibrated` is reused from the same import instead of a second
-// local "is there a curve" check -- the two were never byte-for-byte
-// duplicates (this file's check went through `getSmeterKnots()`, gated at
-// `length >= 2`; the imported one tested `length > 0` directly), so the
-// swap silently loosened the gate to one knot until `smeter-scale.ts`'s
-// `isSmeterCalibrated` was fixed (MOR-2024) to also require `length >= 2`
-// -- interpolation needs two points to define a line, so a single knot
-// cannot support a calibrated reading.
-import { calibratedToSUnit, isSmeterCalibrated } from '../meters/smeter-scale';
+import {
+  calibratedToRaw,
+  calibratedToSUnit,
+  getCalibratedScaleMaxRaw,
+  isSmeterCalibrated,
+} from '../../primitives/meters/s-meter-scale';
 
 export type MeterSource = 'S' | 'SWR' | 'POWER' | 'po';
 
@@ -202,39 +197,6 @@ export function compLevel(value: number): number {
 
 // ---- S-meter (dB-rel-S9 when calibrated; MOR-1451) ----
 
-function getSmeterKnots(): [number, number][] {
-  const cal = getMeterCalibration('s_meter');
-  if (!cal || cal.length < 2) return [];
-  return cal.map((p) => [p.raw, p.actual] as [number, number]);
-}
-
-function getSmeterMaxRaw(): number {
-  const knots = getSmeterKnots();
-  return knots.length > 0 ? knots[knots.length - 1][0] : RAW_SCALE_MAX;
-}
-
-/** Identity passthrough when uncalibrated, matching `smeter-scale.ts`'s
- *  `calibratedToRaw`. */
-function calibratedSmeterToRaw(actual: number): number {
-  const knots = getSmeterKnots();
-  if (knots.length === 0) return Math.max(0, Math.min(RAW_SCALE_MAX, actual));
-  const minActual = knots[0][1];
-  const maxActual = knots[knots.length - 1][1];
-  const clamped = Math.max(minActual, Math.min(maxActual, actual));
-
-  for (let i = 0; i < knots.length - 1; i++) {
-    const [raw0, actual0] = knots[i];
-    const [raw1, actual1] = knots[i + 1];
-    if (clamped <= actual1) {
-      const span = actual1 - actual0;
-      const t = span === 0 ? 0 : (clamped - actual0) / span;
-      return raw0 + t * (raw1 - raw0);
-    }
-  }
-
-  return knots[knots.length - 1][0];
-}
-
 /**
  * Formats calibrated S-meter value (dB relative to S9) as an S-unit string.
  * Falls back to the honest raw-tagged reading (`formatRaw`, e.g. "53 raw";
@@ -250,16 +212,18 @@ function calibratedSmeterToRaw(actual: number): number {
  * FTX-1's real S0-S9 steps are 6/3/3/3/3/3/15/9/9 dB).
  */
 export function formatSMeter(actual: number): string {
-  if (!isSmeterCalibrated()) {
+  const calibration = getMeterCalibration('s_meter') ?? [];
+  if (!isSmeterCalibrated(calibration)) {
     return formatRaw(actual);
   }
-  return calibratedToSUnit(actual);
+  return calibratedToSUnit(actual, calibration);
 }
 
 /** Bar level for calibrated S-meter values relative to the UI scale full-scale. */
 export function sLevel(actual: number): number {
-  const scaleMaxRaw = getSmeterMaxRaw();
-  const scaled = calibratedSmeterToRaw(actual);
+  const calibration = getMeterCalibration('s_meter') ?? [];
+  const scaleMaxRaw = getCalibratedScaleMaxRaw(calibration);
+  const scaled = calibratedToRaw(actual, calibration);
   return scaleMaxRaw > 0 ? Math.max(0, Math.min(1, scaled / scaleMaxRaw)) : 0;
 }
 
