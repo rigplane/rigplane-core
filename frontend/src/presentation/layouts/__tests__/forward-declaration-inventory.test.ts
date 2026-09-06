@@ -17,11 +17,10 @@
  * lookup below), and a manifest gaining a real mount must remove it by hand.
  * Each test's doc line names the mutation it exists to kill.
  *
- * MOR-1313 EMPTIED IT. `desktop-v2` was the last entry: RadioLayout.svelte no
- * longer gates its semantic mount on a hardcoded skin id, it derives per-zone
- * suppression from the ACTIVE manifest's zone declarations — so `desktop-v2`'s
- * `receiver-deck: [vfo]` / `rx-tx: [rxTx]` zones are what the rendered tree is
- * built from, and both of the shared shell's families are DOM-backed. The
+ * MOR-1313 EMPTIED IT. `desktop-v2` was the last entry. L1 later moved the
+ * shared semantic host above the replaceable entrypoint, so the proof now
+ * follows App host ownership through the hosted registry mode, entrypoint
+ * forwarding, and RadioLayout's manifest-derived named-handle render. The
  * literal is now `[]` and this file's job flips from "keep the promise
  * honest" to "keep it at zero": any NEW forward-declared manifest must extend
  * the literal by hand and be argued for on its own ticket.
@@ -59,7 +58,12 @@ const ALL_MANIFESTS: readonly LayoutManifest[] =
 /** The set this whole file exists to keep honest — see the header comment. */
 const EXPECTED_FORWARD_DECLARED: readonly string[] = [];
 
+const appSource = readFileSync('src/App.svelte', 'utf8');
+const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
+const semanticHostSource = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
 const radioLayoutSource = readFileSync('src/components-v2/layout/RadioLayout.svelte', 'utf8');
+const desktopSkinSource = readFileSync('src/skins/desktop-v2/DesktopSkin.svelte', 'utf8');
+const sdrSkinSource = readFileSync('src/skins/sdr-test/SdrTestSkin.svelte', 'utf8');
 const lcdLayoutSource = readFileSync('src/components-v2/layout/LcdLayout.svelte', 'utf8');
 const mobileLayoutSource = readFileSync('src/components-v2/layout/MobileRadioLayout.svelte', 'utf8');
 const cockpitShellSource = readFileSync('src/skins/dual-receiver-cockpit/DualReceiverCockpit.svelte', 'utf8');
@@ -68,29 +72,41 @@ const unifiedInstrumentShellSource = readFileSync('src/skins/lcd-unified-instrum
 const panadapterFirstShellSource = readFileSync('src/skins/lcd-panadapter-first/LcdPanadapterFirstSkin.svelte', 'utf8');
 
 /**
- * MOR-1313. `sdr-test` and `desktop-v2` share the one shell whose semantic
- * mount is now MANIFEST-driven: RadioLayout derives the suppressed set from
- * `declaredSurfaces(getLayout(skinId))` and mounts `<SemanticRadioSurfaces />`
- * exactly where the resolved layout declares the `vfo` surface. Two independent
- * halves must both hold for either family to be DOM-backed, and each is read
- * from its real source: the SHELL still resolving through the registry (text),
- * and the MANIFEST still declaring the surface (the registered object).
+ * L1 hosted path. App owns one semantic host and passes its named composition
+ * into the loaded entrypoint; the entrypoint forwards it to RadioLayout, whose
+ * semantic gate still comes from `declaredSurfaces(getLayout(skinId))`. Every
+ * hop is read from its real source and the manifest must still declare VFO.
  *
  * Deliberately NOT `true`: a prober that ignores both halves would report a
  * DOM-backed inventory for a shell that had gone back to a hardcoded id, or for
  * a manifest that had dropped its VFO zone.
  *
- * MOR-2231 widened the mount pattern to accept ATTRIBUTES on the tag (the
- * `regions` prop, which decides only whether `vfo`/`rxTx` gain a zone element
- * — never whether the semantic vertical mounts). What this half asserts is
- * unchanged: the mount is the first thing inside `{#if semanticDeck}`, and
- * `semanticDeck` is the manifest-derived gate the line above pins.
  */
+const persistentHostPassesInstruments =
+  /<SemanticRadioSurfaces>/.test(appSource)
+  && /\{#snippet children\(instruments\)\}[\s\S]*<(?:HostedPresentation|Presentation) \{instruments\} \/>/.test(appSource)
+  && /children\?: Snippet<\[InstrumentComposition\]>;/.test(semanticHostSource)
+  && /\{@render hostedChildren\(\{/.test(semanticHostSource);
 const shellResolvesThroughManifest =
   /let declared = \$derived\(declaredSurfaces\(getLayout\(skinId\)\)\);/.test(radioLayoutSource)
-  && /\{#if semanticDeck\}\s*<SemanticRadioSurfaces[^>]*\/>/.test(radioLayoutSource);
-const sharedShellMounts = (manifest: LayoutManifest): boolean =>
-  shellResolvesThroughManifest && manifest.zones.some((z) => z.surfaces.includes('vfo'));
+  && /\{@render instruments\.vfo\(/.test(radioLayoutSource);
+const hostedSkinSources: Readonly<Record<string, string>> = {
+  'desktop-v2': desktopSkinSource,
+  'sdr-test': sdrSkinSource,
+};
+const sharedShellMounts = (manifest: LayoutManifest): boolean => {
+  const skinSource = hostedSkinSources[manifest.id];
+  const registryMode = new RegExp(`['"]${manifest.id}['"]:\\s*['"]instrument-handles['"]`);
+  const forwardsComposition = new RegExp(
+    `<RadioLayout\\s+skinId=['"]${manifest.id}['"]\\s+\\{instruments\\}\\s*/>`,
+  );
+  return skinSource !== undefined
+    && persistentHostPassesInstruments
+    && shellResolvesThroughManifest
+    && registryMode.test(registrySource)
+    && forwardsComposition.test(skinSource)
+    && manifest.zones.some((zone) => zone.surfaces.includes('vfo'));
+};
 
 /**
  * Per-manifest DOM-backing proof, read off the ACTUAL skin source — never a
@@ -164,7 +180,8 @@ describe('forward-declared vs DOM-backed manifest inventory (verify.md N2)', () 
   // that stopped resolving through the manifest, and a manifest whose VFO zone
   // was dropped. Both halves are asserted independently, because with the
   // literal at `[]` an always-true prober would otherwise be invisible.
-  it('the shared shell resolves its semantic mount through the manifest', () => {
+  it('the hosted App-to-layout path resolves its semantic mount through the manifest', () => {
+    expect(persistentHostPassesInstruments).toBe(true);
     expect(shellResolvesThroughManifest).toBe(true);
     expect(sharedShellMounts({ ...desktopV2Layout, zones: [{ id: 'rx-tx', surfaces: ['rxTx'] }] }))
       .toBe(false);
