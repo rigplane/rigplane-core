@@ -1,53 +1,13 @@
 <script module lang="ts">
-  import { projectTxMeterDisplay } from './tx-meter-display';
-  import type { DisplayObservedMeterField, MeterRfState, MeterField, MetersViewModel } from './radio-view-model';
-  import {
-    alcLevel, compLevel, formatAlc, formatAmps, formatCompDb, formatPowerWatts,
-    formatVolts, idLevel, isAlcFault, isSwrFault, normalizePower,
-    swrLevel, vdLevel,
-  } from '../components-v2/panels/meter-utils';
+  import type { DisplayObservedMeterField, MeterRfState, MeterField } from './radio-view-model';
+  import { isSwrFault, swrLevel } from '../components-v2/panels/meter-utils';
   import {
     projectSignalMeter,
     type SignalMeterProjection,
   } from '../components-v2/meters/smeter-scale';
   import { renderSlot } from './design-language-renderers';
   import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
-
-  type BarKey = Exclude<keyof MetersViewModel, 'rfState' | 'signal'>;
-  type Scale = readonly [BarKey, string, (raw: number) => number, (raw: number) => string, boolean];
-
-  /** `[field, label, level, format, showPeak]` for the FIVE remaining bar
-   *  meters, in the shipped dock's priority order. `swr` is absent as of
-   *  MOR-2250 (PR 2 of 2) — it now renders on the shared lower scale row
-   *  inside `LinearSMeter` (see `swrLowerScale` below) instead of through
-   *  `BarGauge`, so it must appear exactly once, never zero or two times.
-   *  The level/format pairs are `meter-utils`' own calibrated functions —
-   *  the same ones `MetersDockPanel` uses — so the two can never disagree
-   *  about what a raw sample means. `showPeak` (MOR-1282) mirrors the
-   *  dock's own `PeakKey` set restricted to what remains here (Po/ALC/Id) —
-   *  Vd (a continuous supply rail) and COMP were never peak-held there
-   *  either. `signal` is absent because it has its own component
-   *  (`LinearSMeter`, below). */
-  export const METER_BARS = [
-    ['power', 'Po', normalizePower, formatPowerWatts, true],
-    ['alc', 'ALC', alcLevel, formatAlc, true],
-    ['drainCurrent', 'Id', idLevel, formatAmps, true],
-    ['drainVoltage', 'Vd', vdLevel, formatVolts, false],
-    ['compression', 'COMP', compLevel, formatCompDb, false],
-  ] as const satisfies readonly Scale[];
-
-  /**
-   * MOR-1345: fields with an over-threshold FAULT — the SAME `isAlcFault`
-   * predicate `MetersDockPanel`'s border reads, imported (not copied) so the
-   * two surfaces can never disagree about what counts as a fault. Only ALC
-   * has a threshold among the remaining `METER_BARS` fields, and this
-   * surface invents none — an absent entry means "never faults". SWR's own
-   * fault predicate (`isSwrFault`) is still imported above, but is now
-   * consumed directly by `swrLowerScale`, not through this map.
-   */
-  const FAULT_CHECKS: Partial<Record<BarKey, (raw: number) => boolean>> = {
-    alc: isAlcFault,
-  };
+  import { projectTxMeterPresentation } from './bar-meter-projector';
 
   /** Level 1 — does this radio HAVE the meter at all. */
   const present = (f: MeterField): boolean => f.availability.structural;
@@ -74,23 +34,8 @@
     { value: 1, label: '∞' },
   ] as const;
 
-  function txPresentation(f: DisplayObservedMeterField, rfState: MeterRfState) {
-    const projected = projectTxMeterDisplay(f, rfState);
-    if (!projected.supported) return { value: null, text: '?', description: 'Not observed' };
-    const { relevance, observation } = projected;
-    if (relevance === 'idle') return { value: null, text: 'IDLE', description: 'Not measuring in RX' };
-    const cue = relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
-    return {
-      value: observation.state === 'current' ? observation.value : null,
-      text: observation.state === 'stale' ? 'STALE' : observation.state === 'current'
-        ? (relevance === 'indeterminate' ? ' ?' : '') : '?',
-      description: cue + (observation.state === 'stale' ? 'Stale observation'
-        : observation.state === 'current' ? 'Current observation' : 'Not observed'),
-    };
-  }
-
   function swrLowerScale(f: DisplayObservedMeterField, rfState: MeterRfState): LowerScaleDescriptor {
-    const state = txPresentation(f, rfState);
+    const state = projectTxMeterPresentation(f, rfState);
     return {
       label: 'SWR', ticks: SWR_LOWER_SCALE_TICKS,
       valueFraction: state.value === null ? 0 : swrLevel(state.value),
@@ -127,6 +72,7 @@
   import type { RadioViewModel } from './radio-view-model';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import { RF_LABEL, RF_MARK } from './rx-tx-surface';
+  import { projectBarMeters } from './bar-meter-projector';
 
   interface Props {
     view: RadioViewModel;
@@ -142,6 +88,7 @@
   let signalProjection = $derived(projectSignalMeter(
     meters && observed(meters.signal) ? rawOf(meters.signal) : null,
   ));
+  let barMeters = $derived(projectBarMeters(view));
 
   /**
    * The active design language's `meters` descriptor for this render, or
@@ -155,15 +102,6 @@
    */
   let display = $derived(meters ? signalDisplay(signalProjection) : null);
 
-  /** The COMP gate is the MOR-1244 `txAux.compressor` FACT, deliberately NOT
-   *  `meters.compression.availability`: a radio can keep reporting a
-   *  compression meter while the compressor is switched off, and that reading
-   *  measures nothing. Fail-closed — an unobserved compressor, or a radio with
-   *  no txAux group at all, never opens the gate. */
-  let compressorOn = $derived(
-    view.txAux?.compressor.reading.status === 'known'
-      && view.txAux.compressor.reading.value === true,
-  );
 </script>
 
 {#if meters}
@@ -195,37 +133,30 @@
       </div>
     {/if}
 
-    {#each METER_BARS as [field, label, level, format, showPeak] (field)}
-      {#if present(meters[field]) && (field !== 'compression' || compressorOn)}
-        {@const tx = field === 'power' || field === 'alc' ? txPresentation(meters[field], meters.rfState) : null}
-        {@const isObserved = tx ? tx.value !== null : observed(meters[field])}
-        {@const raw = tx ? tx.value ?? 0 : rawOf(meters[field])}
-        {@const fault = isObserved && meters[field].relevant
-          && (FAULT_CHECKS[field]?.(raw) ?? false)}
+    {#each barMeters as bar (bar.key)}
         <div
-          class="meter-tile" data-meter-tile data-meter={field} data-testid={`meter-${field}`}
-          data-relevant={meters[field].relevant} data-observed={isObserved} data-fault={fault}
-          role="group" aria-label={`${label} meter`}
+          class="meter-tile" data-meter-tile data-meter={bar.key} data-testid={`meter-${bar.key}`}
+          data-relevant={bar.relevant} data-observed={bar.observed} data-fault={bar.fault}
+          role="group" aria-label={`${bar.label} meter`}
         >
-          {#if isObserved || tx}
+          {#if bar.gauge}
             <!-- MOR-2255: `zones` comes from the SAME `display` descriptor
                  the S-meter above reads, so every gauge on this surface is
                  painted by one language. `undefined` (no language, or a
                  descriptor without the quintet) falls back to `BarGauge`'s
                  own `DEFAULT_ZONES`. -->
             <BarGauge
-              value={isObserved ? level(raw) : null} {label}
-              displayValue={tx ? (isObserved ? format(raw) + tx.text : tx.text) : format(raw)}
-              accessibleDescription={tx ? `${label}: ${tx.description}${isObserved ? `. ${format(raw)}` : ''}` : undefined}
-              compact showPeak={showPeak && isObserved} {fault}
+              value={bar.motionFraction} label={bar.label}
+              displayValue={bar.displayText}
+              accessibleDescription={bar.accessibleDescription}
+              compact showPeak={bar.showPeak} fault={bar.fault}
               zones={display?.display?.zones}
-              source={meters[field].source} session={continuitySession}
+              source={bar.source} session={continuitySession}
             />
           {:else}
-            <span class="meter-unknown">{label} ?</span>
+            <span class="meter-unknown">{bar.displayText}</span>
           {/if}
         </div>
-      {/if}
     {/each}
   </section>
 {/if}
