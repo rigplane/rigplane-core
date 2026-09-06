@@ -681,6 +681,16 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(toggle.textContent).not.toContain('off');
   });
 
+  it('keeps SPLIT and DW faceplate labels compact while exposing their full state', () => {
+    const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'], appearance: 'standard' });
+    const split = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
+    const dualWatch = target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
+    expect(split.querySelector('[aria-hidden="true"]')?.textContent).toBe('SPLIT');
+    expect(dualWatch.querySelector('[aria-hidden="true"]')?.textContent).toBe('DW');
+    expect(split.getAttribute('aria-label')).toBe('Split: on');
+    expect(dualWatch.getAttribute('aria-label')).toBe('Dual watch: on');
+  });
+
   it('unknown split renders an explicit "unknown" tri-state', () => {
     const base = topologyFixtures['1/ab'];
     const model: RadioViewModel = validateRadioViewModel({ ...base, split: { status: 'unknown' } });

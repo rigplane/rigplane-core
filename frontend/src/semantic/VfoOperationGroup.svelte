@@ -107,12 +107,12 @@
         data-color="cyan"
         role="switch"
         aria-checked={triState(split)}
-        aria-label={t('core.vfo.split.label')}
+        aria-label={`${t('core.vfo.split.label')}: ${stateWord(split)}`}
         aria-describedby={splitReasonId}
         title={splitAvailability.reason}
         disabled={!splitAvailability.operational}
         onclick={() => emit({ kind: 'toggle-split' }, splitAvailability)}
-      >{t('core.vfo.split.label')}: {stateWord(split)}</button>
+      ><span aria-hidden="true">SPLIT</span><span class="sr-only">: {stateWord(split)}</span></button>
       {#if splitReasonId}<span id={splitReasonId} class="sr-only">{splitAvailability.reason}</span>{/if}
     {/if}
 
@@ -128,12 +128,12 @@
         data-color="green"
         role="switch"
         aria-checked={triState(dualWatch)}
-        aria-label={t('core.vfo.dualWatch.label')}
+        aria-label={`${t('core.vfo.dualWatch.label')}: ${stateWord(dualWatch)}`}
         aria-describedby={dualWatchReasonId}
         title={dualWatchAvailability.reason}
         disabled={!dualWatchAvailability.operational}
         onclick={() => emit({ kind: 'toggle-dual-watch' }, dualWatchAvailability)}
-      >{t('core.vfo.dualWatch.label')}: {stateWord(dualWatch)}</button>
+      ><span aria-hidden="true">DW</span><span class="sr-only">: {stateWord(dualWatch)}</span></button>
       {#if dualWatchReasonId}<span id={dualWatchReasonId} class="sr-only">{dualWatchAvailability.reason}</span>{/if}
     {/if}
   </div>
