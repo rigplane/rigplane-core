@@ -51,6 +51,8 @@ let components: ReturnType<typeof mount>[] = [];
 let roots: HTMLElement[] = [];
 let setIntervalSpy: ReturnType<typeof vi.spyOn>;
 let clearIntervalSpy: ReturnType<typeof vi.spyOn>;
+let activeFrames: Set<number>;
+let nextFrameId: number;
 
 beforeEach(() => {
   components = [];
@@ -59,6 +61,16 @@ beforeEach(() => {
   vi.setSystemTime(0);
   setIntervalSpy = vi.spyOn(window, 'setInterval');
   clearIntervalSpy = vi.spyOn(window, 'clearInterval');
+  activeFrames = new Set();
+  nextFrameId = 0;
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => {
+    const id = ++nextFrameId;
+    activeFrames.add(id);
+    return id;
+  });
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+    activeFrames.delete(id);
+  });
 });
 
 afterEach(() => {
@@ -67,10 +79,15 @@ afterEach(() => {
   components = [];
   roots = [];
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 function netActiveIntervals(): number {
   return setIntervalSpy.mock.calls.length - clearIntervalSpy.mock.calls.length;
+}
+
+function netActiveFrames(): number {
+  return activeFrames.size;
 }
 
 function mountReactive(props: Record<string, unknown>) {
@@ -97,6 +114,7 @@ describe('BarGauge — prefers-reduced-motion peak marker (MOR-1282, mirrors MOR
     try {
       mountReactive({ value: 1.0, label: 'Po', displayValue: '100W', showPeak: true });
       expect(netActiveIntervals()).toBe(0);
+      expect(netActiveFrames()).toBe(0);
     } finally {
       restore();
     }
@@ -107,6 +125,18 @@ describe('BarGauge — prefers-reduced-motion peak marker (MOR-1282, mirrors MOR
     try {
       mountReactive({ value: 1.0, label: 'Po', displayValue: '100W', showPeak: true });
       expect(netActiveIntervals()).toBe(1);
+      expect(netActiveFrames()).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps the smoother frame without starting a peak interval when showPeak is false', () => {
+    const { restore } = mockReducedMotion(false);
+    try {
+      mountReactive({ value: 1.0, label: 'Po', displayValue: '100W', showPeak: false });
+      expect(netActiveFrames()).toBe(1);
+      expect(netActiveIntervals()).toBe(0);
     } finally {
       restore();
     }
@@ -159,6 +189,7 @@ describe('BarGauge — prefers-reduced-motion peak marker (MOR-1282, mirrors MOR
 
       setMatches(true);
       expect(netActiveIntervals()).toBe(0);
+      expect(netActiveFrames()).toBe(0);
     } finally {
       restore();
     }
@@ -172,6 +203,7 @@ describe('BarGauge — prefers-reduced-motion peak marker (MOR-1282, mirrors MOR
 
       setMatches(false);
       expect(netActiveIntervals()).toBe(1);
+      expect(netActiveFrames()).toBe(1);
     } finally {
       restore();
     }
@@ -183,13 +215,28 @@ describe('BarGauge — prefers-reduced-motion peak marker (MOR-1282, mirrors MOR
       const { component } = mountReactive({
         value: 1.0, label: 'Po', displayValue: '100W', showPeak: true,
       });
-      expect(listenerCount()).toBeGreaterThan(0);
+      expect(listenerCount()).toBe(2);
       expect(netActiveIntervals()).toBe(1);
+      expect(netActiveFrames()).toBe(1);
 
       unmount(component);
       components = components.filter((c) => c !== component);
       expect(listenerCount()).toBe(0);
       expect(netActiveIntervals()).toBe(0);
+      expect(netActiveFrames()).toBe(0);
+
+      const remounted = mountReactive({
+        value: 0.5, label: 'Po', displayValue: '50W', showPeak: true,
+      });
+      expect(listenerCount()).toBe(2);
+      expect(netActiveIntervals()).toBe(1);
+      expect(netActiveFrames()).toBe(1);
+
+      unmount(remounted.component);
+      components = components.filter((c) => c !== remounted.component);
+      expect(listenerCount()).toBe(0);
+      expect(netActiveIntervals()).toBe(0);
+      expect(netActiveFrames()).toBe(0);
     } finally {
       restore();
     }

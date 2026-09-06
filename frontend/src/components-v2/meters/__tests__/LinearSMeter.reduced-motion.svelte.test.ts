@@ -172,8 +172,8 @@ describe('LinearSMeter — prefers-reduced-motion (MOR-1233)', () => {
     const { restore } = mockReducedMotion(false);
     try {
       mountReactive({ value: 20 });
-      // Ballistics smoother + peak-hold decay loop each schedule a frame.
-      expect(rafSpy).toHaveBeenCalled();
+      // Ballistics smoother + peak-hold decay loop each schedule one frame.
+      expect(rafSpy).toHaveBeenCalledTimes(2);
     } finally {
       restore();
     }
@@ -388,7 +388,7 @@ describe('LinearSMeter — runtime prefers-reduced-motion flips (MOR-1233 fix cy
       const { component } = mountReactive({ value: 20 });
       flushSync();
       // Ballistics smoother + peak-hold each register their own listener.
-      expect(listenerCount()).toBeGreaterThanOrEqual(2);
+      expect(listenerCount()).toBe(2);
 
       unmount(component);
       components = components.filter((c) => c !== component);

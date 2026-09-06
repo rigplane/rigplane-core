@@ -52,6 +52,53 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it('preserves proportional attack and release trajectories for scaled targets at identical timestamps', () => {
+  const { restore } = mockReducedMotion(false);
+  let frameId = 0;
+  let pending: FrameRequestCallback[] = [];
+  vi.spyOn(performance, 'now').mockReturnValue(0);
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    pending.push(callback);
+    return ++frameId;
+  });
+  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+
+  function trajectory(scale: number): number[] {
+    pending = [];
+    const smoother = createSmoother(0.12, 0.32, 0);
+    const samples: number[] = [];
+    const advance = (now: number) => {
+      const callback = pending.shift();
+      expect(callback).toBeDefined();
+      callback!(now);
+      samples.push(smoother.value);
+    };
+
+    smoother.update(10 * scale);
+    smoother.start();
+    advance(16.67);
+    advance(33.34);
+    advance(50.01);
+    smoother.update(2 * scale);
+    advance(66.68);
+    advance(83.35);
+    advance(100.02);
+    smoother.stop();
+    return samples;
+  }
+
+  try {
+    const base = trajectory(1);
+    const scaled = trajectory(7);
+    expect(scaled).toHaveLength(base.length);
+    scaled.forEach((value, index) => {
+      expect(value).toBeCloseTo(base[index] * 7, 10);
+    });
+  } finally {
+    restore();
+  }
+});
+
 describe('createSmoother — prefers-reduced-motion (MOR-1233)', () => {
   it('snaps value directly to target on update() when reduced motion is preferred', () => {
     const { restore } = mockReducedMotion(true);

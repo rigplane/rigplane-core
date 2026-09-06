@@ -163,10 +163,10 @@
   // Samples the 20-entry ramp above by fraction of SEG_COUNT, so a non-20
   // segment count still walks the same color progression start-to-end.
   // MOR-2214: at SEG_COUNT === 1 there is no second segment to interpolate
-  // `i / (SEG_COUNT - 1)` against (division by zero). `smoother.value` is
-  // already on the SEG_COUNT-wide domain (see its `.update()` call below),
-  // so `smoother.value / SEG_COUNT` is the reading's own fill fraction —
-  // the single segment samples the ramp by THAT instead of by index, so it
+  // `i / (SEG_COUNT - 1)` against (division by zero). `smoothedSegs` is the
+  // normalized smoother value projected onto the local visual domain, so
+  // dividing it by SEG_COUNT recovers the reading's fill fraction. The
+  // single segment samples the ramp by that value instead of by index, so it
   // still reports strong/over-range readings in the ramp's hot colors
   // rather than collapsing every reading to one fixed color.
   function activeColor(i: number): string {
@@ -346,14 +346,14 @@
     ticker: { kind: 'animation-frame' },
     peak: createFrameStepPeakStrategy({
       holdMilliseconds: 1000,
-      decrementPerFrame: () => PEAK_DECAY_FRACTION * SEG_COUNT * 16.67,
+      decrementPerFrame: () => PEAK_DECAY_FRACTION * 16.67,
     }),
   });
 
   $effect(() => {
     const current = value === null || !mainPresent
       ? null
-      : (calibratedToSegments(value) / RAW_SEGMENT_DOMAIN) * SEG_COUNT;
+      : calibratedToSegments(value) / RAW_SEGMENT_DOMAIN;
     const currentSource = source;
     const currentSession = session;
     untrack(() => ballistics.sync({
@@ -367,8 +367,8 @@
     return () => ballistics.stop();
   });
 
-  let smoothedSegs = $derived(ballistics.view.smoothedValue);
-  let peakSegs = $derived(ballistics.view.peakValue ?? 0);
+  let smoothedSegs = $derived(ballistics.view.smoothedValue * SEG_COUNT);
+  let peakSegs = $derived((ballistics.view.peakValue ?? 0) * SEG_COUNT);
   // Peak X position for the vertical indicator line
   let peakX = $derived(BAR_X + peakSegs * (SEG_W + SEG_GAP));
   // Only show peak line if it's meaningfully ahead of current bar
@@ -394,7 +394,7 @@
   const SDR_CELLS = 40;
   const SDR_CELL_WIDTH = 328 / SDR_CELLS;
   const SDR_SUB_WIDTH = (SDR_CELL_WIDTH - 2 - 0.5) / 2;
-  const sdrFill = $derived(((value === null ? 0 : smoother.value) / SEG_COUNT) * SDR_CELLS * 2);
+  const sdrFill = $derived((value === null ? 0 : smoother.value) * SDR_CELLS * 2);
   const sdrS9 = $derived((rawToSegments(getS9Raw()) / RAW_SEGMENT_DOMAIN) * SDR_CELLS * 2);
   function sdrColor(index: number): string {
     const aboveS9 = index >= sdrS9;
