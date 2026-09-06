@@ -41,6 +41,13 @@ choice controls; a final whole-path audit remains outstanding.
   RF/SQL draft retirement. Subsequent acceptance work is tracked by MOR-2409;
   this archive neither audits a later fix nor claims that work complete.
 
+## 2026-09-06 — legacy RF HBar request retirement (accepted main `12444a3f5c977da790cd2f84123732cf53f6666c`)
+
+- [2026-09-06-mechanism-audit-legacy-rf-hbar-handoff.md](2026-09-06-mechanism-audit-legacy-rf-hbar-handoff.md)
+  — historical adjudication of the bounded shared-scalar request-retirement
+  gap before prospective legacy RF HBar adoption. MOR-2415 owns any separate
+  correction; this archive is neither an accepted fix nor a final program audit.
+
 ## 2026-09-06 — CW and current Filter Width (tree `53b27aebbed6a8e27114c442a7420d589af23876`)
 
 - [2026-09-06-mechanism-audit-cw-filter-feedback.md](2026-09-06-mechanism-audit-cw-filter-feedback.md)
