@@ -2381,6 +2381,26 @@ describe('MOR-2342 historical instrument presentations', () => {
     unknown.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(onSelectVfo).not.toHaveBeenCalled();
   });
+
+  it('retains a relative secondary record as disabled, reasoned, and inert', () => {
+    const base = withReceiverIndicators('1/ab');
+    const onSelectVfo = vi.fn();
+    const viewModel: RadioViewModel = {
+      ...base,
+      vfos: [
+        { ...base.vfos[0], slot: { kind: 'relative', role: 'selected' } },
+        { ...base.vfos[1], slot: { kind: 'relative', role: 'unselected' } },
+      ],
+    };
+    const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    const relative = root.querySelector<HTMLButtonElement>('[data-vfo-slot="unselected"]')!;
+    expect(relative).not.toBeNull();
+    expect(relative.disabled).toBe(true);
+    expect(relative.title).toContain('has not confirmed which VFO is A and which is B');
+    relative.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onSelectVfo).not.toHaveBeenCalled();
+  });
 });
 
 

@@ -317,6 +317,8 @@
     cursor: pointer;
   }
 
+  .slot-choice:first-of-type { margin-inline-start: auto; }
+
   .slot-choice:disabled { opacity: 0.55; cursor: not-allowed; }
   .slot-choice .vfo-role { font-size: 8px; }
   .slot-choice .vfo-freq { font-size: 9px; }
@@ -359,9 +361,19 @@
     min-width: 0;
   }
 
-  .freq-row :global(.freq) {
+  .vfo-freq {
+    inline-size: 6.1em;
+    max-inline-size: 100%;
     font-size: var(--vfo-frequency-size, 24px);
     letter-spacing: var(--vfo-frequency-letter-spacing, 0.03em);
+  }
+
+  .vfo-freq :global(.freq.interactive) {
+    font: inherit;
+    font-variant-numeric: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    text-shadow: inherit;
   }
 
   .freq-row :global(.sep) {
@@ -417,7 +429,7 @@
 
 
   @media (max-width: 1280px) {
-    .freq-row :global(.freq) {
+    .vfo-freq {
       font-size: 44px;
     }
   }
@@ -428,7 +440,7 @@
       align-items: flex-start;
     }
 
-    .freq-row :global(.freq) {
+    .vfo-freq {
       font-size: 32px;
     }
 

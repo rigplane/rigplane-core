@@ -876,14 +876,16 @@
               slot: slotKey(choice.slot), label: roleLabel(choice),
               frequencyText: formatFrequency(displayValue(choice.display?.frequencyHz, choice.frequencyHz)),
               active: choice.isActive, activeSlot: choice.isActiveSlot, txTarget: choice.isTxTarget,
-              disabled: disabled || choice.slot.kind === 'unknown', reason: selectReasonText(choice),
+              disabled: disabled || choice.slot.kind === 'unknown' || choice.slot.kind === 'relative',
+              reason: choice.slot.kind === 'relative' ? identityOnlyReasonText() : selectReasonText(choice),
             }]
           : [])}
     <section class="receiver-instrument standard-receiver" data-receiver-instrument={receiver}
       data-testid="vfo-indicator-row" data-indicator-receiver={receiver}
       data-indicator-operational={indicator?.availability.operational}
       aria-label={`${receiver} receiver indicators`}>
-      <div data-indicator-receiver={receiver} data-vfo-dominant={dominant ? 'known' : 'unknown'}
+      <div class="vfo-tile" class:is-active={dominant?.isActive}
+        data-indicator-receiver={receiver} data-vfo-dominant={dominant ? 'known' : 'unknown'}
         data-vfo-tile={dominant ? '' : undefined} data-vfo-receiver={dominant ? receiver : undefined}
         data-vfo-slot={dominant ? slotKey(dominant.slot) : undefined}
         data-vfo-active={dominant?.isActive} data-vfo-active-slot={dominant?.isActiveSlot}
@@ -1051,6 +1053,10 @@
   [data-vfo-appearance='standard'] .receiver-instrument :where(.vfo-tile) {
     grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
+  }
+  [data-vfo-appearance='standard'] .receiver-instrument > :where(.vfo-tile) {
+    display: block;
+    inline-size: 100%;
   }
   [data-vfo-appearance='standard'] .vfo-role { grid-column: 1; grid-row: 1; }
   [data-vfo-appearance='standard'] .vfo-mode {
