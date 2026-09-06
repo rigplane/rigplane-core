@@ -302,7 +302,8 @@
 {:else if skinId === 'lcd-scope'}
   <LcdLayout variant="scope" showManagedTotControl={true} />
 {:else if (skinId === 'sdr-test' || skinId === 'desktop-v2') && semanticDeck}
-  <div class="radio-layout desktop-control-face semantic-deck" class:sdr-test={skinId === 'sdr-test'}>
+  <div class="radio-layout desktop-control-face semantic-deck"
+    class:standard-face={skinId === 'desktop-v2'} class:sdr-test={skinId === 'sdr-test'}>
     <StatusBar onSettings={() => (settingsOpen = true)} {declared} showManagedTotControl={true} />
     <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
@@ -561,6 +562,11 @@
     gap: 4px;
     overflow-y: auto;
   }
+  .radio-layout.desktop-control-face.standard-face {
+    grid-template-columns: 228px minmax(0, 1fr) 228px;
+    grid-template-rows: auto 28px minmax(200px, auto) minmax(0, 1fr) auto;
+    gap: 5px;
+  }
   .desktop-control-face > .receiver-deck,
   .desktop-control-face :global(.semantic-surfaces) { display: contents; }
   .desktop-control-face > :global(.control-link-lost) { grid-area: 1 / 1 / 2 / -1; }
@@ -691,6 +697,10 @@
   }
 
   @media (max-width: 1200px) {
+    .radio-layout.desktop-control-face.standard-face {
+      grid-template-columns: 208px minmax(0, 1fr) 208px;
+    }
+
     .content-row {
       grid-template-columns: 208px minmax(0, 1fr) 208px;
     }
@@ -702,6 +712,30 @@
     }
 
     .radio-layout.desktop-control-face { grid-template-columns: 190px minmax(0, 1fr) 190px; }
+    .radio-layout.desktop-control-face.standard-face {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto 28px auto auto minmax(320px, auto) auto auto;
+    }
+    .desktop-control-face.standard-face :global([data-zone-id='receiver-deck']) {
+      grid-area: 3 / 1 / 4 / 2;
+    }
+    .desktop-control-face.standard-face :global(.desktop-controls-left) {
+      grid-area: 4 / 1 / 5 / 2;
+    }
+    .desktop-control-face.standard-face :global(.desktop-controls-center) {
+      grid-area: 5 / 1 / 6 / 2;
+    }
+    .desktop-control-face.standard-face :global(.desktop-controls-right) {
+      grid-area: 6 / 1 / 7 / 2;
+    }
+    .desktop-control-face.standard-face :global([data-zone-id='meters']) {
+      grid-area: 7 / 1 / 8 / 2;
+    }
+    .desktop-control-face.standard-face :global(.desktop-controls-left),
+    .desktop-control-face.standard-face :global(.desktop-controls-right) {
+      contain: inline-size;
+      max-height: 360px;
+    }
 
     .content-row {
       grid-template-columns: 1fr;
