@@ -544,6 +544,16 @@ describe('the meter table matches the shipped dock', () => {
 // ── 9. Peak-hold channel (MOR-1282) — the surface passes it through ────────
 
 describe('BarGauge peak channel (MOR-1282)', () => {
+  it('forwards each keyed bar field source and the existing surface session', () => {
+    const calls = [...SOURCE.matchAll(/<BarGauge([\s\S]*?)\/>/g)];
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatch(/source=\{meters\[field\]\.source\}/);
+    expect(calls[0][1]).toMatch(/session=\{continuitySession\}/);
+    expect(METER_BARS.map(([field]) => field)).toEqual([
+      'power', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
+    ]);
+  });
+
   // MUTATION KILLED: enabling (or dropping) the peak flag on the wrong
   // meters. Matches the dock's own peak-held set RESTRICTED to what
   // `METER_BARS` still carries post-MOR-2250 (PR 2 of 2) — SWR left this
