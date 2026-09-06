@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import FilterWidthLifecycleDerivedProbe from './support/FilterWidthLifecycleDerivedProbe.svelte';
 import { currentControlSessionEpoch } from '$lib/runtime/commands/radio-intents';
+import { getFilterWidthControlFeedback } from '../panel-adapters';
 
 type Command = {
   id: string; name: string; params: { width: number; receiver: 0 | 1 };
@@ -78,6 +79,18 @@ describe('mounted Filter Width lifecycle projection (MOR-1667)', () => {
     refresh(); flushSync();
     expect(probe.dataset).toMatchObject({ phase: 'idle', confirmed: '3000', outcome: '' });
     expect(error.mock.calls.flat().join(' ')).not.toMatch(/state_unsafe_mutation|mutation.*derived/i);
+  });
+
+  it('exposes the complete descriptor evidence without collapsing requested into confirmed truth', () => {
+    h.state = observed(2400);
+    h.commands = [{ id: 'main', name: 'set_filter_width', params: { width: 3000, receiver: 0 },
+      createdAt: 1, originalEpoch: currentControlSessionEpoch(), status: 'acknowledged' }];
+    expect(getFilterWidthControlFeedback()).toMatchObject({
+      confirmed: 2400, target: 3000, requestedTarget: 3000,
+      phase: 'awaiting-confirmation', busy: true, availability: 'available',
+      sessionEpoch: 7, scope: { control: 'filter-width', receiver: 0 },
+      repeatPolicy: 'latest-target-wins', outcome: null,
+    });
   });
 
   it('keeps SUB command evidence isolated from MAIN projection', () => {

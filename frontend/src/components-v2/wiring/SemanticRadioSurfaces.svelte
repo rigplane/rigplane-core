@@ -25,7 +25,8 @@
   } from '../../semantic/pbt-presentation-continuity';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
-    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getPendingFrequencyHz,
+    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getFilterWidthControlFeedback,
+    getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
     getSystemHandlers, getDataModeArmed,
   } from '$lib/runtime/adapters/panel-adapters';
@@ -715,6 +716,7 @@
   let pendingFilter = $derived(
     activeReceiverIndex === null ? null : getPendingFilterSelection(activeReceiverIndex),
   );
+  let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
   let pendingPreamp = $derived(
@@ -1180,6 +1182,7 @@
         {view}
         {pendingFilter}
         {pendingDataMode}
+        {filterWidthFeedback}
         onDataModeChange={filterIntents.onDataModeChange}
         onModeChange={filterIntents.onModeChange}
         onFilterChange={filterIntents.onFilterChange}

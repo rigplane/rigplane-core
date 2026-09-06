@@ -351,6 +351,15 @@ export function getBreakInDelayControlFeedback(): Readonly<ControlFeedback<numbe
   );
 }
 
+/** Full Filter Width projection for feedback-aware scalar renderers. */
+export function getFilterWidthControlFeedback(): Readonly<ControlFeedback<number>> {
+  const receiver: 0 | 1 = runtime.state?.active === 'SUB' ? 1 : 0;
+  return projectControlFeedback(
+    FILTER_WIDTH_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
+    { control: 'filter-width', receiver }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
+  );
+}
+
 function filterWidthPresentation(
   feedback: Readonly<ControlFeedback<number>>,
 ): Readonly<FilterWidthLifecyclePresentation> {
@@ -366,11 +375,7 @@ function filterWidthPresentation(
 }
 
 export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleView {
-  const receiver: 0 | 1 = runtime.state?.active === 'SUB' ? 1 : 0;
-  const feedback = projectControlFeedback(
-    FILTER_WIDTH_COMMAND_DESCRIPTOR, runtime.state, getCommandLifecycles(),
-    { control: 'filter-width', receiver }, currentControlSessionEpoch(), isCommandLifecycleSuperseded,
-  );
+  const feedback = getFilterWidthControlFeedback();
   if (feedback.availability === 'unavailable') {
     return { confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null, presentation: null };
   }
