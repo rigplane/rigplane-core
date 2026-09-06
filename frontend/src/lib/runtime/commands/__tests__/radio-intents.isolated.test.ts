@@ -88,7 +88,10 @@ describe('typed non-PTT radio intents', () => {
       for (const accepted of [false, true, false]) {
         harness.sendCommand.mockClear().mockReturnValue(accepted);
         expect(api[method](name, params)).toBe(accepted);
-        expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, params, expect.any(String));
+        const wireParams = name === 'set_af_level'
+          ? { ...params, level_unit: 'normalized' }
+          : params;
+        expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(name, wireParams, expect.any(String));
         expect(lifecycle.getCommandLifecycles().at(-1)).toMatchObject({ name, params, status: 'pending' });
       }
     }
@@ -355,7 +358,7 @@ describe('typed non-PTT radio intents', () => {
     }));
 
     levels.forEach((level, index) => expect(harness.sendCommand).toHaveBeenNthCalledWith(
-      index + 1, 'set_af_level', { level, receiver: 0 }, `af-normalized-${index}`,
+      index + 1, 'set_af_level', { level, receiver: 0, level_unit: 'normalized' }, `af-normalized-${index}`,
     ));
     expect(lifecycle.getCommandLifecycles()).toHaveLength(levels.length);
     expect(lifecycle.getCommandLifecycles()).toEqual(expect.arrayContaining(levels.map((_, index) =>
@@ -365,17 +368,41 @@ describe('typed non-PTT radio intents', () => {
     } as never)).toThrow(TypeError);
   });
 
-  it('accepts the shipped fractional RF-power scale without weakening integer TX fields', () => {
-    intents.dispatchRadioIntent({
-      id: 'rf-fraction', name: 'set_rf_power', params: { level: 0.42 },
-    });
+  it('admits tagged normalized RF while preserving untagged finite RF levels', () => {
+    for (const [id, params] of [
+      ['rf-zero', { level: 0, level_unit: 'normalized' }],
+      ['rf-half', { level: 0.5, level_unit: 'normalized' }],
+      ['rf-one', { level: 1, level_unit: 'normalized' }],
+      ['rf-native', { level: 42 }],
+    ] as const) {
+      intents.dispatchRadioIntent({ id, name: 'set_rf_power', params });
+    }
 
-    expect(harness.sendCommand).toHaveBeenCalledExactlyOnceWith(
-      'set_rf_power', { level: 0.42 }, 'rf-fraction',
-    );
+    expect(harness.sendCommand.mock.calls).toEqual([
+      ['set_rf_power', { level: 0, level_unit: 'normalized' }, 'rf-zero'],
+      ['set_rf_power', { level: 0.5, level_unit: 'normalized' }, 'rf-half'],
+      ['set_rf_power', { level: 1, level_unit: 'normalized' }, 'rf-one'],
+      ['set_rf_power', { level: 42 }, 'rf-native'],
+    ]);
     expect(() => intents.dispatchRadioIntent({
       name: 'set_mic_gain', params: { level: 0.42 },
     } as never)).toThrow(TypeError);
+  });
+
+  it('rejects malformed normalized RF markers and levels before lifecycle or transport', () => {
+    for (const params of [
+      { level: -0.01, level_unit: 'normalized' },
+      { level: 1.01, level_unit: 'normalized' },
+      { level: Number.NaN, level_unit: 'normalized' },
+      { level: true, level_unit: 'normalized' },
+      { level: 0.5, level_unit: 'raw_255' },
+    ]) {
+      expect(() => intents.dispatchRadioIntent({
+        name: 'set_rf_power', params,
+      } as never)).toThrow(/invalid radio intent/i);
+    }
+    expect(harness.sendCommand).not.toHaveBeenCalled();
+    expect(lifecycle.getCommandLifecycles()).toHaveLength(0);
   });
 
   it('accepts representative exact envelopes derived from every descriptor family', () => {

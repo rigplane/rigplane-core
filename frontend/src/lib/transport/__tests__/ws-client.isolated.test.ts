@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { WsCommand, WsMessage } from '../../types/protocol';
 import type { ReceiverState, ServerState } from '../../types/state';
@@ -9,6 +11,13 @@ type ServerStateWithObservation = ServerState & {
   publicStateSeq?: number;
   fieldStatus?: Record<string, unknown>;
 };
+
+function normalizedLevelWireVectors(): string[] {
+  const catalog = readFileSync(resolve(process.cwd(), '../docs/api/command-catalog.md'), 'utf8');
+  const match = catalog.match(/<!-- normalized-level-wire-vectors:start -->\n```jsonl\n([\s\S]*?)\n```\n<!-- normalized-level-wire-vectors:end -->/u);
+  if (!match) throw new Error('normalized level wire vectors are missing');
+  return match[1].split('\n').filter(Boolean);
+}
 
 // ─── Mock store before importing ws-client ──────────────────────────────────
 const radioStoreMock = vi.hoisted(() => ({
@@ -1037,6 +1046,42 @@ describe('control channel singleton', () => {
     globalThis.WebSocket = originalWebSocket;
     vi.useRealTimers();
     vi.resetModules();
+  });
+
+  it('serializes the documented normalized AF/RF intents byte-for-byte', async () => {
+    const { connect } = await import('../ws-client');
+    const { dispatchRadioIntent } = await import('../../runtime/commands/radio-intents');
+    const vectors = normalizedLevelWireVectors();
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    for (const raw of vectors) {
+      const command = JSON.parse(raw) as {
+        name: 'set_af_level' | 'set_rf_power';
+        id: string;
+        params: Record<string, unknown>;
+      };
+      const params = { ...command.params };
+      if (command.name === 'set_af_level') delete params.level_unit;
+      dispatchRadioIntent({ name: command.name, id: command.id, params } as never);
+    }
+
+    expect(instances[0].sent).toEqual(vectors);
+  });
+
+  it('preserves normalized marker bytes through the offline reconnect queue', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const queued = {
+      type: 'cmd', name: 'set_freq', id: 'marker-reconnect',
+      params: { level: 0.5, level_unit: 'normalized' },
+    } as const;
+
+    expect(ch.send(queued)).toBe(false);
+    ch.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    expect(instances[0].sent).toEqual([JSON.stringify(queued)]);
   });
 
   it('publishes each control session epoch before draining a pinned OFF', async () => {

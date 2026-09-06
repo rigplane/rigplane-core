@@ -3,7 +3,7 @@ import { makeCommandId } from '$lib/types/protocol';
 import * as controlTransport from '$lib/transport/ws-client';
 import { getControlSession, onCommandDelivery, onControlSessionTransition, sendCommand } from '$lib/transport/ws-client';
 
-type FieldKind = 'boolean' | 'integer' | 'normalized' | 'number' | 'receiver' | 'string' | 'vfo';
+type FieldKind = 'boolean' | 'integer' | 'normalized' | 'normalized-unit' | 'number' | 'receiver' | 'string' | 'vfo';
 type FieldSpec = FieldKind | `${FieldKind}?`;
 type IntentSpec = { names: readonly string[]; params: Readonly<Record<string, FieldSpec>> };
 
@@ -21,7 +21,7 @@ const intentSpecs = [
     'set_monitor_gain', 'set_nb_depth', 'set_nb_width', 'set_vox_delay', 'set_vox_gain',
   ], params: { level: 'integer' } },
   { names: ['set_af_level'], params: { level: 'normalized', receiver: 'receiver' } },
-  { names: ['set_rf_power'], params: { level: 'number' } },
+  { names: ['set_rf_power'], params: { level: 'number', level_unit: 'normalized-unit?' } },
   { names: ['set_nb_level', 'set_nr_level', 'set_preamp', 'set_rf_gain', 'set_squelch'], params: { level: 'integer', receiver: 'receiver' } },
   { names: ['set_cw_pitch', 'set_tuner_status'], params: { value: 'integer' } },
   { names: ['set_agc_time_constant', 'set_manual_notch_width', 'set_notch_filter', 'set_pbt_inner', 'set_pbt_outer'], params: { value: 'integer', receiver: 'receiver' } },
@@ -52,7 +52,7 @@ const intentSpecs = [
 ] as const satisfies readonly IntentSpec[];
 
 type Spec = (typeof intentSpecs)[number];
-type KindValue<K extends FieldKind> = K extends 'boolean' ? boolean : K extends 'receiver' ? 0 | 1
+type KindValue<K extends FieldKind> = K extends 'boolean' ? boolean : K extends 'normalized-unit' ? 'normalized' : K extends 'receiver' ? 0 | 1
   : K extends 'string' ? string : K extends 'vfo' ? 'A' | 'B' | 'MAIN' | 'SUB' : number;
 type RequiredKeys<S extends Readonly<Record<string, FieldSpec>>> = {
   [K in keyof S]-?: S[K] extends `${FieldKind}?` ? never : K
@@ -78,6 +78,7 @@ export function isNormalizedLevel(value: unknown): value is number {
 function matchesValue(kind: FieldKind, value: unknown): boolean {
   if (kind === 'integer') return typeof value === 'number' && Number.isSafeInteger(value);
   if (kind === 'normalized') return isNormalizedLevel(value);
+  if (kind === 'normalized-unit') return value === 'normalized';
   if (kind === 'number') return typeof value === 'number' && Number.isFinite(value);
   if (kind === 'boolean') return typeof value === 'boolean';
   if (kind === 'receiver') return value === 0 || value === 1;
@@ -133,14 +134,20 @@ export function dispatchRadioIntentWithResult(intent: RadioIntent): RadioIntentD
   const name = candidate.name;
   if (typeof name !== 'string' || !specsByName.has(name)) throw new TypeError('Only a known non-PTT radio intent may be dispatched');
   const params = candidate.params;
+  const paramsRecord = params as Record<PropertyKey, unknown>;
   if (typeof params !== 'object' || params === null || Array.isArray(params)
-    || !matchesParams(specsByName.get(name)!, params as Record<PropertyKey, unknown>)
+    || !matchesParams(specsByName.get(name)!, paramsRecord)
+    || (name === 'set_rf_power' && paramsRecord.level_unit === 'normalized'
+      && !isNormalizedLevel(paramsRecord.level))
     || (candidate.id !== undefined && (typeof candidate.id !== 'string' || candidate.id.length === 0))) {
     throw new TypeError('Invalid radio intent envelope');
   }
   const id = (candidate.id as string | undefined) ?? makeCommandId();
   const originalEpoch = getControlSession().epoch;
   const lifecycle = beginCommand({ id, name, params: params as Record<string, unknown>, originalEpoch });
-  const transportAccepted = sendCommand(name, params as Record<string, unknown>, id);
+  const wireParams = specsByName.get(name)?.level === 'normalized'
+    ? { ...(params as Record<string, unknown>), level_unit: 'normalized' }
+    : params as Record<string, unknown>;
+  const transportAccepted = sendCommand(name, wireParams, id);
   return { lifecycle, transportAccepted };
 }

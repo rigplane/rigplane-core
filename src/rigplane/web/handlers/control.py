@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -282,6 +283,27 @@ def _level_for_power(value: Any, radio: Any) -> int:
         power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
     )
     return int(native)
+
+
+def _consume_normalized_level_unit(name: str, params: dict[str, Any]) -> dict[str, Any]:
+    if "level_unit" not in params:
+        return dict(params)
+    if name not in {"set_af_level", "set_rf_power", "set_power"}:
+        raise ValueError("level_unit is only valid for AF level and RF power")
+    if params["level_unit"] != "normalized":
+        raise ValueError("level_unit must be 'normalized'")
+    level = params.get("level")
+    if (
+        isinstance(level, bool)
+        or not isinstance(level, (int, float))
+        or not math.isfinite(level)
+        or not 0.0 <= level <= 1.0
+    ):
+        raise ValueError("normalized level must be a finite number from 0.0 to 1.0")
+    normalized = dict(params)
+    normalized.pop("level_unit")
+    normalized["level"] = float(level)
+    return normalized
 
 
 class ControlHandler:
@@ -1443,7 +1465,7 @@ class ControlHandler:
     ) -> dict[str, Any]:
         if name in self._MANAGED_PTT_COMMANDS:
             return await self._enqueue_managed_ptt(name, params, source=source)
-        intent_params = dict(params)
+        intent_params = _consume_normalized_level_unit(name, params)
         if self._server is not None:
             intent_params["_control_server"] = self._server
         if name in ("set_vfo", "select_vfo") and "receiver_count" not in intent_params:

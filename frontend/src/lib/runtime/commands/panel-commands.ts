@@ -661,8 +661,8 @@ export function makeDspHandlers() {
 export function makeTxHandlers() {
   return {
     onRfPowerChange: (level: number) => {
-      if (!hasCapability('tx') || !knownTopLevelField('powerLevel') || !Number.isFinite(level)) return;
-      dispatchRadioIntent({ name: 'set_rf_power', params: { level } });
+      if (!hasCapability('tx') || !knownTopLevelField('powerLevel') || !isNormalizedLevel(level)) return;
+      dispatchRadioIntent({ name: 'set_rf_power', params: { level, level_unit: 'normalized' } });
     },
     onMicGainChange: (level: number) => {
       if (!hasCapability('tx') || !knownTopLevelField('micGain') || !Number.isSafeInteger(level)) return;

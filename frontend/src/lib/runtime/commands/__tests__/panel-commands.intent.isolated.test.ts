@@ -431,9 +431,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     rxAudio.onAfLevelChange(0.42);
 
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 0, receiver: 0 }],
-      ['set_af_level', { level: 50 / 255, receiver: 0 }],
-      ['set_af_level', { level: 0.42, receiver: 0 }],
+      ['set_af_level', { level: 0, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 50 / 255, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 0.42, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
     expect(h.setMuted).toHaveBeenNthCalledWith(1, true);
@@ -480,8 +480,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     rxAudio.onAfLevelChange(1);
 
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 0, receiver: 0 }],
-      ['set_af_level', { level: 1, receiver: 0 }],
+      ['set_af_level', { level: 0, receiver: 0, level_unit: 'normalized' }],
+      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
     ]);
     expectIntentTransport();
 
@@ -590,7 +590,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     tx.onDriveGainChange(100);
 
     expect(exactCalls()).toEqual([
-      ['set_rf_power', { level: 0.42 }],
+      ['set_rf_power', { level: 0.42, level_unit: 'normalized' }],
       ['set_mic_gain', { level: 200 }],
       ['set_tuner_status', { value: 0 }],
       ['set_tuner_status', { value: 2 }],
@@ -604,6 +604,23 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expectIntentTransport();
     expect(exactCalls().map(([name]) => name)).not.toContain('ptt');
     expect(h.patchRadioState).not.toHaveBeenCalled();
+  });
+
+  it('marks only bounded normalized RF-power UI values', () => {
+    const tx = makeTxHandlers();
+    tx.onRfPowerChange(0);
+    tx.onRfPowerChange(0.5);
+    tx.onRfPowerChange(1);
+    for (const invalid of [-0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+      tx.onRfPowerChange(invalid);
+    }
+
+    expect(exactCalls()).toEqual([
+      ['set_rf_power', { level: 0, level_unit: 'normalized' }],
+      ['set_rf_power', { level: 0.5, level_unit: 'normalized' }],
+      ['set_rf_power', { level: 1, level_unit: 'normalized' }],
+    ]);
+    expectIntentTransport();
   });
 
   it('preserves exact antenna and scan command names and params without Store truth', () => {
@@ -729,7 +746,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_preamp', { level: 1, receiver: 0 }],
       ['set_agc', { mode: 2, receiver: 0 }],
       ['set_nb', { on: true, receiver: 0 }],
-      ['set_af_level', { level: 0.5, receiver: 0 }],
+      ['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }],
       ['set_band', { band: 5 }],
       ['set_rit_status', { on: true }],
     ]);
@@ -1355,7 +1372,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_rit_status', { on: true }],
       ['set_rit_tx_status', { on: false }],
       ['set_rit_frequency', { freq: 0 }],
-      ['set_af_level', { level: 50 / 255 + 0.05, receiver: 0 }],
+      ['set_af_level', { level: 50 / 255 + 0.05, receiver: 0, level_unit: 'normalized' }],
       ['set_rf_gain', { level: Math.round((128 / 255 - 0.05) * 255), receiver: 0 }],
       ['set_monitor', { on: true }], ['set_split', { on: true }],
       ['vfo_swap', {}], ['vfo_equalize', {}],
@@ -1481,7 +1498,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'down' } })).toBe(true);
     expect(exactCalls()).toEqual([
-      ['set_af_level', { level: 1, receiver: 0 }],
+      ['set_af_level', { level: 1, receiver: 0, level_unit: 'normalized' }],
       ['set_rf_gain', { level: 0, receiver: 0 }],
     ]);
     expectIntentTransport();
