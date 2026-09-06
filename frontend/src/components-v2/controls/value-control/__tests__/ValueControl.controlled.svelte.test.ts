@@ -173,9 +173,34 @@ describe('ValueControl controlled HBar rendering', () => {
 
     control.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 50, pointerId: 1 }));
     control.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+    flushSync();
+    expect(visibleValue(target)).toContain('20');
+    expect(fill(target)).toContain('--vc-fill-percent: 20%');
+    expect(control.getAttribute('aria-valuenow')).toBe('20');
     control.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 80, pointerId: 1 }));
 
     expect(onChange.mock.calls).toEqual([[50]]);
+  });
+
+  it.each([
+    [42, '42%', '42', '42%'],
+    [Number.NaN, '--- %', null, '0%'],
+  ] as const)('projects a %s reading synchronously through the caller formatter', (
+    value, expectedText, expectedAria, expectedFill,
+  ) => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    roots.push(target);
+    const component = mount(ValueControl, { target, props: {
+      ...baseProps, value, max: 100, onChange: vi.fn(),
+      displayFn: (candidate: number) => Number.isFinite(candidate) ? `${candidate}%` : '--- %',
+    } });
+    components.push(component);
+
+    expect(visibleValue(target)).toBe(expectedText);
+    expect(slider(target).getAttribute('aria-valuenow')).toBe(expectedAria);
+    expect(fill(target)).toContain(`--vc-fill-percent: ${expectedFill}`);
+    expect(slider(target).getAttribute('aria-disabled')).toBe(value === 42 ? 'false' : 'true');
   });
 
   it('uses canonical value for controlled keyboard arithmetic until the parent accepts', () => {

@@ -128,6 +128,7 @@
 
   const pendingFilterId = $props.id();
   const pendingDataModeId = `${pendingFilterId}-data-mode`;
+  const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
 
   let modeFilter = $derived(view.modeFilter);
   let filterPassband = $derived(view.filterPassband);
@@ -262,6 +263,7 @@
           <span class="filter-level-name">Width</span>
           <input
             type="range"
+            {...feedbackIntegratedRange}
             min={numberOf(modeFilter.filterWidthMin, 50)} max={numberOf(modeFilter.filterWidthMax, 9999)} step={50}
             value={filterWidthView.displayed ?? numberOf(modeFilter.filterWidth, 0)}
             disabled={!filterWidthView.editable}

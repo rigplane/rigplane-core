@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
   import type {
     ContinuousScalarBinding,
     ContinuousScalarRendererLease,
@@ -67,27 +68,35 @@
 
   let containerEl: HTMLDivElement | null = $state(null);
   let activePointer: { id: number; token: number; target: HTMLElement } | null = null;
-  let lease: ContinuousScalarRendererLease | null = $state(null);
+  const initialBinding = untrack(() => binding);
+  let attachedBinding = initialBinding;
+  let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
 
   $effect(() => {
-    const nextLease = binding.attachRenderer();
-    lease = nextLease;
-    return () => {
-      if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
-        activePointer.target.releasePointerCapture(activePointer.id);
-      }
-      activePointer = null;
-      nextLease.dispose();
-    };
+    if (binding === attachedBinding) return;
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
+    lease.dispose();
+    attachedBinding = binding;
+    lease = binding.attachRenderer();
+  });
+  onDestroy(() => {
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
+    lease.dispose();
   });
 
   // Reading a lease reconciles its owner. Keep that mutable reconciliation in
   // an effect, then render the resulting snapshot as ordinary Svelte state.
-  let view = $state<ContinuousScalarView | null>(null);
+  let view = $state<ContinuousScalarView>(untrack(() => lease.view));
   $effect(() => {
-    view = lease?.view ?? binding.view;
+    view = lease.view;
   });
-  let renderedValue = $derived(view?.displayed ?? null);
+  let renderedValue = $derived(view.displayed);
   let fillPercent = $derived(renderedValue === null
     ? 0
     : getFillPercent(renderedValue, min, max));
@@ -95,11 +104,11 @@
     ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
     : (fillColor ?? accentColor));
   let displayValue = $derived(renderedValue === null
-    ? '—'
+    ? displayFn ? displayFn(Number.NaN) : '—'
     : displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
 
   function handlePointerDown(e: PointerEvent) {
-    if (!containerEl || !lease) return;
+    if (!containerEl) return;
     const token = lease.beginPointer();
     if (token === null) return;
 
@@ -114,7 +123,7 @@
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!activePointer || activePointer.id !== e.pointerId || !containerEl || !lease) return;
+    if (!activePointer || activePointer.id !== e.pointerId || !containerEl) return;
 
     const rect = containerEl.getBoundingClientRect();
     const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
@@ -126,7 +135,7 @@
     if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
       activePointer.target.releasePointerCapture(e.pointerId);
     }
-    lease?.endPointer(activePointer.token);
+    lease.endPointer(activePointer.token);
     activePointer = null;
   }
 
@@ -135,29 +144,29 @@
     if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
       activePointer.target.releasePointerCapture(e.pointerId);
     }
-    lease?.cancelPointer(activePointer.token);
+    lease.cancelPointer(activePointer.token);
     activePointer = null;
   }
 
   function handleWheel(e: WheelEvent) {
-    if (!view?.editable || !lease) return;
+    if (!view.editable) return;
     e.preventDefault();
     lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (lease?.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
+    if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 
   function handleDoubleClick() {
-    lease?.reset();
+    lease.reset();
   }
 </script>
 
 <div
   class="vc-hbar"
   class:compact
-  class:disabled={!view?.editable}
+  class:disabled={!view.editable}
   class:hardware={variant === 'hardware'}
   class:hw-illum={variant === 'hardware-illuminated'}
   bind:this={containerEl}
@@ -179,12 +188,12 @@
   <div
     class="vc-track-container"
     role="slider"
-    tabindex={view?.editable ? 0 : -1}
+    tabindex={view.editable ? 0 : -1}
     aria-label={label}
     aria-valuemin={min}
     aria-valuemax={max}
-    aria-valuenow={view?.canonical ?? undefined}
-    aria-disabled={!view?.editable}
+    aria-valuenow={view.canonical ?? undefined}
+    aria-disabled={!view.editable}
     aria-busy={legacyPresentation?.feedbackBusy}
     aria-describedby={legacyPresentation?.feedbackDescription ? feedbackDescriptionId : undefined}
     data-command-phase={legacyPresentation?.feedbackPhase ?? undefined}
