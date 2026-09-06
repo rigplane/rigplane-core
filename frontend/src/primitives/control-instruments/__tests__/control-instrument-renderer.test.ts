@@ -1,0 +1,134 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createAbsoluteChoiceRendererSeat,
+  createActionRendererSeat,
+  createChoiceRendererSeat,
+  createFiniteRendererContext,
+  createToggleRendererSeat,
+  type ControlOption,
+  type FiniteRendererContext,
+} from '../control-instrument-renderer.svelte';
+import type { InstrumentField } from '../control-instrument-behavior';
+
+const field = <T>(value: T): InstrumentField<T> => ({
+  availability: { structural: true, operational: true },
+  reading: { status: 'known', value },
+});
+const unknown = <T>(): InstrumentField<T> => ({
+  availability: { structural: true, operational: true }, reading: { status: 'unknown' },
+});
+
+describe('finite renderer leases', () => {
+  it('permanently refuses a retained A1 callback after A-B-A without cleanup', () => {
+    let context = createFiniteRendererContext();
+    let current = field(1);
+    const invoke = vi.fn();
+    const seat = createActionRendererSeat(() => ({ context, field: current, label: '+', invoke }));
+    const stale = seat.attachRenderer();
+
+    context = createFiniteRendererContext();
+    context = createFiniteRendererContext();
+    stale.invoke();
+    expect(stale.active).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+
+    const replacement = seat.attachRenderer();
+    replacement.invoke();
+    expect(replacement.active).toBe(true);
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  it('keeps simultaneous leases independent and destroys all only with the seat', () => {
+    const context = createFiniteRendererContext();
+    const invoke = vi.fn();
+    const seat = createActionRendererSeat(() => ({ context, field: field(1), label: 'Run', invoke }));
+    const first = seat.attachRenderer();
+    const second = seat.attachRenderer();
+    expect(first.active).toBe(true);
+    expect(second.active).toBe(true);
+    first.dispose();
+    second.invoke();
+    expect(first.active).toBe(false);
+    expect(second.active).toBe(true);
+    expect(invoke).toHaveBeenCalledOnce();
+    seat.destroy();
+    expect(second.active).toBe(false);
+    second.invoke();
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  it('re-reads current toggle truth and carries no unsourced evidence', () => {
+    const context = createFiniteRendererContext();
+    let current = field(false);
+    const invoke = vi.fn();
+    const seat = createToggleRendererSeat(() => ({ context, field: current, label: 'Hold', invoke }));
+    const lease = seat.attachRenderer();
+    expect(lease.view).toEqual({ label: 'Hold', available: true, confirmed: false });
+    current = field(true);
+    expect(lease.view?.confirmed).toBe(true);
+    expect('defaultValue' in lease.view!).toBe(false);
+    expect('requested' in lease.view!).toBe(false);
+    expect('feedback' in lease.view!).toBe(false);
+    lease.invoke();
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it('carries a supplied default only as presentation metadata', () => {
+    const context = createFiniteRendererContext();
+    const seat = createToggleRendererSeat(() => ({
+      context, field: field(true), label: 'Dual', defaultValue: false, invoke: vi.fn(),
+    }));
+    expect(seat.attachRenderer().view?.defaultValue).toBe(false);
+  });
+
+  it('keeps exact reading, admitted selection and disabled-option admission distinct', () => {
+    const context = createFiniteRendererContext();
+    let current = field('DATA2');
+    let options: readonly ControlOption<string>[] = [
+      { value: 'OFF', label: 'Off' }, { value: 'DATA1', label: 'Data 1', disabled: true },
+    ];
+    const invoke = vi.fn();
+    const seat = createChoiceRendererSeat(() => ({
+      context, field: current, label: 'Data', options, invoke,
+    }));
+    const lease = seat.attachRenderer();
+    expect(lease.view?.reading).toEqual({ status: 'known', value: 'DATA2' });
+    expect(lease.view?.selected).toBeUndefined();
+    expect('defaultValue' in lease.view!).toBe(false);
+    lease.invoke('DATA1');
+    lease.invoke('outside');
+    expect(invoke).not.toHaveBeenCalled();
+    options = [{ value: 'OFF', label: 'Off' }, { value: 'DATA1', label: 'Data 1' }];
+    lease.invoke('DATA1');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('DATA1');
+    current = unknown();
+    expect(lease.view?.reading).toEqual({ status: 'unknown' });
+  });
+
+  it('keeps an unknown absolute choice actionable through the existing binding', () => {
+    const context = createFiniteRendererContext();
+    const invoke = vi.fn();
+    const seat = createAbsoluteChoiceRendererSeat(() => ({
+      context, reading: { status: 'unknown' }, available: true, label: 'Band',
+      options: [{ value: 20, label: '20 m' }], invoke,
+    }));
+    const lease = seat.attachRenderer();
+    expect(lease.view?.available).toBe(true);
+    expect(lease.view?.selected).toBeUndefined();
+    lease.invoke(20);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(20);
+  });
+
+  it('requires a real non-null context and latches mismatch before behavior reads', () => {
+    let context: FiniteRendererContext | null = null;
+    const readField = vi.fn(() => field(1));
+    const seat = createActionRendererSeat(() => ({
+      context, get field() { return readField(); }, label: 'Run', invoke: vi.fn(),
+    }));
+    const lease = seat.attachRenderer();
+    expect(lease.active).toBe(false);
+    context = createFiniteRendererContext();
+    expect(lease.view).toBeUndefined();
+    expect(readField).not.toHaveBeenCalled();
+  });
+});
