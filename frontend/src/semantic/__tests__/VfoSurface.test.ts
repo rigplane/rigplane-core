@@ -677,16 +677,16 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     const target = mountSurface({ viewModel: topologyFixtures['1/ab'] });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
     expect(toggle.getAttribute('aria-checked')).toBe('mixed');
-    expect(toggle.textContent).toContain('unknown');
-    expect(toggle.textContent).not.toContain('off');
+    expect(toggle.getAttribute('aria-label')).toContain('unknown');
+    expect(toggle.getAttribute('aria-label')).not.toContain('off');
   });
 
   it('keeps SPLIT and DW faceplate labels compact while exposing their full state', () => {
     const target = mountSurface({ viewModel: topologyFixtures['2/main_sub'], appearance: 'standard' });
     const split = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     const dualWatch = target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!;
-    expect(split.querySelector('[aria-hidden="true"]')?.textContent).toBe('SPLIT');
-    expect(dualWatch.querySelector('[aria-hidden="true"]')?.textContent).toBe('DW');
+    expect(split.textContent).toBe('SPLIT');
+    expect(dualWatch.textContent).toBe('DW');
     expect(split.getAttribute('aria-label')).toBe('Split: on');
     expect(dualWatch.getAttribute('aria-label')).toBe('Dual watch: on');
   });
@@ -697,7 +697,7 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     const target = mountSurface({ viewModel: model });
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.getAttribute('aria-checked')).toBe('mixed');
-    expect(toggle.textContent).toContain('unknown');
+    expect(toggle.getAttribute('aria-label')).toContain('unknown');
     // R1 (review cycle 1): pin the disabled attribute itself, not just the
     // aria-checked/text-content facts above — mutation M14 deleted
     // `disabled={viewModel.split.status === 'unknown'}` and every other

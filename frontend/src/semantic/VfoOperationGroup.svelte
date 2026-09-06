@@ -112,7 +112,7 @@
         title={splitAvailability.reason}
         disabled={!splitAvailability.operational}
         onclick={() => emit({ kind: 'toggle-split' }, splitAvailability)}
-      ><span aria-hidden="true">SPLIT</span><span class="sr-only">: {stateWord(split)}</span></button>
+      >SPLIT</button>
       {#if splitReasonId}<span id={splitReasonId} class="sr-only">{splitAvailability.reason}</span>{/if}
     {/if}
 
@@ -133,7 +133,7 @@
         title={dualWatchAvailability.reason}
         disabled={!dualWatchAvailability.operational}
         onclick={() => emit({ kind: 'toggle-dual-watch' }, dualWatchAvailability)}
-      ><span aria-hidden="true">DW</span><span class="sr-only">: {stateWord(dualWatch)}</span></button>
+      >DW</button>
       {#if dualWatchReasonId}<span id={dualWatchReasonId} class="sr-only">{dualWatchAvailability.reason}</span>{/if}
     {/if}
   </div>
