@@ -525,7 +525,7 @@ describe('continuous scalar source policies', () => {
     pendingLease.dispose();
   });
 
-  it('uses caller debounce for HBar keys and reset but not pointer or wheel', () => {
+  it('debounces keys and lets accepted reset supersede them without delaying pointer or wheel', () => {
     vi.useFakeTimers();
     const { scalar, request } = commandSetup();
     const lease = scalar.attachRenderer();
@@ -542,7 +542,7 @@ describe('continuous scalar source policies', () => {
     vi.advanceTimersByTime(49);
     expect(request).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(1);
-    expect(request).toHaveBeenLastCalledWith(2_800);
+    expect(request).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
 });
@@ -567,6 +567,437 @@ describe('continuous scalar authority and feedback reconciliation', () => {
     lease.pointer(token, 2_900);
     expect(request.mock.calls).toEqual([[2_500], [2_700], [2_900]]);
     expect(scalar.view.draft).toBe(2_900);
+  });
+
+  it('retains an ended optimistic HBar pointer through pending, then follows exact confirmation and later truth', () => {
+    const initial = feedback('idle', {
+      confirmed: 0.5,
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const { scalar, request, update } = commandSetup(undefined, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: initial,
+    });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 0.7);
+    lease.endPointer(token);
+
+    expect(request).toHaveBeenCalledOnce();
+    expect(Math.round(request.mock.calls[0][0] * 255)).toBe(179);
+    expect(scalar.view).toMatchObject({ interaction: 'idle', canonical: 0.5 });
+    expect(scalar.view.draft).not.toBeNull();
+    const localDraft = scalar.view.draft;
+
+    update({ feedback: feedback('awaiting-confirmation', {
+      confirmed: 0.5,
+      target: 179 / 255,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-179',
+      transitionId: 'rf-awaiting-179',
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({
+      draft: localDraft,
+      displayed: localDraft,
+      target: 179 / 255,
+      phase: 'awaiting-confirmation',
+    });
+
+    update({ feedback: feedback('confirmed', {
+      confirmed: 179 / 255,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-179',
+      transitionId: 'rf-confirmed-179',
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({
+      draft: null, displayed: 179 / 255, canonical: 179 / 255,
+    });
+
+    update({ feedback: feedback('idle', {
+      confirmed: 0.8,
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: null, displayed: 0.8, canonical: 0.8 });
+  });
+
+  it('retains a live HBar drag through synchronous feedback and hands off its latest request on release', () => {
+    let current!: Extract<ContinuousScalarInput, { evidence: 'command-feedback' }>;
+    const request = vi.fn<(value: number) => void>((value) => {
+      const raw = Math.round(value * 255);
+      current = commandInput(request, {
+        domain: NORMALIZED_DOMAIN,
+        command: 'set_rf_gain',
+        feedback: feedback('submitted', {
+          confirmed: 0.5,
+          target: raw / 255,
+          requestedTarget: raw / 255,
+          lifecycleId: `rf-${raw}`,
+          transitionId: `rf-submitted-${raw}`,
+          scope: { control: 'rf-gain', receiver: 0 },
+        }),
+      });
+    });
+    current = commandInput(request, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: feedback('idle', {
+        confirmed: 0.5,
+        scope: { control: 'rf-gain', receiver: 0 },
+      }),
+    });
+    const scalar = createContinuousScalar(
+      () => current,
+      createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 0 }),
+    );
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+
+    lease.pointer(token, 0.7);
+    expect(scalar.view).toMatchObject({ interaction: 'pointer', target: 179 / 255 });
+    expect(scalar.view.draft).not.toBeNull();
+    lease.pointer(token, 0.8);
+    expect(scalar.view).toMatchObject({ interaction: 'pointer', draft: 0.8, target: 0.8 });
+
+    lease.endPointer(token);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(scalar.view).toMatchObject({
+      interaction: 'idle', draft: 0.8, displayed: 0.8, target: 0.8,
+    });
+
+    current = commandInput(request, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: feedback('confirmed', {
+        confirmed: 0.8,
+        requestedTarget: 0.8,
+        lifecycleId: 'rf-204',
+        transitionId: 'rf-confirmed-204',
+        outcome: { phase: 'confirmed' },
+        scope: { control: 'rf-gain', receiver: 0 },
+      }),
+    });
+    expect(scalar.view).toMatchObject({ interaction: 'idle', draft: null, displayed: 0.8 });
+  });
+
+  it.each([0, 50])('hands a %dms HBar key request to quantized command evidence after dispatch', (debounceMs) => {
+    vi.useFakeTimers();
+    const initial = feedback('idle', {
+      confirmed: 0.5,
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const policy = createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs });
+    const { scalar, request, update } = commandSetup(policy, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: initial,
+    });
+    const lease = scalar.attachRenderer();
+
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    expect(scalar.view.draft).toBe(0.51);
+    update({ feedback: { ...initial, scope: { ...initial.scope } } });
+    expect(scalar.view.draft).toBe(0.51);
+    vi.advanceTimersByTime(debounceMs);
+    expect(request).toHaveBeenCalledExactlyOnceWith(0.51);
+
+    update({ feedback: feedback('awaiting-confirmation', {
+      confirmed: 0.5,
+      target: 130 / 255,
+      requestedTarget: 130 / 255,
+      lifecycleId: `rf-key-${debounceMs}`,
+      transitionId: `rf-key-awaiting-${debounceMs}`,
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: 0.51, displayed: 0.51, target: 130 / 255 });
+
+    update({ feedback: feedback('confirmed', {
+      confirmed: 130 / 255,
+      requestedTarget: 130 / 255,
+      lifecycleId: `rf-key-${debounceMs}`,
+      transitionId: `rf-key-confirmed-${debounceMs}`,
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: null, displayed: 130 / 255 });
+
+    update({ feedback: feedback('idle', {
+      confirmed: 0.8,
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ displayed: 0.8, canonical: 0.8 });
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ['immediate exact zero', 0, 0, 0],
+    ['debounced exact zero', 50, 0, 0],
+    ['immediate nonzero quantized', 0, 0.7, 179 / 255],
+    ['debounced nonzero quantized', 50, 0.7, 179 / 255],
+  ] as const)('hands a %s HBar reset to represented command evidence', (
+    _label, debounceMs, defaultValue, target,
+  ) => {
+    vi.useFakeTimers();
+    const initial = feedback('idle', {
+      confirmed: 0.5,
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const policy = createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs });
+    const { scalar, request, update } = commandSetup(policy, {
+      domain: { ...NORMALIZED_DOMAIN, defaultValue },
+      command: 'set_rf_gain',
+      feedback: initial,
+    });
+    const lease = scalar.attachRenderer();
+
+    lease.reset();
+    expect(scalar.view.draft).not.toBeNull();
+    const localDraft = scalar.view.draft;
+    vi.advanceTimersByTime(debounceMs);
+    expect(request).toHaveBeenCalledOnce();
+    expect(Math.round(request.mock.calls[0][0] * 255)).toBe(Math.round(defaultValue * 255));
+    update({ feedback: feedback('submitted', {
+      confirmed: 0.5,
+      target,
+      requestedTarget: target,
+      lifecycleId: `rf-reset-${defaultValue}`,
+      transitionId: `rf-reset-submitted-${defaultValue}`,
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: localDraft, displayed: localDraft, target });
+
+    update({ feedback: feedback('confirmed', {
+      confirmed: target,
+      requestedTarget: target,
+      lifecycleId: `rf-reset-${defaultValue}`,
+      transitionId: `rf-reset-confirmed-${defaultValue}`,
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: null, displayed: target, canonical: target });
+
+    update({ feedback: feedback('idle', {
+      confirmed: 0.8,
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: null, displayed: 0.8, canonical: 0.8 });
+    vi.useRealTimers();
+  });
+
+  it.each(['pointer', 'wheel', 'native-input'] as const)(
+    'supersedes deferred A with accepted immediate %s B', (source) => {
+      vi.useFakeTimers();
+      const initial = feedback('idle', {
+        confirmed: 0.5,
+        scope: { control: 'rf-gain', receiver: 0 },
+      });
+      const { scalar, request, update } = commandSetup(undefined, {
+        domain: NORMALIZED_DOMAIN,
+        command: 'set_rf_gain',
+        feedback: initial,
+      });
+      const lease = scalar.attachRenderer();
+      expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+
+      const requestedCandidate = 0.7;
+      if (source === 'pointer') {
+        const token = lease.beginPointer()!;
+        lease.pointer(token, requestedCandidate);
+        lease.endPointer(token);
+      } else if (source === 'wheel') {
+        lease.wheel({ direction: 1, fine: false });
+      } else {
+        lease.nativeInput(requestedCandidate);
+      }
+      expect(request).toHaveBeenCalledOnce();
+      const candidate = request.mock.calls[0][0];
+      vi.advanceTimersByTime(50);
+      expect(request.mock.calls).toEqual([[candidate]]);
+
+      update({ feedback: feedback('awaiting-confirmation', {
+        confirmed: 0.5,
+        target: candidate,
+        requestedTarget: candidate,
+        lifecycleId: `rf-b-${source}`,
+        transitionId: `rf-b-awaiting-${source}`,
+        scope: { control: 'rf-gain', receiver: 0 },
+      }) });
+      expect(scalar.view).toMatchObject({
+        target: candidate, draft: source === 'native-input' ? null : candidate,
+      });
+
+      update({ feedback: feedback('confirmed', {
+        confirmed: candidate,
+        requestedTarget: candidate,
+        lifecycleId: `rf-b-${source}`,
+        transitionId: `rf-b-confirmed-${source}`,
+        outcome: { phase: 'confirmed' },
+        scope: { control: 'rf-gain', receiver: 0 },
+      }) });
+      expect(scalar.view.canonical).toBe(candidate);
+      expect(scalar.view.draft).toBeNull();
+      vi.useRealTimers();
+    },
+  );
+
+  it('cancels deferred work only after a newer immediate candidate is accepted', () => {
+    vi.useFakeTimers();
+    const initial = feedback('idle', { confirmed: 0.5 });
+    const invalid = commandSetup(undefined, { domain: NORMALIZED_DOMAIN, feedback: initial });
+    const invalidLease = invalid.scalar.attachRenderer();
+    invalidLease.key({ key: 'ArrowRight', fine: false });
+    invalidLease.nativeInput(Number.NaN);
+    vi.advanceTimersByTime(50);
+    expect(invalid.request).toHaveBeenCalledExactlyOnceWith(0.51);
+
+    const noOp = commandSetup(undefined, { domain: NORMALIZED_DOMAIN, feedback: initial });
+    const noOpLease = noOp.scalar.attachRenderer();
+    noOpLease.key({ key: 'ArrowRight', fine: false });
+    noOpLease.nativeInput(0.5);
+    vi.advanceTimersByTime(50);
+    expect(noOp.request).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('keeps a debounced HBar B through terminal A, then hands off to represented B evidence', () => {
+    vi.useFakeTimers();
+    const pendingA = feedback('awaiting-confirmation', {
+      confirmed: 0.5,
+      target: 179 / 255,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-a',
+      transitionId: 'rf-a-awaiting',
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const policy = createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 50 });
+    const { scalar, request, update } = commandSetup(policy, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: pendingA,
+    });
+    const lease = scalar.attachRenderer();
+
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    update({ feedback: feedback('failed', {
+      confirmed: 0.5,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-a',
+      transitionId: 'rf-a-failed',
+      outcome: { phase: 'failed', error: 'late A' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: 0.51, phase: 'failed' });
+    vi.advanceTimersByTime(50);
+    expect(request).toHaveBeenCalledExactlyOnceWith(0.51);
+
+    update({ feedback: feedback('submitted', {
+      confirmed: 0.5,
+      target: 130 / 255,
+      requestedTarget: 130 / 255,
+      lifecycleId: 'rf-b',
+      transitionId: 'rf-b-submitted',
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: 0.51, target: 130 / 255 });
+
+    update({ feedback: feedback('confirmed', {
+      confirmed: 130 / 255,
+      requestedTarget: 130 / 255,
+      lifecycleId: 'rf-b',
+      transitionId: 'rf-b-confirmed',
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: null, displayed: 130 / 255 });
+    vi.useRealTimers();
+  });
+
+  it('keeps HBar B through delayed terminal A after pointer end and retires only for B evidence', () => {
+    const pendingA = feedback('awaiting-confirmation', {
+      confirmed: 0.5,
+      target: 153 / 255,
+      requestedTarget: 153 / 255,
+      lifecycleId: 'rf-a',
+      transitionId: 'rf-a-awaiting',
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const { scalar, update } = commandSetup(undefined, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: pendingA,
+    });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+    lease.pointer(token, 0.7);
+    lease.endPointer(token);
+
+    const delayedA = feedback('failed', {
+      confirmed: 0.5,
+      requestedTarget: 153 / 255,
+      lifecycleId: 'rf-a',
+      transitionId: 'rf-a-failed',
+      outcome: { phase: 'failed', error: 'late A' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    update({ feedback: delayedA });
+    expect(scalar.view.draft).not.toBeNull();
+    update({ feedback: { ...delayedA, scope: { ...delayedA.scope } } });
+    expect(scalar.view.draft).not.toBeNull();
+
+    update({ feedback: feedback('submitted', {
+      confirmed: 0.5,
+      target: 179 / 255,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-b',
+      transitionId: 'rf-b-submitted',
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ target: 179 / 255 });
+    expect(scalar.view.draft).not.toBeNull();
+
+    update({ feedback: feedback('confirmed', {
+      confirmed: 179 / 255,
+      requestedTarget: 179 / 255,
+      lifecycleId: 'rf-b',
+      transitionId: 'rf-b-confirmed',
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    expect(scalar.view).toMatchObject({ draft: null, displayed: 179 / 255 });
+  });
+
+  it('preserves a represented command HBar wheel draft until the 300ms hold expires', () => {
+    vi.useFakeTimers();
+    const initial = feedback('idle', {
+      confirmed: 0.5,
+      scope: { control: 'rf-gain', receiver: 0 },
+    });
+    const policy = createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 50 });
+    const { scalar, request, update } = commandSetup(policy, {
+      domain: NORMALIZED_DOMAIN,
+      command: 'set_rf_gain',
+      feedback: initial,
+    });
+    const lease = scalar.attachRenderer();
+
+    lease.wheel({ direction: 1, fine: false });
+    expect(request).toHaveBeenCalledExactlyOnceWith(0.56);
+    update({ feedback: feedback('awaiting-confirmation', {
+      confirmed: 0.5,
+      target: 143 / 255,
+      requestedTarget: 143 / 255,
+      lifecycleId: 'rf-wheel-143',
+      transitionId: 'rf-wheel-awaiting-143',
+      scope: { control: 'rf-gain', receiver: 0 },
+    }) });
+    vi.advanceTimersByTime(299);
+    expect(scalar.view).toMatchObject({ interaction: 'wheel', draft: 0.56, displayed: 0.56 });
+    vi.advanceTimersByTime(1);
+    expect(scalar.view).toMatchObject({ interaction: 'idle', draft: null, displayed: 0.5 });
+    vi.useRealTimers();
   });
 
   it.each([

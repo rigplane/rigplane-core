@@ -382,6 +382,12 @@ export const nativeRangeContinuousScalarPolicy: Readonly<ContinuousScalarPolicy>
   Object.freeze(nativeRangePolicy);
 
 type AuthorityIdentity = readonly (string | number | boolean | null | undefined)[];
+type LocalCommandRequest = Readonly<{
+  source: ScalarSource;
+  observedLifecycleId: string | null;
+  dispatched: boolean;
+  representedLifecycleId: string | null;
+}>;
 
 function authorityOf(input: Readonly<ContinuousScalarInput>): AuthorityIdentity {
   const domain = input.domain;
@@ -475,7 +481,7 @@ export function createContinuousScalar(
   let presentationState: Readonly<ControlFeedbackPresentationState> = {
     announcedTransitionIds: [],
   };
-  let nativeRequest: Readonly<{ observedLifecycleId: string | null }> | null = null;
+  let localCommandRequest: LocalCommandRequest | null = null;
   let destroyed = false;
 
   function clearTimers(): void {
@@ -492,7 +498,7 @@ export function createContinuousScalar(
     draftCanonical = null;
     interaction = 'idle';
     activeGesture = null;
-    nativeRequest = null;
+    localCommandRequest = null;
   }
 
   function reconcile(input: Readonly<ContinuousScalarInput>): void {
@@ -503,29 +509,63 @@ export function createContinuousScalar(
       presentationState = { announcedTransitionIds: [] };
     }
     lastAuthority = authority;
-    const representedNativeRequest = nativeRequest !== null
+    const requestSnapshot = localCommandRequest;
+    const representedLifecycleId = requestSnapshot !== null
+      && requestSnapshot.dispatched
+      && requestSnapshot.representedLifecycleId === null
       && input.evidence === 'command-feedback'
       && input.feedback.lifecycleId !== null
-      && input.feedback.lifecycleId !== nativeRequest.observedLifecycleId;
-    if (representedNativeRequest) {
+      && input.feedback.lifecycleId !== requestSnapshot.observedLifecycleId
+      ? input.feedback.lifecycleId : null;
+    if (representedLifecycleId !== null && requestSnapshot !== null) {
+      localCommandRequest = { ...requestSnapshot, representedLifecycleId };
+    }
+    const representedRequest = localCommandRequest;
+    const representedLifecycle = representedRequest?.representedLifecycleId ?? null;
+    const feedback = input.evidence === 'command-feedback' ? input.feedback : null;
+    const retainsOptimisticPending = representedRequest !== null
+      && policy.name === 'hbar-optimistic'
+      && (representedRequest.source === 'pointer'
+        || representedRequest.source === 'keyboard'
+        || representedRequest.source === 'reset');
+    const representedLifecycleIsComplete = representedLifecycle !== null
+      && feedback !== null
+      && feedback.lifecycleId === representedLifecycle
+      && (!feedback.busy || feedback.outcome !== null);
+    const representedLifecycleIsGone = representedLifecycle !== null
+      && feedback !== null
+      && ((!feedback.busy && feedback.lifecycleId === null)
+        || (feedback.lifecycleId !== null
+          && feedback.lifecycleId !== representedLifecycle
+          && feedback.lifecycleId !== representedRequest?.observedLifecycleId));
+    const representationRetiresDraft = representedRequest !== null
+      && representedRequest.representedLifecycleId !== null
+      && (representedRequest.source === 'native-input'
+        || !retainsOptimisticPending
+        || representedLifecycleIsComplete
+        || representedLifecycleIsGone);
+    if (representationRetiresDraft
+      && activeGesture === null && interaction !== 'wheel' && debounceTimer === null) {
       draft = null;
       draftCanonical = null;
       interaction = 'idle';
-      nativeRequest = null;
+      localCommandRequest = null;
     }
+    const belongsToObservedOlderLifecycle = localCommandRequest !== null
+      && localCommandRequest.observedLifecycleId !== null
+      && input.evidence === 'command-feedback'
+      && input.feedback.lifecycleId === localCommandRequest.observedLifecycleId;
     const terminal = terminalIdentity(input);
     if (terminal !== null && !sameAuthority(handledTerminal, terminal)) {
-      const belongsToObservedOlderLifecycle = nativeRequest !== null
-        && nativeRequest.observedLifecycleId !== null
-        && input.evidence === 'command-feedback'
-        && input.feedback.lifecycleId === nativeRequest.observedLifecycleId;
       if (!belongsToObservedOlderLifecycle) clearTransient();
       handledTerminal = terminal;
     } else if (input.evidence === 'command-feedback') {
-      if (draft !== null && Object.is(canonicalOf(input), draft)) {
+      if (draft !== null && !belongsToObservedOlderLifecycle
+        && !(retainsOptimisticPending && feedback?.busy)
+        && Object.is(canonicalOf(input), draft)) {
         draft = null;
         draftCanonical = null;
-        nativeRequest = null;
+        localCommandRequest = null;
         if (interaction !== 'pointer' && interaction !== 'wheel') interaction = 'idle';
       }
     } else if (draft !== null && interaction !== 'pointer' && interaction !== 'wheel'
@@ -549,10 +589,23 @@ export function createContinuousScalar(
     return input;
   }
 
-  function dispatch(candidate: number, authority: AuthorityIdentity, generation: number): void {
+  function dispatch(
+    candidate: number,
+    source: ScalarSource,
+    authority: AuthorityIdentity,
+    generation: number,
+  ): void {
     const input = current();
     if (!destroyed && generation === invalidationGeneration
       && sameAuthority(authority, authorityOf(input)) && editable(input)) {
+      localCommandRequest = input.evidence === 'command-feedback'
+        ? {
+          source,
+          observedLifecycleId: input.feedback.lifecycleId,
+          dispatched: true,
+          representedLifecycleId: null,
+        }
+        : null;
       input.request(candidate);
     }
   }
@@ -572,31 +625,36 @@ export function createContinuousScalar(
     const canonical = canonicalOf(input);
     const base = interactionBase(input);
     if (canonical === null || base === null) return false;
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = null;
     draft = normalized;
     draftCanonical = canonical;
     interaction = source;
+    localCommandRequest = input.evidence === 'command-feedback'
+      ? {
+        source,
+        observedLifecycleId: input.feedback.lifecycleId,
+        dispatched: false,
+        representedLifecycleId: null,
+      }
+      : null;
     if (!policy.dispatchesCanonical(source, {
       canonical,
       interactionBase: base,
     }, input.domain) && Object.is(normalized, draftCanonical)) {
       draft = null;
       draftCanonical = null;
+      localCommandRequest = null;
       if (source !== 'pointer') interaction = 'idle';
       return true;
     }
-    if (source !== 'native-input') nativeRequest = null;
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
-      nativeRequest = source === 'native-input' && input.evidence === 'command-feedback'
-        ? { observedLifecycleId: input.feedback.lifecycleId }
-        : null;
-      dispatch(normalized, authority, generation);
+      dispatch(normalized, source, authority, generation);
     } else {
-      if (source === 'native-input') nativeRequest = null;
-      if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        if (renderer === activeRenderer) dispatch(normalized, authority, generation);
+        if (renderer === activeRenderer) dispatch(normalized, source, authority, generation);
       }, mode.debounceMs);
     }
     return true;
@@ -658,7 +716,7 @@ export function createContinuousScalar(
       beginPointer(): number | null {
         const input = current();
         if (destroyed || renderer !== activeRenderer || !editable(input)) return null;
-        nativeRequest = null;
+        localCommandRequest = null;
         const token = ++gestureSequence;
         activeGesture = { renderer, token };
         interaction = 'pointer';
@@ -693,6 +751,7 @@ export function createContinuousScalar(
           draft = null;
           draftCanonical = null;
           interaction = 'idle';
+          localCommandRequest = null;
         } else {
           if (wheelTimer !== null) clearTimeout(wheelTimer);
           const authority = authorityOf(input);
@@ -703,6 +762,7 @@ export function createContinuousScalar(
               draft = null;
               draftCanonical = null;
               interaction = 'idle';
+              localCommandRequest = null;
             }
           }, policy.wheelIdleMs);
         }
