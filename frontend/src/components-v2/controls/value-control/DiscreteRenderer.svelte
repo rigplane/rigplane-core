@@ -66,7 +66,9 @@
     legacy,
   }: Props = $props();
 
-  const feedbackDescriptionId = $props.id();
+  const feedbackId = $props.id();
+  const feedbackDescriptionId = `${feedbackId}-description`;
+  const feedbackCurrentStatusId = `${feedbackId}-current-status`;
 
   let containerEl: HTMLDivElement | null = $state(null);
   let activePointer: { id: number; token: number; target: HTMLElement } | null = null;
@@ -116,6 +118,17 @@
     : displayFn ? displayFn(renderedValue)
       : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
   let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
+  let currentStatusDescription = $derived(
+    renderPresentation.currentStatus === null
+      ? renderPresentation.error
+      : renderPresentation.error === null
+        ? renderPresentation.currentStatus
+        : `${renderPresentation.currentStatus}: ${renderPresentation.error}`,
+  );
+  let feedbackDescriptionIds = $derived([
+    renderPresentation.description === null ? null : feedbackDescriptionId,
+    currentStatusDescription === null ? null : feedbackCurrentStatusId,
+  ].filter((id): id is string => id !== null).join(' ') || undefined);
   let effectiveDimmed = $derived(dimmed ?? !view.editable);
 
   let tickItems = $derived.by(() => {
@@ -254,7 +267,7 @@
     aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
     aria-disabled={!view.editable}
     aria-busy={renderPresentation.attributes['aria-busy']}
-    aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
+    aria-describedby={feedbackDescriptionIds}
     data-command-phase={renderPresentation.attributes['data-command-phase'] ?? undefined}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
@@ -387,6 +400,13 @@
 
   {#if renderPresentation.description !== null}
     <span id={feedbackDescriptionId} class="sr-only">{renderPresentation.description}</span>
+  {/if}
+  {#if currentStatusDescription !== null}
+    <span
+      id={feedbackCurrentStatusId}
+      class="sr-only"
+      data-control-feedback-current-status
+    >{currentStatusDescription}</span>
   {/if}
   {#if renderPresentation.status !== null}
     <span
