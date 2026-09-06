@@ -25,6 +25,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import SpectrumPanelStub from '../../layout/__tests__/SpectrumPanelStub.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
@@ -34,6 +35,11 @@ import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  live: null as unknown,
+  selectedFiniteAppearance: undefined as unknown,
+  controlSession: { state: 'connected', epoch: 1 } as { state: string; epoch: number },
+  controlSessionSubscriber: null as ((next: { state: string; epoch: number }) => void) | null,
+  authoritySubscriber: null as ((next: { state: unknown; caps: unknown; session: { state: string; epoch: number } }) => void) | null,
   txController: null as ManagedAppTxController | null,
   audio: { muted: true, rxEnabled: false, volume: 0 },
   audioConnected: false,
@@ -41,6 +47,11 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
+vi.mock('../../../component-kits/activation', () => ({
+  getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance,
+  getSelectedFrequencyReadout: () => undefined,
+  getSelectedScalarAppearance: () => undefined,
+}));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
   return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
@@ -48,8 +59,22 @@ vi.mock('$lib/runtime/commands/radio-intents', async () => {
 vi.mock('$lib/runtime', () => ({
   runtime: {
     onTxAudioDied: () => () => {},
-    get state() { return h.state; },
-    get caps() { return h.caps; },
+    get state() { return (h.live as Map<string, unknown> | null)?.get('state') ?? h.state; },
+    get caps() { return (h.live as Map<string, unknown> | null)?.get('caps') ?? h.caps; },
+    get controlSession() { return h.controlSession; },
+    subscribeControlSession(handler: (next: { state: string; epoch: number }) => void) {
+      h.controlSessionSubscriber = handler;
+      return () => { if (h.controlSessionSubscriber === handler) h.controlSessionSubscriber = null; };
+    },
+    subscribeControlAuthority(handler: typeof h.authoritySubscriber) {
+      h.authoritySubscriber = handler;
+      handler?.({
+        state: (h.live as Map<string, unknown> | null)?.get('state') ?? h.state,
+        caps: (h.live as Map<string, unknown> | null)?.get('caps') ?? h.caps,
+        session: h.controlSession,
+      });
+      return () => { if (h.authoritySubscriber === handler) h.authoritySubscriber = null; };
+    },
     get audio() { return h.audio; },
     get connectionAudio() { return h.audioConnected; },
     // MOR-1312 slice 12B: the wiring now also hands the adapter a
@@ -78,6 +103,10 @@ import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { getRadioState, resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
 // MOR-1370 (S6b-2): the REAL manifests + the REAL resolution seam, mirroring
 // `semantic-scope-display-wiring.component.test.ts`'s "MOR-1365 (S6a)"
 // section — the only way to prove the `scope-controls` zone binding and the
@@ -161,16 +190,47 @@ const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T
 const el = (id: string) => q<HTMLElement>(`[data-testid="${id}"]`);
 function useState(state: ServerState): void {
   h.state = state;
+  (h.live as SvelteMap<string, unknown> | null)?.set('state', state);
   resetRadioState();
   setRadioState(state);
 }
 
+function useCaps(caps: Capabilities): void {
+  h.caps = caps;
+  (h.live as SvelteMap<string, unknown> | null)?.set('caps', caps);
+  setCapabilities(caps);
+}
+
+function publishAuthority(
+  state: ServerState,
+  caps: Capabilities = h.caps as Capabilities,
+  session: { state: string; epoch: number } = h.controlSession,
+): void {
+  h.state = state;
+  h.caps = caps;
+  h.controlSession = session;
+  (h.live as SvelteMap<string, unknown>).set('state', state);
+  (h.live as SvelteMap<string, unknown>).set('caps', caps);
+  h.authoritySubscriber?.({ state, caps, session });
+}
+
+const finiteFixture = FiniteControlRendererFixture as FiniteControlAppearance['action'];
+const finiteAppearance = {
+  action: finiteFixture,
+  toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+  choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+} satisfies FiniteControlAppearance;
+
 beforeEach(() => {
+  h.live = new SvelteMap<string, unknown>();
+  h.selectedFiniteAppearance = undefined;
+  h.controlSession = { state: 'connected', epoch: 1 };
+  h.controlSessionSubscriber = null;
+  h.authoritySubscriber = null;
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
-  setCapabilities(liveCaps(SCOPE_TAGS));
+  useCaps(liveCaps(SCOPE_TAGS));
   useState(liveState());
-  h.caps = liveCaps(SCOPE_TAGS);
   h.audio = { muted: true, rxEnabled: false, volume: 0 };
   h.audioConnected = false;
   h.guardVisible = false;
@@ -180,6 +240,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  resetRetainedInvocations();
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   document.body.innerHTML = '';
@@ -275,11 +336,193 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
   });
 });
 
+describe('selected finite Scope authority lifetime (MOR-2425)', () => {
+  const withSlot = (state: ServerState, receiver: 'main' | 'sub', activeSlot: 'A' | 'B') => ({
+    ...state,
+    [receiver]: { ...state[receiver], activeSlot },
+  } as ServerState);
+
+  it('revokes retained A1 synchronously on unobserved A→B→A before flush, then admits only fresh A3', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    const a1 = liveState();
+    render();
+    const retainedA1 = {
+      action: retainedInvocations.get('+')!,
+      toggle: retainedInvocations.get('HOLD')!,
+      choice: retainedInvocations.get('Scope center type')!,
+    };
+    expect(Object.values(retainedA1).every(callback => typeof callback === 'function')).toBe(true);
+
+    const b2 = withSlot({ ...a1, stateRevision: 2 } as ServerState, 'main', 'B');
+    const a3 = { ...a1, stateRevision: 3 } as ServerState;
+    publishAuthority(b2);
+    publishAuthority(a3);
+    resetRadioState();
+    setRadioState(a3);
+
+    retainedA1.action();
+    retainedA1.toggle();
+    retainedA1.choice(1);
+    expect(sendCommand).not.toHaveBeenCalled();
+
+    flushSync();
+    const retainedA3 = {
+      action: retainedInvocations.get('+')!,
+      toggle: retainedInvocations.get('HOLD')!,
+      choice: retainedInvocations.get('Scope center type')!,
+    };
+    for (const kind of ['action', 'toggle', 'choice'] as const) {
+      expect(retainedA3[kind]).not.toBe(retainedA1[kind]);
+    }
+    retainedA3.action();
+    retainedA3.toggle();
+    retainedA3.choice(1);
+    expect(vi.mocked(sendCommand).mock.calls).toEqual([
+      ['set_scope_ref', { ref: 0 }],
+      ['set_scope_hold', { on: true }],
+      ['set_scope_center_type', { center_type: 1 }],
+    ]);
+    retainedA1.action();
+    retainedA1.toggle();
+    retainedA1.choice(2);
+    expect(sendCommand).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ['session', (state: ServerState, caps: Capabilities) => ({ state, caps, session: { state: 'connected', epoch: 2 } })],
+    ['provider', (state: ServerState, caps: Capabilities) => ({
+      state: { ...state, providerGeneration: 32 } as ServerState,
+      caps: { ...caps, providerGeneration: 32 } as Capabilities,
+      session: h.controlSession,
+    })],
+    ['topology', (state: ServerState, caps: Capabilities) => ({
+      state,
+      caps: { ...caps, vfoScheme: 'ab_shared', receivers: 2 } as Capabilities,
+      session: h.controlSession,
+    })],
+    ['active receiver', (state: ServerState, caps: Capabilities) => ({
+      state: { ...state, active: 'SUB' } as ServerState, caps, session: h.controlSession,
+    })],
+    ['active slot', (state: ServerState, caps: Capabilities) => ({
+      state: withSlot(state, 'main', 'B'), caps, session: h.controlSession,
+    })],
+  ] as const)('rotates the lease when %s authority changes', (_axis, replacement) => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const first = retainedInvocations.get('HOLD')!;
+    const next = replacement(h.state as ServerState, h.caps as Capabilities);
+    publishAuthority(next.state, next.caps, next.session);
+    flushSync();
+    expect(retainedInvocations.get('HOLD')).not.toBe(first);
+    first();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown receiver and active slots authoritative for readable global Scope controls', () => {
+    const state = liveState();
+    state.fieldStatus!.active = { ...fresh, observed: false, freshness: 'unknown', availability: 'missing' };
+    state.fieldStatus!['main.activeSlot'] = { ...fresh, observed: false, freshness: 'unknown', availability: 'missing' };
+    state.fieldStatus!['sub.activeSlot'] = { ...fresh, observed: false, freshness: 'unknown', availability: 'missing' };
+    useState(state);
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+
+    const hold = el('external-HOLD') as HTMLButtonElement;
+    expect(hold).not.toBeNull();
+    expect(hold.disabled).toBe(false);
+    hold.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_hold', { on: true });
+  });
+
+  it('keeps the chosen external appearance inert through disconnect and creates a fresh lease on return', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const connected = retainedInvocations.get('HOLD')!;
+
+    publishAuthority(h.state as ServerState, h.caps as Capabilities, { state: 'disconnected', epoch: 1 });
+    connected();
+    expect(sendCommand).not.toHaveBeenCalled();
+    flushSync();
+    expect(el('scope-hold')).toBeNull();
+    expect(el('external-HOLD')).toBeNull();
+
+    publishAuthority(h.state as ServerState, h.caps as Capabilities, { state: 'connected', epoch: 2 });
+    flushSync();
+    const returned = retainedInvocations.get('HOLD')!;
+    expect(returned).not.toBe(connected);
+    returned();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_hold', { on: true });
+  });
+
+  it.each([
+    ['provider mismatch', (state: ServerState, caps: Capabilities) => ({
+      state, caps: { ...caps, providerGeneration: 99 } as Capabilities,
+    })],
+    ['invalid topology', (state: ServerState, caps: Capabilities) => ({
+      state, caps: { ...caps, receivers: 1 } as Capabilities,
+    })],
+    ['absent Scope group', (state: ServerState, caps: Capabilities) => ({
+      state, caps: liveCaps(NO_SCOPE_TAGS),
+    })],
+  ] as const)('revokes on %s without exposing native fallback controls', (_reason, invalidate) => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const retained = retainedInvocations.get('HOLD')!;
+    const invalid = invalidate(h.state as ServerState, h.caps as Capabilities);
+    publishAuthority(invalid.state, invalid.caps);
+    retained();
+    expect(sendCommand).not.toHaveBeenCalled();
+    flushSync();
+    expect(el('scope-hold')).toBeNull();
+  });
+
+  it('preserves the lease across irrelevant value updates while refreshing its view', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const retained = retainedInvocations.get('HOLD')!;
+    const changed = liveState({
+      stateRevision: 2,
+      scopeControls: { ...liveState().scopeControls!, hold: true },
+      main: { ...liveState().main!, freqHz: 14251000 },
+    });
+    publishAuthority(changed);
+    flushSync();
+    expect(retainedInvocations.get('HOLD')).toBe(retained);
+    expect((el('external-HOLD') as HTMLButtonElement).getAttribute('aria-pressed')).toBe('true');
+
+    const unavailable = liveState({ stateRevision: 3 });
+    unavailable.fieldStatus!['scopeControls.hold'] = {
+      ...fresh, observed: false, freshness: 'unknown', availability: 'missing',
+    };
+    publishAuthority(unavailable);
+    flushSync();
+    expect(retainedInvocations.get('HOLD')).toBe(retained);
+    expect((el('external-HOLD') as HTMLButtonElement).disabled).toBe(true);
+
+    const telemetry = liveState({
+      stateRevision: 4, freshnessRevision: 9, updatedAt: '2026-08-09T00:00:01Z',
+      main: { ...liveState().main!, mode: 'LSB', freqHz: 14252000 },
+      powerMeter: 45,
+    });
+    publishAuthority(telemetry);
+    flushSync();
+    expect(retainedInvocations.get('HOLD')).toBe(retained);
+  });
+
+  it('leaves the native Scope path unchanged when no appearance is selected', () => {
+    render();
+    expect(el('scope-hold')).not.toBeNull();
+    expect(el('external-HOLD')).toBeNull();
+    expect(h.authoritySubscriber).toBeNull();
+  });
+});
+
 /* ── (b) MOUNTING CANON: single bare, dual absent ─────────────────────── */
 
 describe('the surface mounts only in the single composition, never in dual', () => {
   it('renders no scope-controls surface for a radio without the scope capability', () => {
-    h.caps = liveCaps(NO_SCOPE_TAGS);
+    useCaps(liveCaps(NO_SCOPE_TAGS));
     render();
     expect(el('scope-controls-surface')).toBeNull();
   });
@@ -431,7 +674,7 @@ describe('SDR hosted semantic scope controls (MOR-2358)', () => {
   });
 
   it('removes unsupported receiver leaves while keeping the supported surface hosted', () => {
-    h.caps = liveCaps(['scope']); hosted();
+    useCaps(liveCaps(['scope'])); hosted();
     expect(target.querySelectorAll('[data-testid="scope-controls-surface"]')).toHaveLength(1);
     expect(el('scope-controls-surface')!.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
     expect(el('scope-dual')).toBeNull(); expect(el('scope-receiver')).toBeNull();

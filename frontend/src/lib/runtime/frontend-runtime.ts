@@ -11,7 +11,7 @@
  * @see docs/plans/2026-04-12-target-frontend-architecture.md
  */
 
-import { radio } from '$lib/stores/radio.svelte';
+import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
 import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 import {
   getConnectionStatus,
@@ -67,6 +67,12 @@ export interface DefaultScopeStatus {
 }
 export type ControlSessionSnapshot = Readonly<ControlSessionTransition>;
 export type ControlSessionSubscriber = (next: ControlSessionSnapshot) => void;
+export interface ControlAuthorityPublication {
+  readonly state: ServerState | null;
+  readonly caps: Capabilities | null;
+  readonly session: ControlSessionSnapshot;
+}
+export type ControlAuthoritySubscriber = (next: ControlAuthorityPublication) => void;
 const CLOSED_CONTROL_SESSION: ControlSessionSnapshot = Object.freeze({ state: 'disconnected', epoch: -1 });
 
 // ── Runtime class ──
@@ -143,6 +149,37 @@ class FrontendRuntime {
   }
   subscribeControlSession(handler: ControlSessionSubscriber): () => void {
     return 'onControlSessionTransition' in transport ? transport.onControlSessionTransition(handler) : () => undefined;
+  }
+
+  /**
+   * Synchronous fan-in for sources that jointly establish command authority.
+   * It deliberately retains no derived state: every source publication reads
+   * the other two sources and publishes their current references immediately.
+   */
+  subscribeControlAuthority(handler: ControlAuthoritySubscriber): () => void {
+    let active = true;
+    let initializing = true;
+    const publish = (session: ControlSessionSnapshot) => {
+      if (!active || initializing) return;
+      handler(Object.freeze({ state: this.state, caps: this.caps, session }));
+    };
+    const stops: Array<() => void> = [];
+    try {
+      stops.push(subscribeRadioState(() => publish(this.controlSession)));
+      stops.push(subscribeCapabilities(() => publish(this.controlSession)));
+      stops.push(this.subscribeControlSession(publish));
+      initializing = false;
+      publish(this.controlSession);
+    } catch (error) {
+      active = false;
+      for (const stop of stops.reverse()) stop();
+      throw error;
+    }
+    return () => {
+      if (!active) return;
+      active = false;
+      for (const stop of stops.reverse()) stop();
+    };
   }
 
   /** Radio capabilities (modes, filters, features, etc.) */

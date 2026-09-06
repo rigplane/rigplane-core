@@ -89,7 +89,7 @@
   }
   type RendererSelection =
     | { finiteAppearance?: undefined; rendererContext?: undefined }
-    | { finiteAppearance: FiniteControlAppearance<number>; rendererContext: FiniteRendererContext };
+    | { finiteAppearance: FiniteControlAppearance<number>; rendererContext: FiniteRendererContext | null };
   type Props = ExistingProps & RendererSelection;
   let {
     view, onToggleChange, onChoiceChange, onSpanChange, onSpeedChange, onRefChange,
@@ -188,8 +188,8 @@
   <section class="scope-controls-surface" data-testid="scope-controls-surface" aria-label="Scope controls">
     {#if sc.mode.availability.structural}
       {@const behavior = choiceInstrument('mode', MODE_BUTTONS.map(([value]) => value))}
-      <div class="scope-row" role={finiteAppearance && rendererContext ? undefined : 'radiogroup'} aria-label="Scope mode" data-testid="scope-mode">
-        {#if finiteAppearance && rendererContext}
+      <div class="scope-row" role={finiteAppearance ? undefined : 'radiogroup'} aria-label="Scope mode" data-testid="scope-mode">
+        {#if finiteAppearance}
           {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
             seat={choiceSeat('mode', 'Scope mode', MODE_BUTTONS)} renderer={finiteAppearance.choice}
           />{/key}{/key}
@@ -205,8 +205,8 @@
     {#each CHOICES as [field, label, options] (field)}
       {#if (field !== 'edge' || edgeApplicable) && sc[field].availability.structural}
         {@const behavior = choiceInstrument(field, options.map(([value]) => value))}
-        <div class="scope-row" role={finiteAppearance && rendererContext ? undefined : 'radiogroup'} aria-label={label} data-testid={`scope-${field}`}>
-          {#if finiteAppearance && rendererContext}
+        <div class="scope-row" role={finiteAppearance ? undefined : 'radiogroup'} aria-label={label} data-testid={`scope-${field}`}>
+          {#if finiteAppearance}
             {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
               seat={choiceSeat(field, label, options)} renderer={finiteAppearance.choice}
             />{/key}{/key}
@@ -225,7 +225,7 @@
       {@const increment = spanInstrument(1)}
       <div class="scope-stepper" data-testid="scope-span">
         <span class="scope-name">SPAN</span>
-        {#if finiteAppearance && rendererContext}
+        {#if finiteAppearance}
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', -1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -233,7 +233,7 @@
         <output data-testid="scope-span-value">
           {usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '?') : UNKNOWN_TEXT}
         </output>
-        {#if finiteAppearance && rendererContext}
+        {#if finiteAppearance}
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', 1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -246,7 +246,7 @@
       {@const increment = speedInstrument(1)}
       <div class="scope-stepper" data-testid="scope-speed">
         <span class="scope-name">SPEED</span>
-        {#if finiteAppearance && rendererContext}
+        {#if finiteAppearance}
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', -1, 'scope speed')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -254,7 +254,7 @@
         <output data-testid="scope-speed-value">
           {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? '?') : UNKNOWN_TEXT}
         </output>
-        {#if finiteAppearance && rendererContext}
+        {#if finiteAppearance}
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('speed', 1, 'scope speed')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -267,13 +267,13 @@
       {@const increment = refInstrument(5)}
       <div class="scope-stepper" data-testid="scope-ref">
         <span class="scope-name">REF</span>
-        {#if finiteAppearance && rendererContext}
+        {#if finiteAppearance}
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', -5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
         {:else}<button type="button" disabled={!decrement.available} onclick={() => decrement.invoke()}>-</button>{/if}
         <output data-testid="scope-ref-value">{textOf(sc.refDb)}</output>
-        {#if finiteAppearance && rendererContext}
+        {#if finiteAppearance}
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', 5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -284,7 +284,7 @@
     {#each TOGGLES as [field, label] (field)}
       {#if sc[field].availability.structural}
         {@const behavior = toggleInstrument(field)}
-        {#if finiteAppearance && rendererContext}
+        {#if finiteAppearance}
           {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
             seat={toggleSeat(field, label)} renderer={finiteAppearance.toggle}
           />{/key}{/key}
