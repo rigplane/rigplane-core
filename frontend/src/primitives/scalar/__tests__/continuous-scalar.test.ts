@@ -289,6 +289,26 @@ describe('continuous scalar source policies', () => {
     expect(scalar.view).toMatchObject({ canonical: 50, displayed: 50 });
   });
 
+  it('clears zero-idle Knob wheel state when the incoming value confirms the request', () => {
+    const policy = createKnobContinuousScalarPolicy({ debounceMs: 0 });
+    const { scalar, request, update } = readingSetup(policy, {
+      domain: { min: 0, max: 100, step: 10, defaultValue: null, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 50 },
+    });
+    const lease = scalar.attachRenderer();
+
+    lease.wheel({ direction: 1, fine: false });
+    expect(request).toHaveBeenCalledExactlyOnceWith(80);
+    update({ reading: { status: 'known', value: 80 } });
+
+    expect(scalar.view).toMatchObject({
+      canonical: 80,
+      displayed: 80,
+      draft: null,
+      interaction: 'idle',
+    });
+  });
+
   it('keeps Knob dispatch timing, fine increments, reset, and canonical no-ops explicit', () => {
     vi.useFakeTimers();
     const policy = createKnobContinuousScalarPolicy({ debounceMs: 50 });

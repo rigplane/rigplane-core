@@ -646,7 +646,11 @@ export function createContinuousScalar(
         if (destroyed || renderer !== activeRenderer || !editable(input)) return;
         const base = interactionBase(input);
         if (base === null || !applyCandidate(renderer, 'wheel', policy.wheel(base, event, input.domain))) return;
-        if (policy.wheelIdleMs === 300) {
+        if (policy.wheelIdleMs === 0) {
+          draft = null;
+          draftCanonical = null;
+          interaction = 'idle';
+        } else {
           if (wheelTimer !== null) clearTimeout(wheelTimer);
           const authority = authorityOf(input);
           wheelTimer = setTimeout(() => {

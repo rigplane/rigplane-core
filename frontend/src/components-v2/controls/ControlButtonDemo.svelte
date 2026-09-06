@@ -1345,7 +1345,7 @@
   <section class="demo-card" data-testid="gallery-professionalknob">
     <h2>ProfessionalKnob <span class="hint">(demo-only, not wired to any production caller)</span></h2>
     <p class="lab-note">
-      <strong>ProfessionalKnob</strong> is a binding-shaped skin rendered through <code>ValueControl</code>
+      <strong>ProfessionalKnob</strong> is a <code>KnobSkinRendererProps</code>-shaped skin
       (<code>value-control/skins/ProfessionalKnob.svelte</code>) that renders nowhere in production
       or on any other demo page. Per the owner's look-preservation ruling on MOR-2215 (comment
       <code>0e7ed41d</code>), it is not deleted — this section pins its look via the visual baseline
