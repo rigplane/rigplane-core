@@ -5,7 +5,11 @@
   import KnobRenderer from './KnobRenderer.svelte';
   import DiscreteRenderer from './DiscreteRenderer.svelte';
   import type { LegacyReadingPresentation } from './scalar-render-presentation';
-  import type { Skin } from './skin';
+  import type {
+    HBarIssuedStatusPresentation,
+    HBarValueProjection,
+    Skin,
+  } from './skin';
   import {
     createBipolarContinuousScalarPolicy,
     createContinuousScalar,
@@ -40,6 +44,8 @@
     shortcutHint?: string | null;
     title?: string | null;
     skin?: Skin;
+    valueProjection?: Readonly<HBarValueProjection>;
+    issuedStatusPresentation?: Readonly<HBarIssuedStatusPresentation>;
   }
 
   interface RawProps {
@@ -116,6 +122,8 @@
     title = null,
     onchange,
     skin,
+    valueProjection,
+    issuedStatusPresentation,
   }: Props = $props();
 
   let effectiveOnChange = $derived(onChange ?? onchange ?? (() => {}));
@@ -229,6 +237,7 @@
     legacy,
   });
   let knobProps = $derived({ ...rendererProps, arcAngle, tickCount, tickLabels });
+  let hbarProps = $derived({ ...rendererProps, valueProjection, issuedStatusPresentation });
   let discreteProps = $derived({
     ...rendererProps,
     tickLabels,
@@ -239,7 +248,7 @@
   let skinComponent = $derived(
     skin
       ? renderer === 'knob' ? skin.knob
-        : renderer === 'hbar' ? skin.hbar
+      : renderer === 'hbar' ? skin.hbar
         : renderer === 'bipolar' ? skin.bipolar
           : skin.discrete
       : undefined,
@@ -250,6 +259,8 @@
   {@const SkinRenderer = skinComponent}
   {#if renderer === 'knob'}
     <SkinRenderer {...knobProps} />
+  {:else if renderer === 'hbar'}
+    <SkinRenderer {...hbarProps} />
   {:else if renderer === 'discrete'}
     <SkinRenderer {...discreteProps} />
   {:else}
@@ -260,7 +271,7 @@
     binding={scalarBinding} {label} {displayFn} {unknownDisplay}
     {fillColor} {fillGradient} {trackColor}
     {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
-    {legacy}
+    {legacy} {valueProjection} {issuedStatusPresentation}
   />
 {:else if renderer === 'bipolar'}
   <BipolarRenderer
