@@ -208,6 +208,7 @@
               accessibleDescription={tx ? `${label}: ${tx.description}${isObserved ? `. ${format(raw)}` : ''}` : undefined}
               compact showPeak={showPeak && isObserved} {fault}
               zones={display?.display?.zones}
+              source={meters[field].source} session={continuitySession}
             />
           {:else}
             <span class="meter-unknown">{label} ?</span>

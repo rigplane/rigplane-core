@@ -229,6 +229,14 @@ const signalFillCount = (): number => qSvg('[data-testid="meter-signal"] svg')!
   .querySelectorAll('[data-meter-fill]').length;
 const signalHasPeak = (): boolean => qSvg('[data-testid="meter-signal"] svg')!
   .querySelector('[data-meter-peak]') !== null;
+const barSvg = (field: string): SVGSVGElement =>
+  qSvg(`[data-testid="meter-${field}"] svg`)!;
+const barFillCount = (field: string): number =>
+  barSvg(field).querySelectorAll('[data-gauge-fill]').length;
+const barPeakX = (field: string): number | null => {
+  const x = barSvg(field).querySelector('[data-testid="bar-gauge-peak-marker"]')?.getAttribute('x');
+  return x === null || x === undefined ? null : Number(x);
+};
 const rfState = (): string | undefined => q('[data-testid="meters-surface"]')!.dataset.rfState;
 /** `data-meter -> data-relevant` for every rendered tile. */
 const relevance = (): Record<string, string> => Object.fromEntries(
@@ -254,6 +262,7 @@ afterEach(() => {
   expect(h.sessionSubscriber).toBeNull();
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 // ── 1. The structural gate: absent group ⇒ no surface, no element drift ────
@@ -390,6 +399,71 @@ describe('the meters surface mounts only when the view model carries the group',
     expect(signalObserved()).toBe('true');
     expect(signalFillCount()).toBe(reconnectFill);
     expect(signalHasPeak()).toBe(false);
+  });
+
+  it('re-seeds and clears a mounted radio-wide BarGauge across real context boundaries', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+      matches: false, media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+    }));
+    h.session = { state: 'disconnected', epoch: 0 };
+    h.state = liveState(true, { powerMeter: 255 });
+    render();
+    push({ intent: 'transmit', observedPtt: 'on' });
+
+    const setPower = (value: number, providerGeneration: number): void => {
+      h.state = { ...(h.state as ServerState), powerMeter: value, providerGeneration };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration };
+      push({ intent: 'transmit', observedPtt: 'on' });
+    };
+    const armRetainedPeak = (epoch: number, providerGeneration: number): void => {
+      setPower(255, providerGeneration);
+      pushSession({ state: 'connected', epoch });
+      vi.advanceTimersByTime(600);
+      flushSync();
+      const retainedFill = barFillCount('power');
+      expect(retainedFill).toBeGreaterThan(5);
+      setPower(25.5, providerGeneration);
+      expect(barFillCount('power')).toBe(retainedFill);
+      expect(barPeakX('power')).toBeGreaterThan(64);
+    };
+
+    armRetainedPeak(1, 1);
+    pushSession({ state: 'connected', epoch: 2 });
+    expect(barFillCount('power')).toBe(1);
+    expect(barPeakX('power')).toBe(64);
+
+    armRetainedPeak(3, 1);
+    setPower(25.5, 2);
+    expect(barFillCount('power')).toBe(1);
+    expect(barPeakX('power')).toBe(64);
+
+    armRetainedPeak(4, 2);
+    pushSession({ state: 'disconnected', epoch: 5 });
+    expect(barFillCount('power')).toBe(0);
+    expect(barPeakX('power')).toBeNull();
+    pushSession({ state: 'connected', epoch: 6 });
+    expect(barFillCount('power')).toBe(1);
+    expect(barPeakX('power')).toBe(64);
+
+    armRetainedPeak(7, 2);
+    const mountedPower = barSvg('power');
+    const state = h.state as ServerState;
+    h.state = {
+      ...state,
+      fieldStatus: {
+        ...state.fieldStatus,
+        powerMeter: { ...fresh, freshness: 'stale' },
+      },
+    };
+    push({ intent: 'transmit', observedPtt: 'on' });
+    expect(barSvg('power')).toBe(mountedPower);
+    expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('false');
+    expect(barFillCount('power')).toBe(0);
+    expect(barPeakX('power')).toBeNull();
   });
 
   // MUTATION KILLED: giving the meters surface a `data-zone-id` of its own.

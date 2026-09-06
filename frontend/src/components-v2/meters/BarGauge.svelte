@@ -8,6 +8,8 @@
   import {
     createElapsedEnvelopePeakStrategy,
     createMeterBallistics,
+    type MeterContinuitySession,
+    type MeterSourceIdentity,
   } from '../../primitives/meters/meter-ballistics.svelte';
   import { DEFAULT_ZONES, valueToSegments, getSegmentZone, dimColor, valueFontSize } from './bar-gauge-utils';
   import type { Zone } from './bar-gauge-utils';
@@ -30,11 +32,13 @@
     compact?: boolean;
     showPeak?: boolean;    // MOR-1282: optional peak-hold marker
     fault?: boolean;       // MOR-1345: SWR/ALC over-threshold fault highlight
+    source?: MeterSourceIdentity | null;
+    session?: MeterContinuitySession | null;
   }
 
   let {
     value, label, displayValue, zones = DEFAULT_ZONES, compact = false, showPeak = false,
-    fault = false, accessibleDescription,
+    fault = false, accessibleDescription, source, session,
   }: Props = $props();
 
   // ── Segment geometry ────────────────────────────────────────────────────────
@@ -82,8 +86,13 @@
   });
 
   $effect(() => {
+    const continuitySource = source;
+    const continuitySession = session;
     const smoothTarget = value === null ? null : valueToSegments(value, SEG_COUNT);
-    untrack(() => ballistics.sync({ sample: value, smoothTarget, peakEnabled: showPeak }));
+    untrack(() => ballistics.sync({
+      sample: value, smoothTarget, peakEnabled: showPeak,
+      source: continuitySource, session: continuitySession,
+    }));
   });
 
   onMount(() => {
