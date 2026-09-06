@@ -34,6 +34,7 @@ export interface ControlFeedbackPresentation {
     'aria-busy': 'true' | 'false';
   }>;
   readonly targetDescription: string | null;
+  readonly currentStatus: string | null;
   readonly politeAnnouncement: Readonly<PoliteControlAnnouncement> | null;
   readonly state: Readonly<ControlFeedbackPresentationState>;
 }
@@ -56,6 +57,10 @@ export function projectControlFeedbackPresentation<T>(
 ): Readonly<ControlFeedbackPresentation> {
   const target = feedback.target ?? feedback.requestedTarget;
   const targetDescription = target === null ? null : describeTarget(target);
+  const statusMessage = targetDescription === null
+    ? PHASE_TEXT[feedback.phase]
+    : `${PHASE_TEXT[feedback.phase]}: ${targetDescription}`;
+  const currentStatus = feedback.phase === 'idle' ? null : statusMessage;
   const shouldAnnounce = feedback.transitionId !== null
     && !previous.announcedTransitionIds.includes(feedback.transitionId);
   const state = shouldAnnounce
@@ -67,9 +72,7 @@ export function projectControlFeedbackPresentation<T>(
     ? Object.freeze({
       politeness: 'polite' as const,
       transitionId: feedback.transitionId!, phase: feedback.phase, targetDescription,
-      message: targetDescription === null
-        ? PHASE_TEXT[feedback.phase]
-        : `${PHASE_TEXT[feedback.phase]}: ${targetDescription}`,
+      message: statusMessage,
     })
     : null;
   return Object.freeze({
@@ -77,7 +80,7 @@ export function projectControlFeedbackPresentation<T>(
       'data-command-phase': feedback.phase,
       'aria-busy': BUSY_PHASES.has(feedback.phase) ? 'true' : 'false',
     }),
-    targetDescription, politeAnnouncement, state,
+    targetDescription, currentStatus, politeAnnouncement, state,
   });
 }
 

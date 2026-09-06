@@ -30,6 +30,7 @@ const commandView = (): ContinuousScalarView => ({
       'aria-busy': 'true',
     },
     targetDescription: '30 Hz',
+    currentStatus: 'Awaiting confirmation: 30 Hz',
     politeAnnouncement: null,
     state: { announcedTransitionIds: [] },
   },
@@ -75,10 +76,22 @@ describe('projectScalarRenderPresentation', () => {
       source: 'command-owner',
       attributes: view.presentation?.attributes,
       description: '30 Hz',
+      currentStatus: 'Awaiting confirmation: 30 Hz',
       status: 'Awaiting confirmation: 30 Hz',
       error: 'radio rejected',
     });
     expect(projectScalarRenderPresentation(view, legacy)).toEqual(projection);
+  });
+
+  it('keeps current command status and error after the one-shot status is consumed', () => {
+    const view = { ...commandView(), announcement: null } satisfies ContinuousScalarView;
+
+    expect(projectScalarRenderPresentation(view)).toMatchObject({
+      source: 'command-owner',
+      currentStatus: 'Awaiting confirmation: 30 Hz',
+      status: null,
+      error: 'radio rejected',
+    });
   });
 
   it('preserves arbitrary legacy reading decoration verbatim', () => {
@@ -96,6 +109,7 @@ describe('projectScalarRenderPresentation', () => {
         'aria-busy': false,
       },
       description: '',
+      currentStatus: null,
       status: 'literal legacy status',
       error: null,
     });
@@ -114,6 +128,7 @@ describe('projectScalarRenderPresentation', () => {
         'aria-busy': undefined,
       },
       description: null,
+      currentStatus: null,
       status: null,
       error: null,
     });
