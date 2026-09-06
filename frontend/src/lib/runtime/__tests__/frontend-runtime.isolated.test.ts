@@ -50,6 +50,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/stores/radio.svelte', () => ({
   radio: { current: null },
+  subscribeRadioState: vi.fn(),
   // `panel-commands.ts` (a frozen A09b seam) reads these directly.
   getRadioState: vi.fn(() => null),
   getActiveReceiver: vi.fn(() => null),
@@ -115,7 +116,8 @@ vi.mock('./system-controller', async () => {
 
 import { fetchCapabilities } from '$lib/transport/http-client';
 import { connect, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw } from '$lib/transport/ws-client';
-import { setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
+import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
 import { PresentationResourceHost } from '../resource-host';
@@ -160,6 +162,86 @@ describe('FrontendRuntime control-session facade (MOR-1723)', () => {
     const handler = vi.fn(); expect(runtime.subscribeControlSession(handler)).toBe(disposer);
     expect(onControlSessionTransition).toHaveBeenCalledWith(handler);
     expect(connect).not.toHaveBeenCalled(); expect(sendRaw).not.toHaveBeenCalled();
+  });
+
+  it('fans in every state, capability, and session publication synchronously and disposes once', async () => {
+    const runtime = await freshRuntime();
+    const initialState = { stateRevision: 1 } as any;
+    const initialCaps = { providerGeneration: 7 } as any;
+    const initialSession = { state: 'connected' as const, epoch: 4 };
+    radio.current = initialState;
+    vi.mocked(getCapabilities).mockReturnValue(initialCaps);
+    vi.mocked(getControlSession).mockReturnValue(initialSession);
+
+    let stateSubscriber!: Parameters<typeof subscribeRadioState>[0];
+    let capabilitySubscriber!: Parameters<typeof subscribeCapabilities>[0];
+    let sessionSubscriber!: (next: { state: 'connected' | 'reconnecting'; epoch: number }) => void;
+    const stopState = vi.fn();
+    const stopCapabilities = vi.fn();
+    const stopSession = vi.fn();
+    vi.mocked(subscribeRadioState).mockImplementation((subscriber) => {
+      stateSubscriber = subscriber;
+      subscriber(initialState);
+      return stopState;
+    });
+    vi.mocked(subscribeCapabilities).mockImplementation((subscriber) => {
+      capabilitySubscriber = subscriber;
+      subscriber(initialCaps);
+      return stopCapabilities;
+    });
+    vi.mocked(onControlSessionTransition).mockImplementation((subscriber) => {
+      sessionSubscriber = subscriber as typeof sessionSubscriber;
+      return stopSession;
+    });
+
+    const subscriber = vi.fn();
+    const stop = runtime.subscribeControlAuthority(subscriber);
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    expect(subscriber).toHaveBeenLastCalledWith({
+      state: initialState,
+      caps: initialCaps,
+      session: initialSession,
+    });
+
+    const middleCaps = { providerGeneration: 7, topology: 'B' } as any;
+    const finalCaps = { providerGeneration: 7, revision: 2 } as any;
+    vi.mocked(getCapabilities).mockReturnValue(middleCaps);
+    capabilitySubscriber(middleCaps);
+    vi.mocked(getCapabilities).mockReturnValue(finalCaps);
+    capabilitySubscriber(finalCaps);
+    expect(subscriber.mock.calls.slice(-2).map(([publication]) => publication.caps)).toEqual([
+      middleCaps,
+      finalCaps,
+    ]);
+
+    const nextState = { stateRevision: 2 } as any;
+    radio.current = nextState;
+    stateSubscriber(nextState);
+    vi.mocked(getControlSession).mockReturnValue({ state: 'reconnecting', epoch: 5 });
+    sessionSubscriber({ state: 'reconnecting', epoch: 5 });
+    expect(subscriber).toHaveBeenNthCalledWith(4, {
+      state: nextState,
+      caps: finalCaps,
+      session: initialSession,
+    });
+    expect(subscriber).toHaveBeenNthCalledWith(5, {
+      state: nextState,
+      caps: finalCaps,
+      session: { state: 'reconnecting', epoch: 5 },
+    });
+
+    stop();
+    stop();
+    expect(stopState).toHaveBeenCalledTimes(1);
+    expect(stopCapabilities).toHaveBeenCalledTimes(1);
+    expect(stopSession).toHaveBeenCalledTimes(1);
+    stateSubscriber(nextState);
+    capabilitySubscriber(finalCaps);
+    sessionSubscriber({ state: 'connected', epoch: 6 });
+    expect(subscriber).toHaveBeenCalledTimes(5);
+    radio.current = null;
+    vi.mocked(getCapabilities).mockReturnValue(null);
+    vi.mocked(getControlSession).mockReturnValue({ state: 'disconnected', epoch: 0 });
   });
 });
 

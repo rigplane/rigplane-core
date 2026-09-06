@@ -369,6 +369,18 @@ describe('external finite appearance', () => {
     expect(onToggleChange).not.toHaveBeenCalled();
   });
 
+  it('keeps the selected external appearance inert instead of falling back to native controls', () => {
+    const component = mount(ScopeControlsSurface, { target, props: {
+      view: withSc({ hold: known(false) }), finiteAppearance: appearance, rendererContext: null,
+    } });
+    flushSync();
+    expect(target.querySelector('[data-testid="scope-controls-surface"]')).not.toBeNull();
+    expect(target.querySelector('[data-testid="scope-hold"]')).toBeNull();
+    expect(target.querySelector('[data-testid="external-HOLD"]')).toBeNull();
+    expect(retainedInvocations.size).toBe(0);
+    unmount(component);
+  });
+
   it('preserves an out-of-list canonical reading without selecting an option', () => {
     const component = mount(ScopeControlsSurface, { target, props: {
       view: withSc({ centerType: known(99) }), finiteAppearance: appearance,

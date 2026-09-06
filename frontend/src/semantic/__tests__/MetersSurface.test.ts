@@ -28,7 +28,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
-import MetersSurface, { METER_BARS } from '../MetersSurface.svelte';
+import MetersSurface from '../MetersSurface.svelte';
+import { projectBarMeters, type BarMeterKey } from '../bar-meter-projector';
 import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';
 import type {
   Availability, MeterField, MeterRfState, MetersViewModel, RadioViewModel,
@@ -79,13 +80,16 @@ const SOURCE = readFileSync('src/semantic/MetersSurface.svelte', 'utf8')
   .replace(/<!--[\s\S]*?-->/g, '')
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/.*$/gm, '');
+const PROJECTOR_SOURCE = readFileSync('src/semantic/bar-meter-projector.ts', 'utf8');
 
 const AVAIL: Availability = { structural: true, operational: true };
 const RF_STATES: readonly MeterRfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
 
 /** Every meter field this surface can render, S first. */
 type MeterKey = Exclude<keyof MetersViewModel, 'rfState'>;
-const BAR_KEYS = METER_BARS.map(([field]) => field);
+const BAR_KEYS = [
+  'power', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
+] as const satisfies readonly BarMeterKey[];
 const ALL_KEYS: readonly MeterKey[] = ['signal', ...BAR_KEYS] as readonly MeterKey[];
 
 /** `1/single` + a fully-observed meters group + a fully-observed txAux group,
@@ -289,7 +293,7 @@ describe('relevance is read from the facts, not recomputed', () => {
     ['receiving', 'power', true],
     // MOR-2250 (PR 2 of 2): was 'swr' — SWR no longer has its own tile (it
     // renders on the shared lower-scale row instead), so this row now
-    // exercises 'compression', the remaining `METER_BARS` field this table
+    // exercises 'compression', the remaining projected bar field this table
     // had not already covered.
     ['receiving', 'compression', true],
     ['transmitting', 'signal', true],
@@ -493,7 +497,7 @@ describe('motion and forced-colors mechanisms are reused, not forked', () => {
   // data attributes all do.
   it('encodes state as text and attributes, never colour alone', () => {
     // MOR-2250 (PR 2 of 2): was 'swr' — SWR no longer has its own tile, so
-    // this now exercises 'alc', an unrelated `METER_BARS` field the '?'
+    // this now exercises 'alc', an unrelated projected bar field the '?'
     // placeholder property applies to identically.
     const view = withField(base('transmitting'), 'alc', { unknown: true });
     withSurface(view, (s) => {
@@ -514,8 +518,8 @@ describe('the meter table matches the shipped dock', () => {
   // level and its number from `components-v2/panels/meter-utils` — the same
   // calibrated functions MetersDockPanel uses — so the two never disagree
   // about what 0.6 on the SWR meter means.
-  // MOR-2250 (PR 2 of 2): `ALL_KEYS` (derived from `METER_BARS` + 'signal')
-  // is now six, not seven — 'swr' left `METER_BARS` for the shared
+  // MOR-2250 (PR 2 of 2): `ALL_KEYS` (the five bar keys plus 'signal')
+  // is now six, not seven — 'swr' left the standalone bar list for the shared
   // lower-scale row inside `LinearSMeter`, so it no longer has a tile of its
   // own for `ALL_KEYS`/`s.tile` purposes. It still exists as a real
   // `MeterField` in the fact group, so this test adds it back explicitly to
@@ -530,13 +534,14 @@ describe('the meter table matches the shipped dock', () => {
   });
 
   it('reads its levels and formatters from the shipped meter-utils', () => {
-    expect(SOURCE).toMatch(/from '\.\.\/components-v2\/panels\/meter-utils'/);
+    expect(PROJECTOR_SOURCE).toMatch(/from '\.\.\/components-v2\/panels\/meter-utils'/);
+    expect(SOURCE).toMatch(/from '\.\/bar-meter-projector'/);
   });
 
   // MOR-2250 (PR 2 of 2): 'SWR' dropped from the expected list — it left
-  // `METER_BARS` for the shared lower-scale row.
+  // the standalone bar list for the shared lower-scale row.
   it('labels each bar with the dock\'s own short name', () => {
-    expect(METER_BARS.map(([, label]) => label))
+    expect(projectBarMeters(base('transmitting')).map(({ label }) => label))
       .toEqual(['Po', 'ALC', 'Id', 'Vd', 'COMP']);
   });
 });
@@ -547,23 +552,24 @@ describe('BarGauge peak channel (MOR-1282)', () => {
   it('forwards each keyed bar field source and the existing surface session', () => {
     const calls = [...SOURCE.matchAll(/<BarGauge([\s\S]*?)\/>/g)];
     expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toMatch(/source=\{meters\[field\]\.source\}/);
+    expect(calls[0][1]).toMatch(/source=\{bar\.source\}/);
     expect(calls[0][1]).toMatch(/session=\{continuitySession\}/);
-    expect(METER_BARS.map(([field]) => field)).toEqual([
+    expect(projectBarMeters(base('transmitting')).map(({ key }) => key)).toEqual([
       'power', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
     ]);
   });
 
   // MUTATION KILLED: enabling (or dropping) the peak flag on the wrong
   // meters. Matches the dock's own peak-held set RESTRICTED to what
-  // `METER_BARS` still carries post-MOR-2250 (PR 2 of 2) — SWR left this
+  // the five projected bars still carry post-MOR-2250 (PR 2 of 2) — SWR left this
   // table for the shared lower-scale row, and this PR does not give that row
   // a peak-hold marker (not asked for, not implemented — MetersDockPanel
   // itself, untouched, still peak-holds its own SWR bar). Vd (continuous
   // supply rail) and COMP were never peak-held there either, so the surface
   // must not invent peak-hold for them.
   it('enables the peak marker on exactly the meters the dock peak-holds (Po/ALC/Id)', () => {
-    const withPeak = METER_BARS.filter(([, , , , showPeak]) => showPeak).map(([field]) => field);
+    const withPeak = projectBarMeters(base('transmitting'))
+      .filter(({ showPeak }) => showPeak).map(({ key }) => key);
     expect(withPeak).toEqual(['power', 'alc', 'drainCurrent']);
   });
 
@@ -914,13 +920,13 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
     });
   });
 
-  // MUTATION KILLED: either surface reimplementing the threshold instead of
-  // importing the shared predicates — the same instrument as the PEAK_DECAY_MS
-  // parity test above (block 10), now for `isSwrFault`/`isAlcFault`.
-  it('both MetersSurface and MetersDockPanel import isSwrFault/isAlcFault from the shared meter-utils module', () => {
+  // MUTATION KILLED: either surface/projector reimplementing the threshold
+  // instead of importing the shared predicates — the same instrument as the
+  // PEAK_DECAY_MS parity test above (block 10).
+  it('the surface, projector, and MetersDockPanel import their fault predicates from shared meter-utils', () => {
     const dockSource = readFileSync('src/components-v2/panels/MetersDockPanel.svelte', 'utf8');
     expect(SOURCE).toMatch(/import\s*\{[^}]*isSwrFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
-    expect(SOURCE).toMatch(/import\s*\{[^}]*isAlcFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
+    expect(PROJECTOR_SOURCE).toMatch(/import\s*\{[^}]*isAlcFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
     expect(dockSource).toMatch(/import\s*\{[^}]*isSwrFault[^}]*\}\s*from\s*'\.\/meter-utils'/);
     expect(dockSource).toMatch(/import\s*\{[^}]*isAlcFault[^}]*\}\s*from\s*'\.\/meter-utils'/);
     expect(SOURCE).not.toMatch(/function\s+isSwrFault|function\s+isAlcFault/);
@@ -942,10 +948,10 @@ describe('the SWR shared lower-scale row (MOR-2250, PR 2 of 2)', () => {
   // MUTATION KILLED: SWR rendering through BOTH the old BarGauge path and
   // the new shared row (double-rendering), or through NEITHER (silently
   // dropped). It must render exactly once.
-  it('swr no longer renders through the BarGauge/METER_BARS path — it renders once, on the shared lower-scale row', () => {
+  it('swr no longer renders through the BarGauge projection path — it renders once, on the shared lower-scale row', () => {
     withSurface(base('transmitting'), (s) => {
       expect(s.tile('swr')).toBeNull();
-      expect(METER_BARS.map(([field]) => field)).not.toContain('swr');
+      expect(projectBarMeters(base('transmitting')).map(({ key }) => key)).not.toContain('swr');
       expect(s.signalSvg()!.querySelector('[data-lower-row-label]')?.textContent).toBe('SWR');
     });
   });
@@ -1259,8 +1265,12 @@ it('uses current display calibration while preserving VD/ID/COMP through RX idle
     const component = mount(MetersSurface, { target, props });
     flushSync();
     try {
-      expect(target.querySelector('[data-meter="power"]')?.textContent).toContain('50W');
-      expect(target.querySelectorAll('[data-meter="power"] [data-gauge-fill]')).toHaveLength(3);
+      const projected = projectBarMeters(view).find(({ key }) => key === 'power')!;
+      expect(projected).toMatchObject({ motionFraction: 0.25, displayText: '50W', gauge: true });
+      expect(target.querySelector('[data-meter="power"]')?.textContent)
+        .toContain(projected.displayText);
+      expect(target.querySelectorAll('[data-meter="power"] [data-gauge-fill]'))
+        .toHaveLength(Math.ceil(projected.motionFraction! * 10));
       const other = ['drainVoltage', 'drainCurrent', 'compression'].map((key) =>
         target.querySelector(`[data-meter="${key}"]`)!.outerHTML);
       props.view = { ...props.view, meters: { ...props.view.meters!, rfState: 'receiving',
