@@ -34,6 +34,13 @@ choice controls; a final whole-path audit remains outstanding.
   native-consumer authority still need explicit contracts. No implementation
   or final whole-path completion claim.
 
+## 2026-09-06 — native scalar normalization and RF/SQL draft handoff (unaccepted PR #3261 candidate `1f5d5e74774c8aa481937271f4ca400fcbf5ebb8`, base `e9f6800adb4ffad83b2d1b70fbb0680b707d3fe9`)
+
+- [2026-09-06-mechanism-audit-native-scalar-normalization.md](2026-09-06-mechanism-audit-native-scalar-normalization.md)
+  — historical source audit of native scalar input normalization and separate
+  RF/SQL draft retirement. Subsequent acceptance work is tracked by MOR-2409;
+  this archive neither audits a later fix nor claims that work complete.
+
 ## 2026-09-06 — CW and current Filter Width (tree `53b27aebbed6a8e27114c442a7420d589af23876`)
 
 - [2026-09-06-mechanism-audit-cw-filter-feedback.md](2026-09-06-mechanism-audit-cw-filter-feedback.md)
