@@ -117,7 +117,7 @@
   <div class="panel-body">
     <div class="display-row">
       <div class="freq-row">
-        <span data-vfo-freq data-display-state={frequencyState} class:display-unknown={displayHz === null}
+        <span class="vfo-freq" data-vfo-freq data-display-state={frequencyState} class:display-unknown={displayHz === null}
           aria-describedby={staleDisplay ? staleId : undefined}>
           {#if freq !== null && Number.isFinite(freq)}
             <FrequencyDisplayInteractive
@@ -185,11 +185,15 @@
           data-vfo-slot={choice.slot} data-vfo-active={choice.active}
           data-vfo-active-slot={choice.activeSlot} data-vfo-tx-target={choice.txTarget}
           disabled={choice.disabled} title={choice.reason}
+          aria-describedby={choice.reason ? `${staleId}-choice-${choice.key}` : undefined}
           onclick={() => onSelectSlot?.(choice.key)}
         >
           <span class="vfo-role">{choice.label}</span>
           <span class="vfo-freq">{choice.frequencyText}</span>
         </button>
+        {#if choice.reason}
+          <span id={`${staleId}-choice-${choice.key}`} class="sr-only">{choice.reason}</span>
+        {/if}
       {/each}
     </div>
   </div>

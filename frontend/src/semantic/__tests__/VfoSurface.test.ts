@@ -2347,6 +2347,40 @@ describe('MOR-2342 historical instrument presentations', () => {
     root.querySelector<HTMLButtonElement>('[data-vfo-receiver="SUB"][data-vfo-slot="B"]')?.click();
     expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'SUB', slot: { kind: 'slotted', id: 'B' } });
   });
+
+  it('retains a structural receiver and both records when active-slot identity is unknown', () => {
+    const base = withReceiverIndicators('1/ab');
+    const onSelectVfo = vi.fn();
+    const viewModel: RadioViewModel = {
+      ...base,
+      activeReceiver: { status: 'unknown' },
+      vfos: base.vfos.map((vfo) => ({ ...vfo, isActive: false, isActiveSlot: false })),
+    };
+    const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
+    expect(root.querySelectorAll('[data-receiver-instrument="MAIN"]')).toHaveLength(1);
+    expect(root.querySelector('[data-vfo-dominant="unknown"] [data-vfo-freq]')?.textContent?.trim()).toBe('—');
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    expect(Array.from(root.querySelectorAll('[data-vfo-slot]')).map((node) => node.getAttribute('data-vfo-slot'))).toEqual(['A', 'B']);
+    root.querySelector<HTMLButtonElement>('[data-vfo-slot="B"]')?.click();
+    expect(onSelectVfo).toHaveBeenCalledExactlyOnceWith({ receiver: 'MAIN', slot: { kind: 'slotted', id: 'B' } });
+  });
+
+  it('retains an unknown secondary record as disabled, reasoned, and inert', () => {
+    const base = withReceiverIndicators('1/ab');
+    const onSelectVfo = vi.fn();
+    const viewModel: RadioViewModel = {
+      ...base,
+      vfos: [base.vfos[0], { ...base.vfos[1], slot: { kind: 'unknown' } }],
+    };
+    const root = mountSurface({ viewModel, appearance: 'standard', onSelectVfo });
+    expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    const unknown = root.querySelector<HTMLButtonElement>('[data-vfo-slot="unknown"]')!;
+    expect(unknown).not.toBeNull();
+    expect(unknown.disabled).toBe(true);
+    expect(unknown.title).toContain("has not confirmed this VFO's A/B identity");
+    unknown.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onSelectVfo).not.toHaveBeenCalled();
+  });
 });
 
 

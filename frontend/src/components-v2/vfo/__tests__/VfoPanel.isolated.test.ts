@@ -432,6 +432,12 @@ describe('explicit presentation contract', () => {
     expect(t.querySelector('[data-vfo-freq]')?.textContent?.trim()).toBe('—');
   });
 
+  it('keeps the established wrapper hook and the real frequency control in tab order', () => {
+    const t = mountPanel(explicit);
+    expect(t.querySelector('[data-vfo-freq]')?.classList.contains('vfo-freq')).toBe(true);
+    expect(t.querySelector('.freq')?.getAttribute('tabindex')).toBe('0');
+  });
+
   it('keeps known zero distinct from unknown and structural absence', () => {
     const known = mountPanel(explicit);
     expect(known.querySelector('svg')?.getAttribute('aria-label') ?? '').not.toContain('?');

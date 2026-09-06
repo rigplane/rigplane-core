@@ -865,53 +865,56 @@
   {/snippet}
 
   {#snippet standardInstrument(receiver: ReceiverId)}
-    {@const vfo = viewModel.vfos.find((item) => item.receiver === receiver && item.isActiveSlot)}
+    {@const records = viewModel.vfos.filter((item) => item.receiver === receiver)}
+    {@const activeSlot = records.find((item) => item.isActiveSlot)}
+    {@const dominant = activeSlot ?? (records.length === 1 ? records[0] : undefined)}
     {@const indicator = receiverIndicators.find((item) => item.receiver === receiver)}
-    {#if vfo}
-      {@const shownFrequency = displayValue(vfo.display?.frequencyHz, vfo.frequencyHz)}
-      {@const choices = viewModel.vfos.flatMap((choice, index) =>
-        choice.receiver === receiver && choice !== vfo && choice.slot.kind === 'slotted'
+    {@const choices = viewModel.vfos.flatMap((choice, index) =>
+        choice.receiver === receiver && choice !== dominant
           ? [{
               key: String(index), receiver: choice.receiver === 'SUB' ? 'sub' as const : 'main' as const,
-              slot: choice.slot.id, label: choice.label,
+              slot: slotKey(choice.slot), label: roleLabel(choice),
               frequencyText: formatFrequency(displayValue(choice.display?.frequencyHz, choice.frequencyHz)),
               active: choice.isActive, activeSlot: choice.isActiveSlot, txTarget: choice.isTxTarget,
-              disabled, reason: selectReasonText(choice),
+              disabled: disabled || choice.slot.kind === 'unknown', reason: selectReasonText(choice),
             }]
           : [])}
-      <section class="receiver-instrument standard-receiver" data-receiver-instrument={receiver}
-        data-testid="vfo-indicator-row" data-indicator-receiver={receiver}
-        data-indicator-operational={indicator?.availability.operational}
-        aria-label={`${receiver} receiver indicators`}>
-        <div data-indicator-receiver={receiver} data-vfo-tile data-vfo-receiver={receiver} data-vfo-slot={slotKey(vfo.slot)}
-          data-vfo-active={vfo.isActive} data-vfo-active-slot={vfo.isActiveSlot}
-          data-vfo-tx-target={vfo.isTxTarget}>
-          <VfoPanel
-            receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={receiver}
-            slotTag={vfo.slot.kind === 'slotted' ? vfo.slot.id : roleLabel(vfo)}
-            freq={vfo.frequencyHz} displayHz={shownFrequency}
-            pendingDisplayHz={pendingFrequencyHz?.[receiver] ?? null}
-            frequencyState={vfo.display?.frequencyHz.state ?? (vfo.frequencyHz === null ? 'unknown' : 'current')}
-            staleReason={t('core.rxTx.target.reason.stale')}
-            contextKey={`${viewModel.topologyId}:${receiver}:${slotKey(vfo.slot)}`}
-            frequencyDisabled={readoutDisabled(vfo)}
-            mode={displayValue(vfo.display?.mode, vfo.mode)}
-            filter={displayValue(vfo.display?.filter, vfo.filter)}
-            sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
-              && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
-            meterPresent={indicator?.sMeter.availability.structural ?? false}
-            meterOperational={indicator?.sMeter.availability.operational ?? false}
-            isActive={vfo.isActive} badgeItems={standardBadges(indicator)}
-            bandText={standardBand(vfo)} rit={standardRit(vfo)} slotChoices={choices}
-            onFreqChange={(hz) => tuneFrequency(vfo, hz)}
-            onSelectSlot={(key) => {
-              const choice = viewModel.vfos[Number(key)];
-              if (choice) selectVfo(choice);
-            }}
-          />
-        </div>
-      </section>
-    {/if}
+    <section class="receiver-instrument standard-receiver" data-receiver-instrument={receiver}
+      data-testid="vfo-indicator-row" data-indicator-receiver={receiver}
+      data-indicator-operational={indicator?.availability.operational}
+      aria-label={`${receiver} receiver indicators`}>
+      <div data-indicator-receiver={receiver} data-vfo-dominant={dominant ? 'known' : 'unknown'}
+        data-vfo-tile={dominant ? '' : undefined} data-vfo-receiver={dominant ? receiver : undefined}
+        data-vfo-slot={dominant ? slotKey(dominant.slot) : undefined}
+        data-vfo-active={dominant?.isActive} data-vfo-active-slot={dominant?.isActiveSlot}
+        data-vfo-tx-target={dominant?.isTxTarget}>
+        <VfoPanel
+          receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={receiver}
+          slotTag={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
+          freq={dominant?.frequencyHz ?? null}
+          displayHz={dominant ? displayValue(dominant.display?.frequencyHz, dominant.frequencyHz) : null}
+          pendingDisplayHz={dominant ? pendingFrequencyHz?.[receiver] ?? null : null}
+          frequencyState={dominant?.display?.frequencyHz.state ?? (dominant?.frequencyHz == null ? 'unknown' : 'current')}
+          staleReason={t('core.rxTx.target.reason.stale')}
+          contextKey={`${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`}
+          frequencyDisabled={!dominant || readoutDisabled(dominant)}
+          mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
+          filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}
+          sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
+            && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
+          meterPresent={indicator?.sMeter.availability.structural ?? false}
+          meterOperational={indicator?.sMeter.availability.operational ?? false}
+          isActive={dominant?.isActive ?? false} badgeItems={standardBadges(indicator)}
+          bandText={dominant ? standardBand(dominant) : null}
+          rit={dominant ? standardRit(dominant) : undefined} slotChoices={choices}
+          onFreqChange={dominant ? (hz) => tuneFrequency(dominant, hz) : undefined}
+          onSelectSlot={(key) => {
+            const choice = viewModel.vfos[Number(key)];
+            if (choice) selectVfo(choice);
+          }}
+        />
+      </div>
+    </section>
   {/snippet}
 
   {#if appearance !== 'semantic' && showVfoList}
