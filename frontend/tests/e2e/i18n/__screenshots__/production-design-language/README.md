@@ -249,7 +249,7 @@ simulated production state and do not establish hardware acceptance. A subsequen
 exact-head CI run must confirm the new expectations; this failed comparison is
 not a visual PASS.
 
-## Linux re-pin provenance (current — 2026-09-06 MOR-2384 / MOR-2385)
+## Linux re-pin provenance (superseded — 2026-09-06 MOR-2384 / MOR-2385)
 
 | Field | Value |
 | --- | --- |
@@ -273,14 +273,45 @@ candidate's natural CI result is not yet known and must confirm all four scenes.
 | FieldLine dark | compared-pass; unchanged | `ad07aeb66906aa4c761eb413fb44f2fb5c3944bd7a4f2a8a2b618229142526fc` |
 | FieldLine light | compared-fail; inspected and accepted replacement | `e2fce8500f913ab2dad19aea454825330b0cca78f164f98a5708c6d0c0357e46` |
 
+## Linux re-pin provenance (current — 2026-09-06 MOR-2388 Standard VFO)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `c48d5d2bc044048a99a6104bf34366b5b77be002` |
+| Capture environment | Isolated container from pinned Linux ARM64 image `rigplane-ci-build-core-arm64-runner:85ab46b30c39`, image ID `sha256:52573f10379c2bb5e7076f7484cf0d266ead0fe18abce2fd42eb6047758f9be1`; this was not a GitHub Actions capture. |
+| Source | Byte-identical `actual.png` files from the isolated capture; no image editing, masking, transformation, or macOS-generated baseline. |
+| Node / npm | `v20.20.2` / `10.8.2` |
+| Playwright | `1.58.2` |
+| Chromium | Chrome for Testing `145.0.7632.6`, Playwright revision `1208` |
+| Command | `npx playwright test -c playwright.i18n.config.ts tests/e2e/i18n/i18n-visual.spec.ts --grep "activates from production dist"` |
+| Context / comparator | Chromium, Linux ARM64, 1280×800, DPR 1, `en-US`, UTC; unchanged `threshold: 0.2`, `maxDiffPixelRatio: 0.001`. |
+| Reason | MOR-2388 intentionally replaces Standard's receiver display with the reusable v2.11.1 VFO instrument driven by explicit v3 inputs. Root inspected and accepted all four complete expected/actual/diff pairs. |
+
+All four production cases reached screenshot comparison after the unchanged
+production-dist readiness, CSS, and accessibility assertions passed. The source
+capture was intentionally **compared-fail** against the superseded expectations:
+StudioLine dark changed by 3,487 pixels, StudioLine light by 53,439, FieldLine
+dark by 17,697, and FieldLine light by 63,272. Root adjudicated every pair and
+activated the exact four-image lease. The dark replacements also incorporate
+the previously accepted MOR-2384/MOR-2385 inactive/HW-off scope and unavailable
+Filter Width pixels; those are retained dependency output, not new MOR-2388 VFO
+behavior. A subsequent exact-head CI run must confirm the new expectations.
+
+| Scene | Disposition | SHA-256 |
+| --- | --- | --- |
+| StudioLine dark | compared-fail; inspected and accepted replacement | `0364d91633aedd4ab469fb5ab41277e5625d8b754d8cb139396d9ed79804ca40` |
+| StudioLine light | compared-fail; inspected and accepted replacement | `9b6ef98b8aabb500ee3cecd008127ffb4cc42f4bba8a4454f4e9ac54c0143d4f` |
+| FieldLine dark | compared-fail; inspected and accepted replacement | `84cc82fc887824ea3c67e0bb9a5f7302e3c091b8e11fb6eb92b2be52644c7c0d` |
+| FieldLine light | compared-fail; inspected and accepted replacement | `88e857698e07fffb52c9e92c975546b8b39274695658e666a1ab90a9212a2238` |
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `64361ab2df44851f4ac357764684b2445476e149ddd58a4404dee4e76a7acfd7` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `78f6f139e8365b17a2ed39f9434ed8b6e66282201761fb0bec3f605b971fbda9` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `ad07aeb66906aa4c761eb413fb44f2fb5c3944bd7a4f2a8a2b618229142526fc` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `e2fce8500f913ab2dad19aea454825330b0cca78f164f98a5708c6d0c0357e46` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `0364d91633aedd4ab469fb5ab41277e5625d8b754d8cb139396d9ed79804ca40` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `9b6ef98b8aabb500ee3cecd008127ffb4cc42f4bba8a4454f4e9ac54c0143d4f` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `84cc82fc887824ea3c67e0bb9a5f7302e3c091b8e11fb6eb92b2be52644c7c0d` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `88e857698e07fffb52c9e92c975546b8b39274695658e666a1ab90a9212a2238` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output
