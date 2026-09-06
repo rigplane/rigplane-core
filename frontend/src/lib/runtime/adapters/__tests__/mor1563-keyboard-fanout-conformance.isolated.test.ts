@@ -206,6 +206,7 @@ const CASES: readonly KeyboardCase[] = [
     frames: [['set_af_level', {
       level: Math.max(0, Math.min(1, main.afLevel + 5 / (afLevelRange.raw_max - afLevelRange.raw_min))),
       receiver: 0,
+      level_unit: 'normalized',
     }]],
     gate: 'declared af-level-up binding ({delta:5}); main.afLevel observed; delta scaled against '
       + 'caps.controls.af_level raw domain (MOR-1577, fixed)' },
@@ -282,7 +283,11 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
   it('HANDLER-CAPABILITY PROBE (not profile behavior, MOR-1577): adjust_af_level dispatches set_af_level given {direction}', () => {
     expectFrames(
       () => dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } }),
-      [['set_af_level', { level: Math.max(0, Math.min(1, main.afLevel + 0.05)), receiver: 0 }]],
+      [['set_af_level', {
+        level: Math.max(0, Math.min(1, main.afLevel + 0.05)),
+        receiver: 0,
+        level_unit: 'normalized',
+      }]],
     );
   });
 

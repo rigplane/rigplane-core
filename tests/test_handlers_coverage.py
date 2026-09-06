@@ -1253,6 +1253,105 @@ async def test_normalized_wire_marker_supports_power_alias_and_af_validation() -
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("name", "valid_params", "invalid_params", "expected"),
+    [
+        (
+            "set_af_level",
+            {"level": 0.5, "receiver": 0, "level_unit": "normalized"},
+            {"level": 1.01, "receiver": 0, "level_unit": "normalized"},
+            128,
+        ),
+        (
+            "set_rf_power",
+            {"level": 0.5, "level_unit": "normalized"},
+            {"level": 1.01, "level_unit": "normalized"},
+            128,
+        ),
+    ],
+)
+async def test_malformed_tagged_level_cannot_displace_valid_pending_command(
+    name: str,
+    valid_params: dict[str, object],
+    invalid_params: dict[str, object],
+    expected: int,
+) -> None:
+    ws = SimpleNamespace(send_text=AsyncMock())
+    queue = _QueueRecorder()
+    radio = _capable_radio()
+    handler = _control_handler(
+        ws=ws,
+        radio=radio,
+        server=SimpleNamespace(command_queue=queue),
+        session_id="normalized-pacing",
+    )
+    handler._CMD_MIN_INTERVAL = 10.0  # noqa: SLF001
+    key = handler._coalesce_key(name, valid_params)  # noqa: SLF001
+    handler._cmd_last[key] = time.monotonic()  # noqa: SLF001
+
+    valid = {"type": "cmd", "name": name, "id": "valid-pending", "params": valid_params}
+    malformed = {
+        "type": "cmd",
+        "name": name,
+        "id": "malformed",
+        "params": invalid_params,
+    }
+
+    try:
+        await handler._handle_text(json.dumps(valid, separators=(",", ":")))  # noqa: SLF001
+        pending_before = dict(handler._cmd_pending)  # noqa: SLF001
+        last_before = dict(handler._cmd_last)  # noqa: SLF001
+        coalesced_before = dict(handler._cmd_coalesced)  # noqa: SLF001
+        flush_task = handler._cmd_flush_tasks[key]  # noqa: SLF001
+        assert queue.items == []
+
+        await handler._handle_text(json.dumps(malformed, separators=(",", ":")))  # noqa: SLF001
+
+        responses = [decode_json(call.args[0]) for call in ws.send_text.await_args_list]
+        assert responses == [
+            {
+                "type": "response",
+                "id": "malformed",
+                "ok": False,
+                "error": "command_failed",
+                "message": "normalized level must be a finite number from 0.0 to 1.0",
+            }
+        ]
+        assert handler._cmd_pending == pending_before  # noqa: SLF001
+        assert handler._cmd_last == last_before  # noqa: SLF001
+        assert handler._cmd_coalesced == coalesced_before  # noqa: SLF001
+        assert handler._cmd_flush_tasks[key] is flush_task  # noqa: SLF001
+        assert queue.items == []
+        radio.set_af_level.assert_not_awaited()
+        radio.set_rf_power.assert_not_awaited()
+
+        flush_task.cancel()
+        await asyncio.gather(flush_task, return_exceptions=True)
+        await handler._flush_coalesced_command(key, 0.0)  # noqa: SLF001
+
+        responses = [decode_json(call.args[0]) for call in ws.send_text.await_args_list]
+        assert [response["id"] for response in responses] == [
+            "malformed",
+            "valid-pending",
+        ]
+        assert all(
+            response.get("result") != {"superseded": True} for response in responses
+        )
+        if name == "set_af_level":
+            _assert_canonical_level_intent(
+                queue.items[-1], name=name, level=expected, receiver=0
+            )
+        else:
+            assert queue.items == [SetPower(expected, unit="raw_255")]
+        radio.set_af_level.assert_not_awaited()
+        radio.set_rf_power.assert_not_awaited()
+    finally:
+        handler._cancel_pending_command_flushes()  # noqa: SLF001
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["set_af_level", "set_rf_power", "set_power"])
+@pytest.mark.parametrize(
     "params",
     [
         '{"level":false,"level_unit":"normalized"}',
@@ -1267,16 +1366,25 @@ async def test_normalized_wire_marker_supports_power_alias_and_af_validation() -
         '{"level_unit":"normalized"}',
     ],
 )
-async def test_normalized_wire_marker_rejects_malformed_requests(params: str) -> None:
+async def test_normalized_wire_marker_rejects_malformed_requests(
+    name: str, params: str
+) -> None:
     ws = SimpleNamespace(send_text=AsyncMock())
     queue = _QueueRecorder()
+    radio = _capable_radio()
     handler = _control_handler(
         ws=ws,
-        radio=_capable_radio(),
+        radio=radio,
         server=SimpleNamespace(command_queue=queue),
         session_id="invalid-normalized-wire",
     )
-    raw = f'{{"type":"cmd","name":"set_rf_power","id":"invalid","params":{params}}}'
+    raw = f'{{"type":"cmd","name":"{name}","id":"invalid","params":{params}}}'
+    pacing_before = (
+        dict(handler._cmd_last),  # noqa: SLF001
+        dict(handler._cmd_pending),  # noqa: SLF001
+        dict(handler._cmd_flush_tasks),  # noqa: SLF001
+        dict(handler._cmd_coalesced),  # noqa: SLF001
+    )
 
     await handler._handle_text(raw)  # noqa: SLF001
 
@@ -1284,6 +1392,14 @@ async def test_normalized_wire_marker_rejects_malformed_requests(params: str) ->
     assert response["ok"] is False
     assert response["error"] == "command_failed"
     assert queue.items == []
+    assert (
+        handler._cmd_last,  # noqa: SLF001
+        handler._cmd_pending,  # noqa: SLF001
+        handler._cmd_flush_tasks,  # noqa: SLF001
+        handler._cmd_coalesced,  # noqa: SLF001
+    ) == pacing_before
+    radio.set_af_level.assert_not_awaited()
+    radio.set_rf_power.assert_not_awaited()
 
 
 @pytest.mark.asyncio

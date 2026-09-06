@@ -1039,6 +1039,17 @@ class ControlHandler:
             )
             return
 
+        if (
+            isinstance(name, str)
+            and name in self._COMMANDS
+            and isinstance(params, dict)
+        ):
+            try:
+                params = _consume_normalized_level_unit(name, params)
+            except Exception as exc:
+                await self._send_command_failure(cmd_id, name, exc)
+                return
+
         # ── Server-side rate limiting (per client, per command) ──
         # Only pace SET commands (continuous slider/knob drag). GET and
         # read-only commands pass through. MOR-1427: a command arriving
@@ -1277,35 +1288,40 @@ class ControlHandler:
                 )
             )
         except Exception as exc:
-            logger.warning("control: command %r failed: %s", name, exc)
-            message = str(exc)
-            if isinstance(exc, RadioNotReadyError):
-                error = "radio_not_ready"
-            elif isinstance(exc, CommandUnsupportedError):
-                error = "unsupported_command"
-            elif isinstance(exc, CommandRejectedError):
-                error = "radio_nak"
-            elif isinstance(exc, (TimeoutError, RigplaneTimeoutError)):
-                error = "command_timeout"
-            elif isinstance(exc, CommandError):
-                error = "command_failed"
-            elif command_descriptor(name) is None and (
-                "does not support" in message or "not supported" in message
-            ):
-                error = "unsupported_command"
-            else:
-                error = "command_failed"
-            await self._ws.send_text(
-                encode_json(
-                    {
-                        "type": "response",
-                        "id": cmd_id,
-                        "ok": False,
-                        "error": error,
-                        "message": message,
-                    }
-                )
+            await self._send_command_failure(cmd_id, name, exc)
+
+    async def _send_command_failure(
+        self, cmd_id: Any, name: str, exc: Exception
+    ) -> None:
+        logger.warning("control: command %r failed: %s", name, exc)
+        message = str(exc)
+        if isinstance(exc, RadioNotReadyError):
+            error = "radio_not_ready"
+        elif isinstance(exc, CommandUnsupportedError):
+            error = "unsupported_command"
+        elif isinstance(exc, CommandRejectedError):
+            error = "radio_nak"
+        elif isinstance(exc, (TimeoutError, RigplaneTimeoutError)):
+            error = "command_timeout"
+        elif isinstance(exc, CommandError):
+            error = "command_failed"
+        elif command_descriptor(name) is None and (
+            "does not support" in message or "not supported" in message
+        ):
+            error = "unsupported_command"
+        else:
+            error = "command_failed"
+        await self._ws.send_text(
+            encode_json(
+                {
+                    "type": "response",
+                    "id": cmd_id,
+                    "ok": False,
+                    "error": error,
+                    "message": message,
+                }
             )
+        )
 
     def _apply_mod_input_restore_cmd(
         self, name: str, params: dict[str, Any]
@@ -1465,7 +1481,7 @@ class ControlHandler:
     ) -> dict[str, Any]:
         if name in self._MANAGED_PTT_COMMANDS:
             return await self._enqueue_managed_ptt(name, params, source=source)
-        intent_params = _consume_normalized_level_unit(name, params)
+        intent_params = dict(params)
         if self._server is not None:
             intent_params["_control_server"] = self._server
         if name in ("set_vfo", "select_vfo") and "receiver_count" not in intent_params:

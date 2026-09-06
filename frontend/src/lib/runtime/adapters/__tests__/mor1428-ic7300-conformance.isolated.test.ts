@@ -297,7 +297,7 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
   it('AF level: dispatches set_af_level on receiver 0', () => {
     expectFrames(
       () => makeRxAudioHandlers().onAfLevelChange(0.5),
-      [['set_af_level', { level: 0.5, receiver: 0 }]],
+      [['set_af_level', { level: 0.5, receiver: 0, level_unit: 'normalized' }]],
     );
   });
 
