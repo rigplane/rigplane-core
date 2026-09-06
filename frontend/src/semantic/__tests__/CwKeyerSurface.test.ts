@@ -43,6 +43,11 @@ import type {
   ControlFeedbackPresentationInput, PresentationPhase,
 } from '../../primitives/control-feedback/control-feedback-presentation';
 
+type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
+  readonly sessionEpoch?: number;
+  readonly scope?: Readonly<{ control: string; receiver: number; slot?: string }>;
+};
+
 const SOURCE = readFileSync('src/semantic/CwKeyerSurface.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
  *  source-scanning test matches. */
@@ -78,7 +83,7 @@ type Handlers = {
   onApfOn?: (on: boolean) => void;
   onTwinPeakToggle?: () => void;
   onReversePaddleToggle?: () => void;
-  breakInDelayFeedback?: Readonly<ControlFeedbackPresentationInput<number>>;
+  breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
   onAutoTune?: () => void;
 };
 
@@ -97,7 +102,7 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
   };
 }
 
-function renderReactiveFeedback(initial: ControlFeedbackPresentationInput<number>) {
+function renderReactiveFeedback(initial: BreakInDelayFeedback) {
   const onLevelChange = vi.fn();
   const props = proxy({ view: base(), onLevelChange, breakInDelayFeedback: initial });
   const component = mount(CwKeyerSurface, { target, props });
@@ -121,8 +126,8 @@ const slide = (el: HTMLInputElement, value: number) => {
 };
 const feedback = (
   phase: PresentationPhase,
-  over: Partial<ControlFeedbackPresentationInput<number>> = {},
-): Readonly<ControlFeedbackPresentationInput<number>> => ({
+  over: Partial<BreakInDelayFeedback> = {},
+): Readonly<BreakInDelayFeedback> => ({
   confirmed: 64, target: null, requestedTarget: null, phase,
   transitionId: null, outcome: null, ...over,
 });
@@ -418,6 +423,21 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     expect(r.input().value).toBe('111');
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('breakInDelay', 111);
+    r.dispose();
+  });
+
+  it('invalidates a stale draft when an equal projection moves to a new session context', () => {
+    const context = { control: 'break-in-delay', receiver: 0 } as const;
+    const r = renderReactiveFeedback(feedback('idle', { sessionEpoch: 1, scope: context }));
+    r.input().value = '111';
+    r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(r.input().value).toBe('111');
+    r.props.breakInDelayFeedback = feedback('idle', { sessionEpoch: 2, scope: { ...context } });
+    flushSync();
+    const restored = r.input().value;
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect([restored, r.onLevelChange.mock.calls]).toEqual(['64', []]);
     r.dispose();
   });
 

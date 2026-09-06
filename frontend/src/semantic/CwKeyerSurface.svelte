@@ -131,6 +131,11 @@
   import { clamp, snapToStep } from '../components-v2/controls/value-control/value-control-core';
   import type { RadioViewModel } from './radio-view-model';
 
+  type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
+    readonly sessionEpoch?: number;
+    readonly scope?: Readonly<{ control: string; receiver: number; slot?: string }>;
+  };
+
   interface Props {
     view: RadioViewModel;
     onBreakInMode?: (mode: number) => void;
@@ -138,7 +143,7 @@
     onApfOn?: (on: boolean) => void;
     onTwinPeakToggle?: () => void;
     onReversePaddleToggle?: () => void;
-    breakInDelayFeedback?: Readonly<ControlFeedbackPresentationInput<number>>;
+    breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
     autoTuneAvailable?: boolean;
     onAutoTune?: () => void;
   }
@@ -203,8 +208,8 @@
     return target === null && requestedTarget !== null && outcome?.phase === phase
       && typeof transitionId === 'string' && transitionId.length > 0;
   }
-  let effectiveBreakInDelayFeedback = $derived.by<Readonly<ControlFeedbackPresentationInput<number>>>(() => {
-    let candidate: Readonly<ControlFeedbackPresentationInput<number>>;
+  let effectiveBreakInDelayFeedback = $derived.by<Readonly<BreakInDelayFeedback>>(() => {
+    let candidate: Readonly<BreakInDelayFeedback>;
     if (breakInDelayFeedback !== undefined) candidate = breakInDelayFeedback;
     else {
       const field = cw?.breakInDelay;
@@ -219,6 +224,13 @@
     catch { return unavailableFeedback; }
   });
   let hasBreakInDelayFeedback = $derived(breakInDelayFeedback !== undefined);
+  let breakInDelayContextKey = $derived(JSON.stringify([
+    'cw-keyer.break-in-delay',
+    breakInDelayFeedback?.sessionEpoch ?? null,
+    breakInDelayFeedback?.scope?.control ?? null,
+    breakInDelayFeedback?.scope?.receiver ?? null,
+    breakInDelayFeedback?.scope?.slot ?? null,
+  ]));
   const INTEGRATED_RANGE_POLICY = { 'feedback-policy': 'feedback-integrated' } as const;
   const RADIO_BACKED_RANGE_POLICY = { 'feedback-policy': 'radio-backed' } as const;
   let breakInDelayEditable = $derived(
@@ -229,7 +241,7 @@
     () => ({
       feedback: effectiveBreakInDelayFeedback,
       editable: breakInDelayEditable,
-      contextKey: 'cw-keyer.break-in-delay',
+      contextKey: breakInDelayContextKey,
     }),
     {
       accepts: validLevel,

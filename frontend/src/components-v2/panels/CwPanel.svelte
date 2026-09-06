@@ -76,6 +76,7 @@
         breakInDelayFeedback.sessionEpoch,
         breakInDelayFeedback.scope.control,
         breakInDelayFeedback.scope.receiver,
+        breakInDelayFeedback.scope.slot ?? null,
       ]),
     }),
     {

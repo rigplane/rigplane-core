@@ -32,7 +32,7 @@ afterEach(() => {
   component = null; target?.remove(); setLocale('en-US');
   Object.assign(feedback, { confirmed: 64, target: null, requestedTarget: null, phase: 'idle',
     busy: false, availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
-    sessionEpoch: 1 });
+    sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 } });
 });
 function render() {
   target = document.createElement('div'); document.body.appendChild(target);
@@ -127,12 +127,15 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
     r.input().value = '111'; r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
   });
-  it('preserves equal reprojection but invalidates a changed session context', () => {
+  it.each([
+    ['session epoch', { sessionEpoch: 2 }],
+    ['feedback scope', { scope: { control: 'break-in-delay', receiver: 1 } }],
+  ] as const)('preserves equal reprojection but invalidates changed %s', (_case, changedContext) => {
     handlers.onBreakInDelayChange.mockClear(); const r = render();
     r.input().value = '111'; r.input().dispatchEvent(new Event('input', { bubbles: true }));
     Object.assign(feedback, { confirmed: 64, sessionEpoch: 1 }); flushSync();
     expect(r.input().value).toBe('111');
-    Object.assign(feedback, { sessionEpoch: 2 }); flushSync();
+    Object.assign(feedback, changedContext); flushSync();
     r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect([r.input().value, handlers.onBreakInDelayChange.mock.calls]).toEqual(['64', []]);
   });
