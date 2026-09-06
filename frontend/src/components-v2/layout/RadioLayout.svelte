@@ -290,14 +290,16 @@
 {/snippet}
 
 {#snippet txAuxScalars()}
-  {@render instruments.txAuxScalars.rfPower()}
-  {@render instruments.txAuxScalars.micGain()}
-  {@render instruments.txAuxScalars.driveGain()}
-  {@render instruments.txAuxScalars.voxGain()}
-  {@render instruments.txAuxScalars.antiVoxGain()}
-  {@render instruments.txAuxScalars.voxDelay()}
-  {@render instruments.txAuxScalars.compressorLevel()}
-  {@render instruments.txAuxScalars.monitorLevel()}
+  <div class="tx-aux-scalar-grid">
+    <div class="tx-aux-scalar-seat" data-field="rfPower">{@render instruments.txAuxScalars.rfPower()}</div>
+    <div class="tx-aux-scalar-seat" data-field="micGain">{@render instruments.txAuxScalars.micGain()}</div>
+    <div class="tx-aux-scalar-seat" data-field="driveGain">{@render instruments.txAuxScalars.driveGain()}</div>
+    <div class="tx-aux-scalar-seat" data-field="voxGain">{@render instruments.txAuxScalars.voxGain()}</div>
+    <div class="tx-aux-scalar-seat" data-field="antiVoxGain">{@render instruments.txAuxScalars.antiVoxGain()}</div>
+    <div class="tx-aux-scalar-seat" data-field="voxDelay">{@render instruments.txAuxScalars.voxDelay()}</div>
+    <div class="tx-aux-scalar-seat" data-field="compressorLevel">{@render instruments.txAuxScalars.compressorLevel()}</div>
+    <div class="tx-aux-scalar-seat" data-field="monitorLevel">{@render instruments.txAuxScalars.monitorLevel()}</div>
+  </div>
 {/snippet}
 
 {#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic')}
@@ -628,6 +630,12 @@
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
+  .tx-aux-scalar-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 8px;
+  }
+  .tx-aux-scalar-seat { min-width: 0; }
 
   .radio-layout, .radio-layout.semantic-deck {
     height: 100vh;
