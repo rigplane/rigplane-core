@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import '../controls/control-button.css';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
@@ -6,19 +7,23 @@
   import { getLocale } from '$lib/i18n';
   import type { PresentationPhase } from '../../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../../primitives/scalar/committed-scalar.svelte';
+  import {
+    createContinuousScalar, createDiscreteContinuousScalarPolicy,
+    createHBarContinuousScalarPolicy,
+  } from '../../primitives/scalar/continuous-scalar.svelte';
 
   import { isApfActive } from './cw-panel-logic';
   import {
     deriveCwProps,
     getBreakInDelayControlFeedback,
+    getCwPitchControlFeedback,
     getCwHandlers,
+    getKeySpeedControlFeedback,
   } from '$lib/runtime/adapters/panel-adapters';
 
   const handlers = getCwHandlers();
   let p = $derived(deriveCwProps());
 
-  let cwPitch = $derived(p.cwPitch ?? 600);
-  let keySpeed = $derived(p.keySpeed ?? 12);
   let breakIn = $derived(p.breakIn ?? 0);
   let apfMode = $derived(p.apfMode ?? 0);
   let twinPeak = $derived(p.twinPeak ?? false);
@@ -152,24 +157,41 @@
     cancelBreakInDelay(event);
   }
 
-  // MOR-1409 A12 (coordinator adjudication, Core #2317, comment 5246487510):
-  // `cwPitch`/`keySpeed` are `?? 600`/`?? 12` guarded above, but `??` does
-  // not catch `NaN` (only `null`/`undefined`) — a connected receiver that
-  // has never reported these optional fields still passes through as
-  // `NaN`, and neither `ValueControl` call below has a `displayFn`, so the
-  // default `${value}${unit}` renders the literal "NaN Hz"/"NaN WPM".
-  // Guard locally, same shape as FilterPanel.svelte's `formatWidthDisplay`.
-  // Preserves the exact prior finite-value format (the renderers' own
-  // unguarded default is `${localValue}${unit ? ' ' + unit : ''}`,
-  // a non-breaking space before the unit) — the guard only changes
-  // behavior for the non-finite case, per the grant's "no behavior/logic
-  // changes beyond the guards" restriction.
+  // MOR-1409 A12: keep the established placeholder when canonical feedback
+  // is unavailable, and preserve the exact finite-value/unit rendering.
   function formatCwPitchDisplay(hz: number): string {
     return Number.isFinite(hz) ? `${hz} Hz` : '--- Hz';
   }
   function formatKeySpeedDisplay(wpm: number): string {
     return Number.isFinite(wpm) ? `${wpm} WPM` : '--- WPM';
   }
+  let cwPitchFeedback = $derived(getCwPitchControlFeedback());
+  let keySpeedFeedback = $derived(getKeySpeedControlFeedback());
+  const cwPitchBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: cwPitchFeedback, command: 'set_cw_pitch',
+      domain: { min: 300, max: 900, step: 5, defaultValue: null, fineStepDivisor: 10 },
+      enabled: showCw, request: onCwPitchChange,
+    }),
+    createHBarContinuousScalarPolicy({
+      preview: 'optimistic', debounceMs: 50, describeTarget: formatCwPitchDisplay,
+    }),
+  );
+  const keySpeedBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: keySpeedFeedback, command: 'set_key_speed',
+      domain: { min: 6, max: 48, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      enabled: showCw, request: onKeySpeedChange,
+    }),
+    createDiscreteContinuousScalarPolicy({
+      debounceMs: 50, describeTarget: formatKeySpeedDisplay,
+    }),
+  );
+  onDestroy(() => {
+    cwPitchBinding.destroy();
+    keySpeedBinding.destroy();
+  });
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
 </script>
 
 {#if showCw}
@@ -180,30 +202,24 @@
     </div>
 
     <ValueControl
+      {...feedbackIntegratedControl}
       label="CW Pitch"
-      value={cwPitch}
-      min={300}
-      max={900}
-      step={5}
+      binding={cwPitchBinding}
       unit="Hz"
       renderer="hbar"
       accentColor="var(--v2-accent-cyan)"
-      onChange={onCwPitchChange}
       variant="hardware-illuminated"
       displayFn={formatCwPitchDisplay}
     />
 
     <ValueControl
+      {...feedbackIntegratedControl}
       label="Key Speed"
-      value={keySpeed}
-      min={6}
-      max={48}
-      step={1}
+      binding={keySpeedBinding}
       unit="WPM"
       renderer="discrete"
       tickStyle="notch"
       accentColor="var(--v2-accent-orange)"
-      onChange={onKeySpeedChange}
       variant="hardware-illuminated"
       displayFn={formatKeySpeedDisplay}
     />

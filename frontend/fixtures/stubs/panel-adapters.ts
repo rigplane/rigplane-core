@@ -31,6 +31,24 @@ export function getBreakInDelayControlFeedback() {
   });
 }
 
+function unavailableGlobalCwFeedback(control: 'cw-pitch' | 'keyer-speed') {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control, receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
+/** Offline fixtures never fabricate global CW command-feedback authority. */
+export function getCwPitchControlFeedback() {
+  return unavailableGlobalCwFeedback('cw-pitch');
+}
+export function getKeySpeedControlFeedback() {
+  return unavailableGlobalCwFeedback('keyer-speed');
+}
+
 /** No Filter Width truth or command lifecycle exists in the offline fixture. */
 export function getFilterWidthControlFeedback() {
   return Object.freeze({
