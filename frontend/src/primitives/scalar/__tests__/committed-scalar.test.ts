@@ -7,12 +7,16 @@ import {
   type CommittedScalarPolicy,
 } from '../committed-scalar.svelte';
 
+type ProviderFeedback = ControlFeedbackPresentationInput<number> & {
+  readonly providerGeneration?: number | null;
+};
+
 const feedback = (
   phase: ControlFeedbackPresentationInput<number>['phase'] = 'idle',
-  over: Partial<ControlFeedbackPresentationInput<number>> = {},
-): Readonly<ControlFeedbackPresentationInput<number>> => ({
+  over: Partial<ProviderFeedback> = {},
+): Readonly<ProviderFeedback> => ({
   confirmed: 64, target: null, requestedTarget: null, phase,
-  transitionId: null, outcome: null, ...over,
+  transitionId: null, outcome: null, providerGeneration: 3, ...over,
 });
 
 const rejectPolicy: Readonly<CommittedScalarPolicy> = {
@@ -130,6 +134,22 @@ describe('createCommittedScalar', () => {
     expect(scalar.view.draft).toBe(111);
     scalar.commit(111);
     expect(request).toHaveBeenCalledExactlyOnceWith(111);
+  });
+
+  it('clears draft and announcement memory when provider changes without an intermediate null read', () => {
+    const terminal = feedback('failed', {
+      requestedTarget: 111, transitionId: 'old-provider-failed',
+      outcome: { phase: 'failed' },
+    });
+    const { scalar, request, update } = setup(rejectPolicy, terminal);
+    expect(scalar.view.announcement).toBe('Failed: 111');
+    scalar.input(90);
+    expect(scalar.view.draft).toBe(90);
+
+    update({ feedback: feedback('idle', { providerGeneration: 4 }) });
+    expect(scalar.view).toMatchObject({ draft: null, announcement: null });
+    expect(scalar.commit(90)).toBe(64);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it('supports no-input changes and repeated accepted requests while busy', () => {

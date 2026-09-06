@@ -37,6 +37,19 @@ describe('command lifecycle store', () => {
     expect(() => store.beginCommand({ ...command })).toThrow(/duplicate command id/i);
   });
 
+  it('captures unresolved provider identity once and never backfills it on acknowledgement', () => {
+    const command = store.beginCommand({
+      id: 'unresolved-provider',
+      name: 'set_filter_width',
+      params: { width: 2_400, receiver: 0 },
+      originalEpoch: 7,
+    });
+
+    expect(command.providerGeneration).toBeNull();
+    store.acknowledgeCommand(command.id, 7, 7);
+    expect(store.getCommandLifecycle(command.id, 7)?.providerGeneration).toBeNull();
+  });
+
   it('fences acknowledgement and failure by command id and originating epoch', () => {
     store.beginCommand({ id: 'same', name: 'set_mode', params: { mode: 'USB' }, originalEpoch: 3 });
     store.acknowledgeCommand('same', 2, 3);

@@ -244,11 +244,19 @@ function authorityOf(input: Readonly<ContinuousPairInput>): Identity {
       input.sql.availability, input.sql.reading.status,
     ]);
   }
+  const rfProviderGeneration = input.rf.feedback.providerGeneration;
+  const sqlProviderGeneration = input.sql.feedback.providerGeneration;
   return Object.freeze([
     ...shared,
-    input.rf.command, input.rf.feedback.sessionEpoch, input.rf.feedback.availability,
+    input.rf.command,
+    typeof rfProviderGeneration === 'number' && Number.isSafeInteger(rfProviderGeneration)
+      && rfProviderGeneration >= 0 ? rfProviderGeneration : null,
+    input.rf.feedback.sessionEpoch, input.rf.feedback.availability,
     input.rf.feedback.scope.control, input.rf.feedback.scope.receiver, input.rf.feedback.scope.slot,
-    input.sql.command, input.sql.feedback.sessionEpoch, input.sql.feedback.availability,
+    input.sql.command,
+    typeof sqlProviderGeneration === 'number' && Number.isSafeInteger(sqlProviderGeneration)
+      && sqlProviderGeneration >= 0 ? sqlProviderGeneration : null,
+    input.sql.feedback.sessionEpoch, input.sql.feedback.availability,
     input.sql.feedback.scope.control, input.sql.feedback.scope.receiver, input.sql.feedback.scope.slot,
   ]);
 }

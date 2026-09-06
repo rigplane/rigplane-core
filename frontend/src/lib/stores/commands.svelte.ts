@@ -7,6 +7,8 @@ export interface CommandLifecycle {
   id: string; name: string; params: Readonly<Record<string, unknown>>;
   originalEpoch: number; eventEpoch?: number; createdAt: number; updatedAt: number;
   timeoutMs: number; status: CommandLifecycleStatus; error?: string;
+  /** Actual provider at submission; absent/null legacy records fail closed. */
+  providerGeneration?: number | null;
   /**
    * The radio-observed `observationSeq` (MOR-1488 review R2) at the instant
    * this command transitioned to 'acknowledged', or `undefined` if no radio
@@ -60,6 +62,8 @@ const finiteNumber = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) ? value : null;
 const safeInteger = (value: unknown): number | null =>
   typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
+const providerGeneration = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 
 export const FILTER_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
   intentName: 'set_filter_width', repeatPolicy: 'latest-target-wins',
@@ -206,8 +210,11 @@ function transition(
 /** Accepted StateStore observations, never presentation reads, reconcile commands. */
 function reconcileStateBackedCommands(state: ServerState | null): void {
   if (!state) return;
+  const currentProviderGeneration = providerGeneration(state.providerGeneration);
   for (const command of commands) {
     if (command.status !== 'acknowledged' || isCommandLifecycleSuperseded(command)) continue;
+    const commandProviderGeneration = providerGeneration(command.providerGeneration);
+    if (currentProviderGeneration === null || commandProviderGeneration !== currentProviderGeneration) continue;
     const descriptor = getStateBackedCommandDescriptor(command.name);
     const scope = descriptor?.scope(command);
     const target = descriptor?.target(command);
@@ -243,7 +250,14 @@ export function beginCommand(input: BeginCommandInput): CommandLifecycle {
   reserveRecordSlot();
   const now = Date.now();
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const command: CommandLifecycle = { ...input, timeoutMs, createdAt: now, updatedAt: now, status: 'pending' };
+  const command: CommandLifecycle = {
+    ...input,
+    providerGeneration: providerGeneration(getRadioState()?.providerGeneration),
+    timeoutMs,
+    createdAt: now,
+    updatedAt: now,
+    status: 'pending',
+  };
   for (const existing of commands) if (existing.originalEpoch === command.originalEpoch
     && existing.name === command.name && commandScopeKey(existing) === commandScopeKey(command)) {
     supersededRecordKeys.add(key(existing.id, existing.originalEpoch));

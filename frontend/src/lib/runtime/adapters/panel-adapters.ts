@@ -287,6 +287,7 @@ export interface ControlFeedback<T> {
   readonly outcome: Readonly<{ phase: ControlFeedbackOutcome; error?: string }> | null;
   readonly lifecycleId: string | null;
   readonly transitionId: string | null;
+  readonly providerGeneration?: number | null;
   readonly sessionEpoch: number;
   readonly scope: Readonly<ControlFeedbackScope>;
   readonly repeatPolicy: StateBackedRepeatPolicy;
@@ -305,10 +306,15 @@ export function projectControlFeedback<T>(
   commands: readonly CommandLifecycle[], scope: ControlFeedbackScope, currentSessionEpoch: number,
   superseded: (command: CommandLifecycle) => boolean,
 ): Readonly<ControlFeedback<T>> {
+  const candidateProviderGeneration = state?.providerGeneration;
+  const currentProviderGeneration = typeof candidateProviderGeneration === 'number'
+    && Number.isSafeInteger(candidateProviderGeneration) && candidateProviderGeneration >= 0
+    ? candidateProviderGeneration : null;
   const empty = (availability: 'available' | 'unavailable', confirmed: T | null): Readonly<ControlFeedback<T>> => Object.freeze({
     confirmed, target: null, requestedTarget: null,
     phase: availability === 'available' ? 'idle' : 'unavailable', busy: false, availability,
-    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: currentSessionEpoch,
+    outcome: null, lifecycleId: null, transitionId: null,
+    providerGeneration: currentProviderGeneration, sessionEpoch: currentSessionEpoch,
     scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
   });
   if (state === null) return empty('unavailable', null);
@@ -320,7 +326,12 @@ export function projectControlFeedback<T>(
 
   let latest: CommandLifecycle | null = null;
   for (const command of commands) {
-    if (command.originalEpoch !== currentSessionEpoch || command.name !== descriptor.intentName
+    const commandProviderGeneration = command.providerGeneration;
+    if (currentProviderGeneration === null
+      || typeof commandProviderGeneration !== 'number'
+      || !Number.isSafeInteger(commandProviderGeneration) || commandProviderGeneration < 0
+      || commandProviderGeneration !== currentProviderGeneration
+      || command.originalEpoch !== currentSessionEpoch || command.name !== descriptor.intentName
       || !sameFeedbackScope(descriptor.scope(command), scope) || descriptor.target(command) === null
       || superseded(command)) continue;
     if (latest === null || command.createdAt >= latest.createdAt) latest = command;
@@ -339,7 +350,8 @@ export function projectControlFeedback<T>(
       ...(error === undefined ? {} : { error }) }) : null,
     lifecycleId: JSON.stringify([latest.originalEpoch, latest.id]),
     transitionId: JSON.stringify([latest.originalEpoch, latest.id, latest.status]),
-    sessionEpoch: currentSessionEpoch, scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
+    providerGeneration: currentProviderGeneration, sessionEpoch: currentSessionEpoch,
+    scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
   });
 }
 
