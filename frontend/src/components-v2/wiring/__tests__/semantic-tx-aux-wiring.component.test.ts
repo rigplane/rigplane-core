@@ -17,6 +17,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
@@ -36,6 +37,9 @@ const h = vi.hoisted(() => ({
   compLevel: vi.fn(),
   monLevel: vi.fn(),
   noop: vi.fn(),
+  session: { state: 'connected', epoch: 7 } as ControlSessionSnapshot,
+  sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
+  radioListeners: new Set<(state: ServerState | null) => void>(),
 }));
 
 vi.mock('$lib/runtime', () => ({
@@ -43,6 +47,11 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return h.session; },
+    subscribeControlSession(handler: (next: ControlSessionSnapshot) => void) {
+      h.sessionSubscriber = handler;
+      return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
+    },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an
     // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
     // browser stream keeps every fixture below on its pre-1279 path.
@@ -62,10 +71,26 @@ vi.mock('$lib/runtime', () => ({
     get scope() { return { hardwareScopeConnected: false }; },
   },
 }));
+vi.mock('$lib/runtime/frontend-runtime', () => ({
+  runtime: {
+    get state() { return h.state; },
+    get caps() { return h.caps; },
+    get controlSession() { return h.session; },
+  },
+}));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => {
     if (!h.txController) throw new Error('managed TX harness is not installed');
     return h.txController;
+  },
+}));
+vi.mock('$lib/stores/radio.svelte', () => ({
+  radio: { get current() { return h.state; } },
+  getRadioState: () => h.state,
+  subscribeRadioState(listener: (state: ServerState | null) => void) {
+    h.radioListeners.add(listener);
+    listener(h.state as ServerState | null);
+    return () => h.radioListeners.delete(listener);
   },
 }));
 vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
@@ -162,6 +187,10 @@ import {
 import {
   ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
 } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+import {
+  TX_AUX_COMMAND_DESCRIPTORS, acknowledgeCommand, beginCommand, getCommandLifecycles,
+  resetCommandLifecycle,
+} from '$lib/stores/commands.svelte';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 0 };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -238,14 +267,29 @@ function push(next: ManagedAppTxServerSnapshot): void {
   flushSync();
 }
 
+function pushSession(next: ControlSessionSnapshot): void {
+  h.session = next;
+  h.sessionSubscriber?.(next);
+  flushSync();
+}
+
+function pushRadioState(next: ServerState): void {
+  h.state = next;
+  for (const listener of h.radioListeners) listener(next);
+  flushSync();
+}
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 let txHarness: ManagedAppTxHarness;
 
 beforeEach(() => {
+  resetCommandLifecycle();
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
+  h.session = { state: 'connected', epoch: 7 };
+  h.sessionSubscriber = null;
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -254,6 +298,8 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  resetCommandLifecycle();
+  expect(h.sessionSubscriber).toBeNull();
   document.body.innerHTML = '';
 });
 
@@ -523,6 +569,120 @@ describe('every txAux intent reaches its own command-bus handler', () => {
     const others = [h.rfPower, h.micGain, h.driveGain, h.voxGain, h.antiVoxGain,
       h.voxDelay, h.compLevel, h.monLevel].filter((s) => s !== spy());
     for (const other of others) expect(other).not.toHaveBeenCalled();
+  });
+});
+
+const FEEDBACK_LANES = [
+  ['micGain', 'micGain', 'mic-gain', 128, 200],
+  ['driveGain', 'driveGain', 'drive-gain', 128, 201],
+  ['voxGain', 'voxGain', 'vox-gain', 50, 202],
+  ['antiVoxGain', 'antiVoxGain', 'anti-vox-gain', 30, 203],
+  ['voxDelay', 'voxDelay', 'vox-delay', 10, 7],
+  ['compressorLevel', 'compressorLevel', 'compressor-level', 40, 204],
+  ['monitorLevel', 'monitorGain', 'monitor-level', 60, 205],
+] as const;
+
+describe('the composed TX/VOX controls consume the real feedback lifecycle', () => {
+  it.each(FEEDBACK_LANES)(
+    'maps semantic %s to accessor %s and command scope %s', (
+      semanticField, accessorField, control, canonical, requested,
+    ) => {
+      const descriptor = TX_AUX_COMMAND_DESCRIPTORS[accessorField];
+      beginCommand({
+        id: `feedback-${accessorField}`, name: descriptor.intentName,
+        params: { level: requested }, originalEpoch: 7,
+      });
+      render();
+      const row = q<HTMLElement>(`[data-testid="tx-aux-${semanticField}"]`)!;
+      const input = row.querySelector<HTMLInputElement>('input')!;
+      expect(input.dataset.commandPhase).toBe('submitted');
+      expect(input.valueAsNumber).toBe(requested);
+      expect(row.querySelector('[data-canonical-value]')?.textContent).toContain(
+        semanticField === 'voxDelay' ? `${(canonical * 0.1).toFixed(1)}s` : `${Math.round(canonical / 255 * 100)}%`,
+      );
+      expect(row.dataset.feedbackControl).toBe(control);
+      for (const [otherSemantic] of FEEDBACK_LANES) {
+        if (otherSemantic !== semanticField) {
+          expect(q<HTMLInputElement>(`[data-testid="tx-aux-${otherSemantic}"] input`)!
+            .dataset.commandPhase).toBe('idle');
+        }
+      }
+    },
+  );
+
+  it('keeps ACK pending through unrelated, mismatched and stale readback, then confirms fresh exact truth', () => {
+    const descriptor = TX_AUX_COMMAND_DESCRIPTORS.micGain;
+    const command = beginCommand({
+      id: 'mic-feedback', name: descriptor.intentName, params: { level: 200 }, originalEpoch: 7,
+    });
+    render();
+    const input = () => q<HTMLInputElement>('[data-testid="tx-aux-micGain"] input')!;
+    expect(input().dataset.commandPhase).toBe('submitted');
+    acknowledgeCommand(command.id, 7, 7);
+    flushSync();
+    expect(input().dataset.commandPhase).toBe('awaiting-confirmation');
+
+    const observed = (revision: number, micGain: number, freshness: 'fresh' | 'stale') => ({
+      ...liveState(true), active: 'SUB', micGain,
+      revision, stateRevision: revision, freshnessRevision: revision, observationSeq: revision,
+      fieldStatus: {
+        ...liveState(true).fieldStatus,
+        driveGain: { ...fresh, lastObservedMonotonic: revision + 10 },
+        micGain: { ...fresh, freshness, lastObservedMonotonic: revision },
+      },
+    } as unknown as ServerState);
+    pushRadioState(observed(1, 199, 'fresh'));
+    pushSession({ state: 'connected', epoch: 7 });
+    expect(input().dataset.commandPhase).toBe('awaiting-confirmation');
+    pushRadioState(observed(2, 200, 'stale'));
+    pushSession({ state: 'connected', epoch: 7 });
+    expect(input().dataset.commandPhase).toBe('unavailable');
+    expect(input().disabled).toBe(true);
+    expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
+    pushRadioState(observed(3, 200, 'fresh'));
+    expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
+    pushSession({ state: 'connected', epoch: 7 });
+    expect(input().dataset.commandPhase).toBe('confirmed');
+    expect(input().valueAsNumber).toBe(200);
+    expect(input().closest('[data-testid]')?.querySelector('[data-command-status]')?.textContent)
+      .toContain('confirmed');
+    expect(TX_AUX_COMMAND_DESCRIPTORS.micGain.scope(command)?.receiver).toBe(0);
+  });
+
+  it('fails closed and recovers in place across provider and session replacement', () => {
+    render();
+    const input = () => q<HTMLInputElement>('[data-testid="tx-aux-monitorLevel"] input')!;
+    expect(input().dataset.commandPhase).toBe('idle');
+    const original = input();
+
+    h.state = { ...liveState(true), providerGeneration: 2 } as ServerState;
+    h.caps = { ...liveCaps(true), providerGeneration: 2 } as Capabilities;
+    pushSession({ state: 'disconnected', epoch: 8 });
+    expect(input()).toBe(original);
+    expect(input().disabled).toBe(true);
+    expect(input().dataset.commandPhase).toBe('unavailable');
+
+    pushSession({ state: 'connected', epoch: 8 });
+    expect(input()).toBe(original);
+    expect(input().disabled).toBe(false);
+    expect(input().dataset.commandPhase).toBe('idle');
+    expect(input().valueAsNumber).toBe(60);
+  });
+
+  it('emits only the selected lane handler and no PTT, TUNE, toggle or lifecycle side effect', () => {
+    render();
+    for (const [semanticField, _accessor, _control, _canonical, requested] of FEEDBACK_LANES) {
+      const input = q<HTMLInputElement>(`[data-testid="tx-aux-${semanticField}"] input`)!;
+      input.value = String(requested);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    flushSync();
+    expect([h.micGain, h.driveGain, h.voxGain, h.antiVoxGain, h.voxDelay, h.compLevel, h.monLevel]
+      .map(mock => mock.mock.calls.length)).toEqual([1, 1, 1, 1, 1, 1, 1]);
+    expect([h.atuTune, h.atuToggle, h.voxToggle, h.compToggle, h.monToggle]
+      .map(mock => mock.mock.calls.length)).toEqual([0, 0, 0, 0, 0]);
+    expect(txHarness.trace()).toEqual([]);
+    expect(getCommandLifecycles()).toEqual([]);
   });
 });
 
