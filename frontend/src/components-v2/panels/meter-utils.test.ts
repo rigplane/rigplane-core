@@ -118,7 +118,8 @@ import {
   peakHoldDisplay,
   type PeakHoldState,
 } from './meter-utils';
-import { isSmeterCalibrated } from '../meters/smeter-scale';
+import { calibratedToRaw as calibratedToRawFromFacade, isSmeterCalibrated } from '../meters/smeter-scale';
+import { calibratedToSegments } from '../../primitives/meters/s-meter-scale';
 
 beforeEach(() => {
   setCapabilities(makeCaps({
@@ -664,6 +665,26 @@ describe('sLevel (calibrated bar)', () => {
   });
   it('returns the S9 marker position for a calibrated 0 dB-rel-S9 reading', () => {
     expect(sLevel(0)).toBeCloseTo(130 / 240);
+    expect(sLevel(0)).not.toBeCloseTo(calibratedToSegments(0, IC7610_LIKE_S_METER_CAL) / 20);
+  });
+});
+
+describe('S-meter live profile replacement', () => {
+  it('uses the current profile on each facade and panel-adapter call', () => {
+    setCapabilities(makeCaps({
+      meterCalibrations: { s_meter: IC7610_LIKE_S_METER_CAL },
+    }));
+    expect(calibratedToRawFromFacade(0)).toBe(130);
+    expect(sLevel(0)).toBeCloseTo(130 / 240);
+
+    const ic7300Calibration = [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 120, actual: 0, label: 'S9' },
+      { raw: 241, actual: 60, label: 'S9+60' },
+    ];
+    setCapabilities(makeCaps({ meterCalibrations: { s_meter: ic7300Calibration } }));
+    expect(calibratedToRawFromFacade(0)).toBe(120);
+    expect(sLevel(0)).toBeCloseTo(120 / 241);
   });
 });
 

@@ -15,12 +15,20 @@
  */
 
 import { getSmeterCalibration, getSmeterRedline } from '$lib/stores/capabilities.svelte';
-
-interface CalPoint {
-  raw: number;
-  actual: number;
-  label: string;
-}
+import {
+  calibratedToDbm as calibratedToDbmForCalibration,
+  calibratedToRaw as calibratedToRawForCalibration,
+  calibratedToSegments as calibratedToSegmentsForCalibration,
+  calibratedToSUnit as calibratedToSUnitForCalibration,
+  formatDbm as formatDbmForCalibration,
+  getS9Raw as getS9RawForCalibration,
+  getScaleMaxRaw as getScaleMaxRawForCalibration,
+  isSmeterCalibrated as isSmeterCalibratedForCalibration,
+  rawToDbm as rawToDbmForCalibration,
+  rawToSegments as rawToSegmentsForCalibration,
+  rawToSUnit as rawToSUnitForCalibration,
+  type SmeterCalibrationPoint,
+} from '../../primitives/meters/s-meter-scale';
 
 export interface SmeterMark {
   raw: number;
@@ -29,10 +37,7 @@ export interface SmeterMark {
   color: string;
 }
 
-const MAX_RAW = 255;
-const S9_DBM = -73;
-
-function getCal(): CalPoint[] {
+function getCal(): SmeterCalibrationPoint[] {
   return getSmeterCalibration() ?? [];
 }
 
@@ -44,15 +49,13 @@ function getCal(): CalPoint[] {
  *  below must fall back to an honest raw-scale label instead of
  *  fabricating a reading against a borrowed curve (MOR-1451). */
 export function isSmeterCalibrated(): boolean {
-  return getCal().length >= 2;
+  return isSmeterCalibratedForCalibration(getCal());
 }
 
 /** Find S9 raw value from calibration; the raw-scale midpoint when
  *  uncalibrated — a neutral bar-geometry anchor, not a claimed threshold. */
 export function getS9Raw(): number {
-  const cal = getCal();
-  const s9 = cal.find(p => p.label === 'S9');
-  return s9?.raw ?? MAX_RAW / 2;
+  return getS9RawForCalibration(getCal());
 }
 
 /** Get redline raw value. */
@@ -62,108 +65,19 @@ export function getRedlineRaw(): number {
 
 /** Last calibration raw knot, used as the right edge of visual S-meter scales. */
 export function getScaleMaxRaw(): number {
-  const cal = getCal();
-  return cal[cal.length - 1]?.raw ?? MAX_RAW;
-}
-
-/** Piecewise linear interpolation over calibration table. */
-function interpolate(raw: number, table: CalPoint[], outKey: 'actual'): number;
-function interpolate(raw: number, table: CalPoint[], outKey: 'actual'): number {
-  const v = Math.max(0, Math.min(MAX_RAW, raw));
-  if (table.length === 0) return 0;
-  if (v <= table[0].raw) return table[0][outKey];
-  for (let i = 0; i < table.length - 1; i++) {
-    const p0 = table[i];
-    const p1 = table[i + 1];
-    if (v <= p1.raw) {
-      const t = (v - p0.raw) / (p1.raw - p0.raw);
-      return p0[outKey] + t * (p1[outKey] - p0[outKey]);
-    }
-  }
-  return table[table.length - 1][outKey];
-}
-
-/** Inverse interpolation from calibrated dB-rel-S9 back to the scale raw axis. */
-function interpolateActual(actual: number, table: CalPoint[]): number {
-  if (table.length === 0) return 0;
-  const minActual = table[0].actual;
-  const maxActual = table[table.length - 1].actual;
-  const v = Math.max(minActual, Math.min(maxActual, actual));
-  if (v <= minActual) return table[0].raw;
-  for (let i = 0; i < table.length - 1; i++) {
-    const p0 = table[i];
-    const p1 = table[i + 1];
-    if (v <= p1.actual) {
-      const span = p1.actual - p0.actual;
-      const t = span === 0 ? 0 : (v - p0.actual) / span;
-      return p0.raw + t * (p1.raw - p0.raw);
-    }
-  }
-  return table[table.length - 1].raw;
-}
-
-/** Map raw to fractional S-unit (0.0 - 9.0+ range). */
-function rawToSFloat(raw: number): number {
-  const cal = getCal();
-  const s9Raw = getS9Raw();
-  const v = Math.max(0, Math.min(MAX_RAW, raw));
-
-  // Find S-unit points (labels like S0..S9)
-  const sPoints = cal.filter(p => /^S\d$/.test(p.label));
-  if (sPoints.length < 2) {
-    // Fallback: linear
-    return (v / s9Raw) * 9;
-  }
-
-  // Interpolate through S-unit points
-  for (let i = 0; i < sPoints.length - 1; i++) {
-    const p0 = sPoints[i];
-    const p1 = sPoints[i + 1];
-    const s0 = parseInt(p0.label.slice(1));
-    const s1 = parseInt(p1.label.slice(1));
-    if (v <= p1.raw) {
-      const t = Math.max(0, (v - p0.raw) / (p1.raw - p0.raw));
-      return s0 + t * (s1 - s0);
-    }
-  }
-  return 9;
+  return getScaleMaxRawForCalibration(getCal());
 }
 
 /** Map raw 0-255 to fractional segment count 0-20. */
 export function rawToSegments(raw: number): number {
-  const s9Raw = getS9Raw();
-  const maxRaw = Math.max(s9Raw + 1, getScaleMaxRaw());
-  const v = Math.max(0, Math.min(maxRaw, raw));
-  if (v <= s9Raw) {
-    return (rawToSFloat(v) / 9) * 11;
-  }
-  return 11 + ((v - s9Raw) / (maxRaw - s9Raw)) * 9;
+  return rawToSegmentsForCalibration(raw, getCal());
 }
 
 /** Map raw 0-255 to S-unit string, e.g. "S7", "S9+20". Falls back to the
  *  plain raw number (no "S" claim) when the radio has no calibration table
  *  (MOR-1451) — never a reading borrowed from a different radio's curve. */
 export function rawToSUnit(raw: number): string {
-  const v = Math.max(0, Math.min(MAX_RAW, raw));
-  if (!isSmeterCalibrated()) return String(Math.round(v));
-
-  const s9Raw = getS9Raw();
-
-  if (v <= s9Raw) {
-    const s = Math.floor(rawToSFloat(v));
-    return `S${Math.min(9, s)}`;
-  }
-
-  // Over S9: an honest, continuous dB-over-S9 reading interpolated from
-  // the profile's own table (MOR-2024) — not a knot-snapped label. The
-  // previous version walked the declared over-S9 knots backwards and
-  // returned the first one at or below `v`, which silently under-reported
-  // any raw strictly between two knots, and fell through to the bare
-  // literal "S9+" with no number at all once `v` was short of every
-  // declared knot (e.g. a profile with a single over-point leaves a wide
-  // gap right above S9 where that used to happen).
-  const over = Math.round(interpolate(v, getCal(), 'actual'));
-  return over > 0 ? `S9+${over}` : 'S9';
+  return rawToSUnitForCalibration(raw, getCal());
 }
 
 /** Map raw 0-255 to dBm value (linear interpolation between calibration
@@ -171,25 +85,23 @@ export function rawToSUnit(raw: number): string {
  *  honest-fallback text functions below detect that state themselves and
  *  never present the passthrough as a real dBm reading (MOR-1451). */
 export function rawToDbm(raw: number): number {
-  if (!isSmeterCalibrated()) return Math.round(Math.max(0, Math.min(MAX_RAW, raw)));
-  return Math.round(interpolate(raw, getCal(), 'actual'));
+  return rawToDbmForCalibration(raw, getCal());
 }
 
 /** Map calibrated dB-rel-S9 from backend state to the raw axis used by the
  *  UI scale. Identity passthrough when uncalibrated, matching `rawToDbm`. */
 export function calibratedToRaw(actual: number): number {
-  if (!isSmeterCalibrated()) return Math.max(0, Math.min(MAX_RAW, actual));
-  return interpolateActual(actual, getCal());
+  return calibratedToRawForCalibration(actual, getCal());
 }
 
 /** Map calibrated dB-rel-S9 to fractional segment count 0-20 for the top S-meter. */
 export function calibratedToSegments(actual: number): number {
-  return rawToSegments(calibratedToRaw(actual));
+  return calibratedToSegmentsForCalibration(actual, getCal());
 }
 
 /** Map calibrated dB-rel-S9 to an S-unit label, e.g. "S7", "S9+20". */
 export function calibratedToSUnit(actual: number): string {
-  return rawToSUnit(calibratedToRaw(actual));
+  return calibratedToSUnitForCalibration(actual, getCal());
 }
 
 /** Map calibrated dB-rel-S9 to user-facing dBm referenced to S9=-73 dBm.
@@ -197,12 +109,7 @@ export function calibratedToSUnit(actual: number): string {
  *  would be a fabricated physical unit, not a passthrough (MOR-1451);
  *  `formatDbm` renders this as an explicit "uncalibrated" label. */
 export function calibratedToDbm(actual: number): number | null {
-  if (!isSmeterCalibrated()) return null;
-  const cal = getCal();
-  const minActual = cal[0].actual;
-  const maxActual = cal[cal.length - 1].actual;
-  const clamped = Math.max(minActual, Math.min(maxActual, actual));
-  return Math.round(S9_DBM + clamped);
+  return calibratedToDbmForCalibration(actual, getCal());
 }
 
 function colorForActual(actual: number): string {
@@ -231,12 +138,10 @@ export function getScaleMarks(): SmeterMark[] {
 
 /** Format dBm value as display string, e.g. "−67 dBm". Uses Unicode minus. */
 export function formatDbm(dbm: number | null): string {
-  if (dbm === null) return 'uncalibrated';
-  const sign = dbm < 0 ? '\u2212' : '+';
-  return `${sign}${Math.abs(dbm)} dBm`;
+  return formatDbmForCalibration(dbm);
 }
 
 /** Get full calibration table for rendering scale ticks. */
-export function getCalibrationPoints(): CalPoint[] {
+export function getCalibrationPoints(): SmeterCalibrationPoint[] {
   return getCal();
 }
