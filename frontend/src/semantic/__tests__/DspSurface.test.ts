@@ -187,7 +187,7 @@ describe('operational availability decides whether a control is USABLE', () => {
     });
   });
 
-  // MOR-1304/1305 N1/MD7: `pressedOf` must return `undefined` — never `false`
+  // MOR-1304/1305 N1/MD7: the toggle binding must return `undefined` — never `false`
   // — for an unobserved toggle reading, so Svelte OMITS `aria-pressed`
   // entirely. `aria-pressed="false"` is not the absence of a claim, it is the
   // claim "this control is OFF" about a reading the radio never reported —
@@ -219,6 +219,14 @@ describe('operational availability decides whether a control is USABLE', () => {
     withSurface(view, (s) => {
       expect(s.notchButton('off')!.disabled).toBe(true);
       expect(s.agcButton(1)!.disabled).toBe(true);
+    });
+  });
+
+  it('omits pressed state for unobserved DSP choices', () => {
+    const view = withField(withField(base(), 'notchMode', { unknown: true }), 'agcMode', { unknown: true });
+    withSurface(view, (s) => {
+      expect(s.notchButton('off')!.getAttribute('aria-pressed')).toBeNull();
+      expect(s.agcButton(1)!.getAttribute('aria-pressed')).toBeNull();
     });
   });
 });
@@ -485,10 +493,30 @@ describe('notchMode renders as a three-way choice', () => {
     }, { onNotchModeChange });
   });
 
+  it('does not select an offered mode for a known out-of-offered reading', () => {
+    const onNotchModeChange = vi.fn();
+    const view = {
+      ...base(),
+      dsp: {
+        ...base().dsp!,
+        notchMode: { ...base().dsp!.notchMode, reading: { status: 'known' as const, value: 'other' } },
+      },
+    } as unknown as RadioViewModel;
+    withSurface(view, (s) => {
+      for (const mode of ['off', 'auto', 'manual']) {
+        expect(s.notchButton(mode)!.getAttribute('aria-pressed')).toBeNull();
+      }
+      s.notchButton('manual')!.click();
+      flushSync();
+      expect(onNotchModeChange).toHaveBeenCalledExactlyOnceWith('manual');
+      expect(s.notchButton('manual')!.getAttribute('aria-pressed')).toBeNull();
+    }, { onNotchModeChange });
+  });
+
   /**
    * MOR-1304/1305 F3: `.click()` on a disabled button never reaches its
    * `onclick` handler at all — a no-op that would pass this assertion even
-   * with the `notch()` guard deleted. Dispatching the click event directly
+   * with the choice binding's guard deleted. Dispatching the click event directly
    * proves the GUARD rejects it, not merely that `disabled` suppressed the
    * interaction.
    */
@@ -538,7 +566,7 @@ describe('agcMode renders the capability-derived choice set with caps-echoed lab
 
   /**
    * MOR-1304/1305 F3: same bypass discipline as notchMode's guard test — the
-   * event is dispatched directly so a deleted `agc()` guard is what this
+   * event is dispatched directly so a deleted choice-binding guard is what this
    * assertion catches, not merely `disabled` suppressing a plain `.click()`.
    */
   it('emits nothing when clicked on an unobserved reading, even bypassing disabled', () => {
@@ -583,7 +611,7 @@ describe('pending-target affordance (MOR-1441 leg 2)', () => {
   });
 
   // THE seam test — the exact class of defect leg 1's runaway bug belonged
-  // to, applied to a toggle: `toggle()` computes the NEXT boolean from
+  // to, applied to a toggle: the toggle binding computes the NEXT boolean from
   // `dsp[field].reading.value` (CONFIRMED), never from the pending prop. If
   // it instead read pending, an in-flight "turn NR on" (confirmed still
   // false, pending true) would compute `!true = false` and dispatch a

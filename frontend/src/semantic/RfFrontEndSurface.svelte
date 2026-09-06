@@ -44,13 +44,12 @@
   1's `pendingFrequencyHz`. It never touches the MOR-1447 combined-knob/
   change-guard machinery above (`combinedNormX`/`changeCombined` read only
   confirmed `rf.rfGain`/`rf.squelch`) — preamp is a disjoint field. Marks the
-  targeted preamp CHOICE distinctly; `isValue`/`aria-checked` keep reading
+  targeted preamp CHOICE distinctly; the preamp binding's `aria-checked` keeps reading
   `rf.preamp`'s CONFIRMED reading exclusively, so a click while pending still
   dispatches the CLICKED (explicit) value.
 -->
 <script module lang="ts">
   import type { DisabledReasonCode, RfFrontEndField } from './radio-view-model';
-  import { pressedOf } from './pressed-of';
   import { formatKnownLevel } from './format-level';
 
   /** The one rendering of "not read". Never 0, never the last value. */
@@ -67,8 +66,6 @@
    *  `String()`-ing the raw wire fraction. */
   const levelTextOf = (f: RfFrontEndField<number>, min: number, max: number): string =>
     f.reading.status === 'known' ? formatKnownLevel(f.reading.value, min, max) : UNKNOWN_TEXT;
-  const isValue = (f: RfFrontEndField<unknown>, value: unknown): boolean =>
-    f.reading.status === 'known' && f.reading.value === value;
 
   /** `[field, label, min, max, step]`. The radio's own normalized 0..1
    *  reading (a wire-protocol FRACTION, not the raw 0-255 wire unit) — same
@@ -112,6 +109,10 @@
     dualParamValuesFromNormX,
     dualParamNormXFromValues,
   } from '../primitives/scalar/value-control-core';
+  import {
+    bindChoiceInstrument,
+    bindToggleInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
 
   interface Props {
     view: RadioViewModel;
@@ -145,12 +146,28 @@
     view.disabledReasons.find((reason) => reason.field === 'rfFrontEnd.preamp') ?? null,
   );
 
-  function changePreamp(level: number): void {
-    if (rf && usable(rf.preamp) && preMutex === null) onPreampChange?.(level);
-  }
-  function changeAttenuator(db: number): void {
-    if (rf && usable(rf.attenuator)) onAttenuatorChange?.(db);
-  }
+  const preampBehavior = bindChoiceInstrument<number>(() => ({
+    field: rf?.preamp,
+    choices: rf?.preValues ?? [],
+    blocked: preMutex !== null,
+    invoke: (level) => onPreampChange?.(level),
+  }));
+  const attenuatorBehavior = bindChoiceInstrument<number>(() => ({
+    field: rf?.attenuator,
+    choices: rf?.attValues ?? [],
+    invoke: (db) => onAttenuatorChange?.(db),
+  }));
+  const toggleBehaviors = {
+    digiSel: bindToggleInstrument(() => ({
+      field: rf?.digiSel,
+      invoke: (next) => onToggle?.('digiSel', next),
+    })),
+    ipPlus: bindToggleInstrument(() => ({
+      field: rf?.ipPlus,
+      invoke: (next) => onToggle?.('ipPlus', next),
+    })),
+  } satisfies Record<RfFrontEndToggleField, ReturnType<typeof bindToggleInstrument>>;
+
   function changeLevel(field: RfFrontEndLevelField, value: number): void {
     if (rf && usable(rf[field])) onLevelChange?.(field, value);
   }
@@ -211,10 +228,6 @@
       changeLevel('squelch', nextSql);
     }
   }
-  function toggle(field: RfFrontEndToggleField): void {
-    const f = rf?.[field];
-    if (f && usable(f) && f.reading.status === 'known') onToggle?.(field, !f.reading.value);
-  }
 </script>
 
 {#if rf}
@@ -232,10 +245,10 @@
           <button
             type="button" role="radio" class="rf-front-end-choice"
             data-testid={`rf-front-end-preamp-${value}`}
-            aria-checked={isValue(rf.preamp, value)}
+            aria-checked={preampBehavior.isSelected(value)}
             data-pending={pendingPreamp === value}
-            disabled={!usable(rf.preamp) || preMutex !== null}
-            onclick={() => changePreamp(value)}
+            disabled={!preampBehavior.available}
+            onclick={() => preampBehavior.invoke(value)}
           >{value}</button>
         {/each}
         <output data-testid="rf-front-end-preamp-value">{textOf(rf.preamp)}</output>
@@ -257,9 +270,9 @@
           <button
             type="button" role="radio" class="rf-front-end-choice"
             data-testid={`rf-front-end-attenuator-${value}`}
-            aria-checked={isValue(rf.attenuator, value)}
-            disabled={!usable(rf.attenuator)}
-            onclick={() => changeAttenuator(value)}
+            aria-checked={attenuatorBehavior.isSelected(value)}
+            disabled={!attenuatorBehavior.available}
+            onclick={() => attenuatorBehavior.invoke(value)}
           >{value} dB</button>
         {/each}
         <output data-testid="rf-front-end-attenuator-value">{textOf(rf.attenuator)}</output>
@@ -304,12 +317,13 @@
 
     {#each RF_FRONT_END_TOGGLES as [field, label] (field)}
       {#if rf[field].availability.structural}
+        {@const behavior = toggleBehaviors[field]}
         <button
           type="button" class="rf-front-end-toggle"
           data-testid={`rf-front-end-${field}`} data-observed={usable(rf[field])}
-          aria-pressed={pressedOf(rf[field])}
-          disabled={!usable(rf[field])}
-          onclick={() => toggle(field)}
+          aria-pressed={behavior.confirmed}
+          disabled={!behavior.available}
+          onclick={() => behavior.invoke()}
         >{label}: {textOf(rf[field])}</button>
       {/if}
     {/each}
