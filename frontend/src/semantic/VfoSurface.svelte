@@ -37,10 +37,10 @@
 
 <script lang="ts">
   import { t } from '$lib/i18n';
-  import { vfoEqualLabel, vfoSwapLabel } from '../components-v2/vfo/vfo-ops-utils';
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
+  import VfoOperationGroup, { type VfoOperationIntent } from './VfoOperationGroup.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
@@ -208,7 +208,6 @@
     quickDualWatch: { structural: false, operational: false },
     speak: { structural: false, operational: false },
   });
-  let hasDualActions = $derived(Object.values(dualActions).some((action) => action.structural));
   let relativeIdentityUnknown = $derived(viewModel.vfos.some((vfo) => vfo.slot.kind === 'relative'));
   let relativeReceiver = $derived(
     viewModel.vfos.find((vfo) => vfo.slot.kind === 'relative')?.receiver ?? null,
@@ -365,16 +364,6 @@
     window.setTimeout(() => { relativeSelectionPending = false; }, 2500);
   }
 
-  function triState(fact: BooleanFact): 'true' | 'false' | 'mixed' {
-    if (fact.status === 'unknown') return 'mixed';
-    return fact.value ? 'true' : 'false';
-  }
-
-  function stateWord(fact: BooleanFact): string {
-    if (fact.status === 'unknown') return t('core.vfo.state.unknown');
-    return t(fact.value ? 'core.vfo.state.on' : 'core.vfo.state.off');
-  }
-
   function toggleSplit(): void {
     if (viewModel.split.status !== 'known') return;
     onToggleSplit?.();
@@ -439,6 +428,22 @@
     onQuickDualWatch?.();
   }
 
+  function handleOperationIntent(intent: VfoOperationIntent): void {
+    switch (intent.kind) {
+      case 'select-receiver':
+        if (intent.receiver === 'MAIN') selectMainReceiver();
+        else selectSubReceiver();
+        break;
+      case 'toggle-split': toggleSplit(); break;
+      case 'toggle-dual-watch': toggleDualWatch(); break;
+      case 'equalize': equalizeVfos(); break;
+      case 'swap': swapVfos(); break;
+      case 'quick-split': quickSplit(); break;
+      case 'quick-dual-watch': quickDualWatch(); break;
+      case 'speak': speak(); break;
+    }
+  }
+
   /**
    * MOR-1321 row 20 — the legacy bridge's `RX <freq> TX <freq>` digest, restated
    * on facts. RX is the ACTIVE VFO (what the operator is listening to); TX comes
@@ -465,6 +470,23 @@
   let txFrequencyHz = $derived(
     viewModel.txTarget.status === 'known' ? viewModel.txTarget.frequencyHz : null,
   );
+  let operationActions = $derived({
+    main: { ...dualActions.main, operational: dualActions.main.operational && onSelectMainReceiver !== undefined },
+    sub: { ...dualActions.sub, operational: dualActions.sub.operational && onSelectSubReceiver !== undefined },
+    equalize: { ...dualActions.equalize, operational: dualActions.equalize.operational && onEqualizeVfos !== undefined },
+    swap: { ...dualActions.swap, operational: dualActions.swap.operational && onSwapVfos !== undefined },
+    quickSplit: {
+      ...dualActions.quickSplit,
+      operational: !relativeIdentityUnknown && viewModel.split.status === 'known'
+        && dualActions.quickSplit.operational && onQuickSplit !== undefined,
+    },
+    quickDualWatch: {
+      ...dualActions.quickDualWatch,
+      operational: !relativeIdentityUnknown && viewModel.dualWatch.status === 'known'
+        && dualActions.quickDualWatch.operational && onQuickDualWatch !== undefined,
+    },
+    speak: { ...dualActions.speak, operational: dualActions.speak.operational && onSpeak !== undefined },
+  });
   function instrumentSlot(receiver: ReceiverId): string {
     const slot = viewModel.vfos.find((vfo) => vfo.receiver === receiver && vfo.isActiveSlot)?.slot;
     return slot?.kind === 'slotted' ? slot.id : '—';
@@ -712,144 +734,29 @@
     {/if}
     {@const splitReason = viewModel.split.status === 'unknown' ? t('core.vfo.split.unknownReason') : undefined}
     {@const dualWatchReason = viewModel.dualWatch.status === 'unknown' ? t('core.vfo.dualWatch.unknownReason') : undefined}
-    <div class="fact-toggles">
-      <button
-        type="button"
-        class="fact-toggle"
-        data-vfo-split
-        role="switch"
-        aria-checked={triState(viewModel.split)}
-        aria-label={t('core.vfo.split.label')}
-        title={splitReason}
-        aria-describedby={reasonId('split', splitReason)}
-        disabled={viewModel.split.status === 'unknown'}
-        onclick={toggleSplit}
-      >
-        {t('core.vfo.split.label')}: {stateWord(viewModel.split)}
-      </button>
-      {#if splitReason !== undefined}
-        <span id={reasonId('split', splitReason)} class="sr-only">{splitReason}</span>
-      {/if}
-      {#if hasDualReceiver}
-        <button
-          type="button"
-          class="fact-toggle"
-          data-vfo-dual-watch
-          role="switch"
-          aria-checked={triState(viewModel.dualWatch)}
-          aria-label={t('core.vfo.dualWatch.label')}
-          title={dualWatchReason}
-          aria-describedby={reasonId('dual-watch', dualWatchReason)}
-          disabled={viewModel.dualWatch.status === 'unknown'}
-          onclick={toggleDualWatch}
-        >
-          {t('core.vfo.dualWatch.label')}: {stateWord(viewModel.dualWatch)}
-        </button>
-        {#if dualWatchReason !== undefined}
-          <span id={reasonId('dual-watch', dualWatchReason)} class="sr-only">{dualWatchReason}</span>
-        {/if}
-      {/if}
-    </div>
-
-    <!--
-      MOR-1321. Actions, not facts — so no `role="switch"` and no `aria-checked`:
-      each button DOES a thing once, it does not report a state. The two quick
-      triggers carry the same `disabled` gate their fact toggles above carry.
-      Button text is the accessible name; no `aria-label` duplicates it.
-    -->
-    {#if hasDualActions}
-      {@const equalizeReason = undefined}
-      {@const swapReason = undefined}
-      {@const quickSplitReason = quickSplitReasonText()}
-      {@const quickDualWatchReason = quickDualWatchReasonText()}
-      <div
-        class="vfo-ops" data-testid="vfo-ops" data-dual-action-block
-        data-disabled-reason={relativeIdentityUnknown ? 'vfo-identity-unknown' : undefined}
-        title={identityOnlyReasonText()}
-      >
-        {#if dualActions.main.structural}
-          <button type="button" class="vfo-op" data-dual-action="main"
-            aria-pressed={viewModel.activeReceiver.status === 'known' && viewModel.activeReceiver.receiver === 'MAIN'}
-            disabled={!dualActions.main.operational || !onSelectMainReceiver}
-            onclick={selectMainReceiver}>MAIN</button>
-        {/if}
-        {#if dualActions.sub.structural}
-          <button type="button" class="vfo-op" data-dual-action="sub"
-            aria-pressed={viewModel.activeReceiver.status === 'known' && viewModel.activeReceiver.receiver === 'SUB'}
-            disabled={!dualActions.sub.operational || !onSelectSubReceiver}
-            onclick={selectSubReceiver}>SUB</button>
-        {/if}
-        {#if dualActions.equalize.structural}
-          <button type="button" class="vfo-op" data-vfo-equalize data-dual-action="equalize"
-            aria-label={vfoEqualLabel(viewModel.vfoScheme)}
-            title={equalizeReason} aria-describedby={reasonId('equalize', equalizeReason)}
-            disabled={!dualActions.equalize.operational || !onEqualizeVfos} onclick={equalizeVfos}>
-            {vfoEqualLabel(viewModel.vfoScheme)}
-          </button>
-        {/if}
-        {#if dualActions.swap.structural}
-          <button type="button" class="vfo-op" data-vfo-swap data-dual-action="swap"
-            aria-label={vfoSwapLabel(viewModel.vfoScheme)}
-            title={swapReason} aria-describedby={reasonId('swap', swapReason)}
-            disabled={!dualActions.swap.operational || !onSwapVfos} onclick={swapVfos}>
-            {vfoSwapLabel(viewModel.vfoScheme)}
-          </button>
-        {/if}
-        {#if dualActions.quickSplit.structural}
-          <button
-            type="button" class="vfo-op" data-vfo-quick-split data-dual-action="quick-split"
-            aria-label="Quick split"
-            title={quickSplitReason} aria-describedby={reasonId('quick-split', quickSplitReason)}
-            disabled={relativeIdentityUnknown || viewModel.split.status !== 'known'
-              || !dualActions.quickSplit.operational || !onQuickSplit}
-            onclick={quickSplit}
-          >
-            Quick split
-          </button>
-        {/if}
-        {#if dualActions.quickDualWatch.structural}
-          <button
-            type="button" class="vfo-op" data-vfo-quick-dual-watch data-dual-action="quick-dual-watch"
-            aria-label="Quick dual watch"
-            title={quickDualWatchReason} aria-describedby={reasonId('quick-dual-watch', quickDualWatchReason)}
-            disabled={relativeIdentityUnknown || viewModel.dualWatch.status !== 'known'
-              || !dualActions.quickDualWatch.operational || !onQuickDualWatch}
-            onclick={quickDualWatch}
-          >
-            Quick dual watch
-          </button>
-        {/if}
-        {#if dualActions.speak.structural}
-          <button type="button" class="vfo-op" data-dual-action="speak"
-            title="Speak current frequency aloud"
-            disabled={!dualActions.speak.operational || !onSpeak}
-            onclick={speak}>SPEAK</button>
-        {/if}
-        {#if equalizeReason !== undefined}
-          <span id={reasonId('equalize', equalizeReason)} class="sr-only">{equalizeReason}</span>
-        {/if}
-        {#if swapReason !== undefined}
-          <span id={reasonId('swap', swapReason)} class="sr-only">{swapReason}</span>
-        {/if}
-        {#if quickSplitReason !== undefined}
-          <span id={reasonId('quick-split', quickSplitReason)} class="sr-only">{quickSplitReason}</span>
-        {/if}
-        {#if quickDualWatchReason !== undefined}
-          <span id={reasonId('quick-dual-watch', quickDualWatchReason)} class="sr-only">{quickDualWatchReason}</span>
-        {/if}
-      </div>
-    {/if}
-
-    {#if hasVfoPair}
-      <!--
-        `data-split-active` carries the split fact's TRI-STATE, so "unknown" is
-        stated rather than collapsed into the legacy bridge's binary dimming.
-      -->
-      <p class="split-digest" data-testid="vfo-split-digest" data-split-active={triState(viewModel.split)}>
-        <span data-split-rx>{t('core.vfo.splitDigest.rx', { frequency: formatFrequency(rxFrequencyHz) })}</span>
-        <span data-split-tx>{t('core.vfo.splitDigest.tx', { frequency: formatFrequency(txFrequencyHz) })}</span>
-      </p>
-    {/if}
+    <VfoOperationGroup
+      {appearance}
+      scheme={viewModel.vfoScheme}
+      activeReceiver={viewModel.activeReceiver}
+      split={viewModel.split}
+      dualWatch={viewModel.dualWatch}
+      splitAvailability={{ structural: true, operational: viewModel.split.status === 'known', reason: splitReason }}
+      dualWatchAvailability={{ structural: hasDualReceiver, operational: viewModel.dualWatch.status === 'known', reason: dualWatchReason }}
+      actions={operationActions}
+      actionReasons={{
+        main: dualActions.main.structural && !dualActions.main.operational ? t('core.vfo.select.receiverUnavailableReason') : undefined,
+        sub: dualActions.sub.structural && !dualActions.sub.operational ? t('core.vfo.select.receiverUnavailableReason') : undefined,
+        quickSplit: quickSplitReasonText(),
+        quickDualWatch: quickDualWatchReasonText(),
+      }}
+      digest={hasVfoPair ? {
+        rx: formatFrequency(rxFrequencyHz),
+        tx: formatFrequency(txFrequencyHz),
+        splitState: viewModel.split.status === 'known' ? String(viewModel.split.value) as 'true' | 'false' : 'mixed',
+      } : undefined}
+      groupReason={identityOnlyReasonText()}
+      onIntent={handleOperationIntent}
+    />
   {/if}
   {/snippet}
 
@@ -978,11 +885,9 @@
     line-height: 1; letter-spacing: normal;
   }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
-  .vfo-select, .fact-toggle, .vfo-op { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
-  .vfo-select:disabled, .fact-toggle:disabled, .vfo-op:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
-  .fact-toggles, .vfo-ops, .vfo-identity-selectors { display: flex; gap: 6px; flex-wrap: wrap; }
-  .split-digest { display: flex; gap: 8px; margin: 0; font-size: 11px; color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55)); }
-  .split-digest[data-split-active='false'] { opacity: 0.64; }
+  .vfo-select { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
+  .vfo-select:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
+  .vfo-identity-selectors { display: flex; gap: 6px; flex-wrap: wrap; }
   /* MOR-1481: the `aria-describedby` target for a disabled control's reason
      — present for screen readers, never painted (the `title` attribute
      already carries the sighted-hover channel). Mirrors `TxAuxSurface`. */
@@ -1034,21 +939,6 @@
   }
   .receiver-instrument .secondary-slot .vfo-freq { font-size: 18px; margin: 2px 0; }
   .receiver-instrument .vfo-select { justify-self: end; grid-column: 2; grid-row: 1 / 3; }
-  .bridge .fact-toggles, .bridge .vfo-ops { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .bridge .fact-toggle, .bridge .vfo-op, .bridge .vfo-select {
-    min-height: 28px; padding: 4px 6px; border-radius: 3px; font-size: 10px;
-    font-family: inherit; font-weight: 700; letter-spacing: .04em;
-    color: var(--v2-text-secondary, #a0b4c8);
-    border: 1px solid rgba(72,96,122,.4);
-    background: linear-gradient(180deg, var(--v2-control-button-gradient-top, #202a35) 0%, var(--v2-control-button-gradient-bottom, #0b1017) 100%);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
-  }
-  .bridge .fact-toggle { grid-column: 1 / -1; }
-  .bridge button:disabled { opacity: .5; }
-  .bridge button[aria-pressed='true'], .bridge button[aria-checked='true'] {
-    border-color: var(--v2-accent-cyan, #00d4ff); color: var(--v2-accent-cyan, #7cfce5);
-  }
-  .bridge .split-digest { flex-wrap: wrap; justify-content: center; font-size: 9px; }
   .bridge .vfo-identity-selectors { flex-direction: column; }
   [data-vfo-appearance='standard'] .receiver-instrument { padding: 8px; }
   [data-vfo-appearance='standard'] .instrument-active {

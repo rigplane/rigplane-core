@@ -10,32 +10,70 @@
     immediately select (typical radiogroup pattern).
   - Enter/Space activate the focused segment (redundant with click).
 
-  The component is presentation-only — it emits the new selection via
+  The component is presentation-only — it emits a selection intent via
   `onChange` and does not touch the store directly.
 -->
+<script module lang="ts">
+  type Receiver = 'MAIN' | 'SUB';
+
+  export interface ReceiverSegmentAvailability {
+    structural: boolean;
+    operational: boolean;
+    reason?: string;
+  }
+
+  let sequence = 0;
+</script>
+
 <script lang="ts">
   type Receiver = 'MAIN' | 'SUB';
 
   interface Props {
-    active: Receiver;
+    active: Receiver | null;
     onChange: (next: Receiver) => void;
+    availability?: Partial<Record<Receiver, ReceiverSegmentAvailability>>;
+    segmentLabels?: Partial<Record<Receiver, string>>;
+    /** Emit an explicit selection intent even when the segment is already active. */
+    allowReselect?: boolean;
     /** Optional label for screen readers. */
     label?: string;
   }
 
-  let { active, onChange, label = 'Active receiver' }: Props = $props();
+  let {
+    active,
+    onChange,
+    availability,
+    segmentLabels,
+    allowReselect = false,
+    label = 'Active receiver',
+  }: Props = $props();
 
-  const RECEIVERS: Receiver[] = ['MAIN', 'SUB'];
+  const RECEIVERS: readonly Receiver[] = ['MAIN', 'SUB'];
+  const reasonIdPrefix = `active-receiver-reason-${++sequence}`;
+  let root: HTMLDivElement;
+
+  function state(receiver: Receiver): ReceiverSegmentAvailability {
+    return availability?.[receiver] ?? { structural: true, operational: true };
+  }
+
+  let focusableReceiver = $derived(
+    active !== null && state(active).structural && state(active).operational
+      ? active
+      : RECEIVERS.find((receiver) => state(receiver).structural && state(receiver).operational) ?? null,
+  );
 
   function select(next: Receiver): void {
-    if (next === active) return;
+    if (!state(next).structural || !state(next).operational) return;
+    if (!allowReselect && next === active) return;
     onChange(next);
   }
 
   function move(current: Receiver, delta: 1 | -1): Receiver {
-    const idx = RECEIVERS.indexOf(current);
-    const nextIdx = (idx + delta + RECEIVERS.length) % RECEIVERS.length;
-    return RECEIVERS[nextIdx];
+    const candidates = RECEIVERS.filter((receiver) => state(receiver).structural && state(receiver).operational);
+    if (candidates.length === 0) return current;
+    const currentIndex = candidates.indexOf(current);
+    const start = currentIndex >= 0 ? currentIndex : 0;
+    return candidates[(start + delta + candidates.length) % candidates.length];
   }
 
   function handleKeydown(event: KeyboardEvent, current: Receiver): void {
@@ -69,7 +107,7 @@
   function focusSegment(target: Receiver): void {
     // Defer to next tick so Svelte can update tabindex attrs first.
     queueMicrotask(() => {
-      const el = document.querySelector<HTMLButtonElement>(
+      const el = root.querySelector<HTMLButtonElement>(
         `[data-active-receiver-segment="${target}"]`,
       );
       el?.focus();
@@ -86,27 +124,39 @@
 </script>
 
 <div
+  bind:this={root}
   class="active-receiver-toggle"
   role="radiogroup"
   aria-label={label}
   data-testid="active-receiver-toggle"
 >
   {#each RECEIVERS as receiver (receiver)}
+    {@const availability = state(receiver)}
     {@const isActive = receiver === active}
-    <button
-      type="button"
-      role="radio"
-      class="segment"
-      class:is-active={isActive}
-      data-active-receiver-segment={receiver}
-      aria-checked={isActive}
-      aria-label={longLabel(receiver)}
-      tabindex={isActive ? 0 : -1}
-      onclick={() => select(receiver)}
-      onkeydown={(e) => handleKeydown(e, receiver)}
-    >
-      {shortLabel(receiver)}
-    </button>
+    {#if availability.structural}
+      {@const reasonId = availability.reason ? `${reasonIdPrefix}-${receiver.toLowerCase()}` : undefined}
+      <button
+        type="button"
+        role="radio"
+        class="segment"
+        class:is-active={isActive}
+        data-active-receiver-segment={receiver}
+        data-dual-action={receiver.toLowerCase()}
+        aria-checked={isActive}
+        aria-label={segmentLabels?.[receiver] ?? longLabel(receiver)}
+        aria-describedby={reasonId}
+        title={availability.reason}
+        disabled={!availability.operational}
+        tabindex={receiver === focusableReceiver ? 0 : -1}
+        onclick={() => select(receiver)}
+        onkeydown={(e) => handleKeydown(e, receiver)}
+      >
+        {shortLabel(receiver)}
+      </button>
+      {#if reasonId}
+        <span id={reasonId} class="sr-only">{availability.reason}</span>
+      {/if}
+    {/if}
   {/each}
 </div>
 
@@ -157,5 +207,15 @@
   .segment.is-active {
     background: var(--v2-accent-cyan, #00d4ff);
     color: var(--v2-text-bright, #000);
+  }
+
+  .segment:disabled {
+    color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3));
+    cursor: not-allowed;
+  }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 </style>

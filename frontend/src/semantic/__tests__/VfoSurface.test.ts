@@ -341,7 +341,7 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
     expect(buttons.map((button) => button.dataset.dualAction)).toEqual(cases.map(([id]) => id));
     expect(buttons.map((button) => button.getAttribute('aria-label') ?? button.textContent?.trim()))
       .toEqual(cases.map(([, label]) => label));
-    expect(buttons.map((button) => button.tabIndex)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(buttons.map((button) => button.tabIndex)).toEqual([0, -1, 0, 0, 0, 0, 0]);
     for (const [action, , selected] of cases) {
       for (const callback of Object.values(callbacks)) callback.mockClear();
       target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
@@ -350,6 +350,27 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
       }
     }
   });
+
+  it.each(['semantic', 'sdr', 'standard'] as const)(
+    '%s appearance preserves the same fact and action intent wiring',
+    (appearance) => {
+      const callbacks = {
+        onSelectMainReceiver: vi.fn(), onSelectSubReceiver: vi.fn(),
+        onEqualizeVfos: vi.fn(), onSwapVfos: vi.fn(),
+        onQuickSplit: vi.fn(), onQuickDualWatch: vi.fn(), onSpeak: vi.fn(),
+        onToggleSplit: vi.fn(), onToggleDualWatch: vi.fn(),
+      };
+      const target = mountSurface({ viewModel: withRadioWide(), appearance, ...callbacks });
+      for (const action of [
+        'main', 'sub', 'equalize', 'swap', 'quick-split', 'quick-dual-watch', 'speak',
+      ]) {
+        target.querySelector<HTMLButtonElement>(`[data-dual-action="${action}"]`)!.click();
+      }
+      target.querySelector<HTMLButtonElement>('[data-vfo-split]')!.click();
+      target.querySelector<HTMLButtonElement>('[data-vfo-dual-watch]')!.click();
+      for (const callback of Object.values(callbacks)) expect(callback).toHaveBeenCalledOnce();
+    },
+  );
 
   it('uses AB identities for equalize/swap without conflating receiver selection', () => {
     const target = mountSurface({
@@ -593,6 +614,21 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(el?.getAttribute('data-active-receiver')).toBe('unknown');
     expect(el?.getAttribute('data-active-receiver')).not.toBe('MAIN');
     expect(el?.textContent).toContain('unknown');
+  });
+
+  it('unknown activeReceiver checks neither operation segment through the real group', () => {
+    const model: RadioViewModel = { ...withRadioWide(), activeReceiver: { status: 'unknown' } };
+    const onSelectMainReceiver = vi.fn();
+    const onSelectSubReceiver = vi.fn();
+    const target = mountSurface({ viewModel: model, onSelectMainReceiver, onSelectSubReceiver });
+    const main = target.querySelector<HTMLButtonElement>('[data-dual-action="main"]')!;
+    const sub = target.querySelector<HTMLButtonElement>('[data-dual-action="sub"]')!;
+    expect([main.getAttribute('aria-checked'), sub.getAttribute('aria-checked')])
+      .toEqual(['false', 'false']);
+    expect([main.tabIndex, sub.tabIndex]).toEqual([0, -1]);
+    main.click();
+    expect(onSelectMainReceiver).toHaveBeenCalledOnce();
+    expect(onSelectSubReceiver).not.toHaveBeenCalled();
   });
 
   it('unknown VFO slot renders an explicit "unknown" state, never defaults to A', () => {
@@ -2289,6 +2325,18 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
 });
 
 describe('MOR-2342 historical instrument presentations', () => {
+  it('delegates operations to a pure v3 fact-and-intent component', () => {
+    const surface = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
+    const group = readFileSync('src/semantic/VfoOperationGroup.svelte', 'utf8');
+    expect(surface).toMatch(/import VfoOperationGroup, \{ type VfoOperationIntent \} from '\.\/VfoOperationGroup\.svelte'/);
+    expect(surface).toContain('<VfoOperationGroup');
+    expect(group).toContain('ActiveReceiverToggle');
+    expect(group).not.toMatch(/\$lib\/(?:runtime|stores|transport)|capabilities\.svelte|withDoubleClick/);
+    expect(group).not.toContain('document.querySelector');
+    expect(group).not.toMatch(/active(?:Receiver)?\s*=\s*['\"]MAIN['\"]/);
+    expect(group).not.toMatch(/phase\??:|['\"](?:idle|pending|failed)['\"]/);
+  });
+
   it('forwards fixed-receiver meter context through every instrument branch', () => {
     const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
     expect(source.match(/<VfoIndicatorRow/g)).toHaveLength(3);

@@ -79,6 +79,15 @@ describe('ActiveReceiverToggle', () => {
       expect(main.tabIndex).toBe(-1);
       expect(sub.tabIndex).toBe(0);
     });
+
+    it('unknown active receiver checks neither segment without inventing MAIN', () => {
+      const t = mountToggle({ active: null, onChange: vi.fn() });
+      const main = t.querySelector<HTMLButtonElement>('[data-active-receiver-segment="MAIN"]')!;
+      const sub = t.querySelector<HTMLButtonElement>('[data-active-receiver-segment="SUB"]')!;
+      expect(main.getAttribute('aria-checked')).toBe('false');
+      expect(sub.getAttribute('aria-checked')).toBe('false');
+      expect([main.tabIndex, sub.tabIndex]).toEqual([0, -1]);
+    });
   });
 
   describe('onChange via click', () => {
@@ -177,6 +186,74 @@ describe('ActiveReceiverToggle', () => {
       const sub = t.querySelector<HTMLButtonElement>('[data-active-receiver-segment="SUB"]')!;
       sub.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
       expect(onChange).toHaveBeenCalledWith('SUB');
+    });
+
+    it('keeps keyboard focus inside the instance that received the key', async () => {
+      const first = mountToggle({ active: 'MAIN', onChange: vi.fn() });
+      const second = mountToggle({ active: 'MAIN', onChange: vi.fn() });
+      const secondMain = second.querySelector<HTMLButtonElement>('[data-active-receiver-segment="MAIN"]')!;
+      const secondSub = second.querySelector<HTMLButtonElement>('[data-active-receiver-segment="SUB"]')!;
+      secondMain.focus();
+      secondMain.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      await Promise.resolve();
+      expect(document.activeElement).toBe(secondSub);
+      expect(document.activeElement).not.toBe(
+        first.querySelector('[data-active-receiver-segment="SUB"]'),
+      );
+    });
+  });
+
+  describe('availability', () => {
+    it('omits a structurally absent segment', () => {
+      const t = mountToggle({
+        active: 'MAIN',
+        onChange: vi.fn(),
+        availability: {
+          MAIN: { structural: true, operational: true },
+          SUB: { structural: false, operational: false },
+        },
+      });
+      expect(t.querySelector('[data-active-receiver-segment="MAIN"]')).not.toBeNull();
+      expect(t.querySelector('[data-active-receiver-segment="SUB"]')).toBeNull();
+    });
+
+    it('keeps an operationally unavailable segment reasoned and inert', () => {
+      const onChange = vi.fn();
+      const t = mountToggle({
+        active: 'MAIN',
+        onChange,
+        availability: {
+          MAIN: { structural: true, operational: true },
+          SUB: { structural: true, operational: false, reason: 'SUB is unavailable' },
+        },
+      });
+      const sub = t.querySelector<HTMLButtonElement>('[data-active-receiver-segment="SUB"]')!;
+      const reasonId = sub.getAttribute('aria-describedby');
+      expect(sub.disabled).toBe(true);
+      expect(sub.title).toBe('SUB is unavailable');
+      expect(t.querySelector(`#${reasonId}`)?.textContent).toBe('SUB is unavailable');
+      sub.disabled = false;
+      sub.click();
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('keeps disabled-reason ids unique across mounted instances', () => {
+      const props = {
+        active: 'MAIN' as const,
+        onChange: vi.fn(),
+        availability: {
+          SUB: { structural: true, operational: false, reason: 'SUB is unavailable' },
+        },
+      };
+      const first = mountToggle(props);
+      const second = mountToggle(props);
+      const firstId = first.querySelector('[data-active-receiver-segment="SUB"]')
+        ?.getAttribute('aria-describedby');
+      const secondId = second.querySelector('[data-active-receiver-segment="SUB"]')
+        ?.getAttribute('aria-describedby');
+      expect(firstId).toBeTruthy();
+      expect(secondId).toBeTruthy();
+      expect(firstId).not.toBe(secondId);
     });
   });
 });
