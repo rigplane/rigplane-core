@@ -7,6 +7,11 @@ type FakeCommand = { id: string; name: string; params: Record<string, unknown>;
   error?: string;
   ackObservationSeq?: number;
   ackFieldObservationTimes?: Record<string, number>;
+  dispatchedEventEpoch?: number;
+  hold?: Readonly<{ commandId: string; originalEpoch: number; eventEpoch: number;
+    kind: 'held'; reason: 'tx_active'; expiresAt: number }>;
+  locallyObsolete?: true;
+  terminalOutcome?: 'superseded';
 };
 type FakeState = {
   active: 'MAIN' | 'SUB';
@@ -58,6 +63,7 @@ import {
   FILTER_WIDTH_FEEDBACK_DESCRIPTOR,
   getBreakInDelayControlFeedback,
   getFilterWidthCommandLifecycle,
+  projectControlFeedback,
 } from '../panel-adapters';
 import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR, CW_PITCH_COMMAND_DESCRIPTOR, FILTER_WIDTH_COMMAND_DESCRIPTOR,
@@ -233,6 +239,77 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 3000, target: 2800, phase: 'pending', busy: true, outcome: null,
     });
+  });
+  it('projects only real dispatch and hold evidence, with stable duplicate identities', () => {
+    vi.useFakeTimers();
+    runtimeState.state = state();
+    const submitted = command();
+    lifecycle.commands = [submitted];
+    const submittedFeedback = projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    );
+    expect(submittedFeedback.phase).toBe('submitted');
+
+    submitted.dispatchedEventEpoch = 7;
+    const dispatched = projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    );
+    expect(dispatched).toMatchObject({ phase: 'dispatched', busy: true, target: 3000 });
+    expect(dispatched.transitionId).not.toBe(submittedFeedback.transitionId);
+    expect(projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    ).transitionId).toBe(dispatched.transitionId);
+
+    submitted.hold = Object.freeze({ commandId: submitted.id, originalEpoch: 7, eventEpoch: 7,
+      kind: 'held', reason: 'tx_active', expiresAt: 12.5 });
+    const queued = projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    );
+    expect(queued.phase).toBe('queued');
+    expect(queued.transitionId).not.toBe(dispatched.transitionId);
+    expect(vi.getTimerCount()).toBe(0);
+
+    submitted.status = 'acknowledged';
+    expect(projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    ).phase).toBe('queued');
+  });
+
+  it('shows the latest remote supersession but never revives a locally obsolete record', () => {
+    runtimeState.state = state();
+    const old = command({ id: 'old', createdAt: 1, locallyObsolete: true,
+      terminalOutcome: 'superseded', status: 'cancelled' });
+    const latest = command({ id: 'latest', createdAt: 2, params: { width: 2800 },
+      terminalOutcome: 'superseded', status: 'cancelled' });
+    lifecycle.commands = [old, latest];
+    lifecycle.superseded.add(old.id); lifecycle.superseded.add(latest.id);
+
+    const visible = projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    );
+    expect(visible).toMatchObject({
+      phase: 'superseded', busy: false, target: null,
+      requestedTarget: 2800, outcome: { phase: 'superseded' },
+    });
+
+    lifecycle.commands = [old];
+    expect(projectControlFeedback(
+      FILTER_WIDTH_COMMAND_DESCRIPTOR, runtimeState.state as never, lifecycle.commands as never,
+      { control: 'filter-width', receiver: 0 }, 7,
+      (candidate) => lifecycle.superseded.has(candidate.id),
+    )).toMatchObject({ phase: 'idle', target: null, outcome: null });
   });
   it('lets a newer terminal record suppress an older pending target', () => {
     runtimeState.state = state();
@@ -442,7 +519,14 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     const failed = start('failed', 2800); store.failCommand(failed.id, 12, 12, 'rejected'); assertRetainedThenGc(2800, 'failed');
     start('cancelled', 2600); store.cancelPendingCommands(12); assertRetainedThenGc(2600, 'cancelled');
     start('timed-out', 2400, 1); vi.advanceTimersByTime(1); assertRetainedThenGc(2400, 'timed-out');
-    expect(new Set(transitions)).toHaveLength(6);
+    const superseded = start('superseded', 2200);
+    store.applyCommandLifecycleProjection({ commandId: superseded.id, originalEpoch: 12,
+      eventEpoch: 12, kind: 'superseded' }, 12);
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle',
+      busy: false, outcome: { phase: 'superseded' }, presentation: { target: 2200, status: 'cancelled' } });
+    transitions.push(getLiveView().presentation!.transitionId); vi.advanceTimersByTime(5_000);
+    expect(getLiveView().presentation).toBeNull();
+    expect(new Set(transitions)).toHaveLength(7);
     store.resetCommandLifecycle();
   });
   it('isolates receivers and gives reused command ids in a later session a distinct identity', () => {

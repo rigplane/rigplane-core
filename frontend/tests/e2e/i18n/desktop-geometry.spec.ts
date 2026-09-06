@@ -1,6 +1,36 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
+import { fixtureById } from '../../../fixtures/catalog';
 import { mockCapabilities, mockInfo, mockState } from './fixtures';
+
+type TopologyId = 'topology-1-single' | 'topology-2-main-sub';
+
+function catalogFixture(id: TopologyId, known = true) {
+  const fixture = fixtureById(id);
+  if (!fixture) throw new Error(`Missing catalog fixture: ${id}`);
+  const topologyState = fixture.state();
+  const topologyCaps = fixture.caps();
+  if (!topologyState || !topologyCaps) throw new Error(`Incomplete catalog fixture: ${id}`);
+  const topologyRecord = topologyState as unknown as Record<string, unknown>;
+  const state = {
+    ...structuredClone(mockState),
+    ...structuredClone(topologyState),
+    main: {
+      ...structuredClone(mockState.main),
+      ...structuredClone(topologyState.main),
+    },
+  };
+  if (Object.prototype.hasOwnProperty.call(topologyRecord, 'sub') && topologyState.sub) {
+    state.sub = { ...structuredClone(mockState.sub), ...structuredClone(topologyState.sub) };
+  } else {
+    delete (state as unknown as { sub?: unknown }).sub;
+  }
+  if (!known) state.fieldStatus = {};
+  return {
+    state,
+    caps: { ...structuredClone(mockCapabilities), ...structuredClone(topologyCaps) },
+  };
+}
 
 // Geometry-bearing values from the MOR-1413 IC-7300 observation (18f7e459).
 // Keep provider/session metadata out of this portable fixture. Unknown cases
@@ -49,14 +79,28 @@ function fixture(known: boolean) {
   return { state, caps };
 }
 
-async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false) {
-  const { state, caps } = productionUnknown
+interface BootOptions {
+  height?: number;
+  theme?: 'nord' | 'github-light';
+  locale?: 'en-US' | 'ru-RU';
+  extraCapabilities?: string[];
+}
+
+async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false, topology?: TopologyId, options: BootOptions = {}) {
+  const { state, caps } = topology ? catalogFixture(topology, known) : productionUnknown
     ? { state: structuredClone(mockState), caps: structuredClone(mockCapabilities) } : fixture(known);
-  await page.setViewportSize({ width, height: width === 900 ? 900 : 1000 });
-  await page.addInitScript(({ state, layout, width, language }) => {
+  if (options.extraCapabilities) {
+    const tags = (caps as unknown as { capabilities: string[] }).capabilities;
+    (caps as unknown as { capabilities: string[] }).capabilities = [...new Set([...tags, ...options.extraCapabilities])];
+  }
+  const height = options.height ?? (width === 900 ? 900 : 1000);
+  const theme = options.theme ?? (width === 900 ? 'github-light' : 'nord');
+  const locale = options.locale ?? (width === 900 ? 'ru-RU' : 'en-US');
+  await page.setViewportSize({ width, height });
+  await page.addInitScript(({ state, layout, language, theme, locale }) => {
     localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 1, layout,
-      designLanguage: language, theme: width === 900 ? 'github-light' : 'nord' }));
-    localStorage.setItem('rigplane.i18n.locale', width === 900 ? 'ru-RU' : 'en-US');
+      designLanguage: language, theme }));
+    localStorage.setItem('rigplane.i18n.locale', locale);
     const commands: unknown[] = [];
     Object.assign(window, { geometryCommands: commands });
     // State registration only: no outgoing radio/HTTP command is forwarded.
@@ -89,7 +133,7 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
       close() { this.readyState = 3; const e = new Event('close'); this.dispatchEvent(e); this.onclose?.(e); }
     }
     Object.assign(window, { WebSocket: Socket });
-  }, { state, layout, width, language });
+  }, { state, layout, language, theme, locale });
   await page.route('**/api/**', route => {
     const name = new URL(route.request().url()).pathname.split('/').pop();
     const body = name === 'state' ? state : name === 'capabilities' ? caps : name === 'info' ? mockInfo
@@ -100,8 +144,10 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
         txObservation: { observedPtt: 'off' } } : {};
     return route.fulfill({ json: body });
   });
-  await page.goto(`/?locale=${width === 900 ? 'ru-RU' : 'en-US'}`, { waitUntil: 'networkidle' });
-  await expect(page.locator(layout.startsWith('lcd') ? '.lcd-layout' : '.desktop-control-face')).toBeVisible();
+  await page.goto(`/?locale=${locale}`, { waitUntil: 'networkidle' });
+  const shell = width <= 640 ? '.m-layout, .m-landscape'
+    : layout.startsWith('lcd') ? '.lcd-layout' : '.desktop-control-face';
+  await expect(page.locator(shell).first()).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
 }
 
@@ -117,6 +163,274 @@ async function focusWithoutActivation(page: Page, control: Locator) {
     return document.activeElement === e && (hit === e || e.contains(hit));
   })).toBe(true);
 }
+
+const STANDARD_WIDTHS = [1440, 1200, 1024, 900] as const;
+const STANDARD_TOPOLOGIES = ['topology-1-single', 'topology-2-main-sub'] as const;
+const STANDARD_SHORT_CASES = [
+  ['studioline', 'nord'], ['studioline', 'github-light'],
+  ['fieldline', 'nord'], ['fieldline', 'github-light'],
+] as const;
+const ALL_STRUCTURAL_ACTION_CAPS = ['vfo_equalize', 'vfo_swap', 'speech'];
+
+async function standardGeometry(page: Page) {
+  const selectors = {
+    root: '.desktop-control-face.standard-face',
+    status: '.desktop-control-face.standard-face > .status-bar',
+    receiver: '.desktop-control-face.standard-face [data-zone-id="receiver-deck"]',
+    left: '.desktop-control-face.standard-face .desktop-controls-left',
+    center: '.desktop-control-face.standard-face .desktop-controls-center',
+    right: '.desktop-control-face.standard-face .desktop-controls-right',
+    meters: '.desktop-control-face.standard-face [data-zone-id="meters"]',
+  } as const;
+  const entries = await Promise.all(Object.entries(selectors).map(async ([name, selector]) => {
+    const target = page.locator(selector).first();
+    await expect(target, `${name} is painted`).toBeVisible();
+    return [name, await target.evaluate(element => element.getBoundingClientRect().toJSON())] as const;
+  }));
+  const instruments = await page.locator('.standard-face .receiver-instrument').evaluateAll(elements =>
+    elements.map(instrument => {
+      const box = instrument.getBoundingClientRect();
+      const meter = instrument.querySelector('[data-testid="receiver-s-meter"]')?.getBoundingClientRect();
+      const primary = instrument.querySelector('.panel-body [data-vfo-freq]');
+      const secondary = instrument.querySelector('.slot-choice .vfo-freq');
+      const textBox = (element: Element | null) => {
+        if (!element) return null;
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const rects = [...range.getClientRects()];
+        const bounds = range.getBoundingClientRect();
+        return {
+          width: rects.reduce((sum, rect) => sum + rect.width, 0),
+          height: Math.max(0, ...rects.map(rect => rect.height)),
+          fontSize: Number.parseFloat(getComputedStyle(element).fontSize), rect: bounds.toJSON(),
+        };
+      };
+      return {
+        instrument: box.toJSON(), meter: meter?.toJSON() ?? null,
+        primary: textBox(primary), secondary: textBox(secondary),
+      };
+    }));
+  const horizontalClips = await page.locator(
+    '.standard-face .receiver-instrument, .standard-face [data-testid="receiver-s-meter"], '
+      + '.standard-face [data-vfo-freq], .standard-face .desktop-controls-left > *, '
+      + '.standard-face .desktop-controls-center > *, .standard-face .desktop-controls-right > *, '
+      + '.standard-face [data-zone-id="meters"] > *',
+  ).evaluateAll(elements => {
+    const viewportRight = document.documentElement.clientWidth;
+    return elements.flatMap((element, index) => {
+      const box = element.getBoundingClientRect();
+      return box.width > 0 && (box.left < -1 || box.right > viewportRight + 1)
+        ? [{ index, className: element.className, left: box.left, right: box.right, viewportRight }]
+        : [];
+    });
+  });
+  const receiverIntegrity = await page.locator(selectors.receiver).first().evaluate(receiver => {
+    const zone = receiver.getBoundingClientRect();
+    const tolerance = 1;
+    const clippedOverflow = /(hidden|clip|auto|scroll)/;
+    const descendants = [...receiver.querySelectorAll<HTMLElement>(
+      '.receiver-instrument, [data-testid="receiver-s-meter"], [data-vfo-freq], '
+        + '[data-instrument-bridge], [data-instrument-bridge] .active-receiver, '
+        + '[data-instrument-bridge] [data-testid="vfo-shared-indicators"], '
+        + '[data-instrument-bridge] [data-indicator-fact], [data-instrument-bridge] button, '
+        + '[data-instrument-bridge] [data-testid="vfo-split-digest"], '
+        + '[data-instrument-bridge] [data-split-rx], [data-instrument-bridge] [data-split-tx]',
+    )].filter(element => {
+      if (element.closest('.sr-only')) return false;
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+    });
+    const describe = (element: HTMLElement) => element.getAttribute('data-dual-action')
+      ?? element.getAttribute('data-testid') ?? element.getAttribute('data-indicator-fact')
+      ?? element.className ?? element.tagName;
+    const outsideZone = descendants.flatMap(element => {
+      const box = element.getBoundingClientRect();
+      return box.left < zone.left - tolerance || box.right > zone.right + tolerance
+        || box.top < zone.top - tolerance || box.bottom > zone.bottom + tolerance
+        ? [{ target: describe(element), rect: box.toJSON(), zone: zone.toJSON() }] : [];
+    });
+    const ancestorClips = descendants.flatMap(element => {
+      const box = element.getBoundingClientRect();
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        const parentBox = parent.getBoundingClientRect();
+        if (style.display === 'contents' || parentBox.width === 0 || parentBox.height === 0) continue;
+        const clippedX = clippedOverflow.test(style.overflowX)
+          && (box.left < parentBox.left - tolerance || box.right > parentBox.right + tolerance);
+        const clippedY = clippedOverflow.test(style.overflowY)
+          && (box.top < parentBox.top - tolerance || box.bottom > parentBox.bottom + tolerance);
+        if (clippedX || clippedY) {
+          return [{ target: describe(element), ancestor: describe(parent), axis: `${clippedX ? 'x' : ''}${clippedY ? 'y' : ''}` }];
+        }
+      }
+      return [];
+    });
+    const textTargets = descendants.filter(element => element.matches(
+      '[data-instrument-bridge] button, [data-instrument-bridge] .active-receiver, '
+        + '[data-instrument-bridge] [data-indicator-fact], [data-instrument-bridge] [data-split-rx], '
+        + '[data-instrument-bridge] [data-split-tx]',
+    ));
+    const textFailures = textTargets.flatMap(element => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      const text = range.getBoundingClientRect(); const owner = element.getBoundingClientRect();
+      return text.width <= 0 || text.height <= 0 || text.left < owner.left - tolerance
+        || text.right > owner.right + tolerance || text.top < owner.top - tolerance
+        || text.bottom > owner.bottom + tolerance || text.top < zone.top - tolerance
+        || text.bottom > zone.bottom + tolerance
+        ? [{ target: describe(element), text: text.toJSON(), owner: owner.toJSON() }] : [];
+    });
+    const hitFailures = descendants.filter(element => element.matches('[data-instrument-bridge] button'))
+      .flatMap(element => {
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return hit === element || (hit !== null && element.contains(hit)) ? []
+          : [{ target: describe(element), hit: hit instanceof HTMLElement ? describe(hit) : null }];
+      });
+    const actionNames = descendants.filter(element => element.matches('[data-dual-action]'))
+      .map(element => element.getAttribute('data-dual-action'));
+    return {
+      outsideZone, ancestorClips, textFailures, hitFailures, actionNames,
+      maxBottom: Math.max(zone.top, ...descendants.map(element => element.getBoundingClientRect().bottom)),
+    };
+  });
+  return { boxes: Object.fromEntries(entries), instruments, horizontalClips, receiverIntegrity };
+}
+
+function expectStandardReceiverIntegrity(
+  geometry: Awaited<ReturnType<typeof standardGeometry>>, bodyTop?: number,
+) {
+  expect.soft(geometry.receiverIntegrity.outsideZone, 'painted receiver descendants stay in their zone').toEqual([]);
+  expect.soft(geometry.receiverIntegrity.ancestorClips, 'receiver descendants survive clipping ancestors').toEqual([]);
+  expect.soft(geometry.receiverIntegrity.textFailures, 'bridge text ranges are painted and contained').toEqual([]);
+  expect.soft(geometry.receiverIntegrity.hitFailures, 'bridge controls are center-point hit-testable').toEqual([]);
+  if (bodyTop !== undefined) {
+    expect.soft(geometry.receiverIntegrity.maxBottom, 'receiver paint ends before the body row')
+      .toBeLessThanOrEqual(bodyTop + 1);
+  }
+}
+
+test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
+  for (const width of STANDARD_WIDTHS) for (const topology of STANDARD_TOPOLOGIES) {
+    test(`standard ${width} ${topology} painted grid`, async ({ page }, info) => {
+      await boot(page, 'standard', width, true, 'studioline', false, topology);
+      const root = page.locator('.desktop-control-face');
+      await expect(root).toHaveClass(/standard-face/);
+      await expect(root).not.toHaveClass(/sdr-test/);
+      await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', 'standard');
+      await expect(page.locator('[data-vfo-tile]')).toHaveCount(topology === 'topology-1-single' ? 1 : 4);
+      const geometry = await standardGeometry(page);
+      const boxes = geometry.boxes as Record<string, DOMRect>;
+      expect.soft(boxes.receiver.y, 'receiver deck follows status').toBeGreaterThanOrEqual(boxes.status.y + boxes.status.height - 1);
+      const bodyTop = Math.min(boxes.left.y, boxes.center.y, boxes.right.y);
+      const bodyBottom = Math.max(
+        boxes.left.y + boxes.left.height, boxes.center.y + boxes.center.height,
+        boxes.right.y + boxes.right.height,
+      );
+      expect.soft(bodyTop, 'outer-grid body follows the receiver deck').toBeGreaterThanOrEqual(boxes.receiver.y + boxes.receiver.height - 1);
+      expect.soft(boxes.meters.y, 'meters follow the outer-grid body').toBeGreaterThanOrEqual(bodyBottom - 1);
+      if (width > 1024) {
+        const sideWidth = width <= 1200 ? 208 : 228;
+        expect.soft(boxes.receiver.height, 'wide Standard receiver row keeps its 200px floor').toBeGreaterThanOrEqual(199);
+        expect.soft(boxes.left.width).toBeCloseTo(sideWidth, 0);
+        expect.soft(boxes.right.width).toBeCloseTo(sideWidth, 0);
+        expect.soft(boxes.left.y).toBeCloseTo(boxes.center.y, 0);
+        expect.soft(boxes.center.y).toBeCloseTo(boxes.right.y, 0);
+        expect.soft(boxes.left.x + boxes.left.width).toBeLessThan(boxes.center.x);
+        expect.soft(boxes.center.x + boxes.center.width).toBeLessThan(boxes.right.x);
+      } else {
+        expect.soft(boxes.left.x).toBeCloseTo(boxes.center.x, 0);
+        expect.soft(boxes.center.x).toBeCloseTo(boxes.right.x, 0);
+        expect.soft(boxes.left.y + boxes.left.height).toBeLessThanOrEqual(boxes.center.y + 1);
+        expect.soft(boxes.center.y + boxes.center.height).toBeLessThanOrEqual(boxes.right.y + 1);
+        expect.soft(boxes.right.y + boxes.right.height).toBeLessThanOrEqual(boxes.meters.y + 1);
+      }
+      expect.soft(geometry.horizontalClips, 'painted Standard descendants fit horizontally').toEqual([]);
+      expectStandardReceiverIntegrity(geometry, bodyTop);
+      for (const instrument of geometry.instruments) {
+        expect.soft(instrument.meter?.width ?? 0, 'receiver meter is painted').toBeGreaterThan(0);
+        expect.soft(instrument.meter?.height ?? 0, 'receiver meter is painted').toBeGreaterThan(0);
+        expect.soft(instrument.primary?.width ?? 0, 'primary frequency glyphs are painted').toBeGreaterThan(0);
+        expect.soft(instrument.primary?.height ?? 0, 'primary frequency glyphs are painted').toBeGreaterThan(0);
+        expect.soft(instrument.meter!.left).toBeGreaterThanOrEqual(instrument.instrument.left - 1);
+        expect.soft(instrument.meter!.right).toBeLessThanOrEqual(instrument.instrument.right + 1);
+        expect.soft(instrument.primary!.rect.left).toBeGreaterThanOrEqual(instrument.instrument.left - 1);
+        expect.soft(instrument.primary!.rect.right).toBeLessThanOrEqual(instrument.instrument.right + 1);
+        if (instrument.secondary) expect.soft(instrument.primary!.fontSize).toBeGreaterThan(instrument.secondary.fontSize);
+      }
+      if (topology === 'topology-2-main-sub') await expect(page.locator('.standard-face .spectrum-panel')).toBeVisible();
+      const unkey = page.getByTestId('rx-tx-unkey');
+      await expect(unkey).toHaveCount(1);
+      await focusWithoutActivation(page, unkey);
+      expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] }).geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+      await info.attach('standard-grid-bounds', { body: JSON.stringify(geometry, null, 2), contentType: 'application/json' });
+      const screenshot = info.outputPath('standard-grid.png');
+      await page.screenshot({ path: screenshot, fullPage: true });
+      await info.attach('standard-grid', { path: screenshot, contentType: 'image/png' });
+    });
+  }
+
+  test('crosses the 1200 and 1024 Standard thresholds without changing routes', async ({ page }) => {
+    await boot(page, 'standard', 1201, true, 'studioline', false, 'topology-1-single');
+    const root = page.locator('.desktop-control-face.standard-face');
+    const left = page.locator('.standard-face .desktop-controls-left');
+    const center = page.locator('.standard-face .desktop-controls-center');
+    expect((await left.boundingBox())!.width).toBeCloseTo(228, 0);
+    expectStandardReceiverIntegrity(await standardGeometry(page));
+    await page.setViewportSize({ width: 1200, height: 1000 });
+    expect((await left.boundingBox())!.width).toBeCloseTo(208, 0);
+    expectStandardReceiverIntegrity(await standardGeometry(page));
+    await page.setViewportSize({ width: 1025, height: 1000 });
+    expect((await left.boundingBox())!.y).toBeCloseTo((await center.boundingBox())!.y, 0);
+    expectStandardReceiverIntegrity(await standardGeometry(page));
+    await page.setViewportSize({ width: 1024, height: 1000 });
+    expect((await left.boundingBox())!.y + (await left.boundingBox())!.height)
+      .toBeLessThanOrEqual((await center.boundingBox())!.y + 1);
+    expectStandardReceiverIntegrity(await standardGeometry(page));
+    await expect(root).toHaveClass(/standard-face/);
+  });
+
+  for (const [language, theme] of STANDARD_SHORT_CASES) for (const locale of ['en-US', 'ru-RU'] as const) {
+    test(`standard 1280x800 ${language} ${theme} ${locale} contains the full bridge`, async ({ page }) => {
+      const known = locale === 'en-US';
+      await boot(page, 'standard', 1280, known, language, false, 'topology-2-main-sub', {
+        height: 800, theme, locale, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS,
+      });
+      const geometry = await standardGeometry(page);
+      const boxes = geometry.boxes as Record<string, DOMRect>;
+      const bodyTop = Math.min(boxes.left.y, boxes.center.y, boxes.right.y);
+      expectStandardReceiverIntegrity(geometry, bodyTop);
+      expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'equalize', 'swap', 'speak']);
+      expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
+        .geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+    });
+  }
+
+  for (const width of [1440, 1024] as const) {
+    test(`SDR ${width} keeps its current desktop grid`, async ({ page }) => {
+      await boot(page, 'sdr-test', width, true, 'studioline', false, 'topology-2-main-sub');
+      const root = page.locator('.desktop-control-face');
+      await expect(root).toHaveClass(/sdr-test/);
+      await expect(root).not.toHaveClass(/standard-face/);
+      await expect(page.locator('[data-vfo-appearance]').first()).toHaveAttribute('data-vfo-appearance', 'sdr');
+      const left = await page.locator('.desktop-controls-left').boundingBox();
+      const center = await page.locator('.desktop-controls-center').boundingBox();
+      const right = await page.locator('.desktop-controls-right').boundingBox();
+      expect(left!.y).toBeCloseTo(center!.y, 0);
+      expect(center!.y).toBeCloseTo(right!.y, 0);
+      expect(left!.x + left!.width).toBeLessThan(center!.x);
+      expect(center!.x + center!.width).toBeLessThan(right!.x);
+      expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] }).geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+    });
+  }
+
+  test('mobile keeps the mobile shell at 390px', async ({ page }) => {
+    await boot(page, 'standard', 390, true, 'studioline', false, 'topology-1-single');
+    await expect(page.locator('.m-layout, .m-landscape').first()).toBeVisible();
+    await expect(page.locator('.desktop-control-face')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] }).geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+  });
+});
 
 for (const layout of ['standard', 'sdr-test', 'lcd-scope', 'lcd-cockpit']) {
   for (const width of [900, 1440]) for (const known of [true, false]) {

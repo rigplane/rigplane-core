@@ -446,6 +446,16 @@ describe('RadioLayout structure', () => {
     expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
   });
 
+  it('discriminates the Standard outer grid from the SDR desktop face', () => {
+    const standard = mountLayout('desktop-v2');
+    const sdr = mountLayout('sdr-test');
+
+    expect(standard.querySelector('.radio-layout.desktop-control-face.standard-face')).not.toBeNull();
+    expect(standard.querySelector('.radio-layout.sdr-test')).toBeNull();
+    expect(sdr.querySelector('.radio-layout.desktop-control-face.sdr-test')).not.toBeNull();
+    expect(sdr.querySelector('.radio-layout.standard-face')).toBeNull();
+  });
+
   it('renders the root .radio-layout element', () => {
     const t = mountLayout();
     expect(t.querySelector('.radio-layout')).not.toBeNull();

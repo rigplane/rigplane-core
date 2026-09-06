@@ -265,7 +265,7 @@ export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
 }
 
 export type FilterWidthCommandPhase = 'unavailable' | 'idle' | 'pending' | 'acknowledged' | 'confirmed';
-export type FilterWidthCommandOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled';
+export type FilterWidthCommandOutcome = 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
 export interface FilterWidthLifecyclePresentation {
   /** Opaque correlation value; consumers must compare it, never parse it. */
   readonly lifecycleId: string;
@@ -336,29 +336,43 @@ export function projectControlFeedback<T>(
   let latest: CommandLifecycle | null = null;
   for (const command of commands) {
     const commandProviderGeneration = command.providerGeneration;
+    const remoteSuperseded = command.terminalOutcome === 'superseded';
     if (currentProviderGeneration === null
       || typeof commandProviderGeneration !== 'number'
       || !Number.isSafeInteger(commandProviderGeneration) || commandProviderGeneration < 0
       || commandProviderGeneration !== currentProviderGeneration
       || command.originalEpoch !== currentSessionEpoch || command.name !== descriptor.intentName
       || !sameFeedbackScope(descriptor.scope(command), scope) || descriptor.target(command) === null
-      || superseded(command)) continue;
+      || command.locallyObsolete === true || (superseded(command) && !remoteSuperseded)) continue;
     if (latest === null || command.createdAt >= latest.createdAt) latest = command;
   }
   if (latest === null) return empty('available', confirmed);
   const requestedTarget = descriptor.target(latest)!;
-  const terminal = latest.status === 'confirmed' || latest.status === 'failed'
+  const terminal = latest.terminalOutcome === 'superseded' || latest.status === 'confirmed' || latest.status === 'failed'
     || latest.status === 'timed-out' || latest.status === 'cancelled';
-  const phase: ControlFeedbackPhase = latest.status === 'pending' ? 'submitted'
-    : latest.status === 'acknowledged' ? 'awaiting-confirmation' : latest.status;
+  const phase: ControlFeedbackPhase = latest.terminalOutcome === 'superseded' ? 'superseded'
+    : latest.status === 'confirmed' || latest.status === 'failed'
+      || latest.status === 'timed-out' || latest.status === 'cancelled' ? latest.status
+    : latest.hold !== undefined ? 'queued'
+    : latest.status === 'acknowledged' ? 'awaiting-confirmation'
+    : latest.dispatchedEventEpoch !== undefined ? 'dispatched' : 'submitted';
+  const outcomePhase: ControlFeedbackOutcome = latest.terminalOutcome === 'superseded'
+    ? 'superseded' : latest.status as ControlFeedbackOutcome;
   const error = terminal && typeof latest.error === 'string' && latest.error.length > 0
     ? latest.error.slice(0, 256) : undefined;
+  const transitionId = phase === 'dispatched'
+    ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.dispatchedEventEpoch])
+    : phase === 'queued'
+      ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.hold?.eventEpoch, latest.hold?.expiresAt])
+      : phase === 'superseded'
+        ? JSON.stringify([latest.originalEpoch, latest.id, phase, latest.eventEpoch])
+        : JSON.stringify([latest.originalEpoch, latest.id, latest.status]);
   return Object.freeze({
     confirmed, target: terminal ? null : requestedTarget, requestedTarget, phase, busy: !terminal,
-    availability: 'available', outcome: terminal ? Object.freeze({ phase: latest.status as ControlFeedbackOutcome,
+    availability: 'available', outcome: terminal ? Object.freeze({ phase: outcomePhase,
       ...(error === undefined ? {} : { error }) }) : null,
     lifecycleId: JSON.stringify([latest.originalEpoch, latest.id]),
-    transitionId: JSON.stringify([latest.originalEpoch, latest.id, latest.status]),
+    transitionId,
     providerGeneration: currentProviderGeneration, sessionEpoch: currentSessionEpoch,
     scope: Object.freeze({ ...scope }), repeatPolicy: descriptor.repeatPolicy,
   });
@@ -622,7 +636,9 @@ function filterWidthPresentation(
   feedback: Readonly<ControlFeedback<number>>,
 ): Readonly<FilterWidthLifecyclePresentation> {
   const status = feedback.phase === 'submitted' ? 'pending'
-    : feedback.phase === 'awaiting-confirmation' ? 'acknowledged' : feedback.phase;
+    : feedback.phase === 'queued' || feedback.phase === 'dispatched' ? 'pending'
+    : feedback.phase === 'awaiting-confirmation' ? 'acknowledged'
+    : feedback.phase === 'superseded' ? 'cancelled' : feedback.phase;
   const error = feedback.outcome?.error;
   return Object.freeze({
     lifecycleId: feedback.lifecycleId!, transitionId: feedback.transitionId!,
@@ -643,7 +659,8 @@ export function getFilterWidthCommandLifecycle(): FilterWidthCommandLifecycleVie
   const presentation = filterWidthPresentation(feedback);
   if (feedback.phase === 'confirmed') return { confirmed: feedback.confirmed, target: null,
     phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' }, presentation };
-  if (feedback.phase === 'failed' || feedback.phase === 'timed-out' || feedback.phase === 'cancelled') {
+  if (feedback.phase === 'failed' || feedback.phase === 'timed-out'
+    || feedback.phase === 'cancelled' || feedback.phase === 'superseded') {
     return { confirmed: feedback.confirmed, target: null, phase: 'idle', busy: false,
       outcome: { phase: feedback.phase, error: feedback.outcome?.error }, presentation };
   }

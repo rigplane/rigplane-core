@@ -1,0 +1,20 @@
+{
+  "extends": "../tsconfig.app.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "checkJs": false,
+    "composite": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "./dist/types",
+    "removeComments": true,
+    "rootDir": "..",
+    "stripInternal": true,
+    "tsBuildInfoFile": "../node_modules/.tmp/component-kit-api.tsbuildinfo"
+  },
+  "include": [
+    "src/index.ts"
+  ]
+}
