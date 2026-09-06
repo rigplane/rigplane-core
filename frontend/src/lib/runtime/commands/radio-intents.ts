@@ -1,4 +1,4 @@
-import { acknowledgeCommand, applyCommandLifecycleProjection, beginCommand, cancelPendingCommands, failCommand, type CommandLifecycle } from '$lib/stores/commands.svelte';
+import { acknowledgeCommand, applyCommandLifecycleProjection, beginCommand, cancelPendingCommands, failCommand, markCommandDispatched, type CommandLifecycle } from '$lib/stores/commands.svelte';
 import { makeCommandId } from '$lib/types/protocol';
 import * as controlTransport from '$lib/transport/ws-client';
 import { getControlSession, onCommandDelivery, onControlSessionTransition, sendCommand } from '$lib/transport/ws-client';
@@ -96,7 +96,11 @@ function matchesParams(spec: Readonly<Record<string, FieldSpec>>, params: Record
 }
 
 onCommandDelivery((event) => {
-  if (event.kind === 'transport-sent') return;
+  if (event.kind === 'transport-sent') {
+    if (event.eventEpoch !== getControlSession().epoch) return;
+    markCommandDispatched(event.commandId, event.originalEpoch, event.eventEpoch);
+    return;
+  }
   if (event.cancelled) cancelPendingCommands(event.originalEpoch, event.error);
   else if (event.kind === 'ack' || event.kind === 'response-ok') acknowledgeCommand(event.commandId, event.originalEpoch, event.eventEpoch);
   else failCommand(event.commandId, event.originalEpoch, event.eventEpoch, event.error);

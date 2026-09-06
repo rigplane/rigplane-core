@@ -55,6 +55,68 @@ describe('command lifecycle store', () => {
     expect(() => store.beginCommand({ ...command })).toThrow(/duplicate command id/i);
   });
 
+  it('records dispatch and held evidence without changing coarse lifecycle authority', () => {
+    const command = store.beginCommand({
+      id: 'phase-source',
+      name: 'set_filter_width',
+      params: { width: 2_800, receiver: 0 },
+      originalEpoch: 7,
+    });
+
+    store.markCommandDispatched(command.id, 7, 7);
+    expect(store.getCommandLifecycle(command.id, 7)).toMatchObject({
+      status: 'pending',
+      dispatchedEventEpoch: 7,
+    });
+    store.applyCommandLifecycleProjection({
+      commandId: command.id,
+      originalEpoch: 7,
+      eventEpoch: 7,
+      kind: 'held',
+      reason: 'tx_active',
+      expiresAt: 12.5,
+    }, 7);
+    expect(store.getCommandLifecycle(command.id, 7)?.status).toBe('pending');
+    expect(store.getCommandLifecycleHold(command)).toEqual({
+      commandId: command.id,
+      originalEpoch: 7,
+      eventEpoch: 7,
+      kind: 'held',
+      reason: 'tx_active',
+      expiresAt: 12.5,
+    });
+
+    store.acknowledgeCommand(command.id, 7, 7);
+    expect(store.getCommandLifecycle(command.id, 7)?.status).toBe('acknowledged');
+    expect(store.getCommandLifecycleHold(command)?.expiresAt).toBe(12.5);
+  });
+
+  it('separates permanent local obsolescence from a remote terminal supersession', () => {
+    const old = store.beginCommand({
+      id: 'old', name: 'set_filter_width', params: { width: 3_000 }, originalEpoch: 7,
+    });
+    const latest = store.beginCommand({
+      id: 'latest', name: 'set_filter_width', params: { width: 2_800 }, originalEpoch: 7,
+    });
+    expect(store.getCommandLifecycle(old.id, 7)?.locallyObsolete).toBe(true);
+    expect(store.getCommandLifecycle(latest.id, 7)?.locallyObsolete).toBeUndefined();
+
+    store.applyCommandLifecycleProjection({
+      commandId: latest.id, originalEpoch: 7, eventEpoch: 7, kind: 'superseded',
+    }, 7);
+    expect(store.getCommandLifecycle(latest.id, 7)).toMatchObject({
+      status: 'cancelled', terminalOutcome: 'superseded',
+    });
+    expect(store.isCommandLifecycleSuperseded(latest)).toBe(true);
+
+    store.applyCommandLifecycleProjection({
+      commandId: old.id, originalEpoch: 7, eventEpoch: 7, kind: 'superseded',
+    }, 7);
+    expect(store.getCommandLifecycle(old.id, 7)).toMatchObject({
+      locallyObsolete: true, terminalOutcome: 'superseded',
+    });
+  });
+
   it('captures unresolved provider identity once and never backfills it on acknowledgement', () => {
     const command = store.beginCommand({
       id: 'unresolved-provider',
