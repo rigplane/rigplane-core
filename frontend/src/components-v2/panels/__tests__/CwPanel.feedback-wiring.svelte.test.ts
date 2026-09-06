@@ -31,7 +31,8 @@ afterEach(() => {
   if (component) unmount(component);
   component = null; target?.remove(); setLocale('en-US');
   Object.assign(feedback, { confirmed: 64, target: null, requestedTarget: null, phase: 'idle',
-    busy: false, availability: 'available', outcome: null, lifecycleId: null, transitionId: null });
+    busy: false, availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+    sessionEpoch: 1, scope: { control: 'break-in-delay', receiver: 0 } });
 });
 function render() {
   target = document.createElement('div'); document.body.appendChild(target);
@@ -41,6 +42,25 @@ function render() {
   return { input, live };
 }
 describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
+  it('keeps normalized input local until one native change commits it', () => {
+    handlers.onBreakInDelayChange.mockClear(); const r = render();
+    Object.defineProperty(r.input(), 'valueAsNumber', { configurable: true, value: 111.4 });
+    r.input().dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    expect([handlers.onBreakInDelayChange.mock.calls, r.input().value])
+      .toEqual([[], '111']);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect(handlers.onBreakInDelayChange).toHaveBeenCalledExactlyOnceWith(111);
+  });
+  it.each(['Escape', 'pointercancel'] as const)('%s cancels and suppresses a delayed change', (route) => {
+    handlers.onBreakInDelayChange.mockClear(); const r = render();
+    r.input().value = '111'; r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    const cancel = route === 'Escape'
+      ? new KeyboardEvent('keydown', { key: route, bubbles: true })
+      : new Event(route, { bubbles: true });
+    r.input().dispatchEvent(cancel);
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect([r.input().value, handlers.onBreakInDelayChange.mock.calls]).toEqual(['64', []]);
+  });
   it('projects pending and every terminal phase without replacing canonical truth', () => {
     const r = render();
     for (const [phase, busy] of [
@@ -106,5 +126,17 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
       .toEqual([true, 'Control unavailable', '—']);
     r.input().value = '111'; r.input().dispatchEvent(new Event('change', { bubbles: true }));
     expect(handlers.onBreakInDelayChange).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['session epoch', { sessionEpoch: 2 }],
+    ['feedback scope', { scope: { control: 'break-in-delay', receiver: 1 } }],
+  ] as const)('preserves equal reprojection but invalidates changed %s', (_case, changedContext) => {
+    handlers.onBreakInDelayChange.mockClear(); const r = render();
+    r.input().value = '111'; r.input().dispatchEvent(new Event('input', { bubbles: true }));
+    Object.assign(feedback, { confirmed: 64, sessionEpoch: 1 }); flushSync();
+    expect(r.input().value).toBe('111');
+    Object.assign(feedback, changedContext); flushSync();
+    r.input().dispatchEvent(new Event('change', { bubbles: true }));
+    expect([r.input().value, handlers.onBreakInDelayChange.mock.calls]).toEqual(['64', []]);
   });
 });

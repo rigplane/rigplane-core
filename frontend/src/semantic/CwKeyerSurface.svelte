@@ -124,13 +124,17 @@
 
 <script lang="ts">
   import {
-    projectControlFeedbackPresentation,
-    type ControlFeedbackPresentation,
     type ControlFeedbackPresentationInput,
-    type ControlFeedbackPresentationState,
     type PresentationPhase,
   } from '../primitives/control-feedback/control-feedback-presentation';
+  import { createCommittedScalar } from '../primitives/scalar/committed-scalar.svelte';
+  import { clamp, snapToStep } from '../components-v2/controls/value-control/value-control-core';
   import type { RadioViewModel } from './radio-view-model';
+
+  type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
+    readonly sessionEpoch?: number;
+    readonly scope?: Readonly<{ control: string; receiver: number; slot?: string }>;
+  };
 
   interface Props {
     view: RadioViewModel;
@@ -139,7 +143,7 @@
     onApfOn?: (on: boolean) => void;
     onTwinPeakToggle?: () => void;
     onReversePaddleToggle?: () => void;
-    breakInDelayFeedback?: Readonly<ControlFeedbackPresentationInput<number>>;
+    breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
     autoTuneAvailable?: boolean;
     onAutoTune?: () => void;
   }
@@ -204,8 +208,8 @@
     return target === null && requestedTarget !== null && outcome?.phase === phase
       && typeof transitionId === 'string' && transitionId.length > 0;
   }
-  let effectiveBreakInDelayFeedback = $derived.by<Readonly<ControlFeedbackPresentationInput<number>>>(() => {
-    let candidate: Readonly<ControlFeedbackPresentationInput<number>>;
+  let effectiveBreakInDelayFeedback = $derived.by<Readonly<BreakInDelayFeedback>>(() => {
+    let candidate: Readonly<BreakInDelayFeedback>;
     if (breakInDelayFeedback !== undefined) candidate = breakInDelayFeedback;
     else {
       const field = cw?.breakInDelay;
@@ -220,111 +224,72 @@
     catch { return unavailableFeedback; }
   });
   let hasBreakInDelayFeedback = $derived(breakInDelayFeedback !== undefined);
-  let breakInDelayPresentationMemory: Readonly<{
-    state: ControlFeedbackPresentationState; announcement: string | null;
-  }> = { state: { announcedTransitionIds: [] }, announcement: null };
-  let breakInDelayPresentation = $derived.by<Readonly<ControlFeedbackPresentation> & {
-    readonly announcement: string | null;
-  }>(() => {
-    const next = projectControlFeedbackPresentation(
-      effectiveBreakInDelayFeedback,
-      breakInDelayPresentationMemory.state,
-      (target) => String(target),
-    );
-    const announcement = next.politeAnnouncement?.message
-      ?? breakInDelayPresentationMemory.announcement;
-    breakInDelayPresentationMemory = { state: next.state, announcement };
-    return Object.freeze({ ...next, announcement });
-  });
-
+  let breakInDelayContextKey = $derived(JSON.stringify([
+    'cw-keyer.break-in-delay',
+    breakInDelayFeedback?.sessionEpoch ?? null,
+    breakInDelayFeedback?.scope?.control ?? null,
+    breakInDelayFeedback?.scope?.receiver ?? null,
+    breakInDelayFeedback?.scope?.slot ?? null,
+  ]));
   const INTEGRATED_RANGE_POLICY = { 'feedback-policy': 'feedback-integrated' } as const;
   const RADIO_BACKED_RANGE_POLICY = { 'feedback-policy': 'radio-backed' } as const;
-  let breakInDelayBusy = $derived(BUSY_BREAK_IN_DELAY_PHASES.has(effectiveBreakInDelayFeedback.phase));
   let breakInDelayEditable = $derived(
     cw !== undefined && usable(cw.breakInDelay)
       && effectiveBreakInDelayFeedback.phase !== 'unavailable',
   );
-  let breakInDelayAuthority = $derived(JSON.stringify([
-    effectiveBreakInDelayFeedback.transitionId, effectiveBreakInDelayFeedback.phase,
-    effectiveBreakInDelayFeedback.confirmed, effectiveBreakInDelayFeedback.target,
-    effectiveBreakInDelayFeedback.requestedTarget, effectiveBreakInDelayFeedback.outcome?.phase ?? null,
-  ]));
-  let breakInDelayDraft: number | null = $state(null);
-  let breakInDelayDraftAuthority: string | null = $state(null);
-  let activeBreakInDelayDraft = $derived(
-    breakInDelayDraftAuthority === breakInDelayAuthority ? breakInDelayDraft : null,
+  const breakInDelayScalar = createCommittedScalar(
+    () => ({
+      feedback: effectiveBreakInDelayFeedback,
+      editable: breakInDelayEditable,
+      contextKey: breakInDelayContextKey,
+    }),
+    {
+      accepts: validLevel,
+      normalize: (value) => snapToStep(clamp(
+        value, breakInDelayDomain[2], breakInDelayDomain[3],
+      ), breakInDelayDomain[4], breakInDelayDomain[2]),
+      draftPolicy: 'reject-invalid',
+      describeTarget: String,
+    },
+    (value) => setLevel('breakInDelay', value),
   );
-  let breakInDelayDisplayed = $derived(
-    activeBreakInDelayDraft
-      ?? (breakInDelayBusy
-        ? (effectiveBreakInDelayFeedback.target
-          ?? effectiveBreakInDelayFeedback.requestedTarget
-          ?? effectiveBreakInDelayFeedback.confirmed)
-        : effectiveBreakInDelayFeedback.confirmed),
+  let breakInDelayView = $derived(breakInDelayScalar.view);
+  let breakInDelayBusy = $derived(
+    breakInDelayView.presentation.attributes['aria-busy'] === 'true',
   );
   let breakInDelayPhaseLabel = $derived(
-    activeBreakInDelayDraft !== null
+    breakInDelayView.editing
       ? 'draft'
-      : effectiveBreakInDelayFeedback.phase.replaceAll('-', ' '),
+      : breakInDelayView.feedback.phase.replaceAll('-', ' '),
   );
   let breakInDelayValueText = $derived.by(() => {
-    const confirmed = effectiveBreakInDelayFeedback.confirmed;
-    if (effectiveBreakInDelayFeedback.phase === 'unavailable' || confirmed === null) {
+    const confirmed = breakInDelayView.confirmed;
+    if (confirmed === null) {
       return 'Break-in delay unavailable';
     }
-    if (activeBreakInDelayDraft !== null) {
-      return `Draft ${activeBreakInDelayDraft}; last confirmed ${confirmed}`;
+    if (breakInDelayView.draft !== null) {
+      return `Draft ${breakInDelayView.draft}; last confirmed ${confirmed}`;
     }
     if (breakInDelayBusy) {
-      return `Requested ${breakInDelayDisplayed}; last confirmed ${confirmed}`;
+      return `Requested ${breakInDelayView.displayed}; last confirmed ${confirmed}`;
     }
-    const requested = effectiveBreakInDelayFeedback.requestedTarget;
-    if (effectiveBreakInDelayFeedback.outcome !== null && requested !== null
-      && effectiveBreakInDelayFeedback.outcome.phase !== 'confirmed') {
-      return `Confirmed ${confirmed}; request ${requested} ${effectiveBreakInDelayFeedback.outcome.phase}`;
+    const requested = breakInDelayView.feedback.requestedTarget;
+    if (breakInDelayView.feedback.outcome !== null && requested !== null
+      && breakInDelayView.feedback.outcome.phase !== 'confirmed') {
+      return `Confirmed ${confirmed}; request ${requested} ${breakInDelayView.feedback.outcome.phase}`;
     }
     return `Confirmed ${confirmed}`;
   });
-  let breakInDelayCancelled = false;
-  function restoreBreakInDelay(target: HTMLInputElement): void {
-    target.value = String(effectiveBreakInDelayFeedback.confirmed ?? Number(target.min));
-  }
   function noteBreakInDelayInput(target: HTMLInputElement): void {
-    breakInDelayCancelled = false;
-    const candidate = target.valueAsNumber;
-    if (breakInDelayEditable && validLevel(candidate)) {
-      breakInDelayDraft = candidate;
-      breakInDelayDraftAuthority = breakInDelayAuthority;
-    }
+    breakInDelayScalar.input(target.valueAsNumber);
   }
   function commitBreakInDelay(target: HTMLInputElement): void {
-    if (breakInDelayCancelled) {
-      breakInDelayCancelled = false;
-      restoreBreakInDelay(target);
-      return;
-    }
-    if (breakInDelayDraft !== null && breakInDelayDraftAuthority !== breakInDelayAuthority) {
-      breakInDelayDraft = null;
-      breakInDelayDraftAuthority = null;
-      restoreBreakInDelay(target);
-      return;
-    }
-    const candidate = activeBreakInDelayDraft ?? target.valueAsNumber;
-    const min = Number(target.min);
-    const max = Number(target.max);
-    if (Number.isFinite(candidate) && Number.isFinite(min) && Number.isFinite(max)) {
-      if (breakInDelayEditable) {
-        setLevel('breakInDelay', Math.min(max, Math.max(min, Math.round(candidate))));
-      }
-    }
-    breakInDelayDraft = null;
-    breakInDelayDraftAuthority = null;
+    const restored = breakInDelayScalar.commit(target.valueAsNumber);
+    if (restored !== null) target.value = String(restored);
   }
   function cancelBreakInDelay(target: HTMLInputElement): void {
-    breakInDelayCancelled = true;
-    breakInDelayDraft = null;
-    breakInDelayDraftAuthority = null;
-    restoreBreakInDelay(target);
+    const restored = breakInDelayScalar.cancel();
+    if (restored !== null) target.value = String(restored);
   }
   function keyBreakInDelay(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {
     if (event.key !== 'Escape') return;
@@ -388,14 +353,14 @@
           {#if field === 'breakInDelay'}
             <input
               {...INTEGRATED_RANGE_POLICY} type="range" {min} {max} {step}
-              value={breakInDelayDisplayed ?? (hasBreakInDelayFeedback ? undefined : min)}
-              disabled={hasBreakInDelayFeedback ? !breakInDelayEditable : !usable(f)}
+              value={breakInDelayView.displayed ?? (hasBreakInDelayFeedback ? undefined : min)}
+              disabled={hasBreakInDelayFeedback ? !breakInDelayView.editable : !usable(f)}
               data-command-phase={hasBreakInDelayFeedback
-                ? breakInDelayPresentation.attributes['data-command-phase'] : undefined}
+                ? breakInDelayView.presentation.attributes['data-command-phase'] : undefined}
               aria-busy={hasBreakInDelayFeedback
-                ? breakInDelayPresentation.attributes['aria-busy'] : undefined}
-              aria-valuenow={hasBreakInDelayFeedback && breakInDelayDisplayed !== null
-                ? breakInDelayDisplayed : undefined}
+                ? breakInDelayView.presentation.attributes['aria-busy'] : undefined}
+              aria-valuenow={hasBreakInDelayFeedback && breakInDelayView.displayed !== null
+                ? breakInDelayView.displayed : undefined}
               aria-valuetext={hasBreakInDelayFeedback ? breakInDelayValueText : undefined}
               oninput={(event) => noteBreakInDelayInput(event.currentTarget)}
               onchange={(event) => commitBreakInDelay(event.currentTarget)}
@@ -405,16 +370,15 @@
             {#if hasBreakInDelayFeedback}
             <output
               data-testid="cw-keyer-breakInDelay-value"
-              data-command-phase={effectiveBreakInDelayFeedback.phase}
-            >{effectiveBreakInDelayFeedback.phase === 'unavailable'
-              || breakInDelayDisplayed === null ? UNKNOWN_TEXT : breakInDelayDisplayed}
+              data-command-phase={breakInDelayView.feedback.phase}
+            >{breakInDelayView.displayed === null ? UNKNOWN_TEXT : breakInDelayView.displayed}
               <span class:command-pending={breakInDelayBusy}>{breakInDelayPhaseLabel}</span>
             </output>
-            {#if breakInDelayPresentation.announcement !== null}
+            {#if breakInDelayView.announcement !== null}
               <span
                 class="sr-only" role="status" aria-live="polite" aria-atomic="true"
                 data-control-feedback-status
-              >{breakInDelayPresentation.announcement}</span>
+              >{breakInDelayView.announcement}</span>
             {/if}
             {:else}
               <output data-testid="cw-keyer-breakInDelay-value">{textOf(f)} {unit}</output>

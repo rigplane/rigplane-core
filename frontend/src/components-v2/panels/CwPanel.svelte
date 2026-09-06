@@ -1,12 +1,12 @@
 <script lang="ts">
   import '../controls/control-button.css';
   import { HardwareButton } from '$lib/Button';
-  import { ValueControl, rawToPercentDisplay } from '../controls/value-control';
-  import { getLocale } from '$lib/i18n';
   import {
-    projectControlFeedbackPresentation,
-    type PresentationPhase,
-  } from '../../primitives/control-feedback/control-feedback-presentation';
+    ValueControl, clamp, rawToPercentDisplay, snapToStep,
+  } from '../controls/value-control';
+  import { getLocale } from '$lib/i18n';
+  import type { PresentationPhase } from '../../primitives/control-feedback/control-feedback-presentation';
+  import { createCommittedScalar } from '../../primitives/scalar/committed-scalar.svelte';
 
   import { isApfActive } from './cw-panel-logic';
   import {
@@ -63,50 +63,31 @@
     ? candidateBreakInDelayFeedback : { ...candidateBreakInDelayFeedback,
       confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
       busy: false, availability: 'unavailable' as const, outcome: null, transitionId: null });
-  let breakInDelayAvailable = $derived(
+  let breakInDelayEditable = $derived(
     breakInDelayFeedback.availability === 'available'
       && breakInDelayFeedback.confirmed !== null,
   );
-  let breakInDelayTruth = $derived(
-    breakInDelayFeedback.busy && breakInDelayFeedback.target !== null
-      ? breakInDelayFeedback.target
-      : breakInDelayFeedback.confirmed,
-  );
-  let breakInDelayDraft = $state(0);
-  let breakInDelayEditing = $state(false);
-  let breakInDelayCancelled = $state(false);
-  let breakInDelayDraftAuthority = $state('');
-  let breakInDelayAnnouncement = $state<string | null>(null);
-  const announcedBreakInDelayTransitions = new Set<string>();
   const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
-  let breakInDelayPresentation = $derived(projectControlFeedbackPresentation(
-    breakInDelayFeedback,
-    { announcedTransitionIds: [] },
-    rawToPercentDisplay,
-  ));
-  let breakInDelayAuthority = $derived(JSON.stringify([
-    breakInDelayFeedback.sessionEpoch, breakInDelayFeedback.transitionId,
-    breakInDelayFeedback.phase, breakInDelayFeedback.confirmed,
-  ]));
-  $effect(() => {
-    const truth = breakInDelayTruth, authority = breakInDelayAuthority;
-    if (breakInDelayEditing && breakInDelayDraftAuthority !== authority) {
-      breakInDelayCancelled = true;
-      breakInDelayEditing = false;
-    }
-    if (!breakInDelayEditing && truth !== null) breakInDelayDraft = truth;
-  });
-  $effect(() => {
-    const transition = breakInDelayPresentation.politeAnnouncement;
-    if (transition && !announcedBreakInDelayTransitions.has(transition.transitionId)) {
-      announcedBreakInDelayTransitions.add(transition.transitionId);
-      breakInDelayAnnouncement = breakInDelayMessage(
-        transition.phase,
-        breakInDelayFeedback.requestedTarget,
-        breakInDelayFeedback.confirmed,
-      );
-    }
-  });
+  const breakInDelayScalar = createCommittedScalar(
+    () => ({
+      feedback: breakInDelayFeedback,
+      editable: breakInDelayEditable,
+      contextKey: JSON.stringify([
+        breakInDelayFeedback.sessionEpoch,
+        breakInDelayFeedback.scope.control,
+        breakInDelayFeedback.scope.receiver,
+        breakInDelayFeedback.scope.slot ?? null,
+      ]),
+    }),
+    {
+      accepts: validDelay,
+      normalize: (value) => snapToStep(clamp(value, 0, 255), 1, 0),
+      draftPolicy: 'normalize',
+      describeTarget: rawToPercentDisplay,
+    },
+    onBreakInDelayChange,
+  );
+  let breakInDelayView = $derived(breakInDelayScalar.view);
   const delayText = (value: number | null): string =>
     value === null ? '—' : rawToPercentDisplay(value);
   const delayLabel = (): string =>
@@ -129,50 +110,41 @@
     if (phase === 'idle' || phase === 'confirmed') return `${label}: ${canonical}`;
     return `${label} ${delayText(target)}; ${ru ? 'подтверждено' : 'confirmed'} ${canonical}`;
   }
+  let retainedBreakInDelayAnnouncement: string | null = null;
+  let breakInDelayAnnouncement = $derived.by(() => {
+    const transition = breakInDelayView.presentation.politeAnnouncement;
+    if (transition !== null) {
+      retainedBreakInDelayAnnouncement = breakInDelayMessage(
+        transition.phase,
+        breakInDelayView.feedback.requestedTarget,
+        breakInDelayView.confirmed,
+      );
+    }
+    return retainedBreakInDelayAnnouncement;
+  });
   let breakInDelayValueText = $derived(
-    !breakInDelayAvailable
+    !breakInDelayView.editable
       ? breakInDelayMessage('unavailable', null, null)
-      : breakInDelayEditing
-        ? `${getLocale() === 'ru-RU' ? 'Черновик' : 'Draft'} ${delayText(breakInDelayDraft)}; ${getLocale() === 'ru-RU' ? 'подтверждено' : 'last confirmed'} ${delayText(breakInDelayFeedback.confirmed)}`
+      : breakInDelayView.editing
+        ? `${getLocale() === 'ru-RU' ? 'Черновик' : 'Draft'} ${delayText(breakInDelayView.draft)}; ${getLocale() === 'ru-RU' ? 'подтверждено' : 'last confirmed'} ${delayText(breakInDelayView.confirmed)}`
         : breakInDelayMessage(
-          breakInDelayFeedback.phase,
-          breakInDelayFeedback.target ?? breakInDelayFeedback.requestedTarget,
-          breakInDelayFeedback.confirmed,
+          breakInDelayView.feedback.phase,
+          breakInDelayView.feedback.target ?? breakInDelayView.feedback.requestedTarget,
+          breakInDelayView.confirmed,
         ),
   );
-  function restoreBreakInDelay(): void {
-    breakInDelayEditing = false;
-    breakInDelayDraft = breakInDelayTruth ?? 0;
-  }
   function updateBreakInDelayDraft(event: Event): void {
-    if (!breakInDelayAvailable) return;
-    if (!breakInDelayEditing) breakInDelayDraftAuthority = breakInDelayAuthority;
-    breakInDelayCancelled = false;
-    breakInDelayEditing = true;
-    breakInDelayDraft = Math.min(255, Math.max(0, Math.round(
-      (event.currentTarget as HTMLInputElement).valueAsNumber,
-    )));
+    breakInDelayScalar.input((event.currentTarget as HTMLInputElement).valueAsNumber);
   }
   function commitBreakInDelay(event: Event): void {
-    if (breakInDelayCancelled) {
-      breakInDelayCancelled = false;
-      restoreBreakInDelay();
-      (event.currentTarget as HTMLInputElement).value = String(breakInDelayDraft);
-      return;
-    }
-    const candidate = (event.currentTarget as HTMLInputElement).valueAsNumber;
-    if (breakInDelayAvailable && Number.isFinite(candidate)) {
-      const bounded = Math.min(255, Math.max(0, Math.round(candidate)));
-      breakInDelayDraft = bounded;
-      onBreakInDelayChange(bounded);
-    }
-    breakInDelayEditing = false;
+    const target = event.currentTarget as HTMLInputElement;
+    const restored = breakInDelayScalar.commit(target.valueAsNumber);
+    if (restored !== null) target.value = String(restored);
   }
   function cancelBreakInDelay(event?: Event): void {
-    breakInDelayCancelled = true;
-    restoreBreakInDelay();
+    const restored = breakInDelayScalar.cancel();
     if (event?.currentTarget instanceof HTMLInputElement) {
-      event.currentTarget.value = String(breakInDelayDraft);
+      if (restored !== null) event.currentTarget.value = String(restored);
     }
   }
   function handleBreakInDelayKeydown(event: KeyboardEvent): void {
@@ -263,26 +235,26 @@
         <span class="break-in-delay-header">
           <span>{delayLabel()}</span>
           <output data-testid="cw-break-in-delay-value">
-            {breakInDelayAvailable ? delayText(breakInDelayDraft) : '—'}
+            {breakInDelayView.editable ? delayText(breakInDelayView.displayed) : '—'}
           </output>
         </span>
         <input
           data-testid="cw-break-in-delay"
-          type="range" min="0" max="255" step="1" value={breakInDelayDraft}
+          type="range" min="0" max="255" step="1" value={breakInDelayView.displayed ?? undefined}
           {...feedbackIntegratedRange}
-          disabled={!breakInDelayAvailable}
+          disabled={!breakInDelayView.editable}
           aria-label={delayLabel()}
-          aria-valuenow={breakInDelayAvailable ? breakInDelayDraft : undefined}
+          aria-valuenow={breakInDelayView.displayed ?? undefined}
           aria-valuetext={breakInDelayValueText}
-          aria-busy={breakInDelayPresentation.attributes['aria-busy']}
-          data-command-phase={breakInDelayPresentation.attributes['data-command-phase']}
+          aria-busy={breakInDelayView.presentation.attributes['aria-busy']}
+          data-command-phase={breakInDelayView.presentation.attributes['data-command-phase']}
           oninput={updateBreakInDelayDraft}
           onchange={commitBreakInDelay}
           onpointercancel={cancelBreakInDelay}
           onkeydown={handleBreakInDelayKeydown}
         />
         <span class="break-in-delay-phase" aria-hidden="true">
-          ● {breakInDelayFeedback.phase}
+          ● {breakInDelayView.feedback.phase}
         </span>
         {#if breakInDelayAnnouncement}
           <span
