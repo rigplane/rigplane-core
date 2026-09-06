@@ -184,7 +184,9 @@ describe('ValueControl controlled HBar rendering', () => {
 
   it.each([
     [42, '42%', '42', '42%'],
-    [Number.NaN, '--- %', null, '0%'],
+    [Number.POSITIVE_INFINITY, '+INF', null, '0%'],
+    [Number.NEGATIVE_INFINITY, '-INF', null, '0%'],
+    [Number.NaN, 'NAN', null, '0%'],
   ] as const)('projects a %s reading synchronously through the caller formatter', (
     value, expectedText, expectedAria, expectedFill,
   ) => {
@@ -193,14 +195,16 @@ describe('ValueControl controlled HBar rendering', () => {
     roots.push(target);
     const component = mount(ValueControl, { target, props: {
       ...baseProps, value, max: 100, onChange: vi.fn(),
-      displayFn: (candidate: number) => Number.isFinite(candidate) ? `${candidate}%` : '--- %',
+      displayFn: (candidate: number) => Number.isNaN(candidate) ? 'NAN'
+        : candidate === Number.POSITIVE_INFINITY ? '+INF'
+          : candidate === Number.NEGATIVE_INFINITY ? '-INF' : `${candidate}%`,
     } });
     components.push(component);
 
     expect(visibleValue(target)).toBe(expectedText);
     expect(slider(target).getAttribute('aria-valuenow')).toBe(expectedAria);
     expect(fill(target)).toContain(`--vc-fill-percent: ${expectedFill}`);
-    expect(slider(target).getAttribute('aria-disabled')).toBe(value === 42 ? 'false' : 'true');
+    expect(slider(target).getAttribute('aria-disabled')).toBe(Number.isFinite(value) ? 'false' : 'true');
   });
 
   it('uses canonical value for controlled keyboard arithmetic until the parent accepts', () => {

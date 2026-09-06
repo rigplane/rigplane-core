@@ -98,12 +98,16 @@
     }),
     policy,
   );
+  let unknownDisplay = $derived(
+    !Number.isFinite(value) && displayFn ? displayFn(value) : undefined,
+  );
 
   onDestroy(() => binding.destroy());
 </script>
 
 <HBarRenderer
-  {binding} {min} {max} {step} {label} {displayFn} {fillColor} {fillGradient} {trackColor}
+  {binding} {min} {max} {step} {label} {displayFn} {unknownDisplay}
+  {fillColor} {fillGradient} {trackColor}
   {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
   legacyPresentation={{ feedbackPhase, feedbackBusy, feedbackDescription, feedbackStatus }}
 />

@@ -29,6 +29,7 @@
     step: number;
     label: string;
     displayFn?: (v: number) => string;
+    unknownDisplay?: string;
     fillColor?: string;
     fillGradient?: string[];
     trackColor?: string;
@@ -50,6 +51,7 @@
     step,
     label,
     displayFn,
+    unknownDisplay,
     fillColor,
     fillGradient,
     trackColor = 'var(--v2-bg-gradient-start)',
@@ -104,7 +106,7 @@
     ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
     : (fillColor ?? accentColor));
   let displayValue = $derived(renderedValue === null
-    ? displayFn ? displayFn(Number.NaN) : '—'
+    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
     : displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
 
   function handlePointerDown(e: PointerEvent) {
