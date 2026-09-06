@@ -64,10 +64,12 @@
  * mounts it.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { mount, unmount } from 'svelte';
+import { createRawSnippet, mount, unmount, type Snippet } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SkinId } from '../registry';
-import type { InstrumentComposition } from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
+import type {
+  InstrumentComposition, InstrumentVfoAppearance,
+} from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
 
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
 const mountedInstrumentInputs = vi.hoisted(() => [] as unknown[]);
@@ -144,19 +146,48 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
 
-const radioLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'radio-layout');
+const radioLayoutSkinIds = allSkinIds.filter(
+  (id): id is 'desktop-v2' | 'sdr-test' => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'radio-layout',
+);
 
-const lcdLayoutCases = allSkinIds.flatMap((id) => {
+type LcdLayoutSkinId = 'lcd-cockpit' | 'lcd-scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first';
+const lcdLayoutSkinIds = allSkinIds.filter(
+  (id): id is LcdLayoutSkinId => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'lcd-layout',
+);
+const lcdLayoutCases = lcdLayoutSkinIds.map((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
-  return coverage.kind === 'lcd-layout' ? [[id, coverage.variant] as const] : [];
+  if (coverage.kind !== 'lcd-layout') throw new Error(`Expected LCD coverage for ${id}`);
+  return [id, coverage.variant] as const;
 });
 
-const mobileLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout');
+const mobileLayoutSkinIds = allSkinIds.filter(
+  (id): id is 'mobile' => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout',
+);
 
 const coveredElsewhereCases = allSkinIds.flatMap((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
   return coverage.kind === 'covered-elsewhere' ? [[id, coverage] as const] : [];
 });
+
+const emptySnippet = createRawSnippet(() => ({ render: () => '' }));
+const vfoSnippet = createRawSnippet<[appearance: InstrumentVfoAppearance, allowBare?: boolean]>(
+  () => ({ render: () => '' }),
+);
+const txAuxSnippet = createRawSnippet<[scalarLayout: Snippet, allowBare?: boolean]>(
+  () => ({ render: () => '' }),
+);
+const scalarHandles = {
+  rfPower: emptySnippet, micGain: emptySnippet, driveGain: emptySnippet, voxGain: emptySnippet,
+  antiVoxGain: emptySnippet, voxDelay: emptySnippet, compressorLevel: emptySnippet,
+  monitorLevel: emptySnippet,
+};
+const INSTRUMENTS = {
+  vfo: vfoSnippet, rxTx: emptySnippet, txAuxControls: txAuxSnippet, txAuxScalars: scalarHandles,
+  meters: emptySnippet, rxAudio: emptySnippet, rfFrontEnd: emptySnippet, filter: emptySnippet,
+  dsp: emptySnippet, band: emptySnippet, antenna: emptySnippet, ritXitScan: emptySnippet,
+  cwKeyer: emptySnippet, scopeDisplay: emptySnippet, scopeControls: emptySnippet,
+  txFaultRecovery: emptySnippet, modInputTxWarning: emptySnippet, managedScope: undefined,
+} satisfies InstrumentComposition;
 
 describe('desktop skin entrypoints', () => {
   // Kills: a RadioLayout-backed skin no longer passing its own SkinId
@@ -165,10 +196,9 @@ describe('desktop skin entrypoints', () => {
   it.each(radioLayoutSkinIds)('mounts RadioLayout with its own stable skin ID (%s)', async (skinId) => {
     const Component = await loadSkin(skinId);
     const target = document.createElement('div');
-    const instruments = { marker: Symbol(skinId) } as unknown as InstrumentComposition;
-    components.push(mount(Component, { target, props: { instruments } }));
+    components.push(mount(Component, { target, props: { instruments: INSTRUMENTS } }));
     expect(mountedSkinIds).toEqual([skinId]);
-    expect(mountedInstrumentInputs).toEqual([instruments]);
+    expect(mountedInstrumentInputs).toEqual([INSTRUMENTS]);
   });
 });
 
