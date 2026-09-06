@@ -270,6 +270,7 @@
 {:else if renderer === 'discrete'}
   <DiscreteRenderer
     binding={scalarBinding} {label} {displayFn} {unknownDisplay}
+    dimmed={externalBinding === undefined ? disabled : undefined}
     {fillColor} {fillGradient} {trackColor}
     {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
     {tickLabels} {showAllTicks} {tickStyle} {legacy}

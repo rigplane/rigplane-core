@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import ValueControl from '../ValueControl.svelte';
+import DiscreteRenderer from '../DiscreteRenderer.svelte';
 import {
   createBipolarContinuousScalarPolicy,
   createContinuousScalar,
@@ -647,6 +648,120 @@ describe('ValueControl controlled Bipolar rendering', () => {
 });
 
 describe('ValueControl controlled Discrete rendering', () => {
+  it('keeps a raw unknown reading undimmed but noninteractive without numeric value ARIA', () => {
+    const onChange = vi.fn();
+    const { target } = mountReactive({
+      value: Number.NaN,
+      min: 0,
+      max: 100,
+      step: 10,
+      disabled: false,
+      label: 'Unknown raw Discrete',
+      renderer: 'discrete',
+      onChange,
+    });
+    const wrapper = target.querySelector('.vc-discrete')!;
+    const control = slider(target);
+
+    expect(wrapper.classList.contains('dimmed')).toBe(false);
+    expect(wrapper.classList.contains('disabled')).toBe(false);
+    expect(wrapper.classList.contains('interaction-disabled')).toBe(true);
+    expect(control.getAttribute('aria-valuenow')).toBeNull();
+    expect(control.getAttribute('aria-disabled')).toBe('true');
+    expect(control.getAttribute('tabindex')).toBe('-1');
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    control.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('dims an explicitly disabled raw Discrete without changing owner editability', () => {
+    const { target } = mountReactive({
+      value: 20,
+      min: 0,
+      max: 100,
+      step: 10,
+      disabled: true,
+      label: 'Disabled raw Discrete',
+      renderer: 'discrete',
+      onChange: vi.fn(),
+    });
+
+    expect(target.querySelector('.vc-discrete')?.classList.contains('dimmed')).toBe(true);
+    expect(target.querySelector('.vc-discrete')?.classList.contains('interaction-disabled')).toBe(true);
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+    expect(slider(target).getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('retains default noneditable dimming for a direct external binding', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading',
+        reading: { status: 'unknown' },
+        ownerKey: 'external-unknown-discrete',
+        domain: { min: 0, max: 100, step: 10, defaultValue: null, fineStepDivisor: 10 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createDiscreteContinuousScalarPolicy({ debounceMs: 0 }),
+    );
+    const { target } = mountReactive({
+      binding,
+      label: 'External unknown Discrete',
+      renderer: 'discrete',
+    });
+
+    expect(target.querySelector('.vc-discrete')?.classList.contains('dimmed')).toBe(true);
+    expect(target.querySelector('.vc-discrete')?.classList.contains('interaction-disabled')).toBe(true);
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+    binding.destroy();
+  });
+
+  it('keeps pending owner work intact when direct renderer dimming changes', () => {
+    vi.useFakeTimers();
+    const request = vi.fn();
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading',
+        reading: { status: 'known', value: 20 },
+        ownerKey: 'direct-cosmetic-discrete',
+        domain: { min: 0, max: 100, step: 10, defaultValue: null, fineStepDivisor: 10 },
+        enabled: true,
+        request,
+      }),
+      createDiscreteContinuousScalarPolicy({ debounceMs: 50 }),
+    );
+    const state = $state({
+      binding,
+      label: 'Direct cosmetic Discrete',
+      dimmed: false,
+    });
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    roots.push(target);
+    const component = mount(DiscreteRenderer, { target, props: state });
+    components.push(component);
+    flushSync();
+
+    try {
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state.dimmed = true;
+      flushSync();
+      expect(target.querySelector('.vc-discrete')?.classList.contains('dimmed')).toBe(true);
+      expect(target.querySelector('.vc-discrete')?.classList.contains('interaction-disabled')).toBe(false);
+      expect(slider(target).getAttribute('aria-disabled')).toBe('false');
+      expect(slider(target).getAttribute('tabindex')).toBe('0');
+      expect(visibleValue(target)).toBe('30');
+
+      vi.advanceTimersByTime(50);
+      expect(request).toHaveBeenCalledExactlyOnceWith(30);
+    } finally {
+      binding.destroy();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['optimistic', false],
     ['keyboardStep', 5],

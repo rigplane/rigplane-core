@@ -39,6 +39,7 @@
     showAllTicks?: boolean;
     /** Visual style for discrete step marks. */
     tickStyle?: 'ruler' | 'led' | 'notch';
+    dimmed?: boolean;
     legacy?: LegacyReadingPresentation;
   }
 
@@ -61,6 +62,7 @@
     tickLabels = [],
     showAllTicks = true,
     tickStyle = 'notch',
+    dimmed,
     legacy,
   }: Props = $props();
 
@@ -114,6 +116,7 @@
     : displayFn ? displayFn(renderedValue)
       : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
   let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
+  let effectiveDimmed = $derived(dimmed ?? !view.editable);
 
   let tickItems = $derived.by(() => {
     if (!view.domainValid) return [];
@@ -218,7 +221,8 @@
 <div
   class="vc-hbar vc-discrete"
   class:compact
-  class:disabled={!view.editable}
+  class:interaction-disabled={!view.editable}
+  class:dimmed={effectiveDimmed}
   class:hardware={variant === 'hardware'}
   class:hw-illum={variant === 'hardware-illuminated'}
   bind:this={containerEl}
@@ -441,8 +445,11 @@
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 
-  .disabled {
+  .dimmed {
     opacity: 0.4;
+  }
+
+  .interaction-disabled {
     pointer-events: none;
   }
 
