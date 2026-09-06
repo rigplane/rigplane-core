@@ -166,7 +166,7 @@
         reading: Number.isFinite(value)
           ? { status: 'known' as const, value }
           : { status: 'unknown' as const },
-        ownerKey: `${mountId}:${optimistic}:${debounceMs}`,
+        ownerKey: `${mountId}:${scalarPolicy.name}:${debounceMs}`,
       }),
       adapterPolicy,
     );

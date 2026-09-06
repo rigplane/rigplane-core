@@ -647,6 +647,39 @@ describe('ValueControl controlled Bipolar rendering', () => {
 });
 
 describe('ValueControl controlled Discrete rendering', () => {
+  it.each([
+    ['optimistic', false],
+    ['keyboardStep', 5],
+  ] as const)('keeps a pending Discrete request when ignored raw %s changes', (prop, next) => {
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      const { state, target } = mountReactive({
+        value: 20,
+        min: 0,
+        max: 100,
+        step: 10,
+        keyboardStep: 40,
+        optimistic: true,
+        label: 'Ignored authority input',
+        renderer: 'discrete',
+        debounceMs: 50,
+        onChange,
+      });
+
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state[prop] = next;
+      flushSync();
+      vi.advanceTimersByTime(50);
+
+      expect(onChange).toHaveBeenCalledExactlyOnceWith(30);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('cancels a Discrete pointer draft and reconciles rejected wheel state at expiry', () => {
     vi.useFakeTimers();
     const onChange = vi.fn();
@@ -774,5 +807,61 @@ describe('ValueControl controlled Discrete rendering', () => {
     flushSync();
     expect(visibleValue(target)).toBe('UNKNOWN');
     expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+  });
+});
+
+describe('ValueControl raw effective behavior authority', () => {
+  it('keeps a pending Bipolar request when ignored raw optimistic changes', () => {
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      const { state, target } = mountReactive({
+        value: 0,
+        min: -100,
+        max: 100,
+        step: 5,
+        optimistic: true,
+        label: 'Ignored Bipolar preview',
+        renderer: 'bipolar',
+        debounceMs: 50,
+        onChange,
+      });
+
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state.optimistic = false;
+      flushSync();
+      vi.advanceTimersByTime(50);
+
+      expect(onChange).toHaveBeenCalledExactlyOnceWith(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a pending HBar request when raw optimistic changes effective preview', () => {
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      const { state, target } = mountReactive({
+        ...baseProps,
+        optimistic: true,
+        debounceMs: 50,
+        onChange,
+      });
+
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state.optimistic = false;
+      flushSync();
+      vi.advanceTimersByTime(50);
+
+      expect(onChange).not.toHaveBeenCalled();
+      expect(visibleValue(target)).toContain('20');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
