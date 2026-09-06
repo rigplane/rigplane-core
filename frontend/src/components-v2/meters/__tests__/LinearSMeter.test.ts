@@ -63,6 +63,7 @@ import {
   formatDbm,
   isSmeterCalibrated,
   calibratedToSUnit,
+  projectSignalMeter,
 } from '../smeter-scale';
 
 beforeEach(() => {
@@ -298,6 +299,73 @@ describe('LinearSMeter calibrated S-meter domain', () => {
 
     expect(text).toContain('S9+20');
     expect(text).toContain('\u221253 dBm');
+  });
+
+  it('accepts a projection directly and keeps legacy value callers on the same projector', () => {
+    const projection = projectSignalMeter(-48);
+    const projected = mountMeter({ projection });
+    const legacy = mountMeter({ value: -48 });
+
+    for (const target of [projected, legacy]) {
+      expect(target.textContent).toContain(projection.primaryText);
+      expect(target.textContent).toContain(projection.secondaryText);
+    }
+  });
+
+  it('rejects dynamic callers that supply both projection and value', () => {
+    const projection = projectSignalMeter(0);
+    const projectionOnly = { projection } satisfies ComponentProps<typeof LinearSMeter>;
+    const valueOnly = { value: 0 } satisfies ComponentProps<typeof LinearSMeter>;
+    // @ts-expect-error -- the public component props make the two inputs exclusive.
+    const invalid: ComponentProps<typeof LinearSMeter> = { value: 0, projection };
+    expect(projectionOnly.projection).toBe(projection);
+    expect(valueOnly.value).toBe(0);
+    expect(invalid).toEqual({ value: 0, projection });
+    expect(() => mountMeter({ value: 0, projection } as never))
+      .toThrow(/exactly one of projection or value/);
+  });
+
+  it('rejects dynamic callers that supply neither projection nor value', () => {
+    expect(() => mountMeter({} as never))
+      .toThrow(/exactly one of projection or value/);
+  });
+
+  it('keeps every dense tick and the S1 label on the supplied projection after calibration replacement', () => {
+    const projection = projectSignalMeter(-48);
+    const beforeReplacement = mountMeter({ projection });
+    const denseTickXs = (target: HTMLElement) => [...target.querySelectorAll<SVGLineElement>('line')]
+      .filter((line) => line.getAttribute('y2') === '38')
+      .map((line) => Number(line.getAttribute('x1')));
+    const expectedTickXs = denseTickXs(beforeReplacement);
+    clearCapabilities();
+
+    const projected = mountMeter({ projection });
+    const legacy = mountMeter({ value: -48 });
+    expect(projected.textContent).toContain('S1');
+    expect(projected.textContent).toContain('\u2212121 dBm');
+    expect(projected.textContent).not.toContain('uncalibrated');
+    expect(legacy.textContent).toContain('uncalibrated');
+    expect(legacy.textContent).not.toContain('\u2212121 dBm');
+
+    const s1Label = [...projected.querySelectorAll<SVGTextElement>('text')]
+      .find((label) => label.textContent === 'S1')!;
+    const majorTickXs = [...projected.querySelectorAll<SVGLineElement>('line')]
+      .filter((line) => line.getAttribute('y1') === '18' && line.getAttribute('y2') === '38')
+      .map((line) => Number(line.getAttribute('x1')));
+    expect(denseTickXs(projected)).toEqual(expectedTickXs);
+    expect(majorTickXs[1]).toBeCloseTo(Number(s1Label.getAttribute('x')));
+  });
+
+  it('positions both labeled marks and dense ticks from the supplied projection fractions', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/components-v2/meters/LinearSMeter.svelte'),
+      'utf8',
+    );
+    expect(source).toMatch(/labelMarks\s*=\s*\$derived\(signalProjection\.marks\)/);
+    expect(source).toMatch(/x=\{fractionToX\(m\.fraction\)\}/);
+    expect(source).toMatch(/\{#each signalProjection\.ticks as t\}/);
+    expect(source).toMatch(/\{@const tx = fractionToX\(t\.fraction\)\}/);
+    expect(source).not.toMatch(/\brawToSegments\b|function rawToX\b/);
   });
 });
 

@@ -37,6 +37,30 @@ export interface SmeterMark {
   color: string;
 }
 
+export interface SignalMeterProjectionMark {
+  readonly actual: number;
+  readonly fraction: number;
+  readonly text: string;
+  readonly color: string;
+}
+
+export interface SignalMeterProjectionTick {
+  readonly fraction: number;
+  readonly kind: 'major' | 'mid' | 'minor';
+  readonly color: string;
+}
+
+export interface SignalMeterProjection {
+  readonly motionFraction: number | null;
+  readonly primaryText: string;
+  readonly secondaryText: string;
+  readonly s9Fraction: number;
+  readonly marks: readonly SignalMeterProjectionMark[];
+  readonly ticks: readonly SignalMeterProjectionTick[];
+}
+
+const SEGMENT_DOMAIN = 20;
+
 function getCal(): SmeterCalibrationPoint[] {
   return getSmeterCalibration() ?? [];
 }
@@ -124,9 +148,8 @@ function markText(label: string): string {
   return label;
 }
 
-/** Major S-meter marks derived from the active calibration table. */
-export function getScaleMarks(): SmeterMark[] {
-  return getCal()
+function scaleMarks(calibration: readonly SmeterCalibrationPoint[]): SmeterMark[] {
+  return calibration
     .filter((p) => /^S[13579]$/.test(p.label) || /^S9\+/.test(p.label))
     .map((p) => ({
       raw: p.raw,
@@ -134,6 +157,109 @@ export function getScaleMarks(): SmeterMark[] {
       text: markText(p.label),
       color: colorForActual(p.actual),
     }));
+}
+
+/** Dense subdivisions projected from the same complete calibration snapshot
+ * as the labels and reading. Hidden calibration knots still shape every
+ * intermediate raw position even though they are not themselves labeled. */
+function scaleTicks(
+  marks: readonly SmeterMark[],
+  calibration: readonly SmeterCalibrationPoint[],
+): SignalMeterProjectionTick[] {
+  const ticks: SignalMeterProjectionTick[] = [];
+  const anchors = marks.map(({ raw, actual }) => ({ raw, actual }));
+  const first = anchors[0];
+
+  if (!first || first.raw > 0) {
+    anchors.unshift({ raw: 0, actual: -54 });
+  }
+
+  function tick(raw: number, actual: number, kind: SignalMeterProjectionTick['kind']) {
+    ticks.push({
+      fraction: rawToSegmentsForCalibration(raw, calibration) / SEGMENT_DOMAIN,
+      kind,
+      color: colorForActual(actual),
+    });
+  }
+
+  function addSubdivisions(
+    startRaw: number,
+    endRaw: number,
+    startActual: number,
+    endActual: number,
+  ) {
+    tick(startRaw, startActual, 'major');
+    const rawStep = (endRaw - startRaw) / 10;
+    const actualStep = (endActual - startActual) / 10;
+    for (let j = 1; j <= 9; j++) {
+      tick(
+        startRaw + rawStep * j,
+        startActual + actualStep * j,
+        j === 5 ? 'mid' : 'minor',
+      );
+    }
+  }
+
+  for (let i = 0; i < anchors.length - 1; i++) {
+    addSubdivisions(
+      anchors[i].raw,
+      anchors[i + 1].raw,
+      anchors[i].actual,
+      anchors[i + 1].actual,
+    );
+  }
+
+  const last = anchors[anchors.length - 1];
+  tick(last.raw, last.actual, 'major');
+  return ticks;
+}
+
+/** Major S-meter marks derived from the active calibration table. */
+export function getScaleMarks(): SmeterMark[] {
+  return scaleMarks(getCal());
+}
+
+/**
+ * Resolve every display-facing S-meter value from one capability snapshot.
+ * The facade remains the only store reader; the pure primitives above own all
+ * calibration, interpolation, labeling, and raw fallback behavior.
+ */
+export function projectSignalMeter(value: number | null): SignalMeterProjection {
+  const calibration = getCal();
+  const scale = scaleMarks(calibration);
+  const marks = scale.map((mark) => ({
+    actual: mark.actual,
+    fraction: rawToSegmentsForCalibration(mark.raw, calibration) / SEGMENT_DOMAIN,
+    text: mark.text,
+    color: mark.color,
+  }));
+  const ticks = scaleTicks(scale, calibration);
+  const s9Fraction = rawToSegmentsForCalibration(
+    getS9RawForCalibration(calibration),
+    calibration,
+  ) / SEGMENT_DOMAIN;
+
+  if (value === null) {
+    return {
+      motionFraction: null,
+      primaryText: 'S ?',
+      secondaryText: '',
+      s9Fraction,
+      marks,
+      ticks,
+    };
+  }
+
+  return {
+    motionFraction: calibratedToSegmentsForCalibration(value, calibration) / SEGMENT_DOMAIN,
+    primaryText: calibratedToSUnitForCalibration(value, calibration),
+    secondaryText: formatDbmForCalibration(
+      calibratedToDbmForCalibration(value, calibration),
+    ),
+    s9Fraction,
+    marks,
+    ticks,
+  };
 }
 
 /** Format dBm value as display string, e.g. "−67 dBm". Uses Unicode minus. */

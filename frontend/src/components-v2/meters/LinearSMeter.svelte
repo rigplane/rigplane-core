@@ -53,17 +53,11 @@
   import type { MeterDisplay } from '../../presentation/languages/contract';
   import { DEFAULT_METER_DISPLAY } from './meter-display';
   import {
-    calibratedToSegments,
-    calibratedToSUnit,
-    calibratedToDbm,
-    formatDbm,
-    getScaleMarks,
-    getS9Raw,
-    rawToSegments,
+    projectSignalMeter,
+    type SignalMeterProjection,
   } from './smeter-scale';
 
-  interface Props {
-    value: number | null;    // calibrated dB relative to S9 from backend state
+  interface CommonLinearMeterProps {
     mainPresent?: boolean;
     compact?: boolean;
     label?: string;
@@ -96,21 +90,37 @@
     session?: MeterContinuitySession | null;
   }
 
-  let {
-    value, compact = false, label, variant, display = DEFAULT_METER_DISPLAY, lowerScale,
-    relevant = true, mainPresent = true, source, session,
-  }: Props = $props();
+  type SignalInput =
+    | { projection: SignalMeterProjection; value?: never }
+    | { projection?: never; value: number | null };
+  type Props = CommonLinearMeterProps & SignalInput;
+
+  let props: Props = $props();
+  const compact = $derived(props.compact ?? false);
+  const label = $derived(props.label);
+  const variant = $derived(props.variant);
+  const display = $derived(props.display ?? DEFAULT_METER_DISPLAY);
+  const lowerScale = $derived(props.lowerScale);
+  const relevant = $derived(props.relevant ?? true);
+  const mainPresent = $derived(props.mainPresent ?? true);
+  const source = $derived(props.source);
+  const session = $derived(props.session);
+  const signalProjection = $derived.by((): SignalMeterProjection => {
+    const hasProjection = Object.prototype.hasOwnProperty.call(props, 'projection');
+    const hasValue = Object.prototype.hasOwnProperty.call(props, 'value');
+    if (hasProjection === hasValue) {
+      throw new TypeError('LinearSMeter requires exactly one of projection or value');
+    }
+    if (hasProjection) return (props as { projection: SignalMeterProjection }).projection;
+    return projectSignalMeter((props as { value: number | null }).value);
+  });
 
   const isVfoVariant = $derived(variant === 'vfo' || variant === 'vfo-wide');
   const isWideVfoVariant = $derived(variant === 'vfo-wide');
 
   // ── Segment geometry ────────────────────────────────────────────────────────
-  // `smeter-scale.ts`'s rawToSegments/calibratedToSegments always report a
-  // position on a fixed 0-20 domain (that file's `rawToSegments` tops out at
-  // 20 for any input, regardless of caller) — independent of how many visual
-  // segments this component draws. RAW_SEGMENT_DOMAIN names that fixed width
-  // so a raw-domain reading can be rescaled onto the `display.segmentCount`
-  // visual domain below.
+  // Projected fractions are independent of how many visual segments this
+  // component draws; this component only maps them onto its local geometry.
   const RAW_SEGMENT_DOMAIN = 20;
   const SEG_COUNT = $derived(display.segmentCount);
   const SEG_GAP = $derived(display.segmentGapPx);
@@ -124,20 +134,14 @@
     return BAR_X + i * (SEG_W + SEG_GAP);
   }
 
-  // x position (from bar left) for a given raw value — rawToSegments(raw) is
-  // on the fixed RAW_SEGMENT_DOMAIN, rescaled here onto SEG_COUNT segments.
-  function rawToX(raw: number): number {
-    return BAR_X + (rawToSegments(raw) / RAW_SEGMENT_DOMAIN) * SEG_COUNT * (SEG_W + SEG_GAP);
+  function fractionToX(fraction: number): number {
+    return BAR_X + fraction * SEG_COUNT * (SEG_W + SEG_GAP);
   }
 
-  // Index of the first visual segment at or above the calibrated S9 anchor.
-  // `rawToSegments(getS9Raw())` is exactly 11 on the raw 0-20 domain — S9 is
-  // the last S-unit knot, so `rawToSegments` (via `rawToSFloat`) resolves it
-  // to exactly (9/9)*11 — rescaled here by SEG_COUNT so this index tracks a
-  // non-20 segment count instead of the fixed literal 11 the
-  // pre-display-prop code used.
+  // Index of the first visual segment at or above the projected S9 anchor,
+  // rescaled by SEG_COUNT so it follows non-20 display geometry.
   const s9SegmentIndex = $derived(
-    Math.round((rawToSegments(getS9Raw()) / RAW_SEGMENT_DOMAIN) * SEG_COUNT),
+    Math.round(signalProjection.s9Fraction * SEG_COUNT),
   );
 
   // ── Colors ──────────────────────────────────────────────────────────────────
@@ -232,59 +236,7 @@
   const lowerFracSeg = $derived(lowerFillSegs - lowerFullSegs);
 
   // ── Label marks ─────────────────────────────────────────────────────────────
-  let labelMarks = $derived(getScaleMarks());
-
-  // ── Tick marks ──────────────────────────────────────────────────────────────
-  // Generate dense ticks: 9 subdivisions between each labeled S-unit position,
-  // with the 5th tick (midpoint) slightly taller.
-  type TickKind = 'major' | 'mid' | 'minor';
-  interface Tick { raw: number; kind: TickKind; color: string }
-
-  function generateTicks(): Tick[] {
-    const ticks: Tick[] = [];
-    const anchors = getScaleMarks().map((m) => ({ raw: m.raw, actual: m.actual }));
-    const first = anchors[0];
-
-    if (!first || first.raw > 0) {
-      anchors.unshift({ raw: 0, actual: -54 });
-    }
-
-    function colorForActual(actual: number): string {
-      if (actual <= 0) return 'var(--v2-text-bright)';
-      if (actual <= 20) return 'var(--v2-accent-yellow)';
-      if (actual <= 40) return 'var(--v2-accent-orange-alt)';
-      return 'var(--v2-accent-red-alt)';
-    }
-
-    function addSubdivisions(startRaw: number, endRaw: number, startActual: number, endActual: number) {
-      // Major tick at start
-      ticks.push({ raw: startRaw, kind: 'major', color: colorForActual(startActual) });
-      // 9 subdivision ticks between start and end
-      const step = (endRaw - startRaw) / 10;
-      const actualStep = (endActual - startActual) / 10;
-      for (let j = 1; j <= 9; j++) {
-        const raw = startRaw + step * j;
-        const kind: TickKind = j === 5 ? 'mid' : 'minor';
-        ticks.push({ raw, kind, color: colorForActual(startActual + actualStep * j) });
-      }
-    }
-
-    for (let i = 0; i < anchors.length - 1; i++) {
-      addSubdivisions(
-        anchors[i].raw,
-        anchors[i + 1].raw,
-        anchors[i].actual,
-        anchors[i + 1].actual,
-      );
-    }
-    // Final tick at max
-    const last = anchors[anchors.length - 1];
-    ticks.push({ raw: last.raw, kind: 'major', color: colorForActual(last.actual) });
-
-    return ticks;
-  }
-
-  let tickMarks = $derived(generateTicks());
+  let labelMarks = $derived(signalProjection.marks);
 
   // ── Layout (switches between full / compact) ────────────────────────────────
   //   When label is present: label at top → meter shifted down
@@ -351,9 +303,7 @@
   });
 
   $effect(() => {
-    const current = value === null || !mainPresent
-      ? null
-      : calibratedToSegments(value) / RAW_SEGMENT_DOMAIN;
+    const current = mainPresent ? signalProjection.motionFraction : null;
     const currentSource = source;
     const currentSession = session;
     untrack(() => ballistics.sync({
@@ -372,7 +322,9 @@
   // Peak X position for the vertical indicator line
   let peakX = $derived(BAR_X + peakSegs * (SEG_W + SEG_GAP));
   // Only show peak line if it's meaningfully ahead of current bar
-  let showPeak = $derived(value !== null && mainPresent && peakSegs - smoothedSegs > 0.3);
+  let showPeak = $derived(
+    signalProjection.motionFraction !== null && mainPresent && peakSegs - smoothedSegs > 0.3,
+  );
 
   // Peak-line color zones as fractions of the raw 20-segment domain — 15/20
   // and 18/20 are visual gradient stops with no calibration anchor (unlike
@@ -384,18 +336,22 @@
   let peakColor = $derived(peakSegs <= s9SegmentIndex ? 'var(--v2-accent-cyan-bright)' : peakSegs <= peakZoneYellow ? 'var(--v2-accent-yellow)' : peakSegs <= peakZoneOrange ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)');
 
   // ── Reactive display values ─────────────────────────────────────────────────
-  let fullSegs = $derived(value === null ? 0 : Math.floor(smoothedSegs));
-  let fracSeg  = $derived(value === null ? 0 : smoothedSegs - Math.floor(smoothedSegs));
+  let fullSegs = $derived(signalProjection.motionFraction === null ? 0 : Math.floor(smoothedSegs));
+  let fracSeg  = $derived(
+    signalProjection.motionFraction === null ? 0 : smoothedSegs - Math.floor(smoothedSegs),
+  );
 
-  let displaySUnit = $derived(value === null ? 'S ?' : calibratedToSUnit(value));
-  let displayDbm   = $derived(value === null ? '' : formatDbm(calibratedToDbm(value)));
+  let displaySUnit = $derived(signalProjection.primaryText);
+  let displayDbm   = $derived(signalProjection.secondaryText);
 
   // v2.11.1 SDR SVG geometry; the current calibrated scale still owns positions.
   const SDR_CELLS = 40;
   const SDR_CELL_WIDTH = 328 / SDR_CELLS;
   const SDR_SUB_WIDTH = (SDR_CELL_WIDTH - 2 - 0.5) / 2;
-  const sdrFill = $derived((value === null ? 0 : smoother.value) * SDR_CELLS * 2);
-  const sdrS9 = $derived((rawToSegments(getS9Raw()) / RAW_SEGMENT_DOMAIN) * SDR_CELLS * 2);
+  const sdrFill = $derived(
+    (signalProjection.motionFraction === null ? 0 : smoother.value) * SDR_CELLS * 2,
+  );
+  const sdrS9 = $derived(signalProjection.s9Fraction * SDR_CELLS * 2);
   function sdrColor(index: number): string {
     const aboveS9 = index >= sdrS9;
     return index < sdrFill ? (aboveS9 ? '#FF3030' : '#4FB9EC')
@@ -411,7 +367,7 @@
       <g font-family="Roboto Mono, monospace" font-size="11" fill="var(--v2-text-primary, #C8D4E0)" font-weight="700">
         <text x="4" y="14">{displayDbm === 'uncalibrated' ? 'raw' : 'S'}</text>
         {#each labelMarks as mark}
-          <text x={14 + (rawToSegments(mark.raw) / RAW_SEGMENT_DOMAIN) * 328} y="14"
+          <text x={14 + mark.fraction * 328} y="14"
             text-anchor="middle" fill={mark.actual > 0 ? 'var(--v2-accent-red, #FF4040)' : 'var(--v2-text-primary, #C8D4E0)'}>
             {mark.text.replace(/^S/, '')}
           </text>
@@ -472,7 +428,7 @@
   <!-- Scale labels -->
   {#each labelMarks as m}
     <text
-      x={rawToX(m.raw)}
+      x={fractionToX(m.fraction)}
       y={SCALE_LABEL_Y}
       font-family="'Roboto Mono', monospace"
       font-size={SCALE_LABEL_FS}
@@ -484,8 +440,8 @@
   {/each}
 
   <!-- Tick marks -->
-  {#each tickMarks as t}
-    {@const tx = rawToX(t.raw)}
+  {#each signalProjection.ticks as t}
+    {@const tx = fractionToX(t.fraction)}
     {@const y1 = t.kind === 'major' ? TICK_MAJOR_Y1 : t.kind === 'mid' ? TICK_MID_Y1 : TICK_MINOR_Y1}
     {@const y2 = t.kind === 'major' ? TICK_MAJOR_Y2 : t.kind === 'mid' ? TICK_MID_Y2 : TICK_MINOR_Y2}
     {@const sw = t.kind === 'major' ? 1.2 : t.kind === 'mid' ? 0.9 : 0.6}
