@@ -637,10 +637,15 @@ describe('level intents reach the caller with the field and the raw value', () =
 });
 
 describe('seven TX/VOX levels consume command feedback', () => {
+  const describedText = (el: HTMLElement): string | null => {
+    const id = el.getAttribute('aria-describedby');
+    return id ? target.querySelector(`#${id}`)?.textContent ?? null : null;
+  };
+
   it('declares the adopted ValueControl source feedback-integrated without changing debt inventory', () => {
     const source = readFileSync('src/semantic/TxAuxScalarHost.svelte', 'utf8');
-    expect(source.match(/feedback-policy="feedback-integrated"/g)).toHaveLength(1);
-    expect(source).toContain('feedback-policy="feedback-integrated"');
+    expect(source.match(/'feedback-policy': 'feedback-integrated'/g)).toHaveLength(1);
+    expect(source).toContain('{...feedbackIntegratedControl}');
   });
 
   it.each(FEEDBACK_LEVELS)('uses canonical %s feedback and preserves its raw renderer value', (

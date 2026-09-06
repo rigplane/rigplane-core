@@ -39,6 +39,7 @@
     antiVoxGain: 'set_anti_vox_gain', voxDelay: 'set_vox_delay',
     compressorLevel: 'set_compressor_level', monitorLevel: 'set_monitor_gain',
   };
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const row = (field: TxAuxLevelField) => TX_AUX_LEVELS.find(([candidate]) => candidate === field)!;
   const usable = (field: TxAuxField<unknown>): boolean => field.availability.structural
     && field.availability.operational && field.reading.status === 'known';
@@ -190,7 +191,7 @@
         />
       {:else}
         <ValueControl
-          feedback-policy="feedback-integrated"
+          {...feedbackIntegratedControl}
           binding={bindings[field]} {label} renderer="hbar"
           displayFn={(value) => formatValue(field, value)}
           showLabel={false} showValue={false} compact={true} title={disabledReason}
