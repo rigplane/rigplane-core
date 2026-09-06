@@ -265,6 +265,8 @@ function model(
 }
 
 const INDICATOR_CAPS = caps({
+  stateContractVersion: 1,
+  providerGeneration: 1,
   filters: ['FIL1'],
   agcLabels: { '2': 'SLOW' },
   capabilities: [
@@ -282,10 +284,16 @@ function indicatorState(overrides: Partial<ServerState> = {}): ServerState {
   const base = observedState();
   const fieldStatus = { ...base.fieldStatus } as Record<string, FieldStatus>;
   for (const receiverKey of ['main', 'sub'] as const) {
-    for (const leaf of INDICATOR_LEAVES) fieldStatus[`${receiverKey}.${leaf}`] = fresh;
+    for (const leaf of INDICATOR_LEAVES) {
+      fieldStatus[`${receiverKey}.${leaf}`] = leaf === 'sMeter'
+        ? { ...fresh, lastObservedMonotonic: 0 }
+        : fresh;
+    }
   }
   return {
     ...base,
+    stateContractVersion: 1,
+    providerGeneration: 1,
     main: {
       ...base.main, sMeter: 0, filterWidth: 2400, agc: 0, nb: false, nr: true,
       autoNotch: false, manualNotch: false, att: 0, preamp: 0, rfGain: 0,
@@ -377,6 +385,21 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
       .receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN');
     expect(main?.sMeter.reading).toEqual({ status: 'unknown' });
     expect(main?.sMeter.availability.operational).toBe(false);
+  });
+
+  it.each([
+    ['provider mismatch', { providerGeneration: 2 }],
+    ['invalid marker', { lastObservedMonotonic: NaN }],
+  ] as const)('%s fences only the receiver S-meter qualification path', (kind, override) => {
+    const state = indicatorState();
+    const fieldStatus = { ...state.fieldStatus } as Record<string, FieldStatus>;
+    if (kind === 'invalid marker') fieldStatus['main.sMeter'] = { ...fresh, ...override };
+    const capabilities = kind === 'provider mismatch' ? { ...INDICATOR_CAPS, ...override } : INDICATOR_CAPS;
+    const main = model({ ...state, fieldStatus }, capabilities as Capabilities, RECEIVING)
+      .receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN')!;
+    expect(main.sMeter.reading).toEqual({ status: 'unknown' });
+    expect(main.sMeter.availability.operational).toBe(false);
+    expect(main.nbActive.reading).toEqual({ status: 'known', value: false });
   });
 
   it('uses one App-authority RF fact only: ptt and assignment cannot override it', () => {

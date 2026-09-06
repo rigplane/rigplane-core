@@ -57,7 +57,10 @@ import {
   ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
 } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 0,
+};
 const slot = (frequency: number) => ({ freqHz: frequency, mode: 'USB', filterNum: 1, dataMode: 0 });
 function state(overrides: Partial<ServerState> = {}): ServerState {
   const paths = ['active', 'split', 'dualWatch', 'main.freqHz', 'main.mode', 'main.filter',
@@ -68,7 +71,8 @@ function state(overrides: Partial<ServerState> = {}): ServerState {
   }
   const receiver = (frequency: number) => ({ ...slot(frequency), filter: 1, activeSlot: 'A',
     vfoA: slot(frequency), vfoB: slot(frequency + 50_000), sMeter: -12 });
-  return { active: 'MAIN', split: false, dualWatch: false,
+  return { stateContractVersion: 1, providerGeneration: 1,
+    active: 'MAIN', split: false, dualWatch: false,
     tunerStatus: 0, ritOn: false, ritTx: true, ritFreq: 0, txAntenna: 1,
     main: receiver(14_200_000), sub: receiver(7_100_000),
     fieldStatus: Object.fromEntries(paths.map((path) => [path, fresh])),
@@ -77,6 +81,7 @@ function state(overrides: Partial<ServerState> = {}): ServerState {
 function caps(vfoScheme: Capabilities['vfoScheme'], receivers: number, dual = receivers === 2): Capabilities {
   const common = ['vfo_equalize', 'vfo_swap', 'split', 'speech', 'tuner', 'rit', 'xit'];
   return { model: 'fixture', scope: false, audio: false, tx: true,
+    stateContractVersion: 1, providerGeneration: 1,
     capabilities: dual ? ['dual_rx', 'dual_watch', ...common] : common, receivers, vfoScheme,
     antennas: 1,
     freqRanges: [], modes: [], filters: [], scopeSource: null, audioFftAvailable: false,
@@ -144,6 +149,9 @@ describe('production receiver-indicator partitioning', () => {
     for (const receiver of receivers) {
       expect(rowReceivers(target.querySelector(`[data-testid="channel-strip-${receiver}"]`)!))
         .toEqual([receiver]);
+      expect(target.querySelector(
+        `[data-indicator-receiver="${receiver}"] [data-testid="receiver-s-meter-unknown"]`,
+      )).toBeNull();
     }
     expect(rowReceivers(target.querySelector('[data-testid="cockpit-zone-global"]')!)).toEqual([]);
   });
@@ -154,6 +162,12 @@ describe('production receiver-indicator partitioning', () => {
     expect(rowReceivers(target)).toEqual(['MAIN', 'SUB']);
     expect(sub.dataset.indicatorOperational).toBe('false');
     expect(sub.querySelector('[data-testid="receiver-s-meter-unknown"]')).not.toBeNull();
+  });
+
+  it('keeps both S-meter shells mounted but unknown across a provider mismatch', () => {
+    render({ ...caps('main_sub', 2), providerGeneration: 2 });
+    expect(rowReceivers(target)).toEqual(['MAIN', 'SUB']);
+    expect(target.querySelectorAll('[data-testid="receiver-s-meter-unknown"]')).toHaveLength(2);
   });
 
   it('mounts one singleton shared row/block and maps each production-admitted button exactly once', () => {

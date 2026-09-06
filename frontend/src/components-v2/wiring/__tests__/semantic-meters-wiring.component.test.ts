@@ -138,7 +138,10 @@ import {
 } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 
-const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
+const fresh = {
+  storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 0,
+};
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
 
 /** Every raw meter the MOR-1269 adapter reads, all observed fresh. The
@@ -166,6 +169,7 @@ function liveState(withMeters: boolean, over: Partial<ServerState> = {}): Server
     ...(withMeters ? { sMeter: -12 } : {}),
   });
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
@@ -177,6 +181,7 @@ function liveState(withMeters: boolean, over: Partial<ServerState> = {}): Server
 
 const liveCaps = (withMeters: boolean): Capabilities => ({
   model: 'fixture', scope: false, audio: true, tx: true,
+  stateContractVersion: 1, providerGeneration: 1,
   capabilities: withMeters
     ? ['audio', 'tx', 'dual_rx', 'compressor']
     : ['audio', 'tx', 'dual_rx'],
@@ -290,6 +295,16 @@ describe('the meters surface mounts only when the view model carries the group',
     render({ strips });
     expect(target.querySelectorAll('[data-testid="meters-surface"]')).toHaveLength(1);
     expect(Object.keys(relevance())).toContain('power');
+    expect(q('[data-testid="meter-signal"]')!.dataset.observed).toBe('true');
+    expect(q('[data-testid="meter-drainVoltage"]')!.dataset.observed).toBe('true');
+  });
+
+  it('keeps mounted meter shells but clears readings across a provider generation mismatch', () => {
+    h.caps = { ...liveCaps(true), providerGeneration: 2 };
+    render();
+    expect(q('[data-testid="meters-surface"]')).not.toBeNull();
+    expect(q('[data-testid="meter-signal"]')!.dataset.observed).toBe('false');
+    expect(q('[data-testid="meter-drainVoltage"]')!.dataset.observed).toBe('false');
   });
 
   // MUTATION KILLED: giving the meters surface a `data-zone-id` of its own.
