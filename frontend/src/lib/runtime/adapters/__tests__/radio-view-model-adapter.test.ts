@@ -1065,7 +1065,11 @@ describe('RF gain additive display observation', () => {
   }
   it.each([false, true])('preserves legacy strict model members for stale=%s', (stale) => {
     const view = toRadioViewModel(displayState(stale), displayCaps, RECEIVING)!;
-    const strictJson = JSON.stringify(view, (key, value) => ['display', 'activeFilterConfiguration', 'dataModeChoices'].includes(key) ? undefined : value);
+    const legacyView = structuredClone(view);
+    for (const field of [
+      'signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent',
+    ] as const) delete legacyView.meters?.[field].source;
+    const strictJson = JSON.stringify(legacyView, (key, value) => ['display', 'activeFilterConfiguration', 'dataModeChoices'].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
     expect(digest).toBe(stale ? 'b4b5cff2b85557e39baa48e4d73c756e12ff026488ffa05a1ef558ca0b3f0507' : '379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');
   });

@@ -27,7 +27,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
-  MeterField, MeterRfState, MetersViewModel,
+  MeterField, MeterRfState, MeterSourceIdentity, MeterSourcePath, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
   ActiveFilterConfiguration, FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
   BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
@@ -275,13 +275,20 @@ function meterRfState(tx: MetersTxAuthority): MeterRfState {
 
 function meterField(
   structural: boolean, observation: DisplayObservation<number>, relevant: boolean,
+  state: ServerState,
+  source: Omit<MeterSourceIdentity, 'providerGeneration'> | null,
   receiverOperational = true,
 ): MeterField {
   const operational = structural && receiverOperational && observation.state === 'current';
+  const providerGeneration = state.providerGeneration;
   return {
     reading: operational ? { status: 'known', value: observation.value } : { status: 'unknown' },
     availability: { structural, operational },
     relevant,
+    source: operational && source !== null
+      && typeof providerGeneration === 'number'
+      && Number.isSafeInteger(providerGeneration) && providerGeneration >= 0
+      ? { providerGeneration, ...source } : null,
   };
 }
 
@@ -317,12 +324,18 @@ function deriveMeters(
   const signalRaws = structuralReceivers.map((receiver) => state[RECEIVER_KEY[receiver]]?.sMeter);
   const raws = [...signalRaws, powerMeter, swrMeter, alcMeter, compMeter, vdMeter, idMeter];
   if (!raws.some((v) => v !== undefined)) return undefined;
-  const displayTxMeter = (raw: unknown, path: string) => {
+  const displayTxMeter = (
+    raw: unknown,
+    path: Exclude<MeterSourcePath, 'main.sMeter' | 'sub.sMeter' | 'compMeter' | 'vdMeter' | 'idMeter'>,
+  ) => {
     const structural = hasTx && raw !== undefined;
     const display = qualifyRadioDisplayObservation({
       state, caps, path, structural, value: numOrUndef(raw),
     });
-    return { ...meterField(structural, display, onTx), display };
+    return {
+      ...meterField(structural, display, onTx, state, { scope: 'radio', receiver: null, path }),
+      display,
+    };
   };
   const signalStructural = activeId === null
     ? signalRaws.some((raw) => raw !== undefined)
@@ -352,18 +365,31 @@ function deriveMeters(
   return {
     rfState,
     signal: meterField(
-      signalStructural, signalObservation, !onTx,
+      signalStructural, signalObservation, !onTx, state,
+      activeId === null ? null : {
+        scope: 'receiver', receiver: activeId,
+        path: activeId === 'MAIN' ? 'main.sMeter' : 'sub.sMeter',
+      },
       activeId !== null && operationalReceivers.includes(activeId),
     ),
     power: displayTxMeter(powerMeter, 'powerMeter'),
     swr: displayTxMeter(swrMeter, 'swrMeter'),
     alc: displayTxMeter(alcMeter, 'alcMeter'),
-    compression: meterField(compressionStructural, compressionObservation, onTx),
+    compression: meterField(
+      compressionStructural, compressionObservation, onTx, state,
+      { scope: 'radio', receiver: null, path: 'compMeter' },
+    ),
     // Vd is the station's supply rail, not a TX reading: it is worth showing
     // in every RF state (the dock keeps it on instantaneous display for the
     // same reason), so it is structurally gated but never relevance-gated.
-    drainVoltage: meterField(drainVoltageStructural, drainVoltageObservation, true),
-    drainCurrent: meterField(drainCurrentStructural, drainCurrentObservation, onTx),
+    drainVoltage: meterField(
+      drainVoltageStructural, drainVoltageObservation, true, state,
+      { scope: 'radio', receiver: null, path: 'vdMeter' },
+    ),
+    drainCurrent: meterField(
+      drainCurrentStructural, drainCurrentObservation, onTx, state,
+      { scope: 'radio', receiver: null, path: 'idMeter' },
+    ),
   };
 }
 

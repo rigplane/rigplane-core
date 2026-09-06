@@ -395,8 +395,11 @@ describe('TX truth reaches this surface only through the fact layer (R9)', () =>
     expect(SOURCE).not.toMatch(/\bptt\b/i);
     expect(SOURCE).not.toMatch(/TxAuthoritySnapshot/);
     expect(SOURCE).not.toMatch(/radioState/);
-    // `view` is the ONE prop. A second one would be a second TX input.
-    expect(SOURCE).toMatch(/interface Props\s*\{\s*view:\s*RadioViewModel;?\s*\}/);
+    // Exactly one fact input plus the generic continuity boundary. Neither is
+    // a second TX authority or a raw runtime/state input.
+    expect(SOURCE).toMatch(
+      /interface Props\s*\{\s*view:\s*RadioViewModel;\s*continuitySession\?:\s*MeterContinuitySession\s*\|\s*null;\s*\}/,
+    );
   });
 
   // MUTATION KILLED: computing an RF state locally (e.g. from txPermit, or

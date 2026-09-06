@@ -43,6 +43,7 @@
   } from '../../semantic/DspSurface.svelte';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
+  import type { MeterContinuitySession } from '../../primitives/meters/meter-ballistics.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField, type RfFrontEndToggleField,
@@ -604,6 +605,11 @@
   const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
   const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
   let controlSession = $state(readControlSession?.() ?? { state: 'disconnected' as const, epoch: -1 });
+  let meterContinuitySession: MeterContinuitySession | null = $derived(
+    controlSession.state === 'connected'
+      && Number.isSafeInteger(controlSession.epoch) && controlSession.epoch >= 0
+      ? { controlSessionEpoch: controlSession.epoch } : null,
+  );
   const pbtFloorKey = (generation: number, receiver: 'MAIN' | 'SUB', field: PbtField) =>
     `${generation}:${receiver}:${field}`;
   const unsubscribePbtSession = subscribeControlSession?.((next) => {
@@ -1098,7 +1104,7 @@
   -->
   {#snippet metersSurface()}
     {#if view?.meters}
-      <MetersSurface {view} />
+      <MetersSurface {view} continuitySession={meterContinuitySession} />
     {/if}
   {/snippet}
 

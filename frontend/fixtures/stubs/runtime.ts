@@ -27,6 +27,7 @@ const DEFAULT_SCOPE_STATUS = {
   source: null, available: false, resourceSelected: false, demand: 0,
   lifecycle: 'inactive' as const, transport: 'disconnected' as const, frameSeen: false,
 };
+const FIXTURE_CONTROL_SESSION = Object.freeze({ state: 'connected' as const, epoch: 1 });
 
 type FixturePresentationResource = 'hardware-scope' | 'audio-fft';
 type FixturePresentationLease = Readonly<{
@@ -99,6 +100,13 @@ const fixtureScope = {
 export const runtime = {
   get state() { return harness.state; },
   get caps() { return harness.caps; },
+  // The fixture mounts one already-current state/caps snapshot for its whole
+  // page lifetime. This is its fixed authority boundary, not a socket or a
+  // transition producer; scope-frame transport remains separately absent.
+  get controlSession() { return FIXTURE_CONTROL_SESSION; },
+  subscribeControlSession(_handler: (next: typeof FIXTURE_CONTROL_SESSION) => void) {
+    return () => {};
+  },
   get audio() {
     const { rxEnabled, volume, muted } = harness.audioRuntime;
     return { rxEnabled, volume, muted };

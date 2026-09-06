@@ -47,6 +47,8 @@
   import {
     createFrameStepPeakStrategy,
     createMeterBallistics,
+    type MeterContinuitySession,
+    type MeterSourceIdentity,
   } from '../../primitives/meters/meter-ballistics.svelte';
   import type { MeterDisplay } from '../../presentation/languages/contract';
   import { DEFAULT_METER_DISPLAY } from './meter-display';
@@ -90,11 +92,13 @@
      * sibling `data-main-relevant` / `data-lower-relevant` groups below.
      */
     relevant?: boolean;
+    source?: MeterSourceIdentity | null;
+    session?: MeterContinuitySession | null;
   }
 
   let {
     value, compact = false, label, variant, display = DEFAULT_METER_DISPLAY, lowerScale,
-    relevant = true, mainPresent = true,
+    relevant = true, mainPresent = true, source, session,
   }: Props = $props();
 
   const isVfoVariant = $derived(variant === 'vfo' || variant === 'vfo-wide');
@@ -350,7 +354,12 @@
     const current = value === null || !mainPresent
       ? null
       : (calibratedToSegments(value) / RAW_SEGMENT_DOMAIN) * SEG_COUNT;
-    untrack(() => ballistics.sync({ sample: current, smoothTarget: current, peakEnabled: true }));
+    const currentSource = source;
+    const currentSession = session;
+    untrack(() => ballistics.sync({
+      sample: current, smoothTarget: current, peakEnabled: true,
+      source: currentSource, session: currentSession,
+    }));
   });
 
   onMount(() => {
@@ -515,12 +524,14 @@
     <!-- Active -->
     {#if i < fullSegs}
       <rect
+        data-meter-fill={i}
         {x} y={TRACK_Y + 1}
         width={SEG_W} height={TRACK_H - 2}
         fill={activeColor(i)}
       />
     {:else if i === fullSegs && fracSeg > 0.01}
       <rect
+        data-meter-fill={i}
         {x} y={TRACK_Y + 1}
         width={Math.max(1, SEG_W * fracSeg)} height={TRACK_H - 2}
         fill={activeColor(i)}
@@ -639,6 +650,7 @@
   <!-- Peak hold indicator -->
   {#if showPeak}
     <line
+      data-meter-peak
       x1={peakX} y1={TRACK_Y}
       x2={peakX} y2={TRACK_Y + TRACK_H}
       stroke={peakColor}

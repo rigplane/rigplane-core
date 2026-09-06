@@ -118,10 +118,14 @@
   import BarGauge from '../components-v2/meters/BarGauge.svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { RadioViewModel } from './radio-view-model';
+  import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import { RF_LABEL, RF_MARK } from './rx-tx-surface';
 
-  interface Props { view: RadioViewModel }
-  let { view }: Props = $props();
+  interface Props {
+    view: RadioViewModel;
+    continuitySession?: MeterContinuitySession | null;
+  }
+  let { view, continuitySession }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine,
    *  risk R3): a radio that reports no meters gets no empty dock, and no zone
@@ -174,6 +178,8 @@
           display={display?.display ?? undefined}
           lowerScale={present(meters.swr) ? swrLowerScale(meters.swr, meters.rfState) : undefined}
           relevant={meters.signal.relevant}
+          source={meters.signal.source}
+          session={continuitySession}
         />
       </div>
     {/if}
