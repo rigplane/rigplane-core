@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
 
 const mockProps = {
   nrMode: 0,
@@ -34,12 +36,10 @@ const mockHandlers = {
 };
 
 const runtimeState = vi.hoisted(() => ({
-  state: null as {
-    active: 'MAIN' | 'SUB';
-    main: Record<string, unknown>;
-    sub: Record<string, unknown>;
-    observationSeq?: number;
-  } | null,
+  state: null as ServerState | null,
+  caps: null as Capabilities | null,
+  session: { state: 'connected' as 'connected' | 'disconnected', epoch: 1 },
+  radioListeners: new Set<(state: ServerState | null) => void>(),
   notify: () => {},
 }));
 const mockProjection = vi.hoisted(() => ({ notify: () => {} }));
@@ -48,14 +48,27 @@ vi.mock('$lib/runtime/frontend-runtime', async () => {
   const { createSubscriber } = await import('svelte/reactivity');
   let update = () => {};
   const subscribe = createSubscriber((notify) => { update = notify; return () => {}; });
-  runtimeState.notify = () => update();
+  runtimeState.notify = () => {
+    update();
+    runtimeState.radioListeners.forEach((listener) => listener(runtimeState.state));
+  };
   return {
     runtime: {
       get state() { subscribe(); return runtimeState.state; },
-      get caps() { return null; },
+      get caps() { subscribe(); return runtimeState.caps; },
+      get controlSession() { subscribe(); return runtimeState.session; },
     },
   };
 });
+
+vi.mock('$lib/stores/radio.svelte', () => ({
+  getRadioState: () => runtimeState.state,
+  subscribeRadioState: (listener: (state: ServerState | null) => void) => {
+    runtimeState.radioListeners.add(listener);
+    listener(runtimeState.state);
+    return () => runtimeState.radioListeners.delete(listener);
+  },
+}));
 
 vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>();
@@ -80,11 +93,55 @@ import {
   failCommand,
   resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
+import { getDspControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 
 let components: ReturnType<typeof mount>[] = [];
 
+const fresh = (storePath: string, marker = 1) => ({
+  storePath, observed: true, freshness: 'fresh' as const,
+  availability: 'available' as const, lastObservedMonotonic: marker,
+});
+
+function qualifiedState(marker = 1, providerGeneration = 3): ServerState {
+  return {
+    stateContractVersion: 1, providerGeneration, active: 'MAIN',
+    main: {
+      nr: false, nb: mockProps.nbActive, nbLevel: mockProps.nbLevel,
+      autoNotch: false, manualNotch: mockProps.notchMode === 'manual',
+      notchFilter: mockProps.notchFreq, manualNotchWidth: mockProps.manualNotchWidth,
+      agcTimeConstant: mockProps.agcTimeConstant,
+    },
+    sub: {}, nbWidth: mockProps.nbWidth, observationSeq: marker,
+    fieldStatus: {
+      'main.nr': fresh('main.nr', marker),
+      'main.nb': fresh('main.nb', marker),
+      'main.nbLevel': fresh('main.nbLevel', marker),
+      'main.autoNotch': fresh('main.autoNotch', marker),
+      'main.manualNotch': fresh('main.manualNotch', marker),
+      'main.notchFilter': fresh('main.notchFilter', marker),
+      'main.manualNotchWidth': fresh('main.manualNotchWidth', marker),
+      'main.agcTimeConstant': fresh('main.agcTimeConstant', marker),
+      nbWidth: fresh('nbWidth', marker),
+    },
+  } as unknown as ServerState;
+}
+
+function qualifiedCaps(providerGeneration = 3): Capabilities {
+  return {
+    model: 'FTX-1', scope: false, audio: false, tx: false,
+    capabilities: ['nr', 'nb', 'notch', 'agc'], receivers: 1, vfoScheme: 'single',
+    freqRanges: [], modes: [], filters: [],
+    audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm'] },
+    webrtc: { available: false, enabled: false }, txBands: null,
+    stateContractVersion: 1, providerGeneration,
+    controls: { nb_depth: {} },
+  } as unknown as Capabilities;
+}
+
 function mountPanel(overrides?: Partial<typeof mockProps>) {
   if (overrides) Object.assign(mockProps, overrides);
+  runtimeState.state = qualifiedState(runtimeState.state?.observationSeq ?? 1);
+  runtimeState.notify();
   const t = document.createElement('div');
   document.body.appendChild(t);
   const component = mount(DspPanel, { target: t });
@@ -129,18 +186,18 @@ beforeEach(() => {
   mockHandlers.onNbWidthChange = vi.fn();
   mockHandlers.onManualNotchWidthChange = vi.fn();
   mockHandlers.onAgcTimeChange = vi.fn();
-  runtimeState.state = {
-    active: 'MAIN',
-    main: { autoNotch: false, manualNotch: false },
-    sub: {},
-    observationSeq: 1,
-  };
+  runtimeState.caps = qualifiedCaps();
+  runtimeState.session = { state: 'connected', epoch: 1 };
+  runtimeState.state = qualifiedState();
+  runtimeState.notify();
 });
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
   resetCommandLifecycle();
   runtimeState.state = null;
+  runtimeState.caps = null;
+  runtimeState.session = { state: 'disconnected', epoch: -1 };
   vi.useRealTimers();
   document.body.innerHTML = '';
 });
@@ -242,6 +299,122 @@ describe('DspPanel NB modal depth/width gating (MOR-502)', () => {
     expect(modal?.textContent).not.toContain('NB Depth');
     expect(modal?.textContent).not.toContain('NB Width');
     expect(modal?.textContent).toContain('NB Level');
+  });
+});
+
+describe('DspPanel v3 DSP scalar source integration (MOR-2423)', () => {
+  const lanes = [
+    ['nbLevel', 'set_nb_level', { level: 129, receiver: 0 }, 129],
+    ['nbWidth', 'set_nb_width', { level: 64 }, 64],
+    ['notchFilter', 'set_notch_filter', { value: 127, receiver: 0 }, 127],
+    ['agcTimeConstant', 'set_agc_time_constant', { value: 4, receiver: 0 }, 4],
+  ] as const;
+
+  it('routes both NB lanes independently through their existing raw handlers', () => {
+    const t = mountPanel({ nbActive: true, nbLevel: 128, nbWidth: 63 });
+    openLongPressModal(t, 'NB');
+    vi.useFakeTimers();
+    t.querySelector<HTMLElement>('[aria-label="NB Level"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    t.querySelector<HTMLElement>('[aria-label="NB Width"]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+
+    expect(mockHandlers.onNbLevelChange).toHaveBeenCalledExactlyOnceWith(129);
+    expect(mockHandlers.onNbWidthChange).toHaveBeenCalledExactlyOnceWith(64);
+    vi.useRealTimers();
+  });
+
+  it('uses the real descriptors for submitted, ACK, exact fresh confirmation, and authority replacement', () => {
+    const commands = lanes.map(([field, name, params]) => beginCommand({
+      id: `dsp-${field}`, name, params, originalEpoch: 1, timeoutMs: 5_000,
+    }));
+    for (const [field] of lanes) {
+      const feedback = getDspControlFeedback(field);
+      expect(feedback.phase).toBe('submitted');
+      expect(feedback.availability).toBe('available');
+    }
+
+    commands.forEach((command) => acknowledgeCommand(command.id, command.originalEpoch, 1));
+    for (const [field] of lanes) expect(getDspControlFeedback(field).phase).toBe('awaiting-confirmation');
+
+    const next = qualifiedState(2);
+    next.main!.nbLevel = 129;
+    next.nbWidth = 64;
+    next.main!.notchFilter = 127;
+    next.main!.agcTimeConstant = 4;
+    runtimeState.state = next;
+    runtimeState.notify();
+    for (const [field, , , confirmed] of lanes) {
+      const feedback = getDspControlFeedback(field);
+      expect(feedback.phase).toBe('confirmed');
+      expect(feedback.confirmed).toBe(confirmed);
+    }
+
+    runtimeState.state = qualifiedState(3, 4);
+    runtimeState.caps = qualifiedCaps(4);
+    runtimeState.session = { state: 'connected', epoch: 2 };
+    runtimeState.notify();
+    for (const [field] of lanes) {
+      const feedback = getDspControlFeedback(field);
+      expect(feedback.phase).toBe('idle');
+      expect(feedback.lifecycleId).toBeNull();
+      expect(feedback.providerGeneration).toBe(4);
+      expect(feedback.sessionEpoch).toBe(2);
+    }
+  });
+
+  it('requires the exact same-field observation to be newer than ACK', () => {
+    const command = beginCommand({
+      id: 'exact-nb-level', name: 'set_nb_level', params: { level: 129, receiver: 0 },
+      originalEpoch: 1, timeoutMs: 5_000,
+    });
+    acknowledgeCommand(command.id, command.originalEpoch, 1);
+
+    const wrongValue = qualifiedState(2);
+    wrongValue.main!.nbLevel = 130;
+    runtimeState.state = wrongValue;
+    runtimeState.notify();
+    expect(getDspControlFeedback('nbLevel').phase).toBe('awaiting-confirmation');
+
+    const staleExact = qualifiedState(1);
+    staleExact.main!.nbLevel = 129;
+    runtimeState.state = staleExact;
+    runtimeState.notify();
+    expect(getDspControlFeedback('nbLevel').phase).toBe('awaiting-confirmation');
+
+    const freshExact = qualifiedState(2);
+    freshExact.main!.nbLevel = 129;
+    runtimeState.state = freshExact;
+    runtimeState.notify();
+    expect(getDspControlFeedback('nbLevel').phase).toBe('confirmed');
+  });
+
+  it('invalidates a deferred dispatch on authority loss and recovers in place', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ nbActive: true });
+    openLongPressModal(t, 'NB');
+    vi.useFakeTimers();
+    const slider = t.querySelector<HTMLElement>('[aria-label="NB Level"]')!;
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+
+    runtimeState.session = { state: 'disconnected', epoch: 1 };
+    runtimeState.notify();
+    flushSync();
+    vi.advanceTimersByTime(50);
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    expect(mockHandlers.onNbLevelChange).not.toHaveBeenCalled();
+
+    runtimeState.state = qualifiedState(2, 4);
+    runtimeState.caps = qualifiedCaps(4);
+    runtimeState.session = { state: 'connected', epoch: 2 };
+    runtimeState.notify();
+    flushSync();
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(slider.getAttribute('aria-disabled')).toBe('false');
+    expect(mockHandlers.onNbLevelChange).toHaveBeenCalledExactlyOnceWith(129);
+    vi.useRealTimers();
   });
 });
 
@@ -521,7 +694,7 @@ describe('DspPanel mobile notch dialog (MOR-1631)', () => {
       main: { autoNotch: true, manualNotch: false },
       sub: {},
       observationSeq: 2,
-    };
+    } as unknown as ServerState;
     mockProps.notchMode = 'auto';
     runtimeState.notify();
     mockProjection.notify();

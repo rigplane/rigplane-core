@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { buildNrOptions, buildNotchOptions } from '../dsp-utils';
 import { rawToPercentDisplay } from '../../../primitives/scalar/value-control-core';
 
@@ -39,15 +41,46 @@ const mockHandlers = {
 // unarmed here, this file's tests are not about that behavior (covered by
 // `mor1536-armed-adoption.test.ts`).
 const unarmed = { armed: false, value: null };
-
+const feedbackOverrides = vi.hoisted(() => new Map<string, Record<string, unknown>>());
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveDspProps: () => mockProps,
   getDspHandlers: () => mockHandlers,
   getAutoNotchArmed: () => unarmed,
   getManualNotchArmed: () => unarmed,
+  getDspControlFeedback: (field: 'nbLevel' | 'nbWidth' | 'notchFilter' | 'agcTimeConstant') => ({
+    confirmed: field === 'notchFilter' ? mockProps.notchFreq : mockProps[field],
+    target: null, requestedTarget: null, phase: 'idle' as const,
+    busy: false, availability: 'available' as const, outcome: null,
+    lifecycleId: null, transitionId: null, providerGeneration: 1, sessionEpoch: 7,
+    scope: {
+      control: field === 'nbLevel' ? 'nb-level'
+        : field === 'nbWidth' ? 'nb-width'
+          : field === 'notchFilter' ? 'notch-position' : 'agc-time',
+      receiver: 0 as const,
+    },
+    repeatPolicy: 'latest-target-wins' as const,
+    ...feedbackOverrides.get(field),
+  }),
 }));
 
 import DspPanel from '../DspPanel.svelte';
+
+describe('MOR-2423 DSP scalar feedback wiring contract', () => {
+  it('adopts only the four leased scalar lanes and leaves manual notch width raw', () => {
+    const source = readFileSync(path.resolve(process.cwd(), 'src/components-v2/panels/DspPanel.svelte'), 'utf8');
+
+    expect(source.match(/getDspControlFeedback\('/g)).toHaveLength(4);
+    expect(source).toContain("getDspControlFeedback('nbLevel')");
+    expect(source).toContain("getDspControlFeedback('nbWidth')");
+    expect(source).toContain("getDspControlFeedback('notchFilter')");
+    expect(source).toContain("getDspControlFeedback('agcTimeConstant')");
+    expect(source).not.toContain("getDspControlFeedback('manualNotchWidth')");
+    expect(source).toContain("command: 'set_nb_level'");
+    expect(source).toContain("command: 'set_nb_width'");
+    expect(source).toContain("command: 'set_notch_filter'");
+    expect(source).toContain("command: 'set_agc_time_constant'");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // buildNrOptions
@@ -111,6 +144,7 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
 
 beforeEach(() => {
   components = [];
+  feedbackOverrides.clear();
   Object.assign(mockProps, {
     nrMode: 0, nrLevel: 128, nbActive: false, nbLevel: 128,
     notchMode: 'off', notchFreq: 1000, nbDepth: 0, nbWidth: 0,
@@ -241,6 +275,34 @@ describe('NB depth/width capability gating', () => {
     expect(text).not.toContain('NB Width');
     // NB Level remains present regardless of depth/width.
     expect(text).toContain('NB Level');
+  });
+});
+
+describe('MOR-2423 supplied feedback phase projection', () => {
+  it.each([
+    'unavailable', 'idle', 'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
+    'confirmed', 'failed', 'timed-out', 'cancelled', 'superseded',
+  ] as const)('projects the supplied %s DTO without inventing source lifecycle evidence', (phase) => {
+    const busy = ['submitted', 'queued', 'dispatched', 'awaiting-confirmation'].includes(phase);
+    const terminal = ['confirmed', 'failed', 'timed-out', 'cancelled', 'superseded'].includes(phase);
+    feedbackOverrides.set('nbLevel', {
+      phase, busy, availability: phase === 'unavailable' ? 'unavailable' : 'available',
+      confirmed: phase === 'unavailable' ? null : 128,
+      target: busy ? 129 : null, requestedTarget: phase === 'idle' ? null : 129,
+      outcome: terminal ? { phase, ...(phase === 'failed' ? { error: 'radio rejected' } : {}) } : null,
+      lifecycleId: phase === 'idle' || phase === 'unavailable' ? null : `life-${phase}`,
+      transitionId: phase === 'idle' || phase === 'unavailable' ? null : `life-${phase}:${phase}`,
+    });
+    const t = mountPanel({ nbActive: true });
+    openNbModal(t);
+    const control = t.querySelector<HTMLElement>('[aria-label="NB Level"]')!;
+
+    expect(control.dataset.commandPhase).toBe(phase);
+    expect(control.getAttribute('aria-busy')).toBe(String(busy));
+    expect(control.getAttribute('aria-disabled')).toBe(String(phase === 'unavailable'));
+    expect(t.querySelectorAll('[data-control-feedback-status]')).toHaveLength(
+      phase === 'idle' || phase === 'unavailable' ? 0 : 1,
+    );
   });
 });
 

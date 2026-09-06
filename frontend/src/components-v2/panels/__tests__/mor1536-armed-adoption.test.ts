@@ -123,6 +123,12 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getDspHandlers: () => mockDspHandlers,
   getAutoNotchArmed: () => mockAutoNotchArmed,
   getManualNotchArmed: () => mockManualNotchArmed,
+  getDspControlFeedback: (field: string) => ({
+    confirmed: null, target: null, requestedTarget: null, phase: 'unavailable' as const,
+    busy: false, availability: 'unavailable' as const, outcome: null,
+    lifecycleId: null, transitionId: null, providerGeneration: null, sessionEpoch: -1,
+    scope: { control: field, receiver: 0 as const }, repeatPolicy: 'latest-target-wins' as const,
+  }),
 }));
 
 import AgcPanel from '../AgcPanel.svelte';
