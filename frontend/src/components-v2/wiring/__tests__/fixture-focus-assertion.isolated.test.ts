@@ -38,3 +38,69 @@ describe('fixture focus assertion retained readout exception', () => {
     ['hidden ordinary control', '<section aria-hidden="true"><button>Stop</button></section>'],
   ])('rejects %s', (_label, html) => { expect(admitted(html)).toBe(false); });
 });
+
+describe('fixture focus assertion roving radiogroup exception', () => {
+  const radios = (groupAttributes = 'aria-label="Active receiver"') =>
+    `<div role="radiogroup" ${groupAttributes}>`
+    + '<button role="radio" tabindex="0">M</button>'
+    + '<button role="radio" tabindex="-1">S</button>'
+    + '</div>';
+
+  it('admits one operable programmatic radio beside the single Tab stop', () => {
+    expect(admitted(radios())).toBe(true);
+  });
+
+  it('admits a radiogroup named by visible referenced text', () => {
+    expect(admitted('<span id="receiver-label">Active receiver</span>'
+      + radios('aria-labelledby="receiver-label"'))).toBe(true);
+  });
+
+  it.each([
+    ['unnamed group', radios('')],
+    ['blank group name', radios('aria-label="  "')],
+    ['missing labelledby target', radios('aria-labelledby="missing"')],
+    ['no enabled Tab stop', radios().replace('tabindex="0"', 'tabindex="-1"')],
+    ['two enabled Tab stops', radios().replace('</div>', '<button role="radio" tabindex="0">X</button></div>')],
+    ['omitted native Tab stop', radios().replace('</div>', '<button role="radio">X</button></div>')],
+    ['malformed peer tabindex', radios().replace('</div>', '<button role="radio" tabindex="none">X</button></div>')],
+    ['positive peer tabindex', radios().replace('</div>', '<button role="radio" tabindex="1">X</button></div>')],
+    ['disabled programmatic radio', radios().replace(
+      '<button role="radio" tabindex="-1">S</button>',
+      '<button role="radio" tabindex="-1" disabled>S</button>',
+    )],
+    ['aria-disabled programmatic radio', radios().replace(
+      '<button role="radio" tabindex="-1">S</button>',
+      '<button role="radio" tabindex="-1" aria-disabled="true">S</button>',
+    )],
+    ['hidden radio', radios().replace(
+      '<button role="radio" tabindex="-1">S</button>',
+      '<button role="radio" tabindex="-1" aria-hidden="true">S</button>',
+    )],
+    ['hidden group', `<section aria-hidden="true">${radios()}</section>`],
+    ['unrelated negative control', radios() + '<button tabindex="-1">Stop</button>'],
+    ['nested group Tab-stop leakage', '<div role="radiogroup" aria-label="Outer">'
+      + '<button role="radio" tabindex="-1">Outer radio</button>'
+      + '<div role="radiogroup" aria-label="Inner">'
+      + '<button role="radio" tabindex="0">Inner radio</button>'
+      + '</div></div>'],
+  ])('rejects %s', (_label, html) => {
+    expect(admitted(html)).toBe(false);
+  });
+});
+
+describe('fixture focus assertion inert slider exception', () => {
+  const slider = '<div role="slider" aria-disabled="true" tabindex="-1" aria-label="RF power"></div>';
+
+  it('admits an aria-disabled slider outside the sequential Tab order', () => {
+    expect(admitted(slider)).toBe(true);
+  });
+
+  it.each([
+    ['enabled slider', slider.replace('aria-disabled="true"', 'aria-disabled="false"')],
+    ['malformed tabindex', slider.replace('tabindex="-1"', 'tabindex="-2"')],
+    ['hidden slider', slider.replace('role="slider"', 'role="slider" aria-hidden="true"')],
+    ['hidden slider ancestor', `<section aria-hidden="true">${slider}</section>`],
+  ])('rejects %s', (_label, html) => {
+    expect(admitted(html)).toBe(false);
+  });
+});
