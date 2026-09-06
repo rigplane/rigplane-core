@@ -4,7 +4,9 @@ import { SvelteMap } from 'svelte/reactivity';
 import ValueControl from '../ValueControl.svelte';
 import HBarRenderer from '../HBarRenderer.svelte';
 import DiscreteRenderer from '../DiscreteRenderer.svelte';
+import ExternalScalarRendererFixture from './ExternalScalarRendererFixture.svelte';
 import { professionalSkin } from '../skins';
+import type { Skin } from '../skin';
 import {
   createBipolarContinuousScalarPolicy,
   createContinuousScalar,
@@ -16,6 +18,12 @@ import {
   type ContinuousScalarInput,
   type ContinuousScalarRendererLease,
 } from '../../../../primitives/scalar/continuous-scalar.svelte';
+
+const activationState = vi.hoisted(() => ({ selectedScalarAppearance: undefined as unknown }));
+
+vi.mock('../../../../component-kits/activation', () => ({
+  getSelectedScalarAppearance: () => activationState.selectedScalarAppearance,
+}));
 
 let components: ReturnType<typeof mount>[] = [];
 let roots: HTMLElement[] = [];
@@ -55,6 +63,7 @@ function pointer(target: HTMLElement, x: number) {
 beforeEach(() => {
   components = [];
   roots = [];
+  activationState.selectedScalarAppearance = undefined;
 });
 
 afterEach(() => {
@@ -1422,6 +1431,171 @@ describe('ValueControl controlled Knob skins', () => {
     expect(target.querySelector('.vc-knob-value')?.textContent).toBe(expected);
     expect(slider(target).getAttribute('aria-valuenow')).toBeNull();
     expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+  });
+});
+
+describe('ValueControl external scalar appearances', () => {
+  const fixtureComponent = ExternalScalarRendererFixture as unknown as NonNullable<Skin['hbar']>;
+  const externalAppearance = {
+    name: 'External fixture',
+    knob: fixtureComponent as unknown as NonNullable<Skin['knob']>,
+    hbar: fixtureComponent,
+    bipolar: fixtureComponent as unknown as NonNullable<Skin['bipolar']>,
+    discrete: fixtureComponent as unknown as NonNullable<Skin['discrete']>,
+  } satisfies Skin;
+
+  it.each([
+    ['hbar', {
+      valueProjection: {
+        contextKey: 'USB:[1800,2100,3000]',
+        positionOf: () => 0.5,
+        valueAt: () => 20,
+      },
+      issuedStatusPresentation: { text: 'issued', format: () => 'issued', accept: vi.fn() },
+    }],
+    ['bipolar', {}],
+    ['knob', { arcAngle: 180, tickCount: 5, tickLabels: ['A', 'B'] }],
+    ['discrete', {
+      tickLabels: ['Low', 'High'], showAllTicks: false, tickStyle: 'led', disabled: true,
+    }],
+  ] as const)('renders the selected external %s member with the complete host prop set', (
+    renderer, extra,
+  ) => {
+    activationState.selectedScalarAppearance = externalAppearance;
+    const { target } = mountReactive({
+      ...baseProps,
+      ...extra,
+      renderer,
+      displayFn: (candidate: number) => `display:${candidate}`,
+      accentColor: '#123456',
+      fillColor: '#234567',
+      fillGradient: ['#345678', '#456789'],
+      trackColor: '#56789a',
+      showValue: false,
+      showLabel: false,
+      compact: true,
+      variant: 'hardware-illuminated',
+      unit: 'dB',
+      shortcutHint: 'Alt+S',
+      title: 'Scalar title',
+      feedbackPhase: 'failed',
+      feedbackBusy: false,
+      feedbackDescription: 'Legacy description',
+      feedbackStatus: 'Legacy status',
+      onChange: vi.fn(),
+    });
+    const control = slider(target);
+
+    expect(control.getAttribute('data-external-scalar-renderer')).toBe(renderer);
+    expect(control.getAttribute('data-label')).toBe('Controlled');
+    expect(control.getAttribute('data-display')).toBe('display:20');
+    expect(control.getAttribute('data-accent-color')).toBe('#123456');
+    expect(control.getAttribute('data-fill-color')).toBe('#234567');
+    expect(control.getAttribute('data-fill-gradient')).toBe('#345678|#456789');
+    expect(control.getAttribute('data-track-color')).toBe('#56789a');
+    expect(control.getAttribute('data-show-value')).toBe('false');
+    expect(control.getAttribute('data-show-label')).toBe('false');
+    expect(control.getAttribute('data-compact')).toBe('true');
+    expect(control.getAttribute('data-variant')).toBe('hardware-illuminated');
+    expect(control.getAttribute('data-unit')).toBe('dB');
+    expect(control.getAttribute('data-shortcut-hint')).toBe('Alt+S');
+    expect(control.getAttribute('data-title')).toBe('Scalar title');
+    expect(control.getAttribute('data-legacy-phase')).toBe('failed');
+    expect(control.getAttribute('data-legacy-busy')).toBe('false');
+    expect(control.getAttribute('data-legacy-description')).toBe('Legacy description');
+    expect(control.getAttribute('data-legacy-status')).toBe('Legacy status');
+    if (renderer === 'hbar') {
+      expect(control.getAttribute('data-projection-context')).toBe('USB:[1800,2100,3000]');
+      expect(control.getAttribute('data-issued-status')).toBe('issued');
+    } else if (renderer === 'knob') {
+      expect(control.getAttribute('data-arc-angle')).toBe('180');
+      expect(control.getAttribute('data-tick-count')).toBe('5');
+      expect(control.getAttribute('data-tick-labels')).toBe('A|B');
+    } else if (renderer === 'discrete') {
+      expect(control.getAttribute('data-tick-labels')).toBe('Low|High');
+      expect(control.getAttribute('data-show-all-ticks')).toBe('false');
+      expect(control.getAttribute('data-tick-style')).toBe('led');
+      expect(control.getAttribute('data-dimmed')).toBe('true');
+    }
+  });
+
+  it('keeps explicit appearance authoritative and falls back within that appearance only', () => {
+    activationState.selectedScalarAppearance = externalAppearance;
+    const explicit = mountReactive({
+      ...baseProps,
+      renderer: 'knob',
+      skin: professionalSkin,
+      onChange: vi.fn(),
+    });
+    expect(explicit.target.querySelector('.pro-knob')).not.toBeNull();
+    expect(explicit.target.querySelector('[data-external-scalar-renderer]')).toBeNull();
+
+    const partialExplicit = mountReactive({
+      ...baseProps,
+      skin: { name: 'Explicit partial' },
+      onChange: vi.fn(),
+    });
+    expect(partialExplicit.target.querySelector('.vc-hbar')).not.toBeNull();
+    expect(partialExplicit.target.querySelector('[data-external-scalar-renderer]')).toBeNull();
+  });
+
+  it('uses the built-in member when the selected appearance omits the requested renderer', () => {
+    activationState.selectedScalarAppearance = {
+      name: 'Partial external',
+      hbar: fixtureComponent,
+    } satisfies Skin;
+    const { target } = mountReactive({
+      ...baseProps,
+      renderer: 'knob',
+      onChange: vi.fn(),
+    });
+
+    expect(target.querySelector('.vc-knob')).not.toBeNull();
+    expect(target.querySelector('[data-external-scalar-renderer]')).toBeNull();
+  });
+
+  it('preserves the default built-in UI when no external appearance is selected', () => {
+    const { target } = mountReactive({ ...baseProps, onChange: vi.fn() });
+
+    expect(target.querySelector('.vc-hbar')).not.toBeNull();
+    expect(target.querySelector('[data-external-scalar-renderer]')).toBeNull();
+  });
+
+  it('replaces the external renderer without replacing its binding, policy, or feedback', () => {
+    activationState.selectedScalarAppearance = externalAppearance;
+    const request = vi.fn();
+    const binding = commandBinding(request, {
+      phase: 'failed',
+      busy: false,
+      outcome: { phase: 'failed', error: 'radio rejected' },
+      transitionId: 'external-failed',
+    });
+    const { state, target } = mountReactive({ binding, label: 'External command', renderer: 'hbar' });
+    const external = slider(target) as HTMLElement & {
+      readonly rendererLease: ContinuousScalarRendererLease;
+    };
+    const staleLease = external.rendererLease;
+
+    expect(staleLease.view).toEqual(binding.view);
+    expect(external.getAttribute('data-confirmed')).toBe('20');
+    expect(external.getAttribute('data-requested')).toBe('30');
+    expect(external.getAttribute('data-phase')).toBe('failed');
+    expect(external.getAttribute('data-error')).toBe('radio rejected');
+
+    state.skin = { name: 'Explicit built-in fallback' };
+    flushSync();
+    const replacement = slider(target);
+    expect(target.querySelector('.vc-hbar')).not.toBeNull();
+    expect(replacement.getAttribute('aria-valuenow')).toBe('20');
+    expect(replacement.getAttribute('data-command-phase')).toBe('failed');
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('Failed: 30 Hz: radio rejected');
+
+    expect(staleLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    replacement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).toHaveBeenCalledExactlyOnceWith(30);
+    binding.destroy();
   });
 });
 
