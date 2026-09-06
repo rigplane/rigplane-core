@@ -128,7 +128,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
 }));
 
-import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
+import RadioLayout, { TEST_INSTRUMENTS } from './fixtures/HostedRadioLayoutFixture.svelte';
 import RawRadioLayout from '../RadioLayout.svelte';
 import SemanticRadioSurfaces from '../../wiring/SemanticRadioSurfaces.svelte';
 import { getCapabilities, hasAnyScope, hasCapability } from '$lib/stores/capabilities.svelte';
@@ -254,7 +254,7 @@ function render(skinId: SkinId): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
   mounted.push(getLayout(skinId) === undefined
-    ? mount(RawRadioLayout as typeof RadioLayout, { target, props: { skinId } })
+    ? mount(RawRadioLayout, { target, props: { skinId, instruments: TEST_INSTRUMENTS } })
     : mount(RadioLayout, { target, props: { skinId } }));
   flushSync();
   return target;

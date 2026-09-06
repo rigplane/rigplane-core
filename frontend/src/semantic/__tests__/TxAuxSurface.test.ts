@@ -125,7 +125,8 @@ function withSurface(
 function renderReactiveFeedback(initial: TxAuxFeedbackRecord = feedbackRecord()) {
   const onLevelChange = vi.fn();
   const props = proxy({
-    view: base(), tx: snap(), presentation: 'grouped' as const, onLevelChange, levelFeedback: initial,
+    view: base(), tx: snap(), presentation: 'grouped' as 'grouped' | 'independent',
+    onLevelChange, levelFeedback: initial,
   });
   const component = mount(TxAuxScalarHostFixture, {
     target, props,
@@ -277,8 +278,7 @@ describe('the disabled reason is exposed on hover and to screen readers (MOR-142
         const control = s.control(field)!;
         const el = control instanceof HTMLButtonElement ? control : s.input(field)!;
         expect(control.title || el.title, field).toBe('Not yet observed');
-        expect(describedText(control instanceof HTMLButtonElement ? el : control), field)
-          .toBe('Not yet observed');
+        expect(describedText(el), field).toBe('Not yet observed');
       });
     },
   );
@@ -637,13 +637,18 @@ describe('level intents reach the caller with the field and the raw value', () =
 });
 
 describe('seven TX/VOX levels consume command feedback', () => {
+  const describedText = (el: HTMLElement): string | null => {
+    const id = el.getAttribute('aria-describedby');
+    return id ? target.querySelector(`#${id}`)?.textContent ?? null : null;
+  };
+
   it('declares the adopted ValueControl source feedback-integrated without changing debt inventory', () => {
     const source = readFileSync('src/semantic/TxAuxScalarHost.svelte', 'utf8');
     expect(source.match(/'feedback-policy': 'feedback-integrated'/g)).toHaveLength(1);
-    expect(source).toContain("{...field !== 'rfPower' ? feedbackIntegratedControl : {}}");
+    expect(source).toContain('{...feedbackIntegratedControl}');
   });
 
-  it.each(FEEDBACK_LEVELS)('uses canonical %s feedback and preserves its raw native input', (
+  it.each(FEEDBACK_LEVELS)('uses canonical %s feedback and preserves its raw renderer value', (
     field, _control, canonical,
   ) => {
     const r = renderReactiveFeedback();
@@ -651,6 +656,9 @@ describe('seven TX/VOX levels consume command feedback', () => {
     expect(input.getAttribute('aria-valuenow')).toBe(String(canonical));
     expect(input.dataset.commandPhase).toBe('idle');
     expect(input.getAttribute('aria-busy')).toBe('false');
+    expect(input.getAttribute('aria-valuetext')).toContain(
+      field === 'voxDelay' ? `${(canonical * 0.1).toFixed(1)}s` : `${Math.round(canonical / 255 * 100)}%`,
+    );
     const key = field === 'voxDelay' ? 'ArrowLeft' : 'ArrowRight';
     input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
     flushSync();
@@ -675,8 +683,8 @@ describe('seven TX/VOX levels consume command feedback', () => {
     expect(status.textContent).toContain('unavailable');
     expect(status.classList).toContain('sr-only');
     expect(r.row(field).title).toBe('Not yet observed');
-    const descriptionId = r.row(field).getAttribute('aria-describedby')!;
-    expect(r.row(field).querySelector(`#${descriptionId}`)?.textContent).toBe('Not yet observed');
+    expect(describedText(r.input(field))).toBe('Not yet observed');
+    expect(r.input(field).getAttribute('aria-valuetext')).toContain('unavailable');
     expect(r.input(field).getAttribute('aria-valuenow')).toBeNull();
     const visible = r.row(field).cloneNode(true) as HTMLElement;
     visible.querySelectorAll('.sr-only').forEach((node) => node.remove());
@@ -694,9 +702,10 @@ describe('seven TX/VOX levels consume command feedback', () => {
         transitionId: `mic-${phase}`,
       });
       const r = renderReactiveFeedback(feedbackRecord({ micGain: pending }));
-      expect(r.row('micGain').querySelector('.vc-value')?.textContent).toContain('50%');
+      expect(r.input('micGain').getAttribute('aria-valuenow')).toBe('128');
       expect(r.input('micGain').dataset.commandPhase).toBe(phase);
       expect(r.input('micGain').getAttribute('aria-busy')).toBe('true');
+      expect(r.input('micGain').getAttribute('aria-valuetext')).toContain('requested 78%');
       expect(r.row('micGain').querySelector('[data-canonical-value]')?.textContent).toContain('50%');
       expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain('78%');
       expect(r.row('micGain').querySelector('[data-command-status]')?.classList).not.toContain('sr-only');
@@ -727,7 +736,7 @@ describe('seven TX/VOX levels consume command feedback', () => {
       expect(status.textContent).toContain(error);
       expect(getComputedStyle(status).overflow).not.toBe('hidden');
     }
-    expect(r.row('micGain').querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-feedback-lane="micGain"]')).toHaveLength(1);
     r.dispose();
   });
 
@@ -742,19 +751,20 @@ describe('seven TX/VOX levels consume command feedback', () => {
       outcome: { phase: 'failed', error: 'radio refused' },
     });
     const r = renderReactiveFeedback(feedbackRecord({ [field]: failed(1, 1) }));
-    const status = () => r.row(field).querySelector<HTMLElement>(
-      '[data-control-feedback-status]',
-    );
+    const status = () => target.querySelector<HTMLElement>(`[data-feedback-lane="${field}"]`);
     const first = status()!;
+    r.props.presentation = 'independent';
+    flushSync();
+    expect(status()).toBe(first);
     r.props.levelFeedback = feedbackRecord({ [field]: failed(1, 1) });
     flushSync();
     expect(status()).toBe(first);
-    expect(r.row(field).querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
+    expect(target.querySelectorAll(`[data-feedback-lane="${field}"]`)).toHaveLength(1);
     r.props.levelFeedback = feedbackRecord({ [field]: failed(2, 2) });
     flushSync();
     expect(status()).not.toBe(first);
     expect(status()?.getAttribute('aria-live')).toBe('polite');
-    expect(r.row(field).querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
+    expect(target.querySelectorAll(`[data-feedback-lane="${field}"]`)).toHaveLength(1);
     r.dispose();
     },
   );

@@ -5,7 +5,10 @@
   import KnobRenderer from './KnobRenderer.svelte';
   import DiscreteRenderer from './DiscreteRenderer.svelte';
   import { getSelectedScalarAppearance } from '../../../component-kits/activation';
-  import type { LegacyReadingPresentation } from './scalar-render-presentation';
+  import type {
+    LegacyReadingPresentation,
+    ScalarAccessibilityPresentation,
+  } from './scalar-render-presentation';
   import type {
     HBarIssuedStatusPresentation,
     HBarValueProjection,
@@ -44,6 +47,7 @@
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
+    accessibility?: ScalarAccessibilityPresentation;
     skin?: Skin;
     valueProjection?: Readonly<HBarValueProjection>;
     issuedStatusPresentation?: Readonly<HBarIssuedStatusPresentation>;
@@ -121,6 +125,7 @@
     unit = '',
     shortcutHint = null,
     title = null,
+    accessibility,
     onchange,
     skin,
     valueProjection,
@@ -237,6 +242,7 @@
     unit,
     shortcutHint,
     title,
+    accessibility,
     legacy,
   });
   let knobProps = $derived({ ...rendererProps, arcAngle, tickCount, tickLabels });
@@ -274,14 +280,14 @@
     binding={scalarBinding} {label} {displayFn} {unknownDisplay}
     {fillColor} {fillGradient} {trackColor}
     {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
-    {legacy} {valueProjection} {issuedStatusPresentation}
+    {accessibility} {legacy} {valueProjection} {issuedStatusPresentation}
   />
 {:else if renderer === 'bipolar'}
   <BipolarRenderer
     binding={scalarBinding} {label} {displayFn} {unknownDisplay}
     {fillColor} {fillGradient} {trackColor}
     {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
-    {legacy}
+    {accessibility} {legacy}
   />
 {:else if renderer === 'knob'}
   <KnobRenderer {...knobProps} />

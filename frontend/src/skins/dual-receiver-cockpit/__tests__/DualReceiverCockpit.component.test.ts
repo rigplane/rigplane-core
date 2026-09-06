@@ -893,6 +893,7 @@ describe('operational audio-scope availability (scope=false + audioFft=true)', (
     // this test never observed more than the TUNE-specific id; now every
     // field does, and the general form is required.
     .replace(/tx-aux-reason-\d+-/g, 'tx-aux-reason-N-')
+    .replace(/((?:id|aria-describedby)=")c\d+(")/g, '$1cN$2')
     // MOR-2150: `scopeControls` now mounts through the same dual-composition
     // `zoned()` path as every other optional surface, and unlike the other
     // eight its OWN gate (`hasCap(caps, 'scope')`, radio-view-model-adapter

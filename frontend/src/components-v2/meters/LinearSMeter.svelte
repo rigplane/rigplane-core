@@ -43,15 +43,16 @@
 
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { createSmoother, prefersReducedMotion, onReducedMotionChange } from '$lib/utils/smoothing.svelte';
-  import {
-    createFrameStepPeakStrategy,
-    createMeterBallistics,
-    type MeterContinuitySession,
-    type MeterSourceIdentity,
+  import type {
+    MeterContinuitySession,
+    MeterSourceIdentity,
   } from '../../primitives/meters/meter-ballistics.svelte';
   import type { MeterDisplay } from '../../presentation/languages/contract';
   import { DEFAULT_METER_DISPLAY } from './meter-display';
+  import {
+    createSignalMeterMotion,
+    type SignalMeterFrame,
+  } from './signal-meter-motion.svelte';
   import {
     projectSignalMeter,
     type SignalMeterProjection,
@@ -86,16 +87,66 @@
      * sibling `data-main-relevant` / `data-lower-relevant` groups below.
      */
     relevant?: boolean;
-    source?: MeterSourceIdentity | null;
-    session?: MeterContinuitySession | null;
   }
 
-  type SignalInput =
+  type LocalSignalInput = (
     | { projection: SignalMeterProjection; value?: never }
-    | { projection?: never; value: number | null };
+    | { projection?: never; value: number | null }
+  ) & {
+    frame?: never;
+    source?: MeterSourceIdentity | null;
+    session?: MeterContinuitySession | null;
+  };
+  type HostFrameInput = {
+    frame: SignalMeterFrame;
+    projection?: never;
+    value?: never;
+    source?: never;
+    session?: never;
+  };
+  type SignalInput = LocalSignalInput | HostFrameInput;
   type Props = CommonLinearMeterProps & SignalInput;
 
+  type InputMode = 'local' | 'frame';
+
+  function hasOwn(value: object, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  function resolveInputMode(current: Props): InputMode {
+    const hasFrame = hasOwn(current, 'frame');
+    const hasProjection = hasOwn(current, 'projection');
+    const hasValue = hasOwn(current, 'value');
+    if (Number(hasFrame) + Number(hasProjection) + Number(hasValue) !== 1) {
+      throw new TypeError('LinearSMeter requires exactly one of frame, projection, or value');
+    }
+    if (hasFrame) {
+      if (current.frame === undefined) {
+        throw new TypeError('LinearSMeter frame must be defined when supplied');
+      }
+      if (hasOwn(current, 'source') || hasOwn(current, 'session')) {
+        throw new TypeError('LinearSMeter frame owns source and session continuity');
+      }
+      return 'frame';
+    }
+    if (hasProjection && current.projection === undefined) {
+      throw new TypeError('LinearSMeter projection must be defined when supplied');
+    }
+    if (hasValue && current.value === undefined) {
+      throw new TypeError('LinearSMeter value must be a number or null when supplied');
+    }
+    return 'local';
+  }
+
   let props: Props = $props();
+  const initialInputMode = untrack(() => resolveInputMode(props));
+  const inputMode = $derived.by(() => {
+    const current = resolveInputMode(props);
+    if (current !== initialInputMode) {
+      throw new TypeError('LinearSMeter input mode cannot change after mount');
+    }
+    return current;
+  });
   const compact = $derived(props.compact ?? false);
   const label = $derived(props.label);
   const variant = $derived(props.variant);
@@ -103,15 +154,11 @@
   const lowerScale = $derived(props.lowerScale);
   const relevant = $derived(props.relevant ?? true);
   const mainPresent = $derived(props.mainPresent ?? true);
-  const source = $derived(props.source);
-  const session = $derived(props.session);
   const signalProjection = $derived.by((): SignalMeterProjection => {
-    const hasProjection = Object.prototype.hasOwnProperty.call(props, 'projection');
-    const hasValue = Object.prototype.hasOwnProperty.call(props, 'value');
-    if (hasProjection === hasValue) {
-      throw new TypeError('LinearSMeter requires exactly one of projection or value');
+    if (inputMode === 'frame') return (props as HostFrameInput).frame.projection;
+    if (hasOwn(props, 'projection')) {
+      return (props as LocalSignalInput & { projection: SignalMeterProjection }).projection;
     }
-    if (hasProjection) return (props as { projection: SignalMeterProjection }).projection;
     return projectSignalMeter((props as { value: number | null }).value);
   });
 
@@ -278,47 +325,40 @@
     lowerScale ? LOWER_TRACK_Y + LOWER_TRACK_H + SCALE_LABEL_Y : TRACK_Y + TRACK_H + SCALE_LABEL_Y,
   );
 
-  // ── Smoother ────────────────────────────────────────────────────────────────
-  // MOR-481: keep the fast attack (0.06) but shorten the release τ to ~100 ms
-  // so the bar fill tracks the (raw) numeric readout instead of lagging it on
-  // downward steps. The previous 0.25 (~250 ms) release was visibly behind the
-  // number; AmberSmeter already uses a comparably snappy 0.15 release.
-  const smoother = createSmoother(0.06, 0.1);
-  const PEAK_DECAY_FRACTION = 0.0195 / RAW_SEGMENT_DOMAIN;
-  const ballistics = createMeterBallistics(smoother, {
-    now: () => performance.now(),
-    requestFrame: (callback) => requestAnimationFrame(callback),
-    cancelFrame: (id) => cancelAnimationFrame(id),
-    setInterval: (callback, milliseconds) => setInterval(callback, milliseconds),
-    clearInterval: (id) => clearInterval(id),
-    prefersReducedMotion,
-    onReducedMotionChange,
-  }, {
-    peakSource: 'smoothed',
-    ticker: { kind: 'animation-frame' },
-    peak: createFrameStepPeakStrategy({
-      holdMilliseconds: 1000,
-      decrementPerFrame: () => PEAK_DECAY_FRACTION * 16.67,
-    }),
-  });
+  const localMotion = initialInputMode === 'local'
+    ? untrack(() => createSignalMeterMotion({
+        projection: signalProjection,
+        present: mainPresent,
+        source: (props as LocalSignalInput).source,
+        session: (props as LocalSignalInput).session,
+      }))
+    : null;
+  const meterFrame = $derived(
+    inputMode === 'frame' ? (props as HostFrameInput).frame : localMotion!.frame,
+  );
 
   $effect(() => {
-    const current = mainPresent ? signalProjection.motionFraction : null;
-    const currentSource = source;
-    const currentSession = session;
-    untrack(() => ballistics.sync({
-      sample: current, smoothTarget: current, peakEnabled: true,
-      source: currentSource, session: currentSession,
+    if (localMotion === null) return;
+    const currentProjection = signalProjection;
+    const currentPresent = mainPresent;
+    const currentSource = (props as LocalSignalInput).source;
+    const currentSession = (props as LocalSignalInput).session;
+    untrack(() => localMotion.sync({
+      projection: currentProjection,
+      present: currentPresent,
+      source: currentSource,
+      session: currentSession,
     }));
   });
 
   onMount(() => {
-    ballistics.start();
-    return () => ballistics.stop();
+    if (localMotion === null) return;
+    localMotion.start();
+    return () => localMotion.stop();
   });
 
-  let smoothedSegs = $derived(ballistics.view.smoothedValue * SEG_COUNT);
-  let peakSegs = $derived((ballistics.view.peakValue ?? 0) * SEG_COUNT);
+  let smoothedSegs = $derived(meterFrame.smoothedFraction * SEG_COUNT);
+  let peakSegs = $derived((meterFrame.peakFraction ?? 0) * SEG_COUNT);
   // Peak X position for the vertical indicator line
   let peakX = $derived(BAR_X + peakSegs * (SEG_W + SEG_GAP));
   // Only show peak line if it's meaningfully ahead of current bar
@@ -349,7 +389,7 @@
   const SDR_CELL_WIDTH = 328 / SDR_CELLS;
   const SDR_SUB_WIDTH = (SDR_CELL_WIDTH - 2 - 0.5) / 2;
   const sdrFill = $derived(
-    (signalProjection.motionFraction === null ? 0 : smoother.value) * SDR_CELLS * 2,
+    (signalProjection.motionFraction === null ? 0 : meterFrame.smoothedFraction) * SDR_CELLS * 2,
   );
   const sdrS9 = $derived(signalProjection.s9Fraction * SDR_CELLS * 2);
   function sdrColor(index: number): string {

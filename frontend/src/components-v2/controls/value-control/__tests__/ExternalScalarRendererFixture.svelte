@@ -28,6 +28,7 @@
     unit,
     shortcutHint,
     title,
+    accessibility,
     legacy,
     valueProjection,
     issuedStatusPresentation,
@@ -93,6 +94,8 @@
   data-unit={unit ?? ''}
   data-shortcut-hint={shortcutHint ?? ''}
   data-title={title ?? ''}
+  data-accessibility-description={accessibility?.description ?? ''}
+  data-accessibility-value-text={accessibility?.valueText ?? ''}
   data-legacy-phase={legacy?.phase ?? ''}
   data-legacy-busy={String(legacy?.busy)}
   data-legacy-description={legacy?.description ?? ''}

@@ -207,6 +207,91 @@ function knobCommandBinding(
   );
 }
 
+describe('ValueControl scalar accessibility presentation', () => {
+  it.each(['hbar', 'bipolar', 'knob', 'discrete'] as const)(
+    'places descriptive metadata on the actual %s slider and withdraws it without commands',
+    (renderer) => {
+      const onChange = vi.fn();
+      const { state, target } = mountReactive({
+        ...baseProps,
+        renderer,
+        accessibility: {
+          description: 'Canonical receiver gain',
+          valueText: '20 percent; device idle',
+        },
+        onChange,
+      });
+      const control = slider(target);
+
+      expect(control.getAttribute('aria-valuetext')).toBe('20 percent; device idle');
+      const descriptionId = control.getAttribute('aria-describedby');
+      expect(descriptionId).not.toBeNull();
+      expect(target.querySelector(`#${descriptionId}`)?.textContent)
+        .toBe('Canonical receiver gain');
+      expect(onChange).not.toHaveBeenCalled();
+
+      state.accessibility = { description: null, valueText: null };
+      flushSync();
+      expect(control.getAttribute('aria-valuetext')).toBeNull();
+      expect(control.getAttribute('aria-describedby')).toBeNull();
+      expect(onChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it('updates host context without reading truth or replacing command feedback facts', () => {
+    const request = vi.fn();
+    const owner = commandBinding(request, {
+      phase: 'failed',
+      busy: false,
+      outcome: { phase: 'failed', error: 'radio rejected' },
+      transitionId: 'accessibility-failed',
+    });
+    let viewReads = 0;
+    const binding = countViewReads(owner, () => { viewReads += 1; });
+    const { state, target } = mountReactive({
+      binding,
+      label: 'Filter width',
+      renderer: 'hbar',
+      accessibility: {
+        description: 'Canonical 20 Hz; device rejected the latest request',
+        valueText: '20 Hz; failed request for 30 Hz',
+      },
+    });
+    const readsAfterMount = viewReads;
+    const control = slider(target);
+    const descriptionText = () => target.querySelector(
+      `#${control.getAttribute('aria-describedby')}`,
+    )?.textContent;
+
+    expect(descriptionText()).toBe('30 Hz. Canonical 20 Hz; device rejected the latest request');
+    expect(control.getAttribute('aria-valuetext')).toBe('20 Hz; failed request for 30 Hz');
+    expect(control.getAttribute('data-command-phase')).toBe('failed');
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('Failed: 30 Hz: radio rejected');
+    expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
+
+    state.accessibility = {
+      description: 'Canonical 20 Hz; retry available',
+      valueText: '20 Hz; retry available',
+    };
+    flushSync();
+    expect(descriptionText()).toBe('30 Hz. Canonical 20 Hz; retry available');
+    expect(control.getAttribute('aria-valuetext')).toBe('20 Hz; retry available');
+    expect(viewReads).toBe(readsAfterMount);
+    expect(request).not.toHaveBeenCalled();
+
+    state.accessibility = undefined;
+    flushSync();
+    expect(descriptionText()).toBe('30 Hz');
+    expect(control.getAttribute('aria-valuetext')).toBeNull();
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('Failed: 30 Hz: radio rejected');
+    expect(viewReads).toBe(readsAfterMount);
+    expect(request).not.toHaveBeenCalled();
+    owner.destroy();
+  });
+});
+
 describe('ValueControl controlled HBar rendering', () => {
   it.each([
     ['built-in', undefined],
@@ -1478,6 +1563,10 @@ describe('ValueControl external scalar appearances', () => {
       unit: 'dB',
       shortcutHint: 'Alt+S',
       title: 'Scalar title',
+      accessibility: {
+        description: 'Canonical scalar control',
+        valueText: '20 units; device idle',
+      },
       feedbackPhase: 'failed',
       feedbackBusy: false,
       feedbackDescription: 'Legacy description',
@@ -1500,6 +1589,8 @@ describe('ValueControl external scalar appearances', () => {
     expect(control.getAttribute('data-unit')).toBe('dB');
     expect(control.getAttribute('data-shortcut-hint')).toBe('Alt+S');
     expect(control.getAttribute('data-title')).toBe('Scalar title');
+    expect(control.getAttribute('data-accessibility-description')).toBe('Canonical scalar control');
+    expect(control.getAttribute('data-accessibility-value-text')).toBe('20 units; device idle');
     expect(control.getAttribute('data-legacy-phase')).toBe('failed');
     expect(control.getAttribute('data-legacy-busy')).toBe('false');
     expect(control.getAttribute('data-legacy-description')).toBe('Legacy description');

@@ -40,8 +40,6 @@
     compressorLevel: 'set_compressor_level', monitorLevel: 'set_monitor_gain',
   };
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
-  const hostId = $props.id();
-
   const row = (field: TxAuxLevelField) => TX_AUX_LEVELS.find(([candidate]) => candidate === field)!;
   const usable = (field: TxAuxField<unknown>): boolean => field.availability.structural
     && field.availability.operational && field.reading.status === 'known';
@@ -167,7 +165,10 @@
     {@const currentStatus = field === 'rfPower' ? '' : status(field)}
     {@const currentFeedback = field === 'rfPower' ? undefined : levelFeedback?.[field]}
     {@const disabledReason = reason(field)}
-    {@const reasonId = disabledReason === undefined ? undefined : `${hostId}-${field}-reason`}
+    {@const accessibility = {
+      description: disabledReason ?? null,
+      valueText: `${label}: ${formatValue(field, canonical(field))}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
+    }}
     <div
       class="tx-aux-level"
       data-testid={`tx-aux-${field}`}
@@ -178,27 +179,25 @@
       data-max={max}
       data-step={step}
       aria-busy={currentFeedback?.busy}
-      aria-describedby={reasonId}
       title={disabledReason}
     >
       <span class="tx-aux-name">{label}</span>
-      <ValueControl
-        {...field !== 'rfPower' ? feedbackIntegratedControl : {}}
-        binding={bindings[field]}
-        {label}
-        renderer="hbar"
-        displayFn={(value) => formatValue(field, value)}
-        showLabel={false}
-        showValue={true}
-        compact={true}
-        title={disabledReason}
-        feedbackDescription={field === 'rfPower' ? disabledReason ?? null : undefined}
-        issuedStatusPresentation={field === 'rfPower'
-          ? undefined
-          : statusPresentations[field as TxAuxFeedbackLevelField]}
-      />
-      {#if disabledReason !== undefined}
-        <span id={reasonId} class="sr-only">{disabledReason}</span>
+      {#if field === 'rfPower'}
+        <ValueControl
+          binding={bindings[field]} label="RF Power" renderer="hbar"
+          displayFn={(value) => formatValue(field, value)}
+          showLabel={false} showValue={false} compact={true} title={disabledReason}
+          {accessibility}
+        />
+      {:else}
+        <ValueControl
+          {...feedbackIntegratedControl}
+          binding={bindings[field]} {label} renderer="hbar"
+          displayFn={(value) => formatValue(field, value)}
+          showLabel={false} showValue={false} compact={true} title={disabledReason}
+          {accessibility}
+          issuedStatusPresentation={statusPresentations[field as TxAuxFeedbackLevelField]}
+        />
       {/if}
       <output data-canonical-value>{formatValue(field, canonical(field))}</output>
       {#if currentStatus !== ''}
@@ -207,14 +206,6 @@
           class:command-pending={currentFeedback?.busy}
           class:sr-only={currentFeedback?.phase === 'unavailable'}
         >{currentStatus}</span>
-      {/if}
-      {#if field !== 'rfPower' && issuedStatus[field] !== null}
-        {#key issuedStatusKey[field]}
-          <span
-            class="sr-only" role="status" aria-live="polite" aria-atomic="true"
-            data-control-feedback-status data-feedback-lane={field}
-          >{issuedStatus[field]}</span>
-        {/key}
       {/if}
     </div>
   {/if}
@@ -233,8 +224,18 @@
   rfPower, micGain, driveGain, voxGain, antiVoxGain, voxDelay, compressorLevel, monitorLevel,
 })}
 
+{#each TX_AUX_FEEDBACK_LEVELS as field (field)}
+  {#if issuedStatus[field] !== null}
+    {#key issuedStatusKey[field]}
+      <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+        data-control-feedback-status data-feedback-lane={field}>{issuedStatus[field]}</span>
+    {/key}
+  {/if}
+{/each}
+
 <style>
-  .tx-aux-level { display: flex; align-items: baseline; gap: 0.5rem; }
-  .tx-aux-name { min-width: 8ch; }
+  .tx-aux-level { display: grid; grid-template-columns: 10ch 8rem auto; align-items: center; gap: 0.5rem; }
+  .tx-aux-name { white-space: nowrap; }
+  .tx-aux-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 </style>

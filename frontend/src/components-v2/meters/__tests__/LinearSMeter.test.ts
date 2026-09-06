@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
@@ -56,6 +58,7 @@ function makeCaps(overrides: Partial<Capabilities> = {}): Capabilities {
 }
 
 import LinearSMeter from '../LinearSMeter.svelte';
+import type { SignalMeterFrame } from '../signal-meter-motion.svelte';
 import {
   rawToSegments,
   rawToSUnit,
@@ -91,6 +94,7 @@ afterEach(() => {
   components = [];
   roots = [];
   clearCapabilities();
+  vi.restoreAllMocks();
 });
 
 // ── rawToSegments ──────────────────────────────────────────────────────────
@@ -266,21 +270,20 @@ describe('segment rendering logic', () => {
 
 describe('LinearSMeter smoother release τ', () => {
   const source = readFileSync(
-    resolve(process.cwd(), 'src/components-v2/meters/LinearSMeter.svelte'),
+    resolve(process.cwd(), 'src/components-v2/meters/signal-meter-motion.svelte.ts'),
     'utf8',
   );
 
-  it('calls createSmoother with the snappy release τ (0.10), not the slow 0.25', () => {
-    const match = source.match(/createSmoother\(\s*([0-9.]+)\s*,\s*([0-9.]+)/);
-    expect(match).not.toBeNull();
-    const attack = Number(match![1]);
-    const release = Number(match![2]);
+  it('moves the snappy attack/release policy unchanged into the motion binding', () => {
+    const attack = Number(source.match(/ATTACK_SECONDS\s*=\s*([0-9.]+)/)?.[1]);
+    const release = Number(source.match(/RELEASE_SECONDS\s*=\s*([0-9.]+)/)?.[1]);
     // Attack unchanged (fast punch-in).
     expect(attack).toBeCloseTo(0.06, 5);
     // Release reduced from 0.25 → 0.10 so the bar reaches the target within
     // ~150 ms. Anything ≥ 0.25 reintroduces the visible lag (MOR-481).
     expect(release).toBeCloseTo(0.1, 5);
     expect(release).toBeLessThan(0.25);
+    expect(source).toMatch(/createSmoother\(ATTACK_SECONDS, RELEASE_SECONDS\)/);
   });
 });
 
@@ -312,6 +315,88 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     }
   });
 
+  it('renders normal and SDR geometry from every supplied host-frame field', () => {
+    const projection = projectSignalMeter(0);
+    const frame = {
+      projection,
+      smoothedFraction: 0.5,
+      peakFraction: 0.8,
+    } satisfies SignalMeterFrame;
+    const frameOnly = { frame } satisfies ComponentProps<typeof LinearSMeter>;
+    expect(frameOnly.frame).toBe(frame);
+
+    const normal = mountMeter({ frame });
+    expect(normal.textContent).toContain(projection.primaryText);
+    expect(normal.textContent).toContain(projection.secondaryText);
+    expect(normal.querySelectorAll('[data-meter-fill]')).toHaveLength(10);
+    expect(Number(normal.querySelector('[data-meter-peak]')?.getAttribute('x1'))).toBeCloseTo(396);
+
+    const sdr = mountMeter({ frame, variant: 'sdr-screen' });
+    expect(sdr.querySelector('[data-sdr-segment="39"]')?.getAttribute('fill')).toBe('#4FB9EC');
+    expect(sdr.querySelector('[data-sdr-segment="40"]')?.getAttribute('fill')).toBe('#1a2230');
+  });
+
+  it('starts no local motion owner for a host frame while compatibility callers start one', () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList) as unknown as typeof window.matchMedia;
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    try {
+      const projection = projectSignalMeter(0);
+      mountMeter({ frame: { projection, smoothedFraction: 0.5, peakFraction: null } });
+      expect(requestFrame).not.toHaveBeenCalled();
+      mountMeter({ projection });
+      expect(requestFrame).toHaveBeenCalledTimes(2);
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('rejects frame input combined with local value, projection, source, or session owners', () => {
+    const projection = projectSignalMeter(0);
+    const frame = { projection, smoothedFraction: 0.5, peakFraction: null } satisfies SignalMeterFrame;
+    // @ts-expect-error -- a host frame and local value are exclusive owners.
+    const invalidValue: ComponentProps<typeof LinearSMeter> = { frame, value: 0 };
+    const invalidProjection: ComponentProps<typeof LinearSMeter> = { frame, projection: undefined };
+    const invalidSource: ComponentProps<typeof LinearSMeter> = { frame, source: undefined };
+    // @ts-expect-error -- a defined projection cannot accompany a host frame.
+    const invalidDefinedProjection: ComponentProps<typeof LinearSMeter> = { frame, projection };
+    const definedSource = {
+      providerGeneration: 1, scope: 'receiver', receiver: 'MAIN', path: 'main.sMeter',
+    } as const;
+    // @ts-expect-error -- a host frame owns its source continuity.
+    const invalidDefinedSource: ComponentProps<typeof LinearSMeter> = { frame, source: definedSource };
+    expect(invalidValue.value).toBe(0);
+    expect(invalidProjection).toHaveProperty('projection');
+    expect(invalidSource).toHaveProperty('source');
+    expect(invalidDefinedProjection.projection).toBe(projection);
+    expect(invalidDefinedSource).toHaveProperty('source');
+    expect(() => mountMeter(invalidValue as never)).toThrow(/exactly one of .*frame.*projection.*value/);
+    expect(() => mountMeter(invalidProjection as never)).toThrow(/exactly one of .*frame.*projection.*value/);
+    expect(() => mountMeter(invalidSource as never)).toThrow(/frame owns source and session/);
+    expect(() => mountMeter({ frame, session: null } as never)).toThrow(/frame owns source and session/);
+    expect(() => mountMeter({ frame: undefined } as never)).toThrow(/frame must be defined/);
+  });
+
+  it('rejects a dynamic switch between local-owner and host-frame modes', () => {
+    const projection = projectSignalMeter(0);
+    const frame = { projection, smoothedFraction: 0.5, peakFraction: null } satisfies SignalMeterFrame;
+    const state: ComponentProps<typeof LinearSMeter> = proxy({ value: 0 });
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(LinearSMeter, { target, props: state });
+    flushSync();
+    expect(() => flushSync(() => {
+      delete (state as { value?: number | null }).value;
+      (state as { frame?: SignalMeterFrame }).frame = frame;
+    })).toThrow(/input mode cannot change after mount/);
+    unmount(component);
+    target.remove();
+  });
+
   it('rejects dynamic callers that supply both projection and value', () => {
     const projection = projectSignalMeter(0);
     const projectionOnly = { projection } satisfies ComponentProps<typeof LinearSMeter>;
@@ -322,12 +407,12 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     expect(valueOnly.value).toBe(0);
     expect(invalid).toEqual({ value: 0, projection });
     expect(() => mountMeter({ value: 0, projection } as never))
-      .toThrow(/exactly one of projection or value/);
+      .toThrow(/exactly one of .*projection.*value/);
   });
 
   it('rejects dynamic callers that supply neither projection nor value', () => {
     expect(() => mountMeter({} as never))
-      .toThrow(/exactly one of projection or value/);
+      .toThrow(/exactly one of .*projection.*value/);
   });
 
   it('keeps every dense tick and the S1 label on the supplied projection after calibration replacement', () => {

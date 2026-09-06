@@ -125,16 +125,6 @@ describe('TxAuxScalarHost independent composition', () => {
     const r = render();
     const bindings = [...scalarCapture.bindings];
     const staleLease = r.scalar('micGain')!.rendererLease;
-
-    r.props.presentation = 'independent';
-    flushSync();
-
-    expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
-    expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
-    expect(target.querySelectorAll('[data-testid="tx-aux-vox"]')).toHaveLength(1);
-    expect(target.querySelectorAll('[data-external-scalar-renderer]')).toHaveLength(8);
-    expect(scalarCapture.bindings).toEqual(bindings);
-    expect(staleLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     r.onLevelChange.mockImplementationOnce((_field, value) => {
       const current = r.props.levelFeedback!;
       r.props.levelFeedback = {
@@ -143,12 +133,31 @@ describe('TxAuxScalarHost independent composition', () => {
           ...current.micGain, target: value, requestedTarget: value, phase: 'submitted', busy: true,
           lifecycleId: 'mic-129', transitionId: 'mic-submitted-129',
         },
+        compressorLevel: {
+          ...current.compressorLevel, requestedTarget: 20, phase: 'failed',
+          lifecycleId: 'comp-20', transitionId: 'comp-failed-20',
+          outcome: { phase: 'failed', error: 'radio refused' },
+        },
       };
     });
     r.scalar('micGain')!.click();
     flushSync();
     expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('micGain', 129);
     expect(r.scalar('micGain')?.dataset.display).toBe('51%');
+
+    r.props.presentation = 'independent';
+    flushSync();
+
+    expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-external-scalar-renderer]')).toHaveLength(8);
+    expect(scalarCapture.bindings).toEqual(bindings);
+    expect(r.scalar('micGain')?.dataset.requested).toBe('129');
+    expect(r.scalar('micGain')?.dataset.phase).toBe('submitted');
+    expect(r.scalar('compressorLevel')?.dataset.error).toBe('radio refused');
+    expect(staleLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    r.scalar('micGain')!.click();
+    expect(r.onLevelChange).toHaveBeenCalledTimes(2);
     r.dispose();
   });
 
