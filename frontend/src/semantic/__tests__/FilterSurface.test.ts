@@ -11,6 +11,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import { getLocale, setLocale } from '$lib/i18n';
 import FilterSurface, {
   FILTER_PASSBAND_LEVELS, FILTER_SHAPES, type FilterPassbandLevelField,
@@ -19,6 +20,7 @@ import { topologyFixtures, withFilterPassband, withModeFilter } from '../fixture
 import type {
   Availability, FilterPassbandViewModel, ModeFilterViewModel, RadioViewModel,
 } from '../radio-view-model';
+import type { CommandScalarFeedback } from '../../primitives/scalar/continuous-scalar.svelte';
 
 const base = (): RadioViewModel =>
   withFilterPassband(withModeFilter(topologyFixtures['1/single']));
@@ -105,9 +107,26 @@ type Handlers = {
   onPbtOuterChange?: (value: number) => void;
 };
 
-type PendingProps = { pendingFilter?: number | null; pendingDataMode?: number | null };
+type PendingProps = {
+  pendingFilter?: number | null;
+  pendingDataMode?: number | null;
+  filterWidthFeedback?: Readonly<CommandScalarFeedback>;
+};
 function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingProps = {}) {
-  const component = mount(FilterSurface, { target, props: { view, ...extra, ...handlers } });
+  const component = mount(FilterSurface, { target, props: {
+    get view() { return view; },
+    get pendingFilter() { return extra.pendingFilter; },
+    get pendingDataMode() { return extra.pendingDataMode; },
+    get filterWidthFeedback() { return extra.filterWidthFeedback; },
+    get onDataModeChange() { return handlers.onDataModeChange; },
+    get onModeChange() { return handlers.onModeChange; },
+    get onFilterChange() { return handlers.onFilterChange; },
+    get onFilterWidthChange() { return handlers.onFilterWidthChange; },
+    get onFilterShapeChange() { return handlers.onFilterShapeChange; },
+    get onIfShiftChange() { return handlers.onIfShiftChange; },
+    get onPbtInnerChange() { return handlers.onPbtInnerChange; },
+    get onPbtOuterChange() { return handlers.onPbtOuterChange; },
+  } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -611,6 +630,153 @@ describe('level fields emit the raw value, unrescaled', () => {
       flushSync();
       expect(onIfShiftChange).not.toHaveBeenCalled();
     }, { onIfShiftChange });
+  });
+});
+
+const widthFeedback = (
+  phase: CommandScalarFeedback['phase'] = 'idle',
+  over: Partial<CommandScalarFeedback> = {},
+): Readonly<CommandScalarFeedback> => ({
+  confirmed: 2400, target: null, requestedTarget: null, phase, busy: false,
+  availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  sessionEpoch: 7, scope: { control: 'filter-width', receiver: 0 },
+  repeatPolicy: 'latest-target-wins', ...over,
+});
+
+describe('full Filter Width scalar feedback', () => {
+  it('previews native input on the thumb while the sibling output stays canonical', () => {
+    const request = vi.fn();
+    withSurface(base(), (surface) => {
+      const input = surface.input('filter-width')!;
+      input.value = '3000';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+      flushSync();
+      expect(request).toHaveBeenCalledExactlyOnceWith(3000);
+      expect(input.value).toBe('3000');
+      expect(surface.output('filter-width')!.textContent).toBe('2400');
+    }, { onFilterWidthChange: request }, { filterWidthFeedback: widthFeedback() });
+  });
+
+  it.each([
+    ['submitted', 'submitted'],
+    ['awaiting-confirmation', 'awaiting-confirmation'],
+  ] as const)('renders actual %s evidence without presenting the target as confirmed', (_name, phase) => {
+    withSurface(base(), (surface) => {
+      const input = surface.input('filter-width')!;
+      expect(input.dataset.commandPhase).toBe(phase);
+      expect(input.getAttribute('aria-busy')).toBe('true');
+      expect(input.value).toBe('2400');
+      expect(surface.output('filter-width')!.textContent).toBe('2400');
+    }, {}, { filterWidthFeedback: widthFeedback(phase, {
+      target: 3000, requestedTarget: 3000, busy: true,
+      lifecycleId: '7:width', transitionId: `7:width:${phase}`,
+    }) });
+  });
+
+  it('accepts another native input while the same authority is pending', () => {
+    const request = vi.fn();
+    withSurface(base(), (surface) => {
+      const input = surface.input('filter-width')!;
+      input.value = '3200';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(request).toHaveBeenCalledExactlyOnceWith(3200);
+      expect(input.value).toBe('3200');
+      expect(surface.output('filter-width')!.textContent).toBe('2400');
+    }, { onFilterWidthChange: request }, { filterWidthFeedback: widthFeedback('submitted', {
+      target: 3000, requestedTarget: 3000, busy: true,
+      lifecycleId: '7:width', transitionId: '7:width:submitted',
+    }) });
+  });
+
+  it('retires a matching draft when the radio confirms it', () => {
+    const current = base();
+    current.modeFilter!.filterWidth.reading = { status: 'known', value: 3000 };
+    withSurface(current, (surface) => {
+      const input = surface.input('filter-width')!;
+      expect(input.value).toBe('3000');
+      expect(input.dataset.commandPhase).toBe('confirmed');
+      expect(input.getAttribute('aria-busy')).toBe('false');
+      expect(surface.output('filter-width')!.textContent).toBe('3000');
+    }, {}, { filterWidthFeedback: widthFeedback('confirmed', {
+      confirmed: 3000, requestedTarget: 3000, outcome: { phase: 'confirmed' },
+      lifecycleId: '7:width', transitionId: '7:width:confirmed',
+    }) });
+  });
+
+  it('restores canonical display and reports a terminal error', () => {
+    withSurface(base(), (surface) => {
+      const input = surface.input('filter-width')!;
+      expect(input.value).toBe('2400');
+      expect(input.dataset.commandPhase).toBe('failed');
+      expect(input.getAttribute('aria-busy')).toBe('false');
+      expect(surface.group('filter-width')!.querySelector('[data-control-feedback-status]')?.textContent)
+        .toBe('Failed: 3000: radio refused width');
+    }, {}, { filterWidthFeedback: widthFeedback('failed', {
+      requestedTarget: 3000, outcome: { phase: 'failed', error: 'radio refused width' },
+      lifecycleId: '7:width', transitionId: '7:width:failed',
+    }) });
+  });
+
+  it('makes forced input inert when feedback is unavailable', () => {
+    const request = vi.fn();
+    withSurface(base(), (surface) => {
+      const input = surface.input('filter-width')!;
+      expect(input.disabled).toBe(true);
+      input.value = '3000';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(request).not.toHaveBeenCalled();
+    }, { onFilterWidthChange: request }, { filterWidthFeedback: widthFeedback('unavailable', {
+      confirmed: null, availability: 'unavailable',
+    }) });
+  });
+
+  it('uses current receiver authority and callback after replacement', () => {
+    const first = vi.fn(), second = vi.fn();
+    const state = new SvelteMap<string, Readonly<CommandScalarFeedback> | typeof first>();
+    state.set('feedback', widthFeedback());
+    state.set('request', first);
+    const props = {
+      get filterWidthFeedback() { return state.get('feedback') as Readonly<CommandScalarFeedback>; },
+    };
+    const handlers = {
+      get onFilterWidthChange() { return state.get('request') as typeof first; },
+    };
+    const surface = render(base(), handlers, props);
+    try {
+      const input = surface.input('filter-width')!;
+      input.value = '3000';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(first).toHaveBeenCalledExactlyOnceWith(3000);
+
+      flushSync(() => {
+        state.set('feedback', widthFeedback('idle', {
+          confirmed: 2100, sessionEpoch: 8,
+          scope: { control: 'filter-width', receiver: 1 },
+        }));
+        state.set('request', second);
+      });
+      expect(input.value).toBe('2100');
+      input.value = '2800';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      flushSync();
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledExactlyOnceWith(2800);
+    } finally { void surface.dispose(); }
+  });
+
+  it('disposes the owner so detached input callbacks cannot dispatch', () => {
+    const request = vi.fn();
+    const surface = render(base(), { onFilterWidthChange: request }, {
+      filterWidthFeedback: widthFeedback(),
+    });
+    const input = surface.input('filter-width')!;
+    void surface.dispose();
+    input.value = '3000';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(request).not.toHaveBeenCalled();
   });
 });
 

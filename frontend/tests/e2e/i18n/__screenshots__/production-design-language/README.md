@@ -220,7 +220,7 @@ assertions completed before the four pixel comparisons; the other 39 cases
 passed, including presentation repair. No scene was skipped. A subsequent exact-head run must confirm
 these expectations; this comparison run itself is not a visual PASS.
 
-## Linux re-pin provenance (current — 2026-09-05 UTC MOR-2342 desktop controls)
+## Linux re-pin provenance (superseded — 2026-09-05 UTC MOR-2342 desktop controls)
 
 | Field | Value |
 | --- | --- |
@@ -249,14 +249,38 @@ simulated production state and do not establish hardware acceptance. A subsequen
 exact-head CI run must confirm the new expectations; this failed comparison is
 not a visual PASS.
 
+## Linux re-pin provenance (current — 2026-09-06 MOR-2384 / MOR-2385)
+
+| Field | Value |
+| --- | --- |
+| Source code commit | `38eb8371c1ee6e9e23221ddc092c4b3ba9d8c46c` |
+| CI run / artifact | [Tests (quick) #34012673065](https://github.com/rigplane/rigplane-core/actions/runs/34012673065) / `9982977739` |
+| Source | Byte-identical Linux `actual.png` files from the run artifact; no macOS-generated baseline or image transformation. |
+| Reason | MOR-2384/MOR-2385 intentionally render unavailable Filter Width as disabled and preserve the fixture's truthful `SRC hardware` / `inactive` / `HW off` scope state. The production capture now waits for those final DOM facts. |
+
+The source run compared all four production scenes. StudioLine dark and
+FieldLine dark were **compared-pass** and their baseline bytes remain unchanged.
+StudioLine light and FieldLine light were **compared-fail**; root inspected both
+complete expected/actual/diff triplets and DOM contexts, accepted the disabled
+Filter Width and inactive/off scope output, and replaced only those two LIGHT
+expectations. This source run predates the readiness assertion, so the final
+candidate's natural CI result is not yet known and must confirm all four scenes.
+
+| Scene | Disposition | SHA-256 |
+| --- | --- | --- |
+| StudioLine dark | compared-pass; unchanged | `64361ab2df44851f4ac357764684b2445476e149ddd58a4404dee4e76a7acfd7` |
+| StudioLine light | compared-fail; inspected and accepted replacement | `78f6f139e8365b17a2ed39f9434ed8b6e66282201761fb0bec3f605b971fbda9` |
+| FieldLine dark | compared-pass; unchanged | `ad07aeb66906aa4c761eb413fb44f2fb5c3944bd7a4f2a8a2b618229142526fc` |
+| FieldLine light | compared-fail; inspected and accepted replacement | `e2fce8500f913ab2dad19aea454825330b0cca78f164f98a5708c6d0c0357e46` |
+
 ## Named expectations
 
 | File | Workspace/theme case | SHA-256 |
 | --- | --- | --- |
-| `studioline--dark--production-root.png` | clean StudioLine × dark | `82c72d8b6a48c1b2d88314279866ce495e846f73237eabadead5108244af0c19` |
-| `studioline--light--production-root.png` | persisted StudioLine × light | `07abbfc43b9d94471baa71a7299e44a35431537bb5a689426101255e5a055e2d` |
-| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `98c9a34c1fcb6bda63eb0521ce4b3c4286da6198dbcf9df05e9fcc4a3ed8a681` |
-| `fieldline--light--production-root.png` | persisted FieldLine × light | `68e9908caf2cee2c1c2e621bdae14af7fde6a69659343dddcb10497df6ee996d` |
+| `studioline--dark--production-root.png` | clean StudioLine × dark | `64361ab2df44851f4ac357764684b2445476e149ddd58a4404dee4e76a7acfd7` |
+| `studioline--light--production-root.png` | persisted StudioLine × light | `78f6f139e8365b17a2ed39f9434ed8b6e66282201761fb0bec3f605b971fbda9` |
+| `fieldline--dark--production-root.png` | persisted FieldLine × dark | `ad07aeb66906aa4c761eb413fb44f2fb5c3944bd7a4f2a8a2b618229142526fc` |
+| `fieldline--light--production-root.png` | persisted FieldLine × light | `e2fce8500f913ab2dad19aea454825330b0cca78f164f98a5708c6d0c0357e46` |
 
 All images are RGB PNGs at 1280×800. Changes to any expected image require a
 new reviewed Linux re-pin with the same provenance record; macOS/local output

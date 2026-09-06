@@ -93,8 +93,14 @@
 </script>
 
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
   import { t } from '$lib/i18n';
   import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import {
+    createContinuousScalar, nativeRangeContinuousScalarPolicy,
+    type CommandScalarFeedback, type ContinuousScalarInput,
+    type ContinuousScalarRendererLease, type ContinuousScalarView,
+  } from '../primitives/scalar/continuous-scalar.svelte';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -104,6 +110,7 @@
      *  nothing is pending. */
     pendingFilter?: number | null;
     pendingDataMode?: number | null;
+    filterWidthFeedback?: Readonly<CommandScalarFeedback>;
     onDataModeChange?: (mode: number) => void;
     onModeChange?: (mode: string) => void;
     onFilterChange?: (filter: number) => void;
@@ -114,19 +121,63 @@
     onPbtOuterChange?: (value: number) => void;
   }
   let {
-    view, pendingFilter = null, pendingDataMode = null, onDataModeChange, onModeChange, onFilterChange, onFilterWidthChange,
+    view, pendingFilter = null, pendingDataMode = null, filterWidthFeedback,
+    onDataModeChange, onModeChange, onFilterChange, onFilterWidthChange,
     onFilterShapeChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
   }: Props = $props();
 
   const pendingFilterId = $props.id();
   const pendingDataModeId = `${pendingFilterId}-data-mode`;
+  const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
 
   let modeFilter = $derived(view.modeFilter);
   let filterPassband = $derived(view.filterPassband);
 
-  function changeWidth(value: number): void {
-    if (modeFilter && usable(modeFilter.filterWidth)) onFilterWidthChange?.(value);
+  function filterWidthInput(): Readonly<ContinuousScalarInput> {
+    const field = modeFilter?.filterWidth;
+    const domain = {
+      min: modeFilter ? numberOf(modeFilter.filterWidthMin, 50) : 50,
+      max: modeFilter ? numberOf(modeFilter.filterWidthMax, 9999) : 9999,
+      step: 50, defaultValue: null, fineStepDivisor: 1,
+    };
+    const enabled = field !== undefined && usable(field);
+    const request = (value: number) => onFilterWidthChange?.(value);
+    if (filterWidthFeedback !== undefined) {
+      return {
+        evidence: 'command-feedback', feedback: filterWidthFeedback,
+        command: 'set_filter_width', domain, enabled, request,
+      };
+    }
+    return {
+      evidence: 'reading',
+      reading: field?.reading.status === 'known'
+        ? { status: 'known', value: field.reading.value } : { status: 'unknown' },
+      ownerKey: 'filter-width-legacy', domain, enabled, request,
+    };
   }
+  const filterWidthScalar = createContinuousScalar(
+    filterWidthInput, nativeRangeContinuousScalarPolicy,
+  );
+  let filterWidthLease: ContinuousScalarRendererLease | null = $state(null);
+  const initialFilterWidthView = untrack(() => filterWidthScalar.view);
+  let filterWidthView: Readonly<ContinuousScalarView> = $state(initialFilterWidthView);
+  const statusOf = (current: Readonly<ContinuousScalarView>): string | null =>
+    current.announcement === null ? null
+      : current.error === null ? current.announcement : `${current.announcement}: ${current.error}`;
+  let filterWidthAnnouncement: string | null = $state(statusOf(initialFilterWidthView));
+  $effect(() => {
+    const lease = filterWidthScalar.attachRenderer();
+    filterWidthLease = lease;
+    return () => lease.dispose();
+  });
+  $effect(() => {
+    const next = filterWidthLease === null
+      ? filterWidthScalar.view : filterWidthLease.view;
+    filterWidthView = next;
+    const status = statusOf(next);
+    if (status !== null) filterWidthAnnouncement = status;
+  });
+  onDestroy(() => filterWidthScalar.destroy());
   function modeInstrument() {
     return bindChoiceInstrument(() => ({
       field: modeFilter?.currentMode, choices: modeFilter?.modeChoices ?? [],
@@ -212,12 +263,19 @@
           <span class="filter-level-name">Width</span>
           <input
             type="range"
+            {...feedbackIntegratedRange}
             min={numberOf(modeFilter.filterWidthMin, 50)} max={numberOf(modeFilter.filterWidthMax, 9999)} step={50}
-            value={numberOf(modeFilter.filterWidth, 0)}
-            disabled={!usable(modeFilter.filterWidth)}
-            oninput={(event) => changeWidth(event.currentTarget.valueAsNumber)}
+            value={filterWidthView.displayed ?? numberOf(modeFilter.filterWidth, 0)}
+            disabled={!filterWidthView.editable}
+            data-command-phase={filterWidthView.phase ?? undefined}
+            aria-busy={filterWidthView.busy}
+            oninput={(event) => filterWidthLease?.nativeInput(event.currentTarget.valueAsNumber)}
           />
           <output>{textOf(modeFilter.filterWidth)}</output>
+          {#if filterWidthAnnouncement !== null}
+            <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+              data-control-feedback-status>{filterWidthAnnouncement}</span>
+          {/if}
         </label>
       {/if}
     {/if}

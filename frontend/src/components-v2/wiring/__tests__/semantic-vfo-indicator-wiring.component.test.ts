@@ -1,6 +1,7 @@
 /** MOR-2299 slice 1: the production dual composition partitions indicators. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { readFileSync } from 'node:fs';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -10,6 +11,7 @@ const h = vi.hoisted(() => ({
   txController: null as ManagedAppTxController | null,
   main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(), split: vi.fn(),
   dualWatch: vi.fn(), speak: vi.fn(),
+  filterWidthFeedback: vi.fn(),
 }));
 const group = new Proxy({}, { get: () => h.noop });
 
@@ -43,7 +45,9 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
     : group }),
   getSystemHandlers: () => ({ onSpeak: h.speak }),
   getDataModeArmed: () => ({ armed: false, value: null }),
-  getBreakInDelayControlFeedback: () => null, getPendingFrequencyHz: () => null,
+  getBreakInDelayControlFeedback: () => null,
+  getFilterWidthControlFeedback: h.filterWidthFeedback,
+  getPendingFrequencyHz: () => null,
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
 }));
@@ -98,6 +102,13 @@ const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement
 beforeEach(() => {
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
+  h.filterWidthFeedback.mockReturnValue(Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable', busy: false, availability: 'unavailable',
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: 'filter-width', receiver: 0 }),
+    repeatPolicy: 'latest-target-wins',
+  }));
   for (const mock of [
     h.noop, h.main, h.sub, h.equalize, h.swap, h.split, h.dualWatch, h.speak,
   ]) mock.mockReset();
@@ -111,6 +122,18 @@ afterEach(() => {
 });
 
 describe('production receiver-indicator partitioning', () => {
+  it('passes the complete Filter Width feedback projection through production wiring', () => {
+    const source = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
+    expect(source).toMatch(
+      /filterWidthFeedback\s*=\s*\$derived\(getFilterWidthControlFeedback\(\)\)/,
+    );
+    expect(source).toMatch(/<FilterSurface[\s\S]*?\{filterWidthFeedback\}[\s\S]*?\/>/);
+    expect(h.filterWidthFeedback()).toMatchObject({
+      phase: 'unavailable', availability: 'unavailable',
+      scope: { control: 'filter-width', receiver: 0 },
+    });
+  });
+
   it.each([
     ['1/single', caps('single', 1), ['MAIN']], ['1/ab', caps('ab', 1), ['MAIN']],
     ['2/ab_shared', caps('ab_shared', 2), ['MAIN', 'SUB']],
