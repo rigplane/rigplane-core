@@ -5,7 +5,7 @@ import { mockCapabilities, mockInfo, mockState } from './fixtures';
 
 type TopologyId = 'topology-1-single' | 'topology-2-main-sub';
 
-function catalogFixture(id: TopologyId) {
+function catalogFixture(id: TopologyId, known = true) {
   const fixture = fixtureById(id);
   if (!fixture) throw new Error(`Missing catalog fixture: ${id}`);
   const topologyState = fixture.state();
@@ -25,6 +25,7 @@ function catalogFixture(id: TopologyId) {
   } else {
     delete (state as unknown as { sub?: unknown }).sub;
   }
+  if (!known) state.fieldStatus = {};
   return {
     state,
     caps: { ...structuredClone(mockCapabilities), ...structuredClone(topologyCaps) },
@@ -78,14 +79,28 @@ function fixture(known: boolean) {
   return { state, caps };
 }
 
-async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false, topology?: TopologyId) {
-  const { state, caps } = topology ? catalogFixture(topology) : productionUnknown
+interface BootOptions {
+  height?: number;
+  theme?: 'nord' | 'github-light';
+  locale?: 'en-US' | 'ru-RU';
+  extraCapabilities?: string[];
+}
+
+async function boot(page: Page, layout: string, width: number, known: boolean, language = 'studioline', productionUnknown = false, topology?: TopologyId, options: BootOptions = {}) {
+  const { state, caps } = topology ? catalogFixture(topology, known) : productionUnknown
     ? { state: structuredClone(mockState), caps: structuredClone(mockCapabilities) } : fixture(known);
-  await page.setViewportSize({ width, height: width === 900 ? 900 : 1000 });
-  await page.addInitScript(({ state, layout, width, language }) => {
+  if (options.extraCapabilities) {
+    const tags = (caps as unknown as { capabilities: string[] }).capabilities;
+    (caps as unknown as { capabilities: string[] }).capabilities = [...new Set([...tags, ...options.extraCapabilities])];
+  }
+  const height = options.height ?? (width === 900 ? 900 : 1000);
+  const theme = options.theme ?? (width === 900 ? 'github-light' : 'nord');
+  const locale = options.locale ?? (width === 900 ? 'ru-RU' : 'en-US');
+  await page.setViewportSize({ width, height });
+  await page.addInitScript(({ state, layout, language, theme, locale }) => {
     localStorage.setItem('rigplane:workspace', JSON.stringify({ version: 1, layout,
-      designLanguage: language, theme: width === 900 ? 'github-light' : 'nord' }));
-    localStorage.setItem('rigplane.i18n.locale', width === 900 ? 'ru-RU' : 'en-US');
+      designLanguage: language, theme }));
+    localStorage.setItem('rigplane.i18n.locale', locale);
     const commands: unknown[] = [];
     Object.assign(window, { geometryCommands: commands });
     // State registration only: no outgoing radio/HTTP command is forwarded.
@@ -118,7 +133,7 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
       close() { this.readyState = 3; const e = new Event('close'); this.dispatchEvent(e); this.onclose?.(e); }
     }
     Object.assign(window, { WebSocket: Socket });
-  }, { state, layout, width, language });
+  }, { state, layout, language, theme, locale });
   await page.route('**/api/**', route => {
     const name = new URL(route.request().url()).pathname.split('/').pop();
     const body = name === 'state' ? state : name === 'capabilities' ? caps : name === 'info' ? mockInfo
@@ -129,7 +144,7 @@ async function boot(page: Page, layout: string, width: number, known: boolean, l
         txObservation: { observedPtt: 'off' } } : {};
     return route.fulfill({ json: body });
   });
-  await page.goto(`/?locale=${width === 900 ? 'ru-RU' : 'en-US'}`, { waitUntil: 'networkidle' });
+  await page.goto(`/?locale=${locale}`, { waitUntil: 'networkidle' });
   const shell = width <= 640 ? '.m-layout, .m-landscape'
     : layout.startsWith('lcd') ? '.lcd-layout' : '.desktop-control-face';
   await expect(page.locator(shell).first()).toBeVisible();
@@ -151,6 +166,11 @@ async function focusWithoutActivation(page: Page, control: Locator) {
 
 const STANDARD_WIDTHS = [1440, 1200, 1024, 900] as const;
 const STANDARD_TOPOLOGIES = ['topology-1-single', 'topology-2-main-sub'] as const;
+const STANDARD_SHORT_CASES = [
+  ['studioline', 'nord'], ['studioline', 'github-light'],
+  ['fieldline', 'nord'], ['fieldline', 'github-light'],
+] as const;
+const ALL_STRUCTURAL_ACTION_CAPS = ['vfo_equalize', 'vfo_swap', 'speech'];
 
 async function standardGeometry(page: Page) {
   const selectors = {
@@ -204,7 +224,90 @@ async function standardGeometry(page: Page) {
         : [];
     });
   });
-  return { boxes: Object.fromEntries(entries), instruments, horizontalClips };
+  const receiverIntegrity = await page.locator(selectors.receiver).first().evaluate(receiver => {
+    const zone = receiver.getBoundingClientRect();
+    const tolerance = 1;
+    const clippedOverflow = /(hidden|clip|auto|scroll)/;
+    const descendants = [...receiver.querySelectorAll<HTMLElement>(
+      '.receiver-instrument, [data-testid="receiver-s-meter"], [data-vfo-freq], '
+        + '[data-instrument-bridge], [data-instrument-bridge] .active-receiver, '
+        + '[data-instrument-bridge] [data-testid="vfo-shared-indicators"], '
+        + '[data-instrument-bridge] [data-indicator-fact], [data-instrument-bridge] button, '
+        + '[data-instrument-bridge] [data-testid="vfo-split-digest"], '
+        + '[data-instrument-bridge] [data-split-rx], [data-instrument-bridge] [data-split-tx]',
+    )].filter(element => {
+      if (element.closest('.sr-only')) return false;
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+    });
+    const describe = (element: HTMLElement) => element.getAttribute('data-dual-action')
+      ?? element.getAttribute('data-testid') ?? element.getAttribute('data-indicator-fact')
+      ?? element.className ?? element.tagName;
+    const outsideZone = descendants.flatMap(element => {
+      const box = element.getBoundingClientRect();
+      return box.left < zone.left - tolerance || box.right > zone.right + tolerance
+        || box.top < zone.top - tolerance || box.bottom > zone.bottom + tolerance
+        ? [{ target: describe(element), rect: box.toJSON(), zone: zone.toJSON() }] : [];
+    });
+    const ancestorClips = descendants.flatMap(element => {
+      const box = element.getBoundingClientRect();
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        const parentBox = parent.getBoundingClientRect();
+        if (style.display === 'contents' || parentBox.width === 0 || parentBox.height === 0) continue;
+        const clippedX = clippedOverflow.test(style.overflowX)
+          && (box.left < parentBox.left - tolerance || box.right > parentBox.right + tolerance);
+        const clippedY = clippedOverflow.test(style.overflowY)
+          && (box.top < parentBox.top - tolerance || box.bottom > parentBox.bottom + tolerance);
+        if (clippedX || clippedY) {
+          return [{ target: describe(element), ancestor: describe(parent), axis: `${clippedX ? 'x' : ''}${clippedY ? 'y' : ''}` }];
+        }
+      }
+      return [];
+    });
+    const textTargets = descendants.filter(element => element.matches(
+      '[data-instrument-bridge] button, [data-instrument-bridge] .active-receiver, '
+        + '[data-instrument-bridge] [data-indicator-fact], [data-instrument-bridge] [data-split-rx], '
+        + '[data-instrument-bridge] [data-split-tx]',
+    ));
+    const textFailures = textTargets.flatMap(element => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      const text = range.getBoundingClientRect(); const owner = element.getBoundingClientRect();
+      return text.width <= 0 || text.height <= 0 || text.left < owner.left - tolerance
+        || text.right > owner.right + tolerance || text.top < owner.top - tolerance
+        || text.bottom > owner.bottom + tolerance || text.top < zone.top - tolerance
+        || text.bottom > zone.bottom + tolerance
+        ? [{ target: describe(element), text: text.toJSON(), owner: owner.toJSON() }] : [];
+    });
+    const hitFailures = descendants.filter(element => element.matches('[data-instrument-bridge] button'))
+      .flatMap(element => {
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return hit === element || (hit !== null && element.contains(hit)) ? []
+          : [{ target: describe(element), hit: hit instanceof HTMLElement ? describe(hit) : null }];
+      });
+    const actionNames = descendants.filter(element => element.matches('[data-dual-action]'))
+      .map(element => element.getAttribute('data-dual-action'));
+    return {
+      outsideZone, ancestorClips, textFailures, hitFailures, actionNames,
+      maxBottom: Math.max(zone.top, ...descendants.map(element => element.getBoundingClientRect().bottom)),
+    };
+  });
+  return { boxes: Object.fromEntries(entries), instruments, horizontalClips, receiverIntegrity };
+}
+
+function expectStandardReceiverIntegrity(
+  geometry: Awaited<ReturnType<typeof standardGeometry>>, bodyTop?: number,
+) {
+  expect.soft(geometry.receiverIntegrity.outsideZone, 'painted receiver descendants stay in their zone').toEqual([]);
+  expect.soft(geometry.receiverIntegrity.ancestorClips, 'receiver descendants survive clipping ancestors').toEqual([]);
+  expect.soft(geometry.receiverIntegrity.textFailures, 'bridge text ranges are painted and contained').toEqual([]);
+  expect.soft(geometry.receiverIntegrity.hitFailures, 'bridge controls are center-point hit-testable').toEqual([]);
+  if (bodyTop !== undefined) {
+    expect.soft(geometry.receiverIntegrity.maxBottom, 'receiver paint ends before the body row')
+      .toBeLessThanOrEqual(bodyTop + 1);
+  }
 }
 
 test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
@@ -228,7 +331,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
       expect.soft(boxes.meters.y, 'meters follow the outer-grid body').toBeGreaterThanOrEqual(bodyBottom - 1);
       if (width > 1024) {
         const sideWidth = width <= 1200 ? 208 : 228;
-        expect.soft(boxes.receiver.height, 'wide Standard receiver row').toBeCloseTo(200, 0);
+        expect.soft(boxes.receiver.height, 'wide Standard receiver row keeps its 200px floor').toBeGreaterThanOrEqual(199);
         expect.soft(boxes.left.width).toBeCloseTo(sideWidth, 0);
         expect.soft(boxes.right.width).toBeCloseTo(sideWidth, 0);
         expect.soft(boxes.left.y).toBeCloseTo(boxes.center.y, 0);
@@ -243,6 +346,7 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
         expect.soft(boxes.right.y + boxes.right.height).toBeLessThanOrEqual(boxes.meters.y + 1);
       }
       expect.soft(geometry.horizontalClips, 'painted Standard descendants fit horizontally').toEqual([]);
+      expectStandardReceiverIntegrity(geometry, bodyTop);
       for (const instrument of geometry.instruments) {
         expect.soft(instrument.meter?.width ?? 0, 'receiver meter is painted').toBeGreaterThan(0);
         expect.soft(instrument.meter?.height ?? 0, 'receiver meter is painted').toBeGreaterThan(0);
@@ -272,15 +376,35 @@ test.describe('MOR-2424 Standard v2.11.1 outer grid', () => {
     const left = page.locator('.standard-face .desktop-controls-left');
     const center = page.locator('.standard-face .desktop-controls-center');
     expect((await left.boundingBox())!.width).toBeCloseTo(228, 0);
+    expectStandardReceiverIntegrity(await standardGeometry(page));
     await page.setViewportSize({ width: 1200, height: 1000 });
     expect((await left.boundingBox())!.width).toBeCloseTo(208, 0);
+    expectStandardReceiverIntegrity(await standardGeometry(page));
     await page.setViewportSize({ width: 1025, height: 1000 });
     expect((await left.boundingBox())!.y).toBeCloseTo((await center.boundingBox())!.y, 0);
+    expectStandardReceiverIntegrity(await standardGeometry(page));
     await page.setViewportSize({ width: 1024, height: 1000 });
     expect((await left.boundingBox())!.y + (await left.boundingBox())!.height)
       .toBeLessThanOrEqual((await center.boundingBox())!.y + 1);
+    expectStandardReceiverIntegrity(await standardGeometry(page));
     await expect(root).toHaveClass(/standard-face/);
   });
+
+  for (const [language, theme] of STANDARD_SHORT_CASES) for (const locale of ['en-US', 'ru-RU'] as const) {
+    test(`standard 1280x800 ${language} ${theme} ${locale} contains the full bridge`, async ({ page }) => {
+      const known = locale === 'en-US';
+      await boot(page, 'standard', 1280, known, language, false, 'topology-2-main-sub', {
+        height: 800, theme, locale, extraCapabilities: ALL_STRUCTURAL_ACTION_CAPS,
+      });
+      const geometry = await standardGeometry(page);
+      const boxes = geometry.boxes as Record<string, DOMRect>;
+      const bodyTop = Math.min(boxes.left.y, boxes.center.y, boxes.right.y);
+      expectStandardReceiverIntegrity(geometry, bodyTop);
+      expect(geometry.receiverIntegrity.actionNames).toEqual(['main', 'sub', 'equalize', 'swap', 'speak']);
+      expect(await page.evaluate(() => (window as unknown as { geometryCommands: { type: string }[] })
+        .geometryCommands.filter(c => c.type === 'cmd'))).toEqual([]);
+    });
+  }
 
   for (const width of [1440, 1024] as const) {
     test(`SDR ${width} keeps its current desktop grid`, async ({ page }) => {
