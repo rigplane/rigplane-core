@@ -13,6 +13,19 @@ public repository** — never put session notes, baselines, or anything with
 internal identifiers here; untracked working notes belong in the ignored
 remainder of `.claude/`.
 
+## 2026-09-06 — instrument mechanism decision audits (source `f2e7969708d5c93890cf1b24d833ce820b36dc15`)
+
+Three independent, bounded mechanism-audit tracts at the pinned source. They
+record point-in-time evidence for scalar pairs, meter context, and finite
+choice controls; a final whole-path audit remains outstanding.
+
+- [2026-09-06-mechanism-audit-scalar-pair.md](2026-09-06-mechanism-audit-scalar-pair.md)
+  — scalar-pair ownership, lifecycle and interaction evidence.
+- [2026-09-06-mechanism-audit-meter-context.md](2026-09-06-mechanism-audit-meter-context.md)
+  — meter source/context and ballistics-continuity evidence.
+- [2026-09-06-mechanism-audit-finite-choice.md](2026-09-06-mechanism-audit-finite-choice.md)
+  — finite-choice observation, eligibility and feedback-boundary evidence.
+
 ## 2026-09-03 — Icom lower-executor lifetime (draft, source `4e4c1782`)
 
 - [2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md](2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md)
