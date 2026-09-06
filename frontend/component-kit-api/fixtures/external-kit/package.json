@@ -1,0 +1,20 @@
+{
+  "name": "@rigplane/external-component-kit-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "peerDependencies": {
+    "@rigplane/component-kit-api": "0.1.0",
+    "svelte": ">=5.45.2 <6"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  }
+}
