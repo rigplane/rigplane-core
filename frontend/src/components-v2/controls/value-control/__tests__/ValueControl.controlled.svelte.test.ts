@@ -262,9 +262,25 @@ describe('ValueControl controlled HBar rendering', () => {
       scope: { control: 'rf-gain', receiver: 0 },
     }));
     flushSync();
-    expect(visibleValue(target)).toBe('50%');
-    expect(fill(target)).toContain('--vc-fill-percent: 50%');
+    expect(visibleValue(target)).toBe('70%');
+    expect(fill(target)).toContain('--vc-fill-percent: 70%');
     expect(control.getAttribute('aria-valuenow')).toBe('0.5');
+
+    feedback.set('value', commandFeedback({
+      confirmed: 179 / 255,
+      target: null,
+      requestedTarget: 179 / 255,
+      phase: 'confirmed',
+      busy: false,
+      lifecycleId: 'rf-179',
+      transitionId: 'rf-confirmed-179',
+      outcome: { phase: 'confirmed' },
+      scope: { control: 'rf-gain', receiver: 0 },
+    }));
+    flushSync();
+    expect(visibleValue(target)).toBe('70%');
+    expect(fill(target)).toContain(`--vc-fill-percent: ${(179 / 255) * 100}%`);
+    expect(control.getAttribute('aria-valuenow')).toBe(String(179 / 255));
 
     feedback.set('value', commandFeedback({
       confirmed: 0.8,

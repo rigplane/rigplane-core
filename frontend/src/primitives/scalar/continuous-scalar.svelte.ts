@@ -383,9 +383,10 @@ export const nativeRangeContinuousScalarPolicy: Readonly<ContinuousScalarPolicy>
 
 type AuthorityIdentity = readonly (string | number | boolean | null | undefined)[];
 type LocalCommandRequest = Readonly<{
+  source: ScalarSource;
   observedLifecycleId: string | null;
   dispatched: boolean;
-  represented: boolean;
+  representedLifecycleId: string | null;
 }>;
 
 function authorityOf(input: Readonly<ContinuousScalarInput>): AuthorityIdentity {
@@ -509,31 +510,59 @@ export function createContinuousScalar(
     }
     lastAuthority = authority;
     const requestSnapshot = localCommandRequest;
-    const representedLocalRequest = requestSnapshot !== null
+    const representedLifecycleId = requestSnapshot !== null
       && requestSnapshot.dispatched
+      && requestSnapshot.representedLifecycleId === null
       && input.evidence === 'command-feedback'
       && input.feedback.lifecycleId !== null
-      && input.feedback.lifecycleId !== requestSnapshot.observedLifecycleId;
-    if (representedLocalRequest) {
-      localCommandRequest = { ...requestSnapshot, represented: true };
+      && input.feedback.lifecycleId !== requestSnapshot.observedLifecycleId
+      ? input.feedback.lifecycleId : null;
+    if (representedLifecycleId !== null && requestSnapshot !== null) {
+      localCommandRequest = { ...requestSnapshot, representedLifecycleId };
     }
-    if (localCommandRequest?.represented === true
+    const representedRequest = localCommandRequest;
+    const representedLifecycle = representedRequest?.representedLifecycleId ?? null;
+    const feedback = input.evidence === 'command-feedback' ? input.feedback : null;
+    const retainsOptimisticPending = representedRequest !== null
+      && policy.name === 'hbar-optimistic'
+      && (representedRequest.source === 'pointer'
+        || representedRequest.source === 'keyboard'
+        || representedRequest.source === 'reset');
+    const representedLifecycleIsComplete = representedLifecycle !== null
+      && feedback !== null
+      && feedback.lifecycleId === representedLifecycle
+      && (!feedback.busy || feedback.outcome !== null);
+    const representedLifecycleIsGone = representedLifecycle !== null
+      && feedback !== null
+      && ((!feedback.busy && feedback.lifecycleId === null)
+        || (feedback.lifecycleId !== null
+          && feedback.lifecycleId !== representedLifecycle
+          && feedback.lifecycleId !== representedRequest?.observedLifecycleId));
+    const representationRetiresDraft = representedRequest !== null
+      && representedRequest.representedLifecycleId !== null
+      && (representedRequest.source === 'native-input'
+        || !retainsOptimisticPending
+        || representedLifecycleIsComplete
+        || representedLifecycleIsGone);
+    if (representationRetiresDraft
       && activeGesture === null && interaction !== 'wheel' && debounceTimer === null) {
       draft = null;
       draftCanonical = null;
       interaction = 'idle';
       localCommandRequest = null;
     }
+    const belongsToObservedOlderLifecycle = localCommandRequest !== null
+      && localCommandRequest.observedLifecycleId !== null
+      && input.evidence === 'command-feedback'
+      && input.feedback.lifecycleId === localCommandRequest.observedLifecycleId;
     const terminal = terminalIdentity(input);
     if (terminal !== null && !sameAuthority(handledTerminal, terminal)) {
-      const belongsToObservedOlderLifecycle = localCommandRequest !== null
-        && localCommandRequest.observedLifecycleId !== null
-        && input.evidence === 'command-feedback'
-        && input.feedback.lifecycleId === localCommandRequest.observedLifecycleId;
       if (!belongsToObservedOlderLifecycle) clearTransient();
       handledTerminal = terminal;
     } else if (input.evidence === 'command-feedback') {
-      if (draft !== null && Object.is(canonicalOf(input), draft)) {
+      if (draft !== null && !belongsToObservedOlderLifecycle
+        && !(retainsOptimisticPending && feedback?.busy)
+        && Object.is(canonicalOf(input), draft)) {
         draft = null;
         draftCanonical = null;
         localCommandRequest = null;
@@ -560,15 +589,21 @@ export function createContinuousScalar(
     return input;
   }
 
-  function dispatch(candidate: number, authority: AuthorityIdentity, generation: number): void {
+  function dispatch(
+    candidate: number,
+    source: ScalarSource,
+    authority: AuthorityIdentity,
+    generation: number,
+  ): void {
     const input = current();
     if (!destroyed && generation === invalidationGeneration
       && sameAuthority(authority, authorityOf(input)) && editable(input)) {
       localCommandRequest = input.evidence === 'command-feedback'
         ? {
+          source,
           observedLifecycleId: input.feedback.lifecycleId,
           dispatched: true,
-          represented: false,
+          representedLifecycleId: null,
         }
         : null;
       input.request(candidate);
@@ -590,14 +625,17 @@ export function createContinuousScalar(
     const canonical = canonicalOf(input);
     const base = interactionBase(input);
     if (canonical === null || base === null) return false;
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = null;
     draft = normalized;
     draftCanonical = canonical;
     interaction = source;
     localCommandRequest = input.evidence === 'command-feedback'
       ? {
+        source,
         observedLifecycleId: input.feedback.lifecycleId,
         dispatched: false,
-        represented: false,
+        representedLifecycleId: null,
       }
       : null;
     if (!policy.dispatchesCanonical(source, {
@@ -612,12 +650,11 @@ export function createContinuousScalar(
     }
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
-      dispatch(normalized, authority, generation);
+      dispatch(normalized, source, authority, generation);
     } else {
-      if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        if (renderer === activeRenderer) dispatch(normalized, authority, generation);
+        if (renderer === activeRenderer) dispatch(normalized, source, authority, generation);
       }, mode.debounceMs);
     }
     return true;
