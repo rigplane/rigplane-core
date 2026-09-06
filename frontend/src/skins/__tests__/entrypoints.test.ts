@@ -67,6 +67,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SkinId } from '../registry';
+import type { InstrumentComposition } from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
 
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
 const mountedInstrumentInputs = vi.hoisted(() => [] as unknown[]);
@@ -164,7 +165,7 @@ describe('desktop skin entrypoints', () => {
   it.each(radioLayoutSkinIds)('mounts RadioLayout with its own stable skin ID (%s)', async (skinId) => {
     const Component = await loadSkin(skinId);
     const target = document.createElement('div');
-    const instruments = { skinId, marker: Symbol(skinId) };
+    const instruments = { marker: Symbol(skinId) } as unknown as InstrumentComposition;
     components.push(mount(Component, { target, props: { instruments } }));
     expect(mountedSkinIds).toEqual([skinId]);
     expect(mountedInstrumentInputs).toEqual([instruments]);
