@@ -3,6 +3,7 @@ import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import ValueControl from '../ValueControl.svelte';
 import {
+  createBipolarContinuousScalarPolicy,
   createContinuousScalar,
   createHBarContinuousScalarPolicy,
 } from '../../../../primitives/scalar/continuous-scalar.svelte';
@@ -60,6 +61,29 @@ describe('ValueControl wrapper', () => {
     expect(getSlider(target).getAttribute('aria-valuemax')).toBe('60');
     expect(target.querySelector('.vc-hbar')?.getAttribute('style'))
       .toContain('--vc-fill-percent: 50%');
+    binding.destroy();
+  });
+
+  it('renders a caller-owned Bipolar binding synchronously without raw bounds', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: -25 },
+        ownerKey: 'direct-bipolar',
+        domain: { min: -100, max: 100, step: 5, defaultValue: 0, fineStepDivisor: 10 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createBipolarContinuousScalarPolicy({ debounceMs: 0 }),
+    );
+
+    const target = mountControl({ binding, label: 'Direct', renderer: 'bipolar' });
+
+    expect(getValueDisplay(target)?.textContent).toBe('-25');
+    expect(getSlider(target).getAttribute('aria-valuemin')).toBe('-100');
+    expect(getSlider(target).getAttribute('aria-valuemax')).toBe('100');
+    expect(target.querySelector('.vc-bipolar')?.getAttribute('style'))
+      .toContain('--vc-current: 37.5%');
     binding.destroy();
   });
 

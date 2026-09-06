@@ -54,16 +54,25 @@ export type ScalarSource = 'native-input' | 'pointer' | 'wheel' | 'keyboard' | '
 export type ScalarDispatchMode = 'immediate' | Readonly<{ debounceMs: number }>;
 export interface ScalarStepInput { readonly direction: -1 | 1; readonly fine: boolean }
 export interface ScalarKeyInput { readonly key: string; readonly fine: boolean }
+export interface ScalarDispatchContext {
+  readonly canonical: number;
+  readonly interactionBase: number;
+}
 
 export interface ContinuousScalarPolicy {
   readonly name: string;
   readonly preview: 'optimistic' | 'confirmed';
+  resolveKeyboardStep?(domain: ScalarDomain): number | undefined;
   normalize(value: number, domain: ScalarDomain): number | null;
   wheel(current: number, event: ScalarStepInput, domain: ScalarDomain): number | null;
   key(current: number, event: ScalarKeyInput, domain: ScalarDomain): number | null;
   reset(domain: ScalarDomain): number | null;
   dispatch(source: ScalarSource): ScalarDispatchMode;
-  dispatchesCanonical(source: ScalarSource): boolean;
+  dispatchesCanonical(
+    source: ScalarSource,
+    context?: Readonly<ScalarDispatchContext>,
+    domain?: ScalarDomain,
+  ): boolean;
   readonly wheelIdleMs: 0 | 300;
   describeTarget(value: number): string;
 }
@@ -176,6 +185,92 @@ export function createHBarContinuousScalarPolicy(
     reset: (domain) => domain.defaultValue ?? domain.min,
     dispatch: (source) => source === 'keyboard' || source === 'reset' ? debounce : 'immediate',
     dispatchesCanonical: (source) => source === 'wheel',
+    wheelIdleMs: 300,
+    describeTarget: options.describeTarget ?? String,
+  };
+  return Object.freeze(policy);
+}
+
+function bipolarLatticeCompatible(increment: number, domain: ScalarDomain): boolean {
+  return Number.isFinite(increment)
+    && increment > 0
+    && Number.isFinite(domain.step)
+    && domain.step > 0
+    && Number.isInteger(increment / domain.step);
+}
+
+function bipolarKeyboardStep(
+  current: number,
+  key: string,
+  increment: number,
+  domain: ScalarDomain,
+): number | null {
+  const center = domain.defaultValue ?? 0;
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowUp':
+      return clamp(center + Math.round((current + increment - center) / increment) * increment,
+        domain.min, domain.max);
+    case 'ArrowLeft':
+    case 'ArrowDown':
+      return clamp(center + Math.round((current - increment - center) / increment) * increment,
+        domain.min, domain.max);
+    case 'Home':
+      return domain.min;
+    case 'End':
+      return domain.max;
+    default:
+      return null;
+  }
+}
+
+export function createBipolarContinuousScalarPolicy(
+  options: Readonly<{
+    debounceMs: number;
+    describeTarget?: (value: number) => string;
+  }>,
+): Readonly<ContinuousScalarPolicy> {
+  const debounce = options.debounceMs > 0
+    ? Object.freeze({ debounceMs: options.debounceMs })
+    : 'immediate';
+  const policy: ContinuousScalarPolicy = {
+    name: 'bipolar',
+    preview: 'optimistic',
+    resolveKeyboardStep: (domain) => domain.keyboardStep === undefined
+      || bipolarLatticeCompatible(domain.keyboardStep, domain)
+      || !Number.isFinite(domain.step) || domain.step <= 0
+      ? domain.keyboardStep
+      : domain.step,
+    normalize: (value, domain) => Number.isFinite(value)
+      ? clamp(value, domain.min, domain.max) : null,
+    wheel: (current, event, domain) => {
+      const stepsInRange = Math.max(1, (domain.max - domain.min) / domain.step);
+      const multiplier = stepsInRange > 500 ? Math.round(stepsInRange / 240) : 1;
+      const quantum = event.fine
+        ? domain.step / domain.fineStepDivisor
+        : domain.step * multiplier;
+      return clamp(snapToStep(current + event.direction * quantum, quantum, domain.min),
+        domain.min, domain.max);
+    },
+    key: (current, event, domain) => {
+      if (domain.keyboardStep === undefined) {
+        return handleKeyboardStep(
+          current, event.key, domain.step, domain.fineStepDivisor,
+          domain.min, domain.max, event.fine,
+        );
+      }
+      const requested = event.fine
+        ? domain.keyboardStep / domain.fineStepDivisor
+        : domain.keyboardStep;
+      const increment = bipolarLatticeCompatible(requested, domain) ? requested : domain.step;
+      return bipolarKeyboardStep(current, event.key, increment, domain);
+    },
+    reset: (domain) => domain.defaultValue ?? 0,
+    dispatch: (source) => source === 'keyboard' || source === 'reset' ? debounce : 'immediate',
+    dispatchesCanonical: (source, context, domain) => source === 'wheel'
+      || (source === 'keyboard' && domain?.keyboardStep !== undefined
+        && context !== undefined
+        && !Object.is(context.interactionBase, context.canonical)),
     wheelIdleMs: 300,
     describeTarget: options.describeTarget ?? String,
   };
@@ -332,7 +427,14 @@ export function createContinuousScalar(
   }
 
   function current(): Readonly<ContinuousScalarInput> {
-    const input = read();
+    const source = read();
+    const keyboardStep = policy.resolveKeyboardStep === undefined
+      ? source.domain.keyboardStep
+      : policy.resolveKeyboardStep(source.domain);
+    const domain = Object.is(keyboardStep, source.domain.keyboardStep)
+      ? source.domain
+      : { ...source.domain, keyboardStep };
+    const input = domain === source.domain ? source : { ...source, domain };
     reconcile(input);
     return input;
   }
@@ -357,10 +459,16 @@ export function createContinuousScalar(
       || normalized < input.domain.min || normalized > input.domain.max) return false;
     const authority = authorityOf(input);
     const generation = invalidationGeneration;
+    const canonical = canonicalOf(input);
+    const base = interactionBase(input);
+    if (canonical === null || base === null) return false;
     draft = normalized;
-    draftCanonical = canonicalOf(input);
+    draftCanonical = canonical;
     interaction = source;
-    if (!policy.dispatchesCanonical(source) && Object.is(normalized, draftCanonical)) {
+    if (!policy.dispatchesCanonical(source, {
+      canonical,
+      interactionBase: base,
+    }, input.domain) && Object.is(normalized, draftCanonical)) {
       draft = null;
       draftCanonical = null;
       if (source !== 'pointer') interaction = 'idle';
@@ -451,7 +559,7 @@ export function createContinuousScalar(
         if (activeGesture?.renderer !== renderer || activeGesture.token !== token) return;
         activeGesture = null;
         interaction = 'idle';
-        reconcile(read());
+        current();
       },
       cancelPointer(token: number): void {
         current();
