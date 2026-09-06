@@ -644,6 +644,63 @@ describe('raw sMeter renders honestly, never a fabricated S-unit (MOR-1451)', ()
   });
 });
 
+describe('the host descriptor and LinearSMeter share one signal projection', () => {
+  const NONUNIFORM_S_METER_CAL = [
+    { raw: 0, actual: -54, label: 'S0' },
+    { raw: 26, actual: -48, label: 'S1' },
+    { raw: 52, actual: -36, label: 'S3' },
+    { raw: 78, actual: -24, label: 'S5' },
+    { raw: 103, actual: -12, label: 'S7' },
+    { raw: 130, actual: 0, label: 'S9' },
+    { raw: 165, actual: 10, label: 'S9+10' },
+    { raw: 200, actual: 20, label: 'S9+20' },
+    { raw: 240, actual: 40, label: 'S9+40' },
+  ];
+
+  it('projects a known nonuniform reading identically into fieldline and the real LinearSMeter, distinct from unknown', () => {
+    const caps = makeFaultCaps();
+    caps.meterCalibrations!.s_meter = NONUNIFORM_S_METER_CAL;
+    setCapabilities(caps);
+    document.documentElement.dataset.designLanguage = 'fieldline';
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: true,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }) as unknown as typeof window.matchMedia;
+
+    try {
+      withSurface(withRaw(base(), 'signal', -48), (s) => {
+        const tile = s.tile('signal')!;
+        expect(tile.dataset.dlUnknown).toBe('false');
+        expect(tile.dataset.dlLitCount).toBe('1');
+        expect(tile.querySelectorAll('[data-meter-fill]')).toHaveLength(1);
+        expect(tile.textContent).toContain('\u2212121 dBm');
+      });
+
+      withSurface(withField(base(), 'signal', { unknown: true }), (s) => {
+        const tile = s.tile('signal')!;
+        expect(tile.dataset.dlUnknown).toBe('true');
+        expect(tile.querySelectorAll('[data-meter-fill]')).toHaveLength(0);
+        expect(tile.textContent).toContain('S ?');
+      });
+    } finally {
+      clearCapabilities();
+      delete document.documentElement.dataset.designLanguage;
+      window.matchMedia = originalMatchMedia;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('creates one projection and reuses its motion and S9 fractions for the descriptor and the exact object for LinearSMeter', () => {
+    expect(SOURCE.match(/\bprojectSignalMeter\(/g)).toHaveLength(1);
+    expect(SOURCE).toMatch(/value:\s*signalProjection\.motionFraction/);
+    expect(SOURCE).toMatch(/s9:\s*signalProjection\.s9Fraction/);
+    expect(SOURCE).toMatch(/<LinearSMeter[\s\S]*?projection=\{signalProjection\}/);
+    expect(SOURCE).not.toMatch(/\bsLevel\(/);
+  });
+});
+
 describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // MOR-1470: fault predicates are only claimable in the calibrated
   // engineering domain (an uncalibrated raw byte never asserts a fault) —

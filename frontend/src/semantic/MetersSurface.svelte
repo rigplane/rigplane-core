@@ -3,9 +3,13 @@
   import type { DisplayObservedMeterField, MeterRfState, MeterField, MetersViewModel } from './radio-view-model';
   import {
     alcLevel, compLevel, formatAlc, formatAmps, formatCompDb, formatPowerWatts,
-    formatVolts, idLevel, isAlcFault, isSwrFault, normalizePower, sLevel,
+    formatVolts, idLevel, isAlcFault, isSwrFault, normalizePower,
     swrLevel, vdLevel,
   } from '../components-v2/panels/meter-utils';
+  import {
+    projectSignalMeter,
+    type SignalMeterProjection,
+  } from '../components-v2/meters/smeter-scale';
   import { renderSlot } from './design-language-renderers';
   import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
 
@@ -99,10 +103,9 @@
   /**
    * MOR-1275: the active design language's `meters` renderer, for the S meter —
    * the one gauge whose grammar those renderers describe (a two-tone track that
-   * hands over at S9). The reading is handed over on the 0..1 UI scale
-   * `meter-utils` already calibrates, with the S9 crossover expressed on the
-   * same scale, so the descriptor's fractions mean what they say; an unobserved
-   * meter passes `null` and stays unknown rather than reading as zero.
+   * hands over at S9). The reading and crossover are the fractions from the
+   * same `SignalMeterProjection` passed to `LinearSMeter`; an unobserved meter
+   * keeps a null motion fraction and stays unknown rather than reading as zero.
    * Annotations only — availability, relevance and the gauge itself remain this
    * surface's decisions.
    *
@@ -110,8 +113,12 @@
    * the slot is called ONCE per render (see `display` below) and read twice,
    * never once per gauge.
    */
-  const signalDisplay = (f: MeterField): ReturnType<typeof renderSlot> =>
-    renderSlot('meters', { value: observed(f) ? sLevel(rawOf(f)) : null, max: 1, s9: sLevel(0) });
+  const signalDisplay = (signalProjection: SignalMeterProjection): ReturnType<typeof renderSlot> =>
+    renderSlot('meters', {
+      value: signalProjection.motionFraction,
+      max: 1,
+      s9: signalProjection.s9Fraction,
+    });
 </script>
 
 <script lang="ts">
@@ -132,6 +139,10 @@
    *  schema had to learn about it. */
   let meters = $derived(view.meters);
 
+  let signalProjection = $derived(projectSignalMeter(
+    meters && observed(meters.signal) ? rawOf(meters.signal) : null,
+  ));
+
   /**
    * The active design language's `meters` descriptor for this render, or
    * `null` when no language is active, the language declares no `meters`
@@ -142,7 +153,7 @@
    * read the SAME descriptor from ONE `renderSlot` call. Each consumer falls
    * back to its own component default when this is `null`.
    */
-  let display = $derived(meters ? signalDisplay(meters.signal) : null);
+  let display = $derived(meters ? signalDisplay(signalProjection) : null);
 
   /** The COMP gate is the MOR-1244 `txAux.compressor` FACT, deliberately NOT
    *  `meters.compression.availability`: a radio can keep reporting a
@@ -173,7 +184,7 @@
         {...display?.attributes ?? {}}
       >
         <LinearSMeter
-          value={observed(meters.signal) ? rawOf(meters.signal) : null} label="S" compact
+          projection={signalProjection} label="S" compact
           mainPresent={present(meters.signal)}
           display={display?.display ?? undefined}
           lowerScale={present(meters.swr) ? swrLowerScale(meters.swr, meters.rfState) : undefined}

@@ -63,6 +63,7 @@ import {
   formatDbm,
   isSmeterCalibrated,
   calibratedToSUnit,
+  projectSignalMeter,
 } from '../smeter-scale';
 
 beforeEach(() => {
@@ -298,6 +299,61 @@ describe('LinearSMeter calibrated S-meter domain', () => {
 
     expect(text).toContain('S9+20');
     expect(text).toContain('\u221253 dBm');
+  });
+
+  it('accepts a projection directly and keeps legacy value callers on the same projector', () => {
+    const projection = projectSignalMeter(-48);
+    const projected = mountMeter({ projection });
+    const legacy = mountMeter({ value: -48 });
+
+    for (const target of [projected, legacy]) {
+      expect(target.textContent).toContain(projection.primaryText);
+      expect(target.textContent).toContain(projection.secondaryText);
+    }
+  });
+
+  it('rejects dynamic callers that supply both projection and value', () => {
+    const projection = projectSignalMeter(0);
+    const projectionOnly = { projection } satisfies ComponentProps<typeof LinearSMeter>;
+    const valueOnly = { value: 0 } satisfies ComponentProps<typeof LinearSMeter>;
+    // @ts-expect-error -- the public component props make the two inputs exclusive.
+    const invalid: ComponentProps<typeof LinearSMeter> = { value: 0, projection };
+    expect(projectionOnly.projection).toBe(projection);
+    expect(valueOnly.value).toBe(0);
+    expect(invalid).toEqual({ value: 0, projection });
+    expect(() => mountMeter({ value: 0, projection } as never))
+      .toThrow(/exactly one of projection or value/);
+  });
+
+  it('rejects dynamic callers that supply neither projection nor value', () => {
+    expect(() => mountMeter({} as never))
+      .toThrow(/exactly one of projection or value/);
+  });
+
+  it('renders an exact supplied projection without consulting a replacement calibration', () => {
+    const projection = projectSignalMeter(-48);
+    clearCapabilities();
+
+    const projected = mountMeter({ projection });
+    const legacy = mountMeter({ value: -48 });
+    expect(projected.textContent).toContain('S1');
+    expect(projected.textContent).toContain('\u2212121 dBm');
+    expect(projected.textContent).not.toContain('uncalibrated');
+    expect(legacy.textContent).toContain('uncalibrated');
+    expect(legacy.textContent).not.toContain('\u2212121 dBm');
+  });
+
+  it('positions labeled marks from the projection while dense ticks retain the raw facade mapping', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/components-v2/meters/LinearSMeter.svelte'),
+      'utf8',
+    );
+    expect(source).toMatch(/labelMarks\s*=\s*\$derived\(signalProjection\.marks\)/);
+    expect(source).toMatch(/x=\{fractionToX\(m\.fraction\)\}/);
+    expect(source).toMatch(
+      /function rawToX\(raw: number\)[\s\S]*?rawToSegments\(raw\)\s*\/\s*RAW_SEGMENT_DOMAIN/,
+    );
+    expect(source).toMatch(/\{@const tx = rawToX\(t\.raw\)\}/);
   });
 });
 

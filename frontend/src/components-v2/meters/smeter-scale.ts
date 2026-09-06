@@ -37,6 +37,24 @@ export interface SmeterMark {
   color: string;
 }
 
+export interface SignalMeterProjectionMark {
+  readonly raw: number;
+  readonly actual: number;
+  readonly fraction: number;
+  readonly text: string;
+  readonly color: string;
+}
+
+export interface SignalMeterProjection {
+  readonly motionFraction: number | null;
+  readonly primaryText: string;
+  readonly secondaryText: string;
+  readonly s9Fraction: number;
+  readonly marks: readonly SignalMeterProjectionMark[];
+}
+
+const SEGMENT_DOMAIN = 20;
+
 function getCal(): SmeterCalibrationPoint[] {
   return getSmeterCalibration() ?? [];
 }
@@ -124,9 +142,8 @@ function markText(label: string): string {
   return label;
 }
 
-/** Major S-meter marks derived from the active calibration table. */
-export function getScaleMarks(): SmeterMark[] {
-  return getCal()
+function scaleMarks(calibration: readonly SmeterCalibrationPoint[]): SmeterMark[] {
+  return calibration
     .filter((p) => /^S[13579]$/.test(p.label) || /^S9\+/.test(p.label))
     .map((p) => ({
       raw: p.raw,
@@ -134,6 +151,42 @@ export function getScaleMarks(): SmeterMark[] {
       text: markText(p.label),
       color: colorForActual(p.actual),
     }));
+}
+
+/** Major S-meter marks derived from the active calibration table. */
+export function getScaleMarks(): SmeterMark[] {
+  return scaleMarks(getCal());
+}
+
+/**
+ * Resolve every display-facing S-meter value from one capability snapshot.
+ * The facade remains the only store reader; the pure primitives above own all
+ * calibration, interpolation, labeling, and raw fallback behavior.
+ */
+export function projectSignalMeter(value: number | null): SignalMeterProjection {
+  const calibration = getCal();
+  const marks = scaleMarks(calibration).map((mark) => ({
+    ...mark,
+    fraction: rawToSegmentsForCalibration(mark.raw, calibration) / SEGMENT_DOMAIN,
+  }));
+  const s9Fraction = rawToSegmentsForCalibration(
+    getS9RawForCalibration(calibration),
+    calibration,
+  ) / SEGMENT_DOMAIN;
+
+  if (value === null) {
+    return { motionFraction: null, primaryText: 'S ?', secondaryText: '', s9Fraction, marks };
+  }
+
+  return {
+    motionFraction: calibratedToSegmentsForCalibration(value, calibration) / SEGMENT_DOMAIN,
+    primaryText: calibratedToSUnitForCalibration(value, calibration),
+    secondaryText: formatDbmForCalibration(
+      calibratedToDbmForCalibration(value, calibration),
+    ),
+    s9Fraction,
+    marks,
+  };
 }
 
 /** Format dBm value as display string, e.g. "−67 dBm". Uses Unicode minus. */
