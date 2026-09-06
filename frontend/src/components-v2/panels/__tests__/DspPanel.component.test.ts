@@ -93,6 +93,22 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
   return t;
 }
 
+function openLongPressModal(t: HTMLElement, buttonPrefix: string): void {
+  vi.useFakeTimers();
+  const button = Array.from(t.querySelectorAll<HTMLButtonElement>('.dsp-btn-wrap button')).find(
+    (candidate) => candidate.textContent?.trim().startsWith(buttonPrefix),
+  );
+  if (buttonPrefix === 'AGC-T') {
+    button?.click();
+    flushSync();
+    return;
+  }
+  button?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+  vi.advanceTimersByTime(600);
+  flushSync();
+  vi.useRealTimers();
+}
+
 beforeEach(() => {
   resetCommandLifecycle();
   components = [];
@@ -171,6 +187,29 @@ describe('DspPanel component rendering', () => {
     unmount(comp);
     expect(t.innerHTML).toBe('');
   });
+});
+
+describe('DspPanel Discrete facade mounts', () => {
+  it.each([
+    ['NR', 'Noise reduction settings', 'NR Level', 'onNrLevelChange', 6],
+    ['NB', 'Noise blanker settings', 'NB Depth', 'onNbDepthChange', 1],
+    ['AGC-T', 'AGC time settings', 'AGC Time', 'onAgcTimeChange', 1],
+  ] as const)(
+    'renders and dispatches the %s Discrete mount',
+    (button, dialogLabel, controlLabel, handler, expected) => {
+      const t = mountPanel({ nbActive: true });
+      openLongPressModal(t, button);
+      const dialog = t.querySelector<HTMLElement>(`[aria-label="${dialogLabel}"]`)!;
+      const control = dialog.querySelector<HTMLElement>(`[aria-label="${controlLabel}"]`)!;
+
+      expect(control.closest('.vc-discrete')).not.toBeNull();
+      vi.useFakeTimers();
+      control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      vi.advanceTimersByTime(50);
+      expect(mockHandlers[handler]).toHaveBeenCalledExactlyOnceWith(expected);
+      vi.useRealTimers();
+    },
+  );
 });
 
 describe('DspPanel NB modal depth/width gating (MOR-502)', () => {

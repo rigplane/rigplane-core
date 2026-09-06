@@ -3,6 +3,7 @@ import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 import {
   createBipolarContinuousScalarPolicy,
   createContinuousScalar,
+  createDiscreteContinuousScalarPolicy,
   createHBarContinuousScalarPolicy,
   nativeRangeContinuousScalarPolicy,
   type CommandScalarFeedback,
@@ -216,6 +217,55 @@ describe('continuous scalar contract', () => {
 });
 
 describe('continuous scalar source policies', () => {
+  it('keeps Discrete ordinary and fine wheel increments distinct from HBar', () => {
+    const policy = createDiscreteContinuousScalarPolicy({ debounceMs: 0 });
+    const domain = { min: 0, max: 10, step: 2, defaultValue: null, fineStepDivisor: 4 };
+
+    expect(policy.wheel(4, { direction: 1, fine: false }, domain)).toBe(6);
+    expect(policy.wheel(4, { direction: -1, fine: true }, domain)).toBe(3.5);
+    expect(createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 0 })
+      .wheel(4, { direction: 1, fine: false }, domain)).toBe(10);
+  });
+
+  it('ignores Discrete keyboardStep while preserving declared-step keyboard behavior', () => {
+    const policy = createDiscreteContinuousScalarPolicy({ debounceMs: 0 });
+    const { scalar, request } = readingSetup(policy, {
+      domain: { min: 0, max: 10, step: 2, defaultValue: null, fineStepDivisor: 4, keyboardStep: Infinity },
+      reading: { status: 'known', value: 4 },
+    });
+
+    expect(scalar.view.domainValid).toBe(true);
+    expect('keyboardStep' in scalar.view.domain).toBe(false);
+    scalar.attachRenderer().key({ key: 'ArrowRight', fine: false });
+    expect(request).toHaveBeenCalledExactlyOnceWith(6);
+  });
+
+  it('keeps absent Discrete reset inert while HBar resets to min', () => {
+    const domain = { min: 0, max: 10, step: 1, defaultValue: null, fineStepDivisor: 10 };
+    const discrete = readingSetup(createDiscreteContinuousScalarPolicy({ debounceMs: 0 }), {
+      domain, reading: { status: 'known', value: 5 },
+    });
+    const hbar = readingSetup(createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 0 }), {
+      domain, reading: { status: 'known', value: 5 },
+    });
+
+    discrete.scalar.attachRenderer().reset();
+    hbar.scalar.attachRenderer().reset();
+    expect(discrete.request).not.toHaveBeenCalled();
+    expect(hbar.request).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('dispatches a Discrete wheel at the canonical boundary', () => {
+    const policy = createDiscreteContinuousScalarPolicy({ debounceMs: 0 });
+    const { scalar, request } = readingSetup(policy, {
+      domain: { min: 0, max: 10, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 10 },
+    });
+
+    scalar.attachRenderer().wheel({ direction: 1, fine: false });
+    expect(request).toHaveBeenCalledExactlyOnceWith(10);
+  });
+
   it.each([0, -50, Number.NaN, 2.5, Number.POSITIVE_INFINITY])(
     'adapts invalid Bipolar keyboard hint %s without weakening the radio domain',
     (keyboardStep) => {

@@ -191,6 +191,43 @@ export function createHBarContinuousScalarPolicy(
   return Object.freeze(policy);
 }
 
+export function createDiscreteContinuousScalarPolicy(
+  options: Readonly<{
+    debounceMs: number;
+    describeTarget?: (value: number) => string;
+  }>,
+): Readonly<ContinuousScalarPolicy> {
+  const debounce = options.debounceMs > 0
+    ? Object.freeze({ debounceMs: options.debounceMs })
+    : 'immediate';
+  const policy: ContinuousScalarPolicy = {
+    name: 'discrete',
+    preview: 'optimistic',
+    resolveKeyboardStep: () => undefined,
+    normalize: (value, domain) => Number.isFinite(value)
+      ? clamp(value, domain.min, domain.max) : null,
+    wheel: (current, event, domain) => {
+      const quantum = event.fine ? domain.step / domain.fineStepDivisor : domain.step;
+      return snap(current + event.direction * quantum, domain, quantum);
+    },
+    key: (current, event, domain) => handleKeyboardStep(
+      current,
+      event.key,
+      domain.step,
+      domain.fineStepDivisor,
+      domain.min,
+      domain.max,
+      event.fine,
+    ),
+    reset: (domain) => domain.defaultValue,
+    dispatch: (source) => source === 'keyboard' || source === 'reset' ? debounce : 'immediate',
+    dispatchesCanonical: (source) => source === 'wheel',
+    wheelIdleMs: 300,
+    describeTarget: options.describeTarget ?? String,
+  };
+  return Object.freeze(policy);
+}
+
 function bipolarLatticeCompatible(increment: number, domain: ScalarDomain): boolean {
   return Number.isFinite(increment)
     && increment > 0

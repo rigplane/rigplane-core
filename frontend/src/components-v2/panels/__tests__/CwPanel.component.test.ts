@@ -99,6 +99,19 @@ describe('CwPanel component rendering', () => {
     const t = mountPanel();
     const labels = Array.from(t.querySelectorAll('.vc-label'));
     expect(labels.some((el) => el.textContent === 'Key Speed')).toBe(true);
+    expect(t.querySelector('.vc-discrete')).not.toBeNull();
+  });
+
+  it('dispatches Key Speed through its Discrete facade binding', () => {
+    vi.useFakeTimers();
+    const t = mountPanel({ keySpeed: 12 });
+    const control = t.querySelector<HTMLElement>('[aria-label="Key Speed"]')!;
+
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+
+    expect(mockHandlers.onKeySpeedChange).toHaveBeenCalledExactlyOnceWith(13);
+    vi.useRealTimers();
   });
 
   it('renders SEMI break-in button', () => {

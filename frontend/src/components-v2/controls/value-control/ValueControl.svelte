@@ -9,6 +9,7 @@
   import {
     createBipolarContinuousScalarPolicy,
     createContinuousScalar,
+    createDiscreteContinuousScalarPolicy,
     createHBarContinuousScalarPolicy,
     type ContinuousScalarBinding,
     type ContinuousScalarPolicy,
@@ -59,7 +60,7 @@
 
   interface BoundContinuousProps {
     binding: ContinuousScalarBinding;
-    renderer: 'hbar' | 'bipolar';
+    renderer: 'hbar' | 'bipolar' | 'discrete';
     value?: undefined;
     min?: undefined;
     max?: undefined;
@@ -124,7 +125,10 @@
     debounceMs,
   }));
   let bipolarPolicy = $derived(createBipolarContinuousScalarPolicy({ debounceMs }));
-  let scalarPolicy = $derived(renderer === 'bipolar' ? bipolarPolicy : hbarPolicy);
+  let discretePolicy = $derived(createDiscreteContinuousScalarPolicy({ debounceMs }));
+  let scalarPolicy = $derived(renderer === 'bipolar'
+    ? bipolarPolicy
+    : renderer === 'discrete' ? discretePolicy : hbarPolicy);
   const adapterPolicy: ContinuousScalarPolicy = {
     get name() { return scalarPolicy.name; },
     get preview() { return scalarPolicy.preview; },
@@ -219,7 +223,6 @@
     title,
   });
   let knobProps = $derived({ ...commonProps, arcAngle, tickCount, tickLabels });
-  let discreteProps = $derived({ ...commonProps, tickLabels, showAllTicks, tickStyle });
   let legacy = $derived<LegacyReadingPresentation>({
     phase: feedbackPhase,
     busy: feedbackBusy,
@@ -265,5 +268,10 @@
 {:else if renderer === 'knob'}
   <KnobRenderer {...knobProps} />
 {:else if renderer === 'discrete'}
-  <DiscreteRenderer {...discreteProps} />
+  <DiscreteRenderer
+    binding={scalarBinding} {label} {displayFn} {unknownDisplay}
+    {fillColor} {fillGradient} {trackColor}
+    {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
+    {tickLabels} {showAllTicks} {tickStyle} {legacy}
+  />
 {/if}
