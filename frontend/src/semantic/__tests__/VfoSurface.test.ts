@@ -692,6 +692,18 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(dualWatch.getAttribute('aria-label')).toBe('Dual watch: on');
   });
 
+  it('owns only the embedded M/S radios in a named active-receiver group', () => {
+    const target = mountSurface({ viewModel: withRadioWide(), appearance: 'standard' });
+    const group = target.querySelector('[role="radiogroup"][aria-label="Active receiver"]')!;
+    expect(group).not.toBeNull();
+    expect([...group.querySelectorAll(':scope > [role="radio"]')]
+      .map((radio) => radio.getAttribute('data-dual-action'))).toEqual(['main', 'sub']);
+    expect(group.querySelector('[data-vfo-equalize]')).toBeNull();
+    expect(group.querySelector('[data-vfo-swap]')).toBeNull();
+    expect(group.querySelector('[data-vfo-quick-split]')).toBeNull();
+    expect(target.querySelectorAll('[role="radiogroup"]')).toHaveLength(1);
+  });
+
   it('unknown split renders an explicit "unknown" tri-state', () => {
     const base = topologyFixtures['1/ab'];
     const model: RadioViewModel = validateRadioViewModel({ ...base, split: { status: 'unknown' } });

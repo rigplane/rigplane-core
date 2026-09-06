@@ -142,6 +142,7 @@
      */
     indicatorReceiver?: ReceiverId;
     continuitySession?: MeterContinuitySession | null;
+    frequencyLifetimeKey?: string;
     /**
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
@@ -180,6 +181,7 @@
     pendingFrequencyHz,
     indicatorReceiver,
     continuitySession,
+    frequencyLifetimeKey,
     onEqualizeVfos,
     onSwapVfos,
     onQuickSplit,
@@ -620,7 +622,7 @@
               freq={vfo.frequencyHz}
               {displayHz}
               disabled={readoutDisabled(vfo)}
-              contextKey={`${viewModel.topologyId}:${vfo.receiver}:${slotKey(vfo.slot)}`}
+              contextKey={`${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${vfo.receiver}:${slotKey(vfo.slot)}`}
               pendingDisplayHz={pendingHz}
               pendingAnnouncement={pendingHz !== null ? t('core.vfo.freq.pendingAnnouncement') : undefined}
               compact={appearance === 'semantic'}
@@ -809,7 +811,7 @@
           pendingDisplayHz={dominant ? pendingFrequencyHz?.[receiver] ?? null : null}
           frequencyState={dominant?.display?.frequencyHz.state ?? (dominant?.frequencyHz == null ? 'unknown' : 'current')}
           staleReason={t('core.rxTx.target.reason.stale')}
-          contextKey={`${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`}
+          contextKey={`${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`}
           frequencyDisabled={!dominant || readoutDisabled(dominant)}
           mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
           filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}

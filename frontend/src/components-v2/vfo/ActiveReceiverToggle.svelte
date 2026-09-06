@@ -80,8 +80,12 @@
     onChange(next);
   }
 
+  function availableReceivers(): Receiver[] {
+    return RECEIVERS.filter((receiver) => state(receiver).structural && state(receiver).operational);
+  }
+
   function move(current: Receiver, delta: 1 | -1): Receiver {
-    const candidates = RECEIVERS.filter((receiver) => state(receiver).structural && state(receiver).operational);
+    const candidates = availableReceivers();
     if (candidates.length === 0) return current;
     const currentIndex = candidates.indexOf(current);
     const start = currentIndex >= 0 ? currentIndex : 0;
@@ -102,12 +106,13 @@
       focusSegment(next);
     } else if (key === 'Home') {
       event.preventDefault();
-      const next = RECEIVERS[0];
+      const next = availableReceivers()[0] ?? current;
       select(next);
       focusSegment(next);
     } else if (key === 'End') {
       event.preventDefault();
-      const next = RECEIVERS[RECEIVERS.length - 1];
+      const candidates = availableReceivers();
+      const next = candidates[candidates.length - 1] ?? current;
       select(next);
       focusSegment(next);
     } else if (key === 'Enter' || key === ' ') {
@@ -165,13 +170,9 @@
   {/each}
 {/snippet}
 
-{#if embedded}
-  {@render segments()}
-{:else}
-<div class="active-receiver-toggle" role="radiogroup" aria-label={label}>
+<div class="active-receiver-toggle" class:embedded role="radiogroup" aria-label={label}>
   {@render segments()}
 </div>
-{/if}
 
 <style>
   .active-receiver-toggle {
@@ -231,6 +232,16 @@
     min-height: var(--vfo-ops-badge-height, 18px);
     border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
     border-radius: var(--vfo-ops-badge-radius, 4px);
+  }
+
+  .active-receiver-toggle.embedded {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--vfo-ops-gap, 4px);
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
   }
 
   .sr-only {

@@ -172,6 +172,33 @@ describe('ActiveReceiverToggle', () => {
       expect(onChange).toHaveBeenCalledWith('SUB');
     });
 
+    it.each([
+      ['Home', 'MAIN', { structural: false, operational: false }, 'SUB'],
+      ['Home', 'MAIN', { structural: true, operational: false }, 'SUB'],
+      ['End', 'SUB', { structural: false, operational: false }, 'MAIN'],
+      ['End', 'SUB', { structural: true, operational: false }, 'MAIN'],
+    ] as const)('%s selects and focuses the available endpoint when %s is unavailable', async (
+      key, unavailable, unavailableState, expected,
+    ) => {
+      const onChange = vi.fn();
+      const t = mountToggle({
+        active: null,
+        onChange,
+        availability: {
+          MAIN: unavailable === 'MAIN' ? unavailableState : { structural: true, operational: true },
+          SUB: unavailable === 'SUB' ? unavailableState : { structural: true, operational: true },
+        },
+      });
+      const available = t.querySelector<HTMLButtonElement>(
+        `[data-active-receiver-segment="${expected}"]`,
+      )!;
+      available.focus();
+      available.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      await Promise.resolve();
+      expect(onChange).toHaveBeenCalledWith(expected);
+      expect(document.activeElement).toBe(available);
+    });
+
     it('Enter on focused segment selects it', () => {
       const onChange = vi.fn();
       const t = mountToggle({ active: 'MAIN', onChange });
@@ -204,6 +231,14 @@ describe('ActiveReceiverToggle', () => {
   });
 
   describe('availability', () => {
+    it('keeps embedded radios in their own named radiogroup', () => {
+      const t = mountToggle({ active: 'MAIN', onChange: vi.fn(), embedded: true });
+      const group = t.querySelector('[role="radiogroup"]')!;
+      expect(group).not.toBeNull();
+      expect(group.getAttribute('aria-label')).toBe('Active receiver');
+      expect(group.querySelectorAll(':scope > [role="radio"]')).toHaveLength(2);
+    });
+
     it('omits a structurally absent segment', () => {
       const t = mountToggle({
         active: 'MAIN',
