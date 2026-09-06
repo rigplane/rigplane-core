@@ -39,7 +39,6 @@
     MODE_BUTTONS, SPAN_LABELS, SPEED_LABELS,
     isSpanApplicable, isEdgeApplicable, clampSpan, clampSpeed, clampRef,
   } from '../components/spectrum/spectrum-toolbar-logic';
-  import { pressedOf } from './pressed-of';
 
   /** On/off leaves, `[field, label]`. */
   export const TOGGLES = [
@@ -68,6 +67,9 @@
 </script>
 
 <script lang="ts">
+  import {
+    bindActionInstrument, bindChoiceInstrument, bindToggleInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -90,34 +92,48 @@
   let spanApplicable = $derived(isSpanApplicable(modeKnown));
   let edgeApplicable = $derived(isEdgeApplicable(modeKnown));
 
-  function toggle(field: ScopeToggleField): void {
-    const f = sc?.[field];
-    if (f && usable(f) && f.reading.status === 'known') onToggleChange?.(field, !f.reading.value);
+  function toggleInstrument(field: ScopeToggleField) {
+    return bindToggleInstrument(() => ({
+      field: sc?.[field],
+      invoke: (next) => onToggleChange?.(field, next),
+    }));
   }
-  function choice(field: ScopeChoiceField, value: number): void {
-    const f = sc?.[field];
-    if (f && usable(f)) onChoiceChange?.(field, value);
+  function choiceInstrument(field: ScopeChoiceField, choices: readonly number[]) {
+    return bindChoiceInstrument(() => ({
+      field: sc?.[field], choices,
+      invoke: (value) => onChoiceChange?.(field, value),
+    }));
   }
-  function span(delta: -1 | 1): void {
-    if (sc && usable(sc.span)) onSpanChange?.(clampSpan(numberOf(sc.span, 3), delta));
+  function spanInstrument(delta: -1 | 1) {
+    return bindActionInstrument(() => {
+      const field = sc?.span;
+      return { field, invoke: () => onSpanChange?.(clampSpan(numberOf(field!, 3), delta)) };
+    });
   }
-  function speed(delta: -1 | 1): void {
-    if (sc && usable(sc.speed)) onSpeedChange?.(clampSpeed(numberOf(sc.speed, 1), delta));
+  function speedInstrument(delta: -1 | 1) {
+    return bindActionInstrument(() => {
+      const field = sc?.speed;
+      return { field, invoke: () => onSpeedChange?.(clampSpeed(numberOf(field!, 1), delta)) };
+    });
   }
-  function ref(delta: -5 | 5): void {
-    if (sc && usable(sc.refDb)) onRefChange?.(clampRef(numberOf(sc.refDb, 0), delta));
+  function refInstrument(delta: -5 | 5) {
+    return bindActionInstrument(() => {
+      const field = sc?.refDb;
+      return { field, invoke: () => onRefChange?.(clampRef(numberOf(field!, 0), delta)) };
+    });
   }
 </script>
 
 {#if sc}
   <section class="scope-controls-surface" data-testid="scope-controls-surface" aria-label="Scope controls">
     {#if sc.mode.availability.structural}
+      {@const behavior = choiceInstrument('mode', MODE_BUTTONS.map(([value]) => value))}
       <div class="scope-row" role="radiogroup" aria-label="Scope mode" data-testid="scope-mode">
         {#each MODE_BUTTONS as [v, label] (v)}
           <button
             type="button" role="radio" class="scope-choice" data-testid={`scope-mode-${v}`}
-            aria-checked={sc.mode.reading.status === 'known' && sc.mode.reading.value === v}
-            disabled={!usable(sc.mode)} onclick={() => choice('mode', v)}
+            aria-checked={behavior.isSelected(v)}
+            disabled={!behavior.available} onclick={() => behavior.invoke(v)}
           >{label}</button>
         {/each}
       </div>
@@ -125,12 +141,13 @@
 
     {#each CHOICES as [field, label, options] (field)}
       {#if (field !== 'edge' || edgeApplicable) && sc[field].availability.structural}
+        {@const behavior = choiceInstrument(field, options.map(([value]) => value))}
         <div class="scope-row" role="radiogroup" aria-label={label} data-testid={`scope-${field}`}>
           {#each options as [v, optLabel] (v)}
             <button
               type="button" role="radio" class="scope-choice" data-testid={`scope-${field}-${v}`}
-              aria-checked={sc[field].reading.status === 'known' && sc[field].reading.value === v}
-              disabled={!usable(sc[field])} onclick={() => choice(field, v)}
+              aria-checked={behavior.isSelected(v)}
+              disabled={!behavior.available} onclick={() => behavior.invoke(v)}
             >{optLabel}</button>
           {/each}
         </div>
@@ -138,42 +155,49 @@
     {/each}
 
     {#if spanApplicable && sc.span.availability.structural}
+      {@const decrement = spanInstrument(-1)}
+      {@const increment = spanInstrument(1)}
       <div class="scope-stepper" data-testid="scope-span">
         <span class="scope-name">SPAN</span>
-        <button type="button" disabled={!usable(sc.span)} onclick={() => span(-1)}>-</button>
+        <button type="button" disabled={!decrement.available} onclick={() => decrement.invoke()}>-</button>
         <output data-testid="scope-span-value">
           {usable(sc.span) ? (SPAN_LABELS[numberOf(sc.span, 3)] ?? '?') : UNKNOWN_TEXT}
         </output>
-        <button type="button" disabled={!usable(sc.span)} onclick={() => span(1)}>+</button>
+        <button type="button" disabled={!increment.available} onclick={() => increment.invoke()}>+</button>
       </div>
     {/if}
 
     {#if sc.speed.availability.structural}
+      {@const decrement = speedInstrument(-1)}
+      {@const increment = speedInstrument(1)}
       <div class="scope-stepper" data-testid="scope-speed">
         <span class="scope-name">SPEED</span>
-        <button type="button" disabled={!usable(sc.speed)} onclick={() => speed(-1)}>-</button>
+        <button type="button" disabled={!decrement.available} onclick={() => decrement.invoke()}>-</button>
         <output data-testid="scope-speed-value">
           {usable(sc.speed) ? (SPEED_LABELS[numberOf(sc.speed, 1)] ?? '?') : UNKNOWN_TEXT}
         </output>
-        <button type="button" disabled={!usable(sc.speed)} onclick={() => speed(1)}>+</button>
+        <button type="button" disabled={!increment.available} onclick={() => increment.invoke()}>+</button>
       </div>
     {/if}
 
     {#if sc.refDb.availability.structural}
+      {@const decrement = refInstrument(-5)}
+      {@const increment = refInstrument(5)}
       <div class="scope-stepper" data-testid="scope-ref">
         <span class="scope-name">REF</span>
-        <button type="button" disabled={!usable(sc.refDb)} onclick={() => ref(-5)}>-</button>
+        <button type="button" disabled={!decrement.available} onclick={() => decrement.invoke()}>-</button>
         <output data-testid="scope-ref-value">{textOf(sc.refDb)}</output>
-        <button type="button" disabled={!usable(sc.refDb)} onclick={() => ref(5)}>+</button>
+        <button type="button" disabled={!increment.available} onclick={() => increment.invoke()}>+</button>
       </div>
     {/if}
 
     {#each TOGGLES as [field, label] (field)}
       {#if sc[field].availability.structural}
+        {@const behavior = toggleInstrument(field)}
         <button
           type="button" class="scope-toggle" data-testid={`scope-${field}`}
-          aria-pressed={pressedOf(sc[field])} disabled={!usable(sc[field])}
-          onclick={() => toggle(field)}
+          aria-pressed={behavior.confirmed} disabled={!behavior.available}
+          onclick={() => behavior.invoke()}
         >{label}: {textOf(sc[field])}</button>
       {/if}
     {/each}

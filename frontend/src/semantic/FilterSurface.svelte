@@ -90,14 +90,11 @@
   const numberOf = (f: DisplayObservedField<number>, fallback: number): number =>
     f.display?.state === 'current' || f.display?.state === 'stale' ? f.display.value
       : f.reading.status === 'known' ? f.reading.value : fallback;
-  /** Never fabricates a selection: `usable` alone cannot narrow `reading` for
-   *  the `===` comparison below, so the known-check is repeated explicitly. */
-  const isSelected = (f: TxAuxField<unknown>, value: unknown): boolean =>
-    usable(f) && f.reading.status === 'known' && f.reading.value === value;
 </script>
 
 <script lang="ts">
   import { t } from '$lib/i18n';
+  import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
@@ -127,23 +124,35 @@
   let modeFilter = $derived(view.modeFilter);
   let filterPassband = $derived(view.filterPassband);
 
-  function selectMode(mode: string): void {
-    if (modeFilter && usable(modeFilter.currentMode)) onModeChange?.(mode);
-  }
-  function selectFilter(filter: number): void {
-    if (modeFilter && usable(modeFilter.currentFilter)) onFilterChange?.(filter);
-  }
   function changeWidth(value: number): void {
     if (modeFilter && usable(modeFilter.filterWidth)) onFilterWidthChange?.(value);
   }
-  function selectShape(shape: number): void {
-    if (filterPassband && usable(filterPassband.filterShape)) onFilterShapeChange?.(shape);
+  function modeInstrument() {
+    return bindChoiceInstrument(() => ({
+      field: modeFilter?.currentMode, choices: modeFilter?.modeChoices ?? [],
+      invoke: (value) => onModeChange?.(value),
+    }));
   }
-  function selectDataMode(mode: number): void {
-    if (!filterPassband || !usable(filterPassband.dataMode)
-      || filterPassband.dataModeChoices.length < 2
-      || !filterPassband.dataModeChoices.some(choice => choice.value === mode)) return;
-    onDataModeChange?.(mode);
+  function filterInstrument() {
+    return bindChoiceInstrument(() => ({
+      field: modeFilter?.currentFilter,
+      choices: (modeFilter?.filterChoices ?? []).map((_choice, index) => index + 1),
+      invoke: (value) => onFilterChange?.(value),
+    }));
+  }
+  function shapeInstrument() {
+    return bindChoiceInstrument(() => ({
+      field: filterPassband?.filterShape, choices: FILTER_SHAPES.map(([value]) => value),
+      invoke: (value) => onFilterShapeChange?.(value),
+    }));
+  }
+  function dataModeInstrument() {
+    return bindChoiceInstrument(() => ({
+      field: filterPassband?.dataMode,
+      choices: filterPassband?.dataModeChoices.map(choice => choice.value) ?? [],
+      blocked: (filterPassband?.dataModeChoices.length ?? 0) < 2,
+      invoke: (value) => onDataModeChange?.(value),
+    }));
   }
   /** One guarded entry point for all three passband sliders — each still
    *  reads and disables on its OWN field's availability (see the file
@@ -161,6 +170,7 @@
   <section class="filter-surface" data-testid="filter-surface" aria-label="Mode and filter controls">
     {#if modeFilter}
       {#if modeFilter.currentMode.availability.structural}
+        {@const behavior = modeInstrument()}
         <div
           class="filter-choice-group" data-testid="filter-mode"
           data-disabled-reason={reasonOf(modeFilter.currentMode)}
@@ -168,14 +178,15 @@
           {#each modeFilter.modeChoices as choice (choice)}
             <button
               type="button" class="filter-choice" data-testid={`filter-mode-${choice}`}
-              aria-pressed={isSelected(modeFilter.currentMode, choice)}
-              disabled={!usable(modeFilter.currentMode)}
-              onclick={() => selectMode(choice)}
+              aria-pressed={behavior.available && behavior.isSelected(choice)}
+              disabled={!behavior.available}
+              onclick={() => behavior.invoke(choice)}
             >{choice}</button>
           {/each}
         </div>
       {/if}
       {#if modeFilter.currentFilter.availability.structural}
+        {@const behavior = filterInstrument()}
         <div
           class="filter-choice-group" data-testid="filter-select"
           data-disabled-reason={reasonOf(modeFilter.currentFilter)}
@@ -185,10 +196,10 @@
           {#each modeFilter.filterChoices as choice, index (choice)}
             <button
               type="button" class="filter-choice" data-testid={`filter-select-${index + 1}`}
-              aria-pressed={isSelected(modeFilter.currentFilter, index + 1)}
+              aria-pressed={behavior.available && behavior.isSelected(index + 1)}
               data-pending={pendingFilter === index + 1}
-              disabled={!usable(modeFilter.currentFilter)}
-              onclick={() => selectFilter(index + 1)}
+              disabled={!behavior.available}
+              onclick={() => behavior.invoke(index + 1)}
             >{choice}</button>
           {/each}
           {#if pendingFilter !== null}
@@ -225,6 +236,7 @@
         {/key}
       {/snippet}
       {#if filterPassband.filterShapeControlStructural}
+        {@const behavior = shapeInstrument()}
         <div
           class="filter-choice-group" data-testid="filter-shape"
           data-disabled-reason={reasonOf(filterPassband.filterShape)}
@@ -232,9 +244,9 @@
           {#each FILTER_SHAPES as [value, label] (value)}
             <button
               type="button" class="filter-choice" data-testid={`filter-shape-${value}`}
-              aria-pressed={isSelected(filterPassband.filterShape, value)}
-              disabled={!usable(filterPassband.filterShape)}
-              onclick={() => selectShape(value)}
+              aria-pressed={behavior.available && behavior.isSelected(value)}
+              disabled={!behavior.available}
+              onclick={() => behavior.invoke(value)}
             >{label}</button>
           {/each}
         </div>
@@ -280,6 +292,7 @@
         {/if}
       {/each}
       {#if filterPassband.dataMode.availability.structural}
+        {@const behavior = dataModeInstrument()}
         <div
           class={filterPassband.dataModeChoices.length > 1 ? 'filter-choice-group' : 'filter-readout'} data-testid="filter-data-mode"
           role="group" aria-label={t('core.mobile.sheet.dataMode')}
@@ -293,10 +306,10 @@
             {#each filterPassband.dataModeChoices as choice (choice.value)}
               <button
                 type="button" class="filter-choice" data-testid={`filter-data-mode-${choice.value}`}
-                aria-pressed={isSelected(filterPassband.dataMode, choice.value)}
+                aria-pressed={behavior.available && behavior.isSelected(choice.value)}
                 data-pending={pendingDataMode === choice.value}
-                disabled={!usable(filterPassband.dataMode)}
-                onclick={() => selectDataMode(choice.value)}
+                disabled={!behavior.available}
+                onclick={() => behavior.invoke(choice.value)}
               >{choice.label ?? (choice.value === 0 ? 'OFF' : `D${choice.value}`)}</button>
             {/each}
           {/if}

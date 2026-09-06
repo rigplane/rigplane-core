@@ -144,6 +144,12 @@ describe('unread leaves render honestly, never fabricated', () => {
     expect(r.el('scope-ref-value')!.textContent).toBe(UNKNOWN_TEXT);
     r.dispose();
   });
+
+  it('does not coerce an observed out-of-list choice into a selected option', () => {
+    const r = render(withSc({ centerType: known(99) }));
+    for (const value of [0, 1, 2]) expect(r.el(`scope-centerType-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    r.dispose();
+  });
 });
 
 describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', () => {

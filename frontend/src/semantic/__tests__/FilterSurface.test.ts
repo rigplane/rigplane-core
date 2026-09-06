@@ -826,6 +826,20 @@ describe('pending-target affordance (MOR-1441 leg 2)', () => {
       expect(onFilterChange).toHaveBeenCalledExactlyOnceWith(3);
     }, { onFilterChange }, { pendingFilter: 3 });
   });
+
+  it('keeps an observed out-of-list filter unselected without changing clicked intent', () => {
+    const onFilterChange = vi.fn();
+    const view = base();
+    view.modeFilter!.currentFilter = {
+      availability: { structural: true, operational: true }, reading: { status: 'known', value: 99 },
+    };
+    withSurface(view, (s) => {
+      for (const value of [1, 2, 3]) expect(s.button('filter-select', value)!.getAttribute('aria-pressed')).toBe('false');
+      s.button('filter-select', 2)!.click();
+      flushSync();
+      expect(onFilterChange).toHaveBeenCalledExactlyOnceWith(2);
+    }, { onFilterChange });
+  });
 });
 
 // ── 9. No re-derivation — facts only (carry-forwards 1 and 5) ───────────────
