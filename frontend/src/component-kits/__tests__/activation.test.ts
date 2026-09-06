@@ -32,6 +32,14 @@ function config(kits: readonly unknown[], selection: Record<string, unknown> = {
   };
 }
 
+function addUnknownOwnProperty(target: object, kind: 'symbol' | 'non-enumerable'): void {
+  if (kind === 'symbol') {
+    Reflect.defineProperty(target, Symbol('extra'), { value: true, enumerable: true });
+  } else {
+    Reflect.defineProperty(target, 'extra', { value: true, enumerable: false });
+  }
+}
+
 async function subject() {
   return import('../activation');
 }
@@ -117,6 +125,111 @@ describe('component-kit activation transaction', () => {
 
     await expect(activation.activateComponentKits(configured)).rejects.toThrow();
     expect(activation.getSelectedScalarAppearance()).toBeUndefined();
+  });
+
+  it.each([
+    ['configuration', () => {
+      const configured = config([]);
+      return { configured, target: configured };
+    }],
+    ['selection', () => {
+      const selection = {};
+      return { configured: config([], selection), target: selection };
+    }],
+    ['kit declaration', () => {
+      const declaration = kit('exact-kit');
+      return { configured: config([declaration]), target: declaration };
+    }],
+    ['scalar appearance', () => {
+      const selectedAppearance = appearance('Exact');
+      return {
+        configured: config([kit('exact-scalar-kit', { scalarAppearances: { exact: selectedAppearance } })]),
+        target: selectedAppearance,
+      };
+    }],
+  ] as const)('rejects symbol and non-enumerable unknown properties on %s', async (_name, makeCase) => {
+    const activation = await subject();
+    for (const kind of ['symbol', 'non-enumerable'] as const) {
+      const { configured, target } = makeCase();
+      addUnknownOwnProperty(target, kind);
+
+      await expect(activation.activateComponentKits(configured)).rejects.toThrow(/unknown property/i);
+      expect(activation.getSelectedScalarAppearance()).toBeUndefined();
+    }
+  });
+
+  it('rejects an empty-string unknown property', async () => {
+    const activation = await subject();
+    const configured = config([]);
+    Reflect.defineProperty(configured, '', { value: true, enumerable: true });
+
+    await expect(activation.activateComponentKits(configured)).rejects.toThrow(/unknown property/i);
+  });
+
+  it.each([
+    ['configuration', () => {
+      const configured = config([]);
+      Reflect.defineProperty(configured, 'kits', { value: configured.kits, enumerable: false });
+      return configured;
+    }],
+    ['selection', () => {
+      const selection = { scalarAppearance: 'professional' };
+      Reflect.defineProperty(selection, 'scalarAppearance', { value: 'professional', enumerable: false });
+      return config([], selection);
+    }],
+    ['kit declaration', () => {
+      const declaration = kit('descriptor-kit');
+      Reflect.defineProperty(declaration, 'id', { value: 'descriptor-kit', enumerable: false });
+      return config([declaration]);
+    }],
+    ['scalar appearance', () => {
+      const selectedAppearance = appearance('Descriptor');
+      Reflect.defineProperty(selectedAppearance, 'name', { value: 'Descriptor', enumerable: false });
+      return config([kit('descriptor-scalar-kit', { scalarAppearances: { descriptor: selectedAppearance } })]);
+    }],
+  ] as const)('rejects a non-enumerable allowed property on %s', async (_name, makeConfig) => {
+    const activation = await subject();
+
+    await expect(activation.activateComponentKits(makeConfig()))
+      .rejects.toThrow(/enumerable data property/i);
+  });
+
+  it('rejects an accessor without invoking it', async () => {
+    const activation = await subject();
+    const configured: Record<string, unknown> = {};
+    const getter = vi.fn(() => []);
+    Reflect.defineProperty(configured, 'kits', { get: getter, enumerable: true });
+
+    await expect(activation.activateComponentKits(configured))
+      .rejects.toThrow(/enumerable data property/i);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
+  it('allows additional exports on the loader module namespace', async () => {
+    const activation = await subject();
+
+    await activation.activateComponentKits({
+      kits: [async () => ({ default: kit('module-kit'), namedExport: true })],
+    });
+  });
+
+  it.each([
+    ['scalarAppearances', 'symbol'],
+    ['scalarAppearances', 'non-enumerable'],
+    ['frequencyReadouts', 'symbol'],
+    ['frequencyReadouts', 'non-enumerable'],
+  ] as const)('rejects a %s map with a %s entry', async (mapName, kind) => {
+    const activation = await subject();
+    const declarations: Record<PropertyKey, unknown> = {};
+    const key = kind === 'symbol' ? Symbol('hidden') : 'hidden';
+    Reflect.defineProperty(declarations, key, {
+      value: mapName === 'scalarAppearances' ? appearance('Hidden') : renderer,
+      enumerable: kind === 'symbol',
+    });
+
+    await expect(activation.activateComponentKits(config([
+      kit(`hidden-${mapName}-${kind}`, { [mapName]: declarations }),
+    ]))).rejects.toThrow(/property/i);
   });
 
   it.each(['designLanguages', 'layouts', 'instrumentGroups', 'presentations'] as const)(

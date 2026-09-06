@@ -50,13 +50,25 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-function rejectUnknownKeys(
+function ownDataEntries(
   value: Record<string, unknown>,
-  allowed: readonly string[],
   owner: string,
-): void {
-  const unknown = Object.keys(value).find((key) => !allowed.includes(key));
-  if (unknown) throw new ComponentKitActivationError(`${owner} has unknown property "${unknown}".`);
+  allowed?: readonly string[],
+): [string, unknown][] {
+  const entries: [string, unknown][] = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || (allowed !== undefined && !allowed.includes(key))) {
+      throw new ComponentKitActivationError(`${owner} has unknown property "${String(key)}".`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+      throw new ComponentKitActivationError(
+        `${owner} property "${key}" must be an enumerable data property.`,
+      );
+    }
+    entries.push([key, descriptor.value]);
+  }
+  return entries;
 }
 
 function requireId(value: unknown, owner: string): string {
@@ -70,7 +82,7 @@ function copyAppearance(value: unknown, id: string): ScalarAppearance {
   if (!isPlainRecord(value)) {
     throw new ComponentKitActivationError(`Scalar appearance "${id}" must be an object.`);
   }
-  rejectUnknownKeys(value, APPEARANCE_KEYS, `Scalar appearance "${id}"`);
+  ownDataEntries(value, `Scalar appearance "${id}"`, APPEARANCE_KEYS);
   if (typeof value.name !== 'string' || value.name.trim() === '') {
     throw new ComponentKitActivationError(`Scalar appearance "${id}" must have a non-empty name.`);
   }
@@ -87,7 +99,7 @@ function readSelection(value: unknown): ComponentKitSelection {
   if (!isPlainRecord(value)) {
     throw new ComponentKitActivationError('Component-kit selection must be an object.');
   }
-  rejectUnknownKeys(value, SELECTION_KEYS, 'Component-kit selection');
+  ownDataEntries(value, 'Component-kit selection', SELECTION_KEYS);
   for (const key of SELECTION_KEYS) {
     if (value[key] !== undefined && (typeof value[key] !== 'string' || value[key].trim() === '')) {
       throw new ComponentKitActivationError(`Component-kit selection "${key}" must be a non-empty string.`);
@@ -99,7 +111,7 @@ function readSelection(value: unknown): ComponentKitSelection {
 function prepareSnapshot(declarations: readonly unknown[], selectionValue: unknown): ActiveSnapshot {
   const scalarAppearances = new Map<string, ScalarAppearance>();
   const scalarOwners = new Map<string, string>();
-  for (const [id, appearance] of Object.entries(builtInScalarAppearances)) {
+  for (const [id, appearance] of ownDataEntries(builtInScalarAppearances, 'Built-in scalar appearances')) {
     scalarAppearances.set(id, copyAppearance(appearance, id));
     scalarOwners.set(id, 'built-in scalar appearances');
   }
@@ -111,7 +123,7 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
     if (!isPlainRecord(value)) {
       throw new ComponentKitActivationError('A component-kit module did not export an object.');
     }
-    rejectUnknownKeys(value, KIT_KEYS, 'Component kit');
+    ownDataEntries(value, 'Component kit', KIT_KEYS);
     const id = requireId(value.id, 'Component kit');
     if (value.apiVersion !== COMPONENT_KIT_API_VERSION) {
       throw new ComponentKitActivationError(`Component kit "${id}" requires unsupported API version ${String(value.apiVersion)}.`);
@@ -129,7 +141,10 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
       if (!isPlainRecord(value.scalarAppearances)) {
         throw new ComponentKitActivationError(`Component kit "${id}" scalarAppearances must be a record.`);
       }
-      for (const [appearanceId, appearance] of Object.entries(value.scalarAppearances)) {
+      for (const [appearanceId, appearance] of ownDataEntries(
+        value.scalarAppearances,
+        `Component kit "${id}" scalarAppearances`,
+      )) {
         requireId(appearanceId, `Component kit "${id}" scalar appearance`);
         const owner = scalarOwners.get(appearanceId);
         if (owner) {
@@ -144,7 +159,10 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
       if (!isPlainRecord(value.frequencyReadouts)) {
         throw new ComponentKitActivationError(`Component kit "${id}" frequencyReadouts must be a record.`);
       }
-      for (const [readoutId, readout] of Object.entries(value.frequencyReadouts)) {
+      for (const [readoutId, readout] of ownDataEntries(
+        value.frequencyReadouts,
+        `Component kit "${id}" frequencyReadouts`,
+      )) {
         requireId(readoutId, `Component kit "${id}" frequency readout`);
         if (frequencyOwners.has(readoutId)) {
           throw new ComponentKitActivationError(`Duplicate frequency readout "${readoutId}" conflicts with ${frequencyOwners.get(readoutId)}.`);
@@ -180,7 +198,7 @@ export async function activateComponentKits(configValue: unknown): Promise<void>
     if (!isPlainRecord(configValue)) {
       throw new ComponentKitActivationError('Component-kit configuration must be an object.');
     }
-    rejectUnknownKeys(configValue, CONFIG_KEYS, 'Component-kit configuration');
+    ownDataEntries(configValue, 'Component-kit configuration', CONFIG_KEYS);
     if (!Array.isArray(configValue.kits) || configValue.kits.some((load) => typeof load !== 'function')) {
       throw new ComponentKitActivationError('Component-kit configuration kits must be an array of loaders.');
     }
