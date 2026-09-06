@@ -156,7 +156,7 @@
         aria-describedby={reasonId}
         title={availability.reason}
         disabled={!availability.operational}
-        tabindex={receiver === focusableReceiver ? 0 : -1}
+        tabindex={availability.operational ? receiver === focusableReceiver ? 0 : -1 : undefined}
         use:registerSegment={receiver}
         onclick={() => select(receiver)}
         onkeydown={(e) => handleKeydown(e, receiver)}
@@ -243,6 +243,13 @@
     padding: 0;
     border: 0;
     background: transparent;
+  }
+
+  @media (pointer: coarse) {
+    .segment.embedded {
+      min-width: var(--tap-target, 44px);
+      min-height: var(--tap-target, 44px);
+    }
   }
 
   .sr-only {

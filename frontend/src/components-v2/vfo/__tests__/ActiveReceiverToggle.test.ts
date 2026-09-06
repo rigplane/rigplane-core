@@ -265,6 +265,7 @@ describe('ActiveReceiverToggle', () => {
       const sub = t.querySelector<HTMLButtonElement>('[data-active-receiver-segment="SUB"]')!;
       const reasonId = sub.getAttribute('aria-describedby');
       expect(sub.disabled).toBe(true);
+      expect(sub.hasAttribute('tabindex')).toBe(false);
       expect(sub.title).toBe('SUB is unavailable');
       expect(t.querySelector(`#${reasonId}`)?.textContent).toBe('SUB is unavailable');
       sub.disabled = false;
