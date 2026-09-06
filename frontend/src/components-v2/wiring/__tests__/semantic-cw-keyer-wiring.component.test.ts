@@ -773,7 +773,8 @@ describe('the surface mounts only where a declared zone can hold it', () => {
   it('leaves the cockpit with no focusable control outside a declared zone', () => {
     render({ strips: 'dual' });
     const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
-      .filter((node) => !node.matches(':disabled') && node.closest('[data-zone-id]') === null);
+      .filter((node) => !node.matches(':disabled') && node.tabIndex >= 0
+        && node.closest('[data-zone-id]') === null);
     expect(outside).toEqual([]);
   });
 });

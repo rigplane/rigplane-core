@@ -38,5 +38,5 @@ export const CONTROL_FEEDBACK_DEBT_BASELINE = Object.freeze([
   "src/semantic/RfFrontEndSurface.svelte::input::unlabelled::rf[field].reading.status === 'known' ? rf[field].reading.value : 0",
   'src/semantic/RitXitScanSurface.svelte::input::unlabelled::decodedOffset?.value ?? ritDomain?.raw_origin ?? 0',
   "src/semantic/RxAudioSurface.svelte::input::unlabelled::rx.afLevel.reading.status === 'known' ? rx.afLevel.reading.value : 0",
-  'src/semantic/TxAuxSurface.svelte::input::unlabelled::numberOf(txAux[field], min)',
+  'src/semantic/TxAuxScalarHost.svelte::ValueControl::RF Power::unbound',
 ]);

@@ -3,9 +3,9 @@
 
   Presentation only. It renders the MOR-1244 `txAux` fact group — ATU, VOX
   (+gain/anti-VOX/delay), COMP (+level), MON (+level), RF power, mic gain,
-  drive gain — and emits control intents as callbacks. It owns only the
-  shared scalar primitive's presentation state and consults no controller
-  (v3 ADR invariant 11).
+  drive gain — and emits finite control intents as callbacks. Scalar state is
+  owned by `TxAuxScalarHost`; this remainder consults no controller (v3 ADR
+  invariant 11).
 
   SAFETY. Two rules govern this file and nothing may relax them:
 
