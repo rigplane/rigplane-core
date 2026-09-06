@@ -14,6 +14,7 @@ import {
   type CommandScalarFeedback,
   type ContinuousScalarBinding,
   type ContinuousScalarInput,
+  type ContinuousScalarRendererLease,
 } from '../../../../primitives/scalar/continuous-scalar.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
@@ -108,6 +109,30 @@ function commandBinding(
       preview: 'confirmed', debounceMs: 0, describeTarget: (value) => `${value} Hz`,
     }),
   );
+}
+
+function countViewReads(
+  binding: ContinuousScalarBinding,
+  onRead: () => void,
+): ContinuousScalarBinding {
+  const countedLease = (lease: ContinuousScalarRendererLease): ContinuousScalarRendererLease => ({
+    get view() { onRead(); return lease.view; },
+    beginPointer: () => lease.beginPointer(),
+    pointer: (token, candidate) => lease.pointer(token, candidate),
+    endPointer: (token) => lease.endPointer(token),
+    cancelPointer: (token) => lease.cancelPointer(token),
+    nativeInput: (candidate) => lease.nativeInput(candidate),
+    wheel: (event) => lease.wheel(event),
+    key: (event) => lease.key(event),
+    reset: () => lease.reset(),
+    dispose: () => lease.dispose(),
+  });
+  return {
+    get view() { onRead(); return binding.view; },
+    attachRenderer: () => countedLease(binding.attachRenderer()),
+    cancel: (reason) => binding.cancel(reason),
+    destroy: () => binding.destroy(),
+  };
 }
 
 function readingBinding(value: number, request: (value: number) => void): ContinuousScalarBinding {
@@ -214,7 +239,7 @@ describe('ValueControl controlled HBar rendering', () => {
       confirmed: 2100, target: null, requestedTarget: 2501, phase: 'failed', busy: false,
       outcome: { phase: 'failed', error: 'radio rejected' }, transitionId: 'width-failed',
     })]]);
-    const binding = createContinuousScalar(
+    const owner = createContinuousScalar(
       () => ({
         evidence: 'command-feedback' as const,
         command: 'set_filter_width',
@@ -225,6 +250,8 @@ describe('ValueControl controlled HBar rendering', () => {
       }),
       createHBarContinuousScalarPolicy({ preview: 'confirmed', debounceMs: 0 }),
     );
+    let viewReads = 0;
+    const binding = countViewReads(owner, () => { viewReads += 1; });
     const retained = $state({ text: null as string | null });
     let locale = 'en';
     const format = vi.fn(({ view }) =>
@@ -243,6 +270,7 @@ describe('ValueControl controlled HBar rendering', () => {
       issuedStatusPresentation,
     });
 
+    expect(viewReads).toBe(1);
     expect(format).toHaveBeenCalledOnce();
     expect(accept).toHaveBeenCalledExactlyOnceWith('en:2501/2100:radio rejected');
     expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
@@ -261,6 +289,7 @@ describe('ValueControl controlled HBar rendering', () => {
     }));
     flushSync();
 
+    expect(viewReads).toBe(2);
     expect(format).toHaveBeenCalledOnce();
     expect(target.querySelector('[data-control-feedback-status]')?.textContent)
       .toBe('en:2501/2100:radio rejected');

@@ -49,7 +49,7 @@
   } | null = null;
   const initialBinding = untrack(() => binding);
   let attachedBinding = initialBinding;
-  let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
+  let lease: ContinuousScalarRendererLease = initialBinding.attachRenderer();
 
   function releaseActivePointer(): void {
     if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
@@ -58,13 +58,6 @@
     activePointer = null;
   }
 
-  $effect(() => {
-    if (binding === attachedBinding) return;
-    releaseActivePointer();
-    lease.dispose();
-    attachedBinding = binding;
-    lease = binding.attachRenderer();
-  });
   onDestroy(() => {
     releaseActivePointer();
     lease.dispose();
@@ -80,22 +73,20 @@
     attachedProjectionContext = nextContext;
   });
 
-  // Reading a lease reconciles its owner. Keep that mutable reconciliation in
-  // an effect, then render the resulting snapshot as ordinary Svelte state.
-  let view = $state<ContinuousScalarView>(untrack(() => lease.view));
-  let skipViewAssignment = true;
-  $effect(() => {
-    const next = lease.view;
-    if (skipViewAssignment) {
-      skipViewAssignment = false;
-    } else {
-      view = next;
+  let view = $state<ContinuousScalarView | null>();
+  $effect.pre(() => {
+    if (binding !== attachedBinding) {
+      releaseActivePointer();
+      lease.dispose();
+      attachedBinding = binding;
+      lease = binding.attachRenderer();
     }
+    view = lease.view;
   });
-  let renderedValue = $derived(view.displayed);
+  let renderedValue = $derived(view?.displayed ?? null);
   let projectedPosition = $derived(renderedValue === null || valueProjection === undefined
     ? null : valueProjection.positionOf(renderedValue));
-  let fillPercent = $derived(!view.domainValid || renderedValue === null
+  let fillPercent = $derived(view == null || !view.domainValid || renderedValue === null
     ? 0
     : valueProjection === undefined
       ? getFillPercent(renderedValue, view.domain.min, view.domain.max)
@@ -107,10 +98,11 @@
   let displayValue = $derived(renderedValue === null
     ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
     : displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
-  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
+  let renderPresentation = $derived(view == null ? null : projectScalarRenderPresentation(view, legacy));
   $effect(() => {
     const snapshot = view;
-    if (issuedStatusPresentation === undefined || snapshot.evidence !== 'command-feedback') return;
+    if (issuedStatusPresentation === undefined || snapshot == null
+      || snapshot.evidence !== 'command-feedback') return;
     const announcement = snapshot.presentation.politeAnnouncement;
     if (announcement !== null) {
       const formatted = untrack(() => issuedStatusPresentation.format({ view: snapshot, announcement }));
@@ -120,10 +112,10 @@
     }
   });
   let statusText = $derived(issuedStatusPresentation === undefined
-    ? renderPresentation.status === null ? null
+    ? renderPresentation?.status === null || renderPresentation === null ? null
       : `${renderPresentation.status}${renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}`
     : issuedStatusPresentation.text);
-  let ariaValueNow = $derived(!view.domainValid || view.canonical === null
+  let ariaValueNow = $derived(view == null || !view.domainValid || view.canonical === null
     ? undefined
     : valueProjection === undefined
       ? view.canonical
@@ -151,7 +143,7 @@
   }
 
   function handlePointerDown(e: PointerEvent) {
-    if (!containerEl) return;
+    if (!containerEl || view == null) return;
     const token = lease.beginPointer();
     if (token === null) return;
 
@@ -172,7 +164,7 @@
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!activePointer || activePointer.id !== e.pointerId || !containerEl
+    if (!activePointer || activePointer.id !== e.pointerId || !containerEl || view == null
       || !pointerContextCurrent()) return;
 
     const rect = containerEl.getBoundingClientRect();
@@ -200,7 +192,7 @@
   }
 
   function handleWheel(e: WheelEvent) {
-    if (!view.editable) return;
+    if (view == null || !view.editable) return;
     e.preventDefault();
     lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
   }
@@ -214,6 +206,7 @@
   }
 </script>
 
+{#if view != null && renderPresentation !== null}
 <div
   class="vc-hbar"
   class:compact
@@ -294,6 +287,7 @@
     >{statusText}</span>
   {/if}
 </div>
+{/if}
 
 <style>
   .vc-hbar {
