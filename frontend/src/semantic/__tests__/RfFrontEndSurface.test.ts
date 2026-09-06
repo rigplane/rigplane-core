@@ -132,6 +132,17 @@ describe('carry-forward 1: a stale/unread reading renders unknown, never its las
     expect(onAttenuatorChange).not.toHaveBeenCalled();
     r.dispose();
   });
+
+  it('keeps every radio unchecked for unread choices while exposing unknown output', () => {
+    const r = render(
+      withRf({ preamp: unread<number>(DEGRADED), attenuator: unread<number>(DEGRADED) }),
+    );
+    for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    for (const value of [0, 6, 12, 18]) expect(r.el(`attenuator-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    expect(r.text('preamp-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('attenuator-value')).toBe(UNKNOWN_TEXT);
+    r.dispose();
+  });
 });
 
 /* ── (2)+(3) the PREAMP/DIGI-SEL mutex ──────────────────────────── */
@@ -222,6 +233,18 @@ describe('preamp and attenuator render as choice groups from the capability-deri
     r.el('preamp-2')!.click();
     flushSync();
     expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(2);
+    r.dispose();
+  });
+
+  it('does not select an offered radio for a known out-of-offered preamp value', () => {
+    const onPreampChange = vi.fn();
+    const r = render(withRf({ preamp: known(3) }), { onPreampChange });
+    for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.getAttribute('aria-checked')).toBe('false');
+    expect(r.text('preamp-value')).toBe('3');
+    r.el('preamp-1')!.click();
+    flushSync();
+    expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(1);
+    expect(r.el('preamp-1')!.getAttribute('aria-checked')).toBe('false');
     r.dispose();
   });
 

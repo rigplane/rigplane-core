@@ -36,7 +36,7 @@
 
   PENDING AFFORDANCE (MOR-1441 leg 2). `pendingNb`/`pendingNr` are plain,
   command-bus-blind display props, same "read at the wiring seam" precedent
-  as leg 1's `pendingFrequencyHz`. `toggle()` keeps computing the flipped
+  as leg 1's `pendingFrequencyHz`. The toggle bindings keep computing the flipped
   value from `dsp[field].reading.value` — the CONFIRMED reading — exclusively
   (see below); pending never becomes the arithmetic base, the same class of
   defect leg 1's `FrequencyDisplayInteractive` fix closed for the frequency
@@ -47,7 +47,6 @@
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
-  import { pressedOf } from './pressed-of';
 
   /** On/off controls, `[field, label]`. */
   export const DSP_TOGGLES = [['nrActive', 'NR'], ['nbActive', 'NB']] as const;
@@ -133,6 +132,10 @@
 <script lang="ts">
   import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
+  import {
+    bindChoiceInstrument,
+    bindToggleInstrument,
+  } from '../primitives/control-instruments/control-instrument-behavior';
 
   interface Props {
     view: RadioViewModel;
@@ -169,10 +172,27 @@
     nbLevelPercent ? (v: number) => rawToPercentDisplay(v, 0, nbLevelMax) : undefined,
   );
 
-  function toggle(field: DspToggleField): void {
-    const f = dsp?.[field];
-    if (f && usable(f) && f.reading.status === 'known') onToggle?.(field, !f.reading.value);
-  }
+  const toggleBehaviors = {
+    nrActive: bindToggleInstrument(() => ({
+      field: dsp?.nrActive,
+      invoke: (next) => onToggle?.('nrActive', next),
+    })),
+    nbActive: bindToggleInstrument(() => ({
+      field: dsp?.nbActive,
+      invoke: (next) => onToggle?.('nbActive', next),
+    })),
+  } satisfies Record<DspToggleField, ReturnType<typeof bindToggleInstrument>>;
+  const notchBehavior = bindChoiceInstrument(() => ({
+    field: dsp?.notchMode,
+    choices: NOTCH_MODES,
+    invoke: (mode) => onNotchModeChange?.(mode),
+  }));
+  const agcBehavior = bindChoiceInstrument<number>(() => ({
+    field: dsp?.agcMode,
+    choices: agcOptions.map((option) => option.value),
+    invoke: (mode) => onAgcModeChange?.(mode),
+  }));
+
   function level(field: DspLevelField, value: number): void {
     if (!dsp) return;
     if (field === 'nrLevel') {
@@ -184,12 +204,6 @@
     }
     if (usable(dsp[field])) onLevelChange?.(field, value);
   }
-  function notch(mode: (typeof NOTCH_MODES)[number]): void {
-    if (dsp && usable(dsp.notchMode)) onNotchModeChange?.(mode);
-  }
-  function agc(mode: number): void {
-    if (dsp && usable(dsp.agcMode)) onAgcModeChange?.(mode);
-  }
 </script>
 
 {#if dsp}
@@ -199,12 +213,13 @@
         {#if dsp[field].availability.structural}
           {@const pending = pendingOf(field)}
           {@const pendingId = `${pendingToggleIdBase}-${field}`}
+          {@const behavior = toggleBehaviors[field]}
           <button
             type="button" class="dsp-toggle" data-testid={`dsp-${field}`} data-field={field}
-            data-disabled-reason={reasonOf(dsp[field])} aria-pressed={pressedOf(dsp[field])}
+            data-disabled-reason={reasonOf(dsp[field])} aria-pressed={behavior.confirmed}
             data-pending-status={pending !== null ? 'pending' : 'confirmed'}
             aria-describedby={pending !== null ? pendingId : undefined}
-            disabled={!usable(dsp[field])} onclick={() => toggle(field)}
+            disabled={!behavior.available} onclick={() => behavior.invoke()}
           >{label}: {fmt(dsp[field])}</button>
           {#if pending !== null}
             <span id={pendingId} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>
@@ -249,8 +264,8 @@
         {#each NOTCH_MODES as mode (mode)}
           <button
             type="button" class="dsp-choice" data-testid={`dsp-notchMode-${mode}`}
-            aria-pressed={dsp.notchMode.reading.status === 'known' && dsp.notchMode.reading.value === mode}
-            disabled={!usable(dsp.notchMode)} onclick={() => notch(mode)}
+            aria-pressed={notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected(mode)}
+            disabled={!notchBehavior.available} onclick={() => notchBehavior.invoke(mode)}
           >{mode}</button>
         {/each}
       </div>
@@ -261,8 +276,8 @@
         {#each agcOptions as option (option.value)}
           <button
             type="button" class="dsp-choice" data-testid={`dsp-agcMode-${option.value}`}
-            aria-pressed={dsp.agcMode.reading.status === 'known' && dsp.agcMode.reading.value === option.value}
-            disabled={!usable(dsp.agcMode)} onclick={() => agc(option.value)}
+            aria-pressed={agcBehavior.selected === undefined ? undefined : agcBehavior.isSelected(option.value)}
+            disabled={!agcBehavior.available} onclick={() => agcBehavior.invoke(option.value)}
           >{option.label}</button>
         {/each}
       </div>
