@@ -18,6 +18,7 @@ const feedback = (
 ): Readonly<CommandScalarFeedback> => ({
   confirmed, target: null, requestedTarget: null, phase: 'idle', busy: false,
   availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+  providerGeneration: 3,
   sessionEpoch: 7, scope: { control, receiver: 0 }, repeatPolicy: 'latest-target-wins',
   ...over,
 });
@@ -268,6 +269,31 @@ describe('continuous pair delegates one scalar lifetime', () => {
     vi.advanceTimersByTime(50);
     expect(requestSql).not.toHaveBeenCalled();
     vi.useRealTimers();
+  });
+
+  it('invalidates pair draft, lease, and lane announcements on provider replacement without a null read', () => {
+    const { pair, read, update } = commandSetup();
+    update({ rf: { ...read().rf, feedback: feedback('rf-gain', 0.8, {
+      requestedTarget: 0.8, phase: 'failed', outcome: { phase: 'failed' },
+      lifecycleId: 'old-rf', transitionId: 'old-rf-failed',
+    }) } });
+    const stale = pair.attachRenderer();
+    expect(stale.view.lanes.rf.announcement).toBe('Failed: 0.8');
+    const staleToken = stale.beginPointer()!;
+    stale.pointer(staleToken, 0.5);
+    expect(pair.view.draft).not.toBeNull();
+
+    update({
+      rf: { ...read().rf, feedback: feedback('rf-gain', 0.8, { providerGeneration: 4 }) },
+      sql: { ...read().sql, feedback: feedback('squelch', 0.2, { providerGeneration: 4 }) },
+    });
+    expect(pair.view).toMatchObject({
+      draft: null, lanes: { rf: { announcement: null }, sql: { announcement: null } },
+    });
+    stale.pointer(staleToken, 0);
+    expect(pair.view.draft).toBeNull();
+    stale.nativeInput(0);
+    expect(pair.view.draft).not.toBeNull();
   });
 
   it('keeps lane announcement identity when appearance leases are replaced', () => {

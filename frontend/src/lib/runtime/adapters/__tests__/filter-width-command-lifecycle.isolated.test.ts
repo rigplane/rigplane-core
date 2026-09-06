@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 type FakeCommand = { id: string; name: string; params: Record<string, unknown>;
   originalEpoch: number; eventEpoch?: number; createdAt: number;
   status: 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'cancelled' | 'timed-out';
+  providerGeneration?: number | null;
   error?: string;
   ackObservationSeq?: number;
   ackFieldObservationTimes?: Record<string, number>;
@@ -73,10 +74,10 @@ function emitAcceptedState(value: FakeState | null): void {
 const command = (over: Partial<FakeCommand> = {}): FakeCommand => ({
   id: 'width-1', name: 'set_filter_width', params: { width: 3000 },
   originalEpoch: controlSession.epoch, eventEpoch: controlSession.epoch,
-  createdAt: 1, status: 'pending', ...over,
+  providerGeneration: 3, createdAt: 1, status: 'pending', ...over,
 });
 const state = (over: Partial<FakeState> = {}): FakeState => ({
-  active: 'MAIN', main: { filterWidth: 2400 }, sub: {}, observationSeq: 4,
+  active: 'MAIN', providerGeneration: 3, main: { filterWidth: 2400 }, sub: {}, observationSeq: 4,
   fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 4 } }, ...over,
 });
 describe('Filter Width command lifecycle projection (MOR-1664)', () => {
@@ -125,6 +126,25 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     lifecycle.commands = [command()];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: 2400, target: 3000, phase: 'pending', busy: true, outcome: null,
+    });
+  });
+  it('excludes unresolved, invalid, and prior-provider records including terminals', () => {
+    runtimeState.state = state({ providerGeneration: 4 });
+    for (const providerGeneration of [undefined, null, -1, 3]) {
+      lifecycle.commands = [command({ providerGeneration })];
+      expect(getFilterWidthCommandLifecycle()).toMatchObject({
+        confirmed: 2400, target: null, phase: 'idle', presentation: null,
+      });
+    }
+    lifecycle.commands = [command({
+      providerGeneration: 3, status: 'failed', error: 'old provider rejected',
+    })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
+      confirmed: 2400, target: null, phase: 'idle', outcome: null, presentation: null,
+    });
+    lifecycle.commands = [command({ providerGeneration: 4 })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
+      confirmed: 2400, target: 3000, phase: 'pending',
     });
   });
   it('keeps a fresh matching observation acknowledged when a caller only reads the pure accessor', () => {
@@ -238,7 +258,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       index === 142 ? 'sub.filterWidth' : `other.${index}`,
       { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: index === 142 ? 73 : Number.NaN },
     ]));
-    commandRadio.current = { observationSeq: 41, fieldStatus: fields };
+    commandRadio.current = { providerGeneration: 3, observationSeq: 41, fieldStatus: fields };
     const store = await import('$lib/stores/commands.svelte');
     store.beginCommand({ id: 'real-ack', name: 'set_filter_width', params: { width: 3000, receiver: 1 }, originalEpoch: 9 });
     store.acknowledgeCommand('real-ack', 9, 10);
@@ -258,7 +278,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     runtimeState.state = state({ active: 'SUB', sub: { filterWidth: 3000 }, fieldStatus: { 'sub.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 74 } } });
     emitAcceptedState(runtimeState.state);
     expect(store.getCommandLifecycle('real-ack', 9)?.status).toBe('confirmed');
-    const retained = getLiveView().presentation;
     expect(getLiveView()).toMatchObject({ confirmed: 3000, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' }, presentation: {
       receiver: 1, sessionEpoch: 9, target: 3000, status: 'confirmed',
     } });
@@ -269,17 +288,17 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     store.beginCommand({ id: 'cold-ack', name: 'set_filter_width', params: { width: 2800, receiver: 0 }, originalEpoch: 9 });
     store.acknowledgeCommand('cold-ack', 9, 10);
     expect(store.getCommandLifecycle('cold-ack', 9)).toMatchObject({
-      status: 'acknowledged', ackObservationSeq: undefined, ackFieldObservationTimes: {},
+      status: 'acknowledged', providerGeneration: null, ackObservationSeq: undefined, ackFieldObservationTimes: {},
     });
     runtimeState.state = state({ main: { filterWidth: 2400 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 } } });
     emitAcceptedState(runtimeState.state);
-    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: 2800, phase: 'acknowledged', busy: true });
-    expect(store.getCommandLifecycle('cold-ack', 9)?.ackFieldObservationTimes).toEqual({ 'main.filterWidth': 5 });
+    expect(getLiveView()).toMatchObject({ confirmed: 2400, target: null, phase: 'idle', busy: false });
+    expect(store.getCommandLifecycle('cold-ack', 9)?.ackFieldObservationTimes).toEqual({});
     runtimeState.state = state({ main: { filterWidth: 2800 }, fieldStatus: { 'main.filterWidth': { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 6 } } });
     emitAcceptedState(runtimeState.state);
-    expect(getLiveView()).toMatchObject({ confirmed: 2800, target: null, phase: 'confirmed', busy: false, outcome: { phase: 'confirmed' } });
-    expect(store.getCommandLifecycle('cold-ack', 9)?.status).toBe('confirmed');
-    expect(getLiveView().presentation?.lifecycleId).not.toBe(retained?.lifecycleId);
+    expect(getLiveView()).toMatchObject({ confirmed: 2800, target: null, phase: 'idle', busy: false, outcome: null });
+    expect(store.getCommandLifecycle('cold-ack', 9)?.status).toBe('acknowledged');
+    expect(getLiveView().presentation).toBeNull();
     store.resetCommandLifecycle();
     expect(getLiveView().presentation).toBeNull();
   });
@@ -288,6 +307,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     vi.doUnmock('$lib/stores/commands.svelte');
     vi.resetModules();
     runtimeState.state = state({ main: { filterWidth: 2400 }, sub: { filterWidth: 1800 } });
+    commandRadio.current = runtimeState.state as unknown as Record<string, unknown>;
     const store = await import('$lib/stores/commands.svelte');
     const { getFilterWidthCommandLifecycle: getLiveView } = await import('../panel-adapters');
 
@@ -449,7 +469,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
 const delayCommand = (over: Partial<FakeCommand> = {}): FakeCommand => ({
   id: 'delay-1', name: 'set_break_in_delay', params: Object.freeze({ level: 64 }),
   originalEpoch: controlSession.epoch, eventEpoch: controlSession.epoch,
-  createdAt: 1, status: 'pending', ...over,
+  providerGeneration: 3, createdAt: 1, status: 'pending', ...over,
 });
 const delayState = (over: Partial<FakeState> = {}): FakeState => ({
   active: 'MAIN', providerGeneration: 3, breakInDelay: 32, main: {}, sub: {},
@@ -512,6 +532,24 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     });
     expect(JSON.stringify([pending])).toBe(before);
     expect(dispatch).not.toHaveBeenCalled();
+  });
+  it('publishes current provider identity and rejects old-provider Break-in Delay outcomes', () => {
+    runtimeState.state = delayState({ providerGeneration: 4 });
+    lifecycle.commands = [delayCommand({
+      providerGeneration: 3, status: 'failed', error: 'old provider rejected',
+    })];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      providerGeneration: 4, confirmed: 32, target: null,
+      phase: 'idle', outcome: null, lifecycleId: null,
+    });
+    lifecycle.commands = [delayCommand({ providerGeneration: 4 })];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      providerGeneration: 4, phase: 'submitted', target: 64,
+    });
+    runtimeState.state = null;
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      providerGeneration: null, phase: 'unavailable',
+    });
   });
 
   it.each([

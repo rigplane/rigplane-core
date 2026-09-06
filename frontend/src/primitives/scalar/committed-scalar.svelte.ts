@@ -5,7 +5,9 @@ import {
   type ControlFeedbackPresentationState,
   type PresentationOutcome,
 } from '../control-feedback/control-feedback-presentation';
-export type ScalarFeedback = Readonly<ControlFeedbackPresentationInput<number>>;
+export type ScalarFeedback = Readonly<ControlFeedbackPresentationInput<number> & {
+  readonly providerGeneration?: number | null;
+}>;
 export interface CommittedScalarInput {
   readonly feedback: ScalarFeedback;
   readonly editable: boolean;
@@ -44,7 +46,13 @@ type DraftIdentity = {
   transitionId: string | null;
   outcomePhase: PresentationOutcome | null;
   outcomeError: string | undefined;
+  providerGeneration: number | null;
 };
+function providerGenerationOf(feedback: ScalarFeedback): number | null {
+  const providerGeneration = feedback.providerGeneration;
+  return typeof providerGeneration === 'number' && Number.isSafeInteger(providerGeneration)
+    && providerGeneration >= 0 ? providerGeneration : null;
+}
 function identityOf(input: Readonly<CommittedScalarInput>): DraftIdentity {
   return Object.freeze({
     contextKey: input.contextKey,
@@ -56,6 +64,7 @@ function identityOf(input: Readonly<CommittedScalarInput>): DraftIdentity {
     transitionId: input.feedback.transitionId,
     outcomePhase: input.feedback.outcome?.phase ?? null,
     outcomeError: input.feedback.outcome?.error,
+    providerGeneration: providerGenerationOf(input.feedback),
   });
 }
 
@@ -68,7 +77,8 @@ function sameIdentity(left: DraftIdentity, right: DraftIdentity): boolean {
     && left.phase === right.phase
     && left.transitionId === right.transitionId
     && left.outcomePhase === right.outcomePhase
-    && left.outcomeError === right.outcomeError;
+    && left.outcomeError === right.outcomeError
+    && left.providerGeneration === right.providerGeneration;
 }
 
 export function createCommittedScalar(
@@ -81,6 +91,8 @@ export function createCommittedScalar(
   let suppressCommit = false;
   let presentationState: Readonly<ControlFeedbackPresentationState> = { announcedTransitionIds: [] };
   let announcement: string | null = null;
+  let providerAuthorityInitialized = false;
+  let lastProviderGeneration: number | null = null;
 
   function isEditable(input: Readonly<CommittedScalarInput>): boolean {
     return input.editable && input.feedback.phase !== 'unavailable';
@@ -98,6 +110,16 @@ export function createCommittedScalar(
   }
 
   function reconcile(input: Readonly<CommittedScalarInput>): void {
+    const providerGeneration = providerGenerationOf(input.feedback);
+    if (providerAuthorityInitialized && providerGeneration !== lastProviderGeneration) {
+      draft = null;
+      draftIdentity = null;
+      suppressCommit = true;
+      presentationState = { announcedTransitionIds: [] };
+      announcement = null;
+    }
+    providerAuthorityInitialized = true;
+    lastProviderGeneration = providerGeneration;
     if (draft === null || draftIdentity === null) return;
     if (sameIdentity(draftIdentity, identityOf(input))) return;
     draftIdentity = null;

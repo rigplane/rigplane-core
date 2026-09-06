@@ -13,6 +13,7 @@ type ServerStateWithObservation = ServerState & {
 // ─── Mock store before importing ws-client ──────────────────────────────────
 const radioStoreMock = vi.hoisted(() => ({
   current: null as ServerStateWithObservation | null,
+  listeners: new Set<(state: ServerStateWithObservation | null) => void>(),
 }));
 
 vi.mock('../../stores/connection.svelte', () => ({
@@ -32,7 +33,13 @@ vi.mock('../../stores/radio.svelte', () => ({
   getRadioState: vi.fn(() => radioStoreMock.current),
   resetRadioState: vi.fn(() => {
     radioStoreMock.current = null;
+    for (const handler of radioStoreMock.listeners) handler(null);
   }),
+  subscribeRadioState: (handler: (state: ServerStateWithObservation | null) => void) => {
+    radioStoreMock.listeners.add(handler);
+    handler(radioStoreMock.current);
+    return () => radioStoreMock.listeners.delete(handler);
+  },
   isValidServerState: vi.fn(() => true),
   matchesCurrentCapabilityTopology: vi.fn(() => true),
   setRadioState: vi.fn((state: ServerStateWithObservation) => {
@@ -57,6 +64,7 @@ vi.mock('../../stores/radio.svelte', () => ({
     );
     if (current === null || semanticAdvanced || metadataAdvanced) {
       radioStoreMock.current = state;
+      for (const handler of radioStoreMock.listeners) handler(state);
     }
   }),
 }));
@@ -81,6 +89,7 @@ import { resetRadioState, setRadioState } from '../../stores/radio.svelte';
 
 beforeEach(() => {
   radioStoreMock.current = null;
+  radioStoreMock.listeners.clear();
   vi.mocked(isLiveRadioAvailable).mockReturnValue(true);
   vi.mocked(resetRadioState).mockClear();
   vi.mocked(setRadioState).mockClear();
@@ -1271,6 +1280,56 @@ describe('control channel singleton', () => {
       { commandId: 'provider-pending', kind: 'transport-sent', originalEpoch: 1, eventEpoch: 1 },
       { commandId: 'provider-pending', kind: 'error', cancelled: true, error: 'provider session replaced' },
     ]);
+  });
+
+  it('fences an acknowledged successful command from matching replacement-provider evidence on the same socket', async () => {
+    const { connect, disconnect, getControlSession, onCommandDelivery } = await import('../ws-client');
+    const { dispatchRadioIntent } = await import('../../runtime/commands/radio-intents');
+    const lifecycle = await import('../../stores/commands.svelte');
+    const deliveries: CommandDeliveryEvent[] = [];
+    onCommandDelivery((event) => deliveries.push(event));
+    connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], fullEnvelope(makeState({
+      providerGeneration: 0, revision: 4, observationSeq: 4,
+      main: makeReceiver({ filterWidth: 3000 }),
+      fieldStatus: { 'main.filterWidth': {
+        storePath: 'main.filterWidth', observed: true, freshness: 'fresh', availability: 'available',
+        lastObservedMonotonic: 4,
+      } },
+    })));
+
+    dispatchRadioIntent({
+      id: 'provider-acknowledged', name: 'set_filter_width',
+      params: { width: 3000, receiver: 0 },
+    });
+    instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: 'provider-acknowledged' }));
+    instances[0].simulateMessage(JSON.stringify({
+      type: 'response', id: 'provider-acknowledged', ok: true,
+    }));
+    expect(lifecycle.getCommandLifecycle('provider-acknowledged', 1)).toMatchObject({
+      status: 'acknowledged', providerGeneration: 0,
+      ackFieldObservationTimes: { 'main.filterWidth': 4 },
+    });
+
+    sendStateUpdate(instances[0], fullEnvelope(makeState({
+      providerGeneration: 1, revision: 5, observationSeq: 5,
+      main: makeReceiver({ filterWidth: 3000 }),
+      fieldStatus: { 'main.filterWidth': {
+        storePath: 'main.filterWidth', observed: true, freshness: 'fresh', availability: 'available',
+        lastObservedMonotonic: 5,
+      } },
+    })));
+
+    expect(getControlSession().epoch).toBe(1);
+    expect(deliveries).not.toContainEqual(expect.objectContaining({
+      commandId: 'provider-acknowledged', cancelled: true,
+    }));
+    expect(lifecycle.getCommandLifecycle('provider-acknowledged', 1)).toMatchObject({
+      status: 'acknowledged', providerGeneration: 0,
+    });
+    lifecycle.resetCommandLifecycle();
+    disconnect();
   });
 
   it('keeps all 100 live correlations and rejects the 101st facade send', async () => {

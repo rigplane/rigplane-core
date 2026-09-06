@@ -22,6 +22,7 @@ export interface CommandScalarFeedback extends ControlFeedbackPresentationInput<
   readonly busy: boolean;
   readonly availability: 'available' | 'unavailable';
   readonly lifecycleId: string | null;
+  readonly providerGeneration?: number | null;
   readonly sessionEpoch: number;
   readonly scope: Readonly<{ control: string; receiver: 0 | 1; slot?: string }>;
   readonly repeatPolicy: 'latest-target-wins';
@@ -374,8 +375,12 @@ function authorityOf(input: Readonly<ContinuousScalarInput>): AuthorityIdentity 
     domain.defaultValue, domain.fineStepDivisor, domain.keyboardStep,
   ] as const;
   if (input.evidence === 'command-feedback') {
+    const providerGeneration = input.feedback.providerGeneration;
     return Object.freeze([
-      ...shared, input.command, input.feedback.sessionEpoch, input.feedback.availability,
+      ...shared, input.command,
+      typeof providerGeneration === 'number' && Number.isSafeInteger(providerGeneration)
+        && providerGeneration >= 0 ? providerGeneration : null,
+      input.feedback.sessionEpoch, input.feedback.availability,
       input.feedback.scope.control, input.feedback.scope.receiver, input.feedback.scope.slot,
     ]);
   }

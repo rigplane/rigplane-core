@@ -36,6 +36,7 @@ const feedback = (
   outcome: null,
   lifecycleId: null,
   transitionId: null,
+  providerGeneration: 3,
   sessionEpoch: 7,
   scope: { control: 'filter-width', receiver: 0, slot: 'main' },
   repeatPolicy: 'latest-target-wins',
@@ -666,6 +667,7 @@ describe('continuous scalar deferred work', () => {
   });
 
   it.each([
+    ['provider', { feedback: feedback('idle', { providerGeneration: 4 }) }],
     ['epoch', { feedback: feedback('idle', { sessionEpoch: 8 }) }],
     ['receiver', { feedback: feedback('idle', { scope: { control: 'filter-width', receiver: 1, slot: 'main' } }) }],
     ['control', { feedback: feedback('idle', { scope: { control: 'other', receiver: 0, slot: 'main' } }) }],
@@ -683,6 +685,28 @@ describe('continuous scalar deferred work', () => {
     expect(request).not.toHaveBeenCalled();
     expect(scalar.view.draft).toBeNull();
     vi.useRealTimers();
+  });
+
+  it('invalidates draft, lease, and announcement memory on provider replacement without a null read', () => {
+    const terminal = feedback('failed', {
+      requestedTarget: 2_500, lifecycleId: 'old-provider',
+      transitionId: 'old-provider-failed', outcome: { phase: 'failed' },
+    });
+    const { scalar, update } = commandSetup(nativeRangeContinuousScalarPolicy, {
+      feedback: terminal,
+    });
+    const stale = scalar.attachRenderer();
+    expect(stale.view.announcement).toBe('Failed: 2500');
+    const staleToken = stale.beginPointer()!;
+    stale.pointer(staleToken, 2_700);
+    expect(scalar.view.draft).toBe(2_700);
+
+    update({ feedback: feedback('idle', { providerGeneration: 4 }) });
+    expect(scalar.view).toMatchObject({ draft: null, announcement: null });
+    stale.pointer(staleToken, 2_800);
+    expect(scalar.view.draft).toBeNull();
+    stale.nativeInput(2_900);
+    expect(scalar.view.draft).toBe(2_900);
   });
 
   it.each([
