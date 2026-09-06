@@ -94,12 +94,7 @@
   }
 </script>
 
-<div
-  class="vfo-operation-group"
-  data-vfo-operation-appearance={appearance}
-  data-disabled-reason={groupReason ? 'vfo-identity-unknown' : undefined}
->
-  <div class="fact-toggles">
+  <div class="fact-toggles" data-vfo-operation-appearance={appearance}>
     {#if splitAvailability.structural}
       {@const splitReasonId = reasonId('split', splitAvailability.reason)}
       <button
@@ -147,24 +142,24 @@
     <div
       class="vfo-ops"
       class:dual={hasReceiverSelector}
+      data-vfo-operation-appearance={appearance}
       data-testid="vfo-ops"
       data-dual-action-block
       data-disabled-reason={groupReason ? 'vfo-identity-unknown' : undefined}
       title={groupReason}
     >
       {#if hasReceiverSelector}
-        <div class="active-receiver-slot">
-          <ActiveReceiverToggle
-            {active}
-            availability={receiverAvailability}
-            segmentLabels={{ MAIN: 'MAIN', SUB: 'SUB' }}
-            allowReselect
-            onChange={(receiver) => emit(
-              { kind: 'select-receiver', receiver },
-              receiver === 'MAIN' ? actions.main : actions.sub,
-            )}
-          />
-        </div>
+        <ActiveReceiverToggle
+          {active}
+          availability={receiverAvailability}
+          segmentLabels={{ MAIN: 'MAIN', SUB: 'SUB' }}
+          allowReselect
+          embedded
+          onChange={(receiver) => emit(
+            { kind: 'select-receiver', receiver },
+            receiver === 'MAIN' ? actions.main : actions.sub,
+          )}
+        />
       {/if}
 
       {#if actions.equalize.structural}
@@ -216,15 +211,18 @@
   {/if}
 
   {#if digest}
-    <p class="split-digest" data-testid="vfo-split-digest" data-split-active={digest.splitState}>
+    <p
+      class="split-digest"
+      data-vfo-operation-appearance={appearance}
+      data-testid="vfo-split-digest"
+      data-split-active={digest.splitState}
+    >
       <span data-split-rx>{t('core.vfo.splitDigest.rx', { frequency: digest.rx })}</span>
       <span data-split-tx>{t('core.vfo.splitDigest.tx', { frequency: digest.tx })}</span>
     </p>
   {/if}
-</div>
 
 <style>
-  .vfo-operation-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .fact-toggles, .vfo-ops { display: flex; gap: 6px; flex-wrap: wrap; }
   .fact-toggle, .vfo-op {
     border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
@@ -242,24 +240,23 @@
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
-  [data-vfo-operation-appearance='sdr'] .fact-toggles,
-  [data-vfo-operation-appearance='sdr'] .vfo-ops,
-  [data-vfo-operation-appearance='standard'] .fact-toggles,
-  [data-vfo-operation-appearance='standard'] .vfo-ops {
+  .fact-toggles[data-vfo-operation-appearance='sdr'],
+  .vfo-ops[data-vfo-operation-appearance='sdr'],
+  .fact-toggles[data-vfo-operation-appearance='standard'],
+  .vfo-ops[data-vfo-operation-appearance='standard'] {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--vfo-ops-gap, 4px);
   }
-  [data-vfo-operation-appearance='sdr'] .fact-toggle,
-  [data-vfo-operation-appearance='sdr'] .vfo-op,
-  [data-vfo-operation-appearance='standard'] .fact-toggle,
-  [data-vfo-operation-appearance='standard'] .vfo-op {
+  .fact-toggles[data-vfo-operation-appearance='sdr'] .fact-toggle,
+  .vfo-ops[data-vfo-operation-appearance='sdr'] .vfo-op,
+  .fact-toggles[data-vfo-operation-appearance='standard'] .fact-toggle,
+  .vfo-ops[data-vfo-operation-appearance='standard'] .vfo-op {
     width: 100%; min-width: 0; min-height: var(--vfo-ops-badge-height, 18px);
     padding: 4px var(--vfo-ops-badge-padding-x, 6px);
     border-radius: var(--vfo-ops-badge-radius, 4px);
     font-size: var(--vfo-ops-badge-font-size, 10px); box-sizing: border-box;
   }
-  .active-receiver-slot { grid-column: 1 / -1; }
-  [data-vfo-operation-appearance='sdr'] .split-digest,
-  [data-vfo-operation-appearance='standard'] .split-digest {
+  .split-digest[data-vfo-operation-appearance='sdr'],
+  .split-digest[data-vfo-operation-appearance='standard'] {
     flex-wrap: wrap; justify-content: center; font-size: 9px;
   }
 </style>

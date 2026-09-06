@@ -35,6 +35,8 @@
     segmentLabels?: Partial<Record<Receiver, string>>;
     /** Emit an explicit selection intent even when the segment is already active. */
     allowReselect?: boolean;
+    /** Render only the segments when the caller already owns the operation group. */
+    embedded?: boolean;
     /** Optional label for screen readers. */
     label?: string;
   }
@@ -45,12 +47,22 @@
     availability,
     segmentLabels,
     allowReselect = false,
+    embedded = false,
     label = 'Active receiver',
   }: Props = $props();
 
   const RECEIVERS: readonly Receiver[] = ['MAIN', 'SUB'];
   const reasonIdPrefix = `active-receiver-reason-${++sequence}`;
-  let root: HTMLDivElement;
+  const segmentElements: Partial<Record<Receiver, HTMLButtonElement>> = {};
+
+  function registerSegment(node: HTMLButtonElement, receiver: Receiver) {
+    segmentElements[receiver] = node;
+    return {
+      destroy: () => {
+        if (segmentElements[receiver] === node) delete segmentElements[receiver];
+      },
+    };
+  }
 
   function state(receiver: Receiver): ReceiverSegmentAvailability {
     return availability?.[receiver] ?? { structural: true, operational: true };
@@ -107,10 +119,7 @@
   function focusSegment(target: Receiver): void {
     // Defer to next tick so Svelte can update tabindex attrs first.
     queueMicrotask(() => {
-      const el = root.querySelector<HTMLButtonElement>(
-        `[data-active-receiver-segment="${target}"]`,
-      );
-      el?.focus();
+      segmentElements[target]?.focus();
     });
   }
 
@@ -123,13 +132,7 @@
   }
 </script>
 
-<div
-  bind:this={root}
-  class="active-receiver-toggle"
-  role="radiogroup"
-  aria-label={label}
-  data-testid="active-receiver-toggle"
->
+{#snippet segments()}
   {#each RECEIVERS as receiver (receiver)}
     {@const availability = state(receiver)}
     {@const isActive = receiver === active}
@@ -139,6 +142,7 @@
         type="button"
         role="radio"
         class="segment"
+        class:embedded
         class:is-active={isActive}
         data-active-receiver-segment={receiver}
         data-dual-action={receiver.toLowerCase()}
@@ -148,6 +152,7 @@
         title={availability.reason}
         disabled={!availability.operational}
         tabindex={receiver === focusableReceiver ? 0 : -1}
+        use:registerSegment={receiver}
         onclick={() => select(receiver)}
         onkeydown={(e) => handleKeydown(e, receiver)}
       >
@@ -158,7 +163,15 @@
       {/if}
     {/if}
   {/each}
+{/snippet}
+
+{#if embedded}
+  {@render segments()}
+{:else}
+<div class="active-receiver-toggle" role="radiogroup" aria-label={label}>
+  {@render segments()}
 </div>
+{/if}
 
 <style>
   .active-receiver-toggle {
@@ -212,6 +225,12 @@
   .segment:disabled {
     color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3));
     cursor: not-allowed;
+  }
+
+  .segment.embedded {
+    min-height: var(--vfo-ops-badge-height, 18px);
+    border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
+    border-radius: var(--vfo-ops-badge-radius, 4px);
   }
 
   .sr-only {
