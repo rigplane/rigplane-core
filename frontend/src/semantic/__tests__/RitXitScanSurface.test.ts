@@ -15,6 +15,7 @@
  *   `scan` per-field partial-reporter gate — a radio that has only ever
  *        reported `scanning` surfaces exactly that field, no more.
  */
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import RitXitScanSurface, { OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, UNKNOWN_TEXT } from '../RitXitScanSurface.svelte';
@@ -24,6 +25,7 @@ import type {
 } from '../radio-view-model';
 
 const ON: Availability = { structural: true, operational: true };
+const SOURCE = readFileSync('src/semantic/RitXitScanSurface.svelte', 'utf8');
 
 const base = (): RadioViewModel => withScan(withRitXit(topologyFixtures['1/single']));
 const withRx = (over: Partial<RitXitViewModel>): RadioViewModel => {
@@ -70,6 +72,21 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
 }
 /** MOR-1304 F3 recipe: bypasses jsdom's disabled-button `.click()` no-op. */
 const bypassClick = (el: HTMLElement) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+describe('current-input action bindings', () => {
+  it('uses toggles for RIT, XIT and scan, plus an action for the resume cycle', () => {
+    expect(SOURCE).toContain('bindToggleInstrument');
+    expect(SOURCE).toContain('const ritToggle = bindToggleInstrument');
+    expect(SOURCE).toContain('const xitToggle = bindToggleInstrument');
+    expect(SOURCE).toContain('const scanToggle = bindToggleInstrument');
+    expect(SOURCE).toContain('const resumeCycle = bindActionInstrument');
+  });
+
+  it('keeps RIT and XIT callbacks as zero-argument intents', () => {
+    expect(SOURCE).toContain('invoke: () => onRitToggle?.()');
+    expect(SOURCE).toContain('invoke: () => onXitToggle?.()');
+  });
+});
 
 describe('structural presence: absent groups render nothing extra', () => {
   it('renders nothing when neither ritXit nor scan is present', () => {
