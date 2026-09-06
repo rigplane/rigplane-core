@@ -27,6 +27,7 @@
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getFilterWidthControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
+    getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
     getSystemHandlers, getDataModeArmed,
@@ -54,6 +55,7 @@
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import ScopeDisplaySurface from '../../semantic/ScopeDisplaySurface.svelte';
   import TxAuxSurface, {
+    TX_AUX_FEEDBACK_LEVELS, type TxAuxFeedbackLevelField, type TxAuxLevelFeedback,
     type TxAuxLevelField, type TxAuxToggleField,
   } from '../../semantic/TxAuxSurface.svelte';
   import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
@@ -216,6 +218,13 @@
     driveGain: txAuxIntents.onDriveGainChange, voxGain: txAuxIntents.onVoxGainChange,
     antiVoxGain: txAuxIntents.onAntiVoxGainChange, voxDelay: txAuxIntents.onVoxDelayChange,
     compressorLevel: txAuxIntents.onCompLevelChange, monitorLevel: txAuxIntents.onMonLevelChange,
+  };
+  const TX_AUX_FEEDBACK_FIELD: Readonly<Record<
+    TxAuxFeedbackLevelField, TxAuxControlFeedbackField
+  >> = {
+    micGain: 'micGain', driveGain: 'driveGain', voxGain: 'voxGain',
+    antiVoxGain: 'antiVoxGain', voxDelay: 'voxDelay',
+    compressorLevel: 'compressorLevel', monitorLevel: 'monitorGain',
   };
   /**
    * MOR-1279. The RX-audio intent vocabulary, composed from the SHIPPED
@@ -726,6 +735,11 @@
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
+  let txAuxLevelFeedback = $derived.by<TxAuxLevelFeedback>(() => Object.fromEntries(
+    TX_AUX_FEEDBACK_LEVELS.map(field => [
+      field, getTxAuxControlFeedback(TX_AUX_FEEDBACK_FIELD[field], controlSession),
+    ]),
+  ) as unknown as TxAuxLevelFeedback);
   let dataModeArmed = $derived(getDataModeArmed());
   let pendingDataMode = $derived(dataModeArmed.armed ? dataModeArmed.value : null);
   let pendingPreamp = $derived(
@@ -1080,7 +1094,7 @@
   {#snippet txAuxSurface()}
     {#if view?.txAux}
       <TxAuxSurface
-        {view} tx={txState}
+        {view} tx={txState} levelFeedback={txAuxLevelFeedback}
         onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()}
         onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
         onAtuTune={requestAtuTune}

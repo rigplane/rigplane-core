@@ -16,6 +16,7 @@ export interface ScalarRenderPresentation {
     'aria-busy': 'true' | 'false' | boolean | undefined;
   }>;
   readonly description: string | null;
+  readonly currentStatus: string | null;
   readonly status: string | null;
   readonly error: string | null;
 }
@@ -27,6 +28,7 @@ const NONE: Readonly<ScalarRenderPresentation> = Object.freeze({
     'aria-busy': undefined,
   }),
   description: null,
+  currentStatus: null,
   status: null,
   error: null,
 });
@@ -40,6 +42,7 @@ export function projectScalarRenderPresentation(
       source: 'command-owner',
       attributes: view.presentation.attributes,
       description: view.presentation.targetDescription,
+      currentStatus: view.presentation.currentStatus,
       status: view.announcement,
       error: view.error,
     });
@@ -57,6 +60,7 @@ export function projectScalarRenderPresentation(
       'aria-busy': legacy.busy,
     }),
     description: legacy.description,
+    currentStatus: null,
     status: legacy.status,
     error: null,
   });

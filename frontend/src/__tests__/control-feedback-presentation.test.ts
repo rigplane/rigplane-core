@@ -18,6 +18,12 @@ const PHASES: readonly PresentationPhase[] = [
 const BUSY = new Set<PresentationPhase>([
   'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
 ]);
+const PHASE_TEXT: Readonly<Record<PresentationPhase, string>> = {
+  unavailable: 'Control unavailable', idle: 'Control idle', submitted: 'Submitting',
+  queued: 'Queued', dispatched: 'Dispatched',
+  'awaiting-confirmation': 'Awaiting confirmation', confirmed: 'Confirmed',
+  failed: 'Failed', 'timed-out': 'Timed out', cancelled: 'Cancelled', superseded: 'Superseded',
+};
 const EMPTY: ControlFeedbackPresentationState = { announcedTransitionIds: [] };
 const feedback = <T>(phase: PresentationPhase, overrides: Partial<ControlFeedbackPresentationInput<T>> = {}) => ({
   confirmed: null, target: null, requestedTarget: null, phase,
@@ -41,6 +47,9 @@ describe('pure ControlFeedback presentation contract (MOR-1711)', () => {
       'data-command-phase': phase, 'aria-busy': BUSY.has(phase) ? 'true' : 'false',
     });
     expect(result.targetDescription).toBe('2400');
+    expect(result.currentStatus).toBe(
+      phase === 'idle' ? null : `${PHASE_TEXT[phase]}: 2400`,
+    );
     expect(result.politeAnnouncement === null).toBe(phase === 'idle' || phase === 'unavailable');
   });
 
@@ -67,6 +76,7 @@ describe('pure ControlFeedback presentation contract (MOR-1711)', () => {
       feedback<number>('submitted', { target: 3000, requestedTarget: 3000 }), first.state, String,
     );
     expect(repeated.politeAnnouncement).toBeNull();
+    expect(repeated.currentStatus).toBe('Submitting: 3000');
     const next = projectControlFeedbackPresentation(
       feedback<number>('awaiting-confirmation', {
         target: 3000, requestedTarget: 3000, transitionId: 'transition-new',
@@ -77,6 +87,28 @@ describe('pure ControlFeedback presentation contract (MOR-1711)', () => {
       feedback<number>('submitted', { transitionId: 'transition-submitted' }), next.state, String,
     );
     expect(delayedOld.politeAnnouncement).toBeNull();
+  });
+
+  it('replaces current status from current facts without retaining old terminal text', () => {
+    const failed = projectControlFeedbackPresentation(
+      feedback<number>('failed', {
+        requestedTarget: 1800,
+        outcome: { phase: 'failed', error: 'radio rejected' },
+      }), EMPTY, (value) => `${value} Hz`,
+    );
+    expect(failed.currentStatus).toBe('Failed: 1800 Hz');
+
+    const unavailable = projectControlFeedbackPresentation(
+      feedback<number>('unavailable'), failed.state, (value) => `${value} Hz`,
+    );
+    expect(unavailable.currentStatus).toBe('Control unavailable');
+    expect(unavailable.politeAnnouncement).toBeNull();
+
+    const idle = projectControlFeedbackPresentation(
+      feedback<number>('idle'), unavailable.state, (value) => `${value} Hz`,
+    );
+    expect(idle.currentStatus).toBeNull();
+    expect(idle.politeAnnouncement).toBeNull();
   });
 
   it('derives toggle and choice ARIA only from confirmed truth', () => {

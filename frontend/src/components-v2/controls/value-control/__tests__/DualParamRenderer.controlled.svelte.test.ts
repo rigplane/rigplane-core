@@ -189,6 +189,7 @@ describe('binding-only DualParamRenderer', () => {
           'aria-busy': supplied.busy ? 'true' : 'false',
         },
         targetDescription: null,
+        currentStatus: supplied.phase === 'idle' ? null : announcement,
         politeAnnouncement: supplied.transitionId === null ? null : {
           politeness: 'polite', transitionId: supplied.transitionId,
           phase: supplied.phase, targetDescription: null, message: announcement,
