@@ -1,11 +1,6 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
-  import { getSelectedFrequencyReadout } from '../../component-kits/activation';
-  import StandardFrequencyReadout from './StandardFrequencyReadout.svelte';
-  import {
-    createFrequencyInteraction, createFrequencyInteractionLease,
-  } from './frequency-interaction.svelte';
-  import { projectFrequencyReadout } from './frequency-readout';
+  import FrequencyRendererSeat from './FrequencyRendererSeat.svelte';
+  import { createFrequencyInstrumentBinding } from './frequency-instrument.svelte';
 
   interface Props {
     /**
@@ -84,65 +79,26 @@
     vfoFreqHook = true,
   }: Props = $props();
 
-  let model = $derived(projectFrequencyReadout({
-    confirmedHz: freq,
-    displayHz,
-    pendingDisplayHz,
-    pendingAnnouncement,
-  }));
-  const owner = createFrequencyInteraction({
+  let bindingContext = $derived.by(() => ({ contextKey, receiver }));
+  const binding = createFrequencyInstrumentBinding({
     get confirmedHz() { return freq; },
-    get digits() { return model.digits; },
+    get displayHz() { return displayHz; },
+    get pendingDisplayHz() { return pendingDisplayHz; },
+    get pendingAnnouncement() { return pendingAnnouncement; },
     get disabled() { return disabled; },
-    get contextKey() { return contextKey; },
+    get context() { return bindingContext; },
     get receiver() { return receiver; },
     get minFreq() { return minFreq; },
     get maxFreq() { return maxFreq; },
     get onFreqChange() { return onFreqChange; },
   });
-  let selectedRenderer = $derived.by(() => {
-    void contextKey;
-    return getSelectedFrequencyReadout();
-  });
-  let attachedContextKey = untrack(() => contextKey);
-  let attachedRenderer = untrack(() => selectedRenderer);
-  const attachLease = (key: string | undefined, renderer: typeof selectedRenderer) => createFrequencyInteractionLease(
-    owner,
-    () => Object.is(contextKey, key) && getSelectedFrequencyReadout() === renderer,
-  );
-  let lease = $state.raw(attachLease(attachedContextKey, attachedRenderer));
-  $effect.pre(() => {
-    const nextContextKey = contextKey;
-    const nextRenderer = selectedRenderer;
-    if (Object.is(nextContextKey, attachedContextKey)
-      && nextRenderer === attachedRenderer && !lease.revoked) return;
-    lease.revoke();
-    attachedContextKey = nextContextKey;
-    attachedRenderer = nextRenderer;
-    lease = attachLease(nextContextKey, nextRenderer);
-  });
-  onDestroy(() => lease.revoke());
 </script>
 
-{#if selectedRenderer}
-  {@const Renderer = selectedRenderer}
-  <Renderer
-    {model}
-    presentation="interactive"
-    interaction={lease.interaction}
-    {compact}
-    {active}
-    {receiver}
-    {vfoFreqHook}
-  />
-{:else}
-  <StandardFrequencyReadout
-    {model}
-    presentation="interactive"
-    interaction={lease.interaction}
-    {compact}
-    {active}
-    {receiver}
-    {vfoFreqHook}
-  />
-{/if}
+<FrequencyRendererSeat
+  {binding}
+  presentation="interactive"
+  {compact}
+  {active}
+  {receiver}
+  {vfoFreqHook}
+/>
