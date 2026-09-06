@@ -172,7 +172,11 @@ vi.mock('$lib/stores/layout.svelte', () => ({
 vi.mock('../skins/registry', () => ({
   resolveSkinId: () => widthToSkin(),
   loadSkin: h.loadSkin,
+  presentationHostMode: () => 'self-contained',
   presentationResourcePlan: (id: SkinId) => SKIN_PLAN[id] ?? [],
+}));
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('./LayoutStub.svelte')).default,
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   // TX controller identity across a switch has its own real-stack proof

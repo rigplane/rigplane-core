@@ -19,6 +19,30 @@ export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
   | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first';
 
+export type PresentationHostMode = 'self-contained' | 'instrument-handles';
+
+/**
+ * Whether App supplies the persistent semantic instrument host for a skin.
+ * Kept total over SkinId so a new presentation cannot silently inherit the
+ * hosted lifetime contract without choosing it explicitly.
+ */
+const PRESENTATION_HOST_MODE: Readonly<Record<SkinId, PresentationHostMode>> = {
+  'desktop-v2': 'instrument-handles',
+  'dual-receiver-cockpit': 'self-contained',
+  'lcd-cockpit': 'self-contained',
+  'lcd-scope': 'self-contained',
+  'mobile': 'self-contained',
+  'peer-split': 'self-contained',
+  'sdr-test': 'instrument-handles',
+  'dual-sdr-face': 'self-contained',
+  'unified-instrument': 'self-contained',
+  'panadapter-first': 'self-contained',
+};
+
+export function presentationHostMode(id: SkinId): PresentationHostMode {
+  return PRESENTATION_HOST_MODE[id];
+}
+
 export interface SkinResolutionContext {
   capabilities: Capabilities | null;
   layoutPreference: LayoutMode;

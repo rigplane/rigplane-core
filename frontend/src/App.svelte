@@ -35,7 +35,11 @@
     densityActivation, provideSurfacePlan, resolveSurfacePlan,
   } from './presentation/workspace/resolution';
   import { getWorkspace, initWorkspaceStore } from './presentation/workspace/store.svelte';
-  import { loadSkin, presentationResourcePlan, resolveSkinId, type SkinId } from './skins/registry';
+  import SemanticRadioSurfaces from './components-v2/wiring/SemanticRadioSurfaces.svelte';
+  import {
+    loadSkin, presentationHostMode, presentationResourcePlan, resolveSkinId,
+    type PresentationHostMode, type SkinId,
+  } from './skins/registry';
   import { t } from '$lib/i18n';
   import './app.css';
 
@@ -144,7 +148,11 @@
   // loader is in flight, so a switch never blanks the operator's screen and
   // never replays bootstrap, transport, audio or TX ownership — all of which
   // live above this seam (MOR-973, MOR-1008, MOR-1059).
-  let presentation = $state<{ id: SkinId; component: Component } | null>(null);
+  let presentation = $state<{
+    id: SkinId;
+    component: Component;
+    hostMode: PresentationHostMode;
+  } | null>(null);
   let presentationFailed = $state(false);
   let Presentation = $derived(presentation?.component ?? null);
   let loaderGeneration = 0;
@@ -182,7 +190,7 @@
     const bridge = acquireSwapBridge(id);
     try {
       presentationFailed = false;
-      presentation = { id, component: loaded };
+      presentation = { id, component: loaded, hostMode: presentationHostMode(id) };
       await tick();
     } finally {
       releaseSwapBridge(bridge);
@@ -330,7 +338,17 @@
     </div>
   </div>
 {:else if Presentation}
-  <Presentation />
+  {#if presentation?.hostMode === 'instrument-handles'}
+    <!-- One unkeyed host outlives replacement of either hosted presentation.
+         The child owns placement only; SRS retains bindings and authority. -->
+    <SemanticRadioSurfaces>
+      {#snippet children(instruments)}
+        <Presentation {instruments} />
+      {/snippet}
+    </SemanticRadioSurfaces>
+  {:else}
+    <Presentation />
+  {/if}
 {:else if presentationFailed}
   <!-- Initial presentation load failed: an inert App-owned surface. No retry
        and no runtime teardown — control transport, audio and TX authority all

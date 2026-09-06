@@ -17,6 +17,7 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 
 vi.mock('../../../skins/registry', () => ({
   resolveSkinId: vi.fn(() => 'desktop-v2'),
+  presentationHostMode: () => 'self-contained',
 }));
 
 vi.mock('$lib/runtime', () => ({

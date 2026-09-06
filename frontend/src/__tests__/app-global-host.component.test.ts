@@ -93,10 +93,14 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../skins/registry', () => ({
   resolveSkinId: h.resolveSkin,
   loadSkin: h.loadSkin,
+  presentationHostMode: () => 'self-contained',
   presentationResourcePlan: () => [],
 }));
 vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({ initMediaSession: vi.fn(), destroyMediaSession: vi.fn() }));
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('./LayoutStub.svelte')).default,
+}));
 vi.mock('../components-v2/layout/RadioLayout.svelte', async () => {
   const stub = await import('./LayoutStub.svelte');
   return { default: stub.default };
