@@ -876,6 +876,8 @@ def _pending_value_for_intent(intent: CommandIntent) -> Any:
 
 def _expected_value_for_path(intent: CommandIntent, path: FieldPath) -> Any:
     value = _pending_value_for_path(intent.params, path)
+    if intent.name in {"set_rf_power", "set_power"} and path.name == "power_level":
+        return value
     if _should_normalize_level_expectation(intent.name, path):
         return _normalize_raw_level_value(value)
     return value
@@ -885,61 +887,34 @@ def _should_normalize_level_expectation(name: str, path: FieldPath) -> bool:
     return _NORMALIZED_LEVEL_EXPECTATION_COMMANDS.get(name) == path.name
 
 
-def _power_level_expectation_from_param(
+def resolve_power_level_target(
     value: Any,
     *,
+    power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
-) -> int | float:
-    """Coerce ``set_rf_power``/``set_power``'s StateStore expectation param.
+) -> tuple[int, float]:
+    """Resolve the native power integer and its exact normalized readback."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"level {value!r} must be an int or a normalized float")
 
-    MOR-1579 round 3: this used to be a plain ``int(raw_level)``, so a
-    normalized float level (e.g. ``0.4`` from the web power slider —
-    ``control.py``'s ``_level_for_power`` treats ``set_rf_power`` as
-    type-dispatched, same as ``set_af_level``) collapsed to
-    ``int(0.4) == 0``. The StateStore overlay/expectation then sat at 0%
-    for the optimistic-update TTL before jumping to the real readback —
-    the same snap-back class MOR-1579 fixes for ``rf_gain``/``squelch``,
-    reproduced here on every single power-slider move rather than only at
-    a boundary value.
-
-    ``_normalize_raw_level_value`` (below) always divides this value by
-    255 to recover the normalized overlay value, and *both* backends'
-    readbacks normalize to that same fraction ``v`` regardless of unit —
-    Icom CI-V as ``raw / 255``, Yaesu CAT as ``watts / max_watts`` (see
-    ``backends/yaesu_cat/observations.py``'s ``_normalize_power_level``).
-    So for a float input the coherent expectation is ``round(v * 255)``,
-    independent of ``native_power_unit`` — no radio object needed here
-    (unlike ``control.py``'s ``_level_for_power``, which *does* need
-    ``profile.max_watts`` to compute the correct *actuation* value for a
-    watts radio). This is exact for ``raw_255`` radios; for a ``watts``
-    radio it is accurate to within 1/255 of full scale, since
-    ``round(v * max_watts) / max_watts`` (the real readback's
-    quantization) and ``round(v * 255) / 255`` (this expectation's
-    quantization) are different roundings of the same ``v`` and don't
-    always land on the same value — in practice most float positions on
-    a watts radio simply expire by TTL instead of confirming
-    ``reconciled``, rather than snapping to a visibly wrong overlay (the
-    residual error is bounded at <=0.2% of full scale).
-
-    A bare int is the documented raw/watts wire value. When the ingress
-    supplies a positive profile ``power_max_watts`` for a watts-native
-    radio, retain the existing 0-255 expectation representation while
-    scaling that raw watts value to the same normalized fraction as the
-    readback. Callers for raw-255 radios omit the optional profile value.
-    """
-    if isinstance(value, float) and not isinstance(value, bool):
-        if not (0.0 <= value <= 1.0):
-            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
-        return max(0, min(255, round(value * 255)))
-    if (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and isinstance(power_max_watts, (int, float))
+    valid_max = (
+        isinstance(power_max_watts, (int, float))
         and not isinstance(power_max_watts, bool)
         and power_max_watts > 0
-    ):
-        return value * 255 / power_max_watts
-    return int(value)
+    )
+    watts_native = power_native_unit == "watts" or (
+        power_native_unit is None and valid_max
+    )
+    scale = float(power_max_watts) if watts_native and valid_max else 255.0
+    upper = int(power_max_watts) if watts_native and valid_max else 255
+
+    if isinstance(value, float):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
+        native = max(0, min(upper, round(value * scale)))
+    else:
+        native = value
+    return native, native / scale
 
 
 def _normalize_raw_level_value(value: Any) -> Any:
@@ -1136,6 +1111,7 @@ def command_intent_from_request(
     command_id: str | None = None,
     session_id: str | None = None,
     timeout: float | None = 2.0,
+    power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
 ) -> CommandIntent:
     """Normalize a production command request into a backend-neutral intent."""
@@ -1208,8 +1184,9 @@ def command_intent_from_request(
         raw_level = (
             normalized["level"] if "level" in normalized else normalized["value"]
         )
-        normalized["power_level"] = _power_level_expectation_from_param(
+        _, normalized["power_level"] = resolve_power_level_target(
             raw_level,
+            power_native_unit=power_native_unit,
             power_max_watts=power_max_watts,
         )
     elif command_name == "set_split":

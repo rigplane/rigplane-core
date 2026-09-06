@@ -14,6 +14,7 @@ from ...core.command_service import (
     CommandExecutionResult,
     CommandService,
     command_intent_from_request,
+    resolve_power_level_target,
 )
 from ...core.command_dispatch import (
     CommandUnsupportedError,
@@ -275,24 +276,12 @@ def _level_for_power(value: Any, radio: Any) -> int:
     produced (any value ``> 1`` passed through raw) but by accident of
     bucketing on magnitude rather than by declared type.
     """
-    if isinstance(value, bool):
-        raise ValueError(f"level {value!r} must be an int or a normalized float")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if not (0.0 <= value <= 1.0):
-            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
-        if getattr(radio, "native_power_unit", "raw_255") == "watts":
-            profile = getattr(radio, "profile", None)
-            max_watts = getattr(profile, "max_watts", None)
-            if (
-                isinstance(max_watts, (int, float))
-                and not isinstance(max_watts, bool)
-                and max_watts > 0
-            ):
-                return max(0, min(int(max_watts), round(value * max_watts)))
-        return max(0, min(255, round(value * 255)))
-    raise ValueError(f"level {value!r} must be an int or a normalized float")
+    native, _ = resolve_power_level_target(
+        value,
+        power_native_unit=getattr(radio, "native_power_unit", "raw_255"),
+        power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
+    )
+    return int(native)
 
 
 class ControlHandler:
@@ -1464,7 +1453,8 @@ class ControlHandler:
             if isinstance(receiver_count, int) and not isinstance(receiver_count, bool):
                 intent_params["receiver_count"] = receiver_count
         power_max_watts = None
-        if getattr(self._radio, "native_power_unit", "raw_255") == "watts":
+        power_native_unit = getattr(self._radio, "native_power_unit", "raw_255")
+        if power_native_unit == "watts":
             power_max_watts = getattr(
                 getattr(self._radio, "profile", None), "max_watts", None
             )
@@ -1495,6 +1485,7 @@ class ControlHandler:
                 source=source,
                 command_id=command_id,
                 session_id=self._session_id if source == "websocket" else None,
+                power_native_unit=power_native_unit,
                 power_max_watts=power_max_watts,
             )
         executor = (
