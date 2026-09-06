@@ -679,6 +679,7 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     expect(toggle.getAttribute('aria-checked')).toBe('mixed');
     expect(toggle.getAttribute('aria-label')).toContain('unknown');
     expect(toggle.getAttribute('aria-label')).not.toContain('off');
+    expect(toggle.textContent).toBe('DW');
   });
 
   it('keeps SPLIT and DW faceplate labels compact while exposing their full state', () => {
@@ -698,6 +699,7 @@ describe('uncertainty is rendered explicitly, never defaulted', () => {
     const toggle = target.querySelector<HTMLButtonElement>('[data-vfo-split]')!;
     expect(toggle.getAttribute('aria-checked')).toBe('mixed');
     expect(toggle.getAttribute('aria-label')).toContain('unknown');
+    expect(toggle.textContent).toBe('SPLIT');
     // R1 (review cycle 1): pin the disabled attribute itself, not just the
     // aria-checked/text-content facts above — mutation M14 deleted
     // `disabled={viewModel.split.status === 'unknown'}` and every other
