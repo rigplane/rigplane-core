@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { getSelectedFrequencyReadout } from '../../component-kits/activation';
   import StandardFrequencyReadout from '../../primitives/frequency/StandardFrequencyReadout.svelte';
   import {
     createFrequencyInteraction, createFrequencyInteractionLease,
@@ -24,16 +25,33 @@
     minFreq: 0,
     maxFreq: 999_000_000,
   });
-  const lease = createFrequencyInteractionLease(owner, () => true);
+  const selectedRenderer = getSelectedFrequencyReadout();
+  const lease = createFrequencyInteractionLease(
+    owner,
+    () => getSelectedFrequencyReadout() === selectedRenderer,
+  );
   onDestroy(lease.revoke);
 </script>
 
-<StandardFrequencyReadout
-  {model}
-  interaction={lease.interaction}
-  presentation="passive"
-  {compact}
-  {active}
-  {receiver}
-  vfoFreqHook={false}
-/>
+{#if selectedRenderer}
+  {@const Renderer = selectedRenderer}
+  <Renderer
+    {model}
+    interaction={lease.interaction}
+    presentation="passive"
+    {compact}
+    {active}
+    {receiver}
+    vfoFreqHook={false}
+  />
+{:else}
+  <StandardFrequencyReadout
+    {model}
+    interaction={lease.interaction}
+    presentation="passive"
+    {compact}
+    {active}
+    {receiver}
+    vfoFreqHook={false}
+  />
+{/if}

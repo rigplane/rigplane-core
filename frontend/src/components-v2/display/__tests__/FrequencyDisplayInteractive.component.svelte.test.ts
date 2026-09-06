@@ -4,7 +4,17 @@ import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { FrequencyRenderer } from '../../../../component-kit-api/src/index';
+
+const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
+vi.mock('../../../component-kits/activation', () => ({
+  getSelectedFrequencyReadout: () => selectedFrequency.current,
+}));
+
 import FrequencyDisplayInteractive from '../../../primitives/frequency/FrequencyDisplayInteractive.svelte';
+import AlternateFrequencyReadoutHarness, {
+  clearRetainedInteractions, retainedInteractions,
+} from '../../../primitives/frequency/__tests__/AlternateFrequencyReadoutHarness.svelte';
 import {
   createFrequencyInteraction,
   createFrequencyInteractionLease,
@@ -136,6 +146,54 @@ function interactionOwner(options: { disabled?: boolean; onFreqChange?: (hz: num
 }
 
 describe('frequency renderer lifetime', () => {
+  it('revokes the actual external renderer across replacement, context A-B-A, and unmount', () => {
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+    const context = writable('A');
+    const liveContext = fromStore(context);
+    const onFreqChange = vi.fn();
+    const root = mountDisplay({
+      freq: 14_250_000,
+      pendingDisplayHz: 14_260_000,
+      get contextKey() { return liveContext.current; },
+      onFreqChange,
+    });
+    const digit = projectFrequencyReadout({ confirmedHz: 14_250_000 }).digits
+      .find((candidate) => candidate.multiplier === 1_000)!;
+    const first = retainedInteractions()[0];
+    expect(root.querySelector('[data-alternate-frequency-readout]')?.getAttribute('data-source'))
+      .toBe('pending');
+    first.handleDigitClick(digit, new MouseEvent('click'));
+
+    selectedFrequency.current = undefined;
+    const beforeCleanup = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    first.handleWheel(digit, beforeCleanup);
+    expect(beforeCleanup.defaultPrevented).toBe(false);
+    expect(onFreqChange).not.toHaveBeenCalled();
+    context.set('B');
+    flushSync();
+    expect(root.querySelector('[data-alternate-frequency-readout]')).toBeNull();
+
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+    context.set('A');
+    flushSync();
+    const second = retainedInteractions().at(-1)!;
+    expect(second).not.toBe(first);
+    first.handleDigitClick(digit, new MouseEvent('click'));
+    first.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    expect(onFreqChange).not.toHaveBeenCalled();
+    second.handleDigitClick(digit, new MouseEvent('click'));
+    second.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
+
+    const component = components.pop()!;
+    unmount(component);
+    const afterUnmount = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    second.handleWheel(digit, afterUnmount);
+    expect(afterUnmount.defaultPrevented).toBe(false);
+    expect(second.inert).toBe(true);
+    expect(onFreqChange).toHaveBeenCalledTimes(1);
+  });
+
   it('makes a retained facade synchronously inert and permanently revokes it across A-B-A', () => {
     const onFreqChange = vi.fn();
     const { owner, digit } = interactionOwner({ onFreqChange });
@@ -239,6 +297,8 @@ describe('display-only frequency and disabled arithmetic', () => {
 
 beforeEach(async () => {
   vi.resetModules();
+  selectedFrequency.current = undefined;
+  clearRetainedInteractions();
   // Same module registry: radio.svelte's own capabilities import resolves to
   // this instance, so the epoch we establish here is the one the gate checks.
   capabilities = await import('$lib/stores/capabilities.svelte');
@@ -250,6 +310,8 @@ afterEach(() => {
   components.forEach((c) => unmount(c));
   roots.forEach((dispose) => dispose());
   roots = [];
+  selectedFrequency.current = undefined;
+  clearRetainedInteractions();
   document.body.innerHTML = '';
 });
 

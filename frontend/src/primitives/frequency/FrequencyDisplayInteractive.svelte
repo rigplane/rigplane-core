@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
+  import { getSelectedFrequencyReadout } from '../../component-kits/activation';
   import StandardFrequencyReadout from './StandardFrequencyReadout.svelte';
   import {
     createFrequencyInteraction, createFrequencyInteractionLease,
@@ -99,28 +100,48 @@
     get maxFreq() { return maxFreq; },
     get onFreqChange() { return onFreqChange; },
   });
+  let selectedRenderer = $derived.by(() => {
+    void contextKey;
+    return getSelectedFrequencyReadout();
+  });
   let attachedContextKey = untrack(() => contextKey);
-  const attachLease = (key: string | undefined) => createFrequencyInteractionLease(
+  let attachedRenderer = untrack(() => selectedRenderer);
+  const attachLease = (key: string | undefined, renderer: typeof selectedRenderer) => createFrequencyInteractionLease(
     owner,
-    () => Object.is(contextKey, key),
+    () => Object.is(contextKey, key) && getSelectedFrequencyReadout() === renderer,
   );
-  let lease = $state.raw(attachLease(attachedContextKey));
+  let lease = $state.raw(attachLease(attachedContextKey, attachedRenderer));
   $effect.pre(() => {
     const nextContextKey = contextKey;
-    if (Object.is(nextContextKey, attachedContextKey)) return;
+    const nextRenderer = selectedRenderer;
+    if (Object.is(nextContextKey, attachedContextKey) && nextRenderer === attachedRenderer) return;
     lease.revoke();
     attachedContextKey = nextContextKey;
-    lease = attachLease(nextContextKey);
+    attachedRenderer = nextRenderer;
+    lease = attachLease(nextContextKey, nextRenderer);
   });
   onDestroy(() => lease.revoke());
 </script>
 
-<StandardFrequencyReadout
-  {model}
-  presentation="interactive"
-  interaction={lease.interaction}
-  {compact}
-  {active}
-  {receiver}
-  {vfoFreqHook}
-/>
+{#if selectedRenderer}
+  {@const Renderer = selectedRenderer}
+  <Renderer
+    {model}
+    presentation="interactive"
+    interaction={lease.interaction}
+    {compact}
+    {active}
+    {receiver}
+    {vfoFreqHook}
+  />
+{:else}
+  <StandardFrequencyReadout
+    {model}
+    presentation="interactive"
+    interaction={lease.interaction}
+    {compact}
+    {active}
+    {receiver}
+    {vfoFreqHook}
+  />
+{/if}

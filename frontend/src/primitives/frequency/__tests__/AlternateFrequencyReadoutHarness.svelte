@@ -1,39 +1,21 @@
-<script lang="ts">
-  import { projectFrequencyReadout } from '../frequency-readout';
-  import { createFrequencyInteraction } from '../frequency-interaction.svelte';
+<script module lang="ts">
+  import type { FrequencyInteraction } from '../frequency-interaction.svelte';
 
-  interface Props {
-    confirmedHz: number | null;
-    displayHz?: number | null;
-    pendingDisplayHz?: number | null;
-    disabled?: boolean;
-    contextKey?: string;
-    onFreqChange?: (frequencyHz: number) => void;
+  const retained: FrequencyInteraction[] = [];
+  export const retainedInteractions = () => retained.slice();
+  export const clearRetainedInteractions = () => { retained.length = 0; };
+  function retain(interaction: FrequencyInteraction): void {
+    if (retained.at(-1) !== interaction) retained.push(interaction);
   }
+</script>
+
+<script lang="ts">
+  import type { FrequencyRendererProps } from '../../../../component-kit-api/src/index';
 
   let {
-    confirmedHz,
-    displayHz,
-    pendingDisplayHz = null,
-    disabled = false,
-    contextKey,
-    onFreqChange,
-  }: Props = $props();
-
-  let readout = $derived(projectFrequencyReadout({
-    confirmedHz,
-    displayHz,
-    pendingDisplayHz,
-  }));
-  const interaction = createFrequencyInteraction({
-    get confirmedHz() { return confirmedHz; },
-    get digits() { return readout.digits; },
-    get disabled() { return disabled; },
-    get contextKey() { return contextKey; },
-    minFreq: 0,
-    maxFreq: 999_000_000,
-    get onFreqChange() { return onFreqChange; },
-  });
+    model, interaction, presentation, compact, active, receiver, vfoFreqHook,
+  }: FrequencyRendererProps = $props();
+  $effect(() => retain(interaction));
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -42,11 +24,16 @@
   role="group"
   tabindex="0"
   data-alternate-frequency-readout
-  data-source={readout.source}
+  data-source={model.source}
+  data-presentation={presentation}
+  data-compact={compact}
+  data-active={active}
+  data-receiver={receiver}
+  data-vfo-freq-hook={vfoFreqHook}
   aria-disabled={interaction.inert}
   onkeydown={interaction.handleKeyDown}
 >
-  {#each readout.digits as digit}
+  {#each model.digits as digit}
     <button
       type="button"
       data-multiplier={digit.multiplier}

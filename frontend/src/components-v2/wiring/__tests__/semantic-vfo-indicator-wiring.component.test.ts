@@ -6,6 +6,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
+import type { FrequencyRenderer } from '../../../../component-kit-api/src/index';
 
 const h = vi.hoisted(() => ({
   state: null as ServerState | null, caps: null as Capabilities | null, noop: vi.fn(),
@@ -17,7 +18,12 @@ const h = vi.hoisted(() => ({
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
 }));
+const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
 const group = new Proxy({}, { get: () => h.noop });
+
+vi.mock('../../../component-kits/activation', () => ({
+  getSelectedFrequencyReadout: () => selectedFrequency.current,
+}));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
@@ -65,6 +71,10 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import AlternateFrequencyReadoutHarness, {
+  clearRetainedInteractions, retainedInteractions,
+} from '../../../primitives/frequency/__tests__/AlternateFrequencyReadoutHarness.svelte';
+import { projectFrequencyReadout } from '../../../primitives/frequency/frequency-readout';
 import {
   ManagedAppTxHarness, type ManagedAppTxServerSnapshot,
 } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -133,6 +143,8 @@ beforeEach(() => {
   h.txController = txHarness.controller;
   h.session = { state: 'connected', epoch: 1 };
   h.sessionSubscriber = null;
+  selectedFrequency.current = undefined;
+  clearRetainedInteractions();
   h.filterWidthFeedback.mockReturnValue(Object.freeze({
     confirmed: null, target: null, requestedTarget: null,
     phase: 'unavailable', busy: false, availability: 'unavailable',
@@ -172,6 +184,8 @@ afterEach(() => {
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionSubscriber).toBeNull();
+  selectedFrequency.current = undefined;
+  clearRetainedInteractions();
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -179,25 +193,38 @@ afterEach(() => {
 
 describe('production receiver-indicator partitioning', () => {
   it.each([
-    ['dual receiver strip', { strips: 'dual' }, '[data-testid="channel-strip-MAIN"] .digit'],
-    ['single VFO surface', { strips: 'single' }, '.vfo-tile .digit'],
+    ['dual receiver strip', { strips: 'dual' }],
+    ['single VFO surface', { strips: 'single' }],
   ] as const)('rotates the %s frequency authority on session and provider identity', (
-    _name, props, digitSelector,
+    _name, props,
   ) => {
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
     render(caps('main_sub', 2), state(), {}, props);
-    const digit = () => target.querySelector<HTMLElement>(digitSelector)!;
-
-    digit().dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    flushSync();
-    expect(target.querySelector('.freq .selected')).not.toBeNull();
+    const digit = projectFrequencyReadout({ confirmedHz: 14_200_000 }).digits[0];
+    const first = retainedInteractions().find((interaction) => !interaction.inert)!;
+    first.handleDigitClick(digit, new MouseEvent('click'));
+    expect(first.selectedDigitIndex).toBe(digit.digitIndex);
     pushSession({ state: 'connected', epoch: 2 });
-    expect(target.querySelector('.freq .selected')).toBeNull();
+    expect(first.inert).toBe(true);
+    const callsAfterSession = h.noop.mock.calls.length;
+    const staleSessionWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    first.handleDigitClick(digit, new MouseEvent('click'));
+    first.handleWheel(digit, staleSessionWheel);
+    expect(staleSessionWheel.defaultPrevented).toBe(false);
+    expect(h.noop).toHaveBeenCalledTimes(callsAfterSession);
 
-    digit().dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    flushSync();
-    expect(target.querySelector('.freq .selected')).not.toBeNull();
+    const second = retainedInteractions().find((interaction) => !interaction.inert)!;
+    expect(second).not.toBe(first);
+    second.handleDigitClick(digit, new MouseEvent('click'));
+    expect(second.selectedDigitIndex).toBe(digit.digitIndex);
     pushMeter(50, 2);
-    expect(target.querySelector('.freq .selected')).toBeNull();
+    expect(second.inert).toBe(true);
+    const callsAfterProvider = h.noop.mock.calls.length;
+    const staleProviderKey = new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true });
+    second.handleDigitClick(digit, new MouseEvent('click'));
+    second.handleKeyDown(staleProviderKey);
+    expect(staleProviderKey.defaultPrevented).toBe(false);
+    expect(h.noop).toHaveBeenCalledTimes(callsAfterProvider);
   });
 
   it.each([
