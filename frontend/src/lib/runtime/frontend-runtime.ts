@@ -23,7 +23,14 @@ import {
   getRadioStatus,
   getRadioPowerOn,
 } from '$lib/stores/connection.svelte';
-import { getAudioState, setVolume, setMuted, toggleMute } from '$lib/stores/audio.svelte';
+import {
+  getAudioState,
+  getRxAudioTargetSnapshot,
+  setVolume,
+  setMuted,
+  subscribeRxAudioTarget,
+  toggleMute,
+} from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
 import { fetchInfo } from '$lib/transport/http-client';
 import { audioManager } from '$lib/audio/audio-manager';
@@ -41,6 +48,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { WsIncoming } from '$lib/types/protocol';
 import type { ConnectionState } from '$lib/transport/ws-client';
 import type { ControlSessionTransition } from '$lib/transport/ws-client';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 export const presentationResources = new PresentationResourceHost<unknown>('app');
 // ── Types ──
 
@@ -71,6 +79,7 @@ export interface ControlAuthorityPublication {
   readonly state: ServerState | null;
   readonly caps: Capabilities | null;
   readonly session: ControlSessionSnapshot;
+  readonly rxAudioTarget: RxAudioTargetSnapshot;
 }
 export type ControlAuthoritySubscriber = (next: ControlAuthorityPublication) => void;
 const CLOSED_CONTROL_SESSION: ControlSessionSnapshot = Object.freeze({ state: 'disconnected', epoch: -1 });
@@ -161,12 +170,18 @@ class FrontendRuntime {
     let initializing = true;
     const publish = (session: ControlSessionSnapshot) => {
       if (!active || initializing) return;
-      handler(Object.freeze({ state: this.state, caps: this.caps, session }));
+      handler(Object.freeze({
+        state: this.state,
+        caps: this.caps,
+        session,
+        rxAudioTarget: getRxAudioTargetSnapshot(),
+      }));
     };
     const stops: Array<() => void> = [];
     try {
       stops.push(subscribeRadioState(() => publish(this.controlSession)));
       stops.push(subscribeCapabilities(() => publish(this.controlSession)));
+      stops.push(subscribeRxAudioTarget(() => publish(this.controlSession)));
       stops.push(this.subscribeControlSession(publish));
       initializing = false;
       publish(this.controlSession);
