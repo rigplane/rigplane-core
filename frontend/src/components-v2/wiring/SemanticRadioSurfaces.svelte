@@ -26,6 +26,7 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
     bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getFilterWidthControlFeedback,
+    getRfSqlControlFeedback,
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
     getSystemHandlers, getDataModeArmed,
@@ -728,6 +729,7 @@
   let pendingPreamp = $derived(
     activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
   );
+  let rfSqlFeedback = $derived(getRfSqlControlFeedback(controlSession));
   let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
   let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
 
@@ -1292,6 +1294,7 @@
       <RfFrontEndSurface
         {view}
         controlModel={rfSqlControlModel}
+        {rfSqlFeedback}
         {pendingPreamp}
         onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
         onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}

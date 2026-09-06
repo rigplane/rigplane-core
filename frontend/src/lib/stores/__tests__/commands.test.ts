@@ -1,4 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ServerState } from '../../types/state';
+
+let acceptedState: ServerState | null = null;
+const stateListeners = new Set<(state: ServerState | null) => void>();
+const emitState = (state: ServerState): void => {
+  acceptedState = state;
+  for (const listener of stateListeners) listener(state);
+};
 
 describe('command lifecycle store', () => {
   let store: typeof import('../commands.svelte');
@@ -6,11 +14,21 @@ describe('command lifecycle store', () => {
   beforeEach(async () => {
     vi.useFakeTimers();
     vi.resetModules();
+    acceptedState = null;
+    stateListeners.clear();
+    vi.doMock('../radio.svelte', () => ({
+      getRadioState: () => acceptedState,
+      subscribeRadioState: (listener: (state: ServerState | null) => void) => {
+        stateListeners.add(listener); listener(acceptedState);
+        return () => stateListeners.delete(listener);
+      },
+    }));
     store = await import('../commands.svelte');
   });
 
   afterEach(() => {
     store.resetCommandLifecycle();
+    vi.doUnmock('../radio.svelte');
     vi.useRealTimers();
   });
 
@@ -222,5 +240,121 @@ describe('command lifecycle store', () => {
     expect(store.getCommandLifecycles()).toHaveLength(100);
     expect(store.getCommandLifecycle('acknowledged-0', 9)?.status).toBe('acknowledged');
     expect(store.getCommandLifecycle('overflow', 9)).toBeUndefined();
+  });
+
+  describe('RF/SQL state-backed descriptors', () => {
+    it('uses exact receiver scopes and normalized 0..1 targets', () => {
+      const rfMain = store.RF_GAIN_COMMAND_DESCRIPTOR.scope({ params: { level: 128, receiver: 0 } })!;
+      const rfSub = store.RF_GAIN_COMMAND_DESCRIPTOR.scope({ params: { level: 255, receiver: 1 } })!;
+      const sqlMain = store.SQUELCH_COMMAND_DESCRIPTOR.scope({ params: { level: 0, receiver: 0 } })!;
+      const sqlSub = store.SQUELCH_COMMAND_DESCRIPTOR.scope({ params: { level: 64, receiver: 1 } })!;
+
+      expect([...store.STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
+        'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
+      ]);
+      expect(rfMain).toEqual({ control: 'rf-gain', receiver: 0 });
+      expect(rfSub).toEqual({ control: 'rf-gain', receiver: 1 });
+      expect(sqlMain).toEqual({ control: 'squelch', receiver: 0 });
+      expect(sqlSub).toEqual({ control: 'squelch', receiver: 1 });
+      expect(store.RF_GAIN_COMMAND_DESCRIPTOR.fieldPath(rfMain)).toBe('main.rfGain');
+      expect(store.RF_GAIN_COMMAND_DESCRIPTOR.fieldPath(rfSub)).toBe('sub.rfGain');
+      expect(store.SQUELCH_COMMAND_DESCRIPTOR.fieldPath(sqlMain)).toBe('main.squelch');
+      expect(store.SQUELCH_COMMAND_DESCRIPTOR.fieldPath(sqlSub)).toBe('sub.squelch');
+      expect(store.RF_GAIN_COMMAND_DESCRIPTOR.target({ params: { level: 128, receiver: 0 } })).toBe(128 / 255);
+      expect(store.SQUELCH_COMMAND_DESCRIPTOR.target({ params: { level: 255, receiver: 1 } })).toBe(1);
+      expect(store.RF_GAIN_COMMAND_DESCRIPTOR.confirmed({
+        main: { rfGain: 0.5 }, sub: { rfGain: 0.75 },
+      } as never, rfMain)).toBe(0.5);
+      expect(store.SQUELCH_COMMAND_DESCRIPTOR.confirmed({
+        main: { squelch: 0.1 }, sub: { squelch: 0.2 },
+      } as never, sqlSub)).toBe(0.2);
+      expect(store.RF_GAIN_COMMAND_DESCRIPTOR.matches(128 / 255, 128 / 255)).toBe(true);
+      expect(store.RF_GAIN_COMMAND_DESCRIPTOR.matches(0.5, 128 / 255)).toBe(false);
+    });
+
+    it.each([
+      ['missing level', { receiver: 0 }],
+      ['missing receiver', { level: 1 }],
+      ['extra key', { level: 1, receiver: 0, slot: 'A' }],
+      ['string level', { level: '1', receiver: 0 }],
+      ['boolean level', { level: true, receiver: 0 }],
+      ['fractional level', { level: 1.5, receiver: 0 }],
+      ['nonfinite level', { level: Number.POSITIVE_INFINITY, receiver: 0 }],
+      ['negative level', { level: -1, receiver: 0 }],
+      ['high level', { level: 256, receiver: 0 }],
+      ['string receiver', { level: 1, receiver: '0' }],
+      ['boolean receiver', { level: 1, receiver: false }],
+      ['unknown receiver', { level: 1, receiver: 2 }],
+    ])('rejects a %s envelope', (_name, params) => {
+      for (const descriptor of [store.RF_GAIN_COMMAND_DESCRIPTOR, store.SQUELCH_COMMAND_DESCRIPTOR]) {
+        expect(descriptor.scope({ params })).toBeNull();
+        expect(descriptor.target({ params })).toBeNull();
+      }
+    });
+
+    it('rejects symbol, inherited, and throwing envelopes without executing a default', () => {
+      const inherited = Object.create({ receiver: 0 }) as Record<string, unknown>;
+      inherited.level = 1;
+      const symbol = { level: 1, receiver: 0, [Symbol('extra')]: true };
+      const throwing = Object.defineProperty({ receiver: 0 }, 'level', {
+        enumerable: true, get: () => { throw new Error('read'); },
+      });
+      const ownKeysTrap = new Proxy({}, { ownKeys: () => { throw new Error('keys'); } });
+
+      for (const params of [inherited, symbol, throwing, ownKeysTrap]) {
+        expect(store.RF_GAIN_COMMAND_DESCRIPTOR.scope({ params })).toBeNull();
+        expect(store.RF_GAIN_COMMAND_DESCRIPTOR.target({ params })).toBeNull();
+      }
+    });
+
+    it('supersedes only the same intent and receiver scope', () => {
+      const rfMain = store.beginCommand({
+        id: 'rf-main', name: 'set_rf_gain', params: { level: 10, receiver: 0 }, originalEpoch: 4,
+      });
+      const rfSub = store.beginCommand({
+        id: 'rf-sub', name: 'set_rf_gain', params: { level: 20, receiver: 1 }, originalEpoch: 4,
+      });
+      const sqlMain = store.beginCommand({
+        id: 'sql-main', name: 'set_squelch', params: { level: 30, receiver: 0 }, originalEpoch: 4,
+      });
+      store.beginCommand({
+        id: 'rf-main-new', name: 'set_rf_gain', params: { level: 40, receiver: 0 }, originalEpoch: 4,
+      });
+
+      expect(store.isCommandLifecycleSuperseded(rfMain)).toBe(true);
+      expect(store.isCommandLifecycleSuperseded(rfSub)).toBe(false);
+      expect(store.isCommandLifecycleSuperseded(sqlMain)).toBe(false);
+    });
+
+    it('confirms only from exact scoped truth after a finite advancing ACK marker', () => {
+      const snapshot = (
+        rfGain: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh',
+      ): ServerState => ({
+        providerGeneration: 3, main: { rfGain }, sub: {},
+        fieldStatus: { 'main.rfGain': {
+          storePath: 'fixture', observed: true, freshness,
+          availability: 'available', lastObservedMonotonic: marker,
+        } },
+      } as unknown as ServerState);
+      emitState(snapshot(128 / 255, 4));
+      const command = store.beginCommand({
+        id: 'rf-confirm', name: 'set_rf_gain', params: { level: 128, receiver: 0 }, originalEpoch: 7,
+      });
+      store.acknowledgeCommand(command.id, 7, 7);
+      const current = () => store.getCommandLifecycle(command.id, 7)!;
+      expect(current()).toMatchObject({
+        status: 'acknowledged', providerGeneration: 3,
+        ackFieldObservationTimes: { 'main.rfGain': 4 },
+      });
+
+      emitState(snapshot(128 / 255, 4));
+      expect(current().status).toBe('acknowledged');
+      emitState(snapshot(0.5, 5));
+      expect(current().status).toBe('acknowledged');
+      emitState(snapshot(128 / 255, 6, 'stale'));
+      expect(current().status).toBe('acknowledged');
+      emitState(snapshot(128 / 255, 7));
+      expect(current().status).toBe('confirmed');
+    });
   });
 });

@@ -61,6 +61,7 @@ import {
 } from '../panel-adapters';
 import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR, FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR,
   STATE_BACKED_COMMAND_DESCRIPTORS,
   beginCommand, getStateBackedCommandDescriptor,
 } from '$lib/stores/commands.svelte';
@@ -103,7 +104,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     expect(FILTER_WIDTH_FEEDBACK_DESCRIPTOR).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
     expect(getStateBackedCommandDescriptor('set_filter_width')).toBe(FILTER_WIDTH_COMMAND_DESCRIPTOR);
     expect([...STATE_BACKED_COMMAND_DESCRIPTORS.keys()]).toEqual([
-      'set_filter_width', 'set_break_in_delay',
+      'set_filter_width', 'set_break_in_delay', 'set_rf_gain', 'set_squelch',
     ]);
     expect(RADIO_INTENT_NAMES).toContain(FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName);
     const main = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 0 } }))!;
@@ -492,6 +493,8 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect([...STATE_BACKED_COMMAND_DESCRIPTORS.entries()]).toEqual([
       ['set_filter_width', FILTER_WIDTH_COMMAND_DESCRIPTOR],
       ['set_break_in_delay', BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
+      ['set_rf_gain', RF_GAIN_COMMAND_DESCRIPTOR],
+      ['set_squelch', SQUELCH_COMMAND_DESCRIPTOR],
     ]);
     const scope = BREAK_IN_DELAY_COMMAND_DESCRIPTOR.scope(delayCommand());
     expect(scope).toEqual({ control: 'break-in-delay', receiver: 0 });
