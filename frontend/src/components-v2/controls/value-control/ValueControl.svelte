@@ -4,6 +4,7 @@
   import BipolarRenderer from './BipolarRenderer.svelte';
   import KnobRenderer from './KnobRenderer.svelte';
   import DiscreteRenderer from './DiscreteRenderer.svelte';
+  import { getSelectedScalarAppearance } from '../../../component-kits/activation';
   import type { LegacyReadingPresentation } from './scalar-render-presentation';
   import type {
     HBarIssuedStatusPresentation,
@@ -127,6 +128,8 @@
   }: Props = $props();
 
   let effectiveOnChange = $derived(onChange ?? onchange ?? (() => {}));
+  const configuredAppearance = getSelectedScalarAppearance();
+  let effectiveAppearance = $derived(skin ?? configuredAppearance);
   const mountId = $props.id();
   let hbarPolicy = $derived(createHBarContinuousScalarPolicy({
     preview: optimistic ? 'optimistic' : 'confirmed',
@@ -246,11 +249,11 @@
     dimmed: externalBinding === undefined ? disabled : undefined,
   });
   let skinComponent = $derived(
-    skin
-      ? renderer === 'knob' ? skin.knob
-      : renderer === 'hbar' ? skin.hbar
-        : renderer === 'bipolar' ? skin.bipolar
-          : skin.discrete
+    effectiveAppearance
+      ? renderer === 'knob' ? effectiveAppearance.knob
+      : renderer === 'hbar' ? effectiveAppearance.hbar
+        : renderer === 'bipolar' ? effectiveAppearance.bipolar
+          : effectiveAppearance.discrete
       : undefined,
   );
 </script>

@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
-  import type { ContinuousScalarRendererLease } from '../../../../primitives/scalar/continuous-scalar.svelte';
+  import type {
+    ContinuousScalarRendererLease,
+    ContinuousScalarView,
+  } from '../../../../primitives/scalar/continuous-scalar.svelte';
   import type {
     DiscreteSkinRendererProps,
     HBarSkinRendererProps,
@@ -37,8 +40,8 @@
   }: FixtureProps = $props();
 
   let attachedBinding = untrack(() => binding);
-  let lease: ContinuousScalarRendererLease = $state(attachedBinding.attachRenderer());
-  let view = $derived(lease.view);
+  let lease: ContinuousScalarRendererLease = attachedBinding.attachRenderer();
+  let view = $state<ContinuousScalarView>(untrack(() => lease.view));
   let renderer = $derived(valueProjection !== undefined
     ? 'hbar'
     : arcAngle !== undefined || tickCount !== undefined
@@ -47,11 +50,13 @@
         ? 'discrete'
         : 'bipolar');
 
-  $effect(() => {
-    if (binding === attachedBinding) return;
-    lease.dispose();
-    attachedBinding = binding;
-    lease = binding.attachRenderer();
+  $effect.pre(() => {
+    if (binding !== attachedBinding) {
+      lease.dispose();
+      attachedBinding = binding;
+      lease = binding.attachRenderer();
+    }
+    view = lease.view;
   });
 
   onDestroy(() => lease.dispose());

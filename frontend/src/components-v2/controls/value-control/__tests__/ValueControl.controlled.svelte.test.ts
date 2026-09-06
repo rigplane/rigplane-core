@@ -1588,8 +1588,10 @@ describe('ValueControl external scalar appearances', () => {
     expect(target.querySelector('.vc-hbar')).not.toBeNull();
     expect(replacement.getAttribute('aria-valuenow')).toBe('20');
     expect(replacement.getAttribute('data-command-phase')).toBe('failed');
-    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
-      .toBe('Failed: 30 Hz: radio rejected');
+    expect(binding.view).toMatchObject({
+      confirmed: 20, requested: 30, phase: 'failed', error: 'radio rejected',
+    });
+    expect(target.querySelector('[data-control-feedback-status]')).toBeNull();
 
     expect(staleLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
     expect(request).not.toHaveBeenCalled();
