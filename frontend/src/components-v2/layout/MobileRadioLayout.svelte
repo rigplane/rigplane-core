@@ -28,7 +28,8 @@
   import EssentialsPanel from '../panels/EssentialsPanel.svelte';
   import PttFab from '../controls/PttFab.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
-  import { ValueControl, normalizedPercentDisplay } from '../controls/value-control';
+  import { ValueControl } from '../controls/value-control';
+  import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
   import {
     Settings, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
     Sliders, Radio as RadioIcon,

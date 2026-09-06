@@ -29,7 +29,7 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
   import { pressedOf } from './pressed-of';
-  import { rawToPercentDisplay } from '../components-v2/controls/value-control/value-control-core';
+  import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   import { disabledReasonText } from './disabled-reason';
 
   /** On/off controls, `[field, label]`. ATU's reading is a three-state enum,

@@ -1,6 +1,6 @@
 <script lang="ts">
   import '../value-control.css';
-  import { valueToPosition, calculateArcPath, calculateIndicatorPosition, generateTickPositions, handleKeyboardStep, debounce, clamp, snapToStep } from '../value-control-core';
+  import { valueToPosition, calculateArcPath, calculateIndicatorPosition, generateTickPositions, handleKeyboardStep, debounce, clamp, snapToStep } from '../../../../primitives/scalar/value-control-core';
   import type { KnobSkinRendererProps } from '../skin';
 
   let { value, min, max, step, defaultValue, fineStepDivisor = 10, label, displayFn,

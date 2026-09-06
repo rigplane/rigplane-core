@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { buildNrOptions, buildNotchOptions } from '../dsp-utils';
-import { rawToPercentDisplay } from '../../controls/value-control';
+import { rawToPercentDisplay } from '../../../primitives/scalar/value-control-core';
 
 const mockProps = {
   nrMode: 0,

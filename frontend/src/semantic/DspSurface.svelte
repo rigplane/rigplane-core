@@ -46,7 +46,7 @@
   import type { DspField, DspViewModel } from './radio-view-model';
   import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
-  import { rawToPercentDisplay } from '../components-v2/controls/value-control/value-control-core';
+  import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   import { pressedOf } from './pressed-of';
 
   /** On/off controls, `[field, label]`. */

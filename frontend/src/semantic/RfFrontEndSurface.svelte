@@ -111,7 +111,7 @@
   import {
     dualParamValuesFromNormX,
     dualParamNormXFromValues,
-  } from '../components-v2/controls/value-control/value-control-core';
+  } from '../primitives/scalar/value-control-core';
 
   interface Props {
     view: RadioViewModel;
@@ -170,7 +170,7 @@
     f && f.reading.status === 'known' ? f.reading.value : fallback;
   /** Readback projection (MOR-1447 leg 2): the honest inverse of the
    *  hardware knob. Ported verbatim from `dualParamNormXFromValues`
-   *  (`components-v2/controls/value-control/value-control-core.ts`) — the
+   *  (`primitives/scalar/value-control-core.ts`) — the
    *  same math `DualParamRenderer.svelte` already draws with. Ambiguity
    *  handling is inherited from that function: if SQL reads above its
    *  minimum, the knob is projected to the right leg (RF forced to max) —
@@ -196,7 +196,7 @@
       normX, RF_SQL_MIN, RF_SQL_MAX, RF_SQL_STEP,
     );
     // Per-field change guard, mirroring `DualParamRenderer.svelte`'s
-    // `emitPair` (`value-control-core.ts`'s companion component — only emits
+    // `emitPair` (`primitives/scalar/value-control-core.ts`'s companion component — only emits
     // a field that actually moved). Without this, every input event
     // unconditionally re-sends BOTH fields — a left-leg drag spams redundant
     // `set_squelch(0)` and a right-leg drag spams redundant `set_rf_gain(255)`

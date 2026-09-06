@@ -87,7 +87,7 @@ import { toSpectrumAuthority } from '../scope-adapter';
 import { getRfFrontEndHandlers } from '../panel-adapters';
 import {
   dualParamNormXFromValues, dualParamValuesFromNormX,
-} from '../../../../components-v2/controls/value-control/value-control-core';
+} from '../../../../primitives/scalar/value-control-core';
 
 const profile = PROFILES.ic7300;
 const IC7300_STATE = profile.state;
@@ -236,7 +236,7 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
   // against the real captured `main.rfGain`/`main.squelch` readings, through
   // the exact SAME `dualParamValuesFromNormX`/raw-0-255 rescale seam
   // `RfFrontEndSurface.svelte`/`SemanticRadioSurfaces.svelte` use — ported
-  // from `DualParamRenderer`/`value-control-core.ts`, not re-derived here.
+  // from `DualParamRenderer`/`primitives/scalar/value-control-core.ts`, not re-derived here.
   describe('combined RF/SQL knob (MOR-1447 leg 2) — dispatch/value cases against the real fixture', () => {
     it('the live capture is squelch-at-min / RF-mid — the left leg of the combined knob', () => {
       expect(IC7300_STATE.main!.rfGain).toBeCloseTo(0.8196078431372549);

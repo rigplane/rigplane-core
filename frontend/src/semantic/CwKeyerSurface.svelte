@@ -128,7 +128,7 @@
     type PresentationPhase,
   } from '../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../primitives/scalar/committed-scalar.svelte';
-  import { clamp, snapToStep } from '../components-v2/controls/value-control/value-control-core';
+  import { clamp, snapToStep } from '../primitives/scalar/value-control-core';
   import type { RadioViewModel } from './radio-view-model';
 
   type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {

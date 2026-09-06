@@ -1,9 +1,8 @@
 <script lang="ts">
   import '../controls/control-button.css';
   import { HardwareButton } from '$lib/Button';
-  import {
-    ValueControl, clamp, rawToPercentDisplay, snapToStep,
-  } from '../controls/value-control';
+  import { ValueControl } from '../controls/value-control';
+  import { clamp, rawToPercentDisplay, snapToStep } from '../../primitives/scalar/value-control-core';
   import { getLocale } from '$lib/i18n';
   import type { PresentationPhase } from '../../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../../primitives/scalar/committed-scalar.svelte';

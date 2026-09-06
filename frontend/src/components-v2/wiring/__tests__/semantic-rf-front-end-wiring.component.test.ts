@@ -459,7 +459,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   // Left-of-center: RF sweeps, SQL stays pinned at min. Literal expected
   // values (not re-derived from the mapping formula) — 0.23 lands exactly
   // halfway across the left leg (`dualParamValuesFromNormX`'s own math,
-  // ported from `DualParamRenderer`/`value-control-core.ts`).
+  // ported from `DualParamRenderer`/`primitives/scalar/value-control-core.ts`).
   it('sweeps RF only on a left-of-center drag, leaving SQL pinned at min', () => {
     h.caps = liveCaps(true, 'combined');
     render();

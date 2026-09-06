@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ValueControl, normalizedPercentDisplay } from '../controls/value-control';
+  import { ValueControl } from '../controls/value-control';
+  import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
   import DualParamRenderer from '../controls/value-control/DualParamRenderer.svelte';
   import AttenuatorControl from '../controls/AttenuatorControl.svelte';
   import { HardwareButton } from '$lib/Button';
