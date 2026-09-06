@@ -371,6 +371,23 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     r.dispose();
   });
 
+  it('uses the pair binding to dispatch a canonical reversal after an unconfirmed request', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { controlModel: 'combined', onLevelChange });
+    const input = r.el('rf-sql')!.querySelector('input')!;
+    expect(input.dataset.pairEvidence).toBe('reading');
+    input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.value = '0.5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange.mock.calls).toEqual([
+      ['squelch', 1],
+      ['squelch', 0],
+    ]);
+    r.dispose();
+  });
+
   it('a hard-right drag emits ONLY squelch — RF is already at max, unchanged (owner semantics: "hard right = SQL max (RF max)")', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });

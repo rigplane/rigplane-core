@@ -4,8 +4,9 @@
   Presentation only. It renders the MOR-1262 decomposition family 11
   `rfFrontEnd` fact group (MOR-1292/MOR-1293) — preamp, attenuator, RF gain,
   squelch, DIGI-SEL, IP+ — and emits control intents as callbacks. It holds
-  no state, consults no controller and issues no command directly (v3 ADR
-  invariant 11), same doctrine as `TxAuxSurface`/`RxAudioSurface`.
+  only primitive-owned local interaction state, consults no controller and
+  issues no command directly (v3 ADR invariant 11), same doctrine as
+  `TxAuxSurface`/`RxAudioSurface`.
 
   CARRY-FORWARDS (binding, from the MOR-1292/MOR-1293 review rulings — see
   `radio-view-model.ts`'s `RfFrontEndViewModel` doc comment for the fact-layer
@@ -41,9 +42,9 @@
 
   PENDING AFFORDANCE (MOR-1441 leg 2). `pendingPreamp` is a plain, command-
   bus-blind display prop, same "read at the wiring seam" precedent as leg
-  1's `pendingFrequencyHz`. It never touches the MOR-1447 combined-knob/
-  change-guard machinery above (`combinedNormX`/`changeCombined` read only
-  confirmed `rf.rfGain`/`rf.squelch`) — preamp is a disjoint field. Marks the
+  1's `pendingFrequencyHz`. It never touches the MOR-1447 combined pair
+  binding, whose reading evidence comes only from `rf.rfGain`/`rf.squelch` —
+  preamp is a disjoint field. Marks the
   targeted preamp CHOICE distinctly; the preamp binding's `aria-checked` keeps reading
   `rf.preamp`'s CONFIRMED reading exclusively, so a click while pending still
   dispatches the CLICKED (explicit) value.
@@ -103,12 +104,13 @@
 </script>
 
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
   import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
   import {
-    dualParamValuesFromNormX,
-    dualParamNormXFromValues,
-  } from '../primitives/scalar/value-control-core';
+    createContinuousPair, nativeRangeContinuousPairPolicy,
+    type ContinuousPairInput, type ContinuousPairRendererLease, type ContinuousPairView,
+  } from '../primitives/scalar/continuous-pair.svelte';
   import {
     bindChoiceInstrument,
     bindToggleInstrument,
@@ -183,51 +185,41 @@
     && !!rf?.rfGain.availability.structural
     && !!rf?.squelch.availability.structural,
   );
-  const knownOr = (f: RfFrontEndField<number> | undefined, fallback: number): number =>
-    f && f.reading.status === 'known' ? f.reading.value : fallback;
-  /** Readback projection (MOR-1447 leg 2): the honest inverse of the
-   *  hardware knob. Ported verbatim from `dualParamNormXFromValues`
-   *  (`primitives/scalar/value-control-core.ts`) — the
-   *  same math `DualParamRenderer.svelte` already draws with. Ambiguity
-   *  handling is inherited from that function: if SQL reads above its
-   *  minimum, the knob is projected to the right leg (RF forced to max) —
-   *  the physical knob genuinely cannot express "RF below max AND SQL above
-   *  min" at once, so this is the one honest reading, not a guess.
-   */
-  let combinedNormX = $derived(
-    dualParamNormXFromValues(
-      knownOr(rf?.rfGain, RF_SQL_MIN),
-      knownOr(rf?.squelch, RF_SQL_MIN),
-      RF_SQL_MIN,
-      RF_SQL_MAX,
-    ),
-  );
-  function changeCombined(normX: number): void {
-    // Both halves must be independently usable, not merely structurally
-    // present (mirrors carry-forward 2/3's "the handler itself refuses to
-    // emit, independent of `disabled`" discipline): one physical knob must
-    // not silently half-write the pair — e.g. move RF while SQL is degraded
-    // and stays untouched, desyncing what looks like a single control.
-    if (!rf || !usable(rf.rfGain) || !usable(rf.squelch)) return;
-    const { rf: nextRf, sql: nextSql } = dualParamValuesFromNormX(
-      normX, RF_SQL_MIN, RF_SQL_MAX, RF_SQL_STEP,
-    );
-    // Per-field change guard, mirroring `DualParamRenderer.svelte`'s
-    // `emitPair` (`primitives/scalar/value-control-core.ts`'s companion component — only emits
-    // a field that actually moved). Without this, every input event
-    // unconditionally re-sends BOTH fields — a left-leg drag spams redundant
-    // `set_squelch(0)` and a right-leg drag spams redundant `set_rf_gain(255)`
-    // on every tick, roughly doubling the CI-V write rate versus both the
-    // real hardware knob and the leg-1 two-slider path. On the live serial
-    // IC-7300 gate radio that write-rate doubling is the queue-lag/"Commander
-    // stopped" hazard shape.
-    if (rf.rfGain.reading.status === 'known' && nextRf !== rf.rfGain.reading.value) {
-      changeLevel('rfGain', nextRf);
-    }
-    if (rf.squelch.reading.status === 'known' && nextSql !== rf.squelch.reading.value) {
-      changeLevel('squelch', nextSql);
-    }
+  function rfSqlInput(): Readonly<ContinuousPairInput> {
+    const availability = (field: RfFrontEndField<number> | undefined) =>
+      field?.availability.structural && field.availability.operational
+        ? 'available' as const : 'unavailable' as const;
+    return {
+      evidence: 'reading', ownerKey: 'semantic-rf-sql',
+      domain: {
+        min: RF_SQL_MIN, max: RF_SQL_MAX, step: RF_SQL_STEP,
+        defaultValue: null, fineStepDivisor: 10,
+      },
+      enabled: controlModel === 'combined',
+      rf: {
+        reading: rf?.rfGain.reading ?? { status: 'unknown' },
+        availability: availability(rf?.rfGain),
+      },
+      sql: {
+        reading: rf?.squelch.reading ?? { status: 'unknown' },
+        availability: availability(rf?.squelch),
+      },
+      requestRf: (value) => changeLevel('rfGain', value),
+      requestSql: (value) => changeLevel('squelch', value),
+    };
   }
+  const rfSqlPair = createContinuousPair(rfSqlInput, nativeRangeContinuousPairPolicy);
+  let rfSqlLease: ContinuousPairRendererLease | null = $state(null);
+  let rfSqlView: Readonly<ContinuousPairView> = $state(untrack(() => rfSqlPair.view));
+  $effect(() => {
+    const lease = rfSqlPair.attachRenderer();
+    rfSqlLease = lease;
+    return () => lease.dispose();
+  });
+  $effect(() => {
+    rfSqlView = rfSqlLease === null ? rfSqlPair.view : rfSqlLease.view;
+  });
+  onDestroy(() => rfSqlPair.destroy());
 </script>
 
 {#if rf}
@@ -287,9 +279,10 @@
         <span class="rf-front-end-name">RF/SQL</span>
         <input
           type="range" min={RF_SQL_MIN} max={RF_SQL_MAX} step={RF_SQL_STEP}
-          value={combinedNormX}
-          disabled={!usable(rf.rfGain) || !usable(rf.squelch)}
-          oninput={(event) => changeCombined(event.currentTarget.valueAsNumber)}
+          value={rfSqlView.displayedPosition ?? RF_SQL_MIN}
+          disabled={!rfSqlView.editable}
+          data-pair-evidence={rfSqlView.evidence}
+          oninput={(event) => rfSqlLease?.nativeInput(event.currentTarget.valueAsNumber)}
         />
         <output
           >{levelTextOf(rf.rfGain, RF_SQL_MIN, RF_SQL_MAX)} / {levelTextOf(rf.squelch, RF_SQL_MIN, RF_SQL_MAX)}</output
