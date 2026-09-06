@@ -154,6 +154,13 @@ describe('typed non-PTT radio intents', () => {
       originalEpoch: 7,
       eventEpoch: 7,
     });
+    expect(lifecycle.getCommandLifecycle('mode-1', 7)).toMatchObject({
+      status: 'pending',
+      dispatchedEventEpoch: 7,
+    });
+    const stale = intents.dispatchRadioIntent({ id: 'stale-sent', name: 'set_vfo', params: { vfo: 'B' } });
+    harness.delivery?.({ commandId: stale.id, kind: 'transport-sent', originalEpoch: 7, eventEpoch: 8 });
+    expect(lifecycle.getCommandLifecycle(stale.id, 7)).not.toHaveProperty('dispatchedEventEpoch');
     harness.delivery?.({ commandId: 'mode-1', kind: 'ack', originalEpoch: 7, eventEpoch: 7 });
 
     expect(lifecycle.getCommandLifecycle('mode-1', 7)).toMatchObject({
@@ -216,6 +223,7 @@ describe('typed non-PTT radio intents', () => {
     const superseded = intents.dispatchRadioIntent({ id: 'server-superseded', name: 'set_filter', params: { filter: 2 } });
     harness.lifecycle?.({ commandId: superseded.id, kind: 'superseded', originalEpoch: 7, eventEpoch: 7 });
     expect(lifecycle.getCommandLifecycle(superseded.id, 7)?.status).toBe('cancelled');
+    expect(lifecycle.getCommandLifecycle(superseded.id, 7)?.terminalOutcome).toBe('superseded');
     expect(lifecycle.isCommandLifecycleSuperseded(superseded)).toBe(true);
     vi.advanceTimersByTime(5_000);
     expect(lifecycle.getCommandLifecycle(superseded.id, 7)).toBeUndefined();
