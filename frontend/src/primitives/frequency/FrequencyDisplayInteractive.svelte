@@ -1,6 +1,10 @@
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
+  import { getSelectedFrequencyReadout } from '../../component-kits/activation';
   import StandardFrequencyReadout from './StandardFrequencyReadout.svelte';
-  import { createFrequencyInteraction } from './frequency-interaction.svelte';
+  import {
+    createFrequencyInteraction, createFrequencyInteractionLease,
+  } from './frequency-interaction.svelte';
   import { projectFrequencyReadout } from './frequency-readout';
 
   interface Props {
@@ -86,7 +90,7 @@
     pendingDisplayHz,
     pendingAnnouncement,
   }));
-  const interaction = createFrequencyInteraction({
+  const owner = createFrequencyInteraction({
     get confirmedHz() { return freq; },
     get digits() { return model.digits; },
     get disabled() { return disabled; },
@@ -96,14 +100,49 @@
     get maxFreq() { return maxFreq; },
     get onFreqChange() { return onFreqChange; },
   });
+  let selectedRenderer = $derived.by(() => {
+    void contextKey;
+    return getSelectedFrequencyReadout();
+  });
+  let attachedContextKey = untrack(() => contextKey);
+  let attachedRenderer = untrack(() => selectedRenderer);
+  const attachLease = (key: string | undefined, renderer: typeof selectedRenderer) => createFrequencyInteractionLease(
+    owner,
+    () => Object.is(contextKey, key) && getSelectedFrequencyReadout() === renderer,
+  );
+  let lease = $state.raw(attachLease(attachedContextKey, attachedRenderer));
+  $effect.pre(() => {
+    const nextContextKey = contextKey;
+    const nextRenderer = selectedRenderer;
+    if (Object.is(nextContextKey, attachedContextKey)
+      && nextRenderer === attachedRenderer && !lease.revoked) return;
+    lease.revoke();
+    attachedContextKey = nextContextKey;
+    attachedRenderer = nextRenderer;
+    lease = attachLease(nextContextKey, nextRenderer);
+  });
+  onDestroy(() => lease.revoke());
 </script>
 
-<StandardFrequencyReadout
-  {model}
-  presentation="interactive"
-  {interaction}
-  {compact}
-  {active}
-  {receiver}
-  {vfoFreqHook}
-/>
+{#if selectedRenderer}
+  {@const Renderer = selectedRenderer}
+  <Renderer
+    {model}
+    presentation="interactive"
+    interaction={lease.interaction}
+    {compact}
+    {active}
+    {receiver}
+    {vfoFreqHook}
+  />
+{:else}
+  <StandardFrequencyReadout
+    {model}
+    presentation="interactive"
+    interaction={lease.interaction}
+    {compact}
+    {active}
+    {receiver}
+    {vfoFreqHook}
+  />
+{/if}

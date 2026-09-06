@@ -4,7 +4,23 @@ import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { FrequencyRenderer } from '../../../../component-kit-api/src/index';
+
+const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
+vi.mock('../../../component-kits/activation', () => ({
+  getSelectedFrequencyReadout: () => selectedFrequency.current,
+}));
+
 import FrequencyDisplayInteractive from '../../../primitives/frequency/FrequencyDisplayInteractive.svelte';
+import AlternateFrequencyReadoutHarness, {
+  clearRetainedInteractions, retainedInteractions,
+} from '../../../primitives/frequency/__tests__/AlternateFrequencyReadoutHarness.svelte';
+import {
+  createFrequencyInteraction,
+  createFrequencyInteractionLease,
+  type FrequencyInteraction,
+} from '../../../primitives/frequency/frequency-interaction.svelte';
+import { projectFrequencyReadout } from '../../../primitives/frequency/frequency-readout';
 // Static import while the stores below are imported dynamically per test:
 // safe ONLY while `panel-props` stays a pure state→props module with no store
 // imports. If a projection ever starts reading a store, move this into the
@@ -102,6 +118,7 @@ function makeMinimalState(overrides: Partial<ServerState> = {}): ServerState {
 }
 
 let components: ReturnType<typeof mount>[] = [];
+let roots: (() => void)[] = [];
 
 function mountDisplay(props: ComponentProps<typeof FrequencyDisplayInteractive>): HTMLElement {
   const t = document.createElement('div');
@@ -110,6 +127,159 @@ function mountDisplay(props: ComponentProps<typeof FrequencyDisplayInteractive>)
   flushSync();
   return t;
 }
+
+function interactionOwner(options: { disabled?: boolean; onFreqChange?: (hz: number) => void } = {}) {
+  const model = projectFrequencyReadout({ confirmedHz: 14_250_000 });
+  let owner!: FrequencyInteraction;
+  roots.push($effect.root(() => {
+    owner = createFrequencyInteraction({
+      confirmedHz: 14_250_000,
+      digits: model.digits,
+      disabled: options.disabled ?? false,
+      minFreq: 0,
+      maxFreq: 999_000_000,
+      onFreqChange: options.onFreqChange,
+    });
+  }));
+  flushSync();
+  return { owner, digit: model.digits.find((candidate) => candidate.multiplier === 1_000)! };
+}
+
+describe('frequency renderer lifetime', () => {
+  it('revokes the actual external renderer across replacement, context A-B-A, and unmount', async () => {
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+    const context = writable('A');
+    const liveContext = fromStore(context);
+    const onFreqChange = vi.fn();
+    const root = mountDisplay({
+      freq: 14_250_000,
+      pendingDisplayHz: 14_260_000,
+      get contextKey() { return liveContext.current; },
+      onFreqChange,
+    });
+    const digit = projectFrequencyReadout({ confirmedHz: 14_250_000 }).digits
+      .find((candidate) => candidate.multiplier === 1_000)!;
+    const first = retainedInteractions()[0];
+    expect(root.querySelector('[data-alternate-frequency-readout]')?.getAttribute('data-source'))
+      .toBe('pending');
+    first.handleDigitClick(digit, new MouseEvent('click'));
+
+    context.set('B');
+    expect(first.inert).toBe(true);
+    context.set('A');
+    const aBaWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    first.handleDigitClick(digit, new MouseEvent('click'));
+    first.handleWheel(digit, aBaWheel);
+    expect(aBaWheel.defaultPrevented).toBe(false);
+    expect(first.inert).toBe(true);
+    expect(onFreqChange).not.toHaveBeenCalled();
+    flushSync();
+    const recovered = retainedInteractions().at(-1)!;
+    expect(recovered).not.toBe(first);
+    expect(root.querySelector('[data-alternate-frequency-readout]')).not.toBeNull();
+    recovered.handleDigitClick(digit, new MouseEvent('click'));
+    await Promise.resolve();
+    expect(recovered.selectedDigitIndex).toBe(digit.digitIndex);
+    recovered.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
+    onFreqChange.mockClear();
+    const staleRecoveredWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    first.handleWheel(digit, staleRecoveredWheel);
+    expect(staleRecoveredWheel.defaultPrevented).toBe(false);
+    expect(onFreqChange).not.toHaveBeenCalled();
+
+    selectedFrequency.current = undefined;
+    const beforeCleanup = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    recovered.handleWheel(digit, beforeCleanup);
+    expect(beforeCleanup.defaultPrevented).toBe(false);
+    expect(onFreqChange).not.toHaveBeenCalled();
+    context.set('B');
+    flushSync();
+    expect(root.querySelector('[data-alternate-frequency-readout]')).toBeNull();
+
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+    context.set('A');
+    flushSync();
+    const second = retainedInteractions().at(-1)!;
+    expect(second).not.toBe(first);
+    expect(second).not.toBe(recovered);
+    first.handleDigitClick(digit, new MouseEvent('click'));
+    first.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    expect(onFreqChange).not.toHaveBeenCalled();
+    second.handleDigitClick(digit, new MouseEvent('click'));
+    second.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
+
+    const component = components.pop()!;
+    unmount(component);
+    const afterUnmount = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    second.handleWheel(digit, afterUnmount);
+    expect(afterUnmount.defaultPrevented).toBe(false);
+    expect(second.inert).toBe(true);
+    expect(onFreqChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('latches the first authority mismatch across A-B-A until a fresh lease attaches', async () => {
+    const onFreqChange = vi.fn();
+    const { owner, digit } = interactionOwner({ onFreqChange });
+    let authority = 'A';
+    const first = createFrequencyInteractionLease(owner, () => authority === 'A');
+    const retainedClick = first.interaction.handleDigitClick;
+    const retainedWheel = first.interaction.handleWheel;
+
+    retainedClick(digit, new MouseEvent('click'));
+    first.interaction.handleDigitEnter(digit);
+    expect(first.interaction.selectedDigitIndex).toBe(digit.digitIndex);
+    expect(first.interaction.hoveredDigitIndex).toBe(digit.digitIndex);
+    authority = 'B';
+    expect(first.interaction.inert).toBe(true);
+    authority = 'A';
+
+    const staleWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    const staleKey = new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true });
+    retainedClick(digit, new MouseEvent('click'));
+    first.interaction.handleDigitEnter(digit);
+    retainedWheel(digit, staleWheel);
+    first.interaction.handleKeyDown(staleKey);
+    first.interaction.handleDigitLeave();
+    expect(staleWheel.defaultPrevented).toBe(false);
+    expect(staleKey.defaultPrevented).toBe(false);
+    expect(first.interaction.inert).toBe(true);
+    expect(first.interaction.selectedDigitIndex).toBeNull();
+    expect(first.interaction.hoveredDigitIndex).toBeNull();
+    expect(first.interaction.isSelected(digit)).toBe(false);
+    expect(first.interaction.isHovered(digit)).toBe(false);
+    expect(onFreqChange).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(owner.selectedDigitIndex).toBeNull();
+    expect(owner.hoveredDigitIndex).toBeNull();
+
+    const live = createFrequencyInteractionLease(owner, () => authority === 'A');
+    live.interaction.handleDigitClick(digit, new MouseEvent('click'));
+    live.interaction.handleWheel(digit, new WheelEvent('wheel', { deltaY: -1, cancelable: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
+    live.revoke();
+  });
+
+  it('keeps a real disabled no-writer interaction passive before and after revoke', () => {
+    const { owner, digit } = interactionOwner({ disabled: true });
+    const lease = createFrequencyInteractionLease(owner, () => true);
+    const wheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    lease.interaction.handleDigitClick(digit, new MouseEvent('click'));
+    lease.interaction.handleDigitEnter(digit);
+    lease.interaction.handleWheel(digit, wheel);
+    lease.interaction.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    lease.interaction.handleDigitLeave();
+    expect(wheel.defaultPrevented).toBe(false);
+    expect(lease.interaction).toMatchObject({
+      inert: true, selectedDigitIndex: null, hoveredDigitIndex: null,
+    });
+    expect(lease.interaction.isSelected(digit)).toBe(false);
+    expect(lease.interaction.isHovered(digit)).toBe(false);
+    lease.revoke();
+    expect(lease.interaction.inert).toBe(true);
+  });
+});
 
 describe('display-only frequency and disabled arithmetic', () => {
   it.each([{ freq: null, disabled: false }, { freq: 14250000, disabled: true }])('rejects every gesture with %j', (authority) => {
@@ -159,6 +329,8 @@ describe('display-only frequency and disabled arithmetic', () => {
 
 beforeEach(async () => {
   vi.resetModules();
+  selectedFrequency.current = undefined;
+  clearRetainedInteractions();
   // Same module registry: radio.svelte's own capabilities import resolves to
   // this instance, so the epoch we establish here is the one the gate checks.
   capabilities = await import('$lib/stores/capabilities.svelte');
@@ -168,6 +340,10 @@ beforeEach(async () => {
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
+  roots.forEach((dispose) => dispose());
+  roots = [];
+  selectedFrequency.current = undefined;
+  clearRetainedInteractions();
   document.body.innerHTML = '';
 });
 

@@ -24,6 +24,15 @@ export interface FrequencyInteraction {
   isHovered(digit: DigitInfo): boolean;
 }
 
+export interface FrequencyInteractionLease {
+  readonly interaction: FrequencyInteraction;
+  readonly revoked: boolean;
+  revoke(): void;
+}
+
+const resetInteraction = new WeakMap<FrequencyInteraction, () => void>();
+const activeRevocation = new WeakMap<FrequencyInteraction, () => void>();
+
 export function createFrequencyInteraction(
   current: FrequencyInteractionInput,
 ): FrequencyInteraction {
@@ -78,7 +87,12 @@ export function createFrequencyInteraction(
     hoveredDigitIndex = null;
   }
 
-  return {
+  function reset(): void {
+    selectedDigitIndex = null;
+    hoveredDigitIndex = null;
+  }
+
+  const interaction: FrequencyInteraction = {
     get inert() { return inert; },
     get selectedDigitIndex() { return selectedDigitIndex; },
     get hoveredDigitIndex() { return hoveredDigitIndex; },
@@ -90,4 +104,58 @@ export function createFrequencyInteraction(
     isSelected: (digit) => selectedDigitIndex === digit.digitIndex,
     isHovered: (digit) => hoveredDigitIndex === digit.digitIndex,
   };
+  resetInteraction.set(interaction, reset);
+  return interaction;
+}
+
+export function createFrequencyInteractionLease(
+  owner: FrequencyInteraction,
+  isCurrent: () => boolean,
+): FrequencyInteractionLease {
+  let revoked = false;
+  let resetGeneration = 0;
+  function clearOwner(): void {
+    resetGeneration += 1;
+    resetInteraction.get(owner)?.();
+  }
+  function deferOwnerReset(): void {
+    const generation = ++resetGeneration;
+    queueMicrotask(() => {
+      if (generation === resetGeneration && revoked && !activeRevocation.has(owner)) clearOwner();
+    });
+  }
+  function latch(resetNow: boolean): void {
+    const owned = activeRevocation.get(owner) === revoke;
+    revoked = true;
+    if (owned) activeRevocation.delete(owner);
+    if (resetNow && (owned || !activeRevocation.has(owner))) clearOwner();
+    else if (!activeRevocation.has(owner)) deferOwnerReset();
+  }
+  function active(resetNow = false): boolean {
+    if (revoked || activeRevocation.get(owner) !== revoke) return false;
+    if (isCurrent()) return true;
+    latch(resetNow);
+    return false;
+  }
+  function revoke(): void {
+    latch(true);
+  }
+
+  const previous = activeRevocation.get(owner);
+  if (previous) previous();
+  else resetInteraction.get(owner)?.();
+  activeRevocation.set(owner, revoke);
+  const interaction: FrequencyInteraction = {
+    get inert() { return !active() || owner.inert; },
+    get selectedDigitIndex() { return active() ? owner.selectedDigitIndex : null; },
+    get hoveredDigitIndex() { return active() ? owner.hoveredDigitIndex : null; },
+    handleWheel(digit, event) { if (active(true)) owner.handleWheel(digit, event); },
+    handleDigitClick(digit, event) { if (active(true)) owner.handleDigitClick(digit, event); },
+    handleKeyDown(event) { if (active(true)) owner.handleKeyDown(event); },
+    handleDigitEnter(digit) { if (active(true)) owner.handleDigitEnter(digit); },
+    handleDigitLeave() { if (active(true)) owner.handleDigitLeave(); },
+    isSelected: (digit) => active() && owner.isSelected(digit),
+    isHovered: (digit) => active() && owner.isHovered(digit),
+  };
+  return { interaction, get revoked() { return revoked; }, revoke };
 }

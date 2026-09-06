@@ -1,8 +1,17 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { ComponentProps } from 'svelte';
+import type { FrequencyRenderer } from '../../../../component-kit-api/src/index';
+
+const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
+vi.mock('../../../component-kits/activation', () => ({
+  getSelectedFrequencyReadout: () => selectedFrequency.current,
+}));
+
 import StandardFrequencyReadout from '../StandardFrequencyReadout.svelte';
-import AlternateFrequencyReadoutHarness from './AlternateFrequencyReadoutHarness.svelte';
+import AlternateFrequencyReadoutHarness, {
+  clearRetainedInteractions, retainedInteractions,
+} from './AlternateFrequencyReadoutHarness.svelte';
 import { projectFrequencyReadout } from '../frequency-readout';
 import FrequencyDisplay from '../../../components-v2/display/FrequencyDisplay.svelte';
 
@@ -16,9 +25,16 @@ function mountReadout(props: ComponentProps<typeof StandardFrequencyReadout>): H
   return target;
 }
 
+beforeEach(() => {
+  selectedFrequency.current = undefined;
+  clearRetainedInteractions();
+});
+
 afterEach(() => {
   mounted.forEach((component) => unmount(component));
   mounted.length = 0;
+  selectedFrequency.current = undefined;
+  clearRetainedInteractions();
   document.body.innerHTML = '';
 });
 
@@ -119,30 +135,32 @@ describe('StandardFrequencyReadout', () => {
 });
 
 describe('alternate frequency renderer', () => {
-  it('uses the shared behavior while keeping pending display out of arithmetic', () => {
-    const onFreqChange = vi.fn();
+  it('receives the real passive interaction and stays inert after teardown', () => {
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
     const target = document.createElement('div');
     document.body.appendChild(target);
-    mounted.push(mount(AlternateFrequencyReadoutHarness, {
+    mounted.push(mount(FrequencyDisplay, {
       target,
-      props: {
-        confirmedHz: 14_250_000,
-        pendingDisplayHz: 14_260_000,
-        onFreqChange,
-      },
+      props: { freq: 14_250_000, compact: true, active: false, receiver: 'sub' },
     }));
     flushSync();
 
     const root = target.querySelector<HTMLElement>('[data-alternate-frequency-readout]')!;
-    const oneKhz = target.querySelector<HTMLButtonElement>('[data-multiplier="1000"]')!;
-    expect(root.dataset.source).toBe('pending');
-    expect(Array.from(target.querySelectorAll('button')).map((digit) => digit.textContent).join('')).toBe('14260000');
-
-    oneKhz.click();
-    oneKhz.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
-    flushSync();
-
-    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
-    expect(onFreqChange).not.toHaveBeenCalledWith(14_261_000);
+    const interaction = retainedInteractions()[0];
+    const digit = projectFrequencyReadout({ confirmedHz: 14_250_000 }).digits[0];
+    expect(root.dataset.presentation).toBe('passive');
+    expect(root.dataset.compact).toBe('true');
+    expect(root.dataset.active).toBe('false');
+    expect(root.dataset.receiver).toBe('sub');
+    expect(root.dataset.vfoFreqHook).toBe('false');
+    expect(Array.from(target.querySelectorAll('button')).map((digit) => digit.textContent).join('')).toBe('14250000');
+    const wheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    interaction.handleDigitClick(digit, new MouseEvent('click'));
+    interaction.handleWheel(digit, wheel);
+    interaction.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    expect(wheel.defaultPrevented).toBe(false);
+    expect(interaction.inert).toBe(true);
+    unmount(mounted.pop()!);
+    expect(interaction.inert).toBe(true);
   });
 });
