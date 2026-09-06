@@ -163,6 +163,50 @@ describe('ValueControl controlled HBar rendering', () => {
     expect(slider(target).getAttribute('aria-valuenow')).toBe('20');
   });
 
+  it('makes a cancelled pointer token inert before a later move event', () => {
+    const onChange = vi.fn();
+    const { target } = mountReactive({ ...baseProps, onChange });
+    vi.spyOn(target.querySelector('.vc-hbar') as HTMLElement, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 100 } as DOMRect);
+    const control = slider(target) as HTMLElement & { setPointerCapture?: (pointerId: number) => void };
+    control.setPointerCapture = vi.fn();
+
+    control.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 50, pointerId: 1 }));
+    control.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+    flushSync();
+    expect(visibleValue(target)).toContain('20');
+    expect(fill(target)).toContain('--vc-fill-percent: 20%');
+    expect(control.getAttribute('aria-valuenow')).toBe('20');
+    control.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 80, pointerId: 1 }));
+
+    expect(onChange.mock.calls).toEqual([[50]]);
+  });
+
+  it.each([
+    [42, '42%', '42', '42%'],
+    [Number.POSITIVE_INFINITY, '+INF', null, '0%'],
+    [Number.NEGATIVE_INFINITY, '-INF', null, '0%'],
+    [Number.NaN, 'NAN', null, '0%'],
+  ] as const)('projects a %s reading synchronously through the caller formatter', (
+    value, expectedText, expectedAria, expectedFill,
+  ) => {
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    roots.push(target);
+    const component = mount(ValueControl, { target, props: {
+      ...baseProps, value, max: 100, onChange: vi.fn(),
+      displayFn: (candidate: number) => Number.isNaN(candidate) ? 'NAN'
+        : candidate === Number.POSITIVE_INFINITY ? '+INF'
+          : candidate === Number.NEGATIVE_INFINITY ? '-INF' : `${candidate}%`,
+    } });
+    components.push(component);
+
+    expect(visibleValue(target)).toBe(expectedText);
+    expect(slider(target).getAttribute('aria-valuenow')).toBe(expectedAria);
+    expect(fill(target)).toContain(`--vc-fill-percent: ${expectedFill}`);
+    expect(slider(target).getAttribute('aria-disabled')).toBe(Number.isFinite(value) ? 'false' : 'true');
+  });
+
   it('uses canonical value for controlled keyboard arithmetic until the parent accepts', () => {
     const onChange = vi.fn();
     const { target } = mountReactive({ ...baseProps, optimistic: false, onChange });
@@ -214,5 +258,17 @@ describe('ValueControl controlled HBar rendering', () => {
     expect(onChange).toHaveBeenCalledWith(30);
     expect(visibleValue(target)).toContain('30');
     expect(fill(target)).toContain('--vc-fill-percent: 30%');
+  });
+
+  it('revokes a live disabled HBar binding even when a key event is forced through', () => {
+    const onChange = vi.fn();
+    const { state, target } = mountReactive({ ...baseProps, onChange });
+    state.disabled = true;
+    flushSync();
+
+    slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

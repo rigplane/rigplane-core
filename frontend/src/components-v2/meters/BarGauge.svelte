@@ -5,6 +5,10 @@
     prefersReducedMotion,
     onReducedMotionChange,
   } from '$lib/utils/smoothing.svelte';
+  import {
+    createElapsedEnvelopePeakStrategy,
+    createMeterBallistics,
+  } from '../../primitives/meters/meter-ballistics.svelte';
   import { DEFAULT_ZONES, valueToSegments, getSegmentZone, dimColor, valueFontSize } from './bar-gauge-utils';
   import type { Zone } from './bar-gauge-utils';
   import { updatePeakHold, peakHoldDisplay, PEAK_DECAY_MS, type PeakHoldState } from '../panels/meter-utils';
@@ -59,73 +63,53 @@
 
   // ── Smoother ────────────────────────────────────────────────────────────────
   const smoother = createSmoother(0.08, 0.2);
+  const ballistics = createMeterBallistics(smoother, {
+    now: () => Date.now(),
+    requestFrame: (callback) => requestAnimationFrame(callback),
+    cancelFrame: (id) => cancelAnimationFrame(id),
+    setInterval: (callback, milliseconds) => setInterval(callback, milliseconds),
+    clearInterval: (id) => clearInterval(id),
+    prefersReducedMotion,
+    onReducedMotionChange,
+  }, {
+    peakSource: 'sample',
+    ticker: { kind: 'interval', milliseconds: 100 },
+    peak: createElapsedEnvelopePeakStrategy<PeakHoldState>({
+      decayMilliseconds: PEAK_DECAY_MS,
+      updatePeakHold,
+      peakHoldDisplay,
+    }),
+  });
 
   $effect(() => {
-    if (value === null) smoother.reset(0);
-    else smoother.update(valueToSegments(value, SEG_COUNT));
+    const smoothTarget = value === null ? null : valueToSegments(value, SEG_COUNT);
+    untrack(() => ballistics.sync({ sample: value, smoothTarget, peakEnabled: showPeak }));
   });
 
   onMount(() => {
-    smoother.start();
-    return () => smoother.stop();
+    ballistics.start();
+    return () => ballistics.stop();
   });
 
   // ── Peak-hold marker (MOR-1282) ─────────────────────────────────────────────
-  // Reuses `updatePeakHold`/`peakHoldDisplay` — the single MOR-1252 semantics
-  // implementation MetersDockPanel already channels through — so this gauge
-  // never disagrees with the dock about hold/decay/reduced-motion behaviour.
-  // MetersSurface stays loop-free (R9): all ballistics live here.
-  let peakState = $state<PeakHoldState | undefined>(undefined);
-  let peakNow = $state(Date.now());
-
-  // Latches on every live sample. Reads `peakState` (to compare against the
-  // new sample) as well as writing it, so the read must be untracked —
-  // otherwise `resetPeak()`'s write below would re-trigger this same effect
-  // and immediately re-latch from the still-live `value` (mirrors the dock's
-  // own `untrack(() => stepAllPeaks())` pattern for the identical hazard).
-  $effect(() => {
-    if (value === null) { peakState = undefined; return; }
-    if (!showPeak) return;
-    const v = value;
-    const t = Date.now();
-    untrack(() => {
-      peakState = updatePeakHold(peakState, v, t, PEAK_DECAY_MS);
-      peakNow = t;
-    });
-  });
-
-  // Drives the decay display forward. No ticking (and no rAF) while reduced
-  // motion is preferred — the marker is a static hold instead (MOR-1249/1252).
-  $effect(() => {
-    if (!showPeak) return;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
-    const start = () => { intervalId ??= setInterval(() => { peakNow = Date.now(); }, 100); };
-    const stop = () => { if (intervalId) { clearInterval(intervalId); intervalId = null; } };
-
-    if (!prefersReducedMotion()) start();
-    const unsubscribe = onReducedMotionChange((reduced) => {
-      if (reduced) stop(); else start();
-    });
-
-    return () => { stop(); unsubscribe(); };
-  });
-
   let peakPct = $derived.by(() => {
-    if (value === null || !showPeak || peakState === undefined) return undefined;
-    const level = prefersReducedMotion()
-      ? peakState.latchedPeak
-      : peakHoldDisplay(peakState, value, peakNow, PEAK_DECAY_MS);
+    const level = ballistics.view.peakValue;
+    if (level === null) return undefined;
     return Math.max(0, Math.min(100, level * 100));
   });
 
   function resetPeak() {
-    if (showPeak) peakState = undefined;
+    if (showPeak) ballistics.resetPeak();
   }
 
   // ── Reactive display values ─────────────────────────────────────────────────
   const measuredFault = $derived(value !== null && fault);
-  let fullSegs = $derived(value === null ? 0 : Math.floor(smoother.value));
-  let fracSeg  = $derived(value === null ? 0 : smoother.value - Math.floor(smoother.value));
+  let fullSegs = $derived(value === null ? 0 : Math.floor(ballistics.view.smoothedValue));
+  let fracSeg  = $derived(
+    value === null
+      ? 0
+      : ballistics.view.smoothedValue - Math.floor(ballistics.view.smoothedValue),
+  );
 </script>
 
 <svg

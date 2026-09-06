@@ -9,9 +9,8 @@ import MetersDockPanel from '../MetersDockPanel.svelte';
 // while the peak marker glided. These tests pin the fix, mirroring the
 // MOR-1233 precedent already shipped for LinearSMeter's own rAF peak-hold
 // loop: under reduced motion the decay interval is not scheduled at all (no
-// ticks), any already-latched peak snaps to the live raw value (never
-// freezes at a stale position), and the preference is honored on RUNTIME
-// flips in both directions.
+// ticks), the number and fill follow live raw values while the marker remains
+// static, and the preference is honored on RUNTIME flips in both directions.
 //
 // The MatchMediaMock + mockReducedMotion() helper is duplicated from
 // smoothing.isolated.test.ts / LinearSMeter.reduced-motion.svelte.test.ts,
@@ -187,6 +186,23 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
     }
   });
 
+  it('uses one interval for all four peak-capable channels', () => {
+    const { restore } = mockReducedMotion(false);
+    try {
+      mountReactive({
+        powerMeter: 100,
+        swrMeter: 3,
+        alcMeter: 60,
+        idMeter: 25,
+        txActive: true,
+      });
+      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+      expect(netActiveIntervals()).toBe(1);
+    } finally {
+      restore();
+    }
+  });
+
   it('snaps the Po NUMBER directly to the live raw sample when reduced motion is preferred (no glide)', () => {
     const { restore } = mockReducedMotion(true);
     try {
@@ -280,10 +296,31 @@ describe('MetersDockPanel — prefers-reduced-motion (MOR-1249)', () => {
       restore();
     }
   });
+
+  it('keeps a reset peak clear until a genuine reduced-motion sample update', () => {
+    const { restore } = mockReducedMotion(true);
+    try {
+      const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
+      expect(peakMarkerCount(t)).toBe(1);
+      t.querySelector('[data-meter="po"]')?.dispatchEvent(new Event('dblclick', { bubbles: true }));
+      flushSync();
+      expect(peakMarkerCount(t)).toBe(0);
+
+      vi.advanceTimersByTime(2000);
+      flushSync();
+      expect(peakMarkerCount(t)).toBe(0);
+      state.powerMeter = 2;
+      flushSync();
+      expect(peakMarkerCount(t)).toBe(1);
+      expect(poNumber(t)).toBeLessThan(10);
+    } finally {
+      restore();
+    }
+  });
 });
 
 describe('MetersDockPanel — runtime prefers-reduced-motion flips (MOR-1249, mirrors MOR-1233 F1/F2)', () => {
-  it('KILL F1: stops the live decay interval and snaps the peak to current when reduced motion turns ON mid-session', () => {
+  it('KILL F1: stops the live decay interval while the readout follows current when reduced motion turns ON', () => {
     const { setMatches, restore } = mockReducedMotion(false);
     try {
       const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
@@ -298,8 +335,7 @@ describe('MetersDockPanel — runtime prefers-reduced-motion flips (MOR-1249, mi
       expect(netActiveIntervals()).toBe(0); // the interval was torn down
 
       // Drop the raw signal; without any timer advancing, the number must
-      // reflect the live trough immediately — proving the held peak was
-      // cleared (snapped), not merely paused mid-decay (frozen).
+      // reflect the live trough immediately while the marker stays static.
       state.powerMeter = 2;
       flushSync();
       expect(poNumber(t)).toBeLessThan(10);

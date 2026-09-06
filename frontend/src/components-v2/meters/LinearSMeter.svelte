@@ -44,6 +44,10 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { createSmoother, prefersReducedMotion, onReducedMotionChange } from '$lib/utils/smoothing.svelte';
+  import {
+    createFrameStepPeakStrategy,
+    createMeterBallistics,
+  } from '../../primitives/meters/meter-ballistics.svelte';
   import type { MeterDisplay } from '../../presentation/languages/contract';
   import { DEFAULT_METER_DISPLAY } from './meter-display';
   import {
@@ -166,7 +170,7 @@
       return i < s9SegmentIndex ? display.toneBelowS9 : display.toneAboveS9;
     }
     const denom = SEG_COUNT - 1;
-    const fraction = denom === 0 ? Math.min(1, Math.max(0, smoother.value / SEG_COUNT)) : i / denom;
+    const fraction = denom === 0 ? Math.min(1, Math.max(0, smoothedSegs / SEG_COUNT)) : i / denom;
     return ACTIVE_COLORS[Math.round(fraction * (ACTIVE_COLORS.length - 1))];
   }
 
@@ -324,111 +328,42 @@
   // downward steps. The previous 0.25 (~250 ms) release was visibly behind the
   // number; AmberSmeter already uses a comparably snappy 0.15 release.
   const smoother = createSmoother(0.06, 0.1);
-
-  $effect(() => {
-    if (value === null || !mainPresent) smoother.reset(0);
-    else smoother.update((calibratedToSegments(value) / RAW_SEGMENT_DOMAIN) * SEG_COUNT);
-  });
-
-  onMount(() => {
-    smoother.start();
-    return () => smoother.stop();
-  });
-
-  // ── Peak hold ───────────────────────────────────────────────────────────────
-  const PEAK_HOLD_MS = 1000;   // hold at peak for 1 second
-  // Fraction of full scale to drop per frame once the hold window expires
-  // (~30% faster), scaled by SEG_COUNT below — peakSegs lives on the
-  // SEG_COUNT-wide visual domain (fed by the rescaled smoother.update()
-  // above), not the fixed RAW_SEGMENT_DOMAIN.
   const PEAK_DECAY_FRACTION = 0.0195 / RAW_SEGMENT_DOMAIN;
-
-  let peakSegs   = $state(0);  // peak position in segments (0-SEG_COUNT)
-  let peakTime   = $state(0);  // timestamp when peak was set
-  let peakFrameId = 0;
+  const ballistics = createMeterBallistics(smoother, {
+    now: () => performance.now(),
+    requestFrame: (callback) => requestAnimationFrame(callback),
+    cancelFrame: (id) => cancelAnimationFrame(id),
+    setInterval: (callback, milliseconds) => setInterval(callback, milliseconds),
+    clearInterval: (id) => clearInterval(id),
+    prefersReducedMotion,
+    onReducedMotionChange,
+  }, {
+    peakSource: 'smoothed',
+    ticker: { kind: 'animation-frame' },
+    peak: createFrameStepPeakStrategy({
+      holdMilliseconds: 1000,
+      decrementPerFrame: () => PEAK_DECAY_FRACTION * SEG_COUNT * 16.67,
+    }),
+  });
 
   $effect(() => {
-    if (value === null || !mainPresent) { peakSegs = 0; peakTime = 0; return; }
-    const current = smoother.value;
-
-    if (prefersReducedMotion()) {
-      // MOR-1252: static hold under reduced motion — the peak marker
-      // latches at the highest observed value and stays put (no glide)
-      // until either a higher value arrives or the hold window elapses, at
-      // which point it resets INSTANTLY to the current value (a single
-      // jump computed here, not a decay). This effect only re-runs when
-      // `smoother.value` actually changes — MOR-1233 already makes that a
-      // direct snap-to-target under reduce, so no rAF loop or interval is
-      // scheduled to drive this hold/reset.
-      //
-      // J2: the condition/write below both reads and writes peakSegs and
-      // peakTime, so it must run inside untrack() — otherwise the effect
-      // depends on its own writes and self-invalidates (it still converges
-      // today because the re-seat is idempotent and `||` short-circuits,
-      // but that's incidental, not guaranteed; matches the untrack()
-      // pattern MetersDockPanel's own latch-freshness effect already uses).
-      untrack(() => {
-        if (current >= peakSegs || performance.now() - peakTime > PEAK_HOLD_MS) {
-          peakSegs = current;
-          peakTime = performance.now();
-        }
-      });
-      return;
-    }
-
-    if (current >= peakSegs) {
-      // New peak — capture it (the decay-toward-current glide for an
-      // expired hold is handled by the rAF loop below).
-      peakSegs = current;
-      peakTime = performance.now();
-    }
+    const current = value === null || !mainPresent
+      ? null
+      : (calibratedToSegments(value) / RAW_SEGMENT_DOMAIN) * SEG_COUNT;
+    untrack(() => ballistics.sync({ sample: current, smoothTarget: current, peakEnabled: true }));
   });
 
   onMount(() => {
-    const tickPeak = (now: number) => {
-      const current = smoother.value;
-      const elapsed = now - peakTime;
-
-      if (current >= peakSegs) {
-        // Signal is at or above peak — update peak
-        peakSegs = current;
-        peakTime = now;
-      } else if (elapsed > PEAK_HOLD_MS) {
-        // Hold expired — decay toward current level
-        peakSegs = Math.max(current, peakSegs - PEAK_DECAY_FRACTION * SEG_COUNT * 16.67); // ~1 seg/sec at 60fps
-      }
-      // else: holding — do nothing
-
-      peakFrameId = requestAnimationFrame(tickPeak);
-    };
-
-    // MOR-1233: the hold/decay ballistics above are exactly the animation
-    // prefers-reduced-motion asks us to skip — don't schedule the loop while
-    // the preference is active. Fix cycle 1: react to it changing mid-
-    // session too (start/stop alone only decide once, at mount).
-    if (!prefersReducedMotion()) peakFrameId = requestAnimationFrame(tickPeak);
-
-    const unsubscribe = onReducedMotionChange((reduced) => {
-      if (reduced) {
-        if (peakFrameId) {
-          cancelAnimationFrame(peakFrameId);
-          peakFrameId = 0;
-        }
-      } else if (!peakFrameId) {
-        peakFrameId = requestAnimationFrame(tickPeak);
-      }
-    });
-
-    return () => {
-      if (peakFrameId) cancelAnimationFrame(peakFrameId);
-      unsubscribe();
-    };
+    ballistics.start();
+    return () => ballistics.stop();
   });
 
+  let smoothedSegs = $derived(ballistics.view.smoothedValue);
+  let peakSegs = $derived(ballistics.view.peakValue ?? 0);
   // Peak X position for the vertical indicator line
   let peakX = $derived(BAR_X + peakSegs * (SEG_W + SEG_GAP));
   // Only show peak line if it's meaningfully ahead of current bar
-  let showPeak = $derived(value !== null && mainPresent && peakSegs - smoother.value > 0.3);
+  let showPeak = $derived(value !== null && mainPresent && peakSegs - smoothedSegs > 0.3);
 
   // Peak-line color zones as fractions of the raw 20-segment domain — 15/20
   // and 18/20 are visual gradient stops with no calibration anchor (unlike
@@ -440,8 +375,8 @@
   let peakColor = $derived(peakSegs <= s9SegmentIndex ? 'var(--v2-accent-cyan-bright)' : peakSegs <= peakZoneYellow ? 'var(--v2-accent-yellow)' : peakSegs <= peakZoneOrange ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)');
 
   // ── Reactive display values ─────────────────────────────────────────────────
-  let fullSegs = $derived(value === null ? 0 : Math.floor(smoother.value));
-  let fracSeg  = $derived(value === null ? 0 : smoother.value - Math.floor(smoother.value));
+  let fullSegs = $derived(value === null ? 0 : Math.floor(smoothedSegs));
+  let fracSeg  = $derived(value === null ? 0 : smoothedSegs - Math.floor(smoothedSegs));
 
   let displaySUnit = $derived(value === null ? 'S ?' : calibratedToSUnit(value));
   let displayDbm   = $derived(value === null ? '' : formatDbm(calibratedToDbm(value)));
