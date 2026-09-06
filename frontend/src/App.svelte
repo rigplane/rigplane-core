@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick, type Component } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import AppGlobalHost from './AppGlobalHost.svelte';
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
@@ -38,7 +38,8 @@
   import SemanticRadioSurfaces from './components-v2/wiring/SemanticRadioSurfaces.svelte';
   import {
     loadSkin, presentationHostMode, presentationResourcePlan, resolveSkinId,
-    type PresentationHostMode, type SkinId,
+    type InstrumentHandlesPresentation, type PresentationComponent,
+    type SelfContainedPresentation, type SkinId,
   } from './skins/registry';
   import { t } from '$lib/i18n';
   import './app.css';
@@ -148,13 +149,17 @@
   // loader is in flight, so a switch never blanks the operator's screen and
   // never replays bootstrap, transport, audio or TX ownership — all of which
   // live above this seam (MOR-973, MOR-1008, MOR-1059).
-  let presentation = $state<{
-    id: SkinId;
-    component: Component;
-    hostMode: PresentationHostMode;
-  } | null>(null);
+  type CommittedPresentation =
+    | { id: SkinId; component: InstrumentHandlesPresentation; hostMode: 'instrument-handles' }
+    | { id: SkinId; component: SelfContainedPresentation; hostMode: 'self-contained' };
+  let presentation = $state<CommittedPresentation | null>(null);
   let presentationFailed = $state(false);
-  let Presentation = $derived(presentation?.component ?? null);
+  let HostedPresentation = $derived(
+    presentation?.hostMode === 'instrument-handles' ? presentation.component : null,
+  );
+  let SelfContainedComponent = $derived(
+    presentation?.hostMode === 'self-contained' ? presentation.component : null,
+  );
   let loaderGeneration = 0;
   /** Cleared by App teardown; a resolution that lands afterwards is inert. */
   let presentationActive = true;
@@ -167,7 +172,7 @@
 
   async function requestPresentation(id: SkinId): Promise<void> {
     const generation = ++loaderGeneration;
-    let loaded: Component;
+    let loaded: PresentationComponent;
     try {
       loaded = await loadSkin(id);
     } catch (err) {
@@ -190,7 +195,10 @@
     const bridge = acquireSwapBridge(id);
     try {
       presentationFailed = false;
-      presentation = { id, component: loaded, hostMode: presentationHostMode(id) };
+      const hostMode = presentationHostMode(id);
+      presentation = hostMode === 'instrument-handles'
+        ? { id, component: loaded as InstrumentHandlesPresentation, hostMode }
+        : { id, component: loaded as SelfContainedPresentation, hostMode };
       await tick();
     } finally {
       releaseSwapBridge(bridge);
@@ -337,18 +345,16 @@
       {/if}
     </div>
   </div>
-{:else if Presentation}
-  {#if presentation?.hostMode === 'instrument-handles'}
-    <!-- One unkeyed host outlives replacement of either hosted presentation.
-         The child owns placement only; SRS retains bindings and authority. -->
-    <SemanticRadioSurfaces>
-      {#snippet children(instruments)}
-        <Presentation {instruments} />
-      {/snippet}
-    </SemanticRadioSurfaces>
-  {:else}
-    <Presentation />
-  {/if}
+{:else if HostedPresentation}
+  <!-- One unkeyed host outlives replacement of either hosted presentation.
+       The child places radio instruments; SRS retains bindings and authority. -->
+  <SemanticRadioSurfaces>
+    {#snippet children(instruments)}
+      <HostedPresentation {instruments} />
+    {/snippet}
+  </SemanticRadioSurfaces>
+{:else if SelfContainedComponent}
+  <SelfContainedComponent />
 {:else if presentationFailed}
   <!-- Initial presentation load failed: an inert App-owned surface. No retry
        and no runtime teardown — control transport, audio and TX authority all

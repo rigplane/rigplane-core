@@ -3,9 +3,60 @@ import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
+import type { ServerState } from '$lib/types/state';
+import type { ContinuousScalarBinding, ContinuousScalarRendererLease } from '../../../primitives/scalar/continuous-scalar.svelte';
+import stateFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
+import capsFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-capabilities.json';
+import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 
 const txHarness = new ManagedAppTxHarness({ stale: true });
 import { mount, unmount, flushSync } from 'svelte';
+
+vi.stubGlobal('ResizeObserver', class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+});
+
+vi.mock('$lib/transport/ws-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/transport/ws-client')>(),
+  getControlSession: () => ({ state: 'connected' as const, epoch: 7 }),
+  sendCommand: () => true,
+}));
+
+const scalarCapture = vi.hoisted(() => ({
+  bindingsByLease: new WeakMap<object, ContinuousScalarBinding>(),
+}));
+
+vi.mock('../../../primitives/scalar/continuous-scalar.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../primitives/scalar/continuous-scalar.svelte')>();
+  return {
+    ...actual,
+    createContinuousScalar: (...args: Parameters<typeof actual.createContinuousScalar>) => {
+      const binding = actual.createContinuousScalar(...args);
+      const observed: ContinuousScalarBinding = {
+        get view() { return binding.view; },
+        attachRenderer() {
+          const lease = binding.attachRenderer();
+          scalarCapture.bindingsByLease.set(lease, observed);
+          return lease;
+        },
+        cancel: (reason) => binding.cancel(reason),
+        destroy: () => binding.destroy(),
+      };
+      return observed;
+    },
+  };
+});
+
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  const renderer = await import('../../controls/value-control/__tests__/ExternalScalarRendererFixture.svelte');
+  return {
+    ...actual,
+    getSelectedScalarAppearance: () => ({ name: 'App persistence probe', hbar: renderer.default }),
+  };
+});
 
 vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
   const stub = await import('./SpectrumPanelStub.svelte');
@@ -44,15 +95,16 @@ vi.mock('../../../lib/media/media-session', () => ({
 vi.mock('../../../lib/runtime/frontend-runtime', () => ({
   get presentationResources() { return rt.resources; },
   runtime: {
-    state: null,
+    get state() { return rt.state; },
     onTxAudioDied: () => () => {},
-    caps: { scope: true },
+    get caps() { return rt.caps; },
     connectionStatus: 'disconnected',
-    controlSession: Object.freeze({ state: 'disconnected', epoch: -1 }) satisfies ControlSessionSnapshot,
+    controlSession: Object.freeze({ state: 'connected', epoch: 7 }) satisfies ControlSessionSnapshot,
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
     audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
     connectionAudio: false,
+    system: { identifyFrequency: vi.fn(async () => ({ stations: [] })) },
     // MOR-1312 slice 12B: see the `$lib/runtime` mock below for why these
     // are fixed, honest "never observed" defaults.
     defaultScopeStatus: {
@@ -68,6 +120,7 @@ vi.mock('../../../lib/runtime/frontend-runtime', () => ({
 // reset per test) so a test can put a REAL `ptt` on the runtime state and
 // prove the meters dock ignores it in favour of the App TX authority.
 const rt = vi.hoisted(() => ({ state: null as unknown,
+  caps: null as unknown,
   scope: null as unknown as ScopeController, resources: null as unknown as PresentationResourceHost<unknown>,
   evidenceListeners: 0,
 }));
@@ -76,12 +129,15 @@ vi.mock('$lib/runtime', () => ({
   get presentationResources() { return rt.resources; },
   runtime: {
     get state() { return rt.state; },
-    caps: null,
+    get caps() { return rt.caps; },
+    controlSession: Object.freeze({ state: 'connected', epoch: 7 }) satisfies ControlSessionSnapshot,
+    subscribeControlSession: () => () => {},
     connectionStatus: 'disconnected',
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },
     audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
     connectionAudio: false,
+    system: { identifyFrequency: vi.fn(async () => ({ stations: [] })) },
     // MOR-1312 slice 12B: `SemanticRadioSurfaces` now also reads
     // `runtime.defaultScopeStatus` / `runtime.scope.hardwareScopeConnected`
     // for the scope-display snapshot (the FIFTH adapter argument). `caps` is
@@ -117,7 +173,7 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
   applyModeDefault: vi.fn(),
 }));
 
-import RadioLayout from '../RadioLayout.svelte';
+import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
 import App from '../../../App.svelte';
 import { extractVfoState, extractMeterState, hasLiveAudioFromState } from '../layout-utils';
 import { radio } from '$lib/stores/radio.svelte';
@@ -339,7 +395,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   vfoLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'MAIN' : 'SUB')),
   receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
   vfoSlotLabel: vi.fn((slot: 'A' | 'B') => (slot === 'A' ? 'VFO A' : 'VFO B')),
-  getCapabilities: vi.fn(() => ({ freqRanges: [], modes: [], filters: [] })),
+  getCapabilities: vi.fn(() => rt.caps ?? ({ freqRanges: [], modes: [], filters: [] })),
   setCapabilities: vi.fn(),
   getAgcModes: vi.fn(() => [0, 1, 2, 3]),
   getAgcLabels: vi.fn(() => ({ 0: 'OFF', 1: 'FAST', 2: 'MID', 3: 'SLOW' })),
@@ -359,7 +415,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
 }));
 
-import { getScopeSource, hasAnyScope, hasDualReceiver, hasSpectrum } from '$lib/stores/capabilities.svelte';
+import { getScopeSource, hasAnyScope, hasAudioFft, hasDualReceiver, hasSpectrum } from '$lib/stores/capabilities.svelte';
 import { sdrTestLayout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
@@ -384,10 +440,12 @@ function mountLayout(skinId: SkinId = 'desktop-v2', plan?: SurfacePlan) {
 }
 
 beforeEach(() => {
+  resetCommandLifecycle();
   txHarness.reset({ stale: true });
   components = [];
   radio.current = null;
   rt.state = null;
+  rt.caps = null;
   rt.scope = new ScopeController(() => { throw new Error('Routing fixture has no selected transport'); });
   rt.resources = new PresentationResourceHost('routing');
   rt.evidenceListeners = 0;
@@ -400,6 +458,7 @@ beforeEach(() => {
   vi.mocked(getScopeSource).mockReturnValue(null);
   vi.mocked(hasSpectrum).mockReturnValue(true);
   vi.mocked(hasAnyScope).mockReturnValue(true);
+  vi.mocked(hasAudioFft).mockReturnValue(false);
   vi.mocked(resolveSkinId).mockReturnValue('desktop-v2');
   // JSDOM defaults to 0x0 — force desktop dimensions so isMobile stays false
   Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1440 });
@@ -419,7 +478,10 @@ afterEach(async () => {
   // or a keyed authority left behind by one test would be read by the next one
   // that does not set its own. Reset on the way OUT as well as the way in.
   rt.state = null;
+  rt.caps = null;
+  scalarCapture.bindingsByLease = new WeakMap();
   txHarness.reset({ stale: true });
+  resetCommandLifecycle();
 });
 
 describe('RadioLayout structure', () => {
@@ -505,9 +567,13 @@ describe('RadioLayout structure', () => {
   // receiver deck hosts the semantic surfaces. The LEGACY deck is what an
   // undeclared layout gets — see `UNDECLARED` below and the full suppression
   // matrix in `semantic-desktop-migration.component.test.ts`.
-  it('renders the semantic surfaces inside .receiver-deck for desktop-v2', () => {
+  it('wraps desktop-v2 in one host outside its receiver deck', () => {
     const t = mountLayout();
-    expect(t.querySelector('.receiver-deck [data-testid="semantic-radio-surfaces"]')).not.toBeNull();
+    const host = t.querySelector('[data-testid="semantic-radio-surfaces"]');
+    const deck = t.querySelector('.receiver-deck');
+    expect(host).not.toBeNull();
+    expect(host?.contains(deck)).toBe(true);
+    expect(deck?.querySelector('[data-testid="semantic-radio-surfaces"]')).toBeNull();
     expect(t.querySelector('.vfo-header')).toBeNull();
   });
 
@@ -559,28 +625,113 @@ describe('SpectrumPanel hideAutoStepToggle channel (MOR-1486 ruling B)', () => {
 });
 
 describe('App presentation selection', () => {
-  it('owns the resolver inputs and passes the resolved skinId to RadioLayout', async () => {
-    vi.mocked(resolveSkinId).mockReturnValue('sdr-test');
+  type RendererNode = HTMLButtonElement & { readonly rendererLease: ContinuousScalarRendererLease };
+
+  it('keeps the actual hosted instruments alive across a Standard to SDR switch', async () => {
+    vi.mocked(resolveSkinId).mockReturnValue('desktop-v2');
+    vi.mocked(hasAudioFft).mockReturnValue(true);
+    const liveCaps = {
+      ...structuredClone(capsFixture),
+      capabilities: [...capsFixture.capabilities, 'vfo_equalize'],
+    };
+    const liveState = {
+      ...structuredClone(stateFixture),
+      micGain: 128,
+      fieldStatus: {
+        ...stateFixture.fieldStatus,
+        micGain: {
+          storePath: 'global.operator_controls.mic_gain', observed: true,
+          freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1,
+        },
+      },
+    } as unknown as ServerState;
+    rt.state = liveState;
+    rt.caps = liveCaps;
+    radio.current = liveState;
 
     const t = document.createElement('div');
     document.body.appendChild(t);
     const component = mount(App, { target: t });
     flushSync();
     components.push(component);
-    // MOR-1060: the presentation is loaded lazily (a real dynamic import of
-    // the sdr-test entrypoint), so wait for the commit before asserting.
+
+    await vi.waitFor(() => {
+      flushSync();
+      expect(t.querySelector('.radio-layout.standard-face')).not.toBeNull();
+    });
+
+    expect(resolveSkinId).toHaveBeenLastCalledWith({
+      capabilities: liveCaps,
+      layoutPreference: 'standard',
+      isMobile: false,
+      hasAnyScope: true,
+    });
+    const semanticHost = t.querySelector('[data-testid="semantic-radio-surfaces"]');
+    const globalHost = t.querySelector('[data-testid="app-global-host"]');
+    const oldMic = t.querySelector<RendererNode>(
+      '[data-testid="tx-aux-micGain"] [data-external-scalar-renderer]',
+    );
+    if (oldMic === null) throw new Error('Standard did not render the external MIC probe');
+    const oldLease = oldMic.rendererLease;
+    const micBinding = scalarCapture.bindingsByLease.get(oldLease);
+    const txController = txHarness.controller;
+    const txListeners = txHarness.listenerCount();
+    const releasedAudioDemand: number[] = [];
+    const release = rt.resources.release.bind(rt.resources);
+    vi.spyOn(rt.resources, 'release').mockImplementation((lease) => {
+      const released = release(lease);
+      releasedAudioDemand.push(rt.resources.snapshot('audio-fft').demand);
+      return released;
+    });
+
+    expect(semanticHost).not.toBeNull();
+    expect(globalHost).not.toBeNull();
+    expect(micBinding).toBeDefined();
+    expect(rt.resources.snapshot('audio-fft').demand).toBeGreaterThan(0);
+    const beforeDisplay = oldMic.dataset.display;
+    oldMic.click();
+    flushSync();
+    const pendingEvidence = {
+      requested: oldMic.dataset.requested,
+      phase: oldMic.dataset.phase,
+    };
+    expect(
+      oldMic.dataset.display !== beforeDisplay || pendingEvidence.requested !== '',
+    ).toBe(true);
+    expect(pendingEvidence.requested).not.toBe('');
+    expect(txHarness.trace()).toEqual([]);
+
+    vi.mocked(resolveSkinId).mockReturnValue('sdr-test');
+    window.innerWidth = 500;
+    window.dispatchEvent(new Event('resize'));
+    flushSync();
     await vi.waitFor(() => {
       flushSync();
       expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
     });
 
-    expect(resolveSkinId).toHaveBeenLastCalledWith({
-      capabilities: { scope: true },
-      layoutPreference: 'standard',
-      isMobile: false,
-      hasAnyScope: true,
-    });
-    expect(t.querySelector('.radio-layout.sdr-test')).not.toBeNull();
+    const newMic = t.querySelector<RendererNode>(
+      '[data-testid="tx-aux-micGain"] [data-external-scalar-renderer]',
+    )!;
+    expect(t.querySelector('.radio-layout.standard-face')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
+    expect(t.querySelector('[data-testid="semantic-radio-surfaces"]')).toBe(semanticHost);
+    expect(t.querySelectorAll('[data-testid="rx-tx-surface"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
+    expect(t.querySelectorAll('[data-testid="app-global-host"]')).toHaveLength(1);
+    expect(t.querySelector('[data-testid="app-global-host"]')).toBe(globalHost);
+    expect(scalarCapture.bindingsByLease.get(newMic.rendererLease)).toBe(micBinding);
+    expect(newMic.rendererLease).not.toBe(oldLease);
+    expect(oldLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    expect({
+      requested: newMic.dataset.requested,
+      phase: newMic.dataset.phase,
+    }).toEqual(pendingEvidence);
+    expect(txHarness.controller).toBe(txController);
+    expect(txHarness.listenerCount()).toBe(txListeners);
+    expect(txHarness.trace()).toEqual([]);
+    expect(rt.resources.snapshot('audio-fft').demand).toBeGreaterThan(0);
+    expect(releasedAudioDemand.every((demand) => demand > 0)).toBe(true);
   });
 });
 

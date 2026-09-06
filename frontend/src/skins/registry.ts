@@ -10,6 +10,7 @@
 import type { Component } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { AppResource } from '$lib/runtime/resource-demand';
+import type { InstrumentComposition } from '../components-v2/wiring/SemanticRadioSurfaces.svelte';
 import {
   normalizeLayoutMode,
   type LayoutMode,
@@ -20,6 +21,29 @@ export type SkinId =
   | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first';
 
 export type PresentationHostMode = 'self-contained' | 'instrument-handles';
+export type InstrumentHandlesPresentation = Component<{ instruments: InstrumentComposition }>;
+export type SelfContainedPresentation = Component;
+export type PresentationComponent = InstrumentHandlesPresentation | SelfContainedPresentation;
+
+type PresentationPropsBySkin = {
+  'desktop-v2': { instruments: InstrumentComposition };
+  'sdr-test': { instruments: InstrumentComposition };
+  'dual-receiver-cockpit': Record<string, never>;
+  'lcd-cockpit': Record<string, never>;
+  'lcd-scope': Record<string, never>;
+  'mobile': Record<string, never>;
+  'peer-split': Record<string, never>;
+  'dual-sdr-face': Record<string, never>;
+  'unified-instrument': Record<string, never>;
+  'panadapter-first': Record<string, never>;
+};
+
+type SkinLoaderMap = {
+  [Id in SkinId]: () => Promise<{ default: Component<PresentationPropsBySkin[Id]> }>;
+};
+type LoadedPresentation<Id extends SkinId> = Id extends SkinId
+  ? Component<PresentationPropsBySkin[Id]>
+  : never;
 
 /**
  * Whether App supplies the persistent semantic instrument host for a skin.
@@ -102,7 +126,7 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
  * legacy `amber-lcd` alias is accepted via `normalizeLayoutMode`'s
  * `LEGACY_LAYOUT_ALIASES` table.
  */
-const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component<any> }>> = {
+const SKIN_LOADERS = {
   'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
   // MOR-1068 (F8): the cockpit's layout manifest registers under this exact
   // id, so it needs the matching loadable SkinId — it was the only registered
@@ -125,10 +149,10 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component<any> }>> =
   'panadapter-first': () => import('./lcd-panadapter-first/LcdPanadapterFirstSkin.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
   'dual-sdr-face': () => import('./dual-sdr-face/DualSdrFaceSkin.svelte'),
-};
+} satisfies SkinLoaderMap;
 
-export async function loadSkin(id: SkinId): Promise<Component<any>> {
-  return (await SKIN_LOADERS[id]()).default;
+export async function loadSkin<Id extends SkinId>(id: Id): Promise<LoadedPresentation<Id>> {
+  return (await SKIN_LOADERS[id]()).default as LoadedPresentation<Id>;
 }
 
 /**
