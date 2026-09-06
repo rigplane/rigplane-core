@@ -42,6 +42,14 @@ choice controls; a final whole-path audit remains outstanding.
   bounded gaps. No implementation completion, universal provider timing, or
   all-controls claim.
 
+## 2026-09-06 — Filter Width coordinate and localized presentation (tree `e9f6800adb4ffad83b2d1b70fbb0680b707d3fe9`)
+
+- [2026-09-06-mechanism-audit-filter-coordinate-presentation.md](2026-09-06-mechanism-audit-filter-coordinate-presentation.md)
+  — historical decision record for exact-Hz coordinates, catalog geometry, and
+  localized presentation. Audit-time ownership references are evidence, not
+  current file leases; MOR-2412 owns downstream implementation. This does not
+  claim implementation completion or parent-program completion.
+
 ## 2026-09-03 — Icom lower-executor lifetime (draft, source `4e4c1782`)
 
 - [2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md](2026-09-03-mechanism-audit-icom-lower-executor-lifetime.md)
