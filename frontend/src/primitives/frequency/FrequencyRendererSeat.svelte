@@ -42,7 +42,7 @@
     if (Object.is(nextBinding, attachedBinding)
       && Object.is(nextContext, attachedContext)
       && nextRenderer === attachedRenderer
-      && !lease.revoked) return;
+      && (nextContext === null || !lease.revoked)) return;
     lease.revoke();
     attachedBinding = nextBinding;
     attachedContext = nextContext;
