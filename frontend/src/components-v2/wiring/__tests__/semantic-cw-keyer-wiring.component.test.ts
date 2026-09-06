@@ -342,6 +342,13 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     );
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('submitted');
+    unmount(component!); component = null; target.remove();
+    render();
+    expect(cwInput('pitchHz').value).toBe('725');
+    expect(cwInput('keyerSpeed').value).toBe('31');
+    expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
+    expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('submitted');
+    expect(sendCommand).toHaveBeenCalledTimes(2);
 
     deliver(pitchId, 'ack');
     deliver(speedId, 'ack');
@@ -368,6 +375,9 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
     expect(cwInput('pitchHz').value).toBe('700');
     expect(getCommandLifecycle(latestId, 1)?.status).toBe('pending');
+    const oldPitchStatus = el('pitchHz')!.querySelector<HTMLElement>('[data-cw-feedback-status]')!;
+    const oldPitchText = oldPitchStatus.textContent;
+    expect(target.querySelectorAll('[data-cw-feedback-status]')).toHaveLength(2);
 
     h.session = { state: 'disconnected', epoch: 2 };
     h.transition!({ state: 'disconnected', epoch: 2 });
@@ -378,6 +388,19 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
       expect(cwInput(field).dataset.commandPhase).toBe('unavailable');
       expect(el(field)!.dataset.observed).toBe('false');
     }
+    expect(target.querySelectorAll('[data-cw-feedback-status]')).toHaveLength(0);
+    expect(sendCommand).toHaveBeenCalledTimes(3);
+
+    h.session = { state: 'connected', epoch: 3 };
+    h.transition!({ state: 'connected', epoch: 3 });
+    h.sessionSubscriber!({ state: 'connected', epoch: 3 });
+    flushSync();
+    submitCw('pitchHz', 700);
+    const newPitchStatus = el('pitchHz')!.querySelector<HTMLElement>('[data-cw-feedback-status]')!;
+    expect(newPitchStatus.textContent).toBe(oldPitchText);
+    expect(newPitchStatus).not.toBe(oldPitchStatus);
+    expect(el('pitchHz')!.querySelectorAll('[data-cw-feedback-status]')).toHaveLength(1);
+    expect(sendCommand).toHaveBeenCalledTimes(4);
     expect(txHarness.trace()).toEqual([]);
   });
 

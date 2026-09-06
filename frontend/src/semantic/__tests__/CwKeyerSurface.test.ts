@@ -357,10 +357,10 @@ describe('CW pitch and keyer speed own independent command feedback', () => {
 
   it.each([
     ['idle', false, 600, null],
-    ['submitted', true, 600, null],
-    ['queued', true, 600, null],
-    ['dispatched', true, 600, null],
-    ['awaiting-confirmation', true, 600, null],
+    ['submitted', true, 725, null],
+    ['queued', true, 725, null],
+    ['dispatched', true, 725, null],
+    ['awaiting-confirmation', true, 725, null],
     ['confirmed', false, 725, 'confirmed'],
     ['failed', false, 600, 'failed'],
     ['timed-out', false, 600, 'timed-out'],
@@ -384,6 +384,93 @@ describe('CW pitch and keyer speed own independent command feedback', () => {
     expect(r.input('pitchHz').dataset.commandPhase).toBe(phase);
     expect(r.input('pitchHz').getAttribute('aria-busy')).toBe(String(busy));
     if (phase === 'failed') expect(r.row('pitchHz').textContent).toContain('pitch rejected');
+    r.dispose();
+  });
+
+  it.each([
+    ['pitchHz', 'cw-pitch', 600, 725],
+    ['keyerSpeed', 'keyer-speed', 24, 31],
+  ] as const)('mounts and remounts %s at its pre-existing active target', (
+    field, control, confirmed, targetValue,
+  ) => {
+    const pending = cwFeedback(control, 'awaiting-confirmation', {
+      confirmed, target: targetValue, requestedTarget: targetValue,
+      lifecycleId: `${control}-command`, transitionId: `${control}-awaiting`,
+    });
+    const renderPending = () => field === 'pitchHz'
+      ? renderReactiveCwLevels(pending) : renderReactiveCwLevels(undefined, pending);
+    let r = renderPending();
+    expect(r.input(field).value).toBe(String(targetValue));
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose(); target.innerHTML = '';
+    r = renderPending();
+    expect(r.input(field).value).toBe(String(targetValue));
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it.each([
+    ['pitchHz', 'cw-pitch', 600, 725],
+    ['keyerSpeed', 'keyer-speed', 24, 31],
+  ] as const)('keeps terminal %s requested target distinct from canonical display', (
+    field, control, confirmed, requestedTarget,
+  ) => {
+    const terminal = cwFeedback(control, 'failed', {
+      confirmed, requestedTarget, lifecycleId: `${control}-command`,
+      transitionId: `${control}-failed`, outcome: { phase: 'failed', error: 'rejected' },
+    });
+    const r = field === 'pitchHz'
+      ? renderReactiveCwLevels(terminal) : renderReactiveCwLevels(undefined, terminal);
+    expect(r.input(field).value).toBe(String(confirmed));
+    expect(r.input(field).getAttribute('aria-valuenow')).toBe(String(confirmed));
+    expect(r.row(field).querySelector('output')?.textContent).toContain(String(confirmed));
+    expect(r.row(field).querySelector('output')?.textContent).not.toContain(String(requestedTarget));
+    r.dispose();
+  });
+
+  it.each([
+    ['pitchHz', 'cw-pitch', 600, 605, 725],
+    ['keyerSpeed', 'keyer-speed', 24, 25, 31],
+  ] as const)('invalidates and reissues the %s live event across authority replacement', (
+    field, control, confirmed, rerendered, requestedTarget,
+  ) => {
+    const failed = (canonical: number, providerGeneration = 1, sessionEpoch = 1) => cwFeedback(
+      control, 'failed', {
+        confirmed: canonical, requestedTarget, providerGeneration, sessionEpoch,
+        lifecycleId: `${control}-command`, transitionId: `${control}-failed`,
+        outcome: { phase: 'failed', error: 'rejected' },
+      },
+    );
+    const r = field === 'pitchHz'
+      ? renderReactiveCwLevels(failed(confirmed))
+      : renderReactiveCwLevels(undefined, failed(confirmed));
+    const status = () => r.row(field).querySelector<HTMLElement>('[data-cw-feedback-status]');
+    const initial = status()!;
+    const initialText = initial.textContent;
+    const update = (next: CwLevelFeedback) => {
+      if (field === 'pitchHz') r.props.cwPitchFeedback = next;
+      else r.props.keySpeedFeedback = next;
+      flushSync();
+    };
+    update(failed(rerendered));
+    expect(status()).toBe(initial);
+    expect(status()?.textContent).toBe(initialText);
+
+    update(failed(rerendered, 2, 2));
+    const replaced = status()!;
+    expect(replaced).not.toBe(initial);
+    expect(replaced.textContent).toBe(initialText);
+    expect(r.row(field).querySelectorAll('[data-cw-feedback-status]')).toHaveLength(1);
+
+    update(cwFeedback(control, 'unavailable', {
+      confirmed: null, availability: 'unavailable', providerGeneration: 3, sessionEpoch: 3,
+    }));
+    expect(status()).toBeNull();
+    update(failed(rerendered, 3, 3));
+    expect(status()).not.toBeNull();
+    expect(status()).not.toBe(replaced);
+    expect(status()?.textContent).toBe(initialText);
+    expect(r.row(field).querySelectorAll('[data-cw-feedback-status]')).toHaveLength(1);
     r.dispose();
   });
 
