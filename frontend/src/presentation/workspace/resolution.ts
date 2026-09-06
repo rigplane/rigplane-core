@@ -9,9 +9,7 @@
  *
  * Pure: no storage, no DOM, no registry lookup. The only non-type import
  * beyond `activation.ts` is Svelte's context pair, which is how the
- * composition root hands the resolved plan to the semantic vertical without
- * the vertical importing a layout manifest (that would close the
- * manifest → loader → skin → wiring cycle the MOR-1068 wiring documents).
+ * composition root hands the resolved plan to the semantic vertical.
  *
  * WHAT THE WORKSPACE MAY DO, AND WHAT IT MAY NOT.
  *
