@@ -139,7 +139,11 @@ try {
 
   const apiPack = pack(packageRoot, tarballs);
   const fixturePack = pack(fixtureRoot, tarballs);
-  await assertPackedShape(apiPack, packageRoot, ['dist/types/component-kit-api/src/index.d.ts']);
+  await assertPackedShape(apiPack, packageRoot, [
+    'dist/types/component-kit-api/src/index.d.ts',
+    'dist/types/src/primitives/control-instruments/control-instrument-behavior.d.ts',
+    'dist/types/src/primitives/control-instruments/control-instrument-renderer.svelte.d.ts',
+  ]);
   await assertPackedShape(fixturePack, fixtureRoot, ['dist/index.d.ts']);
 
   const apiDeclarations = await assertClosedDeclarations(
@@ -154,6 +158,8 @@ try {
   assert(!apiRuntime.includes('svelte'));
   assert(!apiRuntime.includes('continuous-scalar'));
   assert(!apiRuntime.includes('frequency-interaction'));
+  assert(!apiRuntime.includes('control-instrument-renderer'));
+  assert(!apiRuntime.includes('createFiniteRendererContext'));
 
   await writeFile(path.join(consumer, 'package.json'), JSON.stringify({
     name: 'component-kit-portable-consumer',
@@ -192,24 +198,60 @@ try {
   COMPONENT_KIT_API_VERSION,
   defineComponentKit,
   type ComponentKitDeclaration,
+  type ChoiceRendererProps,
+  type FiniteChoiceValue,
+  type FiniteControlAppearance,
+  type FiniteControlReading,
   type FrequencyRendererProps,
   type LayoutManifest,
   type PresentationDeclaration,
   type ScalarAppearance,
 } from '@rigplane/component-kit-api';
+import type { Component } from 'svelte';
 import fixtureKit from '@rigplane/external-component-kit-fixture';
 
 const declaration: ComponentKitDeclaration = fixtureKit;
 const scalar: ScalarAppearance | undefined = declaration.scalarAppearances?.fixture;
 const layout: LayoutManifest | undefined = declaration.layouts?.[0];
 const presentation: PresentationDeclaration | undefined = declaration.presentations?.[0];
+const finite: FiniteControlAppearance | undefined = declaration.finiteControlAppearances?.fixture;
+const numericChoiceRenderer: Component<ChoiceRendererProps<number>> | undefined = finite?.choice;
+function inspectChoice(props: ChoiceRendererProps<'OFF' | 'DATA1'>):
+  FiniteControlReading<'OFF' | 'DATA1'> | undefined {
+  const view = props.lease.view;
+  if (view === undefined) return undefined;
+  const option = view.options[0]?.value;
+  const supported: FiniteChoiceValue | undefined = option;
+  const optionalEvidence = [view.defaultValue, view.requested, view.feedback] as const;
+  const request = option === undefined ? undefined : () => props.lease.invoke(option);
+  void supported;
+  void optionalEvidence;
+  void request;
+  return view.reading;
+}
 type FrequencyProps = FrequencyRendererProps;
 void (null as FrequencyProps | null);
 void scalar;
 void layout;
 void presentation;
+void numericChoiceRenderer;
+void inspectChoice;
 export const installedKit = defineComponentKit(declaration);
 export const apiVersion = COMPONENT_KIT_API_VERSION;
+`);
+  await writeFile(path.join(consumer, 'src', 'private-root-negative.ts'), `// @ts-expect-error host authority is not a public root export
+import type { FiniteRendererContext } from '@rigplane/component-kit-api';
+// @ts-expect-error host factories are not public root exports
+import type { createFiniteRendererContext, createChoiceRendererSeat } from '@rigplane/component-kit-api';
+// @ts-expect-error declaration-tree subpaths are not exported
+import type { ChoiceRendererInput } from '@rigplane/component-kit-api/dist/types/src/primitives/control-instruments/control-instrument-renderer.svelte';
+
+export type PrivateRootMustStayUnavailable = [
+  FiniteRendererContext,
+  typeof createFiniteRendererContext,
+  typeof createChoiceRendererSeat,
+  ChoiceRendererInput<string>,
+];
 `);
 
   execute('npm', [
@@ -235,6 +277,12 @@ assert.equal(api.defineComponentKit(fixtureKit), fixtureKit);
   ], consumer, true);
   assert.notEqual(deepImport.status, 0);
   assert.match(deepImport.stderr, /ERR_PACKAGE_PATH_NOT_EXPORTED/);
+  const declarationDeepImport = execute(process.execPath, [
+    '--input-type=module', '--eval',
+    "await import('@rigplane/component-kit-api/dist/types/src/primitives/control-instruments/control-instrument-renderer.svelte')",
+  ], consumer, true);
+  assert.notEqual(declarationDeepImport.status, 0);
+  assert.match(declarationDeepImport.stderr, /ERR_PACKAGE_PATH_NOT_EXPORTED/);
 
   const sveltePackages = await installedSveltePackages(path.join(consumer, 'node_modules'));
   assert.equal(sveltePackages.length, 1);
@@ -246,7 +294,7 @@ assert.equal(api.defineComponentKit(fixtureKit), fixtureKit);
     path.join(consumer, 'node_modules', 'svelte', 'package.json'),
     'utf8',
   ));
-  assert.equal(installedApi.version, '0.1.0');
+  assert.equal(installedApi.version, '0.2.0');
   assert.equal(installedApi.peerDependencies.svelte, '>=5.45.2 <6');
 
   console.log('component-kit-api portable package verification: OK');

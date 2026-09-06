@@ -3,6 +3,7 @@ import {
   defineComponentKit,
   type ComponentKitDeclaration,
   type DesignLanguageManifest,
+  type FiniteControlAppearance,
   type FrequencyRenderer,
   type InstrumentGroup,
   type LayoutManifest,
@@ -14,6 +15,20 @@ import {
 const component = (() => ({})) as unknown as PresentationComponent;
 const scalarRenderer = (() => ({})) as unknown as NonNullable<ScalarAppearance['hbar']>;
 const frequencyRenderer = (() => ({})) as unknown as FrequencyRenderer;
+const actionRenderer = ((_internals, { lease }) => {
+  void lease.view?.available;
+  return {};
+}) satisfies FiniteControlAppearance['action'];
+const toggleRenderer = ((_internals, { lease }) => {
+  void lease.view?.confirmed;
+  return {};
+}) satisfies FiniteControlAppearance['toggle'];
+const choiceRenderer = ((_internals, { lease }) => {
+  const option = lease.view?.options[0];
+  const request = option === undefined ? undefined : () => lease.invoke(option.value);
+  void request;
+  return {};
+}) satisfies FiniteControlAppearance['choice'];
 
 const language: DesignLanguageManifest = {
   id: 'fixture-line',
@@ -64,6 +79,9 @@ export const fixtureKit: ComponentKitDeclaration = defineComponentKit({
     fixture: { name: 'fixture', hbar: scalarRenderer },
   },
   frequencyReadouts: { fixture: frequencyRenderer },
+  finiteControlAppearances: {
+    fixture: { action: actionRenderer, toggle: toggleRenderer, choice: choiceRenderer },
+  },
   designLanguages: [language],
   layouts: [layout],
   instrumentGroups: [group],
