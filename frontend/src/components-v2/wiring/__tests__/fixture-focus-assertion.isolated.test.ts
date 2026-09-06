@@ -87,3 +87,20 @@ describe('fixture focus assertion roving radiogroup exception', () => {
     expect(admitted(html)).toBe(false);
   });
 });
+
+describe('fixture focus assertion inert slider exception', () => {
+  const slider = '<div role="slider" aria-disabled="true" tabindex="-1" aria-label="RF power"></div>';
+
+  it('admits an aria-disabled slider outside the sequential Tab order', () => {
+    expect(admitted(slider)).toBe(true);
+  });
+
+  it.each([
+    ['enabled slider', slider.replace('aria-disabled="true"', 'aria-disabled="false"')],
+    ['malformed tabindex', slider.replace('tabindex="-1"', 'tabindex="-2"')],
+    ['hidden slider', slider.replace('role="slider"', 'role="slider" aria-hidden="true"')],
+    ['hidden slider ancestor', `<section aria-hidden="true">${slider}</section>`],
+  ])('rejects %s', (_label, html) => {
+    expect(admitted(html)).toBe(false);
+  });
+});
