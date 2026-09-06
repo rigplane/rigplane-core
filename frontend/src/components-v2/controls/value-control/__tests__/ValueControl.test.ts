@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import ValueControl from '../ValueControl.svelte';
+import {
+  createContinuousScalar,
+  createHBarContinuousScalarPolicy,
+} from '../../../../primitives/scalar/continuous-scalar.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
 
@@ -36,6 +40,29 @@ afterEach(() => {
 });
 
 describe('ValueControl wrapper', () => {
+  it('renders a caller-owned HBar binding synchronously without raw bounds', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 40 },
+        ownerKey: 'direct-hbar',
+        domain: { min: 20, max: 60, step: 5, defaultValue: null, fineStepDivisor: 5 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 0 }),
+    );
+
+    const target = mountControl({ binding, label: 'Direct', renderer: 'hbar' });
+
+    expect(getValueDisplay(target)?.textContent).toBe('40');
+    expect(getSlider(target).getAttribute('aria-valuemin')).toBe('20');
+    expect(getSlider(target).getAttribute('aria-valuemax')).toBe('60');
+    expect(target.querySelector('.vc-hbar')?.getAttribute('style'))
+      .toContain('--vc-fill-percent: 50%');
+    binding.destroy();
+  });
+
   it('renders HBarRenderer when renderer is hbar', () => {
     const target = mountControl({
       value: 50,

@@ -100,6 +100,54 @@ function readingSetup(
 }
 
 describe('continuous scalar contract', () => {
+  it('publishes a frozen exact domain snapshot without erasing known invalid-domain truth', () => {
+    const invalidDomain: ScalarDomain = {
+      min: 0,
+      max: Number.NaN,
+      step: 100,
+      defaultValue: 2_400,
+      fineStepDivisor: 10,
+      keyboardStep: 50,
+    };
+    const { scalar, request } = readingSetup(undefined, { domain: invalidDomain });
+    const view = scalar.view;
+
+    expect(view).toMatchObject({
+      canonical: 2_400,
+      displayed: 2_400,
+      editable: false,
+      domainValid: false,
+      domain: invalidDomain,
+    });
+    expect(view.domain).not.toBe(invalidDomain);
+    expect(Object.isFrozen(view.domain)).toBe(true);
+    scalar.attachRenderer().nativeInput(2_500);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('keeps command truth and presentation while an invalid domain disables behavior', () => {
+    const failed = feedback('failed', {
+      target: 2_700,
+      requestedTarget: 2_700,
+      transitionId: 'failed-invalid-domain',
+      outcome: { phase: 'failed', error: 'radio rejected' },
+    });
+    const { scalar } = commandSetup(undefined, {
+      domain: { ...DOMAIN, step: 0 },
+      feedback: failed,
+    });
+
+    expect(scalar.view).toMatchObject({
+      canonical: 2_400,
+      displayed: 2_400,
+      domainValid: false,
+      editable: false,
+      phase: 'failed',
+      error: 'radio rejected',
+      presentation: { targetDescription: '2700' },
+    });
+  });
+
   it('keeps reading evidence honest for known, unknown, and non-finite values', () => {
     const { scalar, request, update } = readingSetup();
     const lease = scalar.attachRenderer();
@@ -374,6 +422,25 @@ describe('continuous scalar authority and feedback reconciliation', () => {
 });
 
 describe('continuous scalar deferred work', () => {
+  it('invalidates pending work when a valid domain becomes invalid', () => {
+    vi.useFakeTimers();
+    const { scalar, request, update } = readingSetup();
+    const lease = scalar.attachRenderer();
+    lease.key({ key: 'ArrowRight', fine: false });
+
+    update({ domain: { ...DOMAIN, max: Number.NEGATIVE_INFINITY } });
+    expect(scalar.view).toMatchObject({
+      canonical: 2_400,
+      displayed: 2_400,
+      domainValid: false,
+      editable: false,
+      draft: null,
+    });
+    vi.advanceTimersByTime(50);
+    expect(request).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it('dispatches a debounced candidate through the current request callback', () => {
     vi.useFakeTimers();
     const original = vi.fn<(value: number) => void>();

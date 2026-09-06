@@ -10,23 +10,13 @@
     getFillPercent,
     calculateClickValue,
   } from '../../../primitives/scalar/value-control-core';
-
-  /**
-   * Raw feedback fields predate the scalar evidence contract.  They remain
-   * renderer decoration for LegacyHBarAdapter only and never enter a binding.
-   */
-  interface LegacyPresentation {
-    readonly feedbackPhase: string | null;
-    readonly feedbackBusy: boolean | undefined;
-    readonly feedbackDescription: string | null;
-    readonly feedbackStatus: string | null;
-  }
+  import {
+    projectScalarRenderPresentation,
+    type LegacyReadingPresentation,
+  } from './scalar-render-presentation';
 
   interface Props {
     binding: ContinuousScalarBinding;
-    min: number;
-    max: number;
-    step: number;
     label: string;
     displayFn?: (v: number) => string;
     unknownDisplay?: string;
@@ -41,14 +31,11 @@
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
-    legacyPresentation?: LegacyPresentation;
+    legacy?: LegacyReadingPresentation;
   }
 
   let {
     binding,
-    min,
-    max,
-    step,
     label,
     displayFn,
     unknownDisplay,
@@ -63,7 +50,7 @@
     unit = '',
     shortcutHint = null,
     title = null,
-    legacyPresentation,
+    legacy,
   }: Props = $props();
 
   const feedbackDescriptionId = $props.id();
@@ -95,19 +82,26 @@
   // Reading a lease reconciles its owner. Keep that mutable reconciliation in
   // an effect, then render the resulting snapshot as ordinary Svelte state.
   let view = $state<ContinuousScalarView>(untrack(() => lease.view));
+  let skipViewAssignment = true;
   $effect(() => {
-    view = lease.view;
+    const next = lease.view;
+    if (skipViewAssignment) {
+      skipViewAssignment = false;
+    } else {
+      view = next;
+    }
   });
   let renderedValue = $derived(view.displayed);
-  let fillPercent = $derived(renderedValue === null
+  let fillPercent = $derived(!view.domainValid || renderedValue === null
     ? 0
-    : getFillPercent(renderedValue, min, max));
+    : getFillPercent(renderedValue, view.domain.min, view.domain.max));
   let effectiveFill = $derived(fillGradient
     ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
     : (fillColor ?? accentColor));
   let displayValue = $derived(renderedValue === null
     ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
     : displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
+  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
 
   function handlePointerDown(e: PointerEvent) {
     if (!containerEl) return;
@@ -120,7 +114,10 @@
     activePointer = { id: e.pointerId, token, target };
 
     const rect = containerEl.getBoundingClientRect();
-    const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
+    const domain = view.domain;
+    const newValue = calculateClickValue(
+      e.clientX, rect.left, rect.width, domain.min, domain.max, domain.step,
+    );
     lease.pointer(token, newValue);
   }
 
@@ -128,7 +125,10 @@
     if (!activePointer || activePointer.id !== e.pointerId || !containerEl) return;
 
     const rect = containerEl.getBoundingClientRect();
-    const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
+    const domain = view.domain;
+    const newValue = calculateClickValue(
+      e.clientX, rect.left, rect.width, domain.min, domain.max, domain.step,
+    );
     lease.pointer(activePointer.token, newValue);
   }
 
@@ -192,13 +192,13 @@
     role="slider"
     tabindex={view.editable ? 0 : -1}
     aria-label={label}
-    aria-valuemin={min}
-    aria-valuemax={max}
-    aria-valuenow={view.canonical ?? undefined}
+    aria-valuemin={view.domainValid ? view.domain.min : undefined}
+    aria-valuemax={view.domainValid ? view.domain.max : undefined}
+    aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
     aria-disabled={!view.editable}
-    aria-busy={legacyPresentation?.feedbackBusy}
-    aria-describedby={legacyPresentation?.feedbackDescription ? feedbackDescriptionId : undefined}
-    data-command-phase={legacyPresentation?.feedbackPhase ?? undefined}
+    aria-busy={renderPresentation.attributes['aria-busy']}
+    aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
+    data-command-phase={renderPresentation.attributes['data-command-phase'] ?? undefined}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
@@ -231,17 +231,17 @@
       <div class="vc-thumb" aria-hidden="true"></div>
     {/if}
   </div>
-  {#if legacyPresentation?.feedbackDescription}
-    <span id={feedbackDescriptionId} class="sr-only">{legacyPresentation.feedbackDescription}</span>
+  {#if renderPresentation.description !== null}
+    <span id={feedbackDescriptionId} class="sr-only">{renderPresentation.description}</span>
   {/if}
-  {#if legacyPresentation?.feedbackStatus}
+  {#if renderPresentation.status !== null}
     <span
       class="sr-only"
       role="status"
       aria-live="polite"
       aria-atomic="true"
       data-control-feedback-status
-    >{legacyPresentation.feedbackStatus}</span>
+    >{renderPresentation.status}{renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}</span>
   {/if}
 </div>
 
