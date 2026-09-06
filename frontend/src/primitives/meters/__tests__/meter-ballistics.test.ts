@@ -176,11 +176,17 @@ describe('createMeterBallistics frame-step strategy', () => {
   it('is the shared owner without importing renderer or smoother implementations', () => {
     const primitive = readFileSync('src/primitives/meters/meter-ballistics.svelte.ts', 'utf8');
     expect(primitive).not.toMatch(/components-v2|createSmoother|Math\.exp|calibrated|SEG_COUNT|runtime\//);
-    for (const component of ['LinearSMeter.svelte', 'BarGauge.svelte']) {
-      const source = readFileSync(`src/components-v2/meters/${component}`, 'utf8');
-      expect(source.match(/createMeterBallistics\(/g)).toHaveLength(1);
-      expect(source.match(/createSmoother\(/g)).toHaveLength(1);
-    }
+    const binding = readFileSync('src/components-v2/meters/signal-meter-motion.svelte.ts', 'utf8');
+    expect(binding.match(/createMeterBallistics\(/g)).toHaveLength(1);
+    expect(binding.match(/createSmoother\(/g)).toHaveLength(1);
+
+    const linear = readFileSync('src/components-v2/meters/LinearSMeter.svelte', 'utf8');
+    expect(linear).not.toMatch(/createMeterBallistics\(|createSmoother\(/);
+    expect(linear.match(/createSignalMeterMotion\(/g)).toHaveLength(1);
+
+    const bar = readFileSync('src/components-v2/meters/BarGauge.svelte', 'utf8');
+    expect(bar.match(/createMeterBallistics\(/g)).toHaveLength(1);
+    expect(bar.match(/createSmoother\(/g)).toHaveLength(1);
   });
 
   it('delegates smoothing and clears both outputs when either coordinate is absent', () => {
