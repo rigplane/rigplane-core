@@ -65,6 +65,27 @@ const safeInteger = (value: unknown): number | null =>
 const providerGeneration = (value: unknown): number | null =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 
+type NormalizedLevelCommand = Readonly<{ receiver: 0 | 1; target: number }>;
+function normalizedLevelCommand(
+  command: Pick<CommandLifecycle, 'params'>,
+): NormalizedLevelCommand | null {
+  try {
+    const params = command.params;
+    if (typeof params !== 'object' || params === null) return null;
+    const keys = Reflect.ownKeys(params);
+    if (keys.length !== 2
+      || !Object.prototype.hasOwnProperty.call(params, 'level')
+      || !Object.prototype.hasOwnProperty.call(params, 'receiver')) return null;
+    const level = params.level;
+    const receiver = params.receiver;
+    return typeof level === 'number' && Number.isSafeInteger(level) && level >= 0 && level <= 255
+      && (receiver === 0 || receiver === 1)
+      ? Object.freeze({ receiver, target: level / 255 }) : null;
+  } catch {
+    return null;
+  }
+}
+
 export const FILTER_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
   intentName: 'set_filter_width', repeatPolicy: 'latest-target-wins',
   scope: (command: Pick<CommandLifecycle, 'params'>) => {
@@ -96,10 +117,42 @@ export const BREAK_IN_DELAY_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<num
   matches: (confirmed: number, target: number) => confirmed === target,
 });
 
+export const RF_GAIN_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_rf_gain', repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => {
+    const parsed = normalizedLevelCommand(command);
+    return parsed === null ? null : Object.freeze({ control: 'rf-gain', receiver: parsed.receiver });
+  },
+  fieldPath: (scope: ControlFeedbackScope) => scope.receiver === 1 ? 'sub.rfGain' : 'main.rfGain',
+  target: (command: Pick<CommandLifecycle, 'params'>) => normalizedLevelCommand(command)?.target ?? null,
+  confirmed: (state: ServerState, scope: ControlFeedbackScope) => {
+    const value = finiteNumber((scope.receiver === 1 ? state.sub : state.main)?.rfGain);
+    return value !== null && value >= 0 && value <= 1 ? value : null;
+  },
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
+export const SQUELCH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_squelch', repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => {
+    const parsed = normalizedLevelCommand(command);
+    return parsed === null ? null : Object.freeze({ control: 'squelch', receiver: parsed.receiver });
+  },
+  fieldPath: (scope: ControlFeedbackScope) => scope.receiver === 1 ? 'sub.squelch' : 'main.squelch',
+  target: (command: Pick<CommandLifecycle, 'params'>) => normalizedLevelCommand(command)?.target ?? null,
+  confirmed: (state: ServerState, scope: ControlFeedbackScope) => {
+    const value = finiteNumber((scope.receiver === 1 ? state.sub : state.main)?.squelch);
+    return value !== null && value >= 0 && value <= 1 ? value : null;
+  },
+  matches: (confirmed: number, target: number) => confirmed === target,
+});
+
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
   new Map([
     [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
     [BREAK_IN_DELAY_COMMAND_DESCRIPTOR.intentName, BREAK_IN_DELAY_COMMAND_DESCRIPTOR],
+    [RF_GAIN_COMMAND_DESCRIPTOR.intentName, RF_GAIN_COMMAND_DESCRIPTOR],
+    [SQUELCH_COMMAND_DESCRIPTOR.intentName, SQUELCH_COMMAND_DESCRIPTOR],
   ]);
 export const getStateBackedCommandDescriptor = (intentName: string): StateBackedCommandDescriptor<unknown> | undefined =>
   (STATE_BACKED_COMMAND_DESCRIPTORS as ReadonlyMap<string, StateBackedCommandDescriptor<unknown>>).get(intentName);

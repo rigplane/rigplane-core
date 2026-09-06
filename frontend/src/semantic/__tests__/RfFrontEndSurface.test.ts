@@ -13,6 +13,7 @@
  * Fast-pool-safe by construction (MOR-1272): no `vi.mock`, no global spy.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import RfFrontEndSurface, {
@@ -22,6 +23,7 @@ import { topologyFixtures, withRfFrontEnd } from '../fixtures/topologies';
 import type {
   Availability, DisabledReason, RadioViewModel, RfFrontEndField, RfFrontEndViewModel,
 } from '../radio-view-model';
+import type { CommandFeedbackContinuousPairInput } from '../../primitives/scalar/continuous-pair.svelte';
 
 const ON: Availability = { structural: true, operational: true };
 const OFF: Availability = { structural: false, operational: false };
@@ -40,6 +42,24 @@ const unread = <T>(availability: Availability = ON): RfFrontEndField<T> =>
   ({ reading: { status: 'unknown' }, availability });
 const known = <T>(value: T, availability: Availability = ON): RfFrontEndField<T> =>
   ({ reading: { status: 'known', value }, availability });
+type PairFeedback = Readonly<Pick<CommandFeedbackContinuousPairInput, 'rf' | 'sql'>>;
+const pairFeedback = (
+  over: Partial<Record<'rf' | 'sql', Record<string, unknown>>> = {},
+  providerGeneration = 3,
+): PairFeedback => {
+  const lane = (name: 'rf' | 'sql', confirmed: number) => ({
+    command: name === 'rf' ? 'set_rf_gain' : 'set_squelch',
+    feedback: {
+      confirmed, target: null, requestedTarget: null, phase: 'idle' as const,
+      busy: false, availability: 'available' as const, outcome: null,
+      lifecycleId: null, transitionId: null, providerGeneration, sessionEpoch: 7,
+      scope: { control: name === 'rf' ? 'rf-gain' : 'squelch', receiver: 0 as const },
+      repeatPolicy: 'latest-target-wins' as const,
+      ...over[name],
+    },
+  });
+  return { rf: lane('rf', 0.5), sql: lane('sql', 0.2) };
+};
 
 let target: HTMLDivElement;
 
@@ -311,6 +331,14 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
 /* ── MOR-1447 leg 2: the combined RF/SQL knob ────────────────────── */
 
 describe('the combined RF/SQL knob (controlModel="combined")', () => {
+  it('keeps its optional feedback prop primitive-shaped and free of runtime imports', () => {
+    const source = readFileSync('src/semantic/RfFrontEndSurface.svelte', 'utf8');
+    const props = source.slice(source.indexOf('interface Props'), source.indexOf('}: Props'));
+    expect(props).toContain("Pick<CommandFeedbackContinuousPairInput, 'rf' | 'sql'>");
+    expect(props).toMatch(/rfSqlFeedback\?:[\s\S]*\| null/);
+    expect(source).not.toMatch(/from ['"]\$lib\/runtime|from ['"][^'"]*runtime\/adapters/);
+  });
+
   it('renders one rf-sql control instead of the two separate sliders', () => {
     const r = render(base(), { controlModel: 'combined' });
     expect(r.el('rf-sql')).not.toBeNull();
@@ -339,7 +367,105 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(base(), { controlModel: 'combined' });
     const input = r.el('rf-sql')!.querySelector('input')!;
     expect([input.min, input.max]).toEqual(['0', '1']);
+    expect(input.getAttribute('feedback-policy')).toBe('feedback-integrated');
     r.dispose();
+  });
+
+  it('treats explicit null as unresolved integration with no raw fallback', () => {
+    const onLevelChange = vi.fn();
+    const r = render(base(), { controlModel: 'combined', rfSqlFeedback: null, onLevelChange });
+    const group = r.el('rf-sql')!;
+    const input = group.querySelector('input')!;
+    expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
+    expect(group.dataset.observed).toBe('false');
+    expect(input.disabled).toBe(true);
+    expect(r.text('rf-sql-rf-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('rf-sql-sql-value')).toBe(UNKNOWN_TEXT);
+    input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  it('uses command feedback for position, readout, observation, and request gating', () => {
+    const onLevelChange = vi.fn();
+    const r = render(withRf({ rfGain: unread(DEGRADED), squelch: unread(DEGRADED) }), {
+      controlModel: 'combined', rfSqlFeedback: pairFeedback(), onLevelChange,
+    });
+    const group = r.el('rf-sql')!;
+    const input = group.querySelector('input')!;
+    expect(group.dataset.feedbackIntegration).toBe('command-feedback');
+    expect(group.dataset.observed).toBe('true');
+    expect(input.disabled).toBe(false);
+    expect(input.valueAsNumber).toBeCloseTo(0.632, 3);
+    expect(r.text('rf-sql-rf-value')).toBe('50%');
+    expect(r.text('rf-sql-sql-value')).toBe('20%');
+    input.value = '1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(onLevelChange.mock.calls).toEqual([['rfGain', 1], ['squelch', 1]]);
+    r.dispose();
+  });
+
+  it('renders independent lane phases, errors, busy state, and announcements', () => {
+    const values = new SvelteMap<string, PairFeedback>([['feedback', pairFeedback()]]);
+    target = document.createElement('div'); document.body.appendChild(target);
+    const component = mount(RfFrontEndSurface, { target, props: {
+      view: base(), controlModel: 'combined',
+      get rfSqlFeedback() { return values.get('feedback')!; },
+    } });
+    flushSync();
+    values.set('feedback', pairFeedback({
+      rf: {
+        phase: 'confirmed', requestedTarget: 0.5,
+        outcome: { phase: 'confirmed' }, lifecycleId: 'rf-1', transitionId: 'rf-confirmed',
+      },
+      sql: {
+        phase: 'failed', requestedTarget: 0.4, outcome: { phase: 'failed', error: 'denied' },
+        lifecycleId: 'sql-1', transitionId: 'sql-failed',
+      },
+    }));
+    flushSync();
+    const group = target.querySelector<HTMLElement>('[data-testid="rf-front-end-rf-sql"]')!;
+    expect(group.dataset.rfCommandPhase).toBe('confirmed');
+    expect(group.dataset.sqlCommandPhase).toBe('failed');
+    expect(group.getAttribute('aria-busy')).toBe('false');
+    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-rf-status"]')?.textContent).toContain('Confirmed');
+    expect(group.querySelector('[data-testid="rf-front-end-rf-sql-sql-status"]')?.textContent).toContain('Failed');
+    expect(group.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
+    expect(group.textContent).toContain('denied');
+    unmount(component); target.remove();
+  });
+
+  it('keeps requested and last-confirmed lane values distinct while pending', () => {
+    const feedback = pairFeedback({ rf: {
+      target: 0.75, requestedTarget: 0.75, phase: 'awaiting-confirmation', busy: true,
+      lifecycleId: 'rf-pending', transitionId: 'rf-awaiting',
+    } });
+    const r = render(base(), { controlModel: 'combined', rfSqlFeedback: feedback });
+    expect(r.text('rf-sql-rf-value')).toBe('75%');
+    expect(r.text('rf-sql-rf-status')).toContain('Awaiting confirmation 75%; confirmed 50%');
+    expect(r.el('rf-sql')!.getAttribute('aria-busy')).toBe('true');
+    r.dispose();
+  });
+
+  it('invalidates a local draft when provider authority is replaced', () => {
+    const values = new SvelteMap<string, PairFeedback>([['feedback', pairFeedback()]]);
+    target = document.createElement('div'); document.body.appendChild(target);
+    const component = mount(RfFrontEndSurface, { target, props: {
+      view: base(), controlModel: 'combined',
+      get rfSqlFeedback() { return values.get('feedback')!; },
+      onLevelChange: vi.fn(),
+    } });
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rf-sql"] input')!;
+    input.value = '1'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
+    expect(input.valueAsNumber).toBe(1);
+    values.set('feedback', pairFeedback({ rf: { confirmed: 1 }, sql: { confirmed: 0 } }, 4));
+    flushSync();
+    expect(input.valueAsNumber).toBe(0.5);
+    unmount(component); target.remove();
   });
 
   // Per-field change guard (verifier follow-up R1, mirrors
