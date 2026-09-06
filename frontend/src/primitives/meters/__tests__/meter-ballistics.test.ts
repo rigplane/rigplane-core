@@ -4,6 +4,7 @@ import {
   createElapsedEnvelopePeakStrategy,
   createFrameStepPeakStrategy,
   createMeterBallistics,
+  createMeterBallisticsGroup,
   type MeterMotionHost,
   type MeterSmoother,
 } from '../meter-ballistics.svelte';
@@ -132,6 +133,32 @@ function elapsedSetup(reduced = false) {
     }),
   });
   return { host, smoother, meter, update, display };
+}
+
+const GROUP_KEYS = ['po', 'swr', 'alc', 'id'] as const;
+
+function groupSetup(reduced = false) {
+  const host = createHost(reduced);
+  const update = vi.fn((state: { latchedPeak: number; latchedAt: number } | undefined, value: number, now: number) => (
+    state === undefined || value > state.latchedPeak || now - state.latchedAt > 1500
+      ? { latchedPeak: value, latchedAt: now }
+      : state
+  ));
+  const display = vi.fn((state: { latchedPeak: number; latchedAt: number }, value: number, now: number) => (
+    Math.max(value, state.latchedPeak * (1 - (now - state.latchedAt) / 1500))
+  ));
+  const group = createMeterBallisticsGroup(GROUP_KEYS, host, {
+    ticker: { kind: 'interval', milliseconds: 100 },
+    peak: createElapsedEnvelopePeakStrategy({
+      decayMilliseconds: 1500,
+      updatePeakHold: update,
+      peakHoldDisplay: display,
+    }),
+  });
+  const sync = (over: Partial<Record<(typeof GROUP_KEYS)[number], number | null>> = {}) => {
+    group.sync({ po: 100, swr: 3, alc: 60, id: 25, ...over });
+  };
+  return { host, group, update, display, sync };
 }
 
 describe('createMeterBallistics frame-step strategy', () => {
@@ -280,6 +307,98 @@ describe('createMeterBallistics elapsed-envelope strategy', () => {
     host.setReduced(false);
     expect(update).not.toHaveBeenCalled();
     expect(host.activeIntervals).toBe(1);
+  });
+});
+
+describe('createMeterBallisticsGroup', () => {
+  it('observes four channels at one time through one interval and listener', () => {
+    const { host, group, update, sync } = groupSetup();
+    sync();
+    expect(update).not.toHaveBeenCalled();
+    group.start();
+    expect(host.activeIntervals).toBe(1);
+    expect(host.listenerCount).toBe(1);
+    expect(update).toHaveBeenCalledTimes(4);
+    expect(new Set(update.mock.calls.map((call) => call[2]))).toEqual(new Set([0]));
+
+    update.mockClear();
+    host.advance(100);
+    host.flushIntervals();
+    expect(update).toHaveBeenCalledTimes(4);
+    expect(new Set(update.mock.calls.map((call) => call[2]))).toEqual(new Set([100]));
+  });
+
+  it('stores normal sync, resets one channel, and relatches only on the next tick', () => {
+    const { host, group, update, sync } = groupSetup();
+    sync();
+    group.start();
+    update.mockClear();
+    sync({ po: 2, swr: 1.2 });
+    expect(update).not.toHaveBeenCalled();
+    group.resetPeak('po');
+    expect(group.view('po')).toEqual({ liveValue: 2, displayedValue: 2, peakValue: null });
+    expect(group.view('swr').peakValue).toBe(3);
+    expect(update).not.toHaveBeenCalled();
+
+    host.advance(100);
+    host.flushIntervals();
+    expect(group.view('po').peakValue).toBe(2);
+    expect(group.view('swr').peakValue).toBeGreaterThan(1.2);
+    expect(update).toHaveBeenCalledTimes(4);
+  });
+
+  it('clears absence immediately and reappears live without stale peak state', () => {
+    const { host, group, sync } = groupSetup();
+    sync();
+    group.start();
+    sync({ po: null });
+    expect(group.view('po')).toEqual({ liveValue: null, displayedValue: null, peakValue: null });
+    sync({ po: 2 });
+    expect(group.view('po')).toEqual({ liveValue: 2, displayedValue: 2, peakValue: null });
+    host.advance(100);
+    host.flushIntervals();
+    expect(group.view('po').peakValue).toBe(2);
+  });
+
+  it('delegates normal projection while reduced motion keeps live display and static peak', () => {
+    const { host, group, display, sync } = groupSetup();
+    sync();
+    group.start();
+    sync({ po: 2 });
+    host.advance(750);
+    host.flushIntervals();
+    display.mockClear();
+    expect(group.view('po').displayedValue).toBe(50);
+    expect(group.view('po').peakValue).toBe(50);
+    expect(display).toHaveBeenCalledTimes(2);
+
+    host.setReduced(true);
+    sync({ po: 1 });
+    expect(group.view('po')).toEqual({ liveValue: 1, displayedValue: 1, peakValue: 100 });
+    expect(host.activeIntervals).toBe(0);
+  });
+
+  it('uses only genuine reduced-motion sync and resumes one immediate-sampling ticker', () => {
+    const { host, group, update, sync } = groupSetup(true);
+    sync();
+    group.start();
+    expect(host.activeIntervals).toBe(0);
+    expect(update).toHaveBeenCalledTimes(4);
+    update.mockClear();
+    host.advance(2000);
+    expect(update).not.toHaveBeenCalled();
+    sync({ po: 2 });
+    expect(group.view('po').peakValue).toBe(2);
+
+    update.mockClear();
+    host.setReduced(false);
+    expect(update).toHaveBeenCalledTimes(4);
+    expect(host.activeIntervals).toBe(1);
+    host.setReduced(false);
+    expect(host.activeIntervals).toBe(1);
+    group.stop();
+    expect(host.activeIntervals).toBe(0);
+    expect(host.listenerCount).toBe(0);
   });
 });
 
