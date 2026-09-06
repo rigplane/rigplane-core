@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import ValueControl from '../ValueControl.svelte';
 import DiscreteRenderer from '../DiscreteRenderer.svelte';
+import { professionalSkin } from '../skins';
 import {
   createBipolarContinuousScalarPolicy,
   createContinuousScalar,
   createDiscreteContinuousScalarPolicy,
   createHBarContinuousScalarPolicy,
+  createKnobContinuousScalarPolicy,
   type CommandScalarFeedback,
   type ContinuousScalarBinding,
   type ContinuousScalarInput,
@@ -145,6 +147,27 @@ function discreteBinding(value: number, request: (value: number) => void): Conti
       request,
     }),
     createDiscreteContinuousScalarPolicy({ debounceMs: 0 }),
+  );
+}
+
+function knobCommandBinding(
+  request: (value: number) => void,
+  over: Partial<CommandScalarFeedback> = {},
+): ContinuousScalarBinding {
+  const feedback = commandFeedback(over);
+  return createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback',
+      command: 'set_filter_width',
+      domain: { min: 0, max: 100, step: 10, defaultValue: 50, fineStepDivisor: 10 },
+      enabled: true,
+      request,
+      feedback,
+    }),
+    createKnobContinuousScalarPolicy({
+      debounceMs: 0,
+      describeTarget: (value) => `${value} Hz`,
+    }),
   );
 }
 
@@ -925,7 +948,215 @@ describe('ValueControl controlled Discrete rendering', () => {
   });
 });
 
+describe('ValueControl controlled Knob skins', () => {
+  it.each([
+    ['standard', undefined],
+    ['professional', professionalSkin],
+  ] as const)('preserves relative coarse and Shift-fine pointer geometry in %s', (_name, skin) => {
+    const onChange = vi.fn();
+    const { target } = mountReactive({
+      value: 50,
+      min: 0,
+      max: 100,
+      step: 10,
+      fineStepDivisor: 10,
+      label: 'Relative pointer',
+      renderer: 'knob',
+      skin,
+      onChange,
+    });
+    const control = slider(target) as HTMLElement & {
+      setPointerCapture?: (pointerId: number) => void;
+      releasePointerCapture?: (pointerId: number) => void;
+    };
+    control.setPointerCapture = vi.fn();
+    control.releasePointerCapture = vi.fn();
+
+    control.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, clientY: 100, pointerId: 1,
+    }));
+    control.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, clientY: 99, pointerId: 1,
+    }));
+    control.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, clientY: 88, pointerId: 1, shiftKey: true,
+    }));
+
+    expect(onChange.mock.calls).toEqual([[70], [51]]);
+  });
+
+  it('keeps equivalent wheel traces across appearance and token changes', () => {
+    const onChange = vi.fn();
+    const { state, target } = mountReactive({
+      value: 50,
+      min: 0,
+      max: 100,
+      step: 10,
+      label: 'Appearance-only',
+      renderer: 'knob',
+      onChange,
+    });
+
+    slider(target).dispatchEvent(new WheelEvent('wheel', {
+      deltaY: -1, bubbles: true, cancelable: true,
+    }));
+    state.skin = professionalSkin;
+    state.arcAngle = 180;
+    state.tickCount = 5;
+    state.accentColor = '#ff0000';
+    flushSync();
+    slider(target).dispatchEvent(new WheelEvent('wheel', {
+      deltaY: -1, bubbles: true, cancelable: true,
+    }));
+
+    expect(onChange.mock.calls).toEqual([[80], [80]]);
+  });
+
+  it.each([
+    ['standard', undefined],
+    ['professional', professionalSkin],
+  ] as const)('shows pending command feedback in %s', (_name, skin) => {
+    const binding = knobCommandBinding(vi.fn(), {
+      phase: 'awaiting-confirmation',
+      busy: true,
+      transitionId: 'pending-knob',
+    });
+    const { target } = mountReactive({
+      binding,
+      label: 'Pending knob',
+      renderer: 'knob',
+      skin,
+    });
+    const control = slider(target);
+
+    expect(control.getAttribute('data-command-phase')).toBe('awaiting-confirmation');
+    expect(control.getAttribute('aria-busy')).toBe('true');
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('Awaiting confirmation: 30 Hz');
+    binding.destroy();
+  });
+
+  it.each([
+    ['standard', undefined],
+    ['professional', professionalSkin],
+  ] as const)('preserves unavailable command evidence in %s', (_name, skin) => {
+    const binding = knobCommandBinding(vi.fn(), {
+      confirmed: null,
+      target: null,
+      requestedTarget: null,
+      phase: 'unavailable',
+      busy: false,
+      availability: 'unavailable',
+    });
+    const { target } = mountReactive({
+      binding,
+      label: 'Unavailable knob',
+      renderer: 'knob',
+      skin,
+    });
+
+    expect(slider(target).getAttribute('aria-valuenow')).toBeNull();
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+    binding.destroy();
+  });
+
+  it('replaces Standard with Professional while preserving feedback and revoking the old lease', () => {
+    const request = vi.fn();
+    const binding = knobCommandBinding(request, {
+      phase: 'failed',
+      busy: false,
+      outcome: { phase: 'failed', error: 'radio rejected' },
+      transitionId: 'failed-knob',
+    });
+    const { state, target } = mountReactive({
+      binding,
+      label: 'Skinned command',
+      renderer: 'knob',
+    });
+    const standard = slider(target);
+
+    expect(target.querySelector('.vc-knob')).not.toBeNull();
+    expect(standard.getAttribute('aria-valuenow')).toBe('20');
+    expect(standard.getAttribute('data-command-phase')).toBe('failed');
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('Failed: 30 Hz: radio rejected');
+
+    state.skin = professionalSkin;
+    flushSync();
+    const professional = slider(target);
+    expect(target.querySelector('.pro-knob')).not.toBeNull();
+    expect(professional.getAttribute('aria-valuenow')).toBe('20');
+    expect(professional.getAttribute('data-command-phase')).toBe('failed');
+    expect(professional.getAttribute('aria-busy')).toBe('false');
+    const descriptionId = professional.getAttribute('aria-describedby');
+    expect(target.querySelector(`#${descriptionId}`)?.textContent).toBe('30 Hz');
+    expect(target.querySelector('[data-control-feedback-status]')).toBeNull();
+
+    standard.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).not.toHaveBeenCalled();
+    professional.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).toHaveBeenCalledExactlyOnceWith(30);
+    binding.destroy();
+  });
+
+  it.each([
+    [Number.POSITIVE_INFINITY, '+INF'],
+    [Number.NEGATIVE_INFINITY, '-INF'],
+    [Number.NaN, 'NAN'],
+  ] as const)('keeps exact raw Knob formatting for nonfinite input %s', (value, expected) => {
+    const { target } = mountReactive({
+      value,
+      min: 0,
+      max: 100,
+      step: 10,
+      label: 'Nonfinite Knob',
+      renderer: 'knob',
+      onChange: vi.fn(),
+      displayFn: (candidate: number) => Number.isNaN(candidate) ? 'NAN'
+        : candidate === Number.POSITIVE_INFINITY ? '+INF' : '-INF',
+    });
+
+    expect(target.querySelector('.vc-knob-value')?.textContent).toBe(expected);
+    expect(slider(target).getAttribute('aria-valuenow')).toBeNull();
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+  });
+});
+
 describe('ValueControl raw effective behavior authority', () => {
+  it.each([
+    ['optimistic', false],
+    ['keyboardStep', 25],
+  ] as const)('keeps a pending Knob request when ignored raw %s changes', (prop, next) => {
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      const { state, target } = mountReactive({
+        value: 50,
+        min: 0,
+        max: 100,
+        step: 10,
+        optimistic: true,
+        keyboardStep: 40,
+        label: 'Ignored Knob input',
+        renderer: 'knob',
+        debounceMs: 50,
+        onChange,
+      });
+
+      slider(target).dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      );
+      state[prop] = next;
+      flushSync();
+      vi.advanceTimersByTime(50);
+
+      expect(onChange).toHaveBeenCalledExactlyOnceWith(60);
+      expect(target.querySelector('.vc-knob-value')?.textContent).toBe('50');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps a pending Bipolar request when ignored raw optimistic changes', () => {
     vi.useFakeTimers();
     try {

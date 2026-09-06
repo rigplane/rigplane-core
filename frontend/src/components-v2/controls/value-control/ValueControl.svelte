@@ -11,6 +11,7 @@
     createContinuousScalar,
     createDiscreteContinuousScalarPolicy,
     createHBarContinuousScalarPolicy,
+    createKnobContinuousScalarPolicy,
     type ContinuousScalarBinding,
     type ContinuousScalarPolicy,
   } from '../../../primitives/scalar/continuous-scalar.svelte';
@@ -60,7 +61,7 @@
 
   interface BoundContinuousProps {
     binding: ContinuousScalarBinding;
-    renderer: 'hbar' | 'bipolar' | 'discrete';
+    renderer: 'hbar' | 'bipolar' | 'knob' | 'discrete';
     value?: undefined;
     min?: undefined;
     max?: undefined;
@@ -73,7 +74,6 @@
     onchange?: undefined;
     debounceMs?: undefined;
     disabled?: undefined;
-    skin?: undefined;
   }
 
   type Props = PresentationProps & (RawProps | BoundContinuousProps);
@@ -126,9 +126,11 @@
   }));
   let bipolarPolicy = $derived(createBipolarContinuousScalarPolicy({ debounceMs }));
   let discretePolicy = $derived(createDiscreteContinuousScalarPolicy({ debounceMs }));
+  let knobPolicy = $derived(createKnobContinuousScalarPolicy({ debounceMs }));
   let scalarPolicy = $derived(renderer === 'bipolar'
     ? bipolarPolicy
-    : renderer === 'discrete' ? discretePolicy : hbarPolicy);
+    : renderer === 'discrete' ? discretePolicy
+      : renderer === 'knob' ? knobPolicy : hbarPolicy);
   const adapterPolicy: ContinuousScalarPolicy = {
     get name() { return scalarPolicy.name; },
     get preview() { return scalarPolicy.preview; },
@@ -197,32 +199,6 @@
 
   onDestroy(() => ownedBinding?.destroy());
 
-  let commonProps = $derived({
-    value,
-    min,
-    max,
-    step,
-    keyboardStep,
-    defaultValue,
-    fineStepDivisor,
-    label,
-    displayFn,
-    accentColor,
-    fillColor,
-    fillGradient,
-    trackColor,
-    showValue,
-    showLabel,
-    compact,
-    variant,
-    onChange: effectiveOnChange,
-    debounceMs,
-    disabled,
-    unit,
-    shortcutHint,
-    title,
-  });
-  let knobProps = $derived({ ...commonProps, arcAngle, tickCount, tickLabels });
   let legacy = $derived<LegacyReadingPresentation>({
     phase: feedbackPhase,
     busy: feedbackBusy,
@@ -234,12 +210,38 @@
       ? displayFn(value)
       : undefined,
   );
+  let rendererProps = $derived({
+    binding: scalarBinding,
+    label,
+    displayFn,
+    unknownDisplay,
+    accentColor,
+    fillColor,
+    fillGradient,
+    trackColor,
+    showValue,
+    showLabel,
+    compact,
+    variant,
+    unit,
+    shortcutHint,
+    title,
+    legacy,
+  });
+  let knobProps = $derived({ ...rendererProps, arcAngle, tickCount, tickLabels });
+  let discreteProps = $derived({
+    ...rendererProps,
+    tickLabels,
+    showAllTicks,
+    tickStyle,
+    dimmed: externalBinding === undefined ? disabled : undefined,
+  });
   let skinComponent = $derived(
     skin
       ? renderer === 'knob' ? skin.knob
         : renderer === 'hbar' ? skin.hbar
         : renderer === 'bipolar' ? skin.bipolar
-        : undefined
+          : skin.discrete
       : undefined,
   );
 </script>
@@ -248,8 +250,10 @@
   {@const SkinRenderer = skinComponent}
   {#if renderer === 'knob'}
     <SkinRenderer {...knobProps} />
+  {:else if renderer === 'discrete'}
+    <SkinRenderer {...discreteProps} />
   {:else}
-    <SkinRenderer {...commonProps} />
+    <SkinRenderer {...rendererProps} />
   {/if}
 {:else if renderer === 'hbar'}
   <HBarRenderer
@@ -268,11 +272,5 @@
 {:else if renderer === 'knob'}
   <KnobRenderer {...knobProps} />
 {:else if renderer === 'discrete'}
-  <DiscreteRenderer
-    binding={scalarBinding} {label} {displayFn} {unknownDisplay}
-    dimmed={externalBinding === undefined ? disabled : undefined}
-    {fillColor} {fillGradient} {trackColor}
-    {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
-    {tickLabels} {showAllTicks} {tickStyle} {legacy}
-  />
+  <DiscreteRenderer {...discreteProps} />
 {/if}

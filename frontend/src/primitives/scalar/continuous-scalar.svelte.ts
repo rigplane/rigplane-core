@@ -228,6 +228,42 @@ export function createDiscreteContinuousScalarPolicy(
   return Object.freeze(policy);
 }
 
+export function createKnobContinuousScalarPolicy(
+  options: Readonly<{
+    debounceMs: number;
+    describeTarget?: (value: number) => string;
+  }>,
+): Readonly<ContinuousScalarPolicy> {
+  const debounce = options.debounceMs > 0
+    ? Object.freeze({ debounceMs: options.debounceMs })
+    : 'immediate';
+  const policy: ContinuousScalarPolicy = {
+    name: 'knob',
+    preview: 'confirmed',
+    resolveKeyboardStep: () => undefined,
+    normalize: (value, domain) => snap(value, domain, domain.step / domain.fineStepDivisor),
+    wheel: (current, event, domain) => {
+      const quantum = event.fine ? domain.step / domain.fineStepDivisor : domain.step * 4;
+      return snap(current + event.direction * quantum, domain, quantum);
+    },
+    key: (current, event, domain) => handleKeyboardStep(
+      current,
+      event.key,
+      domain.step,
+      domain.fineStepDivisor,
+      domain.min,
+      domain.max,
+      event.fine,
+    ),
+    reset: (domain) => domain.defaultValue ?? domain.min,
+    dispatch: (source) => source === 'keyboard' || source === 'reset' ? debounce : 'immediate',
+    dispatchesCanonical: () => false,
+    wheelIdleMs: 0,
+    describeTarget: options.describeTarget ?? String,
+  };
+  return Object.freeze(policy);
+}
+
 function bipolarLatticeCompatible(increment: number, domain: ScalarDomain): boolean {
   return Number.isFinite(increment)
     && increment > 0

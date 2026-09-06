@@ -4,8 +4,7 @@
   import { DotButton, FillButton, HardwareButton, HardwarePlainButton, StatusIndicator } from '$lib/Button';
   import { PRESET_MAPPINGS, type RoleMapping } from '$lib/Button/roleMapping';
   import { SegmentedControl } from '$lib/SegmentedControl';
-  import { ValueControl } from './value-control';
-  import ProfessionalKnob from './value-control/skins/ProfessionalKnob.svelte';
+  import { ValueControl, professionalSkin } from './value-control';
   import ValueControlLab from './ValueControlLab.svelte';
 
   const indicatorStyles = [
@@ -1346,31 +1345,37 @@
   <section class="demo-card" data-testid="gallery-professionalknob">
     <h2>ProfessionalKnob <span class="hint">(demo-only, not wired to any production caller)</span></h2>
     <p class="lab-note">
-      <strong>ProfessionalKnob</strong> is a <code>KnobSkinRendererProps</code>-shaped skin
+      <strong>ProfessionalKnob</strong> is a binding-shaped skin rendered through <code>ValueControl</code>
       (<code>value-control/skins/ProfessionalKnob.svelte</code>) that renders nowhere in production
       or on any other demo page. Per the owner's look-preservation ruling on MOR-2215 (comment
       <code>0e7ed41d</code>), it is not deleted — this section pins its look via the visual baseline
       gallery instead. It is not the same component as the <code>knob</code> renderer above.
     </p>
     <div class="vc-knob-row">
-      <ProfessionalKnob
+      <ValueControl
         label="RF Gain"
         value={professionalKnobValue}
         min={0} max={255} step={1}
+        renderer="knob"
+        skin={professionalSkin}
         accentColor="var(--v2-accent-green)"
         onChange={(v) => { professionalKnobValue = v; }}
       />
-      <ProfessionalKnob
+      <ValueControl
         label="Squelch"
         value={professionalSquelchValue}
         min={0} max={255} step={1}
+        renderer="knob"
+        skin={professionalSkin}
         accentColor="var(--v2-accent-cyan)"
         onChange={(v) => { professionalSquelchValue = v; }}
       />
-      <ProfessionalKnob
+      <ValueControl
         label="CW Pitch"
         value={professionalCwPitchValue}
         min={300} max={900} step={1}
+        renderer="knob"
+        skin={professionalSkin}
         unit="Hz"
         accentColor="var(--v2-accent-yellow)"
         onChange={(v) => { professionalCwPitchValue = v; }}
