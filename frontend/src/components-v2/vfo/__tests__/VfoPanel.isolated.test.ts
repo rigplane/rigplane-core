@@ -466,4 +466,14 @@ describe('explicit presentation contract', () => {
     const source = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
     expect(source).not.toMatch(/stores\/|runtime\/|capabilities/);
   });
+
+  it('forwards optional meter context while the legacy adapter omits it', () => {
+    const panel = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
+    const meter = panel.match(/<LinearSMeter([\s\S]*?)\/>/)?.[1] ?? '';
+    expect(meter).toMatch(/source=\{meterSource\}/);
+    expect(meter).toMatch(/session=\{continuitySession\}/);
+    const legacy = readFileSync('src/components-v2/vfo/LegacyVfoPanelAdapter.svelte', 'utf8');
+    const call = legacy.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
+    expect(call).not.toMatch(/meterSource|continuitySession/);
+  });
 });

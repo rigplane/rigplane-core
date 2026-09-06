@@ -896,6 +896,8 @@ function deriveReceiverIndicators(
       state, caps, receiver, path: path('sMeter'), structural: true,
       value: numOrUndef(rx?.sMeter),
     });
+    const sMeterOperational = receiverOperational && sMeterObservation.state === 'current';
+    const providerGeneration = state?.providerGeneration;
 
     return {
       receiver,
@@ -903,10 +905,20 @@ function deriveReceiverIndicators(
       // Every structural receiver owns one S-meter shell. The reading stays
       // unknown until its own leaf passes the strict gate; numeric zero is a
       // valid calibrated S9 reading and is preserved by numOrUndef.
-      sMeter: txAuxField(
-        true, receiverOperational && sMeterObservation.state === 'current',
-        sMeterObservation.state === 'current' ? sMeterObservation.value : undefined,
-      ),
+      sMeter: {
+        ...txAuxField(
+          true, sMeterOperational,
+          sMeterObservation.state === 'current' ? sMeterObservation.value : undefined,
+        ),
+        source: sMeterOperational
+          && typeof providerGeneration === 'number'
+          && Number.isSafeInteger(providerGeneration) && providerGeneration >= 0
+          ? {
+              providerGeneration, scope: 'receiver', receiver,
+              path: receiver === 'MAIN' ? 'main.sMeter' : 'sub.sMeter',
+            }
+          : null,
+      },
       bandwidthHz: strictField(hasFilters, 'filterWidth', numOrUndef(rx?.filterWidth)),
       agcMode: strictField(hasAgc, 'agc', agcMode),
       nbActive: strictField(hasNb, 'nb', boolOrUndef(rx?.nb)),

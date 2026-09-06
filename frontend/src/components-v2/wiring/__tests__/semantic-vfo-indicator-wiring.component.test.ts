@@ -1,10 +1,11 @@
 /** MOR-2299 slice 1: the production dual composition partitions indicators. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { readFileSync } from 'node:fs';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 
 const h = vi.hoisted(() => ({
   state: null as ServerState | null, caps: null as Capabilities | null, noop: vi.fn(),
@@ -12,6 +13,8 @@ const h = vi.hoisted(() => ({
   main: vi.fn(), sub: vi.fn(), equalize: vi.fn(), swap: vi.fn(), split: vi.fn(),
   dualWatch: vi.fn(), speak: vi.fn(),
   filterWidthFeedback: vi.fn(),
+  session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
+  sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
 }));
 const group = new Proxy({}, { get: () => h.noop });
 
@@ -19,6 +22,11 @@ vi.mock('$lib/runtime', () => ({
   runtime: {
     onTxAudioDied: () => () => {},
     get state() { return h.state; }, get caps() { return h.caps; },
+    get controlSession() { return h.session; },
+    subscribeControlSession(handler: (next: ControlSessionSnapshot) => void) {
+      h.sessionSubscriber = handler;
+      return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
+    },
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
     get connectionAudio() { return false; },
     get defaultScopeStatus() {
@@ -96,10 +104,22 @@ function render(
   capabilities: Capabilities,
   stateValue: ServerState = state(),
   txSnapshot: ManagedAppTxServerSnapshot = {},
+  props: ComponentProps<typeof SemanticRadioSurfaces> = { strips: 'dual' },
 ): void {
   h.state = stateValue; h.caps = capabilities; txHarness.emitServerSnapshot(txSnapshot);
   target = document.createElement('div'); document.body.appendChild(target);
-  component = mount(SemanticRadioSurfaces, { target, props: { strips: 'dual' } }); flushSync();
+  component = mount(SemanticRadioSurfaces, { target, props }); flushSync();
+}
+function pushSession(next: ControlSessionSnapshot): void {
+  h.session = next; h.sessionSubscriber?.(next); flushSync();
+}
+function pushMeter(value: number, providerGeneration = 1): void {
+  const next = state({ providerGeneration });
+  next.main!.sMeter = value;
+  h.state = next;
+  h.caps = { ...caps('main_sub', 2), providerGeneration };
+  txHarness.emitServerSnapshot({});
+  flushSync();
 }
 const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')]
   .map((row) => row.dataset.indicatorReceiver);
@@ -107,6 +127,8 @@ const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement
 beforeEach(() => {
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
+  h.session = { state: 'connected', epoch: 1 };
+  h.sessionSubscriber = null;
   h.filterWidthFeedback.mockReturnValue(Object.freeze({
     confirmed: null, target: null, requestedTarget: null,
     phase: 'unavailable', busy: false, availability: 'unavailable',
@@ -123,10 +145,67 @@ afterEach(() => {
   component = null;
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
+  expect(h.sessionSubscriber).toBeNull();
   document.body.innerHTML = '';
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('production receiver-indicator partitioning', () => {
+  it.each([
+    ['dual semantic receiver strip', { strips: 'dual' }],
+    ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
+  ] as const)('re-seeds %s at equal-value session and provider boundaries', (_name, props) => {
+    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+      matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+    }));
+    render(caps('main_sub', 2), state(), {}, props);
+    const meter = () => target.querySelector('[data-indicator-receiver="MAIN"] [data-testid="receiver-s-meter"] svg')!;
+    const fillCount = () => meter().querySelectorAll('[data-meter-fill]').length;
+    const hasPeak = () => meter().querySelector('[data-meter-peak]') !== null;
+    const arm = (generation = 1) => {
+      pushMeter(240, generation); pushMeter(60, generation);
+      expect(hasPeak()).toBe(true);
+      return fillCount();
+    };
+
+    const epochFill = arm();
+    pushSession({ state: 'connected', epoch: 2 });
+    expect(fillCount()).toBe(epochFill);
+    expect(hasPeak()).toBe(false);
+
+    const generationFill = arm();
+    pushMeter(60, 2);
+    expect(fillCount()).toBe(generationFill);
+    expect(hasPeak()).toBe(false);
+
+    const reconnectFill = arm(2);
+    pushSession({ state: 'disconnected', epoch: 3 });
+    expect(fillCount()).toBe(0);
+    expect(hasPeak()).toBe(false);
+    pushSession({ state: 'connected', epoch: 4 });
+    expect(fillCount()).toBe(reconnectFill);
+    expect(hasPeak()).toBe(false);
+  });
+
+  it('stops mounted meter schedulers and the control-session join on unmount', () => {
+    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+      matches: false, media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+    }));
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    render(caps('main_sub', 2));
+    expect(requestFrame).toHaveBeenCalled();
+    unmount(component!);
+    component = null;
+    expect(cancelFrame).toHaveBeenCalled();
+    expect(h.sessionSubscriber).toBeNull();
+  });
+
   it('passes the complete Filter Width feedback projection through production wiring', () => {
     const source = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');
     expect(source).toMatch(

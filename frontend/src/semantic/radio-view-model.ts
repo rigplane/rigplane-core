@@ -1032,6 +1032,9 @@ export interface ScopeDisplayViewModel {
  * survive without becoming an unknown/default.
  */
 export type ReceiverIndicatorField<T> = TxAuxField<T>;
+export interface ReceiverSMeterField extends ReceiverIndicatorField<number> {
+  source?: MeterSourceIdentity | null;
+}
 export interface ReceiverIndicatorViewModel {
   receiver: ReceiverId;
   availability: Availability;
@@ -1041,7 +1044,7 @@ export interface ReceiverIndicatorViewModel {
    * radio-wide `radioWideIndicators.rfState` fact.
    */
   rfState?: MeterRfState;
-  sMeter: ReceiverIndicatorField<number>;
+  sMeter: ReceiverSMeterField;
   bandwidthHz: ReceiverIndicatorField<number>;
   /** Capability label when declared for the ordinal; raw ordinal otherwise. */
   agcMode: ReceiverIndicatorField<number | string>;
@@ -1545,6 +1548,23 @@ function validateDisplayObservedField<T>(
   };
 }
 
+function validateReceiverSMeterField(
+  value: unknown, path: string, receiver: ReceiverId,
+): ReceiverSMeterField {
+  const v = record(value, path);
+  exactKeys(v, ['reading', 'availability', 'source'], path);
+  const strict = validateTxAuxField(
+    { reading: v.reading, availability: v.availability }, path, num,
+  );
+  if (v.source === undefined) return strict;
+  if (v.source === null) return { ...strict, source: null };
+  const source = validateMeterSource(v.source, `${path}.source`, 'signal');
+  if (source.receiver !== receiver) {
+    invalid(`${path}.source`, `the canonical ${receiver} receiver source`);
+  }
+  return { ...strict, source };
+}
+
 function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
   const v = record(value, path);
   exactKeys(v, [
@@ -1552,13 +1572,14 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
     'digiSel', 'ipPlus',
   ], path);
+  const receiver = oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`);
   return {
-    receiver: oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`),
+    receiver,
     availability: validateAvailability(v.availability, `${path}.availability`),
     ...(v.rfState !== undefined
       ? { rfState: oneOf(v.rfState, METER_RF_STATES, `${path}.rfState`) }
       : {}),
-    sMeter: validateTxAuxField(v.sMeter, `${path}.sMeter`, num),
+    sMeter: validateReceiverSMeterField(v.sMeter, `${path}.sMeter`, receiver),
     bandwidthHz: validateTxAuxField(v.bandwidthHz, `${path}.bandwidthHz`, num),
     agcMode: validateTxAuxField(v.agcMode, `${path}.agcMode`, strOrNum),
     nbActive: validateTxAuxField(v.nbActive, `${path}.nbActive`, bool),

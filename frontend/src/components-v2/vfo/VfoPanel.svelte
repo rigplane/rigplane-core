@@ -9,6 +9,9 @@
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../../primitives/frequency/frequency-tuning';
   import { formatRitOffset } from './vfo-utils';
   import type { VfoLayoutProfile } from '../layout/vfo-layout-tokens';
+  import type {
+    MeterContinuitySession, MeterSourceIdentity,
+  } from '../../primitives/meters/meter-ballistics.svelte';
 
   export interface VfoPanelBadge {
     label: string;
@@ -46,6 +49,8 @@
     sValue: number | null;
     meterPresent?: boolean;
     meterOperational?: boolean;
+    meterSource?: MeterSourceIdentity | null;
+    continuitySession?: MeterContinuitySession | null;
     isActive: boolean;
     badgeItems: readonly VfoPanelBadge[];
     bandText?: string | null;
@@ -60,7 +65,7 @@
   let {
     receiver, receiverLabel, slotTag, freq, displayHz, pendingDisplayHz = null,
     frequencyState = 'current', staleReason, contextKey, frequencyDisabled = false,
-    mode, filter, sValue, meterPresent = true, meterOperational,
+    mode, filter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
     badgeItems, bandText, rit, slotChoices = [],
     layoutProfile = 'baseline',
@@ -109,7 +114,7 @@
       <div data-testid="receiver-s-meter" data-receiver={receiver}
         data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
         aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
-        <LinearSMeter value={Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} />
+        <LinearSMeter value={Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
       </div>
     {/if}
   </div>
