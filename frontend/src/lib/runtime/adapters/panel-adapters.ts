@@ -36,6 +36,7 @@ import { recordQsy } from './qsy-history-adapter';
 import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR,
   CW_PITCH_COMMAND_DESCRIPTOR,
+  DSP_COMMAND_DESCRIPTORS,
   FILTER_WIDTH_COMMAND_DESCRIPTOR,
   KEY_SPEED_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR,
@@ -45,6 +46,7 @@ import {
   isCommandLifecycleSuperseded,
   type CommandLifecycle,
   type ControlFeedbackScope,
+  type DspCommandFeedbackField,
   type StateBackedCommandDescriptor,
   type StateBackedRepeatPolicy,
   type TxAuxCommandFeedbackField,
@@ -477,6 +479,72 @@ export function getTxAuxControlFeedback(
     });
     return session.state === 'connected' && epoch >= 0
       && observation.state === 'current' && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+export type DspControlFeedbackField = DspCommandFeedbackField;
+const DSP_FEEDBACK_CAPABILITIES: Readonly<Record<
+  Exclude<DspControlFeedbackField, 'nbWidth'>, string
+>> = Object.freeze({
+  nbLevel: 'nb', notchFilter: 'notch', manualNotchWidth: 'notch', agcTimeConstant: 'agc',
+});
+
+/** Qualified raw DSP feedback; NB Width alone has stable radio-global identity. */
+export function getDspControlFeedback(
+  field: DspControlFeedbackField,
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const descriptor = DSP_COMMAND_DESCRIPTORS[field];
+  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
+  const scope = Object.freeze({
+    control: field === 'nbLevel' ? 'nb-level'
+      : field === 'nbWidth' ? 'nb-width'
+        : field === 'notchFilter' ? 'notch-position'
+          : field === 'manualNotchWidth' ? 'manual-notch-width' : 'agc-time',
+    receiver: field === 'nbWidth' ? 0 as const : receiver,
+  });
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const view = toRadioViewModel(state, caps);
+    if (session.state !== 'connected' || epoch < 0
+      || view === null || view.activeReceiver.status !== 'known') {
+      return unavailableControlFeedback(feedback);
+    }
+    const activeReceiver = view.activeReceiver.receiver;
+    const receiverEntries = view.receiverIndicators?.filter(
+      entry => entry.receiver === activeReceiver,
+    ) ?? [];
+    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
+      return unavailableControlFeedback(feedback);
+    }
+    if (field === 'nbWidth') {
+      const observation = qualifyRadioDisplayObservation({
+        state, caps, path: field, structural: caps?.controls?.nb_depth != null,
+        value: state?.nbWidth,
+      });
+      return observation.state === 'current' && Number.isSafeInteger(observation.value)
+        ? feedback : unavailableControlFeedback(feedback);
+    }
+    const receiverId = activeReceiver;
+    const receiverState = receiverId === 'SUB' ? state?.sub : state?.main;
+    const base = receiverId === 'SUB' ? 'sub' : 'main';
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver: receiverId, path: `${base}.${field}`,
+      structural: tags.includes(DSP_FEEDBACK_CAPABILITIES[field]),
+      value: receiverState?.[field],
+    });
+    return observation.state === 'current' && Number.isSafeInteger(observation.value)
       ? feedback : unavailableControlFeedback(feedback);
   } catch {
     return unavailableControlFeedback(feedback);

@@ -78,6 +78,26 @@ function exactSafeIntegerTarget(
   }
 }
 
+type ExactReceiverSafeIntegerCommand = Readonly<{ receiver: 0 | 1; target: number }>;
+function exactReceiverSafeIntegerCommand(
+  command: Pick<CommandLifecycle, 'params'>, key: string,
+): ExactReceiverSafeIntegerCommand | null {
+  try {
+    const params = command.params;
+    if (typeof params !== 'object' || params === null) return null;
+    const keys = Reflect.ownKeys(params);
+    if (keys.length !== 2
+      || !Object.prototype.hasOwnProperty.call(params, key)
+      || !Object.prototype.hasOwnProperty.call(params, 'receiver')) return null;
+    const target = safeInteger(params[key]);
+    const receiver = params.receiver;
+    return target !== null && (receiver === 0 || receiver === 1)
+      ? Object.freeze({ receiver, target }) : null;
+  } catch {
+    return null;
+  }
+}
+
 type NormalizedLevelCommand = Readonly<{ receiver: 0 | 1; target: number }>;
 function normalizedLevelCommand(
   command: Pick<CommandLifecycle, 'params'>,
@@ -221,6 +241,60 @@ export const TX_AUX_COMMAND_DESCRIPTORS = Object.freeze({
   monitorGain: rawTxAuxCommandDescriptor('set_monitor_gain', 'monitor-level', 'monitorGain'),
 }) satisfies Readonly<Record<TxAuxCommandFeedbackField, StateBackedCommandDescriptor<number>>>;
 
+export type DspCommandFeedbackField =
+  | 'nbLevel' | 'nbWidth' | 'notchFilter' | 'manualNotchWidth' | 'agcTimeConstant';
+type ReceiverDspCommandFeedbackField = Exclude<DspCommandFeedbackField, 'nbWidth'>;
+type ReceiverDspCommandFeedbackIntent =
+  | 'set_nb_level' | 'set_notch_filter' | 'set_manual_notch_width' | 'set_agc_time_constant';
+
+function rawReceiverDspCommandDescriptor(
+  intentName: ReceiverDspCommandFeedbackIntent,
+  control: string,
+  field: ReceiverDspCommandFeedbackField,
+  param: 'level' | 'value',
+): StateBackedCommandDescriptor<number> {
+  const parsed = (command: Pick<CommandLifecycle, 'params'>) =>
+    exactReceiverSafeIntegerCommand(command, param);
+  return Object.freeze({
+    intentName, repeatPolicy: 'latest-target-wins' as const,
+    scope: (command: Pick<CommandLifecycle, 'params'>) => {
+      const value = parsed(command);
+      return value === null ? null : Object.freeze({ control, receiver: value.receiver });
+    },
+    fieldPath: (scope: ControlFeedbackScope) => `${scope.receiver === 1 ? 'sub' : 'main'}.${field}`,
+    target: (command: Pick<CommandLifecycle, 'params'>) => parsed(command)?.target ?? null,
+    confirmed: (state: ServerState, scope: ControlFeedbackScope) =>
+      safeInteger((scope.receiver === 1 ? state.sub : state.main)?.[field]),
+    matches: (confirmed: number, requested: number) => confirmed === requested,
+  });
+}
+
+const nbWidthTarget = (command: Pick<CommandLifecycle, 'params'>): number | null =>
+  exactSafeIntegerTarget(command, 'level');
+const NB_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_nb_width', repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => nbWidthTarget(command) === null
+    ? null : Object.freeze({ control: 'nb-width', receiver: 0 }),
+  fieldPath: () => 'nbWidth',
+  target: nbWidthTarget,
+  confirmed: (state: ServerState) => safeInteger(state.nbWidth),
+  matches: (confirmed: number, requested: number) => confirmed === requested,
+});
+
+export const DSP_COMMAND_DESCRIPTORS = Object.freeze({
+  nbLevel: rawReceiverDspCommandDescriptor('set_nb_level', 'nb-level', 'nbLevel', 'level'),
+  nbWidth: NB_WIDTH_COMMAND_DESCRIPTOR,
+  notchFilter: rawReceiverDspCommandDescriptor(
+    'set_notch_filter', 'notch-position', 'notchFilter', 'value',
+  ),
+  manualNotchWidth: rawReceiverDspCommandDescriptor(
+    'set_manual_notch_width', 'manual-notch-width', 'manualNotchWidth', 'value',
+  ),
+  agcTimeConstant: rawReceiverDspCommandDescriptor(
+    'set_agc_time_constant', 'agc-time', 'agcTimeConstant', 'value',
+  ),
+}) satisfies Readonly<Record<DspCommandFeedbackField, StateBackedCommandDescriptor<number>>>;
+
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
   new Map([
     [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
@@ -230,6 +304,9 @@ export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, Stat
     [CW_PITCH_COMMAND_DESCRIPTOR.intentName, CW_PITCH_COMMAND_DESCRIPTOR],
     [KEY_SPEED_COMMAND_DESCRIPTOR.intentName, KEY_SPEED_COMMAND_DESCRIPTOR],
     ...Object.values(TX_AUX_COMMAND_DESCRIPTORS).map(
+      descriptor => [descriptor.intentName, descriptor] as const,
+    ),
+    ...Object.values(DSP_COMMAND_DESCRIPTORS).map(
       descriptor => [descriptor.intentName, descriptor] as const,
     ),
   ]);
