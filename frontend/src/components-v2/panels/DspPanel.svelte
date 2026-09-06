@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ValueControl, rawToPercentDisplay } from '../controls/value-control';
+  import { ValueControl } from '../controls/value-control';
+  import { rawToPercentDisplay } from '../../primitives/scalar/value-control-core';
   import { HardwareButton } from '$lib/Button';
   import { buildNrOptions, buildNotchOptions } from './dsp-utils';
   import {

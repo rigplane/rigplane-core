@@ -10,7 +10,7 @@
     debounce,
     valueToPosition,
     enumerateDiscreteValues,
-  } from './value-control-core';
+  } from '../../../primitives/scalar/value-control-core';
 
   interface Props {
     value: number;

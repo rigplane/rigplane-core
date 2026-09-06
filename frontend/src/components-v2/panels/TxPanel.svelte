@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { HardwareButton } from '$lib/Button';
-  import { ValueControl, normalizedPercentDisplay, rawToPercentDisplay } from '../controls/value-control';
+  import { ValueControl } from '../controls/value-control';
+  import { normalizedPercentDisplay, rawToPercentDisplay } from '../../primitives/scalar/value-control-core';
   import { txStatusColor } from './tx-utils';
   import { deriveTxProps, getTxHandlers } from '$lib/runtime/adapters/panel-adapters';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';

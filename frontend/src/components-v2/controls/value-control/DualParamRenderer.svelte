@@ -9,7 +9,7 @@
     dualParamThumbPercent,
     dualParamDeviationFromValues,
     dualParamStepAlongAxis,
-  } from './value-control-core';
+  } from '../../../primitives/scalar/value-control-core';
 
   interface Props {
     rfValue: number;

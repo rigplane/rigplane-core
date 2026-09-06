@@ -158,7 +158,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       '$lib/i18n', './radio-view-model', './pressed-of',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
-      '../components-v2/controls/value-control/value-control-core',
+      '../primitives/scalar/value-control-core',
     ]);
   });
 

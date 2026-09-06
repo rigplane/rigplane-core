@@ -4,7 +4,8 @@
    * 90%-of-the-time controls: VFO ops, MODE quick, FILTER quick, AUDIO, DSP toggles.
    */
   import { HardwareButton } from '$lib/Button';
-  import { ValueControl, normalizedPercentDisplay } from '../controls/value-control';
+  import { ValueControl } from '../controls/value-control';
+  import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
 
   interface Props {
     vfoOps: { splitActive?: boolean };
