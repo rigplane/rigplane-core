@@ -469,6 +469,73 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     expect(el('rf-sql')).toBeNull();
     expect(el('rfGain')).not.toBeNull();
     expect(el('squelch')).not.toBeNull();
+    expect(el('rfGain')!.dataset.feedbackIntegration).toBe('command-feedback');
+    expect(el('squelch')!.dataset.feedbackIntegration).toBe('command-feedback');
+  });
+
+  it('fails both separate controls closed on disconnect and recovers from fresh connected authority', () => {
+    render();
+    const rfInput = el('rfGain')!.querySelector('input')!;
+    const sqlInput = el('squelch')!.querySelector('input')!;
+    expect([rfInput.disabled, sqlInput.disabled]).toEqual([false, false]);
+
+    h.session = { state: 'disconnected', epoch: 8 };
+    for (const listener of h.sessionListeners) listener(h.session);
+    flushSync();
+    expect([rfInput.disabled, sqlInput.disabled]).toEqual([true, true]);
+    expect(el('rfGain')!.textContent).toContain('?');
+    expect(el('squelch')!.textContent).toContain('?');
+
+    h.session = { state: 'connected', epoch: 9 };
+    for (const listener of h.sessionListeners) listener(h.session);
+    flushSync();
+    expect([rfInput.disabled, sqlInput.disabled]).toEqual([false, false]);
+    expect(rfInput.valueAsNumber).toBe(0.8);
+    expect(sqlInput.valueAsNumber).toBe(0.1);
+    expect(h.rfGain).not.toHaveBeenCalled();
+    expect(h.squelch).not.toHaveBeenCalled();
+  });
+
+  it('projects independent lifecycle outcomes into the two separate controls', () => {
+    const rf = beginCommand({
+      id: 'separate-rf', name: 'set_rf_gain', params: { level: 128, receiver: 0 }, originalEpoch: 7,
+    });
+    const sql = beginCommand({
+      id: 'separate-sql', name: 'set_squelch', params: { level: 51, receiver: 0 }, originalEpoch: 7,
+    });
+    rf.providerGeneration = 3;
+    sql.providerGeneration = 3;
+    render();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('submitted');
+    expect(el('squelch')!.dataset.commandPhase).toBe('submitted');
+    expect(el('rfGain')!.querySelector('input')!.valueAsNumber).toBe(128 / 255);
+    expect(el('squelch')!.querySelector('input')!.valueAsNumber).toBe(51 / 255);
+    acknowledgeCommand(rf.id, 7, 7);
+    acknowledgeCommand(sql.id, 7, 7);
+    flushSync();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
+    confirmCommand(rf.id, 7, 7);
+    failCommand(sql.id, 7, 7, 'denied');
+    flushSync();
+    expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
+    expect(el('squelch')!.dataset.commandPhase).toBe('failed');
+    expect(el('rfGain')!.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
+    expect(el('squelch')!.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
+    expect(el('squelch')!.textContent).toContain('denied');
+  });
+
+  it('routes separate endpoint requests once through the unchanged raw conversion seam', () => {
+    render();
+    const rfInput = el('rfGain')!.querySelector('input')!;
+    const sqlInput = el('squelch')!.querySelector('input')!;
+    rfInput.value = '0';
+    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
+    sqlInput.value = '1';
+    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
+    expect(h.squelch).toHaveBeenCalledExactlyOnceWith(255);
   });
 
   // Hard left: RF min, SQL min — both converted to the raw 0-255 wire level.
