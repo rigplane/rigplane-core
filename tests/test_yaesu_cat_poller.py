@@ -3400,6 +3400,68 @@ async def test_ftx1_web_receiver_selection_writes_once_and_waits_for_vs_readback
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("requested", "native", "readback", "expected"),
+    [
+        (0.5, 50, "PC2050", 0.5),
+        (1, 1, "PC2001", 0.01),
+    ],
+)
+async def test_ftx1_power_readback_exactly_reconciles_native_target(
+    requested: int | float,
+    native: int,
+    readback: str,
+    expected: float,
+) -> None:
+    radio, handler, poller, store, accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    command_id = f"power-{native}"
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "set_rf_power",
+        {"level": requested},
+        command_id=command_id,
+    )
+    [pending] = service.pending_overlays(
+        source="websocket", session_id="ws-ftx1", command_id=command_id
+    )
+    assert pending.value == expected
+
+    await poller._drain_commands()  # noqa: SLF001
+    radio._transport.write.assert_awaited_once_with(  # noqa: SLF001
+        f"PC2{native:03d};"
+    )
+
+    radio._transport.query = AsyncMock(return_value=readback)  # noqa: SLF001
+    radio.read_mic_gain = AsyncMock(return_value=0)
+    radio._config = replace(  # noqa: SLF001
+        radio._config,
+        capabilities=frozenset({"tx"}),  # noqa: SLF001
+    )
+    radio._profile_cache = None  # noqa: SLF001
+    observations = await YaesuObservationAdapter.from_radio(radio).poll_tx_controls()
+    [power] = [
+        observation
+        for observation in observations
+        if str(observation.path) == "global.operator_controls.power_level"
+    ]
+    assert power.value == expected
+
+    [matched] = poller._annotate_yaesu_readbacks(  # noqa: SLF001
+        poller._stamp_provider_generation((power,), store.provider_generation)  # noqa: SLF001
+    )
+    assert matched.correlation_id == command_id
+    accept((matched,))
+    assert (
+        service.pending_overlays(
+            source="websocket", session_id="ws-ftx1", command_id=command_id
+        )
+        == ()
+    )
+    assert service.lifecycle_events()[-1].state == "reconciled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("failure", "expected_state"),
     [
         (CatTimeoutError("receiver dispatch timed out"), "timed_out"),

@@ -4,6 +4,7 @@ import asyncio
 import json
 import struct
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1092,6 +1093,42 @@ async def test_enqueue_set_rf_power_yaesu_tags_watts_unit() -> None:
     await handler2._enqueue_command("set_rf_power", {"level": 0.8})
     assert queue2.items[-1].level == 204
     assert queue2.items[-1].unit == "raw_255"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "max_watts", "requested", "native", "expected"),
+    [
+        ("set_rf_power", 10, 0.25, 2, 0.2),
+        ("set_power", 100, 0.5, 50, 0.5),
+        ("set_rf_power", 100, 1, 1, 0.01),
+        ("set_power", 200, 0.5, 100, 0.5),
+    ],
+)
+async def test_enqueue_watts_power_uses_exact_native_pending_target(
+    name: str,
+    max_watts: int,
+    requested: int | float,
+    native: int,
+    expected: float,
+) -> None:
+    queue = _QueueRecorder()
+    server = SimpleNamespace(command_queue=queue, command_state_store=StateStore())
+    radio = _capable_radio()
+    radio.native_power_unit = "watts"
+    radio.profile = replace(radio.profile, max_watts=max_watts)
+    handler = _control_handler(radio=radio, server=server, session_id="ws-power")
+
+    await handler._enqueue_command(name, {"level": requested})
+
+    assert isinstance(queue.items[-1], SetPower)
+    assert queue.items[-1].level == native
+    assert queue.items[-1].unit == "watts"
+    [pending] = handler._command_service.pending_overlays(  # noqa: SLF001
+        source="websocket",
+        session_id="ws-power",
+    )
+    assert pending.value == expected
 
 
 @pytest.mark.asyncio

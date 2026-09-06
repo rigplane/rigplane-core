@@ -19,6 +19,7 @@ from rigplane.core.command_service import (
     PendingOverlay,
     command_intent_from_request,
     command_response_observation,
+    resolve_power_level_target,
 )
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import (
@@ -1412,7 +1413,10 @@ async def test_level_command_readback_expectations_are_normalized_but_params_sta
 
     assert executor.intents == [intent]
     assert executor.intents[0].params["level"] == params["level"]
-    assert executor.intents[0].params[path.name] == params["level"]
+    expected_param = (
+        cast(int, params["level"]) / 255 if name == "set_rf_power" else params["level"]
+    )
+    assert executor.intents[0].params[path.name] == expected_param
     assert service.readback_expectations(
         source="websocket",
         session_id="client-a",
@@ -1631,78 +1635,120 @@ def test_public_api_sync_squelch_actuation_value_is_not_reinterpreted() -> None:
     assert intent.params["squelch"] == 1
 
 
-def test_power_level_float_expectation_matches_readback_scale() -> None:
-    """MOR-1579 round 3 regression (red-first leg): the ``set_rf_power``
-    expectation branch used to do a plain ``int(raw_level)``, so a
-    normalized float level (e.g. ``0.4`` from the web power slider —
-    ``control.py``'s ``_level_for_power`` treats ``set_rf_power`` as
-    type-dispatched, same as ``set_af_level``) collapsed to
-    ``int(0.4) == 0``. The StateStore overlay/expectation then sat at 0%
-    for the optimistic-update TTL on *every single power-slider move*
-    (not just a boundary value like the rf_gain/squelch raw-1 case),
-    before jumping to the real readback — the same snap-back class this
-    PR fixes elsewhere.
-
-    Both backends' readbacks normalize to the same fraction ``v``
-    regardless of unit (Icom CI-V as ``raw / 255``, Yaesu CAT as
-    ``watts / max_watts`` — see
-    ``backends/yaesu_cat/observations.py``'s ``_normalize_power_level``),
-    so the coherent expectation for a float input is ``round(v * 255)``
-    for *both* units, independent of ``native_power_unit`` — no radio
-    object needed here.
-    """
+def test_watts_float_power_expectation_uses_native_quantization() -> None:
     intent = command_intent_from_request(
         "set_rf_power",
-        {"level": 0.4},
+        {"level": 0.5},
         source="websocket",
         command_id="ws-set_rf_power",
         session_id="client-a",
+        power_native_unit="watts",
+        power_max_watts=100,
     )
     path = FieldPath.global_("operator_controls", "power_level")
 
-    # Param is coerced to the raw scale the radio actually receives — not 0.
-    assert intent.params["power_level"] == 102  # round(0.4 * 255)
-
-    # The expectation/overlay value the readback reconciles against is the
-    # normalized form of that same raw value (~0.4), not 0.0.
+    assert intent.params["level"] == 0.5
+    assert intent.params["power_level"] == 0.5
     observation = command_response_observation(
         intent,
         timestamp_monotonic=70.0,
         provider="test",
     )
     assert str(intent.target) == str(path)
-    assert observation.value == pytest.approx(102 / 255)
-    assert observation.value == pytest.approx(0.4, abs=0.01)
+    assert observation.value == 0.5
 
 
 @pytest.mark.parametrize(
-    ("name", "level", "expected"),
+    ("name", "param_name", "level", "expected"),
     [
-        ("set_rf_power", 50, 0.5),
-        ("set_power", 50, 0.5),
-        ("set_rf_power", 0.4, 102 / 255),
-        ("set_power", 0.4, 102 / 255),
+        ("set_rf_power", "level", 0.5, 0.5),
+        ("set_power", "value", 1, 0.01),
     ],
 )
 def test_power_expectations_share_canonical_and_alias_contract(
     name: str,
+    param_name: str,
     level: int | float,
     expected: float,
 ) -> None:
-    """A watts profile input applies only to integer power commands."""
     intent = command_intent_from_request(
         name,
-        {"level": level},
+        {param_name: level},
         source="http",
+        power_native_unit="watts",
         power_max_watts=100,
     )
 
+    assert intent.params[param_name] == level
     observation = command_response_observation(
         intent,
         timestamp_monotonic=70.0,
         provider="test",
     )
-    assert observation.value == pytest.approx(expected)
+    assert observation.value == expected
+
+
+@pytest.mark.parametrize(
+    ("max_watts", "requested", "native", "expected"),
+    [
+        (10, 0.0, 0, 0.0),
+        (10, 0.25, 2, 0.2),
+        (10, 1.0, 10, 1.0),
+        (100, 0.5, 50, 0.5),
+        (200, 0.5, 100, 0.5),
+    ],
+)
+def test_power_target_resolver_uses_native_watts_quantization(
+    max_watts: int,
+    requested: float,
+    native: int,
+    expected: float,
+) -> None:
+    assert resolve_power_level_target(
+        requested,
+        power_native_unit="watts",
+        power_max_watts=max_watts,
+    ) == (native, expected)
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected_native", "expected"),
+    [
+        (0.5, 128, 128 / 255),
+        (255, 255, 1.0),
+    ],
+)
+def test_raw_power_target_ignores_incidental_watts_metadata(
+    requested: int | float,
+    expected_native: int,
+    expected: float,
+) -> None:
+    assert resolve_power_level_target(
+        requested,
+        power_native_unit="raw_255",
+        power_max_watts=100,
+    ) == (expected_native, expected)
+
+
+@pytest.mark.parametrize("power_max_watts", [None, 0, -1, True])
+def test_watts_power_target_invalid_metadata_falls_back_to_raw_scale(
+    power_max_watts: int | None,
+) -> None:
+    assert resolve_power_level_target(
+        0.5,
+        power_native_unit="watts",
+        power_max_watts=power_max_watts,
+    ) == (128, 128 / 255)
+
+
+@pytest.mark.parametrize("requested", [True, -0.01, 1.01, "0.5"])
+def test_power_target_rejects_bool_out_of_domain_and_non_numeric_values(
+    requested: object,
+) -> None:
+    with pytest.raises(ValueError):
+        resolve_power_level_target(
+            requested, power_native_unit="watts", power_max_watts=100
+        )
 
 
 @pytest.mark.parametrize("power_max_watts", [None, 0, -1])
@@ -1747,7 +1793,7 @@ async def test_raw_external_rigctld_level_readback_normalizes_before_reconcile()
 
     await service.execute(intent)
     assert intent.params["level"] == 64
-    assert intent.params["power_level"] == 64
+    assert intent.params["power_level"] == 64 / 255
 
     service.apply_observation(
         Observation(
