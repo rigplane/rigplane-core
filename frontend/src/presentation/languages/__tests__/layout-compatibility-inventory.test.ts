@@ -4,19 +4,10 @@
  * declaring no layout compatibility; this file protects THIS repository by
  * failing the suite outright if any manifest actually shipped here does.
  *
- * Mirrors `../../layouts/__tests__/loader-identity-inventory.test.ts`'s
- * completeness-check discipline specifically: like that file's own
- * `BARREL_MANIFESTS` derivation, the manifest list here is derived
- * structurally from the barrel's own export surface, not hand-listed —
- * hand-listing manifest ids here would be the exact defect MOR-2054 exists
- * to remove (a list that silently stops matching reality the moment someone
- * adds a manifest and forgets to update the list). That file's separate
- * `ALL_MANIFESTS`/`EXPECTED_LOADER_SPECIFIER` tables are, by contrast,
- * hand-listed literals by design (that file's own comment says so) — they
- * back that file's own completeness assertion, registration-identity pin
- * and per-id loader-specifier pinning. This file needs none of the three:
- * its own completeness check is structural (`SHIPPED_MANIFESTS` below), and
- * it takes no registry read or loader specifier at all.
+ * The manifest list here is derived structurally from the language
+ * declarations barrel rather than hand-listed. Hand-listing manifest ids
+ * would recreate the exact defect MOR-2054 removes: a list that silently
+ * stops matching reality when someone adds a manifest without updating it.
  *
  * Deliberately NOT sourced from `listDesignLanguageIds()`/the live registry:
  * `contract.ts`'s registry is module-scope, private, mutable state that
@@ -36,11 +27,8 @@
  * changing and no sibling file ever registering a colliding id, neither of
  * which this file can pin. The barrel's own export surface depends on none
  * of that, costs nothing extra to use instead, and needs no
- * `*.isolated.test.ts` escape hatch (unlike `loader-identity-inventory.test.ts`,
- * which additionally proves REGISTRATION identity via `getLayout(id)` — a
- * registry read this file has no need for, since
- * `declaresNoLayoutCompatibility` is a pure structural check on the manifest
- * object itself).
+ * `*.isolated.test.ts` escape hatch. `declaresNoLayoutCompatibility` is a
+ * pure structural check on the manifest object itself.
  */
 import { describe, expect, it } from 'vitest';
 import { declaresNoLayoutCompatibility } from '../layout-compatibility-guard';

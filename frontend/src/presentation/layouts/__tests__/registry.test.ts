@@ -1,6 +1,6 @@
 /**
- * MOR-1066 compiled registry: count-agnostic registration, lookup by id,
- * duplicate-ID rejection, missing-loader rejection and the sdr-test real
+ * MOR-1066 manifest registry: count-agnostic registration, lookup by id,
+ * duplicate-ID rejection, executable-loader rejection and the sdr-test real
  * registration proof. Each test's doc line names the mutation it exists to
  * kill.
  */
@@ -17,7 +17,6 @@ describe('the sdr-test real registration proof', () => {
     expect(getLayout('sdr-test')).toBe(sdrTestLayout);
     expect(sdrTestLayout.zones).toContainEqual({ id: 'receiver-deck', surfaces: ['vfo'] });
     expect(sdrTestLayout.zones).toContainEqual({ id: 'rx-tx', surfaces: ['rxTx'] });
-    expect(typeof sdrTestLayout.loader).toBe('function');
   });
 });
 
@@ -33,7 +32,6 @@ describe('the dual-receiver-cockpit registration barrel proof (MOR-1067)', () =>
     const cockpit = getLayout('dual-receiver-cockpit');
     expect(cockpit).toBeDefined();
     expect(cockpit?.id).toBe('dual-receiver-cockpit');
-    expect(typeof cockpit?.loader).toBe('function');
   });
 });
 
@@ -58,12 +56,16 @@ describe('duplicate IDs', () => {
   });
 });
 
-describe('missing loaders', () => {
-  // Kills: registerLayout accepting a manifest whose loader isn't a function.
-  it('rejects registration when loader is not a function', () => {
-    const manifest = { ...validLayoutManifest({ id: 'no-loader-layout' }), loader: undefined };
-    expect(() => registerLayout(manifest as never)).toThrow(/compiled Svelte loader/);
-    expect(getLayout('no-loader-layout')).toBeUndefined();
+describe('retired manifest loaders', () => {
+  // Kills: keeping the old executable layout-loader boundary as an accepted
+  // manifest key after production has standardized on skins/registry.loadSkin.
+  it('rejects the old loader field instead of registering a second runtime authority', () => {
+    const manifest = {
+      ...validLayoutManifest({ id: 'legacy-loader-layout' }),
+      loader: () => Promise.resolve({ default: {} }),
+    };
+    expect(() => registerLayout(manifest as never)).toThrow(/unknown top-level key/);
+    expect(getLayout('legacy-loader-layout')).toBeUndefined();
   });
 });
 

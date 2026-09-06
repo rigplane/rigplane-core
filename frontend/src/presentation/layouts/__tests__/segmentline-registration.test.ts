@@ -1,7 +1,7 @@
 /**
  * MOR-2151 — the `peer-split` presentation entrypoint, registered as a v1
  * layout manifest (MOR-1066) and resolved through the REAL registry, not a
- * fixture registry and not a stub loader.
+ * fixture registry.
  *
  * Mirrors `sdr-registration.test.ts` (MOR-1093)'s shape for a single
  * manifest with no sibling family: the sizing axis, and — because this slice
@@ -48,24 +48,13 @@ describe('the peer-split entrypoint is registered in the real registry', () => {
   });
 
   // Kills: removing or renaming the 'peer-split' key in SKIN_LOADERS — the
-  // manifest id would then have no addressable skin to activate under. Not
-  // pinned: which module the key imports. MOR-2153 PR-1 retargeted it from
-  // `segmentline/PeerSplitLayout.svelte` to the LCD-shell wrapper
-  // `lcd-peer-split/LcdPeerSplitSkin.svelte` — the manifest declares no
-  // opinion on which component sits behind the SkinId, only that one does.
-  // `PeerSplitLayout.svelte`'s own reachability is pinned separately, by
-  // `loader-identity-inventory.test.ts`'s `EXPECTED_LOADER_SPECIFIER['peer-split']`
-  // — not by the next test below (`declares a compiled loader`), which only
-  // asserts `typeof peerSplitLayout.loader === 'function'` and cannot tell
-  // that loader from one pointing at any other loadable module.
+  // manifest id would then have no addressable skin to activate under. The
+  // canonical registry deliberately points at the LCD-shell wrapper rather
+  // than the bare segmentline glass; skins registry/entrypoint tests pin the
+  // exact wrapper identity and mount behavior.
   it('keeps a `peer-split` key in the skin registry loader table', () => {
     const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
     expect(registrySource).toMatch(/'peer-split':\s*\(\)\s*=>\s*import\(/);
-  });
-
-  // Kills: a manifest that declares no compiled loader at all.
-  it('declares a compiled loader', () => {
-    expect(typeof peerSplitLayout.loader).toBe('function');
   });
 });
 

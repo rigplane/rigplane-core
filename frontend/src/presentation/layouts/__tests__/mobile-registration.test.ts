@@ -41,15 +41,6 @@ describe('the mobile entrypoint is registered in the real registry', () => {
     // And it is the id `resolveSkinId` hands back for a mobile viewport.
     expect(source).toContain("if (ctx.isMobile) return 'mobile';");
   });
-
-  // Kills: a manifest that declares no compiled loader at all. That the
-  // loader reaches the REAL entrypoint — and renders the migrated mobile
-  // shell — is proved by mounting it in
-  // `components-v2/layout/__tests__/semantic-mobile-migration.component.test.ts`;
-  // this file runs outside the DOM environment that whole tree needs.
-  it('declares a compiled loader', () => {
-    expect(typeof mobileLayout.loader).toBe('function');
-  });
 });
 
 describe('declared semantic zone (what the migrated mobile shell mounts)', () => {

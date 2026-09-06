@@ -6,9 +6,7 @@
  * from the barrel instead of hand-listing ids. Not itself a test file.
  *
  * Extracted (MOR-2061) from the identical copy `forward-declaration-
- * inventory.test.ts` carried (MOR-2060); `loader-identity-inventory.test.ts`
- * still has its own independent copy of the same shape, out of this
- * ticket's scope.
+ * inventory.test.ts` carried (MOR-2060).
  */
 import type { LayoutManifest } from '../contract';
 
@@ -17,6 +15,6 @@ export function isLayoutManifest(value: unknown): value is LayoutManifest {
     typeof value === 'object' && value !== null &&
     (value as { schemaVersion?: unknown }).schemaVersion === 1 &&
     typeof (value as { id?: unknown }).id === 'string' &&
-    typeof (value as { loader?: unknown }).loader === 'function'
+    Array.isArray((value as { zones?: unknown }).zones)
   );
 }

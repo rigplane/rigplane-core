@@ -83,10 +83,8 @@ describe('MOR-1317 — every semantic surface has a desktop-v2 decision', () => 
    * MOR-1069), and every suppression pin for its legacy twin would then be a
    * pure regression: the twin gone, nothing in its place.
    *
-   * Read as TEXT rather than mounted for the same reason as the loader pin in
-   * `desktop-v2-registration.test.ts` — mounting would pull in the
-   * component's full import graph, which this suite avoids importing
-   * wholesale.
+   * Read as TEXT rather than mounted because mounting would pull in the
+   * component's full import graph, which this suite avoids importing wholesale.
    */
   it.each([...OWNED].sort())('%s has a real mount in the single composition', (surface) => {
     const source = readFileSync('src/components-v2/wiring/SemanticRadioSurfaces.svelte', 'utf8');

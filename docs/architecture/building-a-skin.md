@@ -140,20 +140,13 @@ preference, and one of its links has no check behind it at all.
    `frontend/src/presentation/layouts/contract.ts`, re-exported from
    `frontend/src/presentation/layouts/declarations.ts` (directly, or from
    your own sibling `<name>-declarations.ts` the way `lcd-declarations.ts`
-   and `mobile-declarations.ts` are). Pinned by
+   and `mobile-declarations.ts` are). The manifest declares stable identity,
+   semantic zones, topology compatibility, sizing, and fallback metadata; it
+   does not load executable components. The matching runtime wrapper belongs
+   only in `SKIN_LOADERS` from step 1. Manifest registration is pinned by
    `frontend/src/presentation/layouts/__tests__/registry.test.ts` and, by
    convention, a dedicated `<your-skin>-registration.test.ts` alongside
-   `sdr-registration.test.ts`/`desktop-v2-registration.test.ts` — plus one
-   more that nothing above names:
-   `frontend/src/presentation/layouts/__tests__/loader-identity-inventory.test.ts`
-   needs a row for your manifest in both `ALL_MANIFESTS` and
-   `EXPECTED_LOADER_SPECIFIER` (the latter is your skin component's
-   resolved import specifier, e.g. `/src/skins/sdr-test/SdrTestSkin.svelte`
-   for `sdr-test`). Both are hand-listed literals, not
-   `Record<SkinId, ...>`, checked against the barrel's actual export
-   surface by that file's "the manifest table matches every id the barrel
-   exports" test — so a missing row fails `npx vitest run`, not
-   `npm run check`.
+   `sdr-registration.test.ts`/`desktop-v2-registration.test.ts`.
 
    A related family of files also touches every registered manifest, for
    narrower purposes of their own, and each one fails loudly when it falls

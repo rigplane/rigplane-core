@@ -192,12 +192,11 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   getControlRange: vi.fn(() => ({ min: 0, max: 255 })),
 }));
 
-import type { Component } from 'svelte';
 import LcdLayout from '../LcdLayout.svelte';
 import SemanticRadioSurfaces from '../../wiring/SemanticRadioSurfaces.svelte';
 import { hasCapability } from '$lib/stores/capabilities.svelte';
 import { topologyFixtures, type TopologyFixtureId } from '../../../semantic/fixtures/topologies';
-import { lcdCockpitLayout, lcdScopeLayout } from '../../../presentation/layouts/lcd-declarations';
+import { loadSkin } from '../../../skins/registry';
 
 type Variant = 'cockpit' | 'scope';
 type LcdVariant = Variant | 'unified-instrument' | 'panadapter-first';
@@ -286,19 +285,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('the layout manifest loader reaches the migrated entrypoint (MOR-1066 bridge)', () => {
-  // MUTATION KILLED: a placeholder loader, or a manifest pointing at the
-  // wrong LCD variant. Registration alone proves nothing about what is on
-  // screen — this mounts what the manifest actually resolves to and checks
-  // it is the migrated LCD, in the right variant.
+describe('the canonical skin loader reaches the migrated entrypoint (MOR-2425)', () => {
+  // MUTATION KILLED: a canonical loader pointing at the wrong LCD wrapper.
+  // Layout registration alone proves nothing about what is on screen, so this
+  // mounts what production loadSkin actually resolves and checks the variant.
   it.each([
-    ['cockpit', lcdCockpitLayout],
-    ['scope', lcdScopeLayout],
-  ] as const)('"%s" resolves to the migrated LCD entrypoint', async (variant, manifest) => {
-    const { default: Entrypoint } = await manifest.loader();
+    ['cockpit', 'lcd-cockpit'],
+    ['scope', 'lcd-scope'],
+  ] as const)('"%s" resolves to the migrated LCD entrypoint', async (variant, skinId) => {
+    const Entrypoint = await loadSkin(skinId);
     target = document.createElement('div');
     document.body.appendChild(target);
-    mounted.push(mount(Entrypoint as Component, { target }));
+    mounted.push(mount(Entrypoint, { target }));
     flushSync();
 
     expect(target.querySelector(`.lcd-frame[data-lcd-variant="${variant}"]`)).not.toBeNull();

@@ -26,7 +26,6 @@ function manifest(zones: readonly LayoutZone[]): LayoutManifest {
     schemaVersion: 1,
     id: 'probe',
     displayName: 'Probe',
-    loader: () => Promise.reject(new Error('never loaded')),
     zones,
     compatibleTopologies: ['1/single'],
     requiredSemanticSurfaces: zones[0]?.surfaces ?? ['vfo'],

@@ -20,8 +20,7 @@ import {
 // Namespace import of the SAME barrel, used ONLY to derive the F8
 // completeness set structurally (MOR-2074) — never to register anything (a
 // namespace import has no side effect beyond the module evaluation the named
-// import above already triggers). Same derivation as `loader-identity-
-// inventory.test.ts`'s `BARREL_MANIFESTS` and `forward-declaration-
+// import above already triggers). Same derivation as `forward-declaration-
 // inventory.test.ts`'s `ALL_MANIFESTS` (MOR-2060): NOT `listLayoutIds()`,
 // because the fast pool's `isolate: false` (vite.config.ts) shares
 // `contract.ts`'s module-scoped registry Map across every test file in the
@@ -63,9 +62,9 @@ describe('audio-only scope survives the cockpit slicing (scope=false + audioFft=
 });
 
 // MOR-1067 verification F8: `skins/registry.ts` had no `dual-receiver-cockpit`
-// SkinId and no loader, so the cockpit was the only registered layout manifest
-// the App could not load. `lcd-registration.test.ts` pins the same rule for
-// `lcd-*` ids only; this generalizes it to every real manifest. Read as TEXT,
+// SkinId and no skin loader, so the cockpit was the only registered layout
+// manifest the App could not load. `lcd-registration.test.ts` pins the same
+// rule for `lcd-*` ids only; this generalizes it to every real manifest. Read as TEXT,
 // not imported: this checks the literal `SkinId` union and `SKIN_LOADERS`
 // keys written in the source, not the imported module's runtime shape.
 describe('F8 — every registered layout manifest names a loadable skin', () => {
@@ -81,9 +80,8 @@ describe('F8 — every registered layout manifest names a loadable skin', () => 
   // from the barrel without a matching entry here used to fall through the
   // whole F8 rule silently — the it.each below only iterates what this list
   // names, never what the barrel actually exports. BARREL_MANIFESTS is the
-  // same structural derivation `loader-identity-inventory.test.ts`'s
-  // `BARREL_MANIFESTS` and `forward-declaration-inventory.test.ts`'s
-  // `ALL_MANIFESTS` use (MOR-2060's `isLayoutManifest` guard), so a missing
+  // same structural derivation `forward-declaration-inventory.test.ts`'s
+  // `ALL_MANIFESTS` uses (MOR-2060's `isLayoutManifest` guard), so a missing
   // or stale REAL_LAYOUTS entry now reddens the completeness test below
   // instead of being skipped.
   const BARREL_MANIFESTS: readonly LayoutManifest[] =
@@ -101,7 +99,7 @@ describe('F8 — every registered layout manifest names a loadable skin', () => 
   });
 
   it.each(REAL_LAYOUTS.map((m) => [m.id, m] as const))(
-    '"%s" is registered and reachable as a SkinId with a loader', (id, manifest) => {
+    '"%s" is registered and reachable through the canonical skin loader', (id, manifest) => {
       expect(getLayout(id)).toBe(manifest);
       expect(skinIdUnion).toContain(`'${id}'`);
       expect(loaderIds).toContain(id);

@@ -1,7 +1,7 @@
 /**
  * MOR-1093 — the sdr-test presentation entrypoint, registered as a v1 layout
  * manifest (MOR-1066) and resolved through the REAL registry, not a fixture
- * registry and not a stub loader.
+ * registry.
  *
  * `registry.test.ts` already pins the bare registration fact ("the sdr-test
  * real registration proof") as MOR-1066's acceptance evidence. This file is
@@ -41,16 +41,6 @@ describe('the sdr-test entrypoint is registered in the real registry', () => {
     expect(registrySource).toMatch(/'sdr-test':\s*\(\)\s*=>\s*import\(['"]\.\/sdr-test\/SdrTestSkin\.svelte['"]\)/);
     const skinSource = readFileSync('src/skins/sdr-test/SdrTestSkin.svelte', 'utf8');
     expect(skinSource).toMatch(/skinId=["']sdr-test["']/);
-  });
-
-  // Kills: a manifest that declares no compiled loader at all. That the
-  // loader reaches the REAL entrypoint — and renders the semantic surfaces
-  // in place of the legacy VFO/TX block — is proved by mounting it in
-  // `components-v2/layout/__tests__/semantic-desktop-migration.component.test.ts`
-  // (MOR-1065); this file runs outside the DOM environment that whole tree
-  // needs.
-  it('declares a compiled loader', () => {
-    expect(typeof sdrTestLayout.loader).toBe('function');
   });
 });
 
