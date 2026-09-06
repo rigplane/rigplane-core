@@ -76,9 +76,27 @@ const mockHandlers = {
   onDriveGainChange: vi.fn(),
 };
 
+const feedbackAccess = vi.hoisted(() => vi.fn());
+const feedbackControls = {
+  micGain: 'mic-gain',
+  driveGain: 'drive-gain',
+  compressorLevel: 'compressor-level',
+  monitorGain: 'monitor-level',
+} as const;
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveTxProps: () => mockProps,
   getTxHandlers: () => mockHandlers,
+  getTxAuxControlFeedback: (field: keyof typeof feedbackControls) => {
+    feedbackAccess(field);
+    const confirmed = field === 'compressorLevel' || field === 'monitorGain' ? 64 : 128;
+    return {
+      confirmed, target: null, requestedTarget: null, phase: 'idle', busy: false,
+      availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+      sessionEpoch: 1, scope: { control: feedbackControls[field], receiver: 0 },
+      repeatPolicy: 'latest-target-wins',
+    };
+  },
 }));
 
 const txHost = vi.hoisted(() => ({ current: undefined as unknown as ManagedAppTxController }));
@@ -150,6 +168,7 @@ beforeEach(() => {
   mockAutoLanProps.available = false;
   mockAutoLanProps.enabled = false;
   mockSetAutoLan.mockReset();
+  feedbackAccess.mockClear();
 });
 
 afterEach(() => {
@@ -159,6 +178,19 @@ afterEach(() => {
 });
 
 describe('panel structure', () => {
+  it('owns feedback bindings for exactly the four live raw TX controls', () => {
+    mountPanel({ compActive: true, monActive: true });
+    expect(new Set(feedbackAccess.mock.calls.map(([field]) => field))).toEqual(new Set([
+      'micGain', 'driveGain', 'compressorLevel', 'monitorGain',
+    ]));
+    expect(txPanelSource.match(/binding=\{(?:mic|drive|comp|mon)\w*Binding\}/g)).toHaveLength(4);
+    expect(txPanelSource).not.toMatch(/label="RF Power"[^>]*binding=/s);
+    expect(txPanelSource).not.toMatch(/stores\/(commands|radio)|sendCommand|dispatchRadioIntent/);
+    for (const seam of ['ptt.down()', 'ptt.up()', 'onAtuTune', 'onCompToggle', 'onMonToggle']) {
+      expect(txPanelSource).toContain(seam);
+    }
+  });
+
   it('mounts the managed TOT fallback only when explicitly requested', () => {
     let t = mountPanel();
     expect(t.querySelector('[data-testid="managed-tot-control"]')).toBeNull();
@@ -187,6 +219,20 @@ describe('panel structure', () => {
     openTxSettings(t);
     const labels = Array.from(t.querySelectorAll('.vc-label'));
     expect(labels.some((el) => el.textContent === 'Mic Gain')).toBe(true);
+  });
+
+  it('preserves the level order and illuminated orange presentation', () => {
+    const t = mountPanel({ compActive: true, monActive: true });
+    openTxSettings(t);
+    expect([...t.querySelectorAll('.vc-label')].map((node) => node.textContent)).toEqual([
+      'RF Power', 'Mic Gain', 'Comp Level', 'Mon Level', 'Drive Gain',
+    ]);
+    const txLevels = [...t.querySelectorAll<HTMLElement>('.vc-hbar')].slice(1);
+    expect(txLevels).toHaveLength(4);
+    for (const level of txLevels) {
+      expect(level.classList.contains('hw-illum')).toBe(true);
+      expect(level.getAttribute('style')).toContain('--vc-accent: var(--v2-accent-orange)');
+    }
   });
 
   it('renders ATU toggle', () => {
@@ -454,6 +500,24 @@ describe('PTT via the App TX controller (MOR-1011)', () => {
       flushSync();
       expect(label(a)).toBe('TX');
       expect(label(b)).toBe('TX');
+    });
+
+    it('keeps one independent level binding and renderer lease per panel', () => {
+      vi.useFakeTimers();
+      const a = mountPanel();
+      const b = mountPanel();
+      openTxSettings(a);
+      openTxSettings(b);
+      for (const panel of [a, b]) {
+        panel.querySelector<HTMLElement>('[aria-label="Mic Gain"]')?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+        );
+      }
+      vi.advanceTimersByTime(50);
+      expect(mockHandlers.onMicGainChange).toHaveBeenCalledTimes(2);
+      expect(mockHandlers.onMicGainChange).toHaveBeenNthCalledWith(1, 129);
+      expect(mockHandlers.onMicGainChange).toHaveBeenNthCalledWith(2, 129);
+      vi.useRealTimers();
     });
   });
 
