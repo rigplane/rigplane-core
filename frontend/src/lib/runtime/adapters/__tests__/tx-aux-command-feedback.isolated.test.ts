@@ -85,7 +85,7 @@ function begin(
   });
 }
 
-describe('qualified raw TX/VOX command feedback', () => {
+describe('imperative qualified raw TX/VOX command feedback', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetCommandLifecycle();
@@ -227,7 +227,7 @@ describe('qualified raw TX/VOX command feedback', () => {
     });
   });
 
-  it('fences old provider and session records and recovers from current authority inputs', () => {
+  it('imperatively projects current authority after provider and session replacement', () => {
     begin('compressorLevel', 200, 'old');
     expect(getTxAuxControlFeedback('compressorLevel', connected).phase).toBe('submitted');
 
