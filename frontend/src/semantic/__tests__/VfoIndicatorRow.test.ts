@@ -114,6 +114,14 @@ describe('VfoIndicatorRow', () => {
       .replace(/\/\*[\s\S]*?\*\//g, '');
     expect(source).not.toMatch(/radioState|ServerState|fieldStatus|\$lib\/transport|tx-controller|panel-commands/);
   });
+
+  it('forwards only the receiver S-meter source and supplied continuity session', () => {
+    const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+    const call = source.match(/<LinearSMeter([\s\S]*?)\/>/)?.[1] ?? '';
+    expect(call).toMatch(/source=\{indicator\.sMeter\.source\}/);
+    expect(call).toMatch(/session=\{continuitySession\}/);
+    expect(source).toMatch(/continuitySession\?: MeterContinuitySession \| null/);
+  });
 });
 
 function shared(): RadioWideIndicatorsViewModel {

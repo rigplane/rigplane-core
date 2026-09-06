@@ -43,6 +43,7 @@
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
+  import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import type { BooleanFact, DisplayObservation, RadioViewModel, ReceiverIndicatorViewModel, VfoViewModel } from './radio-view-model';
 
   interface Props {
@@ -140,6 +141,7 @@
      * once; the radio-wide `showVfoList={false}` mount renders no rows.
      */
     indicatorReceiver?: ReceiverId;
+    continuitySession?: MeterContinuitySession | null;
     /**
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
@@ -177,6 +179,7 @@
     onTuneFrequency,
     pendingFrequencyHz,
     indicatorReceiver,
+    continuitySession,
     onEqualizeVfos,
     onSwapVfos,
     onQuickSplit,
@@ -704,6 +707,7 @@
       <VfoIndicatorRow
         radioWide={viewModel.radioWideIndicators}
         {appearance}
+        {continuitySession}
       />
     {/if}
     {@const splitReason = viewModel.split.status === 'unknown' ? t('core.vfo.split.unknownReason') : undefined}
@@ -854,7 +858,7 @@
       class:instrument-active={viewModel.vfos.some((vfo) => vfo.receiver === receiver && vfo.isActive)}
       aria-label={`${receiver} instrument`}>
       <VfoIndicatorRow indicator={receiverIndicators.find((item) => item.receiver === receiver)} {appearance}
-        slotLabel={instrumentSlot(receiver)}>
+        slotLabel={instrumentSlot(receiver)} {continuitySession}>
         <div class="freq-stack">
           {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
             {#if vfo.receiver === receiver}{@render vfoTile(vfo, i)}{/if}
@@ -906,6 +910,8 @@
             && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
           meterPresent={indicator?.sMeter.availability.structural ?? false}
           meterOperational={indicator?.sMeter.availability.operational ?? false}
+          meterSource={indicator?.sMeter.source}
+          {continuitySession}
           isActive={dominant?.isActive ?? false} badgeItems={standardBadges(indicator)}
           bandText={dominant ? standardBand(dominant) : null}
           rit={dominant ? standardRit(dominant) : undefined} slotChoices={choices}
@@ -945,7 +951,7 @@
       {@render identitySelectors()}
       {#if receiverIndicators.length > 0}
         <div class="receiver-indicators" data-testid="vfo-receiver-indicators">
-          {#each receiverIndicators as indicator (indicator.receiver)}<VfoIndicatorRow {indicator} />{/each}
+          {#each receiverIndicators as indicator (indicator.receiver)}<VfoIndicatorRow {indicator} {continuitySession} />{/each}
         </div>
       {/if}
     {/if}

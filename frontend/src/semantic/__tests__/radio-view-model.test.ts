@@ -60,8 +60,8 @@ describe('validateRadioViewModel', () => {
     expect(validateRadioViewModel(model)).toEqual(model);
   });
 
-  const receiverIndicator = () => ({
-    receiver: 'MAIN' as const,
+  const receiverIndicator = (receiver: 'MAIN' | 'SUB' = 'MAIN') => ({
+    receiver,
     availability: { structural: true, operational: true },
     sMeter: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
     bandwidthHz: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
@@ -81,6 +81,41 @@ describe('validateRadioViewModel', () => {
     expect(model.receiverIndicators?.[0].sMeter.reading).toEqual({ status: 'known', value: 0 });
     expect(model.receiverIndicators?.[0].nbActive.reading).toEqual({ status: 'known', value: false });
     expect(model.receiverIndicators?.[0].digiSel.reading).toEqual({ status: 'known', value: false });
+  });
+
+  const MAIN_S_SOURCE = {
+    providerGeneration: 7, scope: 'receiver' as const, receiver: 'MAIN' as const, path: 'main.sMeter' as const,
+  };
+  const SUB_S_SOURCE = {
+    providerGeneration: 7, scope: 'receiver' as const, receiver: 'SUB' as const, path: 'sub.sMeter' as const,
+  };
+  const withReceiverSource = (receiver: 'MAIN' | 'SUB', source: unknown) => {
+    const indicator = receiverIndicator(receiver);
+    return { ...valid(), receiverIndicators: [{
+      ...indicator, sMeter: { ...indicator.sMeter, source },
+    }] };
+  };
+
+  it('preserves omitted, null, and exact receiver-owned S-meter sources', () => {
+    expect(validateRadioViewModel({ ...valid(), receiverIndicators: [receiverIndicator()] })
+      .receiverIndicators![0].sMeter).not.toHaveProperty('source');
+    expect(validateRadioViewModel(withReceiverSource('MAIN', null))
+      .receiverIndicators![0].sMeter.source).toBeNull();
+    expect(validateRadioViewModel(withReceiverSource('MAIN', MAIN_S_SOURCE))
+      .receiverIndicators![0].sMeter.source).toEqual(MAIN_S_SOURCE);
+    expect(validateRadioViewModel(withReceiverSource('SUB', SUB_S_SOURCE))
+      .receiverIndicators![0].sMeter.source).toEqual(SUB_S_SOURCE);
+  });
+
+  it.each([
+    ['unsafe generation', { ...MAIN_S_SOURCE, providerGeneration: Number.MAX_SAFE_INTEGER + 1 }],
+    ['extra key', { ...MAIN_S_SOURCE, provider: 'rigctld' }],
+    ['radio scope', { ...MAIN_S_SOURCE, scope: 'radio', receiver: null }],
+    ['null receiver', { ...MAIN_S_SOURCE, receiver: null }],
+    ['wrong path', { ...MAIN_S_SOURCE, path: 'sub.sMeter' }],
+    ['cross-owner source', SUB_S_SOURCE],
+  ])('rejects %s on a MAIN receiver S-meter', (_label, source) => {
+    expect(() => validateRadioViewModel(withReceiverSource('MAIN', source))).toThrow(TypeError);
   });
 
   it('accepts and preserves the exact pre-MOR-2309 receiver RF payload shape', () => {

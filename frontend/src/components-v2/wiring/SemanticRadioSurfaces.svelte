@@ -880,6 +880,7 @@
               onTuneFrequency={tuneFrequency}
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
+              continuitySession={meterContinuitySession}
               {pendingFrequencyHz}
             />
           </div>
@@ -948,6 +949,7 @@
         onSelectMainReceiver={vfo.onMainVfoClick}
         onSelectSubReceiver={vfo.onSubVfoClick}
         onSpeak={systemIntents.onSpeak}
+        continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
       />
     {/if}

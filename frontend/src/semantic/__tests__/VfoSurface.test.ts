@@ -221,7 +221,13 @@ function receiverIndicator(receiver: ReceiverId): ReceiverIndicatorViewModel {
   return {
     receiver,
     availability: { structural: true, operational: true },
-    sMeter: indicatorField(receiver === 'MAIN' ? 0 : -31),
+    sMeter: {
+      ...indicatorField(receiver === 'MAIN' ? 0 : -31),
+      source: {
+        providerGeneration: 1, scope: 'receiver', receiver,
+        path: receiver === 'MAIN' ? 'main.sMeter' : 'sub.sMeter',
+      },
+    },
     bandwidthHz: indicatorField(receiver === 'MAIN' ? 2400 : 500),
     agcMode: indicatorField(receiver === 'MAIN' ? 0 : 2),
     nbActive: indicatorField(receiver === 'SUB'),
@@ -2283,6 +2289,17 @@ describe('per-digit tuning (MOR-1322) — composition with an ACTIVE design lang
 });
 
 describe('MOR-2342 historical instrument presentations', () => {
+  it('forwards fixed-receiver meter context through every instrument branch', () => {
+    const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
+    expect(source.match(/<VfoIndicatorRow/g)).toHaveLength(3);
+    expect(source).toMatch(/radioWide=\{viewModel\.radioWideIndicators\}[\s\S]*?\{continuitySession\}/);
+    expect(source).toMatch(/slotLabel=\{instrumentSlot\(receiver\)\} \{continuitySession\}/);
+    expect(source).toContain('<VfoIndicatorRow {indicator} {continuitySession} />');
+    const panel = source.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
+    expect(panel).toMatch(/meterSource=\{indicator\?\.sMeter\.source\}/);
+    expect(panel).toMatch(/continuitySession/);
+  });
+
   it.each(['sdr', 'standard'] as const)('pairs addressed facts and one bridge in %s', (appearance) => {
     const root = mountSurface({ viewModel: withReceiverIndicators('2/main_sub'), appearance });
     const panels = root.querySelectorAll('[data-receiver-instrument]');
