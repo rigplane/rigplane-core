@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.profiles import resolve_radio_profile
 from rigplane.web import server as web_server
 from rigplane.web.radio_poller import (
@@ -1567,6 +1568,273 @@ def _watts_radio() -> SimpleNamespace:
         get_rf_power=AsyncMock(return_value=0),
         set_rf_power=AsyncMock(),
     )
+
+
+def _raw_level_radio() -> MagicMock:
+    radio = _radio()
+    radio.native_power_unit = "raw_255"
+    radio.set_af_level = AsyncMock()
+    radio.get_rf_power = AsyncMock(return_value=0)
+    radio.set_rf_power = AsyncMock()
+    radio.get_powerstat = AsyncMock(return_value=True)
+    radio.set_powerstat = AsyncMock()
+    return radio
+
+
+def _level_params(name: str, level: object, *, tagged: bool) -> dict[str, object]:
+    params: dict[str, object] = {"level": level}
+    if name == "set_af_level":
+        params["receiver"] = 0
+    if tagged:
+        params["level_unit"] = "normalized"
+    return params
+
+
+def _assert_native_levels(
+    commands: list[object],
+    *,
+    name: str,
+    expected: list[int],
+    unit: str,
+) -> None:
+    assert len(commands) == len(expected)
+    if name == "set_af_level":
+        assert all(isinstance(command, CommandIntent) for command in commands)
+        assert [
+            command.name for command in commands if isinstance(command, CommandIntent)
+        ] == ["set_af_level"] * len(expected)
+        assert [
+            command.params["af_level"]
+            for command in commands
+            if isinstance(command, CommandIntent)
+        ] == expected
+        assert all(
+            "level_unit" not in command.params
+            for command in commands
+            if isinstance(command, CommandIntent)
+        )
+        return
+    assert commands == [SetPower(level, unit=unit) for level in expected]
+
+
+async def _post_level_series(
+    srv: WebServer,
+    path: str,
+    *,
+    name: str,
+    levels: list[int | float],
+    tagged: bool,
+) -> tuple[list[_FakeWriter], list[object]]:
+    steps = [
+        {"name": name, "params": _level_params(name, level, tagged=tagged)}
+        for level in levels
+    ]
+    if path.endswith("/batch"):
+        captured: list[object] = []
+        consumer = asyncio.create_task(
+            _complete_ordered_commands(srv.command_queue, len(steps), captured)
+        )
+        try:
+            writer = await _post_json(srv, path, {"steps": steps})
+        finally:
+            await asyncio.wait_for(consumer, timeout=1.0)
+        assert [result["status"] for result in writer.response_body["results"]] == [
+            "executed"
+        ] * len(steps)
+        return [writer], captured
+
+    writers: list[_FakeWriter] = []
+    captured = []
+    for step in steps:
+        writer = await _post_json(srv, path, step)
+        writers.append(writer)
+        captured.extend(srv.command_queue.drain())
+    return writers, captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/commands", "/api/v1/commands/batch"])
+@pytest.mark.parametrize(
+    ("name", "unit", "expected"),
+    [
+        ("set_af_level", "raw_255", [0, 128, 255]),
+        ("set_rf_power", "raw_255", [0, 128, 255]),
+        ("set_power", "raw_255", [0, 128, 255]),
+        ("set_rf_power", "watts", [0, 50, 100]),
+        ("set_power", "watts", [0, 50, 100]),
+    ],
+)
+async def test_http_normalized_level_marker_reaches_native_effects(
+    path: str,
+    name: str,
+    unit: str,
+    expected: list[int],
+) -> None:
+    radio = _watts_radio() if unit == "watts" else _raw_level_radio()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+    writers, commands = await _post_level_series(
+        srv,
+        path,
+        name=name,
+        levels=[0, 0.5, 1],
+        tagged=True,
+    )
+
+    assert all(writer.response_status == 200 for writer in writers)
+    assert all(writer.response_body["ok"] is True for writer in writers)
+    _assert_native_levels(commands, name=name, expected=expected, unit=unit)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/commands", "/api/v1/commands/batch"])
+@pytest.mark.parametrize(
+    ("name", "unit", "expected"),
+    [
+        ("set_af_level", "raw_255", [1, 255]),
+        ("set_rf_power", "raw_255", [1, 255]),
+        ("set_power", "raw_255", [1, 255]),
+        ("set_rf_power", "watts", [1, 100]),
+        ("set_power", "watts", [1, 100]),
+    ],
+)
+async def test_http_untagged_level_json_type_compatibility(
+    path: str,
+    name: str,
+    unit: str,
+    expected: list[int],
+) -> None:
+    radio = _watts_radio() if unit == "watts" else _raw_level_radio()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+
+    writers, commands = await _post_level_series(
+        srv,
+        path,
+        name=name,
+        levels=[1, 1.0],
+        tagged=False,
+    )
+
+    assert all(writer.response_status == 200 for writer in writers)
+    assert all(writer.response_body["ok"] is True for writer in writers)
+    _assert_native_levels(commands, name=name, expected=expected, unit=unit)
+
+
+_MALFORMED_NORMALIZED_LEVELS = [
+    {"level": False, "level_unit": "normalized"},
+    {"level": "0.5", "level_unit": "normalized"},
+    {"level": float("nan"), "level_unit": "normalized"},
+    {"level": float("inf"), "level_unit": "normalized"},
+    {"level": float("-inf"), "level_unit": "normalized"},
+    {"level": -0.01, "level_unit": "normalized"},
+    {"level": 1.01, "level_unit": "normalized"},
+    {"level": 0.5, "level_unit": "raw_255"},
+    {"level": 0.5, "level_unit": None},
+    {"level_unit": "normalized"},
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/v1/commands", "/api/v1/commands/batch"])
+@pytest.mark.parametrize("name", ["set_af_level", "set_rf_power", "set_power"])
+@pytest.mark.parametrize("params", _MALFORMED_NORMALIZED_LEVELS)
+async def test_http_normalized_level_marker_rejects_malformed_without_effect(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    name: str,
+    params: dict[str, object],
+) -> None:
+    monkeypatch.setattr(web_server, "_COMMAND_BATCH_STEP_TIMEOUT", 0.001)
+    radio = _raw_level_radio()
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    attempted: list[object] = []
+    original_put = srv.command_queue.put
+    original_put_ordered = srv.command_queue.put_ordered
+
+    def capture_put(command: object, **metadata: object) -> None:
+        attempted.append(command)
+        original_put(command, **metadata)
+
+    def capture_put_ordered(command: object, **metadata: object) -> object:
+        attempted.append(command)
+        return original_put_ordered(command, **metadata)
+
+    monkeypatch.setattr(srv.command_queue, "put", capture_put)
+    monkeypatch.setattr(srv.command_queue, "put_ordered", capture_put_ordered)
+    command_params = dict(params)
+    if name == "set_af_level":
+        command_params["receiver"] = 0
+    payload = {"name": name, "params": command_params}
+    if path.endswith("/batch"):
+        payload = {"steps": [payload]}
+
+    writer = await _post_json(srv, path, payload)
+
+    if path.endswith("/batch"):
+        assert writer.response_status == 200
+        [result] = writer.response_body["results"]
+        assert result["status"] == "failed_validation"
+        assert result["error"] == "invalid_request"
+    else:
+        assert writer.response_status == 400
+        assert writer.response_body["error"] == "invalid_request"
+    assert attempted == []
+    assert srv.command_queue.drain_entries() == []
+    assert srv.command_service.lifecycle_events() == ()
+    assert srv.command_service.pending_overlays(source="http", session_id=None) == ()
+    radio.set_af_level.assert_not_awaited()
+    radio.set_rf_power.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("continue_on_error", "expected_statuses", "expected_commands"),
+    [
+        (False, ["executed", "failed_validation", "skipped"], [SetFreq(144_030_000)]),
+        (
+            True,
+            ["executed", "failed_validation", "executed"],
+            [SetFreq(144_030_000), SetMode("FM")],
+        ),
+    ],
+)
+async def test_http_batch_malformed_normalized_step_preserves_ordered_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    continue_on_error: bool,
+    expected_statuses: list[str],
+    expected_commands: list[object],
+) -> None:
+    monkeypatch.setattr(web_server, "_COMMAND_BATCH_STEP_TIMEOUT", 0.01)
+    srv = WebServer(_raw_level_radio(), WebConfig(host="127.0.0.1", port=0))
+    captured: list[object] = []
+    consumer = asyncio.create_task(
+        _complete_ordered_commands(srv.command_queue, len(expected_commands), captured)
+    )
+    try:
+        writer = await _post_json(
+            srv,
+            "/api/v1/commands/batch",
+            {
+                "continue_on_error": continue_on_error,
+                "steps": [
+                    {"name": "set_freq", "params": {"freq": 144_030_000}},
+                    {
+                        "name": "set_rf_power",
+                        "params": {"level": 0.5, "level_unit": "raw_255"},
+                    },
+                    {"name": "set_mode", "params": {"mode": "FM"}},
+                ],
+            },
+        )
+    finally:
+        await asyncio.wait_for(consumer, timeout=1.0)
+
+    assert writer.response_status == 200
+    assert writer.response_body["ok"] is False
+    assert [
+        result["status"] for result in writer.response_body["results"]
+    ] == expected_statuses
+    assert captured == expected_commands
 
 
 @pytest.mark.asyncio

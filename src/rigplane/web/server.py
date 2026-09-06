@@ -92,6 +92,7 @@ from .handlers import (  # noqa: TID251
     ScopeHandler,
 )
 from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
+from .handlers.control import _consume_normalized_level_unit  # noqa: TID251
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
 from .radio_poller import (  # noqa: TID251
@@ -4443,9 +4444,10 @@ class WebServer:
             )
             return
         try:
+            params = _consume_normalized_level_unit(raw_name, raw_params)
             result = await self._control_handler_for()._enqueue_command(  # noqa: SLF001
                 raw_name,
-                raw_params,
+                params,
                 command_id=None if payload.get("id") is None else str(payload["id"]),
                 source="http",
             )
@@ -4548,13 +4550,14 @@ class WebServer:
                 f"command {raw_name!r} bypasses the command queue",
             )
 
+        params = _consume_normalized_level_unit(raw_name, raw_params)
         descriptor = command_descriptor(raw_name)
         if descriptor is not None:
             assert self._radio is not None
             intent = prepare_command_intent(
                 self._radio,
                 raw_name,
-                raw_params,
+                params,
                 source="http",
                 command_id=(
                     None if raw_step.get("id") is None else str(raw_step["id"])
@@ -4582,7 +4585,7 @@ class WebServer:
         )()
         result = await self._control_handler_for(server=proxy_server)._enqueue_command(  # noqa: SLF001
             raw_name,
-            raw_params,
+            params,
             source="http",
         )
         if len(collector.commands) != 1:

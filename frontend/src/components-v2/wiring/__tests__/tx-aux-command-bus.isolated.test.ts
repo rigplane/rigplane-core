@@ -19,7 +19,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
-  return { dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params) };
+  return {
+    dispatchRadioIntent: ({ name, params }: { name: string; params: Record<string, unknown> }) => sendCommand(name, params),
+    isNormalizedLevel: (value: unknown): value is number =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1,
+  };
 });
 vi.mock('$lib/stores/radio.svelte', () => ({
   getActiveReceiver: vi.fn(() => null),
@@ -90,7 +94,7 @@ describe('each txAux intent emits the command the radio expects', () => {
     ['onVoxToggle', [], 'set_vox', { on: true }],
     ['onCompToggle', [], 'set_compressor', { on: true }],
     ['onMonToggle', [], 'set_monitor', { on: true }],
-    ['onRfPowerChange', [0.5], 'set_rf_power', { level: 0.5 }],
+    ['onRfPowerChange', [0.5], 'set_rf_power', { level: 0.5, level_unit: 'normalized' }],
     ['onMicGainChange', [200], 'set_mic_gain', { level: 200 }],
     ['onDriveGainChange', [100], 'set_drive_gain', { level: 100 }],
     ['onVoxGainChange', [77], 'set_vox_gain', { level: 77 }],

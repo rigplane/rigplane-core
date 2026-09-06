@@ -28,6 +28,33 @@ protocol examples.
 
 **Response shape:** on success the `result` object echoes accepted parameter values. Non-trivial response fields are listed in the Notes column.
 
+## Explicit normalized levels
+
+Browser controls that operate in the normalized `0.0`–`1.0` domain send
+`level_unit: "normalized"` with `set_af_level` and `set_rf_power`. The server
+validates that marker, consumes it before command binding, and converts the
+level to the radio's native integer scale. Untagged integer levels keep their
+native meaning. An untagged JSON decimal token such as `1.0` keeps the existing
+normalized-float meaning.
+
+The matching server must be installed before enabling a client that emits the
+marker. An older server can ignore the additional field and therefore can
+still misinterpret normalized endpoint `1` as native integer `1`.
+
+These are the canonical WebSocket wire examples used for the normalized AF/RF
+boundary:
+
+<!-- normalized-level-wire-vectors:start -->
+```jsonl
+{"type":"cmd","name":"set_af_level","id":"af-normalized-0","params":{"level":0,"receiver":0,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_af_level","id":"af-normalized-half","params":{"level":0.5,"receiver":0,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_af_level","id":"af-normalized-1","params":{"level":1,"receiver":0,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_rf_power","id":"rf-normalized-0","params":{"level":0,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_rf_power","id":"rf-normalized-half","params":{"level":0.5,"level_unit":"normalized"}}
+{"type":"cmd","name":"set_rf_power","id":"rf-normalized-1","params":{"level":1,"level_unit":"normalized"}}
+```
+<!-- normalized-level-wire-vectors:end -->
+
 ## Rate limiting
 
 `set_*` commands over WebSocket are physically enqueued at most once per 50 ms per client, per command name. Commands arriving before the interval expires are coalesced with last-value-wins semantics (MOR-1427) rather than dropped: the newest frame in the window always survives to the next paced enqueue. Any frame it replaces before that flush receives an immediate ACK with `{"superseded": true}` and is never enqueued; the surviving frame gets the normal enqueue ACK at the pacing boundary. HTTP endpoints are not throttled at this layer.
@@ -87,8 +114,8 @@ Use `set_freq` directly for bands that have no `bsrCode` in capabilities.
 | `ptt` | `state: bool` | — | Yes | `true`=TX on, `false`=TX off. Rejected in read-only mode. |
 | `ptt_on` | — | — | Yes | Equivalent to `ptt` with `state: true`. Rejected in read-only mode. |
 | `ptt_off` | — | — | Yes | Equivalent to `ptt` with `state: false`. Rejected in read-only mode. |
-| `set_rf_power` | `level: int` | `power_control` | Yes | Canonical. Level scale: 0–255 raw (Icom CI-V); watts (Yaesu CAT). Requires `PowerControlCapable`. |
-| `set_power` | `level: int` | `power_control` | Yes | Alias for `set_rf_power`. |
+| `set_rf_power` | `level: int \| float`, `level_unit?: "normalized"` | `power_control` | Yes | Canonical. Untagged integers are native: 0–255 raw (Icom CI-V) or watts (Yaesu CAT). Tagged levels are normalized 0.0–1.0. Requires `PowerControlCapable`. |
+| `set_power` | `level: int \| float`, `level_unit?: "normalized"` | `power_control` | Yes | Alias for `set_rf_power`. |
 | `set_powerstat` | `on?: bool=true` | `power_control` | Yes | Power the radio on or off via CI-V. |
 | `set_drive_gain` | `level: int` | `drive_gain` | Yes | Drive gain; radio-specific range. |
 
@@ -126,7 +153,7 @@ Use `set_freq` directly for bands that have no `bsrCode` in capabilities.
 
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
-| `set_af_level` | `level: int`, `receiver?: int=0` | `af_level` | Yes | AF volume; 0–255 raw scale. |
+| `set_af_level` | `level: int \| float`, `level_unit?: "normalized"`, `receiver?: int=0` | `af_level` | Yes | Untagged integers use the native 0–255 scale. Tagged levels are normalized 0.0–1.0. |
 | `set_rf_gain` | `level: int`, `receiver?: int=0` | `rf_gain` | Yes | |
 | `set_sql` | `level: int`, `receiver?: int=0` | `squelch` | Yes | Canonical. |
 | `set_squelch` | `level: int`, `receiver?: int=0` | `squelch` | Yes | Alias for `set_sql`. |
