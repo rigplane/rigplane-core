@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
   import { ValueControl } from '../controls/value-control';
   import { rawToPercentDisplay } from '../../primitives/scalar/value-control-core';
   import { HardwareButton } from '$lib/Button';
@@ -10,12 +11,22 @@
     toggleNrMode,
     toggleNotchMode,
     isNrActive,
-    isNotchActive,
   } from './dsp-panel-logic';
 
   import {
     deriveDspProps, getDspHandlers, getAutoNotchArmed, getManualNotchArmed,
+    getDspControlFeedback,
   } from '$lib/runtime/adapters/panel-adapters';
+  import {
+    createContinuousScalar,
+    createDiscreteContinuousScalarPolicy,
+    createHBarContinuousScalarPolicy,
+    type ContinuousScalarBinding,
+  } from '../../primitives/scalar/continuous-scalar.svelte';
+  import type {
+    HBarIssuedStatusPresentation,
+    HBarIssuedStatusSnapshot,
+  } from '../controls/value-control/skin';
   import { t } from '$lib/i18n';
 
   const handlers = getDspHandlers();
@@ -103,11 +114,86 @@
   let showAutoNotch = $derived(p.hasAutoNotch ?? true);
   let showAgcTime = $derived(p.hasAgcTime ?? true);
 
+  let nbLevelFeedback = $derived(getDspControlFeedback('nbLevel'));
+  let nbWidthFeedback = $derived(getDspControlFeedback('nbWidth'));
+  let notchPositionFeedback = $derived(getDspControlFeedback('notchFilter'));
+  let agcTimeFeedback = $derived(getDspControlFeedback('agcTimeConstant'));
+  const hbarPolicy = (describeTarget: (value: number) => string) =>
+    createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 50, describeTarget });
+  const nbLevelBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: nbLevelFeedback, command: 'set_nb_level',
+      domain: { min: 0, max: nbLevelMax, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      enabled: showNb && nbLevelFeedback.availability === 'available', request: onNbLevelChange,
+    }),
+    hbarPolicy((value) => nbLevelDisplayFn(value)),
+  );
+  const nbWidthBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: nbWidthFeedback, command: 'set_nb_width',
+      domain: { min: 0, max: 255, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      enabled: showNb && hasNbWidth && nbWidthFeedback.availability === 'available',
+      request: onNbWidthChange,
+    }),
+    hbarPolicy(rawToPercentDisplay),
+  );
+  const notchPositionBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: notchPositionFeedback, command: 'set_notch_filter',
+      domain: { min: 0, max: 255, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      enabled: showNotch && notchMode === 'manual'
+        && notchPositionFeedback.availability === 'available',
+      request: onNotchFreqChange,
+    }),
+    hbarPolicy(String),
+  );
+  const agcTimeBinding = createContinuousScalar(
+    () => ({
+      evidence: 'command-feedback', feedback: agcTimeFeedback, command: 'set_agc_time_constant',
+      domain: { min: 0, max: 9, step: 1, defaultValue: null, fineStepDivisor: 10 },
+      enabled: showAgcTime && agcTimeFeedback.availability === 'available', request: onAgcTimeChange,
+    }),
+    createDiscreteContinuousScalarPolicy({ debounceMs: 50, describeTarget: formatAgcTime }),
+  );
+
+  type HBarDspLane = 'nbLevel' | 'nbWidth' | 'notchPosition';
+  let issuedStatusText = $state<Record<HBarDspLane, string | null>>({
+    nbLevel: null, nbWidth: null, notchPosition: null,
+  });
+  function formatIssuedStatus({ view, announcement }: Readonly<HBarIssuedStatusSnapshot>): string {
+    return view.error === null
+      ? announcement.message
+      : `${announcement.message.replace(/[.!?]$/, '')}: ${view.error}`;
+  }
+  function issuedStatusPresentation(lane: HBarDspLane): Readonly<HBarIssuedStatusPresentation> {
+    return {
+      get text() { return issuedStatusText[lane]; },
+      format: formatIssuedStatus,
+      accept(text) { issuedStatusText[lane] = text; },
+    };
+  }
+  const nbLevelStatus = issuedStatusPresentation('nbLevel');
+  const nbWidthStatus = issuedStatusPresentation('nbWidth');
+  const notchPositionStatus = issuedStatusPresentation('notchPosition');
+  function consumeHiddenStatus(
+    binding: ContinuousScalarBinding,
+    presentation?: Readonly<HBarIssuedStatusPresentation>,
+  ): void {
+    const view = binding.view;
+    if (presentation === undefined || view.evidence !== 'command-feedback') return;
+    const announcement = view.presentation.politeAnnouncement;
+    if (announcement !== null) {
+      presentation.accept(untrack(() => presentation.format({ view, announcement })));
+    } else if (view.feedback.transitionId === null) {
+      presentation.accept(null);
+    }
+  }
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
+
   let nrOptions = $derived(buildNrOptions());
   let notchOptions = $derived(buildNotchOptions());
 
   let nrActive = $derived(isNrActive(nrMode));
-  let notchToggleActive = $derived(isNotchActive(notchMode));
 
   type ModalId = 'nr' | 'nb' | 'notch' | 'agc';
   let openModal = $state<ModalId | null>(null);
@@ -212,6 +298,26 @@
     } else if (openModal === 'agc') {
       agcModalStyle = computeModalStyle(agcAnchorEl);
     }
+  });
+
+  $effect(() => {
+    if (openModal !== 'nb') {
+      consumeHiddenStatus(nbLevelBinding, nbLevelStatus);
+      consumeHiddenStatus(nbWidthBinding, nbWidthStatus);
+    } else if (!hasNbWidth) {
+      consumeHiddenStatus(nbWidthBinding, nbWidthStatus);
+    }
+    if (!(openModal === 'notch' && notchMode === 'manual')) {
+      consumeHiddenStatus(notchPositionBinding, notchPositionStatus);
+    }
+    if (openModal !== 'agc') consumeHiddenStatus(agcTimeBinding);
+  });
+
+  onDestroy(() => {
+    nbLevelBinding.destroy();
+    nbWidthBinding.destroy();
+    notchPositionBinding.destroy();
+    agcTimeBinding.destroy();
   });
 
   /* LONG_PRESS_MS imported from dsp-panel-logic */
@@ -410,15 +516,13 @@
       </HardwareButton>
     </div>
     <ValueControl
+      {...feedbackIntegratedControl}
       label="NB Level"
-      value={nbLevel}
-      min={0}
-      max={nbLevelMax}
-      step={1}
+      binding={nbLevelBinding}
       renderer="hbar"
       displayFn={nbLevelDisplayFn}
       accentColor="var(--v2-accent-yellow)"
-      onChange={onNbLevelChange}
+      issuedStatusPresentation={nbLevelStatus}
       variant="hardware-illuminated"
     />
     {#if hasNbDepth}
@@ -437,15 +541,13 @@
     {/if}
     {#if hasNbWidth}
       <ValueControl
+        {...feedbackIntegratedControl}
         label="NB Width"
-        value={nbWidth}
-        min={0}
-        max={255}
-        step={1}
+        binding={nbWidthBinding}
         renderer="hbar"
         displayFn={rawToPercentDisplay}
         accentColor="var(--v2-accent-orange)"
-        onChange={onNbWidthChange}
+        issuedStatusPresentation={nbWidthStatus}
         variant="hardware-illuminated"
       />
     {/if}
@@ -495,14 +597,12 @@
     {/if}
     {#if notchMode === 'manual'}
       <ValueControl
+        {...feedbackIntegratedControl}
         label="Notch Position"
-        value={notchFreq}
-        min={0}
-        max={255}
-        step={1}
+        binding={notchPositionBinding}
         renderer="hbar"
         accentColor="var(--v2-accent-cyan)"
-        onChange={onNotchFreqChange}
+        issuedStatusPresentation={notchPositionStatus}
         variant="hardware-illuminated"
       />
       <div class="dsp-modal-block dsp-mode-grid">
@@ -518,17 +618,14 @@
   <div class="dsp-modal" role="dialog" aria-label="AGC time settings" style={agcModalStyle}>
     <div class="menu-title">AGC Time Constant</div>
     <ValueControl
+      {...feedbackIntegratedControl}
       label="AGC Time"
-      value={agcTimeConstant}
-      min={0}
-      max={9}
-      step={1}
+      binding={agcTimeBinding}
       renderer="discrete"
       tickStyle="notch"
       displayFn={formatAgcTime}
       unit="s"
       accentColor="var(--v2-accent-cyan)"
-      onChange={onAgcTimeChange}
       variant="hardware-illuminated"
     />
   </div>
