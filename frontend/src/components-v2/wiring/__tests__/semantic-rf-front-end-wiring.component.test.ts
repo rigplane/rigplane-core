@@ -5,17 +5,13 @@
  * `semantic/__tests__/RfFrontEndSurface.test.ts` proves what the surface does
  * with a view model. This file proves what only the composed tree can prove:
  *
- *   (a) every intent reaches its OWN mapped `makeRfFrontEndHandlers` spy,
- *       none cross-wired to a neighbor — mirrors
+ *   (a) ordinary intents reach their OWN mapped command-handler spies, with
+ *       none cross-wired to a neighbor — mirroring
  *       `semantic-tx-aux-wiring.component.test.ts`'s own "every intent
- *       reaches its own command-bus handler" section, and `../command-bus` is
- *       mocked wholesale for the same reason that file mocks it: the real
- *       `makeRfFrontEndHandlers` reads/writes the LEGACY `$lib/stores/
- *       radio.svelte` singleton (`getRadioState`/`patchActiveReceiver`), a
- *       different seam than `runtime.state` — agreement between the real
- *       module and this file's names is a name/arity fact, already covered
- *       by `stub-export-parity.test.ts` and TypeScript itself (the real
- *       factory is imported for its type in the toggle-flip test below);
+ *       reaches its own command-bus handler" section. RF gain and squelch
+ *       additionally wrap and execute shipped `makeRfFrontEndHandlers` calls
+ *       through mocked transport plus the real command/radio stores and
+ *       projector, proving their command-feedback lifecycle end to end;
  *   (b) THE MOUNTING CANON (MOR-1304 ruling): the surface mounts through
  *       `zoned(...)` in the SINGLE composition only, and is ABSENT — zoned or
  *       unzoned — from the DUAL composition, with a view model that actually
@@ -137,9 +133,10 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
   getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
 }));
-// The real module's names/arities are covered by `stub-export-parity.test.ts`
-// and by TypeScript; this file only proves ROUTING, mirroring
-// `semantic-tx-aux-wiring.component.test.ts`'s own wholesale mock.
+// Most handlers remain routing spies. RF gain/squelch wrappers below also call
+// the shipped handlers through mocked transport and real command/radio stores
+// plus the projector; export names/arities remain covered by
+// `stub-export-parity.test.ts` and TypeScript.
 vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/runtime/commands/panel-commands')>();
   return {
