@@ -56,6 +56,7 @@ if [[ "$frontend" == true ]]; then
   (
     cd frontend
     npm ci
+    npm run verify:component-kit-api
     npm run i18n:check
     npm run check
     npx vitest run

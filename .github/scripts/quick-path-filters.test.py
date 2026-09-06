@@ -20,6 +20,7 @@ QUICK_YML = ROOT / ".github" / "workflows" / "quick.yml"
 DOCS_QUICK_YML = ROOT / ".github" / "workflows" / "docs-only-quick.yml"
 DOCS_PATHS_JS = ROOT / ".github" / "scripts" / "docs-only-paths.js"
 VISUAL_YML = ROOT / ".github" / "workflows" / "visual.yml"
+QUICK_WORKER = ROOT / ".github" / "scripts" / "quick-v2-worker-v1.sh"
 DOC_CITATION_YML = ROOT / ".github" / "workflows" / "doc-citation-gate.yml"
 REBRAND_YML = ROOT / ".github" / "workflows" / "rebrand-gate.yml"
 BASE_GATES_TEST = ROOT / ".github" / "scripts" / "base-controlled-gates-v1.test.js"
@@ -188,6 +189,27 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)
         self.assertNotIn('      - ".github/workflows/visual.yml"', visual)
+
+    def test_component_kit_api_proof_is_frontend_selected_and_mirrored(self) -> None:
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        worker = QUICK_WORKER.read_text(encoding="utf-8")
+        command = "npm run verify:component-kit-api"
+
+        for path in (
+            "frontend/component-kit-api/src/index.ts",
+            "frontend/src/components-v2/controls/value-control/skin.ts",
+            "frontend/src/primitives/frequency/frequency-readout.ts",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    CLASSIFIER.classify([path]),
+                    {"core": False, "frontend": True, "ci": False, "docs": False},
+                )
+
+        self.assertEqual(quick.count(command), 1)
+        self.assertEqual(worker.count(command), 1)
+        self.assertLess(quick.index("npm ci"), quick.index(command))
+        self.assertLess(worker.index("npm ci"), worker.index(command))
 
     def test_docs_only_routes_match_predicate_and_are_base_controlled(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
