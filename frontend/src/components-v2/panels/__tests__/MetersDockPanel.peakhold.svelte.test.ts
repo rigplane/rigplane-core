@@ -99,6 +99,15 @@ function poNumber(t: HTMLElement): string | null | undefined {
   return t.querySelector('[data-meter="po"] .tile-value')?.textContent;
 }
 
+function peakMarkerCount(t: HTMLElement, meterKey = 'po'): number {
+  return t.querySelectorAll(`[data-meter="${meterKey}"] [data-testid="peak-marker"]`).length;
+}
+
+function fillWidth(t: HTMLElement, meterKey = 'po'): number {
+  const fill = t.querySelector(`[data-meter="${meterKey}"] .tile-bar-fill`) as HTMLElement | null;
+  return parseFloat(fill?.style.width ?? '0');
+}
+
 describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
   it('holds the Po NUMBER near a prior peak through the inter-syllable gap', () => {
     // 100 W (a voice peak); 2 W (an inter-syllable trough) — engineering
@@ -183,5 +192,47 @@ describe('MetersDockPanel TX peak-hold ballistics (MOR-498)', () => {
     vi.advanceTimersByTime(100);
     flushSync();
     expect(t.querySelector('[data-meter="vd"] .tile-value')?.textContent).toBe('13.8 V');
+  });
+
+  it('clears a removed channel immediately and reappears without its stale peak or smoother', () => {
+    const { t, state } = mountReactive({ powerMeter: 100, txActive: true });
+    vi.advanceTimersByTime(100);
+    flushSync();
+    expect(poNumber(t)).toBe('100W');
+    expect(peakMarkerCount(t)).toBe(1);
+
+    state.powerMeter = undefined;
+    flushSync();
+    expect(t.querySelector('[data-meter="po"]')).toBeNull();
+    state.powerMeter = 2;
+    flushSync();
+    expect(poNumber(t)).toBe('2W');
+    expect(peakMarkerCount(t)).toBe(0);
+    expect(fillWidth(t)).toBeLessThan(10);
+  });
+
+  it('resets only Po and relatches it on the next shared tick', () => {
+    const { t } = mountReactive({
+      powerMeter: 100,
+      swrMeter: 3,
+      alcMeter: 60,
+      idMeter: 25,
+      txActive: true,
+    });
+    vi.advanceTimersByTime(100);
+    flushSync();
+    for (const key of ['po', 'swr', 'alc', 'id']) expect(peakMarkerCount(t, key)).toBe(1);
+
+    t.querySelector('[data-meter="po"]')?.dispatchEvent(new Event('dblclick', { bubbles: true }));
+    flushSync();
+    expect(peakMarkerCount(t, 'po')).toBe(0);
+    for (const key of ['swr', 'alc', 'id']) expect(peakMarkerCount(t, key)).toBe(1);
+
+    vi.advanceTimersByTime(99);
+    flushSync();
+    expect(peakMarkerCount(t, 'po')).toBe(0);
+    vi.advanceTimersByTime(1);
+    flushSync();
+    expect(peakMarkerCount(t, 'po')).toBe(1);
   });
 });
