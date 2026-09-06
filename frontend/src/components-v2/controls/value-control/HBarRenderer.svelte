@@ -1,38 +1,21 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import type {
-    ContinuousScalarBinding,
     ContinuousScalarRendererLease,
     ContinuousScalarView,
   } from '../../../primitives/scalar/continuous-scalar.svelte';
   import './value-control.css';
   import {
+    clamp,
     getFillPercent,
     calculateClickValue,
   } from '../../../primitives/scalar/value-control-core';
   import {
     projectScalarRenderPresentation,
-    type LegacyReadingPresentation,
   } from './scalar-render-presentation';
+  import type { HBarSkinRendererProps } from './skin';
 
-  interface Props {
-    binding: ContinuousScalarBinding;
-    label: string;
-    displayFn?: (v: number) => string;
-    unknownDisplay?: string;
-    fillColor?: string;
-    fillGradient?: string[];
-    trackColor?: string;
-    accentColor?: string;
-    showValue?: boolean;
-    showLabel?: boolean;
-    compact?: boolean;
-    variant?: 'modern' | 'hardware' | 'hardware-illuminated';
-    unit?: string;
-    shortcutHint?: string | null;
-    title?: string | null;
-    legacy?: LegacyReadingPresentation;
-  }
+  type Props = HBarSkinRendererProps;
 
   let {
     binding,
@@ -51,32 +34,50 @@
     shortcutHint = null,
     title = null,
     legacy,
+    valueProjection,
+    issuedStatusPresentation,
   }: Props = $props();
 
   const feedbackDescriptionId = $props.id();
 
   let containerEl: HTMLDivElement | null = $state(null);
-  let activePointer: { id: number; token: number; target: HTMLElement } | null = null;
+  let activePointer: {
+    id: number;
+    token: number;
+    target: HTMLElement;
+    contextKey: string | null;
+  } | null = null;
   const initialBinding = untrack(() => binding);
   let attachedBinding = initialBinding;
   let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
 
-  $effect(() => {
-    if (binding === attachedBinding) return;
+  function releaseActivePointer(): void {
     if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
       activePointer.target.releasePointerCapture(activePointer.id);
     }
     activePointer = null;
+  }
+
+  $effect(() => {
+    if (binding === attachedBinding) return;
+    releaseActivePointer();
     lease.dispose();
     attachedBinding = binding;
     lease = binding.attachRenderer();
   });
   onDestroy(() => {
-    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
-      activePointer.target.releasePointerCapture(activePointer.id);
-    }
-    activePointer = null;
+    releaseActivePointer();
     lease.dispose();
+  });
+
+  const initialProjectionContext = untrack(() => valueProjection?.contextKey ?? null);
+  let attachedProjectionContext = initialProjectionContext;
+  $effect(() => {
+    const nextContext = valueProjection?.contextKey ?? null;
+    if (nextContext === attachedProjectionContext) return;
+    attachedBinding.cancel('authority');
+    releaseActivePointer();
+    attachedProjectionContext = nextContext;
   });
 
   // Reading a lease reconciles its owner. Keep that mutable reconciliation in
@@ -92,9 +93,14 @@
     }
   });
   let renderedValue = $derived(view.displayed);
+  let projectedPosition = $derived(renderedValue === null || valueProjection === undefined
+    ? null : valueProjection.positionOf(renderedValue));
   let fillPercent = $derived(!view.domainValid || renderedValue === null
     ? 0
-    : getFillPercent(renderedValue, view.domain.min, view.domain.max));
+    : valueProjection === undefined
+      ? getFillPercent(renderedValue, view.domain.min, view.domain.max)
+      : projectedPosition !== null && Number.isFinite(projectedPosition)
+        && projectedPosition >= 0 && projectedPosition <= 1 ? projectedPosition * 100 : 0);
   let effectiveFill = $derived(fillGradient
     ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
     : (fillColor ?? accentColor));
@@ -102,6 +108,47 @@
     ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
     : displayFn ? displayFn(renderedValue) : `${renderedValue}${unit ? '\u00a0' + unit : ''}`);
   let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
+  $effect(() => {
+    const snapshot = view;
+    if (issuedStatusPresentation === undefined || snapshot.evidence !== 'command-feedback') return;
+    const announcement = snapshot.presentation.politeAnnouncement;
+    if (announcement !== null) {
+      const formatted = untrack(() => issuedStatusPresentation.format({ view: snapshot, announcement }));
+      untrack(() => issuedStatusPresentation.accept(formatted));
+    } else if (snapshot.feedback.transitionId === null) {
+      untrack(() => issuedStatusPresentation.accept(null));
+    }
+  });
+  let statusText = $derived(issuedStatusPresentation === undefined
+    ? renderPresentation.status === null ? null
+      : `${renderPresentation.status}${renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}`
+    : issuedStatusPresentation.text);
+  let ariaValueNow = $derived(!view.domainValid || view.canonical === null
+    ? undefined
+    : valueProjection === undefined
+      ? view.canonical
+      : (() => {
+        const position = valueProjection.positionOf(view.canonical!);
+        return position !== null && Number.isFinite(position) && position >= 0 && position <= 1
+          ? view.canonical! : undefined;
+      })());
+
+  function pointerValue(clientX: number, rect: DOMRect, domain: ContinuousScalarView['domain']): number | null {
+    if (valueProjection === undefined) {
+      return calculateClickValue(clientX, rect.left, rect.width, domain.min, domain.max, domain.step);
+    }
+    if (!Number.isFinite(rect.width) || rect.width <= 0) return null;
+    const value = valueProjection.valueAt(clamp((clientX - rect.left) / rect.width, 0, 1));
+    return value !== null && Number.isFinite(value) ? value : null;
+  }
+
+  function pointerContextCurrent(): boolean {
+    if (activePointer === null
+      || activePointer.contextKey === (valueProjection?.contextKey ?? null)) return true;
+    attachedBinding.cancel('authority');
+    releaseActivePointer();
+    return false;
+  }
 
   function handlePointerDown(e: PointerEvent) {
     if (!containerEl) return;
@@ -111,29 +158,31 @@
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
-    activePointer = { id: e.pointerId, token, target };
+    activePointer = {
+      id: e.pointerId,
+      token,
+      target,
+      contextKey: valueProjection?.contextKey ?? null,
+    };
 
     const rect = containerEl.getBoundingClientRect();
     const domain = view.domain;
-    const newValue = calculateClickValue(
-      e.clientX, rect.left, rect.width, domain.min, domain.max, domain.step,
-    );
-    lease.pointer(token, newValue);
+    const newValue = pointerValue(e.clientX, rect, domain);
+    if (newValue !== null) lease.pointer(token, newValue);
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!activePointer || activePointer.id !== e.pointerId || !containerEl) return;
+    if (!activePointer || activePointer.id !== e.pointerId || !containerEl
+      || !pointerContextCurrent()) return;
 
     const rect = containerEl.getBoundingClientRect();
     const domain = view.domain;
-    const newValue = calculateClickValue(
-      e.clientX, rect.left, rect.width, domain.min, domain.max, domain.step,
-    );
-    lease.pointer(activePointer.token, newValue);
+    const newValue = pointerValue(e.clientX, rect, domain);
+    if (newValue !== null) lease.pointer(activePointer.token, newValue);
   }
 
   function handlePointerUp(e: PointerEvent) {
-    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (!activePointer || activePointer.id !== e.pointerId || !pointerContextCurrent()) return;
     if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
       activePointer.target.releasePointerCapture(e.pointerId);
     }
@@ -142,7 +191,7 @@
   }
 
   function handlePointerCancel(e: PointerEvent) {
-    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (!activePointer || activePointer.id !== e.pointerId || !pointerContextCurrent()) return;
     if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
       activePointer.target.releasePointerCapture(e.pointerId);
     }
@@ -194,7 +243,8 @@
     aria-label={label}
     aria-valuemin={view.domainValid ? view.domain.min : undefined}
     aria-valuemax={view.domainValid ? view.domain.max : undefined}
-    aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
+    aria-valuenow={ariaValueNow}
+    aria-valuetext={valueProjection === undefined ? undefined : displayValue}
     aria-disabled={!view.editable}
     aria-busy={renderPresentation.attributes['aria-busy']}
     aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
@@ -234,14 +284,14 @@
   {#if renderPresentation.description !== null}
     <span id={feedbackDescriptionId} class="sr-only">{renderPresentation.description}</span>
   {/if}
-  {#if renderPresentation.status !== null}
+  {#if statusText !== null}
     <span
       class="sr-only"
       role="status"
       aria-live="polite"
       aria-atomic="true"
       data-control-feedback-status
-    >{renderPresentation.status}{renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}</span>
+    >{statusText}</span>
   {/if}
 </div>
 

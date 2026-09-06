@@ -195,6 +195,7 @@
   "core.filter.width.failedAnnouncement": "Ширина фильтра {target} не установлена; подтверждённая ширина остаётся {confirmed}.",
   "core.filter.width.timedOutAnnouncement": "Истекло время ожидания ширины фильтра {target}; подтверждённая ширина остаётся {confirmed}.",
   "core.filter.width.cancelledAnnouncement": "Запрос ширины фильтра {target} отменён; подтверждённая ширина остаётся {confirmed}.",
+  "core.filter.width.supersededAnnouncement": "Запрос ширины фильтра {target} заменён; подтверждённая ширина остаётся {confirmed}.",
   "core.rfFrontEnd.preamp.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.dsp.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.vfo.split.label": "Split",

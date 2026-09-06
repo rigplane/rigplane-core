@@ -3,6 +3,8 @@ import { mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { formatFilterWidth } from '../filter-utils';
 import { deriveIfShift } from '../filter-controls';
+import { setLocale } from '$lib/i18n';
+import type { CommandScalarFeedback } from '../../../primitives/scalar/continuous-scalar.svelte';
 
 const mockProps = {
   currentMode: 'USB',
@@ -11,6 +13,8 @@ const mockProps = {
   hasFilterShape: true,
   filterLabels: ['FIL1', 'FIL2', 'FIL3'],
   filterWidth: 2400,
+  filterWidthMin: 50,
+  filterWidthMax: 9999,
   filterConfig: {
     defaults: [3000, 2400, 1800],
     fixed: false,
@@ -46,17 +50,19 @@ const widthLifecycle = {
   target: null as number | null,
   phase: 'idle',
   busy: false,
-  outcome: null as { phase: 'confirmed' | 'failed' | 'timed-out' | 'cancelled'; error?: string } | null,
+  outcome: null as { phase: 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded'; error?: string } | null,
   presentation: null as {
     lifecycleId: string; transitionId: string; receiver: 0 | 1; sessionEpoch: number;
-    target: number; status: 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'timed-out' | 'cancelled';
+    target: number; status: 'pending' | 'acknowledged' | 'confirmed' | 'failed' | 'timed-out' | 'cancelled' | 'superseded';
   } | null,
 };
 const propsVersion = new SvelteMap([['value', 0]]);
 const lifecycleState = new SvelteMap([['value', widthLifecycle]]);
+const feedbackOverride = new SvelteMap<string, Readonly<CommandScalarFeedback> | null>([['value', null]]);
 
 function setMockProps(overrides: Partial<typeof mockProps>): void {
   Object.assign(mockProps, overrides);
+  if ('filterWidth' in overrides) setWidthLifecycle({ confirmed: overrides.filterWidth });
   propsVersion.set('value', (propsVersion.get('value') ?? 0) + 1);
 }
 
@@ -74,6 +80,33 @@ function presentation(
   return { lifecycleId, transitionId: `${sessionEpoch}:${lifecycleId}:${status}`, receiver, sessionEpoch, target, status };
 }
 
+function feedbackFromLifecycle(): Readonly<CommandScalarFeedback> {
+  const lifecycle = lifecycleState.get('value') ?? widthLifecycle;
+  const status = lifecycle.presentation?.status;
+  const phase = status === 'pending' ? 'submitted'
+    : status === 'acknowledged' ? 'awaiting-confirmation'
+      : status ?? (lifecycle.phase === 'unavailable' ? 'unavailable' : 'idle');
+  return {
+    confirmed: lifecycle.confirmed,
+    target: lifecycle.busy ? lifecycle.target : null,
+    requestedTarget: lifecycle.presentation?.target ?? lifecycle.target,
+    phase,
+    busy: lifecycle.busy,
+    availability: lifecycle.phase === 'unavailable' ? 'unavailable' : 'available',
+    outcome: lifecycle.outcome,
+    lifecycleId: lifecycle.presentation?.lifecycleId ?? null,
+    transitionId: lifecycle.presentation?.transitionId ?? null,
+    providerGeneration: 1,
+    sessionEpoch: lifecycle.presentation?.sessionEpoch ?? 7,
+    scope: { control: 'filter-width', receiver: lifecycle.presentation?.receiver ?? 0 },
+    repeatPolicy: 'latest-target-wins',
+  } as Readonly<CommandScalarFeedback>;
+}
+
+function setWidthFeedback(overrides: Partial<CommandScalarFeedback>): void {
+  feedbackOverride.set('value', { ...feedbackFromLifecycle(), ...overrides });
+}
+
 vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   deriveFilterProps: () => {
     propsVersion.get('value');
@@ -81,7 +114,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   },
   getFilterHandlers: () => mockHandlers,
   getFilterArmed: () => unarmed,
-  getFilterWidthCommandLifecycle: () => lifecycleState.get('value')!,
+  getFilterWidthControlFeedback: () => feedbackOverride.get('value') ?? feedbackFromLifecycle(),
 }));
 
 import FilterPanel from '../FilterPanel.svelte';
@@ -151,6 +184,7 @@ function mountPanel(overrides?: Partial<typeof mockProps>) {
 
 beforeEach(() => {
   components = [];
+  setLocale('en-US');
   setMockProps({
     currentMode: 'USB',
     currentFilter: 2,
@@ -158,6 +192,8 @@ beforeEach(() => {
     hasFilterShape: true,
     filterLabels: ['FIL1', 'FIL2', 'FIL3'],
     filterWidth: 2400,
+    filterWidthMin: 50,
+    filterWidthMax: 9999,
     filterConfig: {
       defaults: [3000, 2400, 1800],
       fixed: false,
@@ -188,6 +224,7 @@ beforeEach(() => {
     outcome: null,
     presentation: null,
   });
+  feedbackOverride.set('value', null);
 });
 
 afterEach(() => {
@@ -240,6 +277,237 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     table: [1800, 2400, 3000],
   } as typeof mockProps.filterConfig;
 
+  it('keeps an off-table 2501 Hz reading exact on nonuniform catalog geometry', () => {
+    const t = mountPanel({
+      filterWidth: 2501,
+      filterConfig: {
+        defaults: [2100, 2100, 2100], fixed: false,
+        minHz: 1800, maxHz: 3000, stepHz: 1,
+        table: [1800, 2100, 3000],
+      } as typeof mockProps.filterConfig,
+    });
+    const control = t.querySelector<HTMLElement>('[role="slider"]')!;
+
+    expect(t.querySelector('.vc-value')?.textContent).toBe('2501 Hz');
+    expect(t.querySelector('.vc-hbar')?.getAttribute('style'))
+      .toContain('--vc-fill-percent: 72.27777777777777%');
+    expect(control.getAttribute('aria-valuenow')).toBe('2501');
+    expect(control.getAttribute('aria-valuetext')).toBe('2501 Hz');
+  });
+
+  it.each([
+    [2100, '2.1kHz', '50%'],
+    [2500, '2.5kHz', '72.22222222222221%'],
+  ] as const)('keeps %i Hz exact at its piecewise catalog position', (confirmed, text, percent) => {
+    setWidthFeedback({ confirmed });
+    const t = mountPanel({
+      filterConfig: {
+        defaults: [2100, 2100, 2100], fixed: false,
+        minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2100, 3000],
+      } as typeof mockProps.filterConfig,
+    });
+
+    expect(t.querySelector('.vc-value')?.textContent).toBe(text);
+    expect(t.querySelector('.vc-hbar')?.getAttribute('style')).toContain(`--vc-fill-percent: ${percent}`);
+    expect(t.querySelector('[role="slider"]')?.getAttribute('aria-valuenow')).toBe(String(confirmed));
+  });
+
+  it.each([
+    [null, '--- Hz'],
+    [1700, '1.7kHz'],
+    [3100, '3.1kHz'],
+  ] as const)('does not fabricate geometry for confirmed value %s', (confirmed, text) => {
+    setWidthFeedback({ confirmed });
+    const t = mountPanel({ filterConfig: {
+      defaults: [2100, 2100, 2100], fixed: false,
+      minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2100, 3000],
+    } as typeof mockProps.filterConfig });
+    const control = t.querySelector<HTMLElement>('[role="slider"]')!;
+
+    expect(t.querySelector('.vc-value')?.textContent).toBe(text);
+    expect(t.querySelector('.vc-hbar')?.getAttribute('style')).toContain('--vc-fill-percent: 0%');
+    expect(control.getAttribute('aria-valuenow')).toBeNull();
+    expect(control.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('keeps confirmed, active target, and requested target in their distinct roles', () => {
+    setWidthFeedback({
+      confirmed: 2501, target: 3000, requestedTarget: 2100,
+      phase: 'awaiting-confirmation', busy: true,
+      lifecycleId: 'distinct', transitionId: 'distinct:acknowledged',
+    });
+    const t = mountPanel({ filterConfig: {
+      defaults: [2100, 2100, 2100], fixed: false,
+      minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2100, 3000],
+    } as typeof mockProps.filterConfig });
+    const status = t.querySelector('[data-control-feedback-status]')?.textContent ?? '';
+
+    expect(t.querySelector('.vc-value')?.textContent).toBe('2501 Hz');
+    expect(t.querySelector('[data-pending-width-target]')?.textContent).toContain('3kHz');
+    expect(status).toContain('2.1kHz requested');
+    expect(status).not.toContain('3kHz requested');
+    expect(t.querySelectorAll('[role="status"]')).toHaveLength(1);
+  });
+
+  it.each(['submitted', 'queued', 'dispatched', 'awaiting-confirmation'] as const)(
+    'localizes the owner-issued %s phase through one table emitter', (phase) => {
+      setWidthFeedback({
+        confirmed: 2100, target: 3000, requestedTarget: 2501, phase, busy: true,
+        lifecycleId: `busy-${phase}`, transitionId: `busy-${phase}:${phase}`,
+      });
+      const t = mountPanel({ filterConfig: {
+        defaults: [2100, 2100, 2100], fixed: false,
+        minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2100, 3000],
+      } as typeof mockProps.filterConfig });
+
+      expect(t.querySelector('[data-pending-width-target]')?.textContent).toContain('3kHz');
+      expect(t.querySelector('[data-control-feedback-status]')?.textContent)
+        .toContain('2501 Hz requested');
+      expect(t.querySelectorAll('[role="status"]')).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ['pointer-left', 1800], ['pointer-middle', 2100], ['pointer-right', 3000],
+    ['ArrowRight', 3000], ['Home', 1800], ['End', 3000], ['Shift+ArrowRight', 3000],
+    ['wheel', 3000], ['fine-wheel', 3000], ['reset', 1800],
+  ] as const)('%s requests only the actual nonuniform catalog choice %i', (gesture, expected) => {
+    setWidthFeedback({ confirmed: gesture === 'pointer-middle' ? 1800 : 2100 });
+    const t = mountPanel({ filterConfig: {
+      defaults: [2100, 2100, 2100], fixed: false,
+      minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2100, 3000],
+    } as typeof mockProps.filterConfig });
+    const control = t.querySelector<HTMLElement>('[role="slider"]')!;
+    const hbar = t.querySelector<HTMLElement>('.vc-hbar')!;
+    if (gesture.startsWith('pointer')) {
+      control.setPointerCapture = vi.fn();
+      vi.spyOn(hbar, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+      const x = gesture === 'pointer-left' ? 0 : gesture === 'pointer-middle' ? 50 : 100;
+      control.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, pointerId: 1 }));
+    } else if (gesture.includes('wheel')) {
+      control.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true, cancelable: true, deltaY: -1, shiftKey: gesture === 'fine-wheel',
+      }));
+    } else if (gesture === 'reset') {
+      control.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    } else {
+      control.dispatchEvent(new KeyboardEvent('keydown', {
+        bubbles: true, key: gesture.replace('Shift+', ''), shiftKey: gesture.startsWith('Shift+'),
+      }));
+    }
+    vi.advanceTimersByTime(60);
+
+    expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledWith(expected);
+    expect([1800, 2100, 3000]).toContain(mockHandlers.onFilterWidthChange.mock.calls.at(-1)?.[0]);
+  });
+
+  it('invalidates a deferred choice when same-endpoint catalog content changes', () => {
+    setWidthFeedback({ confirmed: 2100 });
+    const t = mountPanel({ filterConfig: {
+      defaults: [2100, 2100, 2100], fixed: false,
+      minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2100, 3000],
+    } as typeof mockProps.filterConfig });
+    const control = t.querySelector<HTMLElement>('[role="slider"]')!;
+    control.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }));
+    setMockProps({ filterConfig: {
+      defaults: [2200, 2200, 2200], fixed: false,
+      minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2200, 3000],
+    } as typeof mockProps.filterConfig });
+    flushSync();
+    vi.advanceTimersByTime(60);
+    expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+
+    control.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }));
+    vi.advanceTimersByTime(60);
+    expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledExactlyOnceWith(2200);
+
+    mockHandlers.onFilterWidthChange.mockClear();
+    control.setPointerCapture = vi.fn();
+    control.hasPointerCapture = vi.fn(() => true);
+    control.releasePointerCapture = vi.fn();
+    vi.spyOn(t.querySelector('.vc-hbar') as HTMLElement, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 100 } as DOMRect);
+    control.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, clientX: 100, pointerId: 9,
+    }));
+    expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledExactlyOnceWith(3000);
+    mockHandlers.onFilterWidthChange.mockClear();
+    setMockProps({ currentMode: 'AM' });
+    flushSync();
+    expect(control.releasePointerCapture).toHaveBeenCalledExactlyOnceWith(9);
+    control.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, clientX: 0, pointerId: 9,
+    }));
+    expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps the compound table Reset outside scalar reset semantics', () => {
+    const t = mountPanel({ filterConfig: tableConfig });
+    const reset = Array.from(t.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Reset')!;
+    (reset as HTMLButtonElement).click();
+
+    expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledExactlyOnceWith(3200);
+    expect(mockHandlers.onIfShiftChange).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it.each([
+    [[1800, 1800, 3000], 2100],
+    [[1800, Number.NaN, 3000], 2100],
+  ] as const)('disables malformed table %j without replacing its exact reading', (table, confirmed) => {
+    setWidthFeedback({ confirmed });
+    const t = mountPanel({ filterConfig: {
+      defaults: [2100, 2100, 2100], fixed: false,
+      minHz: 1800, maxHz: 3000, stepHz: 1, table: [...table],
+    } as typeof mockProps.filterConfig });
+    const control = t.querySelector<HTMLElement>('[role="slider"]')!;
+
+    expect(t.querySelector('.vc-value')?.textContent).toBe('2.1kHz');
+    expect(control.getAttribute('aria-disabled')).toBe('true');
+    expect(control.getAttribute('aria-valuenow')).toBeNull();
+    expect(t.querySelector('.vc-hbar')?.getAttribute('style')).toContain('--vc-fill-percent: 0%');
+  });
+
+  it('keeps a single-entry catalog at zero geometry without inventing another value', () => {
+    setWidthFeedback({ confirmed: 2100 });
+    const t = mountPanel({ filterConfig: {
+      defaults: [2100, 2100, 2100], fixed: false,
+      minHz: 2100, maxHz: 2100, stepHz: 1, table: [2100],
+    } as typeof mockProps.filterConfig });
+    const control = t.querySelector<HTMLElement>('[role="slider"]')!;
+
+    expect(t.querySelector('.vc-value')?.textContent).toBe('2.1kHz');
+    expect(t.querySelector('.vc-hbar')?.getAttribute('style')).toContain('--vc-fill-percent: 0%');
+    expect(control.getAttribute('aria-valuenow')).toBe('2100');
+    expect(control.getAttribute('aria-disabled')).toBe('false');
+    control.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }));
+    vi.advanceTimersByTime(60);
+    expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+  });
+
+  it('retains one localized owner message across locale and table-branch replacement', () => {
+    setWidthFeedback({
+      confirmed: 2100, target: null, requestedTarget: 2501,
+      phase: 'failed', busy: false, outcome: { phase: 'failed', error: 'radio rejected' },
+      lifecycleId: 'frozen', transitionId: 'frozen:failed',
+    });
+    const t = mountPanel({ filterWidthMin: 1800, filterWidthMax: 3000 });
+    const frozen = t.querySelector('[data-filter-width-live]')?.textContent;
+    expect(frozen).toContain('2501 Hz was not applied');
+    expect(frozen?.match(/radio rejected/g)).toHaveLength(1);
+
+    setLocale('ru-RU');
+    setMockProps({ filterConfig: {
+      defaults: [2100, 2100, 2100], fixed: false,
+      minHz: 1800, maxHz: 3000, stepHz: 1, table: [1800, 2100, 3000],
+    } as typeof mockProps.filterConfig });
+    flushSync();
+
+    expect(t.querySelector('[data-filter-width-live]')).toBeNull();
+    expect(t.querySelectorAll('[role="status"]')).toHaveLength(1);
+    expect(t.querySelector('[data-control-feedback-status]')?.textContent).toBe(frozen);
+  });
+
   it('keeps the canonical BW readout distinct from a pending target and marks the group busy', () => {
     setWidthLifecycle({
       target: 3000, phase: 'acknowledged', busy: true,
@@ -259,6 +527,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     ['failed', 'not applied'],
     ['timed-out', 'timed out'],
     ['cancelled', 'cancelled'],
+    ['superseded', 'superseded'],
   ] as const)('announces the terminal %s outcome once without changing canonical BW', (phase, message) => {
     setWidthLifecycle({
       target: null,
@@ -294,7 +563,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
       expect(mockHandlers.onFilterWidthChange).toHaveBeenCalledWith(3000);
       expect(t.querySelector('.vc-value')?.textContent).toBe('2.4kHz');
       expect(hbar.getAttribute('style')).toContain('--vc-fill-percent: 50%');
-      expect(slider.getAttribute('aria-valuenow')).toBe('1');
+      expect(slider.getAttribute('aria-valuenow')).toBe('2400');
       expect(t.querySelector('[data-pending-width-target]')).toBeNull();
 
       setWidthLifecycle({
@@ -313,7 +582,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
       flushSync();
       expect(t.querySelector('.vc-value')?.textContent).toBe('3kHz');
       expect(hbar.getAttribute('style')).toContain('--vc-fill-percent: 100%');
-      expect(slider.getAttribute('aria-valuenow')).toBe('2');
+      expect(slider.getAttribute('aria-valuenow')).toBe('3000');
       expect(t.querySelector('[data-pending-width-target]')).toBeNull();
     },
   );
@@ -332,7 +601,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
       flushSync();
       expect(t.querySelector('.vc-value')?.textContent).toBe('2.4kHz');
       expect(t.querySelector('.vc-hbar')?.getAttribute('style')).toContain('--vc-fill-percent: 50%');
-      expect(slider.getAttribute('aria-valuenow')).toBe('1');
+      expect(slider.getAttribute('aria-valuenow')).toBe('2400');
       expect(t.querySelector('[data-pending-width-target]')).toBeNull();
     },
   );
@@ -396,7 +665,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
 
     setWidthLifecycle({ target: null, phase: 'idle', busy: false, outcome: null, presentation: null });
     flushSync();
-    expect(t.querySelector('[data-filter-width-live]')?.textContent).toBe('');
+    expect(t.querySelector('[data-filter-width-live]')).toBeNull();
   });
 
   it('restores an open modal draft to canonical state on one failed transition', () => {
@@ -415,7 +684,7 @@ describe('Filter Width lifecycle presentation (MOR-1665)', () => {
     });
     flushSync();
     expect(activeSlider.getAttribute('aria-valuenow')).toBe('2400');
-    expect(t.querySelector('[data-filter-width-live]')?.textContent).toContain('2.5kHz was not applied');
+    expect(t.querySelector('[data-filter-width-live]')?.textContent).toContain('2450 Hz was not applied');
   });
 });
 

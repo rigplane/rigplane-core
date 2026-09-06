@@ -1,16 +1,27 @@
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
   import type { FilterModeConfig } from '$lib/types/capabilities';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { formatFilterWidth } from './filter-utils';
   import { getShortcutHint, joinShortcutHints } from '../layout/shortcut-hints';
   import { t } from '$lib/i18n';
+  import {
+    createContinuousScalar,
+    type ContinuousScalarPolicy,
+    type ContinuousScalarView,
+  } from '../../primitives/scalar/continuous-scalar.svelte';
+  import type {
+    HBarIssuedStatusPresentation,
+    HBarIssuedStatusSnapshot,
+    HBarValueProjection,
+  } from '../controls/value-control/skin';
 
   import {
     deriveFilterProps,
     getFilterHandlers,
     getFilterArmed,
-    getFilterWidthCommandLifecycle,
+    getFilterWidthControlFeedback,
   } from '$lib/runtime/adapters/panel-adapters';
 
   const handlers = getFilterHandlers();
@@ -21,11 +32,7 @@
   // pending command is racing toward, never a substitute for the confirmed
   // reading.
   let filterArmed = $derived(getFilterArmed());
-  // The lifecycle is presentation-only. `filterWidth` remains the sole
-  // canonical/confirmed source for all displayed and selected widths.
-  let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
-  let lastFilterWidthTransitionId = $state<string | null>(null);
-  let filterWidthLiveStatus = $state('');
+  let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   const filterArmedIdBase = $props.id();
 
   let currentMode = $derived(p.currentMode);
@@ -95,16 +102,6 @@
     isTableMode ? 1 : (filterConfig?.stepHz ?? filterConfig?.segments?.[0]?.stepHz ?? 50)
   );
 
-  function snapToTable(hz: number, table: number[]): number {
-    let closest = table[0];
-    let minDist = Math.abs(hz - table[0]);
-    for (let i = 1; i < table.length; i++) {
-      const dist = Math.abs(hz - table[i]);
-      if (dist < minDist) { minDist = dist; closest = table[i]; }
-    }
-    return closest;
-  }
-
   function tableIndexToHz(idx: number): number {
     const table = filterConfig?.table ?? [];
     return table[Math.max(0, Math.min(table.length - 1, Math.round(idx)))] ?? idx;
@@ -128,7 +125,7 @@
   const filterSettingsShortcut = getShortcutHint('open_filter_settings');
 
   $effect(() => {
-    if (!modalOpen || (!filterWidthLifecycle.busy && filterWidthLifecycle.outcome !== null)) {
+    if (!modalOpen || (!filterWidthFeedback.busy && filterWidthFeedback.outcome !== null)) {
       draftWidths = [...visibleWidths];
     }
   });
@@ -146,42 +143,153 @@
     return formatted.includes('k') ? `${formatted}Hz` : `${formatted} Hz`;
   }
 
-  let lifecycleTarget = $derived(
-    filterWidthLifecycle.busy ? (filterWidthLifecycle.presentation?.target ?? filterWidthLifecycle.target) : null
-  );
-
-  $effect(() => {
-    const lifecycle = filterWidthLifecycle.presentation;
-    if (lifecycle === null) {
-      lastFilterWidthTransitionId = null;
-      filterWidthLiveStatus = '';
-    } else if (lifecycle.transitionId !== lastFilterWidthTransitionId) {
-      // Capture both radio-confirmed state and the exact DTO target once per
-      // immutable transition identity. Retained reads and later canonical
-      // polls cannot rewrite/reannounce this historical transition.
-      const target = formatWidthDisplay(lifecycle.target);
-      const confirmed = formatWidthDisplay(filterWidth);
-      lastFilterWidthTransitionId = lifecycle.transitionId;
-      switch (lifecycle.status) {
-        case 'pending':
-        case 'acknowledged':
-          filterWidthLiveStatus = t('core.filter.width.pendingAnnouncement', { target });
-          break;
-        case 'confirmed':
-          filterWidthLiveStatus = t('core.filter.width.confirmedAnnouncement', { confirmed });
-          break;
-        case 'failed':
-          filterWidthLiveStatus = t('core.filter.width.failedAnnouncement', { target, confirmed });
-          break;
-        case 'timed-out':
-          filterWidthLiveStatus = t('core.filter.width.timedOutAnnouncement', { target, confirmed });
-          break;
-        case 'cancelled':
-          filterWidthLiveStatus = t('core.filter.width.cancelledAnnouncement', { target, confirmed });
-          break;
-      }
+  function formatExactWidthDisplay(hz: number): string {
+    if (!Number.isFinite(hz)) return '--- Hz';
+    if (Number.isInteger(hz) && hz >= 1000 && hz % 100 === 0) {
+      const kilohertz = hz / 1000;
+      return `${Number.isInteger(kilohertz) ? kilohertz : kilohertz.toFixed(1)}kHz`;
     }
+    return `${hz} Hz`;
+  }
+
+  let currentWidthTable = $derived(filterConfig?.table ?? []);
+  const validWidthCatalog = (): boolean => currentWidthTable.length > 0
+    && currentWidthTable.every((value, index) => Number.isFinite(value)
+      && (index === 0 || value > currentWidthTable[index - 1]));
+  function nearestWidthChoice(value: number): number | null {
+    if (!validWidthCatalog() || !Number.isFinite(value)) return null;
+    return currentWidthTable.reduce((nearest, choice) =>
+      Math.abs(choice - value) < Math.abs(nearest - value) ? choice : nearest);
+  }
+  function adjacentWidthChoice(value: number, direction: -1 | 1): number | null {
+    if (!validWidthCatalog() || !Number.isFinite(value)) return null;
+    if (direction > 0) return currentWidthTable.find((choice) => choice > value)
+      ?? currentWidthTable[currentWidthTable.length - 1];
+    for (let index = currentWidthTable.length - 1; index >= 0; index -= 1) {
+      if (currentWidthTable[index] < value) return currentWidthTable[index];
+    }
+    return currentWidthTable[0];
+  }
+  function widthPosition(value: number): number | null {
+    if (!validWidthCatalog() || !Number.isFinite(value)) return null;
+    const first = currentWidthTable[0];
+    const last = currentWidthTable[currentWidthTable.length - 1];
+    if (value < first || value > last) return null;
+    if (currentWidthTable.length === 1) return 0;
+    const upper = currentWidthTable.findIndex((choice) => choice >= value);
+    if (upper <= 0) return 0;
+    const lower = upper - 1;
+    const fraction = (value - currentWidthTable[lower])
+      / (currentWidthTable[upper] - currentWidthTable[lower]);
+    return (lower + fraction) / (currentWidthTable.length - 1);
+  }
+  function widthChoiceAt(position: number): number | null {
+    if (!validWidthCatalog() || !Number.isFinite(position)) return null;
+    const index = Math.round(Math.max(0, Math.min(1, position)) * (currentWidthTable.length - 1));
+    return currentWidthTable[index];
+  }
+
+  const filterWidthProjection: Readonly<HBarValueProjection> = {
+    get contextKey() { return JSON.stringify([currentMode, currentWidthTable]); },
+    positionOf: widthPosition,
+    valueAt: widthChoiceAt,
+  };
+  const filterWidthPolicy: Readonly<ContinuousScalarPolicy> = {
+    name: 'filter-width-catalog',
+    preview: 'confirmed',
+    normalize: (value) => nearestWidthChoice(value),
+    wheel: (current, event) => adjacentWidthChoice(current, event.direction),
+    key: (current, event) => {
+      if (event.key === 'Home') return validWidthCatalog() ? currentWidthTable[0] : null;
+      if (event.key === 'End') return validWidthCatalog()
+        ? currentWidthTable[currentWidthTable.length - 1] : null;
+      if (event.key === 'ArrowRight' || event.key === 'ArrowUp') return adjacentWidthChoice(current, 1);
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') return adjacentWidthChoice(current, -1);
+      return null;
+    },
+    reset: () => validWidthCatalog() ? currentWidthTable[0] : null,
+    dispatch: (source) => source === 'keyboard' || source === 'reset'
+      ? { debounceMs: 50 } : 'immediate',
+    dispatchesCanonical: (source) => source === 'wheel',
+    wheelIdleMs: 300,
+    describeTarget: formatExactWidthDisplay,
+  };
+  function filterWidthInput() {
+    const catalogValid = validWidthCatalog();
+    const min = catalogValid ? currentWidthTable[0] : filterWidthMin;
+    const max = catalogValid ? currentWidthTable[currentWidthTable.length - 1] : filterWidthMax;
+    const confirmed = filterWidthFeedback.confirmed;
+    const tableReadingInRange = !isTableMode || (catalogValid && confirmed !== null
+      && Number.isFinite(confirmed) && confirmed >= min && confirmed <= max);
+    return {
+      evidence: 'command-feedback' as const,
+      feedback: filterWidthFeedback,
+      command: 'set_filter_width',
+      domain: { min, max, step: 1, defaultValue: min, fineStepDivisor: 1 },
+      enabled: filterWidthFeedback.availability === 'available' && tableReadingInRange,
+      request: onFilterWidthChange,
+    };
+  }
+  const filterWidthBinding = createContinuousScalar(filterWidthInput, filterWidthPolicy);
+  const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
+  onDestroy(() => filterWidthBinding.destroy());
+
+  function formatIssuedWidthStatus(snapshot: Readonly<HBarIssuedStatusSnapshot>): string {
+    const feedback = snapshot.view.feedback;
+    const requested = formatExactWidthDisplay(feedback.requestedTarget ?? Number.NaN);
+    const confirmed = formatExactWidthDisplay(feedback.confirmed ?? Number.NaN);
+    let message: string;
+    switch (snapshot.announcement.phase) {
+      case 'submitted':
+      case 'queued':
+      case 'dispatched':
+      case 'awaiting-confirmation':
+        message = t('core.filter.width.pendingAnnouncement', { target: requested });
+        break;
+      case 'confirmed':
+        message = t('core.filter.width.confirmedAnnouncement', { confirmed });
+        break;
+      case 'failed':
+        message = t('core.filter.width.failedAnnouncement', { target: requested, confirmed });
+        break;
+      case 'timed-out':
+        message = t('core.filter.width.timedOutAnnouncement', { target: requested, confirmed });
+        break;
+      case 'cancelled':
+        message = t('core.filter.width.cancelledAnnouncement', { target: requested, confirmed });
+        break;
+      case 'superseded':
+        message = t('core.filter.width.supersededAnnouncement', { target: requested, confirmed });
+        break;
+      default:
+        message = '';
+    }
+    return snapshot.view.error === null ? message
+      : `${message.replace(/[.!?]$/, '')}: ${snapshot.view.error}`;
+  }
+  let filterWidthStatusText = $state<string | null>(null);
+  const filterWidthStatusPresentation: Readonly<HBarIssuedStatusPresentation> = {
+    get text() { return filterWidthStatusText; },
+    format: formatIssuedWidthStatus,
+    accept(text) { filterWidthStatusText = text; },
+  };
+  function consumeReadOnlyWidthStatus(view: Readonly<ContinuousScalarView>): void {
+    if (view.evidence !== 'command-feedback') return;
+    const announcement = view.presentation.politeAnnouncement;
+    if (announcement !== null) {
+      filterWidthStatusPresentation.accept(untrack(() =>
+        filterWidthStatusPresentation.format({ view, announcement })));
+    } else if (view.feedback.transitionId === null) {
+      filterWidthStatusPresentation.accept(null);
+    }
+  }
+  $effect(() => {
+    if (isTableMode) return;
+    const view = filterWidthBinding.view;
+    consumeReadOnlyWidthStatus(view);
   });
+
+  let lifecycleTarget = $derived(filterWidthFeedback.busy ? filterWidthFeedback.target : null);
 
   function openSettings(): void {
     draftWidths = [...visibleWidths];
@@ -216,29 +324,26 @@
       data-filter-width-lifecycle
       role="group"
       aria-label="Filter width"
-      aria-busy={filterWidthLifecycle.busy}
+      aria-busy={filterWidthFeedback.busy}
     >
       <ValueControl
+        {...feedbackIntegratedRange}
+        binding={filterWidthBinding}
         label="WIDTH"
-        value={hzToTableIndex(filterWidth)}
-        min={0}
-        max={(filterConfig?.table?.length ?? 1) - 1}
-        step={1}
         unit="Hz"
         renderer="hbar"
-        optimistic={false}
         accentColor="var(--v2-accent-cyan)"
-        displayFn={(idx) => formatWidthDisplay(tableIndexToHz(idx))}
-        onChange={(idx) => onFilterWidthChange(tableIndexToHz(idx))}
+        displayFn={formatExactWidthDisplay}
+        valueProjection={filterWidthProjection}
+        issuedStatusPresentation={filterWidthStatusPresentation}
         variant="hardware-illuminated"
       />
-      {#if filterWidthLifecycle.busy && lifecycleTarget !== null}
+      {#if filterWidthFeedback.busy && lifecycleTarget !== null}
         <span class="bw-pending-target" data-pending-width-target>
-          PENDING {formatWidthDisplay(lifecycleTarget)}
+          PENDING {formatExactWidthDisplay(lifecycleTarget)}
         </span>
       {/if}
     </div>
-    <span class="sr-only" aria-live="polite" aria-atomic="true" data-filter-width-live>{filterWidthLiveStatus}</span>
 
     {#if hasIfShift}
       <ValueControl
@@ -311,17 +416,19 @@
       data-filter-width-lifecycle
       role="group"
       aria-label="Filter width"
-      aria-busy={filterWidthLifecycle.busy}
+      aria-busy={filterWidthFeedback.busy}
     >
       <span class="bw-label">BW</span>
-      <span class="bw-value" data-confirmed-width>{formatWidthDisplay(filterWidth)}</span>
-      {#if filterWidthLifecycle.busy && lifecycleTarget !== null}
+      <span class="bw-value" data-confirmed-width>{formatExactWidthDisplay(filterWidthFeedback.confirmed ?? Number.NaN)}</span>
+      {#if filterWidthFeedback.busy && lifecycleTarget !== null}
         <span class="bw-pending-target" data-pending-width-target>
-          PENDING {formatWidthDisplay(lifecycleTarget)}
+          PENDING {formatExactWidthDisplay(lifecycleTarget)}
         </span>
       {/if}
     </div>
-    <span class="sr-only" aria-live="polite" aria-atomic="true" data-filter-width-live>{filterWidthLiveStatus}</span>
+    {#if filterWidthStatusText !== null}
+      <span class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-filter-width-live>{filterWidthStatusText}</span>
+    {/if}
 
     {#if hasIfShift}
       <ValueControl

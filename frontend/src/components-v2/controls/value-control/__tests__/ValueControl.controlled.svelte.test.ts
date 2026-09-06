@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import ValueControl from '../ValueControl.svelte';
+import HBarRenderer from '../HBarRenderer.svelte';
 import DiscreteRenderer from '../DiscreteRenderer.svelte';
 import { professionalSkin } from '../skins';
 import {
@@ -172,6 +174,157 @@ function knobCommandBinding(
 }
 
 describe('ValueControl controlled HBar rendering', () => {
+  it.each([
+    ['built-in', undefined],
+    ['selected custom HBar', { name: 'test-hbar', hbar: HBarRenderer }],
+  ] as const)('forwards semantic value projection through the %s route', (_route, skin) => {
+    const request = vi.fn();
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 2100 },
+        ownerKey: 'nonuniform-width',
+        domain: { min: 1800, max: 3000, step: 1, defaultValue: 1800, fineStepDivisor: 1 },
+        enabled: true,
+        request,
+      }),
+      createHBarContinuousScalarPolicy({ preview: 'confirmed', debounceMs: 0 }),
+    );
+    const valueProjection = {
+      contextKey: 'USB:[1800,2100,3000]',
+      positionOf: (value: number) => value === 2100 ? 0.5 : null,
+      valueAt: (position: number) => position < 0.75 ? 2100 : 3000,
+    };
+    const { target } = mountReactive({
+      binding, label: 'Projected width', renderer: 'hbar', skin,
+      valueProjection, displayFn: (value: number) => `${value} Hz`,
+    });
+
+    expect(fill(target)).toContain('--vc-fill-percent: 50%');
+    expect(slider(target).getAttribute('aria-valuenow')).toBe('2100');
+    expect(slider(target).getAttribute('aria-valuetext')).toBe('2100 Hz');
+    binding.destroy();
+  });
+
+  it.each([
+    ['built-in', undefined],
+    ['selected custom HBar', { name: 'status-hbar', hbar: HBarRenderer }],
+  ] as const)('delivers one whole owner-issued status through the %s route', (_route, skin) => {
+    const feedback = new SvelteMap([['value', commandFeedback({
+      confirmed: 2100, target: null, requestedTarget: 2501, phase: 'failed', busy: false,
+      outcome: { phase: 'failed', error: 'radio rejected' }, transitionId: 'width-failed',
+    })]]);
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'command-feedback' as const,
+        command: 'set_filter_width',
+        domain: { min: 1800, max: 3000, step: 1, defaultValue: 1800, fineStepDivisor: 1 },
+        enabled: true,
+        request: vi.fn(),
+        feedback: feedback.get('value')!,
+      }),
+      createHBarContinuousScalarPolicy({ preview: 'confirmed', debounceMs: 0 }),
+    );
+    const retained = $state({ text: null as string | null });
+    let locale = 'en';
+    const format = vi.fn(({ view }) =>
+      `${locale}:${view.feedback.requestedTarget}/${view.feedback.confirmed}:radio rejected`);
+    const accept = vi.fn((text: string | null) => { retained.text = text; });
+    const issuedStatusPresentation = {
+      get text() { return retained.text; }, format, accept,
+    };
+    const { state, target } = mountReactive({
+      binding, label: 'Projected width', renderer: 'hbar', skin,
+      valueProjection: {
+        contextKey: 'USB:[1800,2100,3000]',
+        positionOf: () => 0.5,
+        valueAt: () => 2100,
+      },
+      issuedStatusPresentation,
+    });
+
+    expect(format).toHaveBeenCalledOnce();
+    expect(accept).toHaveBeenCalledExactlyOnceWith('en:2501/2100:radio rejected');
+    expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('en:2501/2100:radio rejected');
+
+    locale = 'ru';
+    state.valueProjection = {
+      contextKey: 'AM:[1800,2200,3000]',
+      positionOf: () => 0.5,
+      valueAt: () => 2200,
+    };
+    feedback.set('value', commandFeedback({
+      confirmed: 2200, target: null, requestedTarget: 2501, phase: 'failed', busy: false,
+      outcome: { phase: 'failed', error: 'radio rejected' }, transitionId: 'width-failed',
+    }));
+    flushSync();
+
+    expect(format).toHaveBeenCalledOnce();
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('en:2501/2100:radio rejected');
+    binding.destroy();
+  });
+
+  it('cancels deferred work and releases capture when projection context changes', () => {
+    vi.useFakeTimers();
+    const request = vi.fn();
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 20 },
+        ownerKey: 'stable-owner',
+        domain: { min: 0, max: 100, step: 10, defaultValue: 0, fineStepDivisor: 10 },
+        enabled: true,
+        request,
+      }),
+      createHBarContinuousScalarPolicy({ preview: 'confirmed', debounceMs: 50 }),
+    );
+    const projection = (contextKey: string) => ({
+      contextKey,
+      positionOf: (value: number) => value / 100,
+      valueAt: (position: number) => position * 100,
+    });
+    const { state, target } = mountReactive({
+      binding, label: 'Contextual', renderer: 'hbar', valueProjection: projection('USB:a'),
+    });
+    const control = slider(target) as HTMLElement & {
+      setPointerCapture: (id: number) => void;
+      hasPointerCapture: (id: number) => boolean;
+      releasePointerCapture: (id: number) => void;
+    };
+    control.setPointerCapture = vi.fn();
+    control.hasPointerCapture = vi.fn(() => true);
+    control.releasePointerCapture = vi.fn();
+    vi.spyOn(target.querySelector('.vc-hbar') as HTMLElement, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 100 } as DOMRect);
+
+    control.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, clientX: 40, pointerId: 7,
+    }));
+    expect(request).toHaveBeenCalledExactlyOnceWith(40);
+    request.mockClear();
+    state.valueProjection = projection('USB:b');
+    flushSync();
+    expect(control.releasePointerCapture).toHaveBeenCalledExactlyOnceWith(7);
+    control.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, clientX: 90, pointerId: 7,
+    }));
+    expect(request).not.toHaveBeenCalled();
+
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    state.valueProjection = projection('AM:b');
+    flushSync();
+    vi.advanceTimersByTime(60);
+    expect(request).not.toHaveBeenCalled();
+    control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(60);
+    expect(request).toHaveBeenCalledExactlyOnceWith(30);
+    binding.destroy();
+    vi.useRealTimers();
+  });
+
   it('renders external command-owner feedback and domain without legacy decoration', () => {
     const pendingBinding = commandBinding(vi.fn());
     const failedBinding = commandBinding(vi.fn(), {
