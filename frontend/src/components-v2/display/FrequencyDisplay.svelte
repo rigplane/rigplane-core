@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { formatFrequency } from './frequency-format';
+  import StandardFrequencyReadout from '../../primitives/frequency/StandardFrequencyReadout.svelte';
+  import { projectFrequencyReadout } from '../../primitives/frequency/frequency-readout';
 
   interface Props {
     freq: number;       // frequency in Hz (e.g. 14235000)
@@ -9,39 +10,7 @@
 
   let { freq, compact = false, active = true }: Props = $props();
 
-  let parts = $derived(formatFrequency(freq));
+  let model = $derived(projectFrequencyReadout({ confirmedHz: freq }));
 </script>
 
-<div class="freq" class:compact class:inactive={!active}>
-  <span class="digits">{parts.mhz}</span><span class="sep">.</span><span
-    class="digits">{parts.khz}</span><span class="sep">.</span><span
-    class="digits">{parts.hz}</span>
-</div>
-
-<style>
-  .freq {
-    display: inline-flex;
-    align-items: baseline;
-    font-family: 'Roboto Mono', monospace;
-    font-weight: 700;
-    font-size: 24px;
-    line-height: 1;
-    letter-spacing: 0.035em;
-    color: var(--v2-accent-cyan-bright);
-    white-space: nowrap;
-    user-select: none;
-  }
-
-  .freq.compact {
-    font-size: 14px;
-  }
-
-  .freq.inactive {
-    color: var(--v2-text-muted);
-  }
-
-  .sep {
-    opacity: 0.5;
-    margin: 0 0.02em;
-  }
-</style>
+<StandardFrequencyReadout {model} presentation="passive" {compact} {active} />
