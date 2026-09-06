@@ -1,30 +1,28 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
+  import type {
+    ContinuousScalarBinding,
+    ContinuousScalarRendererLease,
+    ContinuousScalarView,
+  } from '../../../primitives/scalar/continuous-scalar.svelte';
   import './value-control.css';
   import {
     getCenterPercent,
     getBipolarFill,
     calculateClickValue,
-    handleKeyboardStep,
-    handleWheelStep,
-    debounce,
     formatBipolarValue,
-    clamp,
-    snapToStep,
     valueToPosition,
   } from '../../../primitives/scalar/value-control-core';
+  import {
+    projectScalarRenderPresentation,
+    type LegacyReadingPresentation,
+  } from './scalar-render-presentation';
 
   interface Props {
-    value: number;
-    min: number;
-    max: number;
-    step: number;
-    /** Larger increment for keyboard gestures; step remains the radio value lattice. */
-    keyboardStep?: number;
-    defaultValue?: number;
-    fineStepDivisor?: number;
+    binding: ContinuousScalarBinding;
     label: string;
     displayFn?: (v: number) => string;
+    unknownDisplay?: string;
     fillColor?: string;
     fillGradient?: string[];
     trackColor?: string;
@@ -33,24 +31,17 @@
     showLabel?: boolean;
     compact?: boolean;
     variant?: 'modern' | 'hardware' | 'hardware-illuminated';
-    onChange: (value: number) => void;
-    debounceMs?: number;
-    disabled?: boolean;
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
+    legacy?: LegacyReadingPresentation;
   }
 
   let {
-    value,
-    min,
-    max,
-    step,
-    keyboardStep,
-    defaultValue = 0,
-    fineStepDivisor = 10,
+    binding,
     label,
     displayFn,
+    unknownDisplay,
     fillColor,
     fillGradient,
     trackColor = 'var(--v2-bg-gradient-start)',
@@ -59,188 +50,137 @@
     showLabel = true,
     compact = false,
     variant = 'modern',
-    onChange,
-    debounceMs = 0,
-    disabled = false,
     unit = '',
     shortcutHint = null,
     title = null,
+    legacy,
   }: Props = $props();
 
+  const feedbackDescriptionId = $props.id();
+
   let containerEl: HTMLDivElement | null = $state(null);
-  let isDragging = $state(false);
-  let wheelLocked = $state(false);
-  let wheelUnlockTimer: ReturnType<typeof setTimeout> | null = null;
-  let localValue = $state(untrack(() => value));
+  let activePointer: { id: number; token: number; target: HTMLElement } | null = null;
+  const initialBinding = untrack(() => binding);
+  let attachedBinding = initialBinding;
+  let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
 
-  function markWheelActive() {
-    wheelLocked = true;
-    if (wheelUnlockTimer) clearTimeout(wheelUnlockTimer);
-    wheelUnlockTimer = setTimeout(() => {
-      wheelLocked = false;
-      wheelUnlockTimer = null;
-    }, 300);
-  }
-
-  // Sync from parent value ONLY when idle (no drag, no wheel)
-  let prevValue = untrack(() => value);
   $effect(() => {
-    const v = value;
-    if (v !== prevValue) {
-      prevValue = v;
-      if (!isDragging && !wheelLocked) {
-        localValue = v;
-      }
+    if (binding === attachedBinding) return;
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
     }
+    activePointer = null;
+    lease.dispose();
+    attachedBinding = binding;
+    lease = binding.attachRenderer();
+  });
+  onDestroy(() => {
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
+    lease.dispose();
   });
 
-  // Derived values
-  let centerPercent = $derived(getCenterPercent(min, max));
-  let currentPercent = $derived(valueToPosition(localValue, min, max) * 100);
-  let bipolarFill = $derived(getBipolarFill(localValue, min, max));
+  let view = $state<ContinuousScalarView>(untrack(() => lease.view));
+  let skipViewAssignment = true;
+  $effect(() => {
+    const next = lease.view;
+    if (skipViewAssignment) {
+      skipViewAssignment = false;
+    } else {
+      view = next;
+    }
+  });
+  let renderedValue = $derived(view.displayed);
+  let centerPercent = $derived(view.domainValid
+    ? getCenterPercent(view.domain.min, view.domain.max) : 0);
+  let currentPercent = $derived(view.domainValid && renderedValue !== null
+    ? valueToPosition(renderedValue, view.domain.min, view.domain.max) * 100 : 0);
+  let bipolarFill = $derived(view.domainValid && renderedValue !== null
+    ? getBipolarFill(renderedValue, view.domain.min, view.domain.max)
+    : { fillStart: 0, fillEnd: 0 });
   let effectiveFill = $derived(fillGradient
     ? `linear-gradient(90deg, ${fillGradient.join(', ')})`
     : (fillColor ?? accentColor));
-  let displayValue = $derived(displayFn
-    ? displayFn(localValue)
-    : `${formatBipolarValue(localValue)}${unit ? '\u00a0' + unit : ''}`);
-  
-  // Absolute deviation from center for illuminated variant
-  // 0 at center, 1.0 at either extreme
-  let absDeviationRatio = $derived(Math.abs(localValue - defaultValue) / Math.max(Math.abs(max - defaultValue), Math.abs(min - defaultValue)));
-  
-  // Bipolar wheel: 1 step per tick by default (fine control).
-  // Only scale up for very large ranges (>500 steps) to stay usable.
-  let stepsInRange = $derived(Math.max(1, (max - min) / step));
-  let adaptiveWheelMultiplier = $derived(stepsInRange > 500 ? Math.round(stepsInRange / 240) : 1);
-
-  // Debounced change handler
-  let debouncedOnChange = $derived.by<(...args: unknown[]) => void>(() => {
-    if (debounceMs > 0) {
-      return debounce((v: number) => onChange(v), debounceMs) as (...args: unknown[]) => void;
-    }
-    return ((v: number) => onChange(v)) as (...args: unknown[]) => void;
+  let displayValue = $derived(renderedValue === null
+    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
+    : displayFn ? displayFn(renderedValue)
+      : `${formatBipolarValue(renderedValue)}${unit ? '\u00a0' + unit : ''}`);
+  let absDeviationRatio = $derived.by(() => {
+    if (!view.domainValid || renderedValue === null) return 0;
+    const center = view.domain.defaultValue ?? 0;
+    const extent = Math.max(
+      Math.abs(view.domain.max - center), Math.abs(view.domain.min - center),
+    );
+    return extent > 0 ? Math.abs(renderedValue - center) / extent : 0;
   });
-
-  function emitChange(newValue: number, immediate = false, emitWhenLocalValueChanges = false) {
-    const localValueChanged = newValue !== localValue;
-    if (localValueChanged) {
-      localValue = newValue;
-    }
-    if (newValue !== value || (emitWhenLocalValueChanges && localValueChanged)) {
-      if (immediate) {
-        onChange(newValue);
-      } else {
-        debouncedOnChange(newValue);
-      }
-    }
-  }
+  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
 
   function handlePointerDown(e: PointerEvent) {
-    if (disabled || !containerEl) return;
+    if (!containerEl) return;
+    const token = lease.beginPointer();
+    if (token === null) return;
 
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
+    activePointer = { id: e.pointerId, token, target };
 
-    isDragging = true;
-
-    // Calculate value from click position
     const rect = containerEl.getBoundingClientRect();
-    const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
-    emitChange(newValue, true);
+    const domain = view.domain;
+    const newValue = calculateClickValue(
+      e.clientX, rect.left, rect.width, domain.min, domain.max, domain.step,
+    );
+    lease.pointer(token, newValue);
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!isDragging || disabled || !containerEl) return;
+    if (!activePointer || activePointer.id !== e.pointerId || !containerEl) return;
 
     const rect = containerEl.getBoundingClientRect();
-    const newValue = calculateClickValue(e.clientX, rect.left, rect.width, min, max, step);
-    emitChange(newValue, true);
+    const domain = view.domain;
+    const newValue = calculateClickValue(
+      e.clientX, rect.left, rect.width, domain.min, domain.max, domain.step,
+    );
+    lease.pointer(activePointer.token, newValue);
   }
 
   function handlePointerUp(e: PointerEvent) {
-    if (!isDragging) return;
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease.endPointer(activePointer.token);
+    activePointer = null;
+  }
 
-    const target = e.currentTarget as HTMLElement;
-    target.releasePointerCapture(e.pointerId);
-    isDragging = false;
+  function handlePointerCancel(e: PointerEvent) {
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease.cancelPointer(activePointer.token);
+    activePointer = null;
   }
 
   function handleWheel(e: WheelEvent) {
-    if (disabled) return;
+    if (!view.editable) return;
     e.preventDefault();
-
-    // Use adaptive multiplier for consistent scroll speed across ranges
-    const wheelMultiplier = e.shiftKey ? 1 : adaptiveWheelMultiplier;
-    const effectiveStep = e.shiftKey ? step / fineStepDivisor : step * wheelMultiplier;
-    const direction = e.deltaY > 0 ? -1 : 1;
-    const newValue = clamp(
-      snapToStep(localValue + direction * effectiveStep, effectiveStep, min),
-      min,
-      max,
-    );
-    localValue = newValue;
-    markWheelActive();
-    onChange(newValue);
+    lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (disabled) return;
-
-    const keyboardIncrement = getKeyboardIncrement(e.shiftKey);
-    const newValue = keyboardIncrement === null
-      ? handleKeyboardStep(localValue, e.key, step, fineStepDivisor, min, max, e.shiftKey)
-      : handleBipolarKeyboardStep(localValue, e.key, keyboardIncrement);
-    if (newValue !== null) {
-      e.preventDefault();
-      emitChange(newValue, false, keyboardIncrement !== null);
-    }
+    if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 
-  function getKeyboardIncrement(shiftKey: boolean): number | null {
-    if (keyboardStep === undefined) return null;
-    if (!isLatticeCompatible(keyboardStep)) return isLatticeCompatible(step) ? step : null;
-
-    const increment = shiftKey ? keyboardStep / fineStepDivisor : keyboardStep;
-    return isLatticeCompatible(increment) ? increment : step;
-  }
-
-  function isLatticeCompatible(increment: number): boolean {
-    return Number.isFinite(increment)
-      && increment > 0
-      && Number.isFinite(step)
-      && step > 0
-      && Number.isInteger(increment / step);
-  }
-
-  function handleBipolarKeyboardStep(currentValue: number, key: string, increment: number): number | null {
-    switch (key) {
-      case 'ArrowRight':
-      case 'ArrowUp':
-        return clamp(defaultValue + Math.round((currentValue + increment - defaultValue) / increment) * increment, min, max);
-      case 'ArrowLeft':
-      case 'ArrowDown':
-        return clamp(defaultValue + Math.round((currentValue - increment - defaultValue) / increment) * increment, min, max);
-      case 'Home':
-        return min;
-      case 'End':
-        return max;
-      default:
-        return null;
-    }
-  }
-
-  function handleDoubleClick() {
-    if (disabled) return;
-    emitChange(defaultValue);
-  }
+  function handleDoubleClick() { lease.reset(); }
 </script>
 
 <div
   class="vc-bipolar"
   class:compact
-  class:disabled
+  class:disabled={!view.editable}
   class:hardware={variant === 'hardware'}
   class:hw-illum={variant === 'hardware-illuminated'}
   bind:this={containerEl}
@@ -262,16 +202,19 @@
   <div
     class="vc-track-container"
     role="slider"
-    tabindex={disabled ? -1 : 0}
+    tabindex={view.editable ? 0 : -1}
     aria-label={label}
-    aria-valuemin={min}
-    aria-valuemax={max}
-    aria-valuenow={value}
-    aria-disabled={disabled}
+    aria-valuemin={view.domainValid ? view.domain.min : undefined}
+    aria-valuemax={view.domainValid ? view.domain.max : undefined}
+    aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
+    aria-disabled={!view.editable}
+    aria-busy={renderPresentation.attributes['aria-busy']}
+    aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
+    data-command-phase={renderPresentation.attributes['data-command-phase'] ?? undefined}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
-    onpointercancel={handlePointerUp}
+    onpointercancel={handlePointerCancel}
     onwheel={handleWheel}
     onkeydown={handleKeyDown}
     ondblclick={handleDoubleClick}
@@ -304,6 +247,19 @@
       <div class="vc-thumb" aria-hidden="true"></div>
     {/if}
   </div>
+
+  {#if renderPresentation.description !== null}
+    <span id={feedbackDescriptionId} class="sr-only">{renderPresentation.description}</span>
+  {/if}
+  {#if renderPresentation.status !== null}
+    <span
+      class="sr-only"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-control-feedback-status
+    >{renderPresentation.status}{renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}</span>
+  {/if}
 
   <div class="vc-axis" aria-hidden="true">
     <span class="axis-negative">-</span>
@@ -341,6 +297,11 @@
   .vc-value {
     color: var(--vc-text-value, var(--v2-text-bright));
     font-family: 'Roboto Mono', monospace;
+  }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 
   .disabled {

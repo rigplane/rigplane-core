@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ControlFeedback } from '$lib/runtime/adapters/panel-adapters';
 import {
+  createBipolarContinuousScalarPolicy,
   createContinuousScalar,
   createHBarContinuousScalarPolicy,
   nativeRangeContinuousScalarPolicy,
@@ -215,6 +216,81 @@ describe('continuous scalar contract', () => {
 });
 
 describe('continuous scalar source policies', () => {
+  it.each([0, -50, Number.NaN, 2.5, Number.POSITIVE_INFINITY])(
+    'adapts invalid Bipolar keyboard hint %s without weakening the radio domain',
+    (keyboardStep) => {
+      const policy = createBipolarContinuousScalarPolicy({ debounceMs: 0 });
+      const { scalar, request } = readingSetup(policy, {
+        domain: {
+          min: -100,
+          max: 100,
+          step: 5,
+          defaultValue: 0,
+          fineStepDivisor: 10,
+          keyboardStep,
+        },
+        reading: { status: 'known', value: 0 },
+      });
+
+      expect(scalar.view).toMatchObject({
+        domainValid: true,
+        editable: true,
+        domain: { min: -100, max: 100, step: 5, keyboardStep: 5 },
+      });
+      scalar.attachRenderer().key({ key: 'ArrowRight', fine: false });
+      expect(request).toHaveBeenCalledExactlyOnceWith(5);
+    },
+  );
+
+  it('dispatches a center-anchored draft return but suppresses an untouched boundary', () => {
+    vi.useFakeTimers();
+    const policy = createBipolarContinuousScalarPolicy({ debounceMs: 50 });
+    const { scalar, request } = readingSetup(policy, {
+      domain: {
+        min: -100,
+        max: 100,
+        step: 5,
+        defaultValue: 0,
+        fineStepDivisor: 10,
+        keyboardStep: 50,
+      },
+      reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+
+    lease.key({ key: 'ArrowRight', fine: false });
+    vi.advanceTimersByTime(50);
+    lease.key({ key: 'ArrowLeft', fine: false });
+    vi.advanceTimersByTime(50);
+    expect(request.mock.calls).toEqual([[50], [0]]);
+
+    const atBoundary = readingSetup(policy, {
+      domain: {
+        min: -100,
+        max: 100,
+        step: 5,
+        defaultValue: 0,
+        fineStepDivisor: 10,
+        keyboardStep: 50,
+      },
+      reading: { status: 'known', value: 100 },
+    });
+    expect(atBoundary.scalar.attachRenderer().key({ key: 'ArrowRight', fine: false })).toBe(true);
+    vi.advanceTimersByTime(50);
+    expect(atBoundary.request).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('keeps Bipolar wheel scaling and fine stepping explicit', () => {
+    const policy = createBipolarContinuousScalarPolicy({ debounceMs: 0 });
+    const compact = { min: -100, max: 100, step: 5, defaultValue: 0, fineStepDivisor: 10 };
+    const large = { min: -9_999, max: 9_999, step: 1, defaultValue: 0, fineStepDivisor: 10 };
+
+    expect(policy.wheel(0, { direction: 1, fine: false }, compact)).toBe(5);
+    expect(policy.wheel(0, { direction: 1, fine: false }, large)).toBe(44);
+    expect(policy.wheel(0, { direction: 1, fine: true }, compact)).toBe(0.5);
+  });
+
   it('makes native input immediate and tokenless without wheel or key reinterpretation', () => {
     const { scalar, request } = readingSetup(nativeRangeContinuousScalarPolicy, {
       reading: { status: 'known', value: 2_450 },
@@ -509,6 +585,23 @@ describe('continuous scalar deferred work', () => {
     vi.advanceTimersByTime(1);
     expect(scalar.view).toMatchObject({ interaction: 'idle', draft: null, displayed: 2_500 });
     expect(request.mock.calls).toEqual([[2_410], [2_420]]);
+    vi.useRealTimers();
+  });
+
+  it('reconciles a rejected Bipolar wheel draft to current canonical state at expiry', () => {
+    vi.useFakeTimers();
+    const policy = createBipolarContinuousScalarPolicy({ debounceMs: 50 });
+    const { scalar, request } = readingSetup(policy, {
+      domain: { min: -100, max: 100, step: 5, defaultValue: 0, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 0 },
+    });
+    const lease = scalar.attachRenderer();
+
+    lease.wheel({ direction: 1, fine: false });
+    expect(request).toHaveBeenCalledExactlyOnceWith(5);
+    expect(scalar.view).toMatchObject({ interaction: 'wheel', draft: 5, displayed: 5 });
+    vi.advanceTimersByTime(300);
+    expect(scalar.view).toMatchObject({ interaction: 'idle', draft: null, displayed: 0 });
     vi.useRealTimers();
   });
 });

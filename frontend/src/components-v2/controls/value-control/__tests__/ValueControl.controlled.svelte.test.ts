@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import ValueControl from '../ValueControl.svelte';
 import {
+  createBipolarContinuousScalarPolicy,
   createContinuousScalar,
   createHBarContinuousScalarPolicy,
   type CommandScalarFeedback,
@@ -114,6 +115,20 @@ function readingBinding(value: number, request: (value: number) => void): Contin
       request,
     }),
     createHBarContinuousScalarPolicy({ preview: 'optimistic', debounceMs: 0 }),
+  );
+}
+
+function bipolarBinding(value: number, request: (value: number) => void): ContinuousScalarBinding {
+  return createContinuousScalar(
+    () => ({
+      evidence: 'reading',
+      reading: { status: 'known', value },
+      ownerKey: `external-bipolar-${value}`,
+      domain: { min: -100, max: 100, step: 5, defaultValue: 0, fineStepDivisor: 10, keyboardStep: 50 },
+      enabled: true,
+      request,
+    }),
+    createBipolarContinuousScalarPolicy({ debounceMs: 0 }),
   );
 }
 
@@ -462,5 +477,154 @@ describe('ValueControl controlled HBar rendering', () => {
 
     expect(slider(target).getAttribute('aria-disabled')).toBe('true');
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('ValueControl controlled Bipolar rendering', () => {
+  it('cancels a Bipolar pointer draft and makes its retained move inert', () => {
+    const onChange = vi.fn();
+    const { target } = mountReactive({
+      value: 0,
+      min: -100,
+      max: 100,
+      step: 5,
+      label: 'Pointer',
+      renderer: 'bipolar',
+      debounceMs: 0,
+      onChange,
+    });
+    const control = slider(target) as HTMLElement & {
+      setPointerCapture?: (pointerId: number) => void;
+    };
+    control.setPointerCapture = vi.fn();
+    vi.spyOn(target.querySelector('.vc-bipolar') as HTMLElement, 'getBoundingClientRect')
+      .mockReturnValue({ left: 0, width: 100 } as DOMRect);
+
+    control.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, clientX: 75, pointerId: 1,
+    }));
+    control.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+    control.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true, clientX: 100, pointerId: 1,
+    }));
+    flushSync();
+
+    expect(onChange.mock.calls).toEqual([[50]]);
+    expect(visibleValue(target)).toBe('0');
+  });
+
+  it('reconciles a rejected raw wheel draft when the shared wheel lease expires', () => {
+    vi.useFakeTimers();
+    const onChange = vi.fn();
+    const { target } = mountReactive({
+      value: 0,
+      min: -100,
+      max: 100,
+      step: 5,
+      label: 'Rejected',
+      renderer: 'bipolar',
+      debounceMs: 0,
+      onChange,
+    });
+    const control = slider(target);
+
+    control.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true, cancelable: true }));
+    flushSync();
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(5);
+    expect(visibleValue(target)).toBe('+5');
+
+    vi.advanceTimersByTime(300);
+    flushSync();
+    expect(visibleValue(target)).toBe('0');
+    expect(control.getAttribute('aria-valuenow')).toBe('0');
+    vi.useRealTimers();
+  });
+
+  it('replaces HBar with Bipolar on the same external owner and revokes retained callbacks', () => {
+    const request = vi.fn();
+    const binding = bipolarBinding(0, request);
+    const { state, target } = mountReactive({ binding, label: 'Replaceable', renderer: 'hbar' });
+    const retainedHBar = slider(target);
+
+    state.renderer = 'bipolar';
+    flushSync();
+    expect(target.querySelector('.vc-bipolar')).not.toBeNull();
+    expect(visibleValue(target)).toBe('0');
+
+    retainedHBar.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).not.toHaveBeenCalled();
+    slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).toHaveBeenCalledExactlyOnceWith(50);
+
+    const retainedLease = binding.attachRenderer();
+    expect(retainedLease.beginPointer()).not.toBeNull();
+    retainedLease.dispose();
+    binding.destroy();
+  });
+
+  it('preserves command feedback and announcement identity across Bipolar appearance replacement', () => {
+    const binding = commandBinding(vi.fn(), {
+      phase: 'failed',
+      busy: false,
+      outcome: { phase: 'failed', error: 'radio rejected' },
+      transitionId: 'failed-bipolar',
+    });
+    const { state, target } = mountReactive({ binding, label: 'Feedback', renderer: 'hbar' });
+    const first = slider(target);
+    expect(first.getAttribute('data-command-phase')).toBe('failed');
+    expect(target.querySelector('[data-control-feedback-status]')?.textContent)
+      .toBe('Failed: 30 Hz: radio rejected');
+
+    state.renderer = 'bipolar';
+    flushSync();
+    const replacement = slider(target);
+    expect(replacement.getAttribute('data-command-phase')).toBe('failed');
+    expect(replacement.getAttribute('aria-busy')).toBe('false');
+    const descriptionId = replacement.getAttribute('aria-describedby');
+    expect(target.querySelector(`#${descriptionId}`)?.textContent).toBe('30 Hz');
+    expect(target.querySelector('[data-control-feedback-status]')).toBeNull();
+    binding.destroy();
+  });
+
+  it.each([
+    [Number.POSITIVE_INFINITY, '+INF'],
+    [Number.NEGATIVE_INFINITY, '-INF'],
+    [Number.NaN, 'NAN'],
+  ] as const)('keeps exact legacy formatting for nonfinite Bipolar input %s', (value, expected) => {
+    const { target } = mountReactive({
+      value,
+      min: -100,
+      max: 100,
+      step: 5,
+      label: 'Nonfinite',
+      renderer: 'bipolar',
+      onChange: vi.fn(),
+      displayFn: (candidate: number) => Number.isNaN(candidate) ? 'NAN'
+        : candidate === Number.POSITIVE_INFINITY ? '+INF' : '-INF',
+    });
+
+    expect(visibleValue(target)).toBe(expected);
+    expect(slider(target).getAttribute('aria-valuenow')).toBeNull();
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('distinguishes a known invalid-domain Bipolar reading from an unknown reading', () => {
+    const { state, target } = mountReactive({
+      value: 25,
+      min: -100,
+      max: Number.NaN,
+      step: 5,
+      label: 'Domain',
+      renderer: 'bipolar',
+      onChange: vi.fn(),
+      displayFn: (candidate: number) => Number.isNaN(candidate) ? 'UNKNOWN' : `KNOWN:${candidate}`,
+    });
+
+    expect(visibleValue(target)).toBe('KNOWN:25');
+    expect(slider(target).getAttribute('aria-valuenow')).toBeNull();
+    state.value = Number.NaN;
+    flushSync();
+    expect(visibleValue(target)).toBe('UNKNOWN');
+    expect(slider(target).getAttribute('aria-disabled')).toBe('true');
   });
 });

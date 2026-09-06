@@ -455,11 +455,13 @@ describe('PBT sliders visibility', () => {
   it('renders 3 sliders total when hasPbt=true', () => {
     const t = mountPanel({ hasPbt: true, pbtInner: 0, pbtOuter: 0 });
     expect(t.querySelectorAll('[role="slider"]').length).toBe(3);
+    expect(t.querySelectorAll('.vc-bipolar').length).toBe(3);
   });
 
   it('renders 1 slider total when hasPbt=false', () => {
     const t = mountPanel();
     expect(t.querySelectorAll('[role="slider"]').length).toBe(1);
+    expect(t.querySelectorAll('.vc-bipolar').length).toBe(1);
   });
 });
 

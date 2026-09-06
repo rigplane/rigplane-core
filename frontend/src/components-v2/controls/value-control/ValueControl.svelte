@@ -7,6 +7,7 @@
   import type { LegacyReadingPresentation } from './scalar-render-presentation';
   import type { Skin } from './skin';
   import {
+    createBipolarContinuousScalarPolicy,
     createContinuousScalar,
     createHBarContinuousScalarPolicy,
     type ContinuousScalarBinding,
@@ -56,9 +57,9 @@
     disabled?: boolean;
   }
 
-  interface BoundHBarProps {
+  interface BoundContinuousProps {
     binding: ContinuousScalarBinding;
-    renderer: 'hbar';
+    renderer: 'hbar' | 'bipolar';
     value?: undefined;
     min?: undefined;
     max?: undefined;
@@ -74,7 +75,7 @@
     skin?: undefined;
   }
 
-  type Props = PresentationProps & (RawProps | BoundHBarProps);
+  type Props = PresentationProps & (RawProps | BoundContinuousProps);
 
   let {
     binding: externalBinding,
@@ -122,17 +123,26 @@
     preview: optimistic ? 'optimistic' : 'confirmed',
     debounceMs,
   }));
+  let bipolarPolicy = $derived(createBipolarContinuousScalarPolicy({ debounceMs }));
+  let scalarPolicy = $derived(renderer === 'bipolar' ? bipolarPolicy : hbarPolicy);
   const adapterPolicy: ContinuousScalarPolicy = {
-    get name() { return hbarPolicy.name; },
-    get preview() { return hbarPolicy.preview; },
-    normalize(candidate, domain) { return hbarPolicy.normalize(candidate, domain); },
-    wheel(current, event, domain) { return hbarPolicy.wheel(current, event, domain); },
-    key(current, event, domain) { return hbarPolicy.key(current, event, domain); },
-    reset(domain) { return hbarPolicy.reset(domain); },
-    dispatch(source) { return hbarPolicy.dispatch(source); },
-    dispatchesCanonical(source) { return hbarPolicy.dispatchesCanonical(source); },
-    get wheelIdleMs() { return hbarPolicy.wheelIdleMs; },
-    describeTarget(candidate) { return hbarPolicy.describeTarget(candidate); },
+    get name() { return scalarPolicy.name; },
+    get preview() { return scalarPolicy.preview; },
+    resolveKeyboardStep(domain) {
+      return scalarPolicy.resolveKeyboardStep === undefined
+        ? domain.keyboardStep
+        : scalarPolicy.resolveKeyboardStep(domain);
+    },
+    normalize(candidate, domain) { return scalarPolicy.normalize(candidate, domain); },
+    wheel(current, event, domain) { return scalarPolicy.wheel(current, event, domain); },
+    key(current, event, domain) { return scalarPolicy.key(current, event, domain); },
+    reset(domain) { return scalarPolicy.reset(domain); },
+    dispatch(source) { return scalarPolicy.dispatch(source); },
+    dispatchesCanonical(source, context, domain) {
+      return scalarPolicy.dispatchesCanonical(source, context, domain);
+    },
+    get wheelIdleMs() { return scalarPolicy.wheelIdleMs; },
+    describeTarget(candidate) { return scalarPolicy.describeTarget(candidate); },
   };
 
   function createRawBinding(): ContinuousScalarBinding {
@@ -143,7 +153,7 @@
           min,
           max,
           step,
-          defaultValue: defaultValue ?? null,
+          defaultValue: defaultValue ?? (renderer === 'bipolar' ? 0 : null),
           fineStepDivisor,
           keyboardStep,
         },
@@ -163,7 +173,7 @@
   let ownedBinding: ContinuousScalarBinding | null = initialExternalBinding === undefined
     ? createRawBinding()
     : null;
-  let hbarBinding = $state(initialExternalBinding ?? ownedBinding!);
+  let scalarBinding = $state(initialExternalBinding ?? ownedBinding!);
 
   $effect(() => {
     if (externalBinding === attachedExternalBinding) return;
@@ -171,10 +181,10 @@
     attachedExternalBinding = externalBinding;
     if (externalBinding === undefined) {
       ownedBinding = createRawBinding();
-      hbarBinding = ownedBinding;
+      scalarBinding = ownedBinding;
     } else {
       ownedBinding = null;
-      hbarBinding = externalBinding;
+      scalarBinding = externalBinding;
     }
     if (displacedOwnedBinding !== null) {
       queueMicrotask(() => displacedOwnedBinding.destroy());
@@ -240,13 +250,18 @@
   {/if}
 {:else if renderer === 'hbar'}
   <HBarRenderer
-    binding={hbarBinding} {label} {displayFn} {unknownDisplay}
+    binding={scalarBinding} {label} {displayFn} {unknownDisplay}
     {fillColor} {fillGradient} {trackColor}
     {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
     {legacy}
   />
 {:else if renderer === 'bipolar'}
-  <BipolarRenderer {...commonProps} />
+  <BipolarRenderer
+    binding={scalarBinding} {label} {displayFn} {unknownDisplay}
+    {fillColor} {fillGradient} {trackColor}
+    {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
+    {legacy}
+  />
 {:else if renderer === 'knob'}
   <KnobRenderer {...knobProps} />
 {:else if renderer === 'discrete'}
