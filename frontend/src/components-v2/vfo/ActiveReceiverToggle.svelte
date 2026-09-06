@@ -238,6 +238,7 @@
     grid-column: 1 / -1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--vfo-ops-gap, 4px);
+    width: auto;
     min-height: 0;
     padding: 0;
     border: 0;
