@@ -34,6 +34,7 @@ const h = vi.hoisted(() => {
     onTxAudioDied: () => () => {},
       get state() { return h.state; },
       get caps() { return h.caps; },
+      controlSession: Object.freeze({ state: 'disconnected' as const, epoch: -1 }),
       connectionStatus: 'disconnected',
       radioPowerOn: null,
       connection: { status: 'disconnected', radioPowerOn: null },
