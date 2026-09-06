@@ -131,4 +131,38 @@ describe('finite renderer leases', () => {
     expect(lease.view).toBeUndefined();
     expect(readField).not.toHaveBeenCalled();
   });
+
+  it('does not project a field choice before null or stale context admission', () => {
+    let context: FiniteRendererContext | null = null;
+    const readField = vi.fn(() => field('A'));
+    const seat = createChoiceRendererSeat(() => ({
+      context, get field() { return readField(); }, label: 'Mode',
+      options: [{ value: 'A', label: 'A' }], invoke: vi.fn(),
+    }));
+    const nullLease = seat.attachRenderer();
+    expect(nullLease.view).toBeUndefined();
+    nullLease.invoke('A');
+    expect(readField).not.toHaveBeenCalled();
+
+    context = createFiniteRendererContext();
+    const stale = seat.attachRenderer();
+    readField.mockClear();
+    context = createFiniteRendererContext();
+    context = createFiniteRendererContext();
+    expect(stale.view).toBeUndefined();
+    stale.invoke('A');
+    expect(readField).not.toHaveBeenCalled();
+  });
+
+  it('does not read an absolute choice before context admission', () => {
+    const readReading = vi.fn(() => ({ status: 'unknown' as const }));
+    const seat = createAbsoluteChoiceRendererSeat(() => ({
+      context: null, get reading() { return readReading(); }, available: true, label: 'Band',
+      options: [{ value: 20, label: '20 m' }], invoke: vi.fn(),
+    }));
+    const lease = seat.attachRenderer();
+    expect(lease.view).toBeUndefined();
+    lease.invoke(20);
+    expect(readReading).not.toHaveBeenCalled();
+  });
 });

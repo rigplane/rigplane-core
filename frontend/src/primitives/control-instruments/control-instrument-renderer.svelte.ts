@@ -225,7 +225,6 @@ export function createToggleRendererSeat<Feedback = never>(
 }
 
 function createChoiceLease<T, Feedback, Input extends RendererInput & {
-  readonly reading: InstrumentReading<T>;
   readonly options: readonly ControlOption<T>[];
   readonly defaultValue?: T;
   readonly requested?: RequestedTarget<T>;
@@ -233,13 +232,14 @@ function createChoiceLease<T, Feedback, Input extends RendererInput & {
 }>(
   guard: LeaseGuard<Input>,
   behavior: ReturnType<typeof bindChoiceInstrument<T, Feedback>>,
+  readingOf: (input: Input) => InstrumentReading<T>,
 ): ChoiceRendererLease<T, Feedback> {
   return {
     get active() { return guard.current() !== undefined; },
     get view() {
       const input = guard.current();
       return input === undefined ? undefined : {
-        ...labelView(input), available: behavior.available, reading: input.reading,
+        ...labelView(input), available: behavior.available, reading: readingOf(input),
         selected: behavior.selected, options: input.options,
         ...(input.defaultValue === undefined ? {} : { defaultValue: input.defaultValue }),
         ...(input.requested === undefined ? {} : { requested: input.requested }),
@@ -266,11 +266,9 @@ export function createChoiceRendererSeat<T, Feedback = never>(
       feedback: input.feedback, invoke: input.invoke,
     };
   });
-  const read = () => {
-    const input = readCurrent();
-    return { ...input, reading: input.field?.reading ?? { status: 'unknown' as const } };
-  };
-  return createSeat(read, guard => createChoiceLease(guard, behavior));
+  return createSeat(readCurrent, guard => createChoiceLease(
+    guard, behavior, input => input.field?.reading ?? { status: 'unknown' },
+  ));
 }
 
 export function createAbsoluteChoiceRendererSeat<T, Feedback = never>(
@@ -285,5 +283,5 @@ export function createAbsoluteChoiceRendererSeat<T, Feedback = never>(
       feedback: input.feedback, invoke: input.invoke,
     };
   });
-  return createSeat(readCurrent, guard => createChoiceLease(guard, behavior));
+  return createSeat(readCurrent, guard => createChoiceLease(guard, behavior, input => input.reading));
 }
