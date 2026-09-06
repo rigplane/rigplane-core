@@ -1,15 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ComponentKitDeclaration,
+  FiniteControlAppearance,
   FrequencyRenderer,
   ScalarAppearance,
 } from '../../../component-kit-api/src/index';
 
 const renderer = (() => ({})) as unknown as FrequencyRenderer;
 const scalarRenderer = (() => ({})) as unknown as NonNullable<ScalarAppearance['knob']>;
+const actionRenderer = (() => ({})) as unknown as FiniteControlAppearance['action'];
+const toggleRenderer = (() => ({})) as unknown as FiniteControlAppearance['toggle'];
+const choiceRenderer = (() => ({})) as unknown as FiniteControlAppearance['choice'];
 
 function appearance(name: string): ScalarAppearance {
   return { name, knob: scalarRenderer };
+}
+
+function finiteAppearance(): FiniteControlAppearance {
+  return { action: actionRenderer, toggle: toggleRenderer, choice: choiceRenderer };
 }
 
 function kit(
@@ -55,19 +63,31 @@ describe('component-kit activation transaction', () => {
 
     expect(activation.getSelectedScalarAppearance()).toBeUndefined();
     expect(activation.getSelectedFrequencyReadout()).toBeUndefined();
+    expect(activation.getSelectedFiniteControlAppearance()).toBeUndefined();
   });
 
-  it('loads every kit, then commits selected scalar and frequency renderers', async () => {
+  it('loads every kit, then commits selected scalar, frequency, and finite renderers', async () => {
     const activation = await subject();
-    const declaration = kit('field-kit');
+    const finite = finiteAppearance();
+    const declaration = kit('field-kit', { finiteControlAppearances: { 'field-kit-finite': finite } });
 
     await activation.activateComponentKits(config([declaration], {
       scalarAppearance: 'field-kit-scalar',
       frequencyReadout: 'field-kit-frequency',
+      finiteControlAppearance: 'field-kit-finite',
     }));
 
     expect(activation.getSelectedScalarAppearance()).toEqual(appearance('field-kit scalar'));
     expect(activation.getSelectedFrequencyReadout()).toBe(renderer);
+    expect(activation.getSelectedFiniteControlAppearance()).toEqual(finite);
+    expect(Object.isFrozen(activation.getSelectedFiniteControlAppearance())).toBe(true);
+  });
+
+  it('keeps scalar/frequency-only API 1 declarations compatible', async () => {
+    const activation = await subject();
+    await activation.activateComponentKits(config([kit('legacy-api-one')]));
+
+    expect(activation.getSelectedFiniteControlAppearance()).toBeUndefined();
   });
 
   it('copies declarations and selection before the single commit', async () => {
@@ -103,6 +123,11 @@ describe('component-kit activation transaction', () => {
     ['scalar with a non-component member', { ...kit('bad-scalar-component'), scalarAppearances: { bad: { name: 'Bad', knob: 'nope' } } }],
     ['non-record frequency declarations', { ...kit('bad-frequencies'), frequencyReadouts: [] }],
     ['non-component frequency declaration', { ...kit('bad-frequency'), frequencyReadouts: { bad: 'nope' } }],
+    ['non-record finite declarations', { ...kit('bad-finite-map'), finiteControlAppearances: [] }],
+    ['finite appearance missing a member', { ...kit('bad-finite-missing'), finiteControlAppearances: { bad: { action: actionRenderer, toggle: toggleRenderer } } }],
+    ['finite appearance with an extra member', { ...kit('bad-finite-extra'), finiteControlAppearances: { bad: { ...finiteAppearance(), extra: true } } }],
+    ['finite appearance with a non-component member', { ...kit('bad-finite-component'), finiteControlAppearances: { bad: { ...finiteAppearance(), choice: 'nope' } } }],
+    ['empty finite appearance id', { ...kit('bad-finite-id'), finiteControlAppearances: { '': finiteAppearance() } }],
   ])('rejects %s without committing', async (_name, declaration) => {
     const activation = await subject();
 
@@ -147,6 +172,13 @@ describe('component-kit activation transaction', () => {
         target: selectedAppearance,
       };
     }],
+    ['finite appearance', () => {
+      const selectedAppearance = finiteAppearance();
+      return {
+        configured: config([kit('exact-finite-kit', { finiteControlAppearances: { exact: selectedAppearance } })]),
+        target: selectedAppearance,
+      };
+    }],
   ] as const)('rejects symbol and non-enumerable unknown properties on %s', async (_name, makeCase) => {
     const activation = await subject();
     for (const kind of ['symbol', 'non-enumerable'] as const) {
@@ -187,6 +219,11 @@ describe('component-kit activation transaction', () => {
       Reflect.defineProperty(selectedAppearance, 'name', { value: 'Descriptor', enumerable: false });
       return config([kit('descriptor-scalar-kit', { scalarAppearances: { descriptor: selectedAppearance } })]);
     }],
+    ['finite appearance', () => {
+      const selectedAppearance = finiteAppearance();
+      Reflect.defineProperty(selectedAppearance, 'choice', { value: choiceRenderer, enumerable: false });
+      return config([kit('descriptor-finite-kit', { finiteControlAppearances: { descriptor: selectedAppearance } })]);
+    }],
   ] as const)('rejects a non-enumerable allowed property on %s', async (_name, makeConfig) => {
     const activation = await subject();
 
@@ -205,6 +242,18 @@ describe('component-kit activation transaction', () => {
     expect(getter).not.toHaveBeenCalled();
   });
 
+  it('rejects a finite appearance accessor without invoking it', async () => {
+    const activation = await subject();
+    const finite = finiteAppearance();
+    const getter = vi.fn(() => choiceRenderer);
+    Reflect.defineProperty(finite, 'choice', { get: getter, enumerable: true });
+
+    await expect(activation.activateComponentKits(config([
+      kit('accessor-finite-kit', { finiteControlAppearances: { accessor: finite } }),
+    ]))).rejects.toThrow(/enumerable data property/i);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
   it('allows additional exports on the loader module namespace', async () => {
     const activation = await subject();
 
@@ -218,12 +267,16 @@ describe('component-kit activation transaction', () => {
     ['scalarAppearances', 'non-enumerable'],
     ['frequencyReadouts', 'symbol'],
     ['frequencyReadouts', 'non-enumerable'],
+    ['finiteControlAppearances', 'symbol'],
+    ['finiteControlAppearances', 'non-enumerable'],
   ] as const)('rejects a %s map with a %s entry', async (mapName, kind) => {
     const activation = await subject();
     const declarations: Record<PropertyKey, unknown> = {};
     const key = kind === 'symbol' ? Symbol('hidden') : 'hidden';
     Reflect.defineProperty(declarations, key, {
-      value: mapName === 'scalarAppearances' ? appearance('Hidden') : renderer,
+      value: mapName === 'scalarAppearances'
+        ? appearance('Hidden')
+        : mapName === 'frequencyReadouts' ? renderer : finiteAppearance(),
       enumerable: kind === 'symbol',
     });
 
@@ -247,6 +300,7 @@ describe('component-kit activation transaction', () => {
     ['duplicate kit id', [kit('duplicate-kit'), kit('duplicate-kit')]],
     ['duplicate scalar id', [kit('scalar-a', { scalarAppearances: { shared: appearance('A') } }), kit('scalar-b', { scalarAppearances: { shared: appearance('B') } })]],
     ['duplicate frequency id', [kit('frequency-a', { frequencyReadouts: { shared: renderer } }), kit('frequency-b', { frequencyReadouts: { shared: renderer } })]],
+    ['duplicate finite id', [kit('finite-a', { finiteControlAppearances: { shared: finiteAppearance() } }), kit('finite-b', { finiteControlAppearances: { shared: finiteAppearance() } })]],
   ])('rejects %s across the complete loaded set', async (_name, declarations) => {
     const activation = await subject();
 
@@ -267,6 +321,7 @@ describe('component-kit activation transaction', () => {
   it.each([
     ['scalarAppearance', 'missing-scalar'],
     ['frequencyReadout', 'missing-frequency'],
+    ['finiteControlAppearance', 'missing-finite'],
   ])('rejects an unresolved %s selection', async (property, value) => {
     const activation = await subject();
 

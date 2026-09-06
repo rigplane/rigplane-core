@@ -1,5 +1,6 @@
 import {
   COMPONENT_KIT_API_VERSION,
+  type FiniteControlAppearance,
   type FrequencyRenderer,
   type ScalarAppearance,
 } from '../../component-kit-api/src/index';
@@ -8,6 +9,7 @@ import { skins as builtInScalarAppearances } from '../components-v2/controls/val
 export interface ComponentKitSelection {
   readonly scalarAppearance?: string;
   readonly frequencyReadout?: string;
+  readonly finiteControlAppearance?: string;
 }
 
 export interface ComponentKitHostConfig {
@@ -18,21 +20,27 @@ export interface ComponentKitHostConfig {
 interface ActiveSnapshot {
   readonly scalarAppearances: ReadonlyMap<string, ScalarAppearance>;
   readonly frequencyReadouts: ReadonlyMap<string, FrequencyRenderer>;
+  readonly finiteControlAppearances: ReadonlyMap<string, FiniteControlAppearance>;
   readonly selectedScalarAppearance?: string;
   readonly selectedFrequencyReadout?: string;
+  readonly selectedFiniteControlAppearance?: string;
 }
 
 const EMPTY_SNAPSHOT: ActiveSnapshot = Object.freeze({
   scalarAppearances: new Map(),
   frequencyReadouts: new Map(),
+  finiteControlAppearances: new Map(),
 });
 const CONFIG_KEYS = ['kits', 'selection'] as const;
-const SELECTION_KEYS = ['scalarAppearance', 'frequencyReadout'] as const;
+const SELECTION_KEYS = [
+  'scalarAppearance', 'frequencyReadout', 'finiteControlAppearance',
+] as const;
 const KIT_KEYS = [
-  'apiVersion', 'id', 'scalarAppearances', 'frequencyReadouts',
+  'apiVersion', 'id', 'scalarAppearances', 'frequencyReadouts', 'finiteControlAppearances',
   'designLanguages', 'layouts', 'instrumentGroups', 'presentations',
 ] as const;
 const APPEARANCE_KEYS = ['name', 'knob', 'hbar', 'bipolar', 'discrete'] as const;
+const FINITE_APPEARANCE_KEYS = ['action', 'toggle', 'choice'] as const;
 const UNSUPPORTED_SECTIONS = [
   'designLanguages', 'layouts', 'instrumentGroups', 'presentations',
 ] as const;
@@ -94,6 +102,21 @@ function copyAppearance(value: unknown, id: string): ScalarAppearance {
   return Object.freeze({ ...value }) as unknown as ScalarAppearance;
 }
 
+function copyFiniteAppearance(value: unknown, id: string): FiniteControlAppearance {
+  if (!isPlainRecord(value)) {
+    throw new ComponentKitActivationError(`Finite control appearance "${id}" must be an object.`);
+  }
+  ownDataEntries(value, `Finite control appearance "${id}"`, FINITE_APPEARANCE_KEYS);
+  for (const slot of FINITE_APPEARANCE_KEYS) {
+    if (typeof value[slot] !== 'function') {
+      throw new ComponentKitActivationError(
+        `Finite control appearance "${id}" member "${slot}" must be a component.`,
+      );
+    }
+  }
+  return Object.freeze({ ...value }) as unknown as FiniteControlAppearance;
+}
+
 function readSelection(value: unknown): ComponentKitSelection {
   if (value === undefined) return {};
   if (!isPlainRecord(value)) {
@@ -117,6 +140,8 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
   }
   const frequencyReadouts = new Map<string, FrequencyRenderer>();
   const frequencyOwners = new Map<string, string>();
+  const finiteControlAppearances = new Map<string, FiniteControlAppearance>();
+  const finiteAppearanceOwners = new Map<string, string>();
   const kitIds = new Set<string>();
 
   for (const value of declarations) {
@@ -174,6 +199,30 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
         frequencyOwners.set(readoutId, `component kit "${id}"`);
       }
     }
+
+    if (value.finiteControlAppearances !== undefined) {
+      if (!isPlainRecord(value.finiteControlAppearances)) {
+        throw new ComponentKitActivationError(
+          `Component kit "${id}" finiteControlAppearances must be a record.`,
+        );
+      }
+      for (const [appearanceId, appearance] of ownDataEntries(
+        value.finiteControlAppearances,
+        `Component kit "${id}" finiteControlAppearances`,
+      )) {
+        requireId(appearanceId, `Component kit "${id}" finite control appearance`);
+        if (finiteAppearanceOwners.has(appearanceId)) {
+          throw new ComponentKitActivationError(
+            `Duplicate finite control appearance "${appearanceId}" conflicts with ${finiteAppearanceOwners.get(appearanceId)}.`,
+          );
+        }
+        finiteControlAppearances.set(
+          appearanceId,
+          copyFiniteAppearance(appearance, appearanceId),
+        );
+        finiteAppearanceOwners.set(appearanceId, `component kit "${id}"`);
+      }
+    }
   }
 
   const selection = readSelection(selectionValue);
@@ -183,11 +232,19 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
   if (selection.frequencyReadout !== undefined && !frequencyReadouts.has(selection.frequencyReadout)) {
     throw new ComponentKitActivationError(`Selected frequency readout "${selection.frequencyReadout}" is not registered.`);
   }
+  if (selection.finiteControlAppearance !== undefined
+    && !finiteControlAppearances.has(selection.finiteControlAppearance)) {
+    throw new ComponentKitActivationError(
+      `Selected finite control appearance "${selection.finiteControlAppearance}" is not registered.`,
+    );
+  }
   return Object.freeze({
     scalarAppearances,
     frequencyReadouts,
+    finiteControlAppearances,
     selectedScalarAppearance: selection.scalarAppearance,
     selectedFrequencyReadout: selection.frequencyReadout,
+    selectedFiniteControlAppearance: selection.finiteControlAppearance,
   });
 }
 
@@ -228,4 +285,10 @@ export function getSelectedFrequencyReadout(): FrequencyRenderer | undefined {
   return snapshot.selectedFrequencyReadout === undefined
     ? undefined
     : snapshot.frequencyReadouts.get(snapshot.selectedFrequencyReadout);
+}
+
+export function getSelectedFiniteControlAppearance(): FiniteControlAppearance | undefined {
+  return snapshot.selectedFiniteControlAppearance === undefined
+    ? undefined
+    : snapshot.finiteControlAppearances.get(snapshot.selectedFiniteControlAppearance);
 }
