@@ -94,6 +94,38 @@ describe('projectScalarRenderPresentation', () => {
     });
   });
 
+  it('supplements command target description without replacing owner status or error truth', () => {
+    const view = commandView();
+
+    expect(projectScalarRenderPresentation(view, undefined, {
+      description: 'Canonical 20 Hz; awaiting device confirmation',
+      valueText: '20 Hz; awaiting confirmation of 30 Hz',
+    })).toEqual({
+      source: 'command-owner',
+      attributes: view.presentation?.attributes,
+      description: '30 Hz. Canonical 20 Hz; awaiting device confirmation',
+      currentStatus: 'Awaiting confirmation: 30 Hz',
+      status: 'Awaiting confirmation: 30 Hz',
+      error: 'radio rejected',
+    });
+  });
+
+  it('projects only non-empty descriptive metadata for an undecorated reading', () => {
+    expect(projectScalarRenderPresentation(readingView(), undefined, {
+      description: 'Canonical receiver gain',
+      valueText: '20 percent',
+    })).toMatchObject({
+      source: 'none',
+      description: 'Canonical receiver gain',
+      status: null,
+      error: null,
+    });
+    expect(projectScalarRenderPresentation(readingView(), undefined, {
+      description: null,
+      valueText: null,
+    })).toEqual(projectScalarRenderPresentation(readingView()));
+  });
+
   it('preserves arbitrary legacy reading decoration verbatim', () => {
     const legacy: LegacyReadingPresentation = {
       phase: 'caller-authored-phase',

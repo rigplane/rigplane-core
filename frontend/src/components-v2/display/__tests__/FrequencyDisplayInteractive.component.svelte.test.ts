@@ -12,9 +12,11 @@ vi.mock('../../../component-kits/activation', () => ({
 }));
 
 import FrequencyDisplayInteractive from '../../../primitives/frequency/FrequencyDisplayInteractive.svelte';
+import FrequencyRendererSeat from '../../../primitives/frequency/FrequencyRendererSeat.svelte';
 import AlternateFrequencyReadoutHarness, {
   clearRetainedInteractions, retainedInteractions,
 } from '../../../primitives/frequency/__tests__/AlternateFrequencyReadoutHarness.svelte';
+import { createFrequencyInstrumentBinding } from '../../../primitives/frequency/frequency-instrument.svelte';
 import {
   createFrequencyInteraction,
   createFrequencyInteractionLease,
@@ -146,6 +148,101 @@ function interactionOwner(options: { disabled?: boolean; onFreqChange?: (hz: num
 }
 
 describe('frequency renderer lifetime', () => {
+  it('retains one binding while opaque authority and renderer instances are replaced', async () => {
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+    const a1 = {};
+    const b2 = {};
+    const a3 = {};
+    const state = writable<{ context: object | null; confirmedHz: number | null }>({
+      context: a1,
+      confirmedHz: 14_250_000,
+    });
+    const live = fromStore(state);
+    const onFreqChange = vi.fn();
+    let binding!: ReturnType<typeof createFrequencyInstrumentBinding>;
+    roots.push($effect.root(() => {
+      binding = createFrequencyInstrumentBinding({
+        get confirmedHz() { return live.current.confirmedHz; },
+        get pendingDisplayHz() { return 14_260_000; },
+        pendingAnnouncement: 'Pending',
+        disabled: false,
+        get context() { return live.current.context; },
+        receiver: 'main',
+        minFreq: 0,
+        maxFreq: 999_000_000,
+        onFreqChange,
+      });
+    }));
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    components.push(mount(FrequencyRendererSeat, {
+      target,
+      props: {
+        binding,
+        presentation: 'interactive',
+        compact: true,
+        active: false,
+        receiver: 'main',
+        vfoFreqHook: false,
+      },
+    }));
+    flushSync();
+
+    expect(target.querySelector('[data-alternate-frequency-readout]')).toMatchObject({
+      dataset: {
+        source: 'pending',
+        presentation: 'interactive',
+        compact: 'true',
+        active: 'false',
+        receiver: 'main',
+        vfoFreqHook: 'false',
+      },
+    });
+    const digit = binding.model.digits.find((candidate) => candidate.multiplier === 1_000)!;
+    const first = retainedInteractions()[0];
+    first.handleDigitClick(digit, new MouseEvent('click'));
+
+    state.set({ context: b2, confirmedHz: 14_250_000 });
+    state.set({ context: a3, confirmedHz: 14_250_000 });
+    const staleWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    first.handleWheel(digit, staleWheel);
+    expect(staleWheel.defaultPrevented).toBe(false);
+    expect(first.inert).toBe(true);
+    expect(onFreqChange).not.toHaveBeenCalled();
+
+    flushSync();
+    const second = retainedInteractions().at(-1)!;
+    expect(second).not.toBe(first);
+    expect(second.selectedDigitIndex).toBeNull();
+    second.handleDigitClick(digit, new MouseEvent('click'));
+    second.handleKeyDown(new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true }));
+    expect(onFreqChange).toHaveBeenCalledExactlyOnceWith(14_251_000);
+
+    selectedFrequency.current = undefined;
+    state.set({ context: {}, confirmedHz: 14_250_000 });
+    flushSync();
+    expect(target.querySelector('[data-alternate-frequency-readout]')).toBeNull();
+    expect(target.querySelector('.freq')).not.toBeNull();
+    expect(second.inert).toBe(true);
+
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+    state.set({ context: null, confirmedHz: 14_250_000 });
+    flushSync();
+    expect(target.querySelector('[data-alternate-frequency-readout]')).not.toBeNull();
+    const selectedButInert = retainedInteractions().at(-1)!;
+    const nullWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    selectedButInert.handleDigitClick(digit, new MouseEvent('click'));
+    selectedButInert.handleWheel(digit, nullWheel);
+    expect(nullWheel.defaultPrevented).toBe(false);
+    expect(selectedButInert.inert).toBe(true);
+    expect(onFreqChange).toHaveBeenCalledTimes(1);
+
+    const component = components.pop()!;
+    unmount(component);
+    await Promise.resolve();
+    expect(selectedButInert.inert).toBe(true);
+  });
+
   it('revokes the actual external renderer across replacement, context A-B-A, and unmount', async () => {
     selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
     const context = writable('A');

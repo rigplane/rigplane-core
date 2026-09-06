@@ -11,7 +11,10 @@ import type {
   ContinuousScalarView,
 } from '../../../primitives/scalar/continuous-scalar.svelte';
 import type { PoliteControlAnnouncement } from '../../../primitives/control-feedback/control-feedback-presentation';
-import type { LegacyReadingPresentation } from './scalar-render-presentation';
+import type {
+  LegacyReadingPresentation,
+  ScalarAccessibilityPresentation,
+} from './scalar-render-presentation';
 
 /** Binding and presentation inputs shared by every appearance renderer. */
 export interface SkinRendererProps {
@@ -30,6 +33,7 @@ export interface SkinRendererProps {
   unit?: string;
   shortcutHint?: string | null;
   title?: string | null;
+  accessibility?: ScalarAccessibilityPresentation;
   legacy?: LegacyReadingPresentation;
 }
 

@@ -16,6 +16,7 @@
   import {
     projectScalarRenderPresentation,
     type LegacyReadingPresentation,
+    type ScalarAccessibilityPresentation,
   } from './scalar-render-presentation';
 
   interface Props {
@@ -34,6 +35,7 @@
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
+    accessibility?: ScalarAccessibilityPresentation;
     legacy?: LegacyReadingPresentation;
   }
 
@@ -53,6 +55,7 @@
     unit = '',
     shortcutHint = null,
     title = null,
+    accessibility,
     legacy,
   }: Props = $props();
 
@@ -115,7 +118,7 @@
     );
     return extent > 0 ? Math.abs(renderedValue - center) / extent : 0;
   });
-  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
+  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy, accessibility));
 
   function handlePointerDown(e: PointerEvent) {
     if (!containerEl) return;
@@ -207,6 +210,7 @@
     aria-valuemin={view.domainValid ? view.domain.min : undefined}
     aria-valuemax={view.domainValid ? view.domain.max : undefined}
     aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
+    aria-valuetext={accessibility?.valueText?.trim() ? accessibility.valueText : undefined}
     aria-disabled={!view.editable}
     aria-busy={renderPresentation.attributes['aria-busy']}
     aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}

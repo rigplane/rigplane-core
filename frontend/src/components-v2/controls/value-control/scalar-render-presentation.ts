@@ -9,6 +9,11 @@ export interface LegacyReadingPresentation {
   readonly status: string | null;
 }
 
+export type ScalarAccessibilityPresentation = Readonly<{
+  description?: string | null;
+  valueText?: string | null;
+}>;
+
 export interface ScalarRenderPresentation {
   readonly source: 'command-owner' | 'legacy-reading' | 'none';
   readonly attributes: Readonly<{
@@ -33,15 +38,32 @@ const NONE: Readonly<ScalarRenderPresentation> = Object.freeze({
   error: null,
 });
 
+function supplementDescription(
+  existing: string | null,
+  supplemental: string | null,
+): string | null {
+  if (supplemental === null) return existing;
+  return existing === null || existing.length === 0
+    ? supplemental
+    : `${existing}. ${supplemental}`;
+}
+
 export function projectScalarRenderPresentation(
   view: Readonly<ContinuousScalarView>,
   legacy?: Readonly<LegacyReadingPresentation>,
+  accessibility?: ScalarAccessibilityPresentation,
 ): Readonly<ScalarRenderPresentation> {
+  const supplementalDescription = accessibility?.description?.trim()
+    ? accessibility.description
+    : null;
   if (view.evidence === 'command-feedback') {
     return Object.freeze({
       source: 'command-owner',
       attributes: view.presentation.attributes,
-      description: view.presentation.targetDescription,
+      description: supplementDescription(
+        view.presentation.targetDescription,
+        supplementalDescription,
+      ),
       currentStatus: view.presentation.currentStatus,
       status: view.announcement,
       error: view.error,
@@ -52,14 +74,18 @@ export function projectScalarRenderPresentation(
     && legacy.busy === undefined
     && legacy.description === null
     && legacy.status === null
-  )) return NONE;
+  )) {
+    return supplementalDescription === null
+      ? NONE
+      : Object.freeze({ ...NONE, description: supplementalDescription });
+  }
   return Object.freeze({
     source: 'legacy-reading',
     attributes: Object.freeze({
       'data-command-phase': legacy.phase,
       'aria-busy': legacy.busy,
     }),
-    description: legacy.description,
+    description: supplementDescription(legacy.description, supplementalDescription),
     currentStatus: null,
     status: legacy.status,
     error: null,
