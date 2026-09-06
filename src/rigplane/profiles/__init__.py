@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Never, NotRequired, Required, TypedDict
 
+from rigplane.commands._codec import bcd_encode_value, filter_hz_to_index
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
+from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamily,
@@ -538,6 +540,40 @@ class RadioProfile:
             if rule is not None:
                 return rule
         return None
+
+    def encode_filter_width(
+        self, width_hz: int, mode: str | None, *, data_mode: int = 0
+    ) -> bytes:
+        """Encode a width using the resolved segmented CI-V filter rule."""
+        rule = self.resolve_filter_rule(mode, data_mode=data_mode)
+
+        min_hz = self.filter_width_min
+        max_hz = self.filter_width_max
+        if rule is not None:
+            if rule.fixed:
+                raise CommandError(
+                    f"set_filter_width is unsupported for fixed-width mode {mode}"
+                )
+            if rule.min_hz is not None:
+                min_hz = rule.min_hz
+            if rule.max_hz is not None:
+                max_hz = rule.max_hz
+        if not min_hz <= width_hz <= max_hz:
+            raise CommandError(
+                f"set_filter_width value must be {min_hz}-{max_hz} Hz "
+                f"for {mode}, got {width_hz}"
+            )
+
+        if rule is None or not rule.segments:
+            raise CommandError(
+                f"set_filter_width has no filter-width mapping for mode {mode}"
+            )
+        try:
+            payload_value = filter_hz_to_index(width_hz, segments=rule.segments)
+        except ValueError as exc:
+            raise CommandError(str(exc)) from exc
+
+        return bcd_encode_value(payload_value, byte_count=1)
 
 
 # ── TOML-driven profile registry ──────────────────────────────────
