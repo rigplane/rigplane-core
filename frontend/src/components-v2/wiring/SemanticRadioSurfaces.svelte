@@ -15,6 +15,7 @@
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { presentationResources, runtime } from '$lib/runtime';
+  import * as componentKitActivation from '../../component-kits/activation';
   import { ScopeFrameHost, type ScopeFramePresentation } from '$lib/runtime/scope-frame-host';
   import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay } from '$lib/runtime/adapters/scope-passband-display';
   import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
@@ -46,7 +47,11 @@
   import FilterSurface from '../../semantic/FilterSurface.svelte';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { MeterContinuitySession } from '../../primitives/meters/meter-ballistics.svelte';
-  import type { RadioViewModel } from '../../semantic/radio-view-model';
+  import {
+    createFiniteRendererContext,
+    type FiniteRendererContext,
+  } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
+  import type { RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField, type RfFrontEndToggleField,
   } from '../../semantic/RfFrontEndSurface.svelte';
@@ -483,6 +488,73 @@
       toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
     ),
   );
+
+  type ScopeFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+    activeSlots: readonly string[];
+  }>;
+  const slotIdentity = (slot: VfoSlot): string => {
+    if (slot.kind === 'slotted') return `slotted:${slot.id}`;
+    if (slot.kind === 'relative') return `relative:${slot.role}`;
+    return slot.kind;
+  };
+  function scopeFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): ScopeFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    if (model?.scopeControls === undefined) return null;
+    const receivers = [...new Set(model.vfos.map(vfo => vfo.receiver))];
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+      activeSlots: Object.freeze(receivers.map((receiver) => {
+        const active = model.vfos.filter(vfo => vfo.receiver === receiver && vfo.isActiveSlot);
+        return active.length === 1
+          ? `${receiver}:${slotIdentity(active[0]!.slot)}` : `${receiver}:unknown`;
+      })),
+    });
+  }
+  const sameScopeFiniteAuthority = (
+    left: ScopeFiniteAuthority | null | undefined,
+    right: ScopeFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+        && left.activeSlots.length === right.activeSlots.length
+        && left.activeSlots.every((slot, index) => slot === right.activeSlots[index])
+  );
+  const readSelectedFiniteAppearance = 'getSelectedFiniteControlAppearance' in componentKitActivation
+    ? componentKitActivation.getSelectedFiniteControlAppearance : undefined;
+  const selectedFiniteAppearance = readSelectedFiniteAppearance?.();
+  let finiteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
+  const unsubscribeScopeFiniteAuthority = selectedFiniteAppearance === undefined ? undefined
+    : runtime.subscribeControlAuthority((publication) => {
+      const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
+      if (sameScopeFiniteAuthority(lastScopeFiniteAuthority, next)) return;
+      lastScopeFiniteAuthority = next;
+      finiteRendererContext = next === null ? null : createFiniteRendererContext();
+    });
+  onDestroy(() => unsubscribeScopeFiniteAuthority?.());
+  let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : { finiteAppearance: selectedFiniteAppearance, rendererContext: finiteRendererContext });
+
   let managedScope = $derived(displayFrameSource === 'hardware' && regions && regionContent !== undefined);
   let scopeDemanded = $state(true);
   let scopePresentation = $state.raw<ScopeFramePresentation | null>(null);
@@ -1475,6 +1547,7 @@
   {#snippet scopeControlsSurface()}
     {#if view?.scopeControls}
       <ScopeControlsSurface
+        {...scopeFiniteRendererSelection}
         {view}
         onToggleChange={(field, next) => SCOPE_TOGGLE_INTENT[field](next)}
         onChoiceChange={(field, value) => SCOPE_CHOICE_INTENT[field](value)}
