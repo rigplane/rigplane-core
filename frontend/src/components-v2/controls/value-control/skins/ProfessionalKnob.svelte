@@ -1,56 +1,142 @@
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
   import '../value-control.css';
-  import { valueToPosition, calculateArcPath, calculateIndicatorPosition, generateTickPositions, handleKeyboardStep, debounce, clamp, snapToStep } from '../../../../primitives/scalar/value-control-core';
+  import type {
+    ContinuousScalarRendererLease,
+    ContinuousScalarView,
+  } from '../../../../primitives/scalar/continuous-scalar.svelte';
+  import {
+    valueToPosition, calculateArcPath, calculateIndicatorPosition,
+    generateTickPositions, clamp, snapToStep,
+  } from '../../../../primitives/scalar/value-control-core';
+  import { projectScalarRenderPresentation } from '../scalar-render-presentation';
   import type { KnobSkinRendererProps } from '../skin';
 
-  let { value, min, max, step, defaultValue, fineStepDivisor = 10, label, displayFn,
+  let { binding, label, displayFn, unknownDisplay,
     accentColor = '#00e5ff', showValue = true, showLabel = true, compact = false,
-    arcAngle = 270, tickCount = 0, tickLabels = [], onChange, debounceMs = 0,
-    disabled = false, unit = '', shortcutHint = null, title = null,
+    arcAngle = 270, tickCount = 0, tickLabels = [],
+    unit = '', shortcutHint = null, title = null, legacy,
   }: KnobSkinRendererProps = $props();
 
-  let isDragging = $state(false), dragStartY = $state(0), dragStartValue = $state(0);
+  const componentId = $props.id();
+  const feedbackDescriptionId = componentId + '-feedback';
+  const uid = componentId;
+  let activePointer: {
+    id: number; token: number; target: HTMLElement; startY: number; startValue: number;
+  } | null = null;
+  const initialBinding = untrack(() => binding);
+  let attachedBinding = initialBinding;
+  let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
+
+  $effect(() => {
+    if (binding === attachedBinding) return;
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
+    lease.dispose();
+    attachedBinding = binding;
+    lease = binding.attachRenderer();
+  });
+  onDestroy(() => {
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
+    lease.dispose();
+  });
+
+  let view = $state<ContinuousScalarView>(untrack(() => lease.view));
+  let skipViewAssignment = true;
+  $effect(() => {
+    const next = lease.view;
+    if (skipViewAssignment) skipViewAssignment = false;
+    else view = next;
+  });
+  let renderedValue = $derived(view.displayed);
+  let geometryMin = $derived(view.domainValid ? view.domain.min : 0);
+  let geometryMax = $derived(view.domainValid ? view.domain.max : 1);
+  let geometryValue = $derived(
+    view.domainValid && renderedValue !== null ? renderedValue : geometryMin,
+  );
   let size = $derived(compact ? 52 : 68), cx = $derived(size / 2), cy = $derived(size / 2);
   let radius = $derived((size - 14) / 2), tw = $derived(compact ? 4 : 5);
-  let position = $derived(valueToPosition(value, min, max));
+  let position = $derived(view.domainValid && renderedValue !== null
+    ? valueToPosition(renderedValue, view.domain.min, view.domain.max) : 0);
   let sa = $derived(-arcAngle / 2), ea = $derived(arcAngle / 2);
   let trackPath = $derived(calculateArcPath(cx, cy, radius, sa, ea));
   let fillPath = $derived(calculateArcPath(cx, cy, radius, sa, sa + position * arcAngle));
-  let indEnd = $derived(calculateIndicatorPosition(cx, cy, radius - tw - 2, value, min, max, arcAngle));
+  let indEnd = $derived(calculateIndicatorPosition(
+    cx, cy, radius - tw - 2, geometryValue, geometryMin, geometryMax, arcAngle,
+  ));
   let ticks = $derived(tickCount > 0 ? generateTickPositions(cx, cy, radius + 2, radius + 6, tickCount, arcAngle) : []);
-  let uid = `pro-${Math.random().toString(36).slice(2)}`;
-  let displayVal = $derived(displayFn ? displayFn(value) : `${value}${unit || ''}`);
-  let dbc = $derived.by<(v: number) => void>(() => debounceMs > 0 ? debounce(onChange, debounceMs) : onChange);
-
-  function emit(v: number, now = false) { if (v !== value) { now ? onChange(v) : dbc(v); } }
+  let displayVal = $derived(renderedValue === null
+    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
+    : displayFn ? displayFn(renderedValue) : String(renderedValue) + (unit || ''));
+  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
 
   function onDown(e: PointerEvent) {
-    if (disabled) return; e.preventDefault();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    isDragging = true; dragStartY = e.clientY; dragStartValue = value;
+    const token = lease.beginPointer();
+    if (token === null || view.canonical === null) return;
+    e.preventDefault();
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    activePointer = {
+      id: e.pointerId, token, target, startY: e.clientY, startValue: view.canonical,
+    };
   }
   function onMove(e: PointerEvent) {
-    if (!isDragging || disabled) return;
-    const dy = dragStartY - e.clientY, s = e.shiftKey ? 12 : 0.5, ef = e.shiftKey ? step / fineStepDivisor : step;
-    emit(clamp(snapToStep(dragStartValue + Math.round(dy / s) * ef, ef, min), min, max), true);
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    const domain = view.domain;
+    const dy = activePointer.startY - e.clientY;
+    const sensitivity = e.shiftKey ? 12 : 0.5;
+    const quantum = e.shiftKey ? domain.step / domain.fineStepDivisor : domain.step;
+    lease.pointer(activePointer.token, clamp(snapToStep(
+      activePointer.startValue + Math.round(dy / sensitivity) * quantum,
+      quantum, domain.min,
+    ), domain.min, domain.max));
   }
-  function onUp(e: PointerEvent) { if (!isDragging) return; (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); isDragging = false; }
+  function onUp(e: PointerEvent) {
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease.endPointer(activePointer.token);
+    activePointer = null;
+  }
+  function onCancel(e: PointerEvent) {
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease.cancelPointer(activePointer.token);
+    activePointer = null;
+  }
   function onWheel(e: WheelEvent) {
-    if (disabled) return; e.preventDefault();
-    const ef = e.shiftKey ? step / fineStepDivisor : step * 4;
-    emit(clamp(snapToStep(value + (e.deltaY > 0 ? -1 : 1) * ef, ef, min), min, max), true);
+    if (!view.editable) return;
+    e.preventDefault();
+    lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
   }
-  function onKey(e: KeyboardEvent) { if (disabled) return; const nv = handleKeyboardStep(value, e.key, step, fineStepDivisor, min, max, e.shiftKey); if (nv !== null) { e.preventDefault(); emit(nv); } }
-  function onDbl() { if (!disabled) emit(defaultValue ?? min); }
+  function onKey(e: KeyboardEvent) {
+    if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
+  }
+  function onDbl() { lease.reset(); }
 </script>
 
-<div class="pro-knob" class:compact class:disabled
+<div class="pro-knob" class:compact class:disabled={!view.editable}
   data-shortcut-hint={shortcutHint ?? undefined} title={title ?? shortcutHint ?? undefined}
   style="--pro-accent:{accentColor};--pro-size:{size}px;">
   {#if showLabel}<span class="pro-label">{label}</span>{/if}
-  <div class="pro-ctr" role="slider" tabindex={disabled ? -1 : 0}
-    aria-label={label} aria-valuemin={min} aria-valuemax={max} aria-valuenow={value} aria-disabled={disabled}
-    onpointerdown={onDown} onpointermove={onMove} onpointerup={onUp} onpointercancel={onUp}
+  <div class="pro-ctr" role="slider" tabindex={view.editable ? 0 : -1}
+    aria-label={label}
+    aria-valuemin={view.domainValid ? view.domain.min : undefined}
+    aria-valuemax={view.domainValid ? view.domain.max : undefined}
+    aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
+    aria-disabled={!view.editable}
+    aria-busy={renderPresentation.attributes['aria-busy']}
+    aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
+    data-command-phase={renderPresentation.attributes['data-command-phase'] ?? undefined}
+    onpointerdown={onDown} onpointermove={onMove} onpointerup={onUp} onpointercancel={onCancel}
     onwheel={onWheel} onkeydown={onKey} ondblclick={onDbl}>
     <svg width={size} height={size} viewBox="0 0 {size} {size}" class="pro-svg">
       <defs>
@@ -68,6 +154,13 @@
     </svg>
     {#if showValue}<div class="pro-val">{displayVal}</div>{/if}
   </div>
+  {#if renderPresentation.description !== null}
+    <span id={feedbackDescriptionId} class="sr-only">{renderPresentation.description}</span>
+  {/if}
+  {#if renderPresentation.status !== null}
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+      data-control-feedback-status>{renderPresentation.status}{renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}</span>
+  {/if}
   {#if tickLabels.length > 0}<div class="pro-ticks">{#each tickLabels as tl}<span class="pro-tick">{tl}</span>{/each}</div>{/if}
 </div>
 
@@ -76,6 +169,7 @@
   .pro-label { color: var(--pro-accent, #00e5ff); font-size: 10px; text-align: center; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.85; }
   .compact .pro-label { font-size: 9px; }
   .disabled { opacity: 0.4; pointer-events: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .pro-ctr { position: relative; width: var(--pro-size); height: var(--pro-size); cursor: grab; outline: none; touch-action: none; }
   .pro-ctr:active { cursor: grabbing; }
   .pro-ctr:focus-visible { outline: 2px solid var(--pro-accent, #00e5ff); outline-offset: 4px; border-radius: 50%; }

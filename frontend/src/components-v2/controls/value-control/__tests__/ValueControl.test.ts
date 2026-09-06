@@ -2,11 +2,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import ValueControl from '../ValueControl.svelte';
+import HBarRenderer from '../HBarRenderer.svelte';
+import BipolarRenderer from '../BipolarRenderer.svelte';
+import DiscreteRenderer from '../DiscreteRenderer.svelte';
+import ProfessionalKnob from '../skins/ProfessionalKnob.svelte';
+import type { Skin } from '../skin';
 import {
   createBipolarContinuousScalarPolicy,
   createContinuousScalar,
   createDiscreteContinuousScalarPolicy,
   createHBarContinuousScalarPolicy,
+  createKnobContinuousScalarPolicy,
 } from '../../../../primitives/scalar/continuous-scalar.svelte';
 
 let components: ReturnType<typeof mount>[] = [];
@@ -113,6 +119,28 @@ describe('ValueControl wrapper', () => {
     binding.destroy();
   });
 
+  it('renders a caller-owned Knob binding synchronously without raw bounds', () => {
+    const binding = createContinuousScalar(
+      () => ({
+        evidence: 'reading' as const,
+        reading: { status: 'known' as const, value: 40 },
+        ownerKey: 'direct-knob',
+        domain: { min: 20, max: 60, step: 5, defaultValue: null, fineStepDivisor: 5 },
+        enabled: true,
+        request: vi.fn(),
+      }),
+      createKnobContinuousScalarPolicy({ debounceMs: 0 }),
+    );
+
+    const target = mountControl({ binding, label: 'Direct knob', renderer: 'knob' });
+
+    expect(target.querySelector('.vc-knob-value')?.textContent).toBe('40');
+    expect(getSlider(target).getAttribute('aria-valuemin')).toBe('20');
+    expect(getSlider(target).getAttribute('aria-valuemax')).toBe('60');
+    expect(getSlider(target).getAttribute('aria-valuenow')).toBe('40');
+    binding.destroy();
+  });
+
   it('renders HBarRenderer when renderer is hbar', () => {
     const target = mountControl({
       value: 50,
@@ -150,6 +178,34 @@ describe('ValueControl wrapper', () => {
       onChange: vi.fn(),
     });
     expect(target.querySelector('.vc-knob')).toBeTruthy();
+  });
+
+  it.each([
+    ['hbar', '.vc-bipolar'],
+    ['bipolar', '.vc-hbar'],
+    ['discrete', '.vc-discrete'],
+    ['knob', '.pro-knob'],
+  ] as const)('uses the typed skin map for %s', (renderer, selector) => {
+    const skin: Skin = {
+      name: 'complete-test-skin',
+      hbar: BipolarRenderer,
+      bipolar: HBarRenderer,
+      discrete: DiscreteRenderer,
+      knob: ProfessionalKnob,
+    };
+    const target = mountControl({
+      value: 50,
+      min: 0,
+      max: 100,
+      step: 10,
+      label: 'Complete skin',
+      renderer,
+      skin,
+      onChange: vi.fn(),
+    });
+
+    expect(target.querySelector(selector)).toBeTruthy();
+    expect(getSlider(target).getAttribute('aria-valuenow')).toBe('50');
   });
 });
 

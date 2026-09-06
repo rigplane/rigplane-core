@@ -4,8 +4,7 @@
   import { DotButton, FillButton, HardwareButton, HardwarePlainButton, StatusIndicator } from '$lib/Button';
   import { PRESET_MAPPINGS, type RoleMapping } from '$lib/Button/roleMapping';
   import { SegmentedControl } from '$lib/SegmentedControl';
-  import { ValueControl } from './value-control';
-  import ProfessionalKnob from './value-control/skins/ProfessionalKnob.svelte';
+  import { ValueControl, professionalSkin } from './value-control';
   import ValueControlLab from './ValueControlLab.svelte';
 
   const indicatorStyles = [
@@ -1353,24 +1352,30 @@
       gallery instead. It is not the same component as the <code>knob</code> renderer above.
     </p>
     <div class="vc-knob-row">
-      <ProfessionalKnob
+      <ValueControl
         label="RF Gain"
         value={professionalKnobValue}
         min={0} max={255} step={1}
+        renderer="knob"
+        skin={professionalSkin}
         accentColor="var(--v2-accent-green)"
         onChange={(v) => { professionalKnobValue = v; }}
       />
-      <ProfessionalKnob
+      <ValueControl
         label="Squelch"
         value={professionalSquelchValue}
         min={0} max={255} step={1}
+        renderer="knob"
+        skin={professionalSkin}
         accentColor="var(--v2-accent-cyan)"
         onChange={(v) => { professionalSquelchValue = v; }}
       />
-      <ProfessionalKnob
+      <ValueControl
         label="CW Pitch"
         value={professionalCwPitchValue}
         min={300} max={900} step={1}
+        renderer="knob"
+        skin={professionalSkin}
         unit="Hz"
         accentColor="var(--v2-accent-yellow)"
         onChange={(v) => { professionalCwPitchValue = v; }}

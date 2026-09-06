@@ -5,6 +5,7 @@ import {
   createContinuousScalar,
   createDiscreteContinuousScalarPolicy,
   createHBarContinuousScalarPolicy,
+  createKnobContinuousScalarPolicy,
   nativeRangeContinuousScalarPolicy,
   type CommandScalarFeedback,
   type ContinuousScalarInput,
@@ -264,6 +265,85 @@ describe('continuous scalar source policies', () => {
 
     scalar.attachRenderer().wheel({ direction: 1, fine: false });
     expect(request).toHaveBeenCalledExactlyOnceWith(10);
+  });
+
+  it('keeps Knob input anchored to confirmed value and ignores keyboardStep', () => {
+    const policy = createKnobContinuousScalarPolicy({ debounceMs: 0 });
+    const { scalar, request } = readingSetup(policy, {
+      domain: {
+        min: 0, max: 100, step: 10, defaultValue: null,
+        fineStepDivisor: 10, keyboardStep: Number.POSITIVE_INFINITY,
+      },
+      reading: { status: 'known', value: 50 },
+    });
+    const lease = scalar.attachRenderer();
+
+    expect(scalar.view).toMatchObject({ domainValid: true, displayed: 50 });
+    expect('keyboardStep' in scalar.view.domain).toBe(false);
+    lease.wheel({ direction: 1, fine: false });
+    lease.wheel({ direction: 1, fine: false });
+    lease.key({ key: 'ArrowRight', fine: false });
+    lease.key({ key: 'ArrowRight', fine: false });
+
+    expect(request.mock.calls).toEqual([[80], [80], [60], [60]]);
+    expect(scalar.view).toMatchObject({ canonical: 50, displayed: 50 });
+  });
+
+  it('clears zero-idle Knob wheel state when the incoming value confirms the request', () => {
+    const policy = createKnobContinuousScalarPolicy({ debounceMs: 0 });
+    const { scalar, request, update } = readingSetup(policy, {
+      domain: { min: 0, max: 100, step: 10, defaultValue: null, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 50 },
+    });
+    const lease = scalar.attachRenderer();
+
+    lease.wheel({ direction: 1, fine: false });
+    expect(request).toHaveBeenCalledExactlyOnceWith(80);
+    update({ reading: { status: 'known', value: 80 } });
+
+    expect(scalar.view).toMatchObject({
+      canonical: 80,
+      displayed: 80,
+      draft: null,
+      interaction: 'idle',
+    });
+  });
+
+  it('keeps Knob dispatch timing, fine increments, reset, and canonical no-ops explicit', () => {
+    vi.useFakeTimers();
+    const policy = createKnobContinuousScalarPolicy({ debounceMs: 50 });
+    const { scalar, request } = readingSetup(policy, {
+      domain: { min: 0, max: 100, step: 10, defaultValue: null, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 50 },
+    });
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+
+    lease.pointer(token, 51);
+    lease.wheel({ direction: 1, fine: true });
+    expect(request.mock.calls).toEqual([[51], [51]]);
+    lease.pointer(token, 50);
+    expect(request).toHaveBeenCalledTimes(2);
+
+    lease.key({ key: 'ArrowRight', fine: false });
+    vi.advanceTimersByTime(49);
+    expect(request).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1);
+    expect(request).toHaveBeenLastCalledWith(60);
+
+    lease.reset();
+    vi.advanceTimersByTime(50);
+    expect(request).toHaveBeenLastCalledWith(0);
+    expect(request).toHaveBeenCalledTimes(4);
+
+    const explicit = readingSetup(policy, {
+      domain: { min: 0, max: 100, step: 10, defaultValue: 80, fineStepDivisor: 10 },
+      reading: { status: 'known', value: 50 },
+    });
+    explicit.scalar.attachRenderer().reset();
+    vi.advanceTimersByTime(50);
+    expect(explicit.request).toHaveBeenCalledExactlyOnceWith(80);
+    vi.useRealTimers();
   });
 
   it.each([0, -50, Number.NaN, 2.5, Number.POSITIVE_INFINITY])(

@@ -1,26 +1,29 @@
 <script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
+  import type {
+    ContinuousScalarBinding,
+    ContinuousScalarRendererLease,
+    ContinuousScalarView,
+  } from '../../../primitives/scalar/continuous-scalar.svelte';
   import './value-control.css';
   import {
     valueToPosition,
     calculateArcPath,
     calculateIndicatorPosition,
     generateTickPositions,
-    handleKeyboardStep,
-    handleWheelStep,
-    debounce,
     clamp,
     snapToStep,
   } from '../../../primitives/scalar/value-control-core';
+  import {
+    projectScalarRenderPresentation,
+    type LegacyReadingPresentation,
+  } from './scalar-render-presentation';
 
   interface Props {
-    value: number;
-    min: number;
-    max: number;
-    step: number;
-    defaultValue?: number;
-    fineStepDivisor?: number;
+    binding: ContinuousScalarBinding;
     label: string;
     displayFn?: (v: number) => string;
+    unknownDisplay?: string;
     fillColor?: string;
     fillGradient?: string[];
     trackColor?: string;
@@ -32,23 +35,17 @@
     arcAngle?: number;
     tickCount?: number;
     tickLabels?: string[];
-    onChange: (value: number) => void;
-    debounceMs?: number;
-    disabled?: boolean;
     unit?: string;
     shortcutHint?: string | null;
     title?: string | null;
+    legacy?: LegacyReadingPresentation;
   }
 
   let {
-    value,
-    min,
-    max,
-    step,
-    defaultValue,
-    fineStepDivisor = 10,
+    binding,
     label,
     displayFn,
+    unknownDisplay,
     fillColor,
     fillGradient,
     trackColor = 'var(--v2-bg-panel)',
@@ -60,147 +57,153 @@
     arcAngle = 270,
     tickCount = 0,
     tickLabels = [],
-    onChange,
-    debounceMs = 0,
-    disabled = false,
     unit = '',
     shortcutHint = null,
     title = null,
+    legacy,
   }: Props = $props();
 
-  let containerEl: HTMLDivElement | null = $state(null);
-  let isDragging = $state(false);
-  let dragStartY = $state(0);
-  let dragStartValue = $state(0);
+  const componentId = $props.id();
+  const feedbackDescriptionId = componentId + '-feedback';
+  const gradientId = componentId;
+  let activePointer: {
+    id: number;
+    token: number;
+    target: HTMLElement;
+    startY: number;
+    startValue: number;
+  } | null = null;
+  const initialBinding = untrack(() => binding);
+  let attachedBinding = initialBinding;
+  let lease: ContinuousScalarRendererLease = $state(initialBinding.attachRenderer());
 
-  // SVG dimensions (reactive based on compact prop)
+  $effect(() => {
+    if (binding === attachedBinding) return;
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
+    lease.dispose();
+    attachedBinding = binding;
+    lease = binding.attachRenderer();
+  });
+  onDestroy(() => {
+    if (activePointer?.target.hasPointerCapture?.(activePointer.id)) {
+      activePointer.target.releasePointerCapture(activePointer.id);
+    }
+    activePointer = null;
+    lease.dispose();
+  });
+
+  let view = $state<ContinuousScalarView>(untrack(() => lease.view));
+  let skipViewAssignment = true;
+  $effect(() => {
+    const next = lease.view;
+    if (skipViewAssignment) skipViewAssignment = false;
+    else view = next;
+  });
+  let renderedValue = $derived(view.displayed);
+  let geometryMin = $derived(view.domainValid ? view.domain.min : 0);
+  let geometryMax = $derived(view.domainValid ? view.domain.max : 1);
+  let geometryValue = $derived(
+    view.domainValid && renderedValue !== null ? renderedValue : geometryMin,
+  );
+
   let size = $derived(compact ? 48 : 64);
   let cx = $derived(size / 2);
   let cy = $derived(size / 2);
   let radius = $derived((size - 12) / 2);
   let trackWidth = $derived(compact ? 4 : 5);
-  let indicatorLength = $derived(radius - trackWidth - 4);
-
-  // Derived values
-  let effectiveDefault = $derived(defaultValue ?? min);
-  let position = $derived(valueToPosition(value, min, max));
+  let position = $derived(view.domainValid && renderedValue !== null
+    ? valueToPosition(renderedValue, view.domain.min, view.domain.max) : 0);
   let startAngle = $derived(-arcAngle / 2);
   let endAngle = $derived(arcAngle / 2);
   let currentAngle = $derived(startAngle + position * arcAngle);
 
-  // Arc paths
   let trackPath = $derived(calculateArcPath(cx, cy, radius, startAngle, endAngle));
   let fillPath = $derived(calculateArcPath(cx, cy, radius, startAngle, currentAngle));
-
-  // Indicator position
-  let indicatorPos = $derived(calculateIndicatorPosition(cx, cy, indicatorLength, value, min, max, arcAngle));
-  let indicatorEnd = $derived(calculateIndicatorPosition(cx, cy, radius - trackWidth - 2, value, min, max, arcAngle));
-
-  // Tick marks
+  let indicatorEnd = $derived(calculateIndicatorPosition(
+    cx, cy, radius - trackWidth - 2, geometryValue, geometryMin, geometryMax, arcAngle,
+  ));
   let ticks = $derived(tickCount > 0
     ? generateTickPositions(cx, cy, radius + 2, radius + 6, tickCount, arcAngle)
     : []);
 
-  // Gradient or solid fill
-  let gradientId = $derived(`knob-gradient-${Math.random().toString(36).slice(2)}`);
   let hasGradient = $derived(Boolean(fillGradient && fillGradient.length > 1));
   let safeFillGradient = $derived(fillGradient ?? []);
-
-  // Display value
-  let displayValue = $derived(displayFn ? displayFn(value) : `${value}${unit ? unit : ''}`);
-
-  // Debounced change handler
-  let debouncedOnChange = $derived.by<(...args: unknown[]) => void>(() => {
-    if (debounceMs > 0) {
-      return debounce((v: number) => onChange(v), debounceMs) as (...args: unknown[]) => void;
-    }
-    return ((v: number) => onChange(v)) as (...args: unknown[]) => void;
-  });
-
-  function emitChange(newValue: number, immediate = false) {
-    if (newValue !== value) {
-      if (immediate) {
-        onChange(newValue);
-      } else {
-        debouncedOnChange(newValue);
-      }
-    }
-  }
+  let displayValue = $derived(renderedValue === null
+    ? unknownDisplay ?? (displayFn ? displayFn(Number.NaN) : '—')
+    : displayFn ? displayFn(renderedValue) : String(renderedValue) + (unit ? unit : ''));
+  let renderPresentation = $derived(projectScalarRenderPresentation(view, legacy));
 
   function handlePointerDown(e: PointerEvent) {
-    if (disabled) return;
+    const token = lease.beginPointer();
+    if (token === null || view.canonical === null) return;
 
     e.preventDefault();
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
 
-    isDragging = true;
-    dragStartY = e.clientY;
-    dragStartValue = value;
+    activePointer = {
+      id: e.pointerId,
+      token,
+      target,
+      startY: e.clientY,
+      startValue: view.canonical,
+    };
   }
 
   function handlePointerMove(e: PointerEvent) {
-    if (!isDragging || disabled) return;
-
-    // Vertical drag with adaptive coarse/fine feel:
-    // default = coarse enough to move quickly, Shift = precision mode.
-    const deltaY = dragStartY - e.clientY;
-    const sensitivity = e.shiftKey ? 12 : 0.5; // px per step; lower = faster movement
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    const deltaY = activePointer.startY - e.clientY;
+    const sensitivity = e.shiftKey ? 12 : 0.5;
     const stepDelta = Math.round(deltaY / sensitivity);
-    const effectiveStep = e.shiftKey ? step / fineStepDivisor : step;
+    const domain = view.domain;
+    const effectiveStep = e.shiftKey ? domain.step / domain.fineStepDivisor : domain.step;
     const newValue = clamp(
-      snapToStep(dragStartValue + stepDelta * effectiveStep, effectiveStep, min),
-      min,
-      max
+      snapToStep(activePointer.startValue + stepDelta * effectiveStep, effectiveStep, domain.min),
+      domain.min,
+      domain.max,
     );
-    emitChange(newValue, true);
+    lease.pointer(activePointer.token, newValue);
   }
 
   function handlePointerUp(e: PointerEvent) {
-    if (!isDragging) return;
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease.endPointer(activePointer.token);
+    activePointer = null;
+  }
 
-    const target = e.currentTarget as HTMLElement;
-    target.releasePointerCapture(e.pointerId);
-    isDragging = false;
+  function handlePointerCancel(e: PointerEvent) {
+    if (!activePointer || activePointer.id !== e.pointerId) return;
+    if (activePointer.target.hasPointerCapture?.(e.pointerId)) {
+      activePointer.target.releasePointerCapture(e.pointerId);
+    }
+    lease.cancelPointer(activePointer.token);
+    activePointer = null;
   }
 
   function handleWheel(e: WheelEvent) {
-    if (disabled) return;
+    if (!view.editable) return;
     e.preventDefault();
-
-    const wheelMultiplier = e.shiftKey ? 1 : 4;
-    const effectiveStep = e.shiftKey ? step / fineStepDivisor : step * wheelMultiplier;
-    const direction = e.deltaY > 0 ? -1 : 1;
-    const newValue = clamp(
-      snapToStep(value + direction * effectiveStep, effectiveStep, min),
-      min,
-      max,
-    );
-    emitChange(newValue, true);
+    lease.wheel({ direction: e.deltaY > 0 ? -1 : 1, fine: e.shiftKey });
   }
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (disabled) return;
-
-    const newValue = handleKeyboardStep(value, e.key, step, fineStepDivisor, min, max, e.shiftKey);
-    if (newValue !== null) {
-      e.preventDefault();
-      emitChange(newValue);
-    }
+    if (lease.key({ key: e.key, fine: e.shiftKey })) e.preventDefault();
   }
 
-  function handleDoubleClick() {
-    if (disabled) return;
-    emitChange(effectiveDefault);
-  }
+  function handleDoubleClick() { lease.reset(); }
 </script>
 
 <div
   class="vc-knob"
   class:compact
-  class:disabled
+  class:disabled={!view.editable}
   class:hardware={variant === 'hardware'}
-  bind:this={containerEl}
   data-shortcut-hint={shortcutHint ?? undefined}
   title={title ?? shortcutHint ?? undefined}
   style="--vc-accent: {accentColor}; --vc-knob-size: {size}px;"
@@ -212,16 +215,19 @@
   <div
     class="vc-knob-container"
     role="slider"
-    tabindex={disabled ? -1 : 0}
+    tabindex={view.editable ? 0 : -1}
     aria-label={label}
-    aria-valuemin={min}
-    aria-valuemax={max}
-    aria-valuenow={value}
-    aria-disabled={disabled}
+    aria-valuemin={view.domainValid ? view.domain.min : undefined}
+    aria-valuemax={view.domainValid ? view.domain.max : undefined}
+    aria-valuenow={view.domainValid ? view.canonical ?? undefined : undefined}
+    aria-disabled={!view.editable}
+    aria-busy={renderPresentation.attributes['aria-busy']}
+    aria-describedby={renderPresentation.description !== null ? feedbackDescriptionId : undefined}
+    data-command-phase={renderPresentation.attributes['data-command-phase'] ?? undefined}
     onpointerdown={handlePointerDown}
     onpointermove={handlePointerMove}
     onpointerup={handlePointerUp}
-    onpointercancel={handlePointerUp}
+    onpointercancel={handlePointerCancel}
     onwheel={handleWheel}
     onkeydown={handleKeyDown}
     ondblclick={handleDoubleClick}
@@ -329,6 +335,19 @@
     {/if}
   </div>
 
+  {#if renderPresentation.description !== null}
+    <span id={feedbackDescriptionId} class="sr-only">{renderPresentation.description}</span>
+  {/if}
+  {#if renderPresentation.status !== null}
+    <span
+      class="sr-only"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      data-control-feedback-status
+    >{renderPresentation.status}{renderPresentation.error === null ? '' : `: ${renderPresentation.error}`}</span>
+  {/if}
+
   {#if tickLabels.length > 0}
     <div class="vc-tick-labels">
       {#each tickLabels as tickLabel}
@@ -360,6 +379,11 @@
   .disabled {
     opacity: 0.4;
     pointer-events: none;
+  }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 
   .vc-knob-container {
