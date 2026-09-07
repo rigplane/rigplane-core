@@ -81,7 +81,10 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   radio: radioStore,
   getActiveReceiver: vi.fn(),
   getRadioState: vi.fn(() => radioStore.current),
-  subscribeRadioState: vi.fn(() => () => {}),
+  subscribeRadioState: vi.fn((handler: (state: Record<string, unknown> | null) => void) => {
+    handler(radioStore.current);
+    return () => {};
+  }),
 }));
 vi.mock('$lib/stores/connection.svelte', () => ({
   getConnectionStatus: vi.fn(() => 'connected'),
@@ -97,6 +100,11 @@ vi.mock('$lib/stores/audio.svelte', () => ({
     volume: 50, muted: false, rxEnabled: false, txEnabled: false,
     micEnabled: false, bridgeRunning: false,
   })),
+  getRxAudioTargetSnapshot: vi.fn(() => Object.freeze({ muted: false, rxEnabled: false })),
+  subscribeRxAudioTarget: vi.fn((handler: (target: { muted: boolean; rxEnabled: boolean }) => void) => {
+    handler(Object.freeze({ muted: false, rxEnabled: false }));
+    return () => {};
+  }),
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
@@ -108,6 +116,10 @@ vi.mock('$lib/audio/audio-manager', () => ({
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasTx: vi.fn(() => true), hasDualReceiver: vi.fn(() => false), hasAnyScope: vi.fn(() => false),
   hasSpectrum: vi.fn(() => false), getCapabilities: vi.fn(() => null),
+  subscribeCapabilities: vi.fn((handler: (caps: null) => void) => {
+    handler(null);
+    return () => {};
+  }),
   getKeyboardConfig: vi.fn(() => null), hasCapability: vi.fn(() => false),
   receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
   hasAudioFft: vi.fn(() => false),

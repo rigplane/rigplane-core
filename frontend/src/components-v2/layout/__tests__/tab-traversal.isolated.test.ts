@@ -65,6 +65,13 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return rt.state; },
     get caps() { return rt.caps; },
+    subscribeControlAuthority(handler: (publication: unknown) => void) {
+      handler({
+        state: rt.state, caps: rt.caps, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: Object.freeze({ muted: false, rxEnabled: false }),
+      });
+      return () => {};
+    },
     connectionStatus: 'disconnected',
     radioPowerOn: null,
     connection: { status: 'disconnected', radioPowerOn: null },

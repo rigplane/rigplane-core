@@ -55,6 +55,8 @@ vi.mock('$lib/stores/radio.svelte', () => ({
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => h.caps as Capabilities | null),
   getControlRange: vi.fn(() => null),
+  getSmeterCalibration: vi.fn(() => null),
+  getSmeterRedline: vi.fn(() => null),
 }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
