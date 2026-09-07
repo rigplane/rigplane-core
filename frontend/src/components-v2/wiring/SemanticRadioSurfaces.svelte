@@ -978,7 +978,7 @@
   {#snippet children(receiverInstruments)}
   <RxAudioInstrumentHost
     presentation={rxAudioInstrumentPresentation}
-    subscribeControlAuthority={runtime.subscribeControlAuthority}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
     onAfLevelChange={rxAudioIntents.onAfLevelChange}
   >
   {#snippet children(rxAudioInstruments)}
