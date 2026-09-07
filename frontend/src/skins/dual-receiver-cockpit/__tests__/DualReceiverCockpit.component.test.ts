@@ -40,6 +40,13 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (publication: unknown) => void) {
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'disconnected', epoch: 0 },
+        rxAudioTarget: Object.freeze({ muted: true, rxEnabled: false }),
+      });
+      return () => {};
+    },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an App-owned
     // RX-audio snapshot (the FOURTH argument).
     get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },

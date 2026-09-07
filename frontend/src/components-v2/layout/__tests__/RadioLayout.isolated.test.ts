@@ -98,6 +98,13 @@ vi.mock('../../../lib/runtime/frontend-runtime', () => ({
     get state() { return rt.state; },
     onTxAudioDied: () => () => {},
     get caps() { return rt.caps; },
+    subscribeControlAuthority(handler: (publication: unknown) => void) {
+      handler({
+        state: rt.state, caps: rt.caps, session: { state: 'connected', epoch: 7 },
+        rxAudioTarget: Object.freeze({ muted: false, rxEnabled: false }),
+      });
+      return () => {};
+    },
     connectionStatus: 'disconnected',
     controlSession: Object.freeze({ state: 'connected', epoch: 7 }) satisfies ControlSessionSnapshot,
     radioPowerOn: null,
@@ -130,6 +137,13 @@ vi.mock('$lib/runtime', () => ({
   runtime: {
     get state() { return rt.state; },
     get caps() { return rt.caps; },
+    subscribeControlAuthority(handler: (publication: unknown) => void) {
+      handler({
+        state: rt.state, caps: rt.caps, session: { state: 'connected', epoch: 7 },
+        rxAudioTarget: Object.freeze({ muted: false, rxEnabled: false }),
+      });
+      return () => {};
+    },
     controlSession: Object.freeze({ state: 'connected', epoch: 7 }) satisfies ControlSessionSnapshot,
     subscribeControlSession: () => () => {},
     connectionStatus: 'disconnected',

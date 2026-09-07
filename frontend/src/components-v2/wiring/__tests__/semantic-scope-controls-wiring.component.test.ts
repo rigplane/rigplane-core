@@ -40,10 +40,10 @@ const h = vi.hoisted(() => ({
   selectedFiniteAppearance: undefined as unknown,
   controlSession: { state: 'connected', epoch: 1 } as { state: string; epoch: number },
   controlSessionSubscriber: null as ((next: { state: string; epoch: number }) => void) | null,
-  authoritySubscriber: null as ((next: {
+  authoritySubscribers: new Set<(next: {
     state: unknown; caps: unknown; session: { state: string; epoch: number };
     rxAudioTarget: RxAudioTargetSnapshot;
-  }) => void) | null,
+  }) => void>(),
   txController: null as ManagedAppTxController | null,
   audio: { muted: true, rxEnabled: false, volume: 0 },
   audioConnected: false,
@@ -70,15 +70,15 @@ vi.mock('$lib/runtime', () => ({
       h.controlSessionSubscriber = handler;
       return () => { if (h.controlSessionSubscriber === handler) h.controlSessionSubscriber = null; };
     },
-    subscribeControlAuthority(handler: typeof h.authoritySubscriber) {
-      h.authoritySubscriber = handler;
-      handler?.({
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
         state: (h.live as Map<string, unknown> | null)?.get('state') ?? h.state,
         caps: (h.live as Map<string, unknown> | null)?.get('caps') ?? h.caps,
         session: h.controlSession,
         rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
       });
-      return () => { if (h.authoritySubscriber === handler) h.authoritySubscriber = null; };
+      return () => { h.authoritySubscribers.delete(handler); };
     },
     get audio() { return h.audio; },
     get connectionAudio() { return h.audioConnected; },
@@ -216,10 +216,12 @@ function publishAuthority(
   h.controlSession = session;
   (h.live as SvelteMap<string, unknown>).set('state', state);
   (h.live as SvelteMap<string, unknown>).set('caps', caps);
-  h.authoritySubscriber?.({
-    state, caps, session,
-    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
-  });
+  for (const subscriber of h.authoritySubscribers) {
+    subscriber({
+      state, caps, session,
+      rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+    });
+  }
 }
 
 const finiteFixture = FiniteControlRendererFixture as FiniteControlAppearance['action'];
@@ -234,7 +236,7 @@ beforeEach(() => {
   h.selectedFiniteAppearance = undefined;
   h.controlSession = { state: 'connected', epoch: 1 };
   h.controlSessionSubscriber = null;
-  h.authoritySubscriber = null;
+  h.authoritySubscribers.clear();
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
   useCaps(liveCaps(SCOPE_TAGS));
@@ -248,6 +250,7 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  expect(h.authoritySubscribers.size).toBe(0);
   resetRetainedInvocations();
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
@@ -522,7 +525,7 @@ describe('selected finite Scope authority lifetime (MOR-2425)', () => {
     render();
     expect(el('scope-hold')).not.toBeNull();
     expect(el('external-HOLD')).toBeNull();
-    expect(h.authoritySubscriber).toBeNull();
+    expect(h.authoritySubscribers.size).toBe(0);
   });
 });
 
