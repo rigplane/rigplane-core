@@ -51,16 +51,19 @@
 </script>
 
 <script lang="ts">
+  import type {
+    FiniteControlAppearance, FiniteRendererContext,
+  } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
   import RfFrontEndInstrumentHost from '../../RfFrontEndInstrumentHost.svelte';
-  import RfFrontEndSurface, {
-    type RfFrontEndToggleField,
-  } from '../../RfFrontEndSurface.svelte';
+  import RfFrontEndSurface from '../../RfFrontEndSurface.svelte';
   import type { RadioViewModel } from '../../radio-view-model';
   import type {
     RfFrontEndAuthorityPublication,
+    RfFrontEndFiniteChoiceValue,
     RfFrontEndLevelFeedback,
     RfFrontEndLevelField,
     RfFrontEndLevelHandles,
+    RfFrontEndToggleField,
     RfSqlControlModel,
     SubscribeRfFrontEndAuthority,
   } from '../../rf-front-end-instruments';
@@ -74,6 +77,8 @@
     layout?: 'grouped' | 'independent';
     renderSurface?: boolean;
     pendingPreamp?: number | null;
+    finiteAppearance?: FiniteControlAppearance<RfFrontEndFiniteChoiceValue>;
+    rendererContext?: FiniteRendererContext | null;
     onPreampChange?: (level: number) => void;
     onAttenuatorChange?: (db: number) => void;
     onLevelChange?: (field: RfFrontEndLevelField, value: number) => void;
@@ -83,22 +88,25 @@
   let {
     publication, view, subscribeControlAuthority, controlModel, rfSqlFeedback,
     layout = 'grouped', renderSurface = false, pendingPreamp = null,
+    finiteAppearance, rendererContext = null,
     onPreampChange, onAttenuatorChange, onLevelChange, onToggle,
   }: Props = $props();
   let presentation = $derived({
     ...publication, view, controlModel, rfSqlFeedback,
   });
+  let selection = $derived(finiteAppearance === undefined ? {} : { finiteAppearance, rendererContext });
 </script>
 
 <RfFrontEndInstrumentHost
-  {presentation} {subscribeControlAuthority} {onLevelChange}
+  {presentation} {subscribeControlAuthority} {onLevelChange} {pendingPreamp}
+  onPreChange={onPreampChange} onAttChange={onAttenuatorChange}
+  onDigiSelToggle={(next) => onToggle?.('digiSel', next)}
+  onIpPlusToggle={(next) => onToggle?.('ipPlus', next)}
+  {...selection}
 >
   {#snippet children(handles: RfFrontEndLevelHandles)}
     {#if renderSurface && view !== null}
-      <RfFrontEndSurface
-        {view} levelHandles={handles} {pendingPreamp}
-        {onPreampChange} {onAttenuatorChange} {onToggle}
-      />
+      <RfFrontEndSurface {view} levelHandles={handles} />
     {:else}
       {#key layout}
         <section data-layout={layout} data-handle-kind={handles.kind}>
@@ -108,6 +116,10 @@
             <div data-slot="rf-gain">{@render handles.rfGain()}</div>
             <div data-slot="squelch">{@render handles.squelch()}</div>
           {/if}
+          <div data-finite-slot="preamp">{@render handles.preamp()}</div>
+          <div data-finite-slot="attenuator">{@render handles.attenuator()}</div>
+          <div data-finite-slot="digiSel">{@render handles.digiSel()}</div>
+          <div data-finite-slot="ipPlus">{@render handles.ipPlus()}</div>
         </section>
       {/key}
     {/if}
