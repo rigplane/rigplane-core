@@ -371,7 +371,7 @@ describe('the hosted AF owner survives replaceable presentation layouts', () => 
     expect(target.querySelector('[data-af-layout="independent"]')).not.toBeNull();
     expect(target.querySelectorAll('[role="slider"][aria-label="AF"]')).toHaveLength(1);
     expect([...h.authoritySubscribers]).toEqual(originalSubscribers);
-    expect(h.authoritySubscribers.size).toBe(4);
+    expect(h.authoritySubscribers.size).toBe(5);
     expect(newSlider.closest<HTMLElement>('.vc-hbar')!.style
       .getPropertyValue('--vc-fill-percent')).toBe('42%');
     expect(newSlider.getAttribute('aria-valuenow')).toBe('0.42');

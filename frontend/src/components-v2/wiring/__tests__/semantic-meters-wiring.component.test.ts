@@ -370,11 +370,11 @@ describe('the meters surface mounts only when the view model carries the group',
   it('keeps one station host across delayed dual-receiver authority', () => {
     h.deferAuthority = true;
     render({ strips: 'dual' });
-    expect(h.authoritySubscribers.size).toBe(4);
+    expect(h.authoritySubscribers.size).toBe(5);
     expect(() => push({})).not.toThrow();
     expect(target.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="meters-surface"]')).toHaveLength(1);
-    expect(h.authoritySubscribers.size).toBe(4);
+    expect(h.authoritySubscribers.size).toBe(5);
   });
 
   it('keeps mounted meter shells but clears readings across a provider generation mismatch', () => {
