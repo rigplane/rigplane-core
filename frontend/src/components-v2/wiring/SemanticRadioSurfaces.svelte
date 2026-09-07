@@ -47,7 +47,8 @@
   } from '../../semantic/pbt-presentation-continuity';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
-    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getFilterWidthControlFeedback,
+    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
+    getFilterWidthControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
@@ -70,6 +71,8 @@
   } from '../../semantic/DspSurface.svelte';
   import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
   import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
+  import DspScalarHost from '../../semantic/DspScalarHost.svelte';
+  import type { DspScalarLayout } from '../../semantic/dsp-scalars';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
   import FilterInstrumentHost from '../../semantic/FilterInstrumentHost.svelte';
   import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
@@ -1214,6 +1217,15 @@
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
+  /**
+   * MOR-2425. RAW command feedback for the two NB scalars — no projector:
+   * `nbLevel`/`nbWidth` are wire-raw, unlike `nrLevel`/`nbDepth`, which
+   * `DspSurface` still renders natively from the adapter's display-scaled
+   * projection (carry-forward 3).
+   */
+  let dspScalarFeedback = $derived({
+    nbLevel: getDspControlFeedback('nbLevel'), nbWidth: getDspControlFeedback('nbWidth'),
+  });
   let txAuxLevelFeedback = $derived.by<TxAuxLevelFeedback>(() => Object.fromEntries(
     TX_AUX_FEEDBACK_LEVELS.map(field => [
       field, getTxAuxControlFeedback(TX_AUX_FEEDBACK_FIELD[field], controlSession),
@@ -1444,6 +1456,13 @@
     onAgcModeChange={agcIntents.onAgcModeChange}
   >
   {#snippet children(dspInstruments)}
+  <DspScalarHost
+    {view} feedback={dspScalarFeedback} {nbLevelMax} {nbLevelPercent}
+    onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
+    scalarAppearance={externalPresentation?.record.appearances.scalar}
+    presentationIsCurrent={externalPresentation?.isCurrent}
+  >
+  {#snippet children(dspScalars)}
   <RitXitScanInstrumentHost
     {...ritXitFiniteRendererSelection} {view}
     onRitToggle={ritXitIntents.onRitToggle}
@@ -1845,7 +1864,7 @@
 
     Like `rxAudioSurface` and UNLIKE `txAuxSurface`/`metersSurface`, it is
     control-bearing (MOR-1304/MOR-1305 zone-mount ruling). `DspSurface`
-    renders up to 8 range inputs and 7 buttons, and `desktop-v2` declared a
+    renders focusable range and choice controls, and `desktop-v2` declared a
     `dsp` zone in MOR-1368 (S9) while the cockpit still declares none; the
     cockpit's MOR-1069 rule forbids mounting any control-bearing surface bare
     in the dual composition: every focusable control must live inside a
@@ -1858,12 +1877,15 @@
 
     `agcLabels`/`nbLevelMax`/`nbLevelPercent` are the caps-echo metadata
     carry-forward (1) requires stay OUT of the view model — read at this seam,
-    from `runtime.caps`, and handed down as plain props.
+    from `runtime.caps`, and handed to the two persistent DSP hosts as plain
+    props (`agcLabels` to the finite host, the two `nbLevel*` to the scalar
+    host), never to this surface.
   -->
-  {#snippet dspSurface(finiteLayout?: DspFiniteLayout)}
+  {#snippet dspSurface(finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout)}
     {#if view?.dsp}
       <DspSurface
-        {view} finiteHandles={dspInstruments} {finiteLayout} {nbLevelMax} {nbLevelPercent}
+        {view} finiteHandles={dspInstruments} {finiteLayout}
+        scalarHandles={dspScalars} {scalarLayout}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
       />
     {/if}
@@ -2109,8 +2131,9 @@
   {/snippet}
   {#snippet hostedDsp(
     allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
+    scalarLayout?: DspScalarLayout,
   )}
-    {#snippet body()}{@render dspSurface(finiteLayout)}{/snippet}
+    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout)}{/snippet}
     {@render zoned('dsp', view?.dsp !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedBand(allowBare = allowBareSurfaces, controlLayout?: BandControlLayout)}
@@ -2363,6 +2386,8 @@
   {/if}
   {/snippet}
   </RitXitScanInstrumentHost>
+  {/snippet}
+  </DspScalarHost>
   {/snippet}
   </DspInstrumentHost>
   {/snippet}
