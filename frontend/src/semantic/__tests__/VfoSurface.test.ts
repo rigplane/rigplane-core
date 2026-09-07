@@ -776,8 +776,12 @@ describe('VFO selection intent', () => {
 
     const a = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="A"]')!;
     const b = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="B"]')!;
-    expect(a.textContent).toBe('Select VFO A');
-    expect(b.textContent).toBe('Select VFO B');
+    // The visible label is the short chip text; the full "Select VFO A/B"
+    // sentence stays the accessible name, so nothing is lost to assistive tech.
+    expect(a.textContent).toBe('VFO A');
+    expect(b.textContent).toBe('VFO B');
+    expect(a.getAttribute('aria-label')).toBe('Select VFO A');
+    expect(b.getAttribute('aria-label')).toBe('Select VFO B');
     expect(a.title).toBe('Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.');
     b.click();
     flushSync();

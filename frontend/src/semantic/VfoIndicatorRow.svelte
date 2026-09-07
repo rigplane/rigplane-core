@@ -250,6 +250,8 @@
   .indicator-row[data-indicator-appearance='sdr'], .indicator-row[data-indicator-appearance='standard'] {
     padding: 0; border: 0; background: transparent; border-radius: 0; gap: 6px;
   }
+  /* Deck rhythm (sdr only): 16px between the header, meter, tiles and facts. */
+  .indicator-row[data-indicator-appearance='sdr']:not(.shared-indicators) { gap: 16px; }
   [data-indicator-appearance='sdr'] header { justify-content: space-between; letter-spacing: .14em; }
   [data-indicator-appearance='sdr'] .fact { padding: 2px 6px; border-radius: 3px; letter-spacing: .06em; }
   [data-indicator-appearance='sdr'] .facts { gap: 5px; min-height: 24px; }

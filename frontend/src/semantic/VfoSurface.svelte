@@ -287,6 +287,18 @@
     return vfo.receiver;
   }
 
+  /** The sdr receiver deck paints relative identity in the same short
+   *  tracking-caps shape the slotted case already renders ("MAIN A"), rather
+   *  than as a sentence. Only the presentation differs — the fact is still
+   *  the relative role the radio reports, never a fabricated A/B id. */
+  function deckRoleLabel(vfo: VfoViewModel): string {
+    const { slot } = vfo;
+    if (appearance === 'sdr' && slot.kind === 'relative') {
+      return slot.role === 'selected' ? 'SELECTED' : 'UNSELECTED';
+    }
+    return roleLabel(vfo);
+  }
+
   /**
    * MOR-1482 — the ONE stable frequency format this surface's own fallback
    * uses: the same dot-grouped digit convention `FrequencyDisplayInteractive`
@@ -604,7 +616,7 @@
         data-vfo-active-slot={vfo.isActiveSlot}
         data-vfo-tx-target={vfo.isTxTarget}
       >
-        <span class="vfo-role">{roleLabel(vfo)}</span>
+        <span class="vfo-role">{deckRoleLabel(vfo)}</span>
         <span
           class="vfo-freq" class:display-unknown={displayHz === null && pendingHz === null}
           {...(appearance === 'semantic' ? freq?.attributes ?? {} : {})}
@@ -685,6 +697,7 @@
           <button
             type="button"
             class="vfo-select"
+            class:v2-control-button={appearance !== 'semantic'}
             data-vfo-select
             disabled={selectDisabled}
             title={selectReason}
@@ -722,19 +735,21 @@
     {@const absoluteReasonId = reasonId('select-absolute', absoluteReason)}
     <div class="vfo-identity-selectors" data-testid="vfo-identity-selectors">
       <button
-        type="button" class="vfo-select" data-vfo-select-absolute="A"
+        type="button" class="vfo-select" class:v2-control-button={appearance !== 'semantic'}
+        data-vfo-select-absolute="A"
         title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO A"
         aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('A')}
-      >Select VFO A</button>
+      >VFO A</button>
       <button
-        type="button" class="vfo-select" data-vfo-select-absolute="B"
+        type="button" class="vfo-select" class:v2-control-button={appearance !== 'semantic'}
+        data-vfo-select-absolute="B"
         title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO B"
         aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('B')}
-      >Select VFO B</button>
+      >VFO B</button>
       {#if absoluteReason !== undefined}
         <span id={absoluteReasonId} class="sr-only">{absoluteReason}</span>
       {/if}
@@ -786,6 +801,7 @@
       <VfoIndicatorRow indicator={receiverIndicators.find((item) => item.receiver === receiver)} {appearance}
         slotLabel={instrumentSlot(receiver)} {continuitySession}>
         <div class="freq-stack">
+          {#if appearance === 'sdr' && relativeReceiver === receiver}{@render identitySelectors()}{/if}
           {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
             {#if vfo.receiver === receiver}{@render vfoTile(vfo, i)}{/if}
           {/each}
@@ -872,7 +888,7 @@
       {#if showRadioWideFacts}
         <div class="bridge" data-instrument-bridge>
           {@render activeReceiverStatus()}
-          {@render identitySelectors()}
+          {#if appearance !== 'sdr'}{@render identitySelectors()}{/if}
           {@render radioWideContent()}
         </div>
       {/if}
@@ -919,8 +935,8 @@
     line-height: 1; letter-spacing: normal;
   }
   .vfo-badge { padding: 1px 4px; border-radius: 3px; font-size: 10px; color: var(--v2-accent-red, #ff2020); border: 1px solid var(--v2-accent-red, #ff2020); }
-  .vfo-select { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
-  .vfo-select:disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
+  .vfo-select:not(.v2-control-button) { border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12)); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; padding: 3px 6px; }
+  .vfo-select:not(.v2-control-button):disabled { color: var(--v2-text-disabled, rgba(255, 255, 255, 0.3)); cursor: not-allowed; }
   .vfo-identity-selectors { display: flex; gap: 6px; flex-wrap: wrap; }
   /* MOR-1481: the `aria-describedby` target for a disabled control's reason
      — present for screen readers, never painted (the `title` attribute
@@ -1015,6 +1031,40 @@
   [data-vfo-appearance='standard'] .receiver-instrument .secondary-slot .vfo-select {
     grid-column: 4; grid-row: 1;
   }
+  /* ── SDR receiver deck (V1, "side by side") ────────────────────────────
+     Presentation only, and every rule is gated on the sdr appearance so the
+     Standard face and the semantic list keep the paint they already had.
+     Rhythm: 8px inside a group, 16px between groups, 24px deck padding. */
+  [data-vfo-appearance='sdr'] .receiver-instrument { padding: 24px; }
+  [data-vfo-appearance='sdr'] .freq-stack {
+    display: grid; grid-template-columns: 1fr 1fr;
+    column-gap: 16px; row-gap: 16px; align-items: start;
+  }
+  /* Selected left, unselected right. `.secondary-slot` is this surface's own
+     "not the active slot" marker; moving it last in the grid's placement
+     order never pins two tiles to one cell, however the radio reports. */
+  [data-vfo-appearance='sdr'] .freq-stack > .secondary-slot { order: 1; }
+  [data-vfo-appearance='sdr'] .freq-stack > .vfo-identity-selectors {
+    grid-column: 1 / -1; justify-content: flex-end; gap: 8px;
+  }
+  [data-vfo-appearance='sdr'] .receiver-instrument :where(.vfo-tile) { gap: 8px; }
+  [data-vfo-appearance='sdr'] .receiver-instrument .vfo-role {
+    font-size: 11px; letter-spacing: .14em;
+    color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
+  }
+  [data-vfo-appearance='sdr'] .receiver-instrument .vfo-mode {
+    font-size: 11px; letter-spacing: .08em;
+    color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
+  }
+  [data-vfo-appearance='sdr'] .receiver-instrument .vfo-freq {
+    font-size: clamp(28px, 3.2vw, 40px); margin: 8px 0 0;
+    font-variant-numeric: tabular-nums;
+  }
+  [data-vfo-appearance='sdr'] .receiver-instrument .is-active .vfo-freq { text-shadow: none; }
+  [data-vfo-appearance='sdr'] .receiver-instrument .secondary-slot .vfo-freq {
+    font-size: clamp(20px, 2.2vw, 28px); margin: 8px 0 0;
+  }
+
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }
     .receiver-instrument { flex-basis: calc(50% - 90px); }

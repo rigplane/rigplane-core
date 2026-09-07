@@ -400,7 +400,7 @@
 </script>
 
 {#if variant === 'sdr-screen'}
-  <svg class="sdr-meter" viewBox="0 0 420 50" preserveAspectRatio="none"
+  <svg class="sdr-meter" viewBox="0 0 420 50"
     data-variant={variant} role="img" aria-label={`S meter ${displaySUnit} ${displayDbm}`}>
     {#if mainPresent}
     <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
@@ -682,7 +682,9 @@
 {/if}
 
 <style>
-  .sdr-meter { width: 100%; height: 40px; overflow: visible; }
+  /* Drawn at its own 420x50 viewBox scale: stretched to an arbitrary width
+     the S-unit labels stop sitting over the segments they mark. */
+  .sdr-meter { width: 100%; max-width: 420px; height: auto; overflow: visible; }
   svg {
     display: block;
   }
