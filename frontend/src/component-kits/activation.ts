@@ -2,16 +2,30 @@ import {
   COMPONENT_KIT_API_VERSION,
   type FiniteControlAppearance,
   type FrequencyRenderer,
+  type HostedFaceComponentV1,
+  type LayoutManifest,
   type MeterAppearance,
   type ScalarAppearance,
 } from '../../component-kit-api/src/index';
 import { skins as builtInScalarAppearances } from '../components-v2/controls/value-control/skins';
+import {
+  commitExternalPresentationBatch,
+  isPresentationIdReserved,
+  prepareExternalPresentationBatch,
+  type ExternalPresentationRecord,
+} from '../skins/registry';
+import {
+  getLayout,
+  registerLayouts,
+  validateLayoutManifest,
+} from '../presentation/layouts/contract';
 
 export interface ComponentKitSelection {
   readonly scalarAppearance?: string;
   readonly frequencyReadout?: string;
   readonly finiteControlAppearance?: string;
   readonly meterAppearance?: string;
+  readonly presentation?: string;
 }
 
 export interface ComponentKitHostConfig {
@@ -28,6 +42,13 @@ interface ActiveSnapshot {
   readonly selectedFrequencyReadout?: string;
   readonly selectedFiniteControlAppearance?: string;
   readonly selectedMeterAppearance?: string;
+  readonly selectedPresentation?: string;
+}
+
+interface PreparedActivation {
+  readonly snapshot: ActiveSnapshot;
+  readonly layouts: readonly LayoutManifest[];
+  readonly presentations: readonly ExternalPresentationRecord[];
 }
 
 const EMPTY_SNAPSHOT: ActiveSnapshot = Object.freeze({
@@ -38,7 +59,7 @@ const EMPTY_SNAPSHOT: ActiveSnapshot = Object.freeze({
 });
 const CONFIG_KEYS = ['kits', 'selection'] as const;
 const SELECTION_KEYS = [
-  'scalarAppearance', 'frequencyReadout', 'finiteControlAppearance', 'meterAppearance',
+  'scalarAppearance', 'frequencyReadout', 'finiteControlAppearance', 'meterAppearance', 'presentation',
 ] as const;
 const KIT_KEYS = [
   'apiVersion', 'id', 'scalarAppearances', 'frequencyReadouts', 'finiteControlAppearances',
@@ -47,9 +68,17 @@ const KIT_KEYS = [
 const APPEARANCE_KEYS = ['name', 'knob', 'hbar', 'bipolar', 'discrete'] as const;
 const FINITE_APPEARANCE_KEYS = ['action', 'toggle', 'choice'] as const;
 const METER_APPEARANCE_KEYS = ['signal', 'level'] as const;
-const UNSUPPORTED_SECTIONS = [
-  'designLanguages', 'layouts', 'instrumentGroups', 'presentations',
+const UNSUPPORTED_SECTIONS = ['designLanguages', 'instrumentGroups'] as const;
+const LAYOUT_KEYS = [
+  'schemaVersion', 'id', 'displayName', 'zones', 'compatibleTopologies',
+  'requiredSemanticSurfaces', 'stageSizing', 'fallbackLayoutId',
 ] as const;
+const ZONE_KEYS = ['id', 'surfaces', 'group'] as const;
+const PRESENTATION_KEYS = [
+  'hostMode', 'id', 'layoutId', 'loader', 'resources', 'appearances',
+] as const;
+const FACE_APPEARANCE_KEYS = ['scalar', 'frequency', 'finite', 'meter'] as const;
+const PRESENTATION_RESOURCES = ['hardware-scope', 'audio-fft'] as const;
 const hasOwn = (value: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
@@ -90,6 +119,112 @@ function requireId(value: unknown, owner: string): string {
     throw new ComponentKitActivationError(`${owner} must have a non-empty id.`);
   }
   return value;
+}
+
+function requireExactRecord(
+  value: unknown,
+  owner: string,
+  allowed: readonly string[],
+  required: readonly string[] = allowed,
+): Record<string, unknown> {
+  if (!isPlainRecord(value)) {
+    throw new ComponentKitActivationError(`${owner} must be an object.`);
+  }
+  ownDataEntries(value, owner, allowed);
+  for (const key of required) {
+    if (!hasOwn(value, key)) throw new ComponentKitActivationError(`${owner} is missing "${key}".`);
+  }
+  return value;
+}
+
+/** Read an exact dense Array without invoking authored getters. */
+function readDataArray(value: unknown, owner: string): unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    throw new ComponentKitActivationError(`${owner} must be an array.`);
+  }
+  const allowed = new Set<PropertyKey>(['length']);
+  for (let index = 0; index < value.length; index++) allowed.add(String(index));
+  for (const key of Reflect.ownKeys(value)) {
+    if (!allowed.has(key)) throw new ComponentKitActivationError(`${owner} has unknown property "${String(key)}".`);
+  }
+  const copy: unknown[] = [];
+  for (let index = 0; index < value.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+      throw new ComponentKitActivationError(
+        `${owner} property "${index}" must be an enumerable data property.`,
+      );
+    }
+    copy.push(descriptor.value);
+  }
+  return copy;
+}
+
+function copyLayout(value: unknown, owner: string): LayoutManifest {
+  const manifest = requireExactRecord(value, owner, LAYOUT_KEYS);
+  const id = requireId(manifest.id, owner);
+  if (typeof manifest.displayName !== 'string' || manifest.displayName.trim() === '') {
+    throw new ComponentKitActivationError(`Layout "${id}" must have a non-empty displayName.`);
+  }
+  const zones = readDataArray(manifest.zones, `Layout "${id}" zones`).map((zoneValue, index) => {
+    const zone = requireExactRecord(
+      zoneValue, `Layout "${id}" zone ${index}`, ZONE_KEYS, ['id', 'surfaces'],
+    );
+    const zoneId = requireId(zone.id, `Layout "${id}" zone ${index}`);
+    if (zone.group !== undefined && (typeof zone.group !== 'string' || zone.group.trim() === '')) {
+      throw new ComponentKitActivationError(`Layout "${id}" zone "${zoneId}" group must be a non-empty string.`);
+    }
+    return Object.freeze({
+      id: zoneId,
+      surfaces: Object.freeze(readDataArray(zone.surfaces, `Layout "${id}" zone "${zoneId}" surfaces`)),
+      ...(zone.group === undefined ? {} : { group: zone.group }),
+    });
+  });
+  const compatibleTopologies = Object.freeze(
+    readDataArray(manifest.compatibleTopologies, `Layout "${id}" compatibleTopologies`),
+  );
+  const requiredSemanticSurfaces = Object.freeze(
+    readDataArray(manifest.requiredSemanticSurfaces, `Layout "${id}" requiredSemanticSurfaces`),
+  );
+  const sizingValue = requireExactRecord(
+    manifest.stageSizing,
+    `Layout "${id}" stageSizing`,
+    manifest.stageSizing !== null
+      && typeof manifest.stageSizing === 'object'
+      && Object.getOwnPropertyDescriptor(manifest.stageSizing, 'mode')?.value === 'fluid'
+      ? ['mode', 'responsiveBreakpoints']
+      : ['mode', 'nativeW', 'nativeH', 'minScale'],
+  );
+  const stageSizing = sizingValue.mode === 'fluid'
+    ? Object.freeze({
+        mode: 'fluid' as const,
+        responsiveBreakpoints: Object.freeze(
+          readDataArray(sizingValue.responsiveBreakpoints, `Layout "${id}" responsiveBreakpoints`),
+        ),
+      })
+    : Object.freeze({
+        mode: sizingValue.mode,
+        nativeW: sizingValue.nativeW,
+        nativeH: sizingValue.nativeH,
+        minScale: sizingValue.minScale,
+      });
+  if (manifest.fallbackLayoutId !== null) requireId(manifest.fallbackLayoutId, `Layout "${id}" fallbackLayoutId`);
+  const copied = Object.freeze({
+    schemaVersion: manifest.schemaVersion,
+    id,
+    displayName: manifest.displayName,
+    zones: Object.freeze(zones),
+    compatibleTopologies,
+    requiredSemanticSurfaces,
+    stageSizing,
+    fallbackLayoutId: manifest.fallbackLayoutId,
+  }) as unknown as LayoutManifest;
+  try {
+    validateLayoutManifest(copied);
+  } catch (error) {
+    throw new ComponentKitActivationError(error instanceof Error ? error.message : String(error));
+  }
+  return copied;
 }
 
 function copyAppearance(value: unknown, id: string): ScalarAppearance {
@@ -152,7 +287,7 @@ function readSelection(value: unknown): ComponentKitSelection {
   return { ...value } as ComponentKitSelection;
 }
 
-function prepareSnapshot(declarations: readonly unknown[], selectionValue: unknown): ActiveSnapshot {
+function prepareActivation(declarations: readonly unknown[], selectionValue: unknown): PreparedActivation {
   const scalarAppearances = new Map<string, ScalarAppearance>();
   const scalarOwners = new Map<string, string>();
   for (const [id, appearance] of ownDataEntries(builtInScalarAppearances, 'Built-in scalar appearances')) {
@@ -166,6 +301,8 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
   const meterAppearances = new Map<string, MeterAppearance>();
   const meterAppearanceOwners = new Map<string, string>();
   const kitIds = new Set<string>();
+  const authoredLayouts: Array<{ owner: string; value: unknown }> = [];
+  const authoredPresentations: Array<{ owner: string; value: unknown }> = [];
 
   for (const value of declarations) {
     if (!isPlainRecord(value)) {
@@ -267,6 +404,91 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
         meterAppearanceOwners.set(appearanceId, `component kit "${id}"`);
       }
     }
+
+    if (value.layouts !== undefined) {
+      for (const layout of readDataArray(value.layouts, `Component kit "${id}" layouts`)) {
+        authoredLayouts.push({ owner: `Component kit "${id}" layout`, value: layout });
+      }
+    }
+    if (value.presentations !== undefined) {
+      for (const presentation of readDataArray(
+        value.presentations, `Component kit "${id}" presentations`,
+      )) {
+        authoredPresentations.push({
+          owner: `Component kit "${id}" presentation`, value: presentation,
+        });
+      }
+    }
+  }
+
+  const layouts: LayoutManifest[] = [];
+  const layoutIds = new Set<string>();
+  for (const authored of authoredLayouts) {
+    const layout = copyLayout(authored.value, authored.owner);
+    if (layoutIds.has(layout.id)) {
+      throw new ComponentKitActivationError(`Duplicate layout id "${layout.id}".`);
+    }
+    if (getLayout(layout.id) !== undefined || isPresentationIdReserved(layout.id)) {
+      throw new ComponentKitActivationError(`Layout id "${layout.id}" is registered or reserved.`);
+    }
+    layoutIds.add(layout.id);
+    layouts.push(layout);
+  }
+
+  const presentations: ExternalPresentationRecord[] = [];
+  const presentationIds = new Set<string>();
+  for (const authored of authoredPresentations) {
+    const presentation = requireExactRecord(authored.value, authored.owner, PRESENTATION_KEYS);
+    const id = requireId(presentation.id, authored.owner);
+    if (presentation.hostMode !== 'external-instruments-v1') {
+      throw new ComponentKitActivationError(
+        `Presentation "${id}" hostMode must be "external-instruments-v1".`,
+      );
+    }
+    const layoutId = requireId(presentation.layoutId, `Presentation "${id}" layoutId`);
+    if (!layoutIds.has(layoutId)) {
+      throw new ComponentKitActivationError(
+        `Presentation "${id}" layout "${layoutId}" is not in the activated batch.`,
+      );
+    }
+    if (typeof presentation.loader !== 'function') {
+      throw new ComponentKitActivationError(`Presentation "${id}" loader must be a function.`);
+    }
+    const resourceValues = readDataArray(presentation.resources, `Presentation "${id}" resources`);
+    const resources = resourceValues.map((resource) => {
+      if (typeof resource !== 'string' || !PRESENTATION_RESOURCES.includes(resource as never)) {
+        throw new ComponentKitActivationError(`Presentation "${id}" has unsupported resource "${String(resource)}".`);
+      }
+      return resource as (typeof PRESENTATION_RESOURCES)[number];
+    });
+    if (new Set(resources).size !== resources.length) {
+      throw new ComponentKitActivationError(`Presentation "${id}" has a duplicate resource.`);
+    }
+    const appearanceIds = requireExactRecord(
+      presentation.appearances, `Presentation "${id}" appearances`, FACE_APPEARANCE_KEYS,
+    );
+    const scalarId = requireId(appearanceIds.scalar, `Presentation "${id}" scalar appearance`);
+    const frequencyId = requireId(appearanceIds.frequency, `Presentation "${id}" frequency appearance`);
+    const finiteId = requireId(appearanceIds.finite, `Presentation "${id}" finite appearance`);
+    const meterId = requireId(appearanceIds.meter, `Presentation "${id}" meter appearance`);
+    const scalar = scalarAppearances.get(scalarId);
+    const frequency = frequencyReadouts.get(frequencyId);
+    const finite = finiteControlAppearances.get(finiteId);
+    const meter = meterAppearances.get(meterId);
+    if (scalar === undefined) throw new ComponentKitActivationError(`Presentation "${id}" scalar appearance "${scalarId}" is not registered.`);
+    if (frequency === undefined) throw new ComponentKitActivationError(`Presentation "${id}" frequency appearance "${frequencyId}" is not registered.`);
+    if (finite === undefined) throw new ComponentKitActivationError(`Presentation "${id}" finite appearance "${finiteId}" is not registered.`);
+    if (meter === undefined) throw new ComponentKitActivationError(`Presentation "${id}" meter appearance "${meterId}" is not registered.`);
+    if (presentationIds.has(id)) throw new ComponentKitActivationError(`Duplicate presentation id "${id}".`);
+    presentationIds.add(id);
+    presentations.push(Object.freeze({
+      id,
+      kind: 'external-instruments-v1',
+      layoutId,
+      loader: presentation.loader as () => Promise<HostedFaceComponentV1>,
+      resources: Object.freeze(resources),
+      appearances: Object.freeze({ scalar, frequency, finite, meter }),
+    }));
   }
 
   const selection = readSelection(selectionValue);
@@ -288,15 +510,25 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
       `Selected meter appearance "${selection.meterAppearance}" is not registered.`,
     );
   }
+  if (selection.presentation !== undefined && !presentationIds.has(selection.presentation)) {
+    throw new ComponentKitActivationError(
+      `Selected external presentation "${selection.presentation}" is not registered.`,
+    );
+  }
   return Object.freeze({
-    scalarAppearances,
-    frequencyReadouts,
-    finiteControlAppearances,
-    meterAppearances,
-    selectedScalarAppearance: selection.scalarAppearance,
-    selectedFrequencyReadout: selection.frequencyReadout,
-    selectedFiniteControlAppearance: selection.finiteControlAppearance,
-    selectedMeterAppearance: selection.meterAppearance,
+    snapshot: Object.freeze({
+      scalarAppearances,
+      frequencyReadouts,
+      finiteControlAppearances,
+      meterAppearances,
+      selectedScalarAppearance: selection.scalarAppearance,
+      selectedFrequencyReadout: selection.frequencyReadout,
+      selectedFiniteControlAppearance: selection.finiteControlAppearance,
+      selectedMeterAppearance: selection.meterAppearance,
+      selectedPresentation: selection.presentation,
+    }),
+    layouts: Object.freeze(layouts),
+    presentations: Object.freeze(presentations),
   });
 }
 
@@ -308,18 +540,22 @@ export async function activateComponentKits(configValue: unknown): Promise<void>
       throw new ComponentKitActivationError('Component-kit configuration must be an object.');
     }
     ownDataEntries(configValue, 'Component-kit configuration', CONFIG_KEYS);
-    if (!Array.isArray(configValue.kits) || configValue.kits.some((load) => typeof load !== 'function')) {
+    const kitLoaders = readDataArray(configValue.kits, 'Component-kit configuration kits');
+    if (kitLoaders.some((load) => typeof load !== 'function')) {
       throw new ComponentKitActivationError('Component-kit configuration kits must be an array of loaders.');
     }
-    const modules = await Promise.all(configValue.kits.map((load) => load()));
+    const modules = await Promise.all(kitLoaders.map((load) => (load as () => Promise<unknown>)()));
     const declarations = modules.map((module, index) => {
       if (!isPlainRecord(module) || !hasOwn(module, 'default')) {
         throw new ComponentKitActivationError(`Component-kit loader ${index} must return a module with a default export.`);
       }
       return module.default;
     });
-    const prepared = prepareSnapshot(declarations, configValue.selection);
-    snapshot = prepared;
+    const prepared = prepareActivation(declarations, configValue.selection);
+    const catalogBatch = prepareExternalPresentationBatch(prepared.presentations);
+    registerLayouts(prepared.layouts);
+    commitExternalPresentationBatch(catalogBatch);
+    snapshot = prepared.snapshot;
     phase = 'active';
   } catch (error) {
     phase = 'idle';
@@ -349,4 +585,8 @@ export function getSelectedMeterAppearance(): MeterAppearance | undefined {
   return snapshot.selectedMeterAppearance === undefined
     ? undefined
     : snapshot.meterAppearances.get(snapshot.selectedMeterAppearance);
+}
+
+export function getSelectedPresentationId(): string | undefined {
+  return snapshot.selectedPresentation;
 }
