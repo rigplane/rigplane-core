@@ -4,6 +4,7 @@ import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
 import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
 import type { ReceiverInstrumentHandles } from '../../semantic/ReceiverInstrumentHost.svelte';
 import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
+import type { RfFrontEndLevelHandles } from '../../semantic/rf-front-end-instruments';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
@@ -15,6 +16,7 @@ export interface InstrumentComposition {
   readonly txAuxInstruments: TxAuxFiniteHandles;
   readonly receiverInstruments: ReceiverInstrumentHandles;
   readonly rxAudioInstruments: RxAudioInstrumentHandles;
+  readonly rfFrontEndInstruments: RfFrontEndLevelHandles;
   readonly meters: Snippet<[allowBare?: boolean]>;
   readonly rxAudio: Snippet<[allowBare?: boolean]>;
   readonly rfFrontEnd: Snippet<[allowBare?: boolean]>;

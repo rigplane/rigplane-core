@@ -31,6 +31,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -252,6 +254,7 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
@@ -328,8 +331,54 @@ function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan):
   flushSync();
 }
 
+function renderHosted() {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy<{ rfFrontEndLayout: 'grouped' | 'independent' }>({
+    rfFrontEndLayout: 'grouped',
+  });
+  component = mount(HostedRadioLayoutFixture, { target, props });
+  flushSync();
+  return props;
+}
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 const el = (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
+interface LevelDriver {
+  readonly slider: HTMLElement;
+  readonly frame: HTMLElement;
+  readonly value: () => number;
+  readonly disabled: () => boolean;
+  readonly input: (value: number, pointerId?: number) => void;
+}
+
+function levelDriver(root: ParentNode): LevelDriver {
+  const slider = root.querySelector<HTMLElement>('[role="slider"]');
+  if (slider === null) throw new Error('Expected rendered RF level slider');
+  const frame = slider.closest<HTMLElement>('.vc-hbar, .vc-dual');
+  if (frame === null) throw new Error('Expected RF level renderer frame');
+  const dual = frame.classList.contains('vc-dual');
+  return {
+    slider,
+    frame,
+    value: () => Number.parseFloat(frame.style.getPropertyValue(
+      dual ? '--vc-thumb-pct' : '--vc-fill-percent',
+    )) / 100,
+    disabled: () => slider.getAttribute('aria-disabled') === 'true',
+    input: (value, pointerId = 1) => {
+      frame.getBoundingClientRect = () => ({ left: 0, width: 100 } as DOMRect);
+      Object.assign(slider, {
+        setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
+      });
+      slider.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, clientX: value * 100, pointerId,
+      }));
+      slider.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId }));
+    },
+  };
+}
+
+const level = (id: string) => levelDriver(el(id)!);
 let acceptedState: ServerState;
 
 function publishAuthority(): void {
@@ -477,9 +526,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // pinned as the literal 140.
   it('routes the RF-gain slider to onRfGainChange, converted to the raw 0-255 wire level', () => {
     render();
-    const input = el('rfGain')!.querySelector('input')!;
-    input.value = '0.55';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rfGain').input(0.55);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
     for (const other of ALL.filter((s) => s !== h.rfGain)) expect(other).not.toHaveBeenCalled();
@@ -487,9 +534,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
 
   it('routes the squelch slider to onSquelchChange, converted to the raw 0-255 wire level', () => {
     render();
-    const input = el('squelch')!.querySelector('input')!;
-    input.value = '0.2';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('squelch').input(0.2);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(51);
     for (const other of ALL.filter((s) => s !== h.squelch)) expect(other).not.toHaveBeenCalled();
@@ -501,9 +546,7 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
   // proves `Math.round` specifically, not merely "some" integer conversion.
   it('rounds a 0.5 drag to the raw wire level 128, not the truncated 127', () => {
     render();
-    const input = el('rfGain')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rfGain').input(0.5);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(128);
   });
@@ -605,7 +648,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     render();
     const group = el('rf-sql')!;
     expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
-    expect(group.querySelector('input')!.disabled).toBe(true);
+    expect(levelDriver(group).disabled()).toBe(true);
     expect(group.textContent).toContain('?');
   });
 
@@ -626,7 +669,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     confirmCommand(rf.id, 7, 7); failCommand(sql.id, 7, 7, 'denied'); flushSync();
     expect(el('rf-sql')!.dataset.rfCommandPhase).toBe('confirmed');
     expect(el('rf-sql')!.dataset.sqlCommandPhase).toBe('failed');
-    expect(el('rf-sql')!.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
+    expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(2);
   });
 
   it('keeps rendering the two separate sliders when the profile omits the declaration', () => {
@@ -641,15 +684,15 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
 
   it('fails both separate controls closed on disconnect and recovers from fresh connected authority', () => {
     render();
-    const rfInput = el('rfGain')!.querySelector('input')!;
-    const sqlInput = el('squelch')!.querySelector('input')!;
-    expect([rfInput.disabled, sqlInput.disabled]).toEqual([false, false]);
+    const rfInput = level('rfGain');
+    const sqlInput = level('squelch');
+    expect([rfInput.disabled(), sqlInput.disabled()]).toEqual([false, false]);
 
     h.session = { state: 'disconnected', epoch: 8 };
     for (const listener of h.sessionListeners) listener(h.session);
     publishAuthority();
     flushSync();
-    expect([rfInput.disabled, sqlInput.disabled]).toEqual([true, true]);
+    expect([level('rfGain').disabled(), level('squelch').disabled()]).toEqual([true, true]);
     expect(el('rfGain')!.textContent).toContain('?');
     expect(el('squelch')!.textContent).toContain('?');
 
@@ -657,9 +700,9 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     for (const listener of h.sessionListeners) listener(h.session);
     publishAuthority();
     flushSync();
-    expect([rfInput.disabled, sqlInput.disabled]).toEqual([false, false]);
-    expect(rfInput.valueAsNumber).toBe(0.8);
-    expect(sqlInput.valueAsNumber).toBe(0.1);
+    expect([level('rfGain').disabled(), level('squelch').disabled()]).toEqual([false, false]);
+    expect(level('rfGain').value()).toBe(0.8);
+    expect(level('squelch').value()).toBe(0.1);
     expect(h.rfGain).not.toHaveBeenCalled();
     expect(h.squelch).not.toHaveBeenCalled();
   });
@@ -676,8 +719,10 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     render();
     expect(el('rfGain')!.dataset.commandPhase).toBe('submitted');
     expect(el('squelch')!.dataset.commandPhase).toBe('submitted');
-    expect(el('rfGain')!.querySelector('input')!.valueAsNumber).toBe(128 / 255);
-    expect(el('squelch')!.querySelector('input')!.valueAsNumber).toBe(51 / 255);
+    expect(level('rfGain').value()).toBe(0.8);
+    expect(level('squelch').value()).toBe(0.1);
+    expect(el('rfGain')!.querySelector('output')!.textContent).toBe('50%');
+    expect(el('squelch')!.querySelector('output')!.textContent).toBe('20%');
     acknowledgeCommand(rf.id, 7, 7);
     acknowledgeCommand(sql.id, 7, 7);
     flushSync();
@@ -688,18 +733,17 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     flushSync();
     expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
     expect(el('squelch')!.dataset.commandPhase).toBe('failed');
-    expect(el('rfGain')!.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
-    expect(el('squelch')!.querySelectorAll('[data-control-feedback-status]')).toHaveLength(1);
-    expect(el('squelch')!.textContent).toContain('denied');
+    expect(target.querySelectorAll('[data-feedback-lane="rf"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-feedback-lane="sql"]')).toHaveLength(1);
+    expect(target.textContent).toContain('denied');
   });
 
-  it('retires a native RF draft after real raw-command confirmation and follows later truth while SQL is pending', () => {
+  it('retires an RF draft after real raw-command confirmation and follows later truth while SQL is pending', () => {
     render();
-    const rfInput = el('rfGain')!.querySelector('input')!;
-    const sqlInput = el('squelch')!.querySelector('input')!;
+    const rfInput = level('rfGain');
+    const sqlInput = level('squelch');
 
-    rfInput.value = '0.7';
-    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
+    rfInput.input(0.7);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
     expect(h.sentCommands).toHaveLength(1);
@@ -716,8 +760,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     flushSync();
     expect(el('rfGain')!.dataset.commandPhase).toBe('confirmed');
 
-    sqlInput.value = '0.6';
-    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    sqlInput.input(0.6);
     flushSync();
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(153);
     expect(h.sentCommands).toHaveLength(2);
@@ -729,10 +772,11 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     state = observedMainLevels(state, { rfGain: 204 / 255 }, 7);
     acknowledgeSent(sqlCommand);
     flushSync();
-    expect(el('rfGain')!.querySelector('input')!.valueAsNumber).toBe(0.8);
+    expect(level('rfGain').value()).toBe(0.8);
     expect(el('rfGain')!.querySelector('output')!.textContent).toBe('80%');
     expect(el('squelch')!.dataset.commandPhase).toBe('awaiting-confirmation');
-    expect(el('squelch')!.querySelector('input')!.valueAsNumber).toBe(0.6);
+    expect(level('squelch').value()).toBe(0.1);
+    expect(el('squelch')!.querySelector('output')!.textContent).toBe('60%');
 
     observedMainLevels(state, { squelch: 153 / 255 }, 8);
     flushSync();
@@ -743,12 +787,8 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
 
   it('routes separate endpoint requests once through the unchanged raw conversion seam', () => {
     render();
-    const rfInput = el('rfGain')!.querySelector('input')!;
-    const sqlInput = el('squelch')!.querySelector('input')!;
-    rfInput.value = '0';
-    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
-    sqlInput.value = '1';
-    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rfGain').input(0);
+    level('squelch').input(1);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(255);
@@ -758,9 +798,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('routes a hard-left drag to RF min / SQL min, both raw wire integers', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
@@ -774,9 +812,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('routes the knob center to RF max / SQL min', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0.5);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
@@ -787,9 +823,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('routes a hard-right drag to SQL max / RF max, both raw wire integers', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(1);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(255);
@@ -802,9 +836,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('sweeps RF only on a left-of-center drag, leaving SQL pinned at min', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0.23';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0.23);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(128);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(0);
@@ -814,9 +846,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
   it('sweeps SQL only on a right-of-center drag, leaving RF pinned at max', () => {
     h.caps = liveCaps(true, 'combined');
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0.77';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0.77);
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(255);
     expect(h.squelch).toHaveBeenCalledExactlyOnceWith(128);
@@ -831,8 +861,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 0.8196078431372549;
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0.2;
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    expect(input.valueAsNumber).toBeCloseTo(0.632, 3);
+    expect(level('rf-sql').value()).toBeCloseTo(0.632, 3);
   });
 
   // Verifier follow-up R1, pinned end-to-end through the real
@@ -847,9 +876,7 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0.5);
     flushSync();
     expect(h.rfGain).not.toHaveBeenCalled();
     expect(h.squelch).not.toHaveBeenCalled();
@@ -861,12 +888,72 @@ describe('MOR-1447 leg 2: the combined RF/SQL knob, when the profile declares it
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.rfGain = 1;
     (h.state as unknown as { main: { rfGain: number; squelch: number } }).main.squelch = 0;
     render();
-    const input = el('rf-sql')!.querySelector('input')!;
-    input.value = '0'; // hard left: RF -> 0 (changes), SQL stays 0 (unchanged)
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    level('rf-sql').input(0); // hard left: RF -> 0 (changes), SQL stays 0 (unchanged)
     flushSync();
     expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(0);
     expect(h.squelch).not.toHaveBeenCalled();
+  });
+});
+
+describe('the hosted RF owner survives replaceable presentation layouts', () => {
+  it('retains authority while replacing renderers, and cancels detached or revoked drafts', () => {
+    const props = renderHosted();
+    const originalSubscribers = [...h.authorityListeners];
+    const old = level('rfGain');
+    old.frame.getBoundingClientRect = () => ({ left: 0, width: 100 } as DOMRect);
+    Object.assign(old.slider, {
+      setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
+    });
+    old.slider.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 7, clientX: 70, bubbles: true,
+    }));
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(179);
+    h.rfGain.mockClear();
+
+    props.rfFrontEndLayout = 'independent';
+    flushSync();
+    const replacement = level('rfGain');
+    expect(replacement.slider).not.toBe(old.slider);
+    expect(target.querySelector('[data-rf-layout="independent"]')).not.toBeNull();
+    expect(target.querySelectorAll('[data-testid="rf-front-end-rfGain"]')).toHaveLength(1);
+    expect([...h.authorityListeners]).toEqual(originalSubscribers);
+    expect(replacement.value()).toBe(0.8);
+
+    old.slider.dispatchEvent(new PointerEvent('pointermove', {
+      pointerId: 7, clientX: 90, bubbles: true,
+    }));
+    old.slider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, bubbles: true }));
+    old.slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(h.rfGain).not.toHaveBeenCalled();
+
+    replacement.input(0.55, 8);
+    flushSync();
+    expect(h.rfGain).toHaveBeenCalledExactlyOnceWith(140);
+    h.rfGain.mockClear();
+    h.session = { state: 'disconnected', epoch: 8 };
+    for (const listener of h.sessionListeners) listener(h.session);
+    publishAuthority();
+    flushSync();
+    const revoked = level('rfGain');
+    expect(revoked.disabled()).toBe(true);
+    expect(el('rfGain')!.textContent).toContain('?');
+    revoked.input(0.9, 9);
+    expect(h.rfGain).not.toHaveBeenCalled();
+    expect([...h.authorityListeners]).toEqual(originalSubscribers);
+
+    h.session = { state: 'connected', epoch: 9 };
+    for (const listener of h.sessionListeners) listener(h.session);
+    publishAuthority();
+    flushSync();
+    expect(level('rfGain').value()).toBe(0.8);
+    props.rfFrontEndLayout = 'grouped';
+    flushSync();
+    expect(level('rfGain').value()).toBe(0.8);
+    expect([...h.authorityListeners]).toEqual(originalSubscribers);
+    unmount(component!);
+    component = null;
+    expect(h.authorityListeners.size).toBe(0);
   });
 });
 
