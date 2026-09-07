@@ -106,8 +106,7 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../../../../skins/registry', () => ({
   resolveSkinId: () => 'desktop-v2',
   loadSkin: async () => (await import('./support/TxControllerProbe.svelte')).default,
-  presentationHostMode: () => 'self-contained',
-  presentationResourcePlan: () => [],
+  getPresentationRecord: (id: unknown) => ({ id, kind: 'built-in-self-contained', resources: [] }),
 }));
 vi.mock('../../../../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,

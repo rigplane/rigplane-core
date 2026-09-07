@@ -83,7 +83,7 @@ const panadapterFirstShellSource = readFileSync('src/skins/lcd-panadapter-first/
  *
  */
 const persistentHostPassesInstruments =
-  /<SemanticRadioSurfaces>/.test(appSource)
+  /<SemanticRadioSurfaces[^>]*>/.test(appSource)
   && /\{#snippet children\(instruments\)\}[\s\S]*<(?:HostedPresentation|Presentation) \{instruments\} \/>/.test(appSource)
   && /children\?: Snippet<\[InstrumentComposition\]>;/.test(semanticHostSource)
   && /\{@render hostedChildren\(\{/.test(semanticHostSource);

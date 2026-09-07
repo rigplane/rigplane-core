@@ -15,14 +15,16 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
-import type { SkinId } from '../skins/registry';
+import type { ExternalPresentationRecord, PresentationId, SkinId } from '../skins/registry';
 
-type Pending = { id: SkinId; resolve: (component: unknown) => void; reject: (err: unknown) => void };
+type Pending = { id: PresentationId; resolve: (component: unknown) => void; reject: (err: unknown) => void };
 type LeaseEvent = { op: 'acquire' | 'release'; resource: string; consumer: string; mounted: string | null };
 
 const h = vi.hoisted(() => ({
   pending: [] as Pending[],
   loadSkin: vi.fn(),
+  getPresentationRecord: vi.fn(),
+  selectedPresentationId: undefined as string | undefined,
   resolveSkinId: vi.fn(),
   plan: vi.fn(),
   demand: new Map<string, number>(),
@@ -37,6 +39,9 @@ const h = vi.hoisted(() => ({
   registerBarrier: vi.fn(),
   txHost: undefined as { refreshAuthority: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> } | undefined,
   surfacePlanSource: undefined as (() => ReadonlyMap<string, readonly string[]> | null) | undefined,
+  surfaceHosts: [] as Array<{ externalPresentation?: {
+    record: ExternalPresentationRecord; component: unknown; isCurrent: () => boolean;
+  } | null }>,
 }));
 
 // The presentation subtree under test is the *loader result*, so the skin
@@ -45,12 +50,20 @@ const h = vi.hoisted(() => ({
 vi.mock('../skins/registry', () => ({
   resolveSkinId: h.resolveSkinId,
   loadSkin: h.loadSkin,
+  getPresentationRecord: h.getPresentationRecord,
   presentationHostMode: () => 'self-contained',
   presentationResourcePlan: h.plan,
 }));
-vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
-  default: (await import('./LayoutStub.svelte')).default,
+vi.mock('../component-kits/activation', () => ({
+  getSelectedPresentationId: () => h.selectedPresentationId,
 }));
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => {
+  const Stub = (await import('./LayoutStub.svelte')).default;
+  return { default: ((anchor: unknown, props: (typeof h.surfaceHosts)[number]) => {
+    h.surfaceHosts.push(props);
+    return (Stub as unknown as ClientComponent)(anchor, props);
+  }) };
+});
 vi.mock('../presentation/workspace/resolution', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../presentation/workspace/resolution')>();
   return {
@@ -134,6 +147,17 @@ function presentationStub(id: string): ClientComponent {
   return stub;
 }
 
+function externalRecord(
+  id: string, layoutId: string, resources: ExternalPresentationRecord['resources'],
+): ExternalPresentationRecord {
+  const component = presentationStub(id);
+  return {
+    id, layoutId, resources, kind: 'external-instruments-v1',
+    loader: async () => component as never,
+    appearances: {} as ExternalPresentationRecord['appearances'],
+  };
+}
+
 const mountedSkin = (): string | null =>
   document.querySelector('.layout-stub')?.getAttribute('data-skin') ?? null;
 const mountedCount = () => document.querySelectorAll('.layout-stub').length;
@@ -173,13 +197,13 @@ function selectSkin(id: SkinId): void {
  * that resolution hands back, so two pending requests for the same skin can
  * be told apart in the DOM.
  */
-function completeLoad(id: SkinId, as: string = id): void {
+function completeLoad(id: PresentationId, as: string = id): void {
   const index = h.pending.findIndex((entry) => entry.id === id);
   if (index < 0) throw new Error(`no pending load for ${id}`);
   h.pending.splice(index, 1)[0].resolve(presentationStub(as));
 }
 
-function failLoad(id: SkinId, message = 'chunk load failed'): void {
+function failLoad(id: PresentationId, message = 'chunk load failed'): void {
   const index = h.pending.findIndex((entry) => entry.id === id);
   if (index < 0) throw new Error(`no pending load for ${id}`);
   h.pending.splice(index, 1)[0].reject(new Error(message));
@@ -198,15 +222,21 @@ beforeEach(() => {
   h.demand.clear();
   h.resourcesEnded = false;
   h.surfacePlanSource = undefined;
+  h.surfaceHosts.length = 0;
+  h.selectedPresentationId = undefined;
   document.body.innerHTML = '';
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
   h.bootstrap.mockResolvedValue(h.bootstrapCleanup);
   h.initBattery.mockResolvedValue(vi.fn());
   h.resolveSkinId.mockImplementation(({ isMobile }: { isMobile: boolean }) => (isMobile ? 'mobile' : 'desktop-v2'));
-  h.loadSkin.mockImplementation(
-    (id: SkinId) => new Promise((resolve, reject) => { h.pending.push({ id, resolve, reject }); }),
-  );
+  h.getPresentationRecord.mockImplementation((id: SkinId) => ({
+    id, kind: 'built-in-self-contained', loader: vi.fn(), resources: h.plan(id),
+  }));
+  h.loadSkin.mockImplementation((source: PresentationId | ExternalPresentationRecord) => {
+    const id = typeof source === 'string' ? source : source.id;
+    return new Promise((resolve, reject) => { h.pending.push({ id, resolve, reject }); });
+  });
   h.plan.mockImplementation((id: SkinId) => (id === 'mobile' ? ['hardware-scope'] : ['hardware-scope', 'audio-fft']));
   h.provide.mockImplementation(() => {
     h.txHost = { refreshAuthority: vi.fn(), dispose: vi.fn() };
@@ -338,7 +368,7 @@ describe('stale-resolution cancellation', () => {
 
     expect(mountedCount()).toBe(0);
     expect(mountedSkin()).toBeNull();
-    // A discarded resolution touches no resources either.
+    // A discarded resolution never reaches the ready-to-commit bridge.
     expect(h.leaseEvents).toEqual([]);
 
     completeLoad('desktop-v2');           // request 3 — the current one
@@ -375,6 +405,77 @@ describe('stale-resolution cancellation', () => {
     expect(mountedCount()).toBe(1);
 
     unmount(instance);
+  });
+});
+
+describe('external presentation occurrences', () => {
+  it('keeps exact-record LKG current and never revives an earlier A occurrence', async () => {
+    const recordA = externalRecord('face-a', 'desktop-v2', ['audio-fft']);
+    const recordB = externalRecord('face-b', 'mobile', ['hardware-scope']);
+    const recordC = externalRecord('face-c', 'layout-for-c', []);
+    const records = new Map([recordA, recordB, recordC].map((record) => [record.id, record]));
+    h.getPresentationRecord.mockImplementation((id: string) => records.get(id));
+    h.selectedPresentationId = recordA.id;
+    h.demand.set('audio-fft', 1);
+    h.demand.set('hardware-scope', 1);
+    const request = async (id: string, skin: SkinId) => {
+      h.selectedPresentationId = id; selectSkin(skin); await settle();
+    };
+
+    const instance = mountApp();
+    await settle();
+    completeLoad(recordA.id);
+    await settle();
+
+    const hostProps = h.surfaceHosts[0];
+    const a1 = hostProps.externalPresentation!;
+    expect(a1.record).toBe(recordA);
+    expect(a1.isCurrent()).toBe(true);
+    expect(surfacePlanSnapshot()).not.toBeNull();
+    expect(h.plan).not.toHaveBeenCalled();
+    h.leaseEvents.length = 0;
+
+    await request(recordB.id, 'mobile');
+    expect(a1.isCurrent()).toBe(true);
+    failLoad(recordB.id);
+    await settle();
+    expect(a1.isCurrent()).toBe(true);
+    expect(h.leaseEvents.filter((event) => event.consumer === 'App:face-b'))
+      .toEqual([]);
+
+    await request(recordA.id, 'desktop-v2');
+    completeLoad(recordA.id);
+    await settle();
+    const a2 = hostProps.externalPresentation!;
+    expect(a1.isCurrent()).toBe(false);
+
+    const demandBeforeUnresolvedB = h.demand.get('hardware-scope');
+    await request(recordB.id, 'mobile');
+    expect(h.demand.get('hardware-scope')).toBe(demandBeforeUnresolvedB);
+    await request(recordC.id, 'desktop-v2');
+    completeLoad(recordC.id);
+    await settle();
+    const c = hostProps.externalPresentation!;
+    expect(h.pending.some(({ id }) => id === recordB.id)).toBe(true);
+    expect(h.demand.get('hardware-scope')).toBe(demandBeforeUnresolvedB);
+    expect(h.leaseEvents.filter((event) => event.consumer === 'App:face-b')).toEqual([]);
+
+    await request(recordA.id, 'mobile');
+    completeLoad(recordA.id);
+    await settle();
+    const a3 = hostProps.externalPresentation!;
+
+    expect([a1, a2, c, a3]).toHaveLength(new Set([a1, a2, c, a3]).size);
+    expect(a1.isCurrent()).toBe(false);
+    expect(a2.isCurrent()).toBe(false);
+    expect(c.isCurrent()).toBe(false);
+    expect(a3.isCurrent()).toBe(true);
+    expect(h.loadSkin.mock.calls.map(([source]) => source)).toEqual([
+      recordA, recordB, recordA, recordB, recordC, recordA,
+    ]);
+
+    unmount(instance);
+    expect(a3.isCurrent()).toBe(false);
   });
 });
 

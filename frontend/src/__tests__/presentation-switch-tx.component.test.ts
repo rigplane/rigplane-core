@@ -82,8 +82,7 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../skins/registry', () => ({
   resolveSkinId: () => widthToSkin(),
   loadSkin: h.loadSkin,
-  presentationHostMode: () => 'self-contained',
-  presentationResourcePlan: () => [],
+  getPresentationRecord: (id: unknown) => ({ id, kind: 'built-in-self-contained', resources: [] }),
 }));
 vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('./LayoutStub.svelte')).default,
