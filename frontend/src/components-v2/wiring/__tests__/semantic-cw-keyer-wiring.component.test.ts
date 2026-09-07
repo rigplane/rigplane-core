@@ -693,7 +693,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(sendCommand).toHaveBeenCalledTimes(2);
   });
 
-  it('presents out-of-band truth and fails closed for stale or malformed truth', () => {
+  it('presents out-of-band truth, keeps a stale reading honest, and fails closed for malformed truth', () => {
     render();
     unmount(component!); component = null;
     useState(delayState(72, 11)); render();
@@ -701,13 +701,35 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(delayInput().value).toBe('72');
     expect(sendCommand).not.toHaveBeenCalled();
 
+    // R29: a stale-but-observed field no longer fails the control closed —
+    // `projectControlFeedback` presents the last value with phase 'idle',
+    // never a blanked 'unavailable' placeholder. `disabled` stays `true`
+    // here regardless: `CwKeyerSurface`'s own `usable(cw.breakInDelay)` gate
+    // reads `field.availability.operational` from the SEPARATE, unfixed
+    // `field-status.ts: getFieldAvailability` chokepoint (still 'stale' !==
+    // 'available' there) — a second doctrine site the census flagged and
+    // this PR defers (see PR body's field-status follow-up paragraph), not
+    // a regression introduced here.
     unmount(component!); component = null;
     useState(delayState(72, 12, { freshness: 'stale' })); render();
     expect(delayInput().disabled).toBe(true);
+    expect(delayInput().dataset.commandPhase).toBe('idle');
+    expect(delayInput().value).toBe('72');
+    expect(delayInput().hasAttribute('aria-valuenow')).toBe(true);
+    expect(delayInput().getAttribute('aria-valuenow')).toBe('72');
+    expect(delayInput().getAttribute('aria-valuetext')).toBe('Confirmed 72');
+    expect(el('breakInDelay-value')!.textContent).toContain('72');
+
+    // A REAL disconnect (`state === null`, `projectControlFeedback`'s own
+    // gate, orthogonal to freshness) still greys the control out from this
+    // stale-but-presented starting point.
+    unmount(component!); component = null;
+    h.state = null;
+    h.session = { state: 'disconnected', epoch: 2 };
+    render();
+    expect(delayInput().disabled).toBe(true);
     expect(delayInput().dataset.commandPhase).toBe('unavailable');
-    expect(delayInput().hasAttribute('aria-valuenow')).toBe(false);
-    expect(delayInput().getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
-    expect(el('breakInDelay-value')!.textContent).toContain('— unavailable');
+    h.session = { state: 'connected', epoch: 1 };
 
     unmount(component!); component = null;
     useState(delayState(256, 13)); render();

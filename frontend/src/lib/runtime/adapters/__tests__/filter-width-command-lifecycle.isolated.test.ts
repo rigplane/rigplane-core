@@ -182,8 +182,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it.each([
     ['missing status', undefined],
     ['unobserved status', { observed: false, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 }],
-    ['stale status', { observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5 }],
-    ['unavailable status', { observed: true, freshness: 'fresh', availability: 'stale', lastObservedMonotonic: 5 }],
     ['missing marker', { observed: true, freshness: 'fresh', availability: 'available' }],
     ['non-finite marker', { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: Number.NaN }],
   ])('makes the full projection unavailable from %s evidence', (_case, fieldStatus) => {
@@ -191,6 +189,21 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null,
+    });
+  });
+  it.each([
+    // R29 (MOR-2425): a field that is observed and carries a value stays
+    // available whichever of the two wire signals (`freshness`/`availability`)
+    // records the staleness — the server always sets them together
+    // (`_freshness_availability`, `src/rigplane/web/runtime_helpers.py`), but
+    // this predicate does not require them to agree to accept 'stale'.
+    ['stale status', { observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5 }],
+    ['stale availability', { observed: true, freshness: 'fresh', availability: 'stale', lastObservedMonotonic: 5 }],
+  ])('keeps the full projection available with the last value from %s evidence', (_case, fieldStatus) => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': fieldStatus } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
+      confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
   });
   it('does not let a legacy record without an ACK field boundary confirm', () => {
@@ -667,9 +680,6 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     ['missing value', delayState({ breakInDelay: undefined })],
     ['non-integer value', delayState({ breakInDelay: 32.5 })],
     ['missing field status', delayState({ fieldStatus: {} })],
-    ['stale field', delayState({ fieldStatus: { breakInDelay: {
-      observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5,
-    } } })],
     ['unavailable field', delayState({ fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'unavailable', lastObservedMonotonic: 5,
     } } })],
@@ -678,6 +688,16 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getBreakInDelayControlFeedback()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false,
       availability: 'unavailable',
+    });
+  });
+
+  it('keeps a stale-but-observed field available with its last value (MOR-2425/R29)', () => {
+    runtimeState.state = delayState({ fieldStatus: { breakInDelay: {
+      observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5,
+    } } });
+    lifecycle.commands = [delayCommand()];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      confirmed: 32, target: 64, phase: 'submitted', busy: true, availability: 'available',
     });
   });
 
