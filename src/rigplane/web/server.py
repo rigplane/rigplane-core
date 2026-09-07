@@ -660,6 +660,11 @@ class WebConfig:
     discovery_port: int = 8470  # UDP port for discovery
     read_only: bool = False  # reject PTT and other transmit commands
     emit_startup_event: bool = False  # emit JSON runtime startup event to stdout
+    # Hold the listener closed until every declared, non-tx_only field has
+    # been observed once (see web_startup._await_initial_state_acquisition).
+    # The CLI sets it; embedders and tests that drive start() without a
+    # backend filling the store leave it off.
+    await_initial_state: bool = False
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
     state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
     # Adaptive per-client egress codec controller (MOR-588, ADR §3.6):
@@ -2838,10 +2843,23 @@ class WebServer:
         self._detach_reconnect_status_listener()
         await stop_web_server(self)
 
-    async def serve_forever(self) -> None:
-        """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully."""
+    async def serve_forever(
+        self,
+        *,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully.
+
+        ``on_started`` runs once :meth:`start` has returned — i.e. after the
+        listener is bound. The CLI prints its startup banner from there so
+        the ``Web UI:`` line never advertises a URL that is not accepting
+        yet (pinned by
+        ``test_web_ui_banner_prints_only_after_the_server_reports_started``).
+        """
         await self.start()
         assert self._server is not None
+        if on_started is not None:
+            on_started()
         if self._config.emit_startup_event:
             self.emit_startup_event()
 

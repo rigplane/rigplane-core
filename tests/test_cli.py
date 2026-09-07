@@ -1048,7 +1048,8 @@ class TestWebRigctldDefault:
             def __init__(self, _radio, _cfg):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
+                on_started()
                 raise asyncio.CancelledError
 
         p = _build_parser()
@@ -1089,7 +1090,8 @@ class TestWebRigctldDefault:
                 self.command_state_store = object()
                 web_stores.append(self.command_state_store)
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
+                on_started()
                 raise asyncio.CancelledError
 
         class FakeRigctldServer:
@@ -1191,7 +1193,8 @@ class TestWebRigctldDefault:
             async def start_audio_bridge(self, **_kwargs):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
+                on_started()
                 raise asyncio.CancelledError
 
         p = _build_parser()
@@ -1242,7 +1245,8 @@ class TestWebRigctldDefault:
             async def start_audio_bridge(self, **_kwargs):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
+                on_started()
                 raise asyncio.CancelledError
 
         p = _build_parser()
@@ -1304,7 +1308,8 @@ class TestWebRigctldDefault:
             async def start_audio_bridge(self, **_kwargs):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
+                on_started()
                 raise asyncio.CancelledError
 
         p = _build_parser()
@@ -1363,7 +1368,8 @@ class TestWebRigctldDefault:
             async def start_audio_bridge(self, **_kwargs):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
+                on_started()
                 raise asyncio.CancelledError
 
         unavailable_route = AudioRoute(
@@ -1412,7 +1418,8 @@ class TestWebRigctldDefault:
             def __init__(self, _radio, _cfg):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
+                on_started()
                 raise asyncio.CancelledError
 
         p = _build_parser()
@@ -1458,7 +1465,7 @@ class TestWebRigctldDefault:
             def __init__(self, _radio, _cfg):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
                 raise AssertionError("web must not start when rigctld fails hard")
 
         p = _build_parser()
@@ -1509,7 +1516,7 @@ class TestWebRigctldDefault:
             def __init__(self, _radio, _cfg):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
                 raise AssertionError("web must not start when rigctld fails hard")
 
         p = _build_parser()
@@ -1557,7 +1564,7 @@ class TestWebRigctldDefault:
             def __init__(self, _radio, _cfg):
                 pass
 
-            async def serve_forever(self):
+            async def serve_forever(self, *, on_started=None):
                 raise AssertionError("web must not start when rigctld fails hard")
 
         p = _build_parser()

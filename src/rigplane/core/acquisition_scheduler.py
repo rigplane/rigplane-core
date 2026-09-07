@@ -706,7 +706,7 @@ class AcquisitionScheduler:
         observed_paths: Iterable[FieldPath],
         *,
         reason: str = "prime-unobserved",
-        limit: int = _PRIME_UNOBSERVED_BURST_LIMIT,
+        limit: int | None = _PRIME_UNOBSERVED_BURST_LIMIT,
     ) -> tuple[AcquisitionRequest, ...]:
         """Queue BACKGROUND reads for never-observed fields with a policy.
 
@@ -788,7 +788,11 @@ class AcquisitionScheduler:
           (profile-declaration order) that this method advances past
           whatever it scanned, wrapping at the end of the mapping (MOR-1501,
           A1 from #2415 review) — rather than always restarting the scan at
-          index 0. A fixed scan-from-zero would let five or more
+          index 0. ``limit=None`` removes the cap for one call; the startup
+          gate in ``web/web_startup.py`` uses it so a cold store is not
+          primed five paths at a time (pinned by
+          ``test_uncapped_prime_queues_every_unobserved_policy_field_in_one_pass``).
+          A fixed scan-from-zero would let five or more
           *permanently* unanswerable non-polling fields ahead of a reachable
           one in declaration order starve that reachable one indefinitely:
           each call would re-queue the same unanswerable leaders (freed back
@@ -816,7 +820,7 @@ class AcquisitionScheduler:
         cursor = self._prime_cursor % total if total else 0
         visited = 0
         for offset in range(total):
-            if queued_path_count >= limit:
+            if limit is not None and queued_path_count >= limit:
                 break
             visited = offset + 1
             path, policy = items[(cursor + offset) % total]
@@ -877,6 +881,46 @@ class AcquisitionScheduler:
                 continue
             return True
         return False
+
+    def unobserved_startup_paths(
+        self,
+        observed_paths: Iterable[FieldPath],
+    ) -> tuple[FieldPath, ...]:
+        """Return the declared paths the store has never seen, sorted by path.
+
+        The domain is every pollable capability plus every explicit
+        ``field_policies`` key, minus the paths whose resolved policy carries
+        ``tx_only``. That flag is read from the profile
+        (:attr:`AcquisitionPolicy.tx_only`), never from a list kept here;
+        :meth:`due_requests` gates those cadence groups on ``tx_active``, so
+        a caller that waited on them would be waiting for a transmission.
+
+        Unlike :meth:`has_unobserved_policy_fields`, this does not exclude
+        cadence-owned paths: a path :meth:`due_requests` will poll is still
+        unobserved until its first answer arrives.
+        """
+
+        observed = frozenset(observed_paths)
+        profile = self._profile
+        domain = set(profile.pollable_paths()) | set(profile.field_policies)
+        return tuple(
+            sorted(
+                (
+                    path
+                    for path in domain
+                    if path not in observed and not profile.policy_for(path).tx_only
+                ),
+                key=str,
+            )
+        )
+
+    def initial_acquisition_complete(
+        self,
+        observed_paths: Iterable[FieldPath],
+    ) -> bool:
+        """Return True when :meth:`unobserved_startup_paths` is empty."""
+
+        return not self.unobserved_startup_paths(observed_paths)
 
     def record_acquisition_result(
         self,
