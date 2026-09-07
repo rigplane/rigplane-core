@@ -771,20 +771,63 @@ export interface IfShiftControlFeedback extends ControlFeedback<number> {
 }
 
 /**
- * Total order over `ControlFeedbackPhase` from least to most settled, used
- * only to pick between two REAL phase values already produced by
- * `projectControlFeedback` — never to invent a new one. A terminal outcome
- * phase counts as more settled than any in-flight phase but less settled
- * than `idle`, so a just-finished side's outcome still surfaces over a
- * boringly idle counterpart.
+ * Non-terminal phases in lifecycle order, least advanced first. Read only
+ * from a side whose `busy` is true, which (per `projectControlFeedback`)
+ * means its `phase` is one of exactly these four — never `'idle'` or a
+ * terminal phase. A `'queued'` (held-for-tx) overlay can land on a command
+ * that is already `'acknowledged'` underneath
+ * (`commands.svelte.ts: applyCommandLifecycleProjection`'s `'held'` branch
+ * accepts both `'pending'` and `'acknowledged'`), so it ranks ahead of
+ * `'awaiting-confirmation'` here: a held command has made less progress
+ * toward confirmation than one merely awaiting its echo, regardless of the
+ * status it was held from.
  */
-const PHASE_PROGRESS: readonly ControlFeedbackPhase[] = Object.freeze([
-  'awaiting-confirmation', 'dispatched', 'queued', 'submitted',
-  'confirmed', 'failed', 'timed-out', 'cancelled', 'superseded',
-  'idle', 'unavailable',
+const IN_FLIGHT_ORDER: readonly ControlFeedbackPhase[] = Object.freeze([
+  'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
 ]);
-const lessSettled = <T extends { phase: ControlFeedbackPhase }>(a: T, b: T): T =>
-  PHASE_PROGRESS.indexOf(a.phase) <= PHASE_PROGRESS.indexOf(b.phase) ? a : b;
+
+/**
+ * The least-advanced of two busy sides' phases, by `IN_FLIGHT_ORDER` — the
+ * derived IF-shift feedback is never more settled than the side that has
+ * made the least progress toward confirmation.
+ */
+function mergeBusyPhase(
+  inner: Readonly<ControlFeedback<number>>, outer: Readonly<ControlFeedback<number>>,
+): ControlFeedbackPhase {
+  if (inner.busy && outer.busy) {
+    return IN_FLIGHT_ORDER.indexOf(inner.phase) <= IN_FLIGHT_ORDER.indexOf(outer.phase)
+      ? inner.phase : outer.phase;
+  }
+  return inner.busy ? inner.phase : outer.phase;
+}
+
+/**
+ * Terminal outcomes ranked worst-first: a non-`'confirmed'` outcome on
+ * either side always dominates a `'confirmed'` one on the other, so a
+ * half-failed gesture is never reported as `'confirmed'`. The order among
+ * the non-`'confirmed'` outcomes is otherwise arbitrary but fixed, so two
+ * differently-failed sides still resolve to one deterministic outcome.
+ */
+const TERMINAL_OUTCOME_PRIORITY: readonly ControlFeedbackOutcome[] = Object.freeze([
+  'failed', 'timed-out', 'cancelled', 'superseded', 'confirmed',
+]);
+
+/**
+ * Combines two non-busy sides' phase/outcome. Each side's `outcome` here is
+ * either `null` (idle — no lifecycle ran) or a terminal outcome; ranked by
+ * `TERMINAL_OUTCOME_PRIORITY` when both are terminal, otherwise the
+ * non-idle side wins outright.
+ */
+function mergeTerminalOutcome(
+  inner: Readonly<ControlFeedback<number>>, outer: Readonly<ControlFeedback<number>>,
+): { phase: ControlFeedbackPhase; outcome: Readonly<{ phase: ControlFeedbackOutcome; error?: string }> | null } {
+  if (inner.outcome === null && outer.outcome === null) return { phase: 'idle', outcome: null };
+  if (inner.outcome === null) return { phase: outer.phase, outcome: outer.outcome };
+  if (outer.outcome === null) return { phase: inner.phase, outcome: inner.outcome };
+  const winner = TERMINAL_OUTCOME_PRIORITY.indexOf(inner.outcome.phase)
+    <= TERMINAL_OUTCOME_PRIORITY.indexOf(outer.outcome.phase) ? inner : outer;
+  return { phase: winner.phase, outcome: winner.outcome };
+}
 
 function unavailableIfShiftFeedback(
   scope: Readonly<ControlFeedbackScope>, sessionEpoch: number,
@@ -848,9 +891,9 @@ export function getIfShiftControlFeedback(
   const outerForRequested = outer.requestedTarget ?? outer.confirmed;
   const requestedTarget = inner.requestedTarget === null && outer.requestedTarget === null
     ? null : deriveIfShift(toHz(innerForRequested), toHz(outerForRequested));
-  const winner = lessSettled(inner, outer);
-  const phase = winner.phase;
-  const outcome = busy ? null : winner.outcome;
+  const { phase, outcome } = busy
+    ? { phase: mergeBusyPhase(inner, outer), outcome: null }
+    : mergeTerminalOutcome(inner, outer);
   const lifecycleId = inner.lifecycleId === null && outer.lifecycleId === null
     ? null : JSON.stringify([inner.lifecycleId, outer.lifecycleId]);
   const transitionId = inner.transitionId === null && outer.transitionId === null

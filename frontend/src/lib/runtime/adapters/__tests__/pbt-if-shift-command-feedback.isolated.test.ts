@@ -192,4 +192,70 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
     h.caps = { ...ftx1Caps(), capabilities: [] } as unknown as Capabilities;
     expect(getIfShiftControlFeedback(connected).availability).toBe('unavailable');
   });
+
+  it('reports the non-confirmed outcome, not confirmed, when one PBT side confirms and the other fails', () => {
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, { status: 'confirmed' }),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160, { status: 'failed', error: 'echo mismatch' }),
+    ];
+    const feedback = getIfShiftControlFeedback(connected);
+    expect(feedback.busy).toBe(false);
+    expect(feedback.phase).toBe('failed');
+    expect(feedback.outcome).toMatchObject({ phase: 'failed' });
+  });
+
+  it('reports timed-out (not confirmed) when the confirmed side is the other one', () => {
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, { status: 'timed-out' }),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160, { status: 'confirmed' }),
+    ];
+    const feedback = getIfShiftControlFeedback(connected);
+    expect(feedback.busy).toBe(false);
+    expect(feedback.phase).toBe('timed-out');
+    expect(feedback.outcome).toMatchObject({ phase: 'timed-out' });
+  });
+
+  it('reports confirmed with the derived Hz value when both PBT sides confirm', () => {
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, { status: 'confirmed' }),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160, { status: 'confirmed' }),
+    ];
+    const expected = deriveIfShift(pbtRawToHz(131, PBT_SCALE), pbtRawToHz(140, PBT_SCALE));
+    const feedback = getIfShiftControlFeedback(connected);
+    expect(feedback.busy).toBe(false);
+    expect(feedback.phase).toBe('confirmed');
+    expect(feedback.outcome).toMatchObject({ phase: 'confirmed' });
+    expect(feedback.confirmed).toBe(expected);
+  });
+
+  it('while one side merely acknowledged and the other is only submitted, is never more settled than the submitted side', () => {
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, { status: 'acknowledged' }),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160, { status: 'pending' }),
+    ];
+    const feedback = getIfShiftControlFeedback(connected);
+    expect(feedback.busy).toBe(true);
+    expect(feedback.phase).toBe('submitted');
+    expect(feedback.phase).not.toBe('awaiting-confirmation');
+  });
+
+  it('composes a transitionId that changes with either half, distinct across two gestures', () => {
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, { id: 'gesture-a' }),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160),
+    ];
+    const first = getIfShiftControlFeedback(connected);
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, { id: 'gesture-b' }),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160),
+    ];
+    const second = getIfShiftControlFeedback(connected);
+    expect(first.transitionId).not.toBe(second.transitionId);
+    expect(first.lifecycleId ?? first.transitionId).not.toBe(second.lifecycleId ?? second.transitionId);
+  });
 });
