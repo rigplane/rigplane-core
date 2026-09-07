@@ -120,12 +120,18 @@ describe('exact NR-level fallback-props projection (MOR-1734)', () => {
   it.each([
     ['missing raw state', undefined, 'available'],
     ['missing field status', 4, 'missing'],
-    ['stale field status', 4, 'stale'],
     ['raw below the domain', -1, 'available'],
     ['raw above the domain', 11, 'available'],
   ] as const)('fails closed for %s', (_name, raw, availability) => {
     expect(toDspProps(state(raw, availability), caps({ nr_level: EXACT_NR_DOMAIN })).nrLevelProjection)
       .toEqual({ value: null, domain: DISPLAY_DOMAIN, adjustable: false });
+  });
+
+  it('projects the last observed NR level even when its field status is stale (R29)', () => {
+    const capabilities = caps({ nr_level: EXACT_NR_DOMAIN });
+    const expected = { value: 4, domain: DISPLAY_DOMAIN, adjustable: true };
+
+    expect(toDspProps(state(4, 'stale'), capabilities).nrLevelProjection).toEqual(expected);
   });
 
   it.each([
