@@ -1105,6 +1105,64 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       clearCapabilities();
     }
   });
+
+  it('keeps a usable engineering SWR scale mounted across current, stale, unknown, and idle', () => {
+    setCapabilities(makeFaultCaps());
+    try {
+      const view = base('transmitting');
+      view.meters!.swr = {
+        ...view.meters!.swr,
+        domain: { kind: 'engineering', unit: 'ratio' },
+        display: { state: 'current', value: 2.25 },
+      };
+      const props: { view: RadioViewModel } = proxy({ view });
+      const component = mount(MetersSurface, { target, props });
+      flushSync();
+      const ticks = () => target.querySelectorAll('[data-lower-tick-mark]').length;
+      const fills = () => target.querySelectorAll('[data-lower-fill]').length;
+      const fault = () => target.querySelector('[data-lower-fault]')?.getAttribute('data-lower-fault');
+      expect(ticks()).toBe(6);
+      expect(fills()).toBeGreaterThan(0);
+      expect(fault()).toBe('true');
+
+      for (const display of [
+        { state: 'stale', value: 2.25 } as const,
+        { state: 'unknown', reason: 'not-observed' } as const,
+      ]) {
+        props.view = {
+          ...props.view,
+          meters: {
+            ...props.view.meters!,
+            swr: { ...props.view.meters!.swr, display },
+          },
+        };
+        flushSync();
+        expect(ticks()).toBe(6);
+        expect(fills()).toBe(0);
+        expect(fault()).toBe('false');
+      }
+
+      props.view = {
+        ...props.view,
+        meters: {
+          ...props.view.meters!,
+          rfState: 'receiving',
+          swr: {
+            ...props.view.meters!.swr,
+            relevant: false,
+            display: { state: 'current', value: 2.25 },
+          },
+        },
+      };
+      flushSync();
+      expect(ticks()).toBe(6);
+      expect(fills()).toBe(0);
+      expect(fault()).toBe('false');
+      unmount(component);
+    } finally {
+      clearCapabilities();
+    }
+  });
 });
 
 // ── 12. MOR-2250 (PR 2 of 2) — the shared lower-scale bar ──────────────────

@@ -134,6 +134,12 @@ export function swrRatio(value: number, domain?: MeterValueDomain): number {
   return getCal('swr') ? value : NaN;
 }
 
+/** Whether the lower SWR row has a physical ratio scale, independent of sample state. */
+export function hasSwrRatioScale(domain?: MeterValueDomain): boolean {
+  if (domain === undefined) return true;
+  return matchesEngineering(domain, 'ratio') && getCal('swr') !== null;
+}
+
 export function formatSwr(value: number, domain?: MeterValueDomain): string {
   if (domain?.kind === 'raw') return formatRaw(value);
   if (domain?.kind === 'unknown') return formatUnknownUnit(value);

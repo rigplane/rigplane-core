@@ -113,6 +113,7 @@ import {
   compLevel,
   sLevel,
   isSwrFault,
+  hasSwrRatioScale,
   isAlcFault,
   updatePeakHold,
   peakHoldDisplay,
@@ -260,6 +261,7 @@ describe('explicit meter domains override capability metadata (MOR-2425)', () =>
   const unknown = { kind: 'unknown' } as const;
 
   it('keeps an explicit raw sample raw even when calibrated tables exist', () => {
+    expect(hasSwrRatioScale(raw)).toBe(false);
     expect(formatPowerWatts(50, raw)).toBe('50 raw');
     expect(normalizePower(50, raw)).toBeCloseTo(50 / 255);
     expect(formatSwr(3, raw)).toBe('3 raw');
@@ -277,6 +279,7 @@ describe('explicit meter domains override capability metadata (MOR-2425)', () =>
   });
 
   it('retains known numeric evidence for an unknown unit without geometry or faults', () => {
+    expect(hasSwrRatioScale(unknown)).toBe(false);
     expect(formatPowerWatts(50, unknown)).toBe('50 unit unknown');
     expect(normalizePower(50, unknown)).toBeNull();
     expect(formatSwr(3, unknown)).toBe('3 unit unknown');
@@ -295,6 +298,7 @@ describe('explicit meter domains override capability metadata (MOR-2425)', () =>
 
   it('keeps declared engineering units when a physical scale is unavailable', () => {
     clearCapabilities();
+    expect(hasSwrRatioScale({ kind: 'engineering', unit: 'ratio' })).toBe(false);
     expect(formatPowerWatts(50, { kind: 'engineering', unit: 'w' })).toBe('50W');
     expect(normalizePower(50, { kind: 'engineering', unit: 'w' })).toBeNull();
     expect(formatVolts(13.8, { kind: 'engineering', unit: 'v' })).toBe('13.8 V');
@@ -309,6 +313,10 @@ describe('explicit meter domains override capability metadata (MOR-2425)', () =>
     expect(idLevel(10, { kind: 'engineering', unit: 'a' })).toBeNull();
     expect(formatCompDb(15, { kind: 'engineering', unit: 'db' })).toBe('15 dB');
     expect(compLevel(15, { kind: 'engineering', unit: 'db' })).toBeNull();
+  });
+
+  it('keeps ratio-scale availability independent of the current sample', () => {
+    expect(hasSwrRatioScale({ kind: 'engineering', unit: 'ratio' })).toBe(true);
   });
 });
 

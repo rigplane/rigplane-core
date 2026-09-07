@@ -7,6 +7,7 @@ import {
   formatPowerWatts,
   formatSwr,
   formatVolts,
+  hasSwrRatioScale,
   idLevel,
   isAlcFault,
   isSwrFault,
@@ -46,7 +47,9 @@ export interface LevelMeterProjection<Key extends LevelMeterKey = LevelMeterKey>
 }
 
 export type BarMeterProjection = LevelMeterProjection<BarMeterKey>;
-export type SwrMeterProjection = LevelMeterProjection<'swr'>;
+export type SwrMeterProjection = LevelMeterProjection<'swr'> & {
+  readonly ratioScale: boolean;
+};
 
 type MeterDefinition<Key extends LevelMeterKey> = readonly [
   Key,
@@ -170,5 +173,8 @@ export function projectBarMeters(view: RadioViewModel): readonly BarMeterProject
 export function projectSwrMeter(view: RadioViewModel): SwrMeterProjection | null {
   const meters = view.meters;
   if (!meters || !meters.swr.availability.structural) return null;
-  return projectLevelMeter(SWR_DEFINITION, meters.swr, meters.rfState, true);
+  return {
+    ...projectLevelMeter(SWR_DEFINITION, meters.swr, meters.rfState, true),
+    ratioScale: hasSwrRatioScale(meters.swr.domain),
+  };
 }

@@ -34,19 +34,13 @@
   ] as const;
 
   function swrLowerScale(projection: SwrMeterProjection): LowerScaleDescriptor {
-    const hasRatioScale = projection.domain === undefined
-      || (
-        projection.domain.kind === 'engineering'
-        && projection.domain.unit === 'ratio'
-        && projection.motionFraction !== null
-      );
     return {
       label: 'SWR',
-      ticks: hasRatioScale ? SWR_LOWER_SCALE_TICKS : [],
+      ticks: projection.ratioScale ? SWR_LOWER_SCALE_TICKS : [],
       valueFraction: projection.motionFraction ?? 0,
       fault: projection.fault,
       relevant: projection.relevant,
-      stateText: projection.state === 'current' && !hasRatioScale
+      stateText: projection.state === 'current' && !projection.ratioScale
         ? projection.displayText : projection.stateText,
       accessibleDescription: projection.accessibleDescription ?? 'SWR: Not observed',
     };

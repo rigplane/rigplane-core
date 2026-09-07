@@ -446,7 +446,28 @@ describe('the meters surface mounts only when the view model carries the group',
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
     }));
     h.session = { state: 'disconnected', epoch: 0 };
-    h.state = liveState(true, { powerMeter: 255 });
+    const initial = liveState(true, { powerMeter: 255 });
+    h.state = {
+      ...initial,
+      fieldStatus: {
+        ...initial.fieldStatus,
+        powerMeter: { ...fresh, quality: ['calibrated'] },
+      },
+    };
+    // This lifecycle test needs known physics to witness a retained peak:
+    // state values are already watts and this synthetic scale supplies only
+    // the display-axis maximum. Raw and unknown domains intentionally do not peak.
+    h.caps = {
+      ...(h.caps as Capabilities),
+      meterCalibrations: {
+        ...(h.caps as Capabilities).meterCalibrations,
+        power: [
+          { raw: 0, actual: 0, label: '0' },
+          { raw: 255, actual: 255, label: '255' },
+        ],
+      },
+    };
+    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
     render();
     push({ intent: 'transmit', observedPtt: 'on' });
 

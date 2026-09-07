@@ -297,6 +297,7 @@ describe('projectBarMeters', () => {
       domain: { kind: 'raw' },
       motionFraction: 120 / 255,
       displayText: '120 raw',
+      ratioScale: false,
       fault: false,
       showPeak: false,
     });
@@ -310,7 +311,21 @@ describe('projectBarMeters', () => {
       domain: { kind: 'unknown' },
       motionFraction: null,
       displayText: '120 unit unknown',
+      ratioScale: false,
       fault: false,
+    });
+
+    view.meters!.swr = {
+      ...view.meters!.swr,
+      domain: { kind: 'engineering', unit: 'ratio' },
+      display: { state: 'current', value: 2.25 },
+    };
+    expect(projectSwrMeter(view)).toMatchObject({
+      state: 'current',
+      motionFraction: null,
+      displayText: '2.3',
+      ratioScale: false,
+      fault: true,
     });
   });
 });
