@@ -14,6 +14,21 @@ function render(surface: SemanticSurfaceName, view = base(), handlers = {}) {
   return { target, dispose: async () => { await unmount(component); target.remove(); } };
 }
 
+function driveLevel(root: HTMLElement, value: number): HTMLElement {
+  const slider = root.querySelector<HTMLElement>('[role="slider"]')!;
+  const frame = slider.closest<HTMLElement>('.vc-hbar')!;
+  frame.getBoundingClientRect = () => ({ left: 0, width: 100 } as DOMRect);
+  Object.assign(slider, {
+    setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn(),
+  });
+  slider.dispatchEvent(new PointerEvent('pointerdown', {
+    bubbles: true, clientX: value * 100, pointerId: 1,
+  }));
+  slider.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+  flushSync();
+  return slider;
+}
+
 const TITLES = {
   rxTx: 'TX', txAux: 'TX CONTROLS', meters: 'STATION METERS', rxAudio: 'RX AUDIO',
   filter: 'MODE / FILTER', dsp: 'DSP', rfFrontEnd: 'RF FRONT END', band: 'BAND',
@@ -54,17 +69,19 @@ describe('desktop semantic control frames', () => {
     await r.dispose();
   });
 
-  it('preserves native inputs and emits the existing RF intent once', async () => {
+  it('preserves the rendered slider and emits the existing RF intent once', async () => {
     const onPreampChange = vi.fn();
     const onLevelChange = vi.fn();
     const r = render('rfFrontEnd', base(), { onPreampChange, onLevelChange });
     (r.target.querySelector('[data-testid="rf-front-end-preamp-1"]') as HTMLButtonElement).click();
     expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(1);
-    const input = r.target.querySelector('[data-testid="rf-front-end-rfGain"] input') as HTMLInputElement;
-    expect(input.type).toBe('range');
-    input.value = '0.7';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0.7);
+    const level = r.target.querySelector('[data-testid="rf-front-end-rfGain"]') as HTMLElement;
+    const slider = driveLevel(level, 0.7);
+    expect(slider.closest<HTMLElement>('.vc-hbar')!.style
+      .getPropertyValue('--vc-fill-percent')).toBe('70%');
+    expect(onLevelChange).toHaveBeenCalledTimes(1);
+    expect(onLevelChange.mock.calls[0][0]).toBe('rfGain');
+    expect(onLevelChange.mock.calls[0][1]).toBeCloseTo(0.7, 12);
     expect(r.target.querySelectorAll('.rf-front-end-surface')).toHaveLength(1);
     await r.dispose();
   });
@@ -80,9 +97,9 @@ describe('desktop semantic control frames', () => {
     const button = r.target.querySelector('[data-testid="rf-front-end-preamp-1"]') as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     button.click();
-    const input = r.target.querySelector('[data-testid="rf-front-end-rfGain"] input') as HTMLInputElement;
-    expect(input.disabled).toBe(true);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const level = r.target.querySelector('[data-testid="rf-front-end-rfGain"]') as HTMLElement;
+    const slider = driveLevel(level, 0.5);
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
     expect(onPreampChange).not.toHaveBeenCalled();
     expect(onLevelChange).not.toHaveBeenCalled();
     expect(r.target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent).toBe('?');

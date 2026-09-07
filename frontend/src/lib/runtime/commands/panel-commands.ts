@@ -1727,8 +1727,8 @@ export function makeKeyboardHandlers() {
             // `data-panel`/`data-control` vocabulary no component emits.
             const selectors: Record<string, string> = {
               af: '[data-testid="rx-audio-af"] [role="slider"], [data-testid="rx-audio-af"] input[type="range"]',
-              rf: '[data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-rfGain"] input',
-              squelch: '[data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-squelch"] input',
+              rf: '[data-testid="rf-front-end-rf-sql"] [role="slider"], [data-testid="rf-front-end-rfGain"] [role="slider"], [data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-rfGain"] input',
+              squelch: '[data-testid="rf-front-end-rf-sql"] [role="slider"], [data-testid="rf-front-end-squelch"] [role="slider"], [data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-squelch"] input',
               filter: '[data-testid="filter-select"] button',
               mode: '[data-testid="filter-mode"] button',
               pbt: '[data-testid="filter-pbtInner"] input',

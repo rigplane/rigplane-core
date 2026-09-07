@@ -3,10 +3,9 @@
 
   Presentation only. It renders the MOR-1262 decomposition family 11
   `rfFrontEnd` fact group (MOR-1292/MOR-1293) — preamp, attenuator, RF gain,
-  squelch, DIGI-SEL, IP+ — and emits control intents as callbacks. It holds
-  only primitive-owned local interaction state, consults no controller and
-  issues no command directly (v3 ADR invariant 11), same doctrine as
-  `TxAuxSurface`/`RxAudioSurface`.
+  squelch, DIGI-SEL, IP+ — and emits finite-control intents as callbacks.
+  Persistent RF/SQL behavior arrives through required host-owned handles;
+  this remainder consults no controller and issues no command directly.
 
   CARRY-FORWARDS (binding, from the MOR-1292/MOR-1293 review rulings — see
   `radio-view-model.ts`'s `RfFrontEndViewModel` doc comment for the fact-layer
@@ -16,11 +15,8 @@
       last-known value. This is inherited "for free" from `usable`/`textOf`
       gating on `reading.status === 'known'` — the same idiom
       `TxAuxSurface`/`RxAudioSurface` use — as long as nothing here adds a
-      fallback that reads `rf.<field>.reading.value` outside that gate. There
-      is deliberately no "show it anyway, marked stale" branch: the fact
-      layer already collapses a stale reading to `unknown` before this file
-      ever sees it (`radio-view-model-adapter.ts`'s `txAuxField`), so widening
-      here would silently reopen exactly the gate MOR-1292 closed.
+      fallback that reads `rf.<field>.reading.value` outside that gate. RF/SQL
+      level truth is rendered by the required instrument handles.
   (2)+(3) THE PREAMP MUTEX. PRE is genuinely disabled while DIGI-SEL is
       unobserved, by design (MOR-479 hardware mutex, IC-7610). Rendered as a
       disabled control WITH AN EXPLANATION, read from `view.disabledReasons`
@@ -50,7 +46,11 @@
 -->
 <script module lang="ts">
   import type { DisabledReasonCode, RfFrontEndField } from './radio-view-model';
-  import { formatKnownLevel } from './format-level';
+  export {
+    RF_FRONT_END_LEVELS,
+    type RfFrontEndLevelField,
+    type RfSqlControlModel,
+  } from './rf-front-end-instruments';
 
   /** The one rendering of "not read". Never 0, never the last value. */
   export const UNKNOWN_TEXT = '?';
@@ -61,31 +61,10 @@
   /** Honest text: an unread fact reads as unknown, never as a stale value. */
   export const textOf = (f: RfFrontEndField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
-  /** `[field, label, min, max, step]`. The radio's own normalized 0..1
-   *  reading (a wire-protocol FRACTION, not the raw 0-255 wire unit) — same
-   *  discipline as `TxAuxSurface.TX_AUX_LEVELS`. Rescaled to the raw 0-255
-   *  integer `set_rf_gain`/`set_squelch` require at the wiring seam
-   *  (`SemanticRadioSurfaces.svelte`'s `RF_FRONT_END_LEVEL_INTENT`, MOR-1447),
-   *  never inside this presentation-only file. */
-  export const RF_FRONT_END_LEVELS = [
-    ['rfGain', 'RF gain', 0, 1, 0.01],
-    ['squelch', 'Squelch', 0, 1, 0.01],
-  ] as const;
-  /** The combined-knob domain (MOR-1447 leg 2): both `rfGain` and `squelch`
-   *  share this [0,1] range, an invariant of the combined control model —
-   *  `dualParamValuesFromNormX`/`dualParamNormXFromValues` map ONE knob
-   *  position onto both fields over the SAME domain. */
-  const [, , RF_SQL_MIN, RF_SQL_MAX, RF_SQL_STEP] = RF_FRONT_END_LEVELS[0];
-  /** Profile-declared control model (MOR-1447 leg 2, data-driven from
-   *  `[capabilities].rf_sql_control_model` in the rig TOML — never a
-   *  vendor/model-name branch in code). `'separate'` is the default: two
-   *  independent sliders, unchanged from leg 1. */
-  export type RfSqlControlModel = 'separate' | 'combined';
   /** `[field, label]` on/off controls. */
   export const RF_FRONT_END_TOGGLES = [
     ['digiSel', 'DIGI-SEL'], ['ipPlus', 'IP+'],
   ] as const;
-  export type RfFrontEndLevelField = (typeof RF_FRONT_END_LEVELS)[number][0];
   export type RfFrontEndToggleField = (typeof RF_FRONT_END_TOGGLES)[number][0];
 
   /** Carry-forward 4: keyed by the generic CODE, never by a peer-control
@@ -97,19 +76,9 @@
 </script>
 
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
   import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
-  import {
-    createContinuousPair, nativeRangeContinuousPairPolicy,
-    type CommandFeedbackContinuousPairInput, type ContinuousPairInput,
-    type ContinuousPairRendererLease, type ContinuousPairView,
-  } from '../primitives/scalar/continuous-pair.svelte';
-  import {
-    createContinuousScalar, nativeRangeContinuousScalarPolicy,
-    type ContinuousScalarInput, type ContinuousScalarRendererLease,
-    type ContinuousScalarView,
-  } from '../primitives/scalar/continuous-scalar.svelte';
+  import type { RfFrontEndLevelHandles } from './rf-front-end-instruments';
   import {
     bindChoiceInstrument,
     bindToggleInstrument,
@@ -117,21 +86,13 @@
 
   interface Props {
     view: RadioViewModel;
-    /** Icom-style single-knob RF/SQL (MOR-1447 leg 2). Defaults to
-     *  `'separate'` — the two independent sliders leg 1 fixed. */
-    controlModel?: RfSqlControlModel;
-    /** Omitted only by compatibility mounts; null means integrated authority
-     *  is unresolved, while an object is the complete pair authority. */
-    rfSqlFeedback?: Readonly<
-      Pick<CommandFeedbackContinuousPairInput, 'rf' | 'sql'>
-    > | null;
+    levelHandles: RfFrontEndLevelHandles;
     /** MOR-1441 leg 2 — the freshest in-flight `set_preamp` target for the
      *  active receiver, DISPLAY ONLY (see the file header). `null` when
      *  nothing is pending. */
     pendingPreamp?: number | null;
     onPreampChange?: (level: number) => void;
     onAttenuatorChange?: (db: number) => void;
-    onLevelChange?: (field: RfFrontEndLevelField, value: number) => void;
     /** `next` is the FLIPPED value, computed here from the observed reading —
      *  `makeRfFrontEndHandlers().onDigiSelToggle`/`onIpPlusToggle` take an
      *  explicit `on: boolean`, unlike the argument-less vox/comp/mon toggles
@@ -140,8 +101,8 @@
     onToggle?: (field: RfFrontEndToggleField, next: boolean) => void;
   }
   let {
-    view, controlModel = 'separate', rfSqlFeedback, pendingPreamp = null,
-    onPreampChange, onAttenuatorChange, onLevelChange, onToggle,
+    view, levelHandles, pendingPreamp = null,
+    onPreampChange, onAttenuatorChange, onToggle,
   }: Props = $props();
 
   const pendingPreampId = $props.id();
@@ -174,197 +135,6 @@
     })),
   } satisfies Record<RfFrontEndToggleField, ReturnType<typeof bindToggleInstrument>>;
 
-  function changeLevel(field: RfFrontEndLevelField, value: number): void {
-    if (rf && usable(rf[field])) onLevelChange?.(field, value);
-  }
-  function requestPairLevel(field: RfFrontEndLevelField, value: number): void {
-    if (rfSqlFeedback === undefined) changeLevel(field, value);
-    else if (rfSqlFeedback !== null) onLevelChange?.(field, value);
-  }
-  /** MOR-1447 leg 2: both fields structurally present AND the profile
-   *  declares the combined knob — the gate for rendering ONE control instead
-   *  of two. A profile that declares `'combined'` but only observes one of
-   *  the pair structurally falls back to the two-slider rendering below
-   *  (the per-field `{#if rf[field].availability.structural}` gates still
-   *  apply), same "render what's actually there" discipline as every other
-   *  field in this file. */
-  let combinedUsable = $derived(
-    controlModel === 'combined'
-    && !!rf?.rfGain.availability.structural
-    && !!rf?.squelch.availability.structural,
-  );
-  const rfSqlDomain = {
-    min: RF_SQL_MIN, max: RF_SQL_MAX, step: RF_SQL_STEP,
-    defaultValue: null, fineStepDivisor: 10,
-  } as const;
-  function rfSqlInput(): Readonly<ContinuousPairInput> {
-    const common = {
-      domain: rfSqlDomain,
-      requestRf: (value: number) => requestPairLevel('rfGain', value),
-      requestSql: (value: number) => requestPairLevel('squelch', value),
-    };
-    if (rfSqlFeedback === null) return {
-      ...common,
-      evidence: 'reading', ownerKey: 'rf-sql:feedback-integrated:authority-unresolved',
-      enabled: false,
-      rf: { reading: { status: 'unknown' }, availability: 'unavailable' },
-      sql: { reading: { status: 'unknown' }, availability: 'unavailable' },
-    };
-    if (rfSqlFeedback !== undefined) return {
-      ...common,
-      evidence: 'command-feedback', enabled: controlModel === 'combined',
-      rf: rfSqlFeedback.rf, sql: rfSqlFeedback.sql,
-    };
-    const availability = (field: RfFrontEndField<number> | undefined) =>
-      field?.availability.structural && field.availability.operational
-        ? 'available' as const : 'unavailable' as const;
-    return {
-      ...common,
-      evidence: 'reading', ownerKey: JSON.stringify([
-        view.topologyId, view.activeReceiver.status,
-        view.activeReceiver.status === 'known' ? view.activeReceiver.receiver : null,
-      ]),
-      enabled: controlModel === 'combined',
-      rf: {
-        reading: rf?.rfGain.reading ?? { status: 'unknown' },
-        availability: availability(rf?.rfGain),
-      },
-      sql: {
-        reading: rf?.squelch.reading ?? { status: 'unknown' },
-        availability: availability(rf?.squelch),
-      },
-    };
-  }
-  type RfSqlLane = 'rf' | 'sql';
-  const laneForField = (field: RfFrontEndLevelField): RfSqlLane =>
-    field === 'rfGain' ? 'rf' : 'sql';
-  const separateLevelRendered = (field: RfFrontEndLevelField): boolean =>
-    !combinedUsable && !!rf?.[field].availability.structural;
-  function separateLevelInput(field: RfFrontEndLevelField): Readonly<ContinuousScalarInput> {
-    const common = {
-      domain: rfSqlDomain,
-      request: (value: number) => requestPairLevel(field, value),
-    };
-    if (rfSqlFeedback === null) return {
-      ...common,
-      evidence: 'reading',
-      ownerKey: `rf-sql:feedback-integrated:authority-unresolved:${field}`,
-      enabled: false,
-      reading: { status: 'unknown' },
-    };
-    if (rfSqlFeedback !== undefined) {
-      const lane = rfSqlFeedback[laneForField(field)];
-      return {
-        ...common,
-        evidence: 'command-feedback',
-        enabled: separateLevelRendered(field),
-        command: lane.command,
-        feedback: lane.feedback,
-      };
-    }
-    const fact = rf?.[field];
-    return {
-      ...common,
-      evidence: 'reading',
-      ownerKey: JSON.stringify([
-        'rf-sql:compatibility-reading', field, view.topologyId, view.activeReceiver.status,
-        view.activeReceiver.status === 'known' ? view.activeReceiver.receiver : null,
-      ]),
-      enabled: separateLevelRendered(field) && !!fact?.availability.operational,
-      reading: fact?.reading ?? { status: 'unknown' },
-    };
-  }
-  const rfSqlPair = createContinuousPair(rfSqlInput, nativeRangeContinuousPairPolicy);
-  const rfGainScalar = createContinuousScalar(
-    () => separateLevelInput('rfGain'), nativeRangeContinuousScalarPolicy,
-  );
-  const squelchScalar = createContinuousScalar(
-    () => separateLevelInput('squelch'), nativeRangeContinuousScalarPolicy,
-  );
-  let rfSqlLease: ContinuousPairRendererLease | null = $state(null);
-  let rfSqlView: Readonly<ContinuousPairView> = $state(untrack(() => rfSqlPair.view));
-  let rfGainLease: ContinuousScalarRendererLease | null = $state(null);
-  let rfGainView: Readonly<ContinuousScalarView> = $state(untrack(() => rfGainScalar.view));
-  let squelchLease: ContinuousScalarRendererLease | null = $state(null);
-  let squelchView: Readonly<ContinuousScalarView> = $state(untrack(() => squelchScalar.view));
-  $effect(() => {
-    const lease = rfSqlPair.attachRenderer();
-    rfSqlLease = lease;
-    return () => lease.dispose();
-  });
-  $effect(() => {
-    const lease = rfGainScalar.attachRenderer();
-    rfGainLease = lease;
-    return () => lease.dispose();
-  });
-  $effect(() => {
-    const lease = squelchScalar.attachRenderer();
-    squelchLease = lease;
-    return () => lease.dispose();
-  });
-  $effect(() => {
-    rfSqlView = rfSqlLease === null ? rfSqlPair.view : rfSqlLease.view;
-  });
-  $effect(() => {
-    rfGainView = rfGainLease === null ? rfGainScalar.view : rfGainLease.view;
-  });
-  $effect(() => {
-    squelchView = squelchLease === null ? squelchScalar.view : squelchLease.view;
-  });
-  let combinedNormX = $derived(rfSqlView.displayedPosition ?? RF_SQL_MIN);
-  const FEEDBACK_INTEGRATED_RANGE = { 'feedback-policy': 'feedback-integrated' } as const;
-  let feedbackIntegration = $derived(
-    rfSqlFeedback === undefined ? 'compatibility-reading'
-      : rfSqlFeedback === null ? 'authority-unresolved' : 'command-feedback',
-  );
-  const laneValue = (lane: 'rf' | 'sql'): number | null => {
-    const view = rfSqlView.lanes[lane];
-    return rfSqlView.draft?.[lane]
-      ?? (view.evidence === 'command-feedback' ? view.feedback.target : null)
-      ?? view.canonical;
-  };
-  const laneText = (lane: 'rf' | 'sql'): string => {
-    const value = laneValue(lane);
-    return value === null ? UNKNOWN_TEXT : formatKnownLevel(value, RF_SQL_MIN, RF_SQL_MAX);
-  };
-  const laneStatus = (lane: 'rf' | 'sql'): string => {
-    const view = rfSqlView.lanes[lane];
-    if (view.evidence !== 'command-feedback') return '';
-    const phase = view.phase.charAt(0).toUpperCase() + view.phase.slice(1).replaceAll('-', ' ');
-    const requested = view.feedback.target ?? view.feedback.requestedTarget;
-    const target = requested === null ? ''
-      : ` ${formatKnownLevel(requested, RF_SQL_MIN, RF_SQL_MAX)}`;
-    const confirmed = view.canonical === null ? UNKNOWN_TEXT
-      : formatKnownLevel(view.canonical, RF_SQL_MIN, RF_SQL_MAX);
-    return `${phase}${target}; confirmed ${confirmed}${view.error === null ? '' : `: ${view.error}`}`;
-  };
-  const separateLevelLease = (field: RfFrontEndLevelField): ContinuousScalarRendererLease | null =>
-    field === 'rfGain' ? rfGainLease : squelchLease;
-  const separateLevelView = (field: RfFrontEndLevelField): Readonly<ContinuousScalarView> =>
-    field === 'rfGain' ? rfGainView : squelchView;
-  const separateLevelValue = (view: Readonly<ContinuousScalarView>): number | null =>
-    view.draft
-      ?? (view.evidence === 'command-feedback' ? view.feedback.target : null)
-      ?? view.canonical;
-  const separateLevelText = (view: Readonly<ContinuousScalarView>): string => {
-    const value = separateLevelValue(view);
-    return value === null ? UNKNOWN_TEXT : formatKnownLevel(value, RF_SQL_MIN, RF_SQL_MAX);
-  };
-  const separateLevelStatus = (view: Readonly<ContinuousScalarView>): string => {
-    if (view.evidence !== 'command-feedback') return '';
-    const phase = view.phase.charAt(0).toUpperCase() + view.phase.slice(1).replaceAll('-', ' ');
-    const requested = view.feedback.target ?? view.feedback.requestedTarget;
-    const target = requested === null ? ''
-      : ` ${formatKnownLevel(requested, RF_SQL_MIN, RF_SQL_MAX)}`;
-    const confirmed = view.canonical === null ? UNKNOWN_TEXT
-      : formatKnownLevel(view.canonical, RF_SQL_MIN, RF_SQL_MAX);
-    return `${phase}${target}; confirmed ${confirmed}${view.error === null ? '' : `: ${view.error}`}`;
-  };
-  onDestroy(() => {
-    rfSqlPair.destroy();
-    rfGainScalar.destroy();
-    squelchScalar.destroy();
-  });
 </script>
 
 {#if rf}
@@ -416,80 +186,11 @@
       </div>
     {/if}
 
-    {#if combinedUsable}
-      <label
-        class="rf-front-end-level" data-testid="rf-front-end-rf-sql"
-        data-feedback-integration={feedbackIntegration}
-        data-observed={rfSqlView.lanes.rf.availability === 'available'
-          && rfSqlView.lanes.sql.availability === 'available'
-          && rfSqlView.canonical.rf !== null && rfSqlView.canonical.sql !== null}
-        data-rf-command-phase={rfSqlView.lanes.rf.phase ?? undefined}
-        data-sql-command-phase={rfSqlView.lanes.sql.phase ?? undefined}
-        aria-busy={rfSqlView.busy}
-      >
-        <span class="rf-front-end-name">RF/SQL</span>
-        <input
-          type="range" min={RF_SQL_MIN} max={RF_SQL_MAX} step={RF_SQL_STEP}
-          {...FEEDBACK_INTEGRATED_RANGE}
-          value={combinedNormX}
-          disabled={!rfSqlView.editable}
-          data-pair-evidence={rfSqlView.evidence}
-          oninput={(event) => rfSqlLease?.nativeInput(event.currentTarget.valueAsNumber)}
-        />
-        <output data-testid="rf-front-end-rf-sql-rf-value">{laneText('rf')}</output>
-        /
-        <output data-testid="rf-front-end-rf-sql-sql-value">{laneText('sql')}</output>
-        {#if rfSqlView.lanes.rf.evidence === 'command-feedback'}
-          <output data-testid="rf-front-end-rf-sql-rf-status">{laneStatus('rf')}</output>
-        {/if}
-        {#if rfSqlView.lanes.sql.evidence === 'command-feedback'}
-          <output data-testid="rf-front-end-rf-sql-sql-status">{laneStatus('sql')}</output>
-        {/if}
-        {#if rfSqlView.lanes.rf.announcement !== null}
-          <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
-            data-control-feedback-status data-feedback-lane="rf">{rfSqlView.lanes.rf.announcement}</span>
-        {/if}
-        {#if rfSqlView.lanes.sql.announcement !== null}
-          <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
-            data-control-feedback-status data-feedback-lane="sql">{rfSqlView.lanes.sql.announcement}</span>
-        {/if}
-      </label>
+    {#if levelHandles.kind === 'combined'}
+      {@render levelHandles.rfSql()}
     {:else}
-      {#each RF_FRONT_END_LEVELS as [field, label, min, max, step] (field)}
-        {#if rf[field].availability.structural}
-          {@const levelView = separateLevelView(field)}
-          {@const levelValue = separateLevelValue(levelView)}
-          <label
-            class="rf-front-end-level" data-testid={`rf-front-end-${field}`}
-            data-feedback-integration={feedbackIntegration}
-            data-observed={levelView.canonical !== null}
-            data-command-phase={levelView.phase ?? undefined}
-            aria-busy={levelView.busy}
-          >
-            <span class="rf-front-end-name">{label}</span>
-            <input
-              type="range" {min} {max} {step}
-              {...FEEDBACK_INTEGRATED_RANGE}
-              value={levelValue ?? min}
-              disabled={!levelView.editable}
-              data-scalar-evidence={levelView.evidence}
-              oninput={(event) => separateLevelLease(field)?.nativeInput(event.currentTarget.valueAsNumber)}
-            />
-            <output>{separateLevelText(levelView)}</output>
-            {#if levelView.evidence === 'command-feedback'}
-              <output data-testid={`rf-front-end-${field}-status`}>
-                {separateLevelStatus(levelView)}
-              </output>
-            {/if}
-            {#if levelView.announcement !== null}
-              <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
-                data-control-feedback-status data-feedback-lane={laneForField(field)}>
-                {levelView.announcement}
-              </span>
-            {/if}
-          </label>
-        {/if}
-      {/each}
+      {#if rf.rfGain.availability.structural}{@render levelHandles.rfGain()}{/if}
+      {#if rf.squelch.availability.structural}{@render levelHandles.squelch()}{/if}
     {/if}
 
     {#each RF_FRONT_END_TOGGLES as [field, label] (field)}
@@ -512,11 +213,9 @@
      sole state channel (MOR-977, forced-colors). */
   .rf-front-end-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .rf-front-end-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
-  .rf-front-end-level { display: flex; align-items: baseline; gap: 0.5rem; }
-  .rf-front-end-name { min-width: 6ch; }
   .rf-front-end-choice[aria-checked='true'] { font-weight: 700; }
   [data-observed='false'] { font-style: italic; }
-  button:disabled, input:disabled { cursor: not-allowed; }
+  button:disabled { cursor: not-allowed; }
   /* MOR-1441 leg 2 — same pending doctrine as `FilterSurface`'s
      `.filter-choice[data-pending='true']`: structural marker, never
      color-only. */

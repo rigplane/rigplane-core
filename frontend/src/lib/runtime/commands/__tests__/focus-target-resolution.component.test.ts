@@ -78,7 +78,9 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
 
 import { makeKeyboardHandlers } from '../panel-commands';
 import RxAudioInstrumentHostFixture from '../../../../semantic/__tests__/fixtures/RxAudioInstrumentHostFixture.svelte';
-import RfFrontEndSurface from '../../../../semantic/RfFrontEndSurface.svelte';
+import RfFrontEndInstrumentHostFixture, {
+  rfTestAuthorityPublication,
+} from '../../../../semantic/__tests__/fixtures/RfFrontEndInstrumentHostFixture.svelte';
 import FilterSurface from '../../../../semantic/FilterSurface.svelte';
 import VfoSurface from '../../../../semantic/VfoSurface.svelte';
 import {
@@ -141,13 +143,18 @@ describe('focus_target dispatch resolves to a real, focusable anchor in the prod
   });
 
   it('"rf" focuses the RF-gain slider in RfFrontEndSurface (rfFrontEnd zone)', () => {
-    render(RfFrontEndSurface, { view: withRfFrontEnd(topologyFixtures['1/single']) });
-    const input = document.querySelector('[data-testid="rf-front-end-rfGain"] input');
-    expect(input).not.toBeNull();
+    const publication = rfTestAuthorityPublication('separate');
+    render(RfFrontEndInstrumentHostFixture, {
+      publication, view: withRfFrontEnd(topologyFixtures['1/single']),
+      controlModel: 'separate', renderSurface: true, onLevelChange: vi.fn(),
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+    });
+    const slider = document.querySelector('[data-testid="rf-front-end-rfGain"] [role="slider"]');
+    expect(slider).not.toBeNull();
 
     dispatchFocusTarget('rf');
 
-    expect(document.activeElement).toBe(input);
+    expect(document.activeElement).toBe(slider);
   });
 
   it('"mode" focuses the first mode choice in FilterSurface (filter zone)', () => {
