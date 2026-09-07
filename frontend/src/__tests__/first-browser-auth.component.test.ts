@@ -7,10 +7,14 @@ import capsFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-capabil
 vi.mock('../skins/registry', async (importOriginal) => ({
   ...await importOriginal<typeof import('../skins/registry')>(),
   loadSkin: async () => (await import('./LayoutStub.svelte')).default,
+  presentationHostMode: () => 'self-contained',
   presentationResourcePlan: () => [],
 }));
 vi.mock('../AppGlobalHost.svelte', async () => ({ default: (await import('./LayoutStub.svelte')).default }));
 vi.mock('../lib/local-extensions/LocalExtensionsHost.svelte', async () => ({ default: (await import('./LayoutStub.svelte')).default }));
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('./LayoutStub.svelte')).default,
+}));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   provideManagedAppTxHost: () => ({ refreshAuthority() {}, dispose() {}, release() {} }),
 }));

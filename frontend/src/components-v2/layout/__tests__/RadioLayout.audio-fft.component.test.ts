@@ -34,7 +34,7 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', async (importOriginal) =>
   ...await importOriginal<typeof import('$lib/runtime/tx-controller/managed-app-host')>(),
   getManagedAppTxController: () => txHarness.controller,
 }));
-import RadioLayout from '../RadioLayout.svelte';
+import RadioLayout from './fixtures/HostedRadioLayoutFixture.svelte';
 import SpectrumPanel from '../../../components/spectrum/SpectrumPanel.svelte';
 import * as transport from '$lib/transport/ws-client';
 import { getVfoHandlers, getFilterHandlers } from '$lib/runtime/adapters/panel-adapters';

@@ -62,8 +62,14 @@ const h = vi.hoisted(() => ({
 // real skin's whole component tree.
 vi.mock('../skins/registry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../skins/registry')>();
-  return { ...actual, loadSkin: h.loadSkin, presentationResourcePlan: h.plan };
+  return {
+    ...actual, loadSkin: h.loadSkin, presentationHostMode: () => 'self-contained',
+    presentationResourcePlan: h.plan,
+  };
 });
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('./LayoutStub.svelte')).default,
+}));
 
 vi.mock('../lib/runtime/frontend-runtime', () => ({
   runtime: {

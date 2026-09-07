@@ -106,7 +106,11 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../../../../skins/registry', () => ({
   resolveSkinId: () => 'desktop-v2',
   loadSkin: async () => (await import('./support/TxControllerProbe.svelte')).default,
+  presentationHostMode: () => 'self-contained',
   presentationResourcePlan: () => [],
+}));
+vi.mock('../../../../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
 }));
 vi.mock('../../../../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../../../../lib/media/media-session', () => ({

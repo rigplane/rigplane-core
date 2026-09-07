@@ -67,16 +67,19 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SkinId } from '../registry';
+import { TEST_INSTRUMENTS } from '../../components-v2/layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 
 const mountedSkinIds = vi.hoisted(() => [] as SkinId[]);
+const mountedInstrumentInputs = vi.hoisted(() => [] as unknown[]);
 const mountedLcdVariants = vi.hoisted(() => [] as Array<
   'cockpit' | 'scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first'
 >);
 const mobileLayoutMounts = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock('../../components-v2/layout/RadioLayout.svelte', () => ({
-  default: (_anchor: unknown, props: { skinId?: SkinId }) => {
+  default: (_anchor: unknown, props: { skinId?: SkinId; instruments: unknown }) => {
     if (props.skinId) mountedSkinIds.push(props.skinId);
+    mountedInstrumentInputs.push(props.instruments);
   },
 }));
 
@@ -103,6 +106,7 @@ const components: Record<string, unknown>[] = [];
 afterEach(() => {
   while (components.length) unmount(components.pop()!);
   mountedSkinIds.length = 0;
+  mountedInstrumentInputs.length = 0;
   mountedLcdVariants.length = 0;
   mobileLayoutMounts.count = 0;
 });
@@ -140,14 +144,23 @@ const SKIN_ENTRYPOINT_COVERAGE: Readonly<Record<SkinId, EntrypointCoverage>> = {
 
 const allSkinIds = Object.keys(SKIN_ENTRYPOINT_COVERAGE) as SkinId[];
 
-const radioLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'radio-layout');
+const radioLayoutSkinIds = allSkinIds.filter(
+  (id): id is 'desktop-v2' | 'sdr-test' => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'radio-layout',
+);
 
-const lcdLayoutCases = allSkinIds.flatMap((id) => {
+type LcdLayoutSkinId = 'lcd-cockpit' | 'lcd-scope' | 'peer-split' | 'unified-instrument' | 'panadapter-first';
+const lcdLayoutSkinIds = allSkinIds.filter(
+  (id): id is LcdLayoutSkinId => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'lcd-layout',
+);
+const lcdLayoutCases = lcdLayoutSkinIds.map((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
-  return coverage.kind === 'lcd-layout' ? [[id, coverage.variant] as const] : [];
+  if (coverage.kind !== 'lcd-layout') throw new Error(`Expected LCD coverage for ${id}`);
+  return [id, coverage.variant] as const;
 });
 
-const mobileLayoutSkinIds = allSkinIds.filter((id) => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout');
+const mobileLayoutSkinIds = allSkinIds.filter(
+  (id): id is 'mobile' => SKIN_ENTRYPOINT_COVERAGE[id].kind === 'mobile-layout',
+);
 
 const coveredElsewhereCases = allSkinIds.flatMap((id) => {
   const coverage = SKIN_ENTRYPOINT_COVERAGE[id];
@@ -161,8 +174,9 @@ describe('desktop skin entrypoints', () => {
   it.each(radioLayoutSkinIds)('mounts RadioLayout with its own stable skin ID (%s)', async (skinId) => {
     const Component = await loadSkin(skinId);
     const target = document.createElement('div');
-    components.push(mount(Component, { target }));
+    components.push(mount(Component, { target, props: { instruments: TEST_INSTRUMENTS } }));
     expect(mountedSkinIds).toEqual([skinId]);
+    expect(mountedInstrumentInputs).toEqual([TEST_INSTRUMENTS]);
   });
 });
 

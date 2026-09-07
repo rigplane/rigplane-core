@@ -11,9 +11,21 @@
   AppGlobalHost (MOR-1059) and is not duplicated here.
   Both render the same server snapshot.
 -->
+<script module lang="ts">
+  export type {
+    InstrumentComposition,
+    InstrumentVfoAppearance,
+  } from './instrument-composition';
+</script>
+
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
+  import type {
+    InstrumentComposition,
+    InstrumentVfoAppearance,
+  } from './instrument-composition';
   import { t } from '$lib/i18n';
+  import { getScopeSource } from '$lib/stores/capabilities.svelte';
   import { presentationResources, runtime } from '$lib/runtime';
   import * as componentKitActivation from '../../component-kits/activation';
   import { ScopeFrameHost, type ScopeFramePresentation } from '$lib/runtime/scope-frame-host';
@@ -95,6 +107,7 @@
    * (MOR-1067 verification F6).
    */
   interface Props {
+    children?: Snippet<[InstrumentComposition]>;
     strips?: 'single' | 'dual';
     regions?: boolean;
     regionContent?: Snippet<[Snippet | undefined, ManagedScopeRegion | undefined]>;
@@ -125,7 +138,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
+    children: hostedChildren, strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -163,7 +176,7 @@
    * exists then for ANY surface, so there is no arrangement to be unplaced
    * beside — withholding the body would cost a readout and prevent nothing.
    */
-  let allowBareSurfaces = $derived(!regions || surfacePlan() === null);
+  let allowBareSurfaces = $derived((!regions && hostedChildren === undefined) || surfacePlan() === null);
   /**
    * MOR-1336 (v3-rework S4) — the DECLARED zone that mounts `surface`, or
    * `null` when no zone does.
@@ -557,7 +570,13 @@
   let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : { finiteAppearance: selectedFiniteAppearance, rendererContext: finiteRendererContext });
 
-  let managedScope = $derived(displayFrameSource === 'hardware' && regions && regionContent !== undefined);
+  let scopeFrameSource = $derived(
+    displayFrameSource ?? (hostedChildren !== undefined && getScopeSource() === 'hardware' ? 'hardware' : undefined),
+  );
+  let managedScope = $derived(
+    scopeFrameSource === 'hardware'
+      && (hostedChildren !== undefined || (regions && regionContent !== undefined)),
+  );
   let scopeDemanded = $state(true);
   let scopePresentation = $state.raw<ScopeFramePresentation | null>(null);
   let scopePassband = $state.raw(EMPTY_SCOPE_PASSBAND_DISPLAY);
@@ -617,7 +636,7 @@
   $effect(refreshScopePassband);
 
   let scopeAuthority = $derived.by(() => {
-    const source = displayFrameSource;
+    const source = scopeFrameSource;
     const stateGeneration = runtime.state?.providerGeneration;
     const capsGeneration = runtime.caps?.providerGeneration;
     const receiver = canonicalView?.activeReceiver;
@@ -634,7 +653,7 @@
   });
   let scopeLeaseGeneration = $derived(scopeAuthority?.providerGeneration ?? null);
   $effect(() => {
-    const source = displayFrameSource;
+    const source = scopeFrameSource;
     if (source === undefined) {
       scopeFrameHost?.updateAuthority(null);
       selectedDisplayFrame = undefined;
@@ -653,7 +672,7 @@
   });
 
   $effect(() => {
-    const source = displayFrameSource;
+    const source = scopeFrameSource;
     if (source === undefined || (managedScope && (!scopeDemanded || scopeLeaseGeneration === null))) return;
     ensureScopeFrameHost();
     const resource = source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
@@ -926,7 +945,7 @@
   }
 </script>
 
-<div class="semantic-surfaces" data-testid="semantic-radio-surfaces">
+<div class="semantic-surfaces" class:hosted={hostedChildren !== undefined} data-testid="semantic-radio-surfaces">
   {#if readonlyDisplay}
     {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
@@ -1029,11 +1048,11 @@
     site below is where the default path's VFO already was, so an unresolved
     or default plan reproduces today's element sequence exactly.
   -->
-  {#snippet vfoSurface()}
+  {#snippet vfoSurface(appearance: InstrumentVfoAppearance = vfoAppearance)}
     {#if view}
       <VfoSurface
         viewModel={view}
-        appearance={vfoAppearance}
+        {appearance}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
         {hasDualReceiver}
@@ -1158,7 +1177,7 @@
     it?".
   -->
   {#snippet presented(surface: SemanticSurfaceName, body: Snippet)}
-    {#if vfoAppearance === 'semantic'}{@render body()}
+    {#if vfoAppearance === 'semantic' && hostedChildren === undefined}{@render body()}
     {:else}<SemanticControlPanel {surface}>{@render body()}</SemanticControlPanel>{/if}
   {/snippet}
 
@@ -1173,10 +1192,10 @@
     {/if}
   {/snippet}
 
-  {#snippet txAuxSurface(scalarHandles: TxAuxScalarHandles)}
+  {#snippet txAuxSurface(scalarHandles: TxAuxScalarHandles, showScalars = true)}
     {#if view?.txAux}
       <TxAuxSurface
-        {view} tx={txState} {scalarHandles}
+        {view} tx={txState} {scalarHandles} {showScalars}
         onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()}
         onAtuTune={requestAtuTune}
       />
@@ -1569,7 +1588,82 @@
   >
   {#snippet children(txAuxScalars)}
   {#snippet txAuxBody()}{@render txAuxSurface(txAuxScalars)}{/snippet}
-  {#if strips === 'dual'}
+  {#snippet hostedVfo(appearance: InstrumentVfoAppearance, allowBare = allowBareSurfaces)}
+    {#snippet body()}{@render vfoSurface(appearance)}{/snippet}
+    {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBare)}
+  {/snippet}
+  {#snippet hostedRxTx(allowBare = allowBareSurfaces)}
+    {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), rxTxSurface, allowBare)}
+  {/snippet}
+  {#snippet hostedTxAux(scalarLayout: Snippet, allowBare = allowBareSurfaces)}
+    {#snippet body()}
+      {@render txAuxSurface(txAuxScalars, false)}
+      {@render scalarLayout()}
+    {/snippet}
+    {@render zoned('txAux', view?.txAux !== undefined, body, allowBare)}
+  {/snippet}
+  {#snippet hostedMeters(allowBare = allowBareSurfaces)}
+    {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBare)}
+  {/snippet}
+  {#snippet hostedRxAudio(allowBare = allowBareSurfaces)}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBare)}
+  {/snippet}
+  {#snippet hostedRfFrontEnd(allowBare = allowBareSurfaces)}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBare)}
+  {/snippet}
+  {#snippet hostedFilter(allowBare = allowBareSurfaces)}
+    {@render zoned(
+      'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
+      filterSurface, allowBare,
+    )}
+  {/snippet}
+  {#snippet hostedDsp(allowBare = allowBareSurfaces)}
+    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBare)}
+  {/snippet}
+  {#snippet hostedBand(allowBare = allowBareSurfaces)}
+    {@render zoned('band', view?.band !== undefined, bandSurface, allowBare)}
+  {/snippet}
+  {#snippet hostedAntenna(allowBare = allowBareSurfaces)}
+    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBare)}
+  {/snippet}
+  {#snippet hostedRitXitScan(allowBare = allowBareSurfaces)}
+    {@render zoned(
+      'ritXitScan', view?.ritXit !== undefined || view?.scan !== undefined,
+      ritXitScanSurface, allowBare,
+    )}
+  {/snippet}
+  {#snippet hostedCwKeyer(allowBare = allowBareSurfaces)}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBare)}
+  {/snippet}
+  {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
+    {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
+  {/snippet}
+  {#snippet hostedScopeControls(allowBare = allowBareSurfaces)}
+    {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBare)}
+  {/snippet}
+
+  {#if hostedChildren}
+    {@render hostedChildren({
+      vfo: hostedVfo,
+      rxTx: hostedRxTx,
+      txAuxControls: hostedTxAux,
+      txAuxScalars,
+      meters: hostedMeters,
+      rxAudio: hostedRxAudio,
+      rfFrontEnd: hostedRfFrontEnd,
+      filter: hostedFilter,
+      dsp: hostedDsp,
+      band: hostedBand,
+      antenna: hostedAntenna,
+      ritXitScan: hostedRitXitScan,
+      cwKeyer: hostedCwKeyer,
+      scopeDisplay: hostedScopeDisplay,
+      scopeControls: hostedScopeControls,
+      txFaultRecovery,
+      modInputTxWarning: txAdjacentAlerts,
+      managedScope: managedScopeRegion,
+    })}
+  {:else if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
       alerts that used to sit at the bottom of this component, unzoned.
@@ -1748,6 +1842,7 @@
     font-family: 'Roboto Mono', monospace;
     color: var(--v2-text-primary, #e8e8e8);
   }
+  .semantic-surfaces.hosted { display: contents; }
   /* MOR-1784: structure only — the action and the sentence that explains it
      stack as one block, so neither can be read without the other. */
   .tx-fault-recovery {

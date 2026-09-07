@@ -49,7 +49,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (original) => ({
 import { radio, resetRadioState } from '$lib/stores/radio.svelte';
 import { clearCapabilities, setCapabilities, getCapabilities } from '$lib/stores/capabilities.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
-import RadioLayout from '../../layout/RadioLayout.svelte';
+import RadioLayout from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 
 function channel() {

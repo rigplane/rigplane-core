@@ -5,14 +5,10 @@
   requiredSemanticSurfaces are pinned by
   `presentation/layouts/__tests__/sdr-registration.test.ts`.
 
-  It stays a thin delegate to RadioLayout — the same shape DesktopSkin has —
-  because RadioLayout is where the v3 resolution happens: since MOR-1313 it
-  reads THIS entrypoint's manifest and suppresses, per declared zone, the
-  legacy twin of every semantic surface the manifest mounts. `sdr-test`
-  declares the VFO/RX-TX pair, so the semantic surfaces replace `<VfoHeader>` and the sidebars' `<TxPanel>` does
-  not render (MOR-1065). Why the TX twin follows the deck rather than its
-  own zone declaration is the R9 key/unkey argument on RadioLayout's
-  `declared` / `semanticRxTx` derivations, and is not repeated here.
+  App's persistent semantic host supplies the same instrument composition used
+  by Standard. This replaceable entrypoint names the SDR layout and forwards
+  those exact handles to RadioLayout, which owns placement and responsive
+  geometry while retaining the manifest-driven legacy suppression rules.
 
   The deck reaches past the receiver row: the settings modal's
   `.settings-vfo-ops-row` retires with it too. Split/swap/equalize pair with
@@ -26,15 +22,17 @@
   of the semantic meters surface. The spectrum, the status bar and the rest
   of the sidebars come from the standard desktop layout, untouched.
 
-  The skin's job is to name the entrypoint id; the manifest says what that id
-  composes. Skins may not import transport, audioManager or `$lib/stores/*`
+  Skins may not import transport, audioManager or `$lib/stores/*`
   (eslint `FORBIDDEN_SKINS_IMPORTS`, the last of those added by MOR-2039);
   `__tests__/architecture-boundaries.test.ts` exercises that rule for this
   path.
 -->
 <script lang="ts">
+  import type { InstrumentComposition } from '../../components-v2/wiring/instrument-composition';
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';
   import '../desktop-v2/semantic-controls.css';
+
+  let { instruments }: { instruments: InstrumentComposition } = $props();
 </script>
 
-<RadioLayout skinId="sdr-test" />
+<RadioLayout skinId="sdr-test" {instruments} />

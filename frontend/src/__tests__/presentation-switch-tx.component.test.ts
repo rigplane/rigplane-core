@@ -82,7 +82,11 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../skins/registry', () => ({
   resolveSkinId: () => widthToSkin(),
   loadSkin: h.loadSkin,
+  presentationHostMode: () => 'self-contained',
   presentationResourcePlan: () => [],
+}));
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('./LayoutStub.svelte')).default,
 }));
 vi.mock('../lib/utils/battery', () => ({ initBatteryMonitor: h.initBattery }));
 vi.mock('../lib/media/media-session', () => ({

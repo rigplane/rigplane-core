@@ -44,7 +44,11 @@ const h = vi.hoisted(() => ({
 vi.mock('../skins/registry', () => ({
   resolveSkinId: h.resolveSkinId,
   loadSkin: h.loadSkin,
+  presentationHostMode: () => 'self-contained',
   presentationResourcePlan: h.plan,
+}));
+vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
+  default: (await import('./LayoutStub.svelte')).default,
 }));
 
 vi.mock('../lib/runtime/frontend-runtime', () => ({

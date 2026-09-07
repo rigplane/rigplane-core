@@ -29,7 +29,7 @@
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
-  import SemanticRadioSurfaces from '../wiring/SemanticRadioSurfaces.svelte';
+  import type { InstrumentComposition } from '../wiring/instrument-composition';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -59,7 +59,7 @@
   import CwPanel from '../panels/CwPanel.svelte';
   import { HardwareButton } from '$lib/Button';
 
-  let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
+  let { skinId = 'desktop-v2', instruments }: { skinId?: SkinId; instruments: InstrumentComposition } = $props();
 
   // MOR-1313 (v3-rework slice S2) — PER-ZONE suppression, replacing the
   // MOR-1065 `skinId === 'sdr-test'` boolean. This shell hosts two areas that
@@ -272,7 +272,7 @@
   });
 </script>
 
-{#snippet sdrRegionContent(scopeControls: Snippet | undefined, managedScope: ManagedScopeRegion | undefined)}
+{#snippet scopeRegion(scopeControls: Snippet | undefined, managedScope: ManagedScopeRegion | undefined)}
   <section class="content-row">
     <main class="content-center center-column">
       {#if hasAnyScope()}
@@ -289,9 +289,36 @@
   </section>
 {/snippet}
 
-{#snippet desktopRegionExtras(side: 'left' | 'right')}
-  {#if side === 'left'}<div class="content-left"><LeftSidebar hideTxPanel={semanticRxTx} {declared} /></div>
-  {:else}<div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>{/if}
+{#snippet txAuxScalars()}
+  <div class="tx-aux-scalar-grid">
+    <div class="tx-aux-scalar-seat" data-field="rfPower">{@render instruments.txAuxScalars.rfPower()}</div>
+    <div class="tx-aux-scalar-seat" data-field="micGain">{@render instruments.txAuxScalars.micGain()}</div>
+    <div class="tx-aux-scalar-seat" data-field="driveGain">{@render instruments.txAuxScalars.driveGain()}</div>
+    <div class="tx-aux-scalar-seat" data-field="voxGain">{@render instruments.txAuxScalars.voxGain()}</div>
+    <div class="tx-aux-scalar-seat" data-field="antiVoxGain">{@render instruments.txAuxScalars.antiVoxGain()}</div>
+    <div class="tx-aux-scalar-seat" data-field="voxDelay">{@render instruments.txAuxScalars.voxDelay()}</div>
+    <div class="tx-aux-scalar-seat" data-field="compressorLevel">{@render instruments.txAuxScalars.compressorLevel()}</div>
+    <div class="tx-aux-scalar-seat" data-field="monitorLevel">{@render instruments.txAuxScalars.monitorLevel()}</div>
+  </div>
+{/snippet}
+
+{#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic', allowBare = false)}
+  {@render instruments.vfo(appearance, allowBare)}
+  {@render instruments.rxTx(allowBare)}
+  {@render instruments.txFaultRecovery()}
+  {@render instruments.modInputTxWarning()}
+  {@render instruments.rxAudio(allowBare)}
+  {@render instruments.rfFrontEnd(allowBare)}
+  {@render instruments.filter(allowBare)}
+  {@render instruments.dsp(allowBare)}
+  {@render instruments.band(allowBare)}
+  {@render instruments.antenna(allowBare)}
+  {@render instruments.ritXitScan(allowBare)}
+  {@render instruments.cwKeyer(allowBare)}
+  {@render instruments.scopeControls(allowBare)}
+  {@render instruments.scopeDisplay(allowBare)}
+  {@render instruments.txAuxControls(txAuxScalars, allowBare)}
+  {@render instruments.meters(allowBare)}
 {/snippet}
 
 {#if skinId === 'mobile'}
@@ -307,11 +334,35 @@
     <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
     <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
-      {#if semanticDeck}
-        <SemanticRadioSurfaces regions={true} regionContent={sdrRegionContent} {scopeControlsInRegionContent}
-          displayFrameSource={getScopeSource() === 'hardware' ? 'hardware' : undefined}
-          regionExtras={desktopRegionExtras} vfoAppearance={skinId === 'sdr-test' ? 'sdr' : 'standard'} />
-      {/if}
+      {@render instruments.vfo(skinId === 'sdr-test' ? 'sdr' : 'standard')}
+
+      <div class="desktop-controls-left">
+        {@render instruments.rfFrontEnd()}
+        {@render instruments.filter()}
+        {@render instruments.band()}
+        {@render instruments.antenna()}
+        {@render instruments.ritXitScan()}
+        <div class="content-left"><LeftSidebar hideTxPanel={semanticRxTx} {declared} /></div>
+      </div>
+
+      <div class="desktop-controls-center">
+        {#if !scopeControlsInRegionContent}{@render instruments.scopeControls()}{/if}
+        {@render instruments.scopeDisplay()}
+        {@render scopeRegion(scopeControlsInRegionContent ? instruments.scopeControls : undefined, instruments.managedScope)}
+      </div>
+
+      <div class="desktop-controls-right">
+        {@render instruments.rxTx()}
+        {@render instruments.txFaultRecovery()}
+        {@render instruments.modInputTxWarning()}
+        {@render instruments.rxAudio()}
+        {@render instruments.dsp()}
+        {@render instruments.cwKeyer()}
+        {@render instruments.txAuxControls(txAuxScalars)}
+        <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
+      </div>
+
+      {@render instruments.meters()}
     </section>
   </div>
 {:else}
@@ -320,19 +371,8 @@
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
-    <!--
-      MOR-2231 — `regions` below asks the semantic vertical for a zone ELEMENT
-      around `vfo` and `rxTx`. The predicate is SKIN IDENTITY, not a manifest
-      reading: both resolving families now declare `receiver-deck` and
-      `rx-tx`, so nothing in the manifest tells the face that wants the hosts
-      from the one that does not. A later batch replaces it.
-
-      Outside the `{#if}` because the guard in
-      `presentation/layouts/__tests__/forward-declaration-inventory.test.ts`
-      separates `{#if semanticDeck}` from the mount by `\s*` only.
-    -->
     {#if semanticDeck}
-      <SemanticRadioSurfaces regions={skinId === 'sdr-test'} vfoAppearance={skinId === 'desktop-v2' ? 'standard' : 'semantic'} />
+      {@render semanticDeckContent(skinId === 'desktop-v2' ? 'standard' : 'semantic', true)}
     {:else}
       <VfoHeader
         {mainVfo}
@@ -590,6 +630,12 @@
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
+  .tx-aux-scalar-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 8px;
+  }
+  .tx-aux-scalar-seat { min-width: 0; }
 
   .radio-layout, .radio-layout.semantic-deck {
     height: 100vh;

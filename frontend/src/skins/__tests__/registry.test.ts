@@ -65,7 +65,10 @@ vi.mock('../sdr-test/SdrTestSkin.svelte', () => lazyImports['sdr-test']());
 vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports['dual-receiver-cockpit']());
 vi.mock('../dual-sdr-face/DualSdrFaceSkin.svelte', () => lazyImports['dual-sdr-face']());
 
-import { loadSkin, presentationResourcePlan, resolveSkinId } from '../registry';
+import {
+  loadSkin, presentationHostMode, presentationResourcePlan, resolveSkinId,
+  type PresentationHostMode,
+} from '../registry';
 
 const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =>
   resolveSkinId({
@@ -275,4 +278,24 @@ describe('presentation resource plan', () => {
       expect(presentationResourcePlan(skinId)).not.toContain('rx-audio');
     }
   });
+});
+
+describe('presentation host mode', () => {
+  const EXPECTED_HOST_MODE: Record<SkinId, PresentationHostMode> = {
+    'desktop-v2': 'instrument-handles',
+    'sdr-test': 'instrument-handles',
+    'dual-receiver-cockpit': 'self-contained',
+    'lcd-cockpit': 'self-contained',
+    'lcd-scope': 'self-contained',
+    'mobile': 'self-contained',
+    'peer-split': 'self-contained',
+    'unified-instrument': 'self-contained',
+    'panadapter-first': 'self-contained',
+    'dual-sdr-face': 'self-contained',
+  };
+
+  it.each(Object.entries(EXPECTED_HOST_MODE) as Array<[SkinId, PresentationHostMode]>) (
+    'selects %s as %s',
+    (skinId, mode) => expect(presentationHostMode(skinId)).toBe(mode),
+  );
 });

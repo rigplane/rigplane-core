@@ -10,6 +10,7 @@
 import type { Component } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { AppResource } from '$lib/runtime/resource-demand';
+import type { InstrumentComposition } from '../components-v2/wiring/instrument-composition';
 import {
   normalizeLayoutMode,
   type LayoutMode,
@@ -18,6 +19,53 @@ import {
 export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
   | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first';
+
+export type PresentationHostMode = 'self-contained' | 'instrument-handles';
+export type InstrumentHandlesPresentation = Component<{ instruments: InstrumentComposition }>;
+export type SelfContainedPresentation = Component;
+export type PresentationComponent = InstrumentHandlesPresentation | SelfContainedPresentation;
+
+type PresentationPropsBySkin = {
+  'desktop-v2': { instruments: InstrumentComposition };
+  'sdr-test': { instruments: InstrumentComposition };
+  'dual-receiver-cockpit': Record<string, never>;
+  'lcd-cockpit': Record<string, never>;
+  'lcd-scope': Record<string, never>;
+  'mobile': Record<string, never>;
+  'peer-split': Record<string, never>;
+  'dual-sdr-face': Record<string, never>;
+  'unified-instrument': Record<string, never>;
+  'panadapter-first': Record<string, never>;
+};
+
+type SkinLoaderMap = {
+  [Id in SkinId]: () => Promise<{ default: Component<PresentationPropsBySkin[Id]> }>;
+};
+type LoadedPresentation<Id extends SkinId> = Id extends SkinId
+  ? Component<PresentationPropsBySkin[Id]>
+  : never;
+
+/**
+ * Whether App supplies the persistent semantic instrument host for a skin.
+ * Kept total over SkinId so a new presentation cannot silently inherit the
+ * hosted lifetime contract without choosing it explicitly.
+ */
+const PRESENTATION_HOST_MODE: Readonly<Record<SkinId, PresentationHostMode>> = {
+  'desktop-v2': 'instrument-handles',
+  'dual-receiver-cockpit': 'self-contained',
+  'lcd-cockpit': 'self-contained',
+  'lcd-scope': 'self-contained',
+  'mobile': 'self-contained',
+  'peer-split': 'self-contained',
+  'sdr-test': 'instrument-handles',
+  'dual-sdr-face': 'self-contained',
+  'unified-instrument': 'self-contained',
+  'panadapter-first': 'self-contained',
+};
+
+export function presentationHostMode(id: SkinId): PresentationHostMode {
+  return PRESENTATION_HOST_MODE[id];
+}
 
 export interface SkinResolutionContext {
   capabilities: Capabilities | null;
@@ -78,7 +126,7 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
  * legacy `amber-lcd` alias is accepted via `normalizeLayoutMode`'s
  * `LEGACY_LAYOUT_ALIASES` table.
  */
-const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
+const SKIN_LOADERS = {
   'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
   // MOR-1068 (F8): the cockpit's layout manifest registers under this exact
   // id, so it needs the matching loadable SkinId — it was the only registered
@@ -101,9 +149,10 @@ const SKIN_LOADERS: Record<SkinId, () => Promise<{ default: Component }>> = {
   'panadapter-first': () => import('./lcd-panadapter-first/LcdPanadapterFirstSkin.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
   'dual-sdr-face': () => import('./dual-sdr-face/DualSdrFaceSkin.svelte'),
-};
+} satisfies SkinLoaderMap;
 
-export async function loadSkin(id: SkinId): Promise<Component> {
+export function loadSkin<Id extends SkinId>(id: Id): Promise<LoadedPresentation<Id>>;
+export async function loadSkin(id: SkinId): Promise<PresentationComponent> {
   return (await SKIN_LOADERS[id]()).default;
 }
 
