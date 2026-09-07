@@ -159,14 +159,21 @@ describe('segmentline activation, in a rendered App', () => {
     await tick();
     flushSync();
   }
+  function pendingIndex(id: string): number {
+    for (let index = h.pending.length - 1; index >= 0; index -= 1) {
+      if (h.pending[index]?.id === id) return index;
+    }
+    return -1;
+  }
+
   async function complete(id: string): Promise<void> {
-    const index = h.pending.findLastIndex((entry) => entry.id === id);
+    const index = pendingIndex(id);
     if (index < 0) throw new Error(`no pending load for ${id}`);
     h.pending.splice(index, 1)[0].resolve(LayoutStub);
     await settle();
   }
   async function fail(id: string): Promise<void> {
-    const index = h.pending.findLastIndex((entry) => entry.id === id);
+    const index = pendingIndex(id);
     if (index < 0) throw new Error(`no pending load for ${id}`);
     h.pending.splice(index, 1)[0].reject(new Error(`failed ${id}`));
     await settle();
