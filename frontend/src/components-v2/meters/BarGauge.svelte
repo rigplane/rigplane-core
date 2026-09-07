@@ -1,22 +1,17 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import {
-    createSmoother,
-    prefersReducedMotion,
-    onReducedMotionChange,
-  } from '$lib/utils/smoothing.svelte';
-  import {
-    createElapsedEnvelopePeakStrategy,
-    createMeterBallistics,
-    type MeterContinuitySession,
-    type MeterSourceIdentity,
+  import type {
+    MeterContinuitySession,
+    MeterSourceIdentity,
   } from '../../primitives/meters/meter-ballistics.svelte';
-  import { DEFAULT_ZONES, valueToSegments, getSegmentZone, dimColor, valueFontSize } from './bar-gauge-utils';
+  import { DEFAULT_ZONES, getSegmentZone, dimColor, valueFontSize } from './bar-gauge-utils';
   import type { Zone } from './bar-gauge-utils';
-  import { updatePeakHold, peakHoldDisplay, PEAK_DECAY_MS, type PeakHoldState } from '../panels/meter-utils';
+  import {
+    createBarMeterMotion,
+    type BarMeterFrame,
+  } from './bar-meter-motion.svelte';
 
-  interface Props {
-    value: number | null;         // 0–1 normalized
+  interface CommonProps {
     label: string;         // 'Po' | 'SWR' | 'ALC' | 'COMP'
     displayValue: string;  // '35W' | '1.2' | '-8'
     accessibleDescription?: string;
@@ -30,16 +25,67 @@
      */
     zones?: readonly Zone[];
     compact?: boolean;
-    showPeak?: boolean;    // MOR-1282: optional peak-hold marker
     fault?: boolean;       // MOR-1345: SWR/ALC over-threshold fault highlight
-    source?: MeterSourceIdentity | null;
-    session?: MeterContinuitySession | null;
   }
 
-  let {
-    value, label, displayValue, zones = DEFAULT_ZONES, compact = false, showPeak = false,
-    fault = false, accessibleDescription, source, session,
-  }: Props = $props();
+  type LiveValueInput = {
+    value: number | null;         // 0–1 normalized
+    frame?: never;
+    showPeak?: boolean;    // MOR-1282: optional peak-hold marker
+    source?: MeterSourceIdentity | null;
+    session?: MeterContinuitySession | null;
+    onResetPeak?: never;
+  };
+  type HostedFrameInput = {
+    frame: BarMeterFrame;
+    value?: never;
+    showPeak?: never;
+    source?: never;
+    session?: never;
+    onResetPeak?: () => void;
+  };
+  type Props = CommonProps & (LiveValueInput | HostedFrameInput);
+
+  type InputMode = 'value' | 'frame';
+
+  function hasOwn(value: object, key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  function resolveInputMode(current: Props): InputMode {
+    const hasFrame = hasOwn(current, 'frame');
+    const hasValue = hasOwn(current, 'value');
+    if (Number(hasFrame) + Number(hasValue) !== 1) {
+      throw new TypeError('BarGauge requires exactly one of frame or value');
+    }
+    if (hasFrame && current.frame === undefined) {
+      throw new TypeError('BarGauge frame must be defined when supplied');
+    }
+    if (hasValue && current.value === undefined) {
+      throw new TypeError('BarGauge value must be a number or null when supplied');
+    }
+    if (hasFrame && (hasOwn(current, 'source') || hasOwn(current, 'session') || hasOwn(current, 'showPeak'))) {
+      throw new TypeError('BarGauge frame owns peak and continuity state');
+    }
+    return hasFrame ? 'frame' : 'value';
+  }
+
+  let props: Props = $props();
+  const initialInputMode = untrack(() => resolveInputMode(props));
+  const inputMode = $derived.by(() => {
+    const current = resolveInputMode(props);
+    if (current !== initialInputMode) {
+      throw new TypeError('BarGauge input mode cannot change after mount');
+    }
+    return current;
+  });
+  const label = $derived(props.label);
+  const displayValue = $derived(props.displayValue);
+  const zones = $derived(props.zones ?? DEFAULT_ZONES);
+  const compact = $derived(props.compact ?? false);
+  const fault = $derived(props.fault ?? false);
+  const accessibleDescription = $derived(props.accessibleDescription);
+  const liveValue = $derived(inputMode === 'value' ? (props as LiveValueInput).value : null);
 
   // ── Segment geometry ────────────────────────────────────────────────────────
   const SEG_COUNT = 10;
@@ -65,58 +111,59 @@
   const VALUE_FS    = $derived(valueFontSize(displayValue, compact ? 9 : 11));
   const TEXT_Y      = $derived(TRACK_Y + TRACK_H / 2);
 
-  // ── Smoother ────────────────────────────────────────────────────────────────
-  const smoother = createSmoother(0.08, 0.2);
-  const ballistics = createMeterBallistics(smoother, {
-    now: () => Date.now(),
-    requestFrame: (callback) => requestAnimationFrame(callback),
-    cancelFrame: (id) => cancelAnimationFrame(id),
-    setInterval: (callback, milliseconds) => setInterval(callback, milliseconds),
-    clearInterval: (id) => clearInterval(id),
-    prefersReducedMotion,
-    onReducedMotionChange,
-  }, {
-    peakSource: 'sample',
-    ticker: { kind: 'interval', milliseconds: 100 },
-    peak: createElapsedEnvelopePeakStrategy<PeakHoldState>({
-      decayMilliseconds: PEAK_DECAY_MS,
-      updatePeakHold,
-      peakHoldDisplay,
-    }),
-  });
+  const localMotion = initialInputMode === 'value'
+    ? untrack(() => createBarMeterMotion({
+        value: (props as LiveValueInput).value,
+        peakEnabled: (props as LiveValueInput).showPeak ?? false,
+        source: (props as LiveValueInput).source,
+        session: (props as LiveValueInput).session,
+      }))
+    : null;
+  const meterFrame = $derived(
+    inputMode === 'frame' ? (props as HostedFrameInput).frame : localMotion!.frame,
+  );
 
   $effect(() => {
-    const continuitySource = source;
-    const continuitySession = session;
-    const smoothTarget = value === null ? null : valueToSegments(value, SEG_COUNT) / SEG_COUNT;
-    untrack(() => ballistics.sync({
-      sample: value, smoothTarget, peakEnabled: showPeak,
-      source: continuitySource, session: continuitySession,
+    if (localMotion === null) return;
+    const currentValue = (props as LiveValueInput).value;
+    const peakEnabled = (props as LiveValueInput).showPeak ?? false;
+    const source = (props as LiveValueInput).source;
+    const session = (props as LiveValueInput).session;
+    untrack(() => localMotion.sync({
+      value: currentValue,
+      peakEnabled,
+      source,
+      session,
     }));
   });
 
   onMount(() => {
-    ballistics.start();
-    return () => ballistics.stop();
+    if (localMotion === null) return;
+    localMotion.start();
+    return () => localMotion.stop();
   });
 
   // ── Peak-hold marker (MOR-1282) ─────────────────────────────────────────────
   let peakPct = $derived.by(() => {
-    const level = ballistics.view.peakValue;
+    const level = meterFrame.peakFraction;
     if (level === null) return undefined;
     return Math.max(0, Math.min(100, level * 100));
   });
 
   function resetPeak() {
-    if (showPeak) ballistics.resetPeak();
+    if (inputMode === 'frame') {
+      (props as HostedFrameInput).onResetPeak?.();
+    } else if ((props as LiveValueInput).showPeak) {
+      localMotion!.resetPeak();
+    }
   }
 
   // ── Reactive display values ─────────────────────────────────────────────────
-  const measuredFault = $derived(value !== null && fault);
-  let smoothedSegs = $derived(ballistics.view.smoothedValue * SEG_COUNT);
-  let fullSegs = $derived(value === null ? 0 : Math.floor(smoothedSegs));
+  const measuredFault = $derived((inputMode === 'frame' || liveValue !== null) && fault);
+  let smoothedSegs = $derived(meterFrame.smoothedFraction * SEG_COUNT);
+  let fullSegs = $derived(liveValue === null && inputMode === 'value' ? 0 : Math.floor(smoothedSegs));
   let fracSeg  = $derived(
-    value === null
+    liveValue === null && inputMode === 'value'
       ? 0
       : smoothedSegs - Math.floor(smoothedSegs),
   );
@@ -199,7 +246,7 @@
   {/each}
 
   <!-- Peak-hold marker (MOR-1282) -->
-  {#if showPeak && peakPct !== undefined}
+  {#if peakPct !== undefined}
     <rect
       x={BAR_X + (peakPct / 100) * BAR_WIDTH - 1}
       y={TRACK_Y}

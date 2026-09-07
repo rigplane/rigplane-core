@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import BarGauge from '../BarGauge.svelte';
+import type { BarMeterFrame } from '../bar-meter-motion.svelte';
 import type {
   MeterContinuitySession,
   MeterSourceIdentity,
@@ -117,6 +118,27 @@ describe('BarGauge peak-hold marker (MOR-1282)', () => {
 
     t.querySelector('svg')!.dispatchEvent(new Event('dblclick', { bubbles: true }));
     flushSync();
+    expect(markerCount(t)).toBe(0);
+  });
+
+  it('renders hosted frame updates and keeps the reset action revocable', () => {
+    const onResetPeak = vi.fn();
+    const { t, state } = mountReactive({
+      frame: { smoothedFraction: 0.4, peakFraction: 0.8 } satisfies BarMeterFrame,
+      label: 'Po', displayValue: '40W', onResetPeak,
+    });
+    expect(fillCount(t)).toBe(4);
+    expect(markerX(t)).toBe(211);
+
+    t.querySelector('svg')!.dispatchEvent(new Event('dblclick', { bubbles: true }));
+    expect(onResetPeak).toHaveBeenCalledOnce();
+    state.onResetPeak = undefined;
+    t.querySelector('svg')!.dispatchEvent(new Event('dblclick', { bubbles: true }));
+    expect(onResetPeak).toHaveBeenCalledOnce();
+
+    state.frame = { smoothedFraction: 0.2, peakFraction: null } satisfies BarMeterFrame;
+    flushSync();
+    expect(fillCount(t)).toBe(2);
     expect(markerCount(t)).toBe(0);
   });
 

@@ -616,16 +616,16 @@ describe('BarGauge peak channel (MOR-1282)', () => {
 describe('MetersSurface and MetersDockPanel are on the same peak-hold channel', () => {
   // MUTATION KILLED: either side reimplementing the hold/decay math instead
   // of calling the shared `meter-utils` functions. `MetersSurface` itself may
-  // never import them (block 7 above); `BarGauge` (which it delegates every
-  // gauge to) and `MetersDockPanel` must both import the SAME functions from
+  // never import them (block 7 above); the bar-motion binding used by every
+  // `BarGauge` and `MetersDockPanel` must both import the SAME functions from
   // the SAME module, so a raw sample can never decay differently depending on
   // which surface is rendering it.
-  it('both BarGauge and MetersDockPanel import updatePeakHold/peakHoldDisplay from the shared meter-utils module', () => {
-    const barGaugeSource = readFileSync('src/components-v2/meters/BarGauge.svelte', 'utf8');
+  it('both bar meter motion and MetersDockPanel import updatePeakHold/peakHoldDisplay from the shared meter-utils module', () => {
+    const barMotionSource = readFileSync('src/components-v2/meters/bar-meter-motion.svelte.ts', 'utf8');
     const dockSource = readFileSync('src/components-v2/panels/MetersDockPanel.svelte', 'utf8');
-    expect(barGaugeSource).toMatch(/updatePeakHold/);
-    expect(barGaugeSource).toMatch(/peakHoldDisplay/);
-    expect(barGaugeSource).toMatch(/from '\.\.\/panels\/meter-utils'/);
+    expect(barMotionSource).toMatch(/updatePeakHold/);
+    expect(barMotionSource).toMatch(/peakHoldDisplay/);
+    expect(barMotionSource).toMatch(/from '\.\.\/panels\/meter-utils'/);
     expect(dockSource).toMatch(/updatePeakHold/);
     expect(dockSource).toMatch(/peakHoldDisplay/);
     expect(dockSource).toMatch(/from '\.\/meter-utils'/);
@@ -635,12 +635,12 @@ describe('MetersSurface and MetersDockPanel are on the same peak-hold channel', 
   // literal instead of importing the shared one from `meter-utils` — the
   // exact duplicated-window drift the verifier proved was previously pinned
   // by NOTHING. Both must import the SAME binding; neither may shadow it.
-  it('both BarGauge and MetersDockPanel import the shared PEAK_DECAY_MS instead of declaring their own', () => {
-    const barGaugeSource = readFileSync('src/components-v2/meters/BarGauge.svelte', 'utf8');
+  it('both bar meter motion and MetersDockPanel import the shared PEAK_DECAY_MS instead of declaring their own', () => {
+    const barMotionSource = readFileSync('src/components-v2/meters/bar-meter-motion.svelte.ts', 'utf8');
     const dockSource = readFileSync('src/components-v2/panels/MetersDockPanel.svelte', 'utf8');
-    expect(barGaugeSource).toMatch(/import\s*\{[^}]*PEAK_DECAY_MS[^}]*\}\s*from\s*'\.\.\/panels\/meter-utils'/);
+    expect(barMotionSource).toMatch(/import\s*\{[^}]*PEAK_DECAY_MS[^}]*\}\s*from\s*'\.\.\/panels\/meter-utils'/);
     expect(dockSource).toMatch(/import\s*\{[^}]*PEAK_DECAY_MS[^}]*\}\s*from\s*'\.\/meter-utils'/);
-    expect(barGaugeSource).not.toMatch(/const\s+PEAK_DECAY_MS\s*=/);
+    expect(barMotionSource).not.toMatch(/const\s+PEAK_DECAY_MS\s*=/);
     expect(dockSource).not.toMatch(/const\s+PEAK_DECAY_MS\s*=/);
   });
 });
