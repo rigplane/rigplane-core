@@ -43,8 +43,13 @@ const h = vi.hoisted(() => ({
   audio: { muted: true, rxEnabled: false, volume: 0 },
   audioConnected: false,
   guardVisible: false,
+  selectedFiniteAppearance: undefined as unknown,
 }));
 
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  return { ...actual, getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance };
+});
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
   const { sendCommand } = await import('$lib/transport/ws-client');
@@ -95,6 +100,10 @@ import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
+import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -176,6 +185,16 @@ function useState(state: ServerState): void {
   setRadioState(state);
 }
 
+/** Re-publishes control authority to every currently-mounted subscriber —
+ *  used only by the finite-appearance A-B-A witness below; the initial
+ *  publication on subscribe (above) covers every other test in this file. */
+function publishAuthority(state: unknown, caps: unknown): void {
+  for (const handler of h.authoritySubscribers) handler({
+    state, caps, session: { state: 'connected', epoch: 1 },
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
+}
+
 beforeEach(() => {
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
@@ -186,6 +205,8 @@ beforeEach(() => {
   h.audio = { muted: true, rxEnabled: false, volume: 0 };
   h.audioConnected = false;
   h.guardVisible = false;
+  h.selectedFiniteAppearance = undefined;
+  resetRetainedInvocations();
   vi.mocked(sendCommand).mockClear();
 });
 
@@ -403,6 +424,72 @@ describe('the surface intents reach the shipped command vocabulary', () => {
     el('scan-resume-cycle')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: 0xD2 });
+  });
+});
+
+/* ── MOR-2425: RIT/XIT/CLEAR now live in `RitXitScanInstrumentHost`, joined
+ * into `SemanticRadioSurfaces`'s provider chain. These witnesses prove the
+ * two refusal shapes the host itself defines (`control-instrument-behavior`'s
+ * `canInvoke`: an unknown reading and a `blocked` field both refuse
+ * invocation) survive being wired through the real command bus, and that a
+ * finite-appearance renderer swap keeps the composed tree's owner identity
+ * discipline `semantic-dsp-wiring.component.test.ts`'s own A-B-A describe
+ * already proves for that sibling host. ────────────────────────────────── */
+
+describe('MOR-2425: the host refuses the same two shapes it defines, end to end', () => {
+  it('an unread RIT/XIT reading disables both toggles and reaches no command', () => {
+    useState(liveState({ ritOn: undefined, ritTx: undefined } as Partial<ServerState>));
+    render();
+    const rit = el('ritxit-rit-toggle') as HTMLButtonElement;
+    const xit = el('ritxit-xit-toggle') as HTMLButtonElement;
+    expect(rit.disabled).toBe(true);
+    expect(xit.disabled).toBe(true);
+    rit.click();
+    xit.click();
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('an unknown active receiver blocks RIT, XIT and CLEAR alike and reaches no command', () => {
+    useState(liveState({ active: undefined } as Partial<ServerState>));
+    render();
+    const rit = el('ritxit-rit-toggle') as HTMLButtonElement;
+    const xit = el('ritxit-xit-toggle') as HTMLButtonElement;
+    const clear = el('ritxit-clear') as HTMLButtonElement;
+    expect(rit.disabled).toBe(true);
+    expect(xit.disabled).toBe(true);
+    expect(clear.disabled).toBe(true);
+    rit.click();
+    xit.click();
+    clear.click();
+    flushSync();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('MOR-2425: persistent finite RIT/XIT authority', () => {
+  const finiteAppearance = {
+    action: FiniteControlRendererFixture as FiniteControlAppearance<string | number>['action'],
+    toggle: FiniteControlRendererFixture as FiniteControlAppearance<string | number>['toggle'],
+    choice: FiniteControlRendererFixture as FiniteControlAppearance<string | number>['choice'],
+  } satisfies FiniteControlAppearance<string | number>;
+
+  it('synchronously fences RIT across an active-receiver A-B-A and admits only the current seat', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const state = h.state as ServerState;
+    const caps = h.caps as Capabilities;
+    const retainedA1 = retainedInvocations.get('RIT')!;
+    publishAuthority({ ...state, active: 'SUB' } as ServerState, caps);
+    publishAuthority(state, caps);
+    retainedA1();
+    expect(sendCommand).not.toHaveBeenCalled();
+
+    flushSync();
+    const retainedA2 = retainedInvocations.get('RIT')!;
+    expect(retainedA2).not.toBe(retainedA1);
+    retainedA2();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_rit_status', { on: false });
   });
 });
 

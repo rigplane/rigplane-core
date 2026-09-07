@@ -13,6 +13,7 @@ import type { CwKeyerInstrumentHandles } from '../../semantic/CwKeyerInstrumentH
 import type {
   AntennaInstrumentHandles, AntennaInstrumentLayout,
 } from '../../semantic/AntennaInstrumentHost.svelte';
+import type { RitXitScanInstrumentHandles } from '../../semantic/RitXitScanInstrumentHost.svelte';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
@@ -40,6 +41,7 @@ export interface InstrumentComposition {
   readonly antennaInstruments: AntennaInstrumentHandles;
   readonly antennaLayout: AntennaInstrumentLayout;
   readonly ritXitScan: Snippet<[allowBare?: boolean]>;
+  readonly ritXitInstruments: RitXitScanInstrumentHandles;
   readonly cwKeyerInstruments: CwKeyerInstrumentHandles;
   readonly cwKeyer: Snippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;

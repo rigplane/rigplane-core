@@ -15,6 +15,7 @@
   import type {
     AntennaInstrumentHandles, AntennaInstrumentLayout,
   } from '../../../../semantic/AntennaInstrumentHost.svelte';
+  import type { RitXitScanInstrumentHandles } from '../../../../semantic/RitXitScanInstrumentHost.svelte';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[
@@ -41,6 +42,9 @@
   const antennaLayout = {
     blockedId: 'fixture-antenna-blocked', blocked: [],
   } satisfies AntennaInstrumentLayout;
+  const ritXitInstruments = {
+    rit: empty, xit: empty, clear: empty,
+  } satisfies RitXitScanInstrumentHandles;
   const frequency = createRawSnippet<[mount?: ReceiverFrequencyMount]>(() => ({ render: () => '' }));
   const meter = createRawSnippet<[renderer?: ReceiverSMeterRenderer]>(() => ({ render: () => '' }));
   const operations = createRawSnippet<[appearance: ReceiverVfoAppearance]>(() => ({ render: () => '' }));
@@ -73,7 +77,7 @@
     rxAudioInstruments, rfFrontEndInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band, antenna, antennaInstruments, antennaLayout,
-    ritXitScan: empty, cwKeyerInstruments, cwKeyer,
+    ritXitScan: empty, ritXitInstruments, cwKeyerInstruments, cwKeyer,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,
     modInputTxWarning: empty, managedScope: undefined,
   } satisfies FixtureInstrumentComposition;
