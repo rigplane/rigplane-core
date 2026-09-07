@@ -192,6 +192,15 @@ describe('MOR-2342 addressed meter appearance', () => {
     expect(root.querySelector('svg[data-variant="sdr-screen"]')).not.toBeNull();
     expect(root.querySelector('[data-testid="receiver-s-meter-unknown"]')).toBeNull();
   });
+  it('adds one reading-less meter host for the sdr two-block deck', () => {
+    const root = render({ indicator: indicator(), appearance: 'sdr', deckBlocks: true });
+    const meters = [...root.querySelectorAll('[data-testid="receiver-s-meter"]')];
+    expect(meters.map((meter) => meter.getAttribute('data-meter-live'))).toEqual(['true', 'false']);
+    // The second host is handed no value at all, so it draws the component's
+    // own no-reading marker rather than this receiver's reading or a zero.
+    expect(meters[1].querySelector('svg[data-variant="sdr-screen"]')?.getAttribute('aria-label'))
+      .toContain('S ?');
+  });
   it('renders only the supplied Standard slot label, never MAIN as A', () => {
     const root = render({ indicator: indicator(), appearance: 'standard' });
     expect(root.querySelector('.header-badges')?.textContent).toContain('BAR');
@@ -218,8 +227,10 @@ describe('RF gain display observation', () => {
     const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
     const marker = node.querySelector('.stale-cue')!;
     const text = node.textContent;
-    expect(text).toContain('RFG 0.75');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    // RF gain's declared domain is [0, 1]; the wire fraction is a percentage
+    // on screen, never `String(0.8196078431372549)` (formatKnownLevel).
+    expect(text).toContain('RFG 75%');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
     expect(node.hasAttribute('tabindex')).toBe(false);
     expect(getComputedStyle(marker).visibility).toBe('hidden');
     expect(getComputedStyle(marker).width).toBe('1ch');
@@ -231,14 +242,14 @@ describe('RF gain display observation', () => {
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-state')).toBe('unknown');
     expect(node.getAttribute('data-display-state')).toBe('stale');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75 (stale, last observed)"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75% (stale, last observed)"]')).toBe(node);
     expect(getComputedStyle(marker).visibility).toBe('visible');
     expect(marker.textContent?.trim()).not.toBe('');
     expect(target.querySelector('[aria-live], button, input')).toBeNull();
     flushSync(() => state.set('indicator', current));
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-display-state')).toBe('current');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
     expect(target.querySelector('[role="img"][aria-label*="stale"]')).toBeNull();
     expect(getComputedStyle(marker).visibility).toBe('hidden');
   });

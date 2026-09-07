@@ -682,9 +682,10 @@
 {/if}
 
 <style>
-  /* Drawn at its own 420x50 viewBox scale: stretched to an arbitrary width
-     the S-unit labels stop sitting over the segments they mark. */
-  .sdr-meter { width: 100%; max-width: 420px; height: auto; overflow: visible; }
+  /* Scaled from its own 420x50 viewBox with the aspect kept, so the S-unit
+     labels stay over the segments they mark at any host width. The host owns
+     the width; this variant no longer caps it. */
+  .sdr-meter { width: 100%; height: auto; overflow: visible; }
   svg {
     display: block;
   }

@@ -5,8 +5,11 @@
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import '../components-v2/controls/control-button.css';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
+  import { formatKnownLevel } from './format-level';
+  import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -19,11 +22,32 @@
     slotLabel?: string;
     radioWide?: RadioWideIndicatorsViewModel;
     continuitySession?: MeterContinuitySession | null;
+    /**
+     * The sdr receiver deck lays one VFO block per A/B memory side by side and
+     * puts a meter in each (owner ruling, 2026-09-07). The radio reports ONE
+     * S-meter per receiver, so only the first host is fed that reading
+     * (`data-meter-live="true"`); this flag adds the second, reading-less host
+     * for the unselected block. Default `false`: every other caller renders
+     * exactly one meter host, as before.
+     */
+    deckBlocks?: boolean;
   }
 
   let {
     indicator, radioWide, appearance = 'semantic', children, slotLabel, continuitySession,
+    deckBlocks = false,
   }: Props = $props();
+
+  /** The sdr deck paints its receiver facts as chips in the shared
+   *  control-button family; every other appearance keeps the plain `.fact`
+   *  paint this component has always used. */
+  const chipClass = $derived(appearance === 'sdr' ? 'fact v2-control-button' : 'fact');
+
+  /** RF gain's DECLARED domain, read from the same table the RF-front-end
+   *  surface passes to its slider — not guessed from the value. `[0, 1]` is
+   *  what makes `formatKnownLevel` render the wire fraction as a percentage
+   *  instead of `0.8196078431372549`. */
+  const RF_GAIN_DOMAIN = RF_FRONT_END_LEVELS.find(([field]) => field === 'rfGain')!;
 
   const rfLabel = (state: RadioWideIndicatorsViewModel['rfState']): string =>
     state === 'transmitting' ? 'TX'
@@ -35,10 +59,16 @@
     return field.reading.status === 'known' ? String(field.reading.value) : '—';
   }
 
+  function level(value: number): string {
+    return formatKnownLevel(value, RF_GAIN_DOMAIN[2], RF_GAIN_DOMAIN[3]);
+  }
+
   function rfGainNumber(field: DisplayObservedField<number>): string {
-    if (!field.display) return numeric(field);
+    if (!field.display) {
+      return field.reading.status === 'known' ? level(field.reading.value) : '—';
+    }
     return field.display.state === 'current' || field.display.state === 'stale'
-      ? String(field.display.value) : '—';
+      ? level(field.display.value) : '—';
   }
 
   function agc(field: ReceiverIndicatorViewModel['agcMode']): string {
@@ -84,7 +114,7 @@
     <strong>{indicator.receiver}</strong>
     {#if indicator.bandwidthHz.availability.structural}
       <span
-        class="fact"
+        class={chipClass}
         data-indicator-fact="bandwidth"
         data-state={indicator.bandwidthHz.reading.status}
       >BW {numeric(indicator.bandwidthHz)}{indicator.bandwidthHz.reading.status === 'known' ? ' Hz' : ''}</span>
@@ -94,7 +124,7 @@
     {/if}
   </header>
 
-  <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver}>
+  <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver} data-meter-live="true">
     {#if indicator.sMeter.reading.status === 'known' && Number.isFinite(indicator.sMeter.reading.value)}
       <LinearSMeter value={indicator.sMeter.reading.value} compact label={appearance === 'standard' ? slotLabel : undefined} variant={appearance === 'sdr' ? 'sdr-screen' : 'vfo-wide'} source={indicator.sMeter.source} session={continuitySession} />
     {:else}
@@ -106,53 +136,64 @@
       >S —</div>
     {/if}
   </div>
+  {#if deckBlocks}
+    <!--
+      The unselected block's meter. It is handed NO value, so LinearSMeter
+      draws its own no-reading state (unlit segments, its "S ?" marker) —
+      never a fabricated S0, and never this receiver's reading repeated on a
+      memory that has none.
+    -->
+    <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver} data-meter-live="false">
+      <LinearSMeter value={null} compact variant="sdr-screen" />
+    </div>
+  {/if}
 
   {#if children}{@render children()}{/if}
 
   <div class="facts" aria-label={`${indicator.receiver} receiver facts`}>
     {#if indicator.agcMode.availability.structural}
-      <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}>
+      <span class={chipClass} data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}>
         AGC {agc(indicator.agcMode)}
       </span>
     {/if}
     {#if indicator.nbActive.availability.structural}
-      <span class="fact" data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}>
+      <span class={chipClass} data-indicator-fact="nb" data-state={booleanState(indicator.nbActive)}>
         NB {booleanLabel(indicator.nbActive)}
       </span>
     {/if}
     {#if indicator.nrActive.availability.structural}
-      <span class="fact" data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}>
+      <span class={chipClass} data-indicator-fact="nr" data-state={booleanState(indicator.nrActive)}>
         NR {booleanLabel(indicator.nrActive)}
       </span>
     {/if}
     {#if indicator.notchMode.availability.structural}
-      <span class="fact" data-indicator-fact="notch" data-state={indicator.notchMode.reading.status}>
+      <span class={chipClass} data-indicator-fact="notch" data-state={indicator.notchMode.reading.status}>
         NOTCH {indicator.notchMode.reading.status === 'known' ? indicator.notchMode.reading.value.toUpperCase() : '—'}
       </span>
     {/if}
     {#if indicator.attenuator.availability.structural}
-      <span class="fact" data-indicator-fact="attenuator" data-state={indicator.attenuator.reading.status}>
+      <span class={chipClass} data-indicator-fact="attenuator" data-state={indicator.attenuator.reading.status}>
         ATT {numeric(indicator.attenuator)}{indicator.attenuator.reading.status === 'known' ? ' dB' : ''}
       </span>
     {/if}
     {#if indicator.preamp.availability.structural}
-      <span class="fact" data-indicator-fact="preamp" data-state={indicator.preamp.reading.status}>
+      <span class={chipClass} data-indicator-fact="preamp" data-state={indicator.preamp.reading.status}>
         P.AMP {numeric(indicator.preamp)}
       </span>
     {/if}
     {#if indicator.ipPlus.availability.structural}
-      <span class="fact" data-indicator-fact="ip-plus" data-state={booleanState(indicator.ipPlus)}>
+      <span class={chipClass} data-indicator-fact="ip-plus" data-state={booleanState(indicator.ipPlus)}>
         IP+ {booleanLabel(indicator.ipPlus)}
       </span>
     {/if}
     {#if indicator.digiSel.availability.structural}
-      <span class="fact" data-indicator-fact="digi-sel" data-state={booleanState(indicator.digiSel)}>
+      <span class={chipClass} data-indicator-fact="digi-sel" data-state={booleanState(indicator.digiSel)}>
         DIGI-SEL {booleanLabel(indicator.digiSel)}
       </span>
     {/if}
     {#if indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported'}
       <span
-        class="fact"
+        class={chipClass}
         data-indicator-fact="rf-gain"
         role="img"
         data-state={indicator.rfGain.reading.status}
@@ -250,16 +291,36 @@
   .indicator-row[data-indicator-appearance='sdr'], .indicator-row[data-indicator-appearance='standard'] {
     padding: 0; border: 0; background: transparent; border-radius: 0; gap: 6px;
   }
-  /* One grid for the whole sdr receiver deck (V2 "hero + secondary"): the
-     header and the facts span it, the meter sits under the hero column, and
-     VfoSurface places its own tiles (row 2) and A/B selectors (column 2,
-     row 3) into it. Rhythm: 16px between groups. */
-  .indicator-row[data-indicator-appearance='sdr']:not(.shared-indicators) {
-    grid-template-columns: 2fr 1fr; column-gap: 16px; row-gap: 16px;
+  /* ── sdr receiver deck (V3, "two full VFO blocks") ──────────────────────
+     The deck grid itself lives on VfoSurface's `.instrument-panel`; this row
+     hands its own children to that grid so the header, the two meters and
+     the receiver facts land in the same columns as the tiles VfoSurface
+     places. Only the two-block deck does this — every other sdr panel
+     (a second receiver among them) keeps the stacked row above. */
+  :global([data-sdr-deck='blocks']) .indicator-row[data-indicator-appearance='sdr']:not(.shared-indicators) {
+    display: contents;
   }
-  [data-indicator-appearance='sdr']:not(.shared-indicators) header { grid-column: 1 / -1; grid-row: 1; }
-  [data-indicator-appearance='sdr']:not(.shared-indicators) .s-meter { grid-column: 1; grid-row: 3; }
-  [data-indicator-appearance='sdr']:not(.shared-indicators) .facts { grid-column: 1 / -1; grid-row: 4; }
+  /* `display: contents` paints nothing of its own, so the row's unavailable
+     dim moves to the children it hands over. */
+  :global([data-sdr-deck='blocks'])
+    .indicator-row[data-indicator-appearance='sdr'][data-indicator-operational='false']:not(.shared-indicators) > :global(*) {
+    opacity: 0.56;
+  }
+  :global([data-sdr-deck='blocks']) [data-indicator-appearance='sdr'] header {
+    grid-column: 1; grid-row: 1; justify-content: flex-end;
+  }
+  /* The block's own SELECTED/UNSELECTED label carries identity here; on the
+     single-receiver deck the receiver name only repeats it. */
+  :global([data-sdr-deck='blocks']) [data-indicator-appearance='sdr'] header strong { display: none; }
+  :global([data-sdr-deck='blocks']) [data-indicator-appearance='sdr'] .s-meter { grid-row: 2; }
+  :global([data-sdr-deck='blocks']) [data-indicator-appearance='sdr'] .s-meter[data-meter-live='true'] { grid-column: 1; }
+  :global([data-sdr-deck='blocks']) [data-indicator-appearance='sdr'] .s-meter[data-meter-live='false'] { grid-column: 3; }
+  :global([data-sdr-deck='blocks']) [data-indicator-appearance='sdr'] .s-meter[data-meter-live='false'] :global(svg) {
+    opacity: 0.5;
+  }
+  :global([data-sdr-deck='blocks']) [data-indicator-appearance='sdr']:not(.shared-indicators) .facts {
+    grid-column: 1; grid-row: 5; margin-block-start: 8px;
+  }
   [data-indicator-appearance='sdr'] header { justify-content: space-between; letter-spacing: .14em; }
   [data-indicator-appearance='sdr'] .fact { padding: 2px 6px; border-radius: 3px; letter-spacing: .06em; }
   [data-indicator-appearance='sdr'] .facts { gap: 5px; min-height: 24px; }

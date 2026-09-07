@@ -44,6 +44,8 @@
   import type { ReceiverInstrumentHandles } from './ReceiverInstrumentHost.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
+  import { formatKnownLevel } from './format-level';
+  import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import type { BooleanFact, DisplayObservation, RadioViewModel, ReceiverIndicatorViewModel, VfoViewModel } from './radio-view-model';
 
@@ -514,11 +516,26 @@
     return slot?.kind === 'slotted' ? slot.id : '—';
   }
   let instrumentReceivers = $derived([...new Set(viewModel.vfos.map((vfo) => vfo.receiver))]);
+  /**
+   * The sdr deck's "two full VFO blocks" layout: one block per A/B memory,
+   * the bridge column between them. It needs exactly one receiver instrument
+   * (the three columns are the panel's own, and a second instrument would
+   * have to share them) and two memories on that receiver (the second block,
+   * and the reading-less meter in it, would otherwise be empty). Anything
+   * else keeps the stacked sdr panel.
+   */
+  let sdrDeck = $derived(appearance === 'sdr' && instrumentReceivers.length === 1
+    && viewModel.vfos.filter((vfo) => vfo.receiver === instrumentReceivers[0]).length > 1);
   let receiverIndicators = $derived(
     (viewModel.receiverIndicators ?? []).filter(
       (indicator) => indicatorReceiver === undefined || indicator.receiver === indicatorReceiver,
     ),
   );
+
+  /** RF gain's DECLARED domain, from the same table the RF-front-end surface
+   *  hands its slider — `[0, 1]`, so `formatKnownLevel` renders the wire
+   *  fraction as a percentage rather than `0.8196078431372549`. */
+  const RF_GAIN_DOMAIN = RF_FRONT_END_LEVELS.find(([field]) => field === 'rfGain')!;
 
   function standardBadges(indicator: ReceiverIndicatorViewModel | undefined) {
     if (!indicator) return [];
@@ -550,7 +567,8 @@
     toggle('IP+', indicator.ipPlus); toggle('DIGI-SEL', indicator.digiSel);
     if (indicator.rfGain.availability.structural && indicator.rfGain.display?.state !== 'unsupported') {
       const shown = displayValue(indicator.rfGain.display, indicator.rfGain.reading.status === 'known' ? indicator.rfGain.reading.value : null);
-      badges.push({ label: `RFG ${shown ?? '—'}${indicator.rfGain.display?.state === 'stale' ? ' †' : ''}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
+      const text = shown === null ? '—' : formatKnownLevel(shown, RF_GAIN_DOMAIN[2], RF_GAIN_DOMAIN[3]);
+      badges.push({ label: `RFG ${text}${indicator.rfGain.display?.state === 'stale' ? ' †' : ''}`, active: shown !== null, color: shown === null ? 'muted' : 'cyan', state: indicator.rfGain.display?.state ?? indicator.rfGain.reading.status });
     }
     return badges;
   }
@@ -683,7 +701,10 @@
             {formatFrequency(displayHz)}
           {/if}
         </span>
-        <span class="vfo-mode">{displayMode ?? '—'}{displayFilter ? ` / ${displayFilter}` : ''}</span>
+        <!-- The sdr deck paints mode and filter as two chips in the shared
+             control-button family; every other appearance keeps the single
+             "MODE / FILTER" run this span has always rendered. -->
+        <span class="vfo-mode">{#if appearance === 'sdr'}<span class="mode-chip v2-control-button">{displayMode ?? '—'}</span>{#if displayFilter}<span class="mode-chip v2-control-button">{displayFilter}</span>{/if}{:else}{displayMode ?? '—'}{displayFilter ? ` / ${displayFilter}` : ''}{/if}</span>
         <span id={staleId} class="vfo-stale-cue" class:stale={staleDisplay}
           data-vfo-stale-cue aria-hidden={!staleDisplay}
           title={staleDisplay ? t('core.rxTx.target.reason.stale') : undefined}>
@@ -697,7 +718,7 @@
           <button
             type="button"
             class="vfo-select"
-            class:v2-control-button={appearance !== 'semantic'}
+            class:v2-control-button={appearance === 'sdr'}
             data-vfo-select
             disabled={selectDisabled}
             title={selectReason}
@@ -734,22 +755,25 @@
         : undefined}
     {@const absoluteReasonId = reasonId('select-absolute', absoluteReason)}
     <div class="vfo-identity-selectors" data-testid="vfo-identity-selectors">
+      <!-- The sdr deck shortens the visible label to the chip text; the full
+           sentence stays the accessible name, and every other appearance
+           keeps rendering that sentence. -->
       <button
-        type="button" class="vfo-select" class:v2-control-button={appearance !== 'semantic'}
+        type="button" class="vfo-select" class:v2-control-button={appearance === 'sdr'}
         data-vfo-select-absolute="A"
         title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO A"
         aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('A')}
-      >VFO A</button>
+      >{appearance === 'sdr' ? 'VFO A' : 'Select VFO A'}</button>
       <button
-        type="button" class="vfo-select" class:v2-control-button={appearance !== 'semantic'}
+        type="button" class="vfo-select" class:v2-control-button={appearance === 'sdr'}
         data-vfo-select-absolute="B"
         title={absoluteReason ?? relativeSelectionHelp} aria-label="Select VFO B"
         aria-describedby={absoluteReasonId}
         disabled={disabled || relativeSelectionPending}
         onclick={() => selectAbsoluteSlot('B')}
-      >VFO B</button>
+      >{appearance === 'sdr' ? 'VFO B' : 'Select VFO B'}</button>
       {#if absoluteReason !== undefined}
         <span id={absoluteReasonId} class="sr-only">{absoluteReason}</span>
       {/if}
@@ -799,9 +823,8 @@
       class:instrument-active={viewModel.vfos.some((vfo) => vfo.receiver === receiver && vfo.isActive)}
       aria-label={`${receiver} instrument`}>
       <VfoIndicatorRow indicator={receiverIndicators.find((item) => item.receiver === receiver)} {appearance}
-        slotLabel={instrumentSlot(receiver)} {continuitySession}>
+        slotLabel={instrumentSlot(receiver)} {continuitySession} deckBlocks={sdrDeck}>
         <div class="freq-stack">
-          {#if appearance === 'sdr' && relativeReceiver === receiver}{@render identitySelectors()}{/if}
           {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
             {#if vfo.receiver === receiver}{@render vfoTile(vfo, i)}{/if}
           {/each}
@@ -880,7 +903,8 @@
   {/snippet}
 
   {#if appearance !== 'semantic' && showVfoList}
-    <div class="instrument-panel" data-testid="vfo-instrument-panel">
+    <div class="instrument-panel" data-testid="vfo-instrument-panel"
+      data-sdr-deck={sdrDeck ? 'blocks' : undefined}>
       {#if instrumentReceivers[0]}
         {#if appearance === 'standard'}{@render standardInstrument(instrumentReceivers[0])}
         {:else}{@render receiverInstrument(instrumentReceivers[0])}{/if}
@@ -888,7 +912,7 @@
       {#if showRadioWideFacts}
         <div class="bridge" data-instrument-bridge>
           {@render activeReceiverStatus()}
-          {#if appearance !== 'sdr'}{@render identitySelectors()}{/if}
+          {@render identitySelectors()}
           {@render radioWideContent()}
         </div>
       {/if}
@@ -1031,44 +1055,86 @@
   [data-vfo-appearance='standard'] .receiver-instrument .secondary-slot .vfo-select {
     grid-column: 4; grid-row: 1;
   }
-  /* ── SDR receiver deck (V2, "hero + secondary") ────────────────────────
-     Presentation only, and every rule is gated on the sdr appearance so the
+  /* ── SDR receiver deck (V3, "two full VFO blocks") ─────────────────────
+     Presentation only; every rule is gated on the sdr appearance so the
      Standard face and the semantic list keep the paint they already had.
-     The tiles, the S-meter and the A/B selectors share ONE grid — the
-     indicator row's own, declared in VfoIndicatorRow — which is what lets
-     the meter sit under the hero frequency instead of above both tiles.
-     Rhythm: 8px inside a group, 16px between groups, 24px deck padding. */
+     `[data-sdr-deck='blocks']` is the narrower gate for the three-column
+     layout itself — see `sdrDeck` for the two conditions it needs.
+
+     The deck grid is this panel's own. `.receiver-instrument`, the indicator
+     row (VfoIndicatorRow) and `.freq-stack` all hand their children to it,
+     and each tile subgrids the five rows, so one block's header, meter,
+     chips and frequency share a column with the tile they belong to.
+     Rows: 1 header, 2 S-meter, 3 mode/filter chips, 4 frequency, 5
+     receiver-state chips. Rhythm: 8px inside a block, 16px before the
+     state-chip row, 24px deck padding. */
   [data-vfo-appearance='sdr'] .receiver-instrument { padding: 24px; }
-  [data-vfo-appearance='sdr'] .freq-stack { display: contents; }
-  [data-vfo-appearance='sdr'] .receiver-instrument .vfo-tile { grid-row: 2; }
-  /* Hero left, secondary right. `.secondary-slot` is this surface's own "not
-     the active slot" marker; moving it last in the grid's placement order
-     never pins two tiles to one cell, however the radio reports. */
-  [data-vfo-appearance='sdr'] .receiver-instrument .secondary-slot {
-    order: 1; align-self: start;
+  .instrument-panel[data-sdr-deck='blocks'] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 200px minmax(0, 1fr);
+    grid-template-rows: repeat(5, auto);
+    column-gap: 24px; row-gap: 8px; padding: 24px;
   }
-  [data-vfo-appearance='sdr'] .vfo-identity-selectors {
-    grid-column: 2; grid-row: 3; align-self: start; gap: 8px;
+  [data-sdr-deck='blocks'] .receiver-instrument,
+  [data-sdr-deck='blocks'] .freq-stack { display: contents; }
+  /* Column 1 is the selected block, column 3 the unselected one.
+     `.secondary-slot` is this surface's own "not the active slot" marker, so
+     the two tiles can never land in one column however the radio reports. */
+  [data-sdr-deck='blocks'] .receiver-instrument .vfo-tile {
+    grid-column: 1; grid-row: 1 / 6; align-items: center;
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: subgrid;
   }
+  [data-sdr-deck='blocks'] .receiver-instrument .secondary-slot { grid-column: 3; }
+  [data-sdr-deck='blocks'] .receiver-instrument .vfo-role {
+    grid-column: 1; grid-row: 1; justify-self: start;
+  }
+  [data-sdr-deck='blocks'] .receiver-instrument .vfo-mode {
+    grid-column: 1; grid-row: 3; justify-self: start;
+  }
+  [data-sdr-deck='blocks'] .receiver-instrument .vfo-freq {
+    grid-column: 1; grid-row: 4; justify-self: end;
+  }
+  [data-sdr-deck='blocks'] .receiver-instrument .vfo-badge {
+    grid-column: 1; grid-row: 4; justify-self: start;
+  }
+  /* The cue keeps its own cell — the trailing end of the chips row — so it
+     still occupies instrument space whether or not it is painted. */
+  [data-sdr-deck='blocks'] .receiver-instrument .vfo-stale-cue {
+    grid-column: 1; grid-row: 3; justify-self: end; align-self: center;
+    transform: none;
+  }
+  [data-sdr-deck='blocks'] .receiver-instrument .vfo-select {
+    grid-column: 1; grid-row: 1; justify-self: end;
+  }
+  [data-sdr-deck='blocks'] .bridge {
+    grid-column: 2; grid-row: 1 / -1; justify-content: flex-start; gap: 8px;
+  }
+  /* Bridge order: identity selectors, then the operations, then the
+     radio-wide facts, then the split digest — independent of the order the
+     surfaces happen to be rendered in. */
+  [data-sdr-deck='blocks'] .bridge > :global(*) { order: 2; }
+  [data-sdr-deck='blocks'] .bridge > .active-receiver { order: 0; }
+  [data-sdr-deck='blocks'] .bridge > .vfo-identity-selectors { order: 1; }
+  [data-sdr-deck='blocks'] .bridge > :global([data-testid='vfo-shared-indicators']) { order: 3; }
+  [data-sdr-deck='blocks'] .bridge > :global([data-testid='vfo-split-digest']) { order: 4; }
+  [data-vfo-appearance='sdr'] .vfo-identity-selectors { gap: 8px; }
   [data-vfo-appearance='sdr'] .receiver-instrument :where(.vfo-tile) { gap: 8px; }
   [data-vfo-appearance='sdr'] .receiver-instrument .vfo-role {
     font-size: 11px; letter-spacing: .14em;
     color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
   }
   [data-vfo-appearance='sdr'] .receiver-instrument .vfo-mode {
-    justify-self: start; padding: 2px 6px; border-radius: 3px;
-    border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
-    font-size: 11px; letter-spacing: .08em;
-    color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
+    display: inline-flex; gap: 8px; padding: 0; border: 0; background: transparent;
   }
-  [data-vfo-appearance='sdr'] .receiver-instrument .vfo-freq {
-    font-size: clamp(28px, 3.2vw, 40px); margin: 8px 0 0;
+  [data-vfo-appearance='sdr'] .mode-chip { font-size: 10px; letter-spacing: .06em; }
+  /* Both blocks read at the same size, tabular, and neither glows: the
+     selected block is told apart by colour, not by scale. */
+  [data-vfo-appearance='sdr'] .receiver-instrument .vfo-freq,
+  [data-vfo-appearance='sdr'] .receiver-instrument .secondary-slot .vfo-freq {
+    font-size: clamp(28px, 3.2vw, 40px); margin: 0;
     font-variant-numeric: tabular-nums;
   }
   [data-vfo-appearance='sdr'] .receiver-instrument .is-active .vfo-freq { text-shadow: none; }
-  [data-vfo-appearance='sdr'] .receiver-instrument .secondary-slot .vfo-freq {
-    font-size: clamp(18px, 1.8vw, 24px); margin: 8px 0 0;
-  }
 
   @media (max-width: 1050px) {
     .instrument-panel { flex-wrap: wrap; }

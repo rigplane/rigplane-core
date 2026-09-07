@@ -81,7 +81,10 @@ describe('VFO qualified display continuity', () => {
       digits.forEach((digit, index) => expect(primitive.querySelectorAll('.digit')[index]).toBe(digit));
       expect(root.querySelector('[data-vfo-stale-cue]')).toBe(cue);
       expect(primitive.textContent?.replace(/\s/g, '')).toBe('14.250.000');
-      expect(root.querySelector('.vfo-mode')!.textContent).toBe('USB / FIL1');
+      // sdr paints mode and filter as two chips; every other appearance keeps
+      // the single "MODE / FILTER" run.
+      expect(root.querySelector('.vfo-mode')!.textContent)
+        .toBe(appearance === 'sdr' ? 'USBFIL1' : 'USB / FIL1');
       expect(primitive.getAttribute('aria-disabled')).toBe(String(state === 'stale'));
       expect(cue.getAttribute('aria-hidden')).toBe(String(state !== 'stale'));
       expect(cue.textContent).not.toBe('');
@@ -249,6 +252,25 @@ function withReceiverIndicators(id: TopologyFixtureId): RadioViewModel {
   const receivers: ReceiverId[] = id.startsWith('2/') ? ['MAIN', 'SUB'] : ['MAIN'];
   return validateRadioViewModel({
     ...base, receiverIndicators: receivers.map(receiverIndicator),
+  });
+}
+
+/** Both memories reading as relative roles — the state the A/B resolver
+ *  buttons exist for, and the one the live IC-7300 reports. */
+function relativeIdentityModel(): RadioViewModel {
+  const base = withReceiverIndicators('1/ab');
+  return validateRadioViewModel({
+    ...base,
+    vfos: [
+      {
+        ...base.vfos[0], slot: { kind: 'relative', role: 'selected' },
+        label: 'Selected VFO', isActive: true, isActiveSlot: true,
+      },
+      {
+        ...base.vfos[1], slot: { kind: 'relative', role: 'unselected' },
+        label: 'Unselected VFO', isActive: false, isActiveSlot: false,
+      },
+    ],
   });
 }
 
@@ -776,10 +798,10 @@ describe('VFO selection intent', () => {
 
     const a = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="A"]')!;
     const b = target.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="B"]')!;
-    // The visible label is the short chip text; the full "Select VFO A/B"
-    // sentence stays the accessible name, so nothing is lost to assistive tech.
-    expect(a.textContent).toBe('VFO A');
-    expect(b.textContent).toBe('VFO B');
+    // Only the sdr deck shortens the visible label (see the sdr case below);
+    // every other appearance keeps rendering the full sentence.
+    expect(a.textContent).toBe('Select VFO A');
+    expect(b.textContent).toBe('Select VFO B');
     expect(a.getAttribute('aria-label')).toBe('Select VFO A');
     expect(b.getAttribute('aria-label')).toBe('Select VFO B');
     expect(a.title).toBe('Current A/B identity is unknown. Selecting this VFO will change the radio selection and establish identity.');
@@ -2429,11 +2451,40 @@ describe('MOR-2342 historical instrument presentations', () => {
     }
     expect(root.querySelectorAll('[data-instrument-bridge]')).toHaveLength(1);
   });
-  it('keeps A/B memories in one receiver instrument with one S-meter', () => {
+  // Owner ruling 2026-09-07: the sdr deck gives every VFO block a meter, and
+  // the receiver's one reading lives on the selected block; the other block's
+  // meter carries no reading at all.
+  it('keeps A/B memories in one receiver instrument with a meter per block', () => {
     const root = mountSurface({ viewModel: withReceiverIndicators('1/ab'), appearance: 'sdr' });
     expect(root.querySelectorAll('[data-receiver-instrument]')).toHaveLength(1);
     expect(root.querySelectorAll('[data-vfo-tile]')).toHaveLength(2);
+    const meters = [...root.querySelectorAll('[data-testid="receiver-s-meter"]')];
+    expect(meters).toHaveLength(2);
+    expect(meters.map((meter) => meter.getAttribute('data-meter-live'))).toEqual(['true', 'false']);
+    expect(root.querySelector('[data-testid="vfo-instrument-panel"]')
+      ?.getAttribute('data-sdr-deck')).toBe('blocks');
+  });
+  it('gives a single-memory sdr receiver one meter and no block deck', () => {
+    const root = mountSurface({ viewModel: withReceiverIndicators('1/single'), appearance: 'sdr' });
     expect(root.querySelectorAll('[data-testid="receiver-s-meter"]')).toHaveLength(1);
+    expect(root.querySelector('[data-testid="vfo-instrument-panel"]')
+      ?.getAttribute('data-sdr-deck')).toBeNull();
+  });
+  it('shortens the A/B resolver labels and takes control-button paint in sdr only', () => {
+    const relative = relativeIdentityModel();
+    const sdr = mountSurface({ viewModel: relative, appearance: 'sdr' });
+    const sdrA = sdr.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="A"]')!;
+    expect(sdrA.textContent).toBe('VFO A');
+    expect(sdrA.getAttribute('aria-label')).toBe('Select VFO A');
+    expect(sdrA.classList.contains('v2-control-button')).toBe(true);
+    // The resolvers belong to the bridge column, not to either VFO block.
+    expect(sdr.querySelector('[data-instrument-bridge] [data-testid="vfo-identity-selectors"]'))
+      .not.toBeNull();
+
+    const standard = mountSurface({ viewModel: relative, appearance: 'standard' });
+    const standardA = standard.querySelector<HTMLButtonElement>('[data-vfo-select-absolute="A"]')!;
+    expect(standardA.textContent).toBe('Select VFO A');
+    expect(standardA.classList.contains('v2-control-button')).toBe(false);
   });
   it('keeps the Standard active frequency dominant over its secondary memory', () => {
     const root = mountSurface({ viewModel: withReceiverIndicators('1/ab'), appearance: 'standard' });
