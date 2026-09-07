@@ -1,8 +1,8 @@
 /**
- * MOR-2309 — the seven DUAL intents bind once to the real frontend facades.
+ * MOR-2309 — the nine radio-wide intents bind once to the real frontend facades.
  *
- * `SemanticRadioSurfaces` binds all seven `VfoSurface` props by name
- * (`onEqualizeVfos={vfo.onEqual}`, …). Its own component test mocks
+ * `SemanticRadioSurfaces` binds one canonical N1 callback record and supplies
+ * that input to both legitimate radio-wide `VfoSurface` mounts. Its component test mocks
  * `../command-bus`, so a renamed or deleted handler there would be invisible:
  * the mock would keep answering. This file closes that gap the same way
  * `tx-aux-command-bus.isolated.test.ts` does — load the real module, read the
@@ -78,13 +78,15 @@ const commandSource = readFileSync('src/lib/runtime/commands/panel-commands.ts',
  * on "something was called".
  */
 const OPS = [
-  { prop: 'onSelectMainReceiver', owner: 'vfo', handler: 'onMainVfoClick', command: ['set_vfo', { vfo: 'MAIN' }], focus: 'main' },
-  { prop: 'onSelectSubReceiver', owner: 'vfo', handler: 'onSubVfoClick', command: ['set_vfo', { vfo: 'SUB' }], focus: 'sub' },
-  { prop: 'onEqualizeVfos', owner: 'vfo', handler: 'onEqual', command: ['vfo_equalize', {}] },
-  { prop: 'onSwapVfos', owner: 'vfo', handler: 'onSwap', command: ['vfo_swap', {}] },
-  { prop: 'onQuickSplit', owner: 'vfo', handler: 'onQuickSplit', command: ['quick_split', {}] },
-  { prop: 'onQuickDualWatch', owner: 'vfo', handler: 'onQuickDw', command: ['quick_dualwatch', {}] },
-  { prop: 'onSpeak', owner: 'systemIntents', handler: 'onSpeak', command: ['speak', { mode: 0 }] },
+  { prop: 'onToggleSplit', binding: 'vfo.onSplitToggle', handler: 'onSplitToggle', command: ['set_split', { on: true }] },
+  { prop: 'onToggleDualWatch', binding: 'toggleDualWatch', handler: 'onDualWatchToggle', command: ['set_dual_watch', { on: true }] },
+  { prop: 'onSelectMainReceiver', binding: 'vfo.onMainVfoClick', handler: 'onMainVfoClick', command: ['set_vfo', { vfo: 'MAIN' }], focus: 'main' },
+  { prop: 'onSelectSubReceiver', binding: 'vfo.onSubVfoClick', handler: 'onSubVfoClick', command: ['set_vfo', { vfo: 'SUB' }], focus: 'sub' },
+  { prop: 'onEqualizeVfos', binding: 'vfo.onEqual', handler: 'onEqual', command: ['vfo_equalize', {}] },
+  { prop: 'onSwapVfos', binding: 'vfo.onSwap', handler: 'onSwap', command: ['vfo_swap', {}] },
+  { prop: 'onQuickSplit', binding: 'vfo.onQuickSplit', handler: 'onQuickSplit', command: ['quick_split', {}] },
+  { prop: 'onQuickDualWatch', binding: 'vfo.onQuickDw', handler: 'onQuickDw', command: ['quick_dualwatch', {}] },
+  { prop: 'onSpeak', binding: 'systemIntents.onSpeak', handler: 'onSpeak', command: ['speak', { mode: 0 }] },
 ] as const;
 
 type OpHandlerName = (typeof OPS)[number]['handler'];
@@ -92,6 +94,8 @@ type OpHandlerName = (typeof OPS)[number]['handler'];
 function handlerFor(handler: OpHandlerName): () => void {
   const vfo = makeVfoHandlers();
   switch (handler) {
+    case 'onSplitToggle': return vfo.onSplitToggle;
+    case 'onDualWatchToggle': return () => vfo.onDualWatchToggle(true);
     case 'onMainVfoClick': return vfo.onMainVfoClick;
     case 'onSubVfoClick': return vfo.onSubVfoClick;
     case 'onEqual': return vfo.onEqual;
@@ -111,16 +115,15 @@ beforeEach(() => {
 });
 
 describe('the wiring binds every VFO op to a handler the real command bus provides', () => {
-  // Kills: a prop bound to `vfo.onQuickDW` (or any other typo) — Svelte would
-  // pass `undefined` silently and the button would do nothing at runtime.
-  it.each(OPS)('$prop is bound to $owner.$handler in the real wiring source', ({ prop, owner, handler }) => {
-    expect(wiringSource).toContain(`${prop}={${owner}.${handler}}`);
+  // Kills: a callback duplicated or bound to a neighbouring facade.
+  it.each(OPS)('$prop has exactly one canonical $binding binding', ({ prop, binding }) => {
+    expect(wiringSource.split(`${prop}: ${binding}`).length - 1).toBe(1);
   });
 
   // Kills: a rename/removal in command-bus.ts that the mocked component test
   // cannot see.
-  it.each(OPS)('$owner.$handler exists and is callable', ({ owner, handler }) => {
-    expect(typeof handlerFor(handler), owner).toBe('function');
+  it.each(OPS)('$handler exists and is callable', ({ handler }) => {
+    expect(typeof handlerFor(handler)).toBe('function');
   });
 
   // Kills: cross-wiring. Each handler must emit ITS command and no other —
@@ -161,9 +164,8 @@ describe('placement — the ops ride with the radio-wide facts', () => {
   // render one equalize button PER RECEIVER in the dual-receiver cockpit. The
   // strip mount is the one that sets `showRadioWideFacts={false}`; the two
   // legitimate mounts are the cockpit's global row and the single composition.
-  it.each(OPS)('$prop is bound exactly twice — the global row and the single composition', ({ prop }) => {
-    const occurrences = wiringSource.split(`${prop}={`).length - 1;
-    expect(occurrences).toBe(2);
+  it('passes the one N1 input to exactly the global row and single composition', () => {
+    expect(wiringSource.split('operationInput={vfoOperationInput ?? undefined}').length - 1).toBe(2);
   });
 
   // The strip mount stays op-free — asserted on the strip's own markup block
@@ -173,6 +175,6 @@ describe('placement — the ops ride with the radio-wide facts', () => {
       wiringSource.indexOf('showRadioWideFacts={false}') - 400,
       wiringSource.indexOf('showRadioWideFacts={false}') + 400,
     );
-    for (const { prop } of OPS) expect(stripBlock, prop).not.toContain(prop);
+    expect(stripBlock).not.toContain('operationInput=');
   });
 });

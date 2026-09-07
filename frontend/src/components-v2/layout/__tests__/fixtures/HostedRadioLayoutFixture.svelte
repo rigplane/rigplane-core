@@ -9,9 +9,12 @@
     ReceiverVfoAppearance,
   } from '../../../../semantic/ReceiverInstrumentHost.svelte';
   import type { TxAuxFiniteHandles } from '../../../../semantic/tx-aux-finite';
+  import type { VfoOperationHandles } from '../../../../semantic/VfoOperationSeatHost.svelte';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
-  const vfo = createRawSnippet<[appearance: FixtureVfoAppearance, allowBare?: boolean]>(
+  const vfo = createRawSnippet<[
+    appearance: FixtureVfoAppearance, allowBare?: boolean, operationControls?: FixtureSnippet,
+  ]>(
     () => ({ render: () => '' }),
   );
   const txAux = createRawSnippet<[scalarLayout: FixtureSnippet, allowBare?: boolean]>(
@@ -30,6 +33,10 @@
   const txAuxInstruments = {
     atu: empty, vox: empty, compressor: empty, monitor: empty, atuTune: empty,
   } satisfies TxAuxFiniteHandles;
+  const vfoOperations = {
+    split: null, dualWatch: null, activeReceiver: null, equalize: null,
+    swap: null, quickSplit: null, quickDualWatch: null, speak: null,
+  } satisfies VfoOperationHandles;
   const rfFrontEndInstruments = {
     kind: 'separate', rfGain: empty, squelch: empty,
   } as const;
@@ -39,7 +46,8 @@
   };
 
   export const TEST_INSTRUMENTS = {
-    vfo, rxTx: empty, txAuxControls: txAux, txAuxScalars: scalars, txAuxInstruments,
+    vfo, vfoOperations, rxTx: empty, txAuxControls: txAux,
+    txAuxScalars: scalars, txAuxInstruments,
     receiverInstruments,
     rxAudioInstruments, rfFrontEndInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,

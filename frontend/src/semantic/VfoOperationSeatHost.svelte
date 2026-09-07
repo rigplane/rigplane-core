@@ -23,7 +23,7 @@
 
   interface Props {
     input: VfoOperationProjectionInput;
-    finiteAppearance: FiniteControlAppearance<VfoOperationReceiver>;
+    finiteAppearance: FiniteControlAppearance<string | number>;
     rendererContext: FiniteRendererContext | null;
     scheme: RadioViewModel['vfoScheme'];
     children: Snippet<[VfoOperationHandles]>;
