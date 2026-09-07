@@ -563,6 +563,16 @@ describe('external hosted face chain', () => {
     expect(stationKeys()).toEqual([...STATION_ORDER].reverse());
   });
 
+  it('renders station meters from the record appearance when the global selection is absent', async () => {
+    h.state = proxy(stationState()); h.meterAppearance = undefined;
+    const current = { value: {} }; const a = occurrence(await loadedRecord('station-global-absent', FaceA), current);
+    current.value = a;
+    target = document.createElement('div'); document.body.appendChild(target);
+    mountStation(a, writable<SurfacePlan | null>(fullPlan()));
+    expect(stationKeys()).toEqual(STATION_ORDER);
+    expect(target.querySelectorAll('[data-family="receiver"] [data-fixture-signal]')).toHaveLength(2);
+  });
+
   it('admits and withdraws the station family from the meters zone alone', async () => {
     h.state = proxy(stationState());
     const current = { value: {} }; const a = occurrence(await loadedRecord('station-zone', FaceA), current);

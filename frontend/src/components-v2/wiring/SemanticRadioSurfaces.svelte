@@ -2081,6 +2081,7 @@
         {vfoOperations}
         {txAuxScalars}
         {stationMeters}
+        meterAppearance={externalPresentation.record.appearances.meter}
         receiverAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
         vfoOperationsAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
         txAuxAdmitted={surfacePlan() !== null && zoneOwning('txAux') !== null}

@@ -24,6 +24,7 @@
     kind: 'level';
     frame: StationLevelMeterFrame;
     resetPeakSeat?: ActionRendererSeat;
+    levelRenderer?: MeterAppearance['level'];
     fallback: Snippet<[frame: StationLevelMeterFrame, resetPeakSeat?: ActionRendererSeat]>;
   }
   type Props = SignalProps | LevelProps;
@@ -32,7 +33,8 @@
   const appearance = untrack(() => getSelectedMeterAppearance());
   const signalRenderer = untrack(() => props.kind === 'level'
     ? undefined : props.signalRenderer ?? appearance?.signal);
-  const levelRenderer = untrack(() => props.kind === 'level' ? appearance?.level : undefined);
+  const levelRenderer = untrack(() => props.kind === 'level'
+    ? props.levelRenderer ?? appearance?.level : undefined);
   const resetPeak = untrack(() => props.kind === 'level' && levelRenderer
     ? props.resetPeakSeat?.attachRenderer() : undefined);
   const signalView = $derived(props.kind === 'level' ? null

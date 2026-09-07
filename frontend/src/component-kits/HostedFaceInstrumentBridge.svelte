@@ -2,6 +2,7 @@
   import type {
     HostedFaceComponentV1,
     HostedInstrumentFamiliesV1,
+    MeterAppearance,
     ReceiverFrequencyPresentationV1,
     TxAuxScalarPresentationV1,
   } from '../../component-kit-api/src/index';
@@ -25,6 +26,7 @@
     vfoOperations,
     txAuxScalars,
     stationMeters,
+    meterAppearance,
     receiverAdmitted,
     vfoOperationsAdmitted,
     txAuxAdmitted,
@@ -35,6 +37,7 @@
     vfoOperations: VfoOperationHandles;
     txAuxScalars: TxAuxScalarHandles;
     stationMeters: StationMeterInstrumentHandles;
+    meterAppearance: MeterAppearance;
     receiverAdmitted: boolean;
     vfoOperationsAdmitted: boolean;
     txAuxAdmitted: boolean;
@@ -95,7 +98,8 @@
 {#snippet noNativeLevel(_frame: StationLevelMeterFrame, _resetPeakSeat?: ActionRendererSeat)}{/snippet}
 {#snippet stationLevel(frame: StationLevelMeterFrame, resetPeakSeat?: ActionRendererSeat)}
   {#key resetPeakSeat}
-    <MeterRendererSeat kind="level" {frame} {resetPeakSeat} fallback={noNativeLevel} />
+    <MeterRendererSeat kind="level" {frame} {resetPeakSeat}
+      levelRenderer={meterAppearance.level} fallback={noNativeLevel} />
   {/key}
 {/snippet}
 {#snippet stationSignalMeter(
@@ -114,7 +118,8 @@
          S meter. `selectedPresent` carries that structural fact, and
          `MeterRendererSeat` renders no signal appearance when it is false. -->
     <MeterRendererSeat frame={signalFrame.motion} {reading} domain={facts.domain}
-      relevant={facts.relevant} selectedPresent={facts.availability.structural} />
+      relevant={facts.relevant} selectedPresent={facts.availability.structural}
+      signalRenderer={meterAppearance.signal} />
   {/if}
 {/snippet}
 {#snippet stationSignal()}{@render stationMeters.signal(stationSignalMeter)}{/snippet}
