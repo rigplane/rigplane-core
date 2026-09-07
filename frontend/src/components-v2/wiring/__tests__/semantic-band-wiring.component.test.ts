@@ -394,6 +394,26 @@ describe('the live Band choice host uses current synchronous authority', () => {
     retainedInvocations.get('Band')?.('20m');
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_band', { band: 5 });
   });
+
+  it.each([
+    ['missing state provider generation', () => {
+      const { providerGeneration: omitted, ...withoutGeneration } = h.state as ServerState;
+      void omitted;
+      h.state = withoutGeneration;
+    }],
+    ['mismatched provider generations', () => {
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    }],
+  ] as const)('refuses retained Band invocation with %s before publication', (_kind, invalidate) => {
+    h.finiteAppearance = true;
+    render();
+    const retainedA = retainedInvocations.get('Band')!;
+
+    invalidate();
+    retainedA('20m');
+
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
 });
 
 /*
