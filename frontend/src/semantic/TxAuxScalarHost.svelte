@@ -21,6 +21,7 @@
     type TxAuxFeedbackLevelField,
     type TxAuxLevelFeedback,
     type TxAuxLevelField,
+    type TxAuxScalarPresentation,
     type TxAuxScalarHandles,
   } from './tx-aux-scalar';
 
@@ -125,6 +126,18 @@
     field, statusPresentation(field),
   ])) as Record<TxAuxFeedbackLevelField, Readonly<HBarIssuedStatusPresentation>>;
 
+  function retireHBarStatus(
+    _node: HTMLElement,
+    placement: Readonly<{ field: TxAuxLevelField; form: 'hbar' | 'knob' }>,
+  ) {
+    const retire = (next: typeof placement) => {
+      if (next.form !== 'knob' || next.field === 'rfPower') return;
+      issuedStatus[next.field] = null;
+    };
+    retire(placement);
+    return { update: retire };
+  }
+
   function canonical(field: TxAuxLevelField): number | null {
     if (field !== 'rfPower' && levelFeedback !== undefined) {
       const feedback = levelFeedback[field];
@@ -158,9 +171,14 @@
   });
 </script>
 
-{#snippet scalar(field: TxAuxLevelField)}
+{#snippet scalar(
+  field: TxAuxLevelField,
+  presentation?: Readonly<TxAuxScalarPresentation>,
+)}
   {@const current = txAux?.[field]}
   {#if current?.availability.structural}
+    {@const explicitPresentation = presentation !== undefined}
+    {@const form = presentation?.form ?? 'hbar'}
     {@const [, label, min, max, step] = row(field)}
     {@const currentStatus = field === 'rfPower' ? '' : status(field)}
     {@const currentFeedback = field === 'rfPower' ? undefined : levelFeedback?.[field]}
@@ -171,8 +189,10 @@
     }}
     <div
       class="tx-aux-level"
+      class:tx-aux-level--presented={explicitPresentation}
       data-testid={`tx-aux-${field}`}
       data-field={field}
+      data-scalar-form={form}
       data-disabled-reason={disabledReason === undefined ? undefined : 'field-not-observed'}
       data-feedback-control={currentFeedback?.scope.control}
       data-min={min}
@@ -180,45 +200,73 @@
       data-step={step}
       aria-busy={currentFeedback?.busy}
       title={disabledReason}
+      use:retireHBarStatus={{ field, form }}
     >
-      <span class="tx-aux-name">{label}</span>
+      <span class="tx-aux-name" class:sr-only={explicitPresentation}
+        aria-hidden={explicitPresentation ? 'true' : undefined}>{label}</span>
       {#if field === 'rfPower'}
         <ValueControl
-          binding={bindings[field]} label="RF Power" renderer="hbar"
+          binding={bindings[field]} label="RF Power" renderer={form}
           displayFn={(value) => formatValue(field, value)}
-          showLabel={false} showValue={false} compact={true} title={disabledReason}
+          showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
+          showValue={explicitPresentation ? presentation?.showValue ?? true : false}
+          compact={explicitPresentation ? presentation?.compact ?? false : true}
+          title={disabledReason}
           {accessibility}
         />
       {:else}
         <ValueControl
           {...feedbackIntegratedControl}
-          binding={bindings[field]} {label} renderer="hbar"
+          binding={bindings[field]} {label} renderer={form}
           displayFn={(value) => formatValue(field, value)}
-          showLabel={false} showValue={false} compact={true} title={disabledReason}
+          showLabel={explicitPresentation ? presentation?.showLabel ?? true : false}
+          showValue={explicitPresentation ? presentation?.showValue ?? true : false}
+          compact={explicitPresentation ? presentation?.compact ?? false : true}
+          title={disabledReason}
           {accessibility}
-          issuedStatusPresentation={statusPresentations[field as TxAuxFeedbackLevelField]}
+          issuedStatusPresentation={form === 'hbar'
+            ? statusPresentations[field as TxAuxFeedbackLevelField]
+            : undefined}
         />
       {/if}
-      <output data-canonical-value>{formatValue(field, canonical(field))}</output>
+      <output data-canonical-value class:sr-only={explicitPresentation}
+        aria-hidden={explicitPresentation ? 'true' : undefined}
+      >{formatValue(field, canonical(field))}</output>
       {#if currentStatus !== ''}
         <span
           data-command-status
           class:command-pending={currentFeedback?.busy}
-          class:sr-only={currentFeedback?.phase === 'unavailable'}
+          class:sr-only={explicitPresentation || currentFeedback?.phase === 'unavailable'}
         >{currentStatus}</span>
       {/if}
     </div>
   {/if}
 {/snippet}
 
-{#snippet rfPower()}{@render scalar('rfPower')}{/snippet}
-{#snippet micGain()}{@render scalar('micGain')}{/snippet}
-{#snippet driveGain()}{@render scalar('driveGain')}{/snippet}
-{#snippet voxGain()}{@render scalar('voxGain')}{/snippet}
-{#snippet antiVoxGain()}{@render scalar('antiVoxGain')}{/snippet}
-{#snippet voxDelay()}{@render scalar('voxDelay')}{/snippet}
-{#snippet compressorLevel()}{@render scalar('compressorLevel')}{/snippet}
-{#snippet monitorLevel()}{@render scalar('monitorLevel')}{/snippet}
+{#snippet rfPower(presentation?: Readonly<TxAuxScalarPresentation>)}
+  {@render scalar('rfPower', presentation)}
+{/snippet}
+{#snippet micGain(presentation?: Readonly<TxAuxScalarPresentation>)}
+  {@render scalar('micGain', presentation)}
+{/snippet}
+{#snippet driveGain(presentation?: Readonly<TxAuxScalarPresentation>)}
+  {@render scalar('driveGain', presentation)}
+{/snippet}
+{#snippet voxGain(presentation?: Readonly<TxAuxScalarPresentation>)}
+  {@render scalar('voxGain', presentation)}
+{/snippet}
+{#snippet antiVoxGain(presentation?: Readonly<TxAuxScalarPresentation>)}
+  {@render scalar('antiVoxGain', presentation)}
+{/snippet}
+{#snippet voxDelay(presentation?: Readonly<TxAuxScalarPresentation>)}
+  {@render scalar('voxDelay', presentation)}
+{/snippet}
+{#snippet compressorLevel(presentation?: Readonly<TxAuxScalarPresentation>)}
+  {@render scalar('compressorLevel', presentation)}
+{/snippet}
+{#snippet monitorLevel(presentation?: Readonly<TxAuxScalarPresentation>)}
+  {@render scalar('monitorLevel', presentation)}
+{/snippet}
 
 {@render children({
   rfPower, micGain, driveGain, voxGain, antiVoxGain, voxDelay, compressorLevel, monitorLevel,
@@ -235,6 +283,7 @@
 
 <style>
   .tx-aux-level { display: grid; grid-template-columns: 10ch 8rem auto; align-items: center; gap: 0.5rem; }
+  .tx-aux-level--presented { display: inline-flex; min-width: 0; max-width: 100%; }
   .tx-aux-name { white-space: nowrap; }
   .tx-aux-level :global(.vc-hbar) { width: 100%; min-width: 0; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
