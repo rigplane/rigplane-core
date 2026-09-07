@@ -184,9 +184,16 @@ describe('createMeterBallistics frame-step strategy', () => {
     expect(linear).not.toMatch(/createMeterBallistics\(|createSmoother\(/);
     expect(linear.match(/createSignalMeterMotion\(/g)).toHaveLength(1);
 
+    const barBinding = readFileSync(
+      'src/components-v2/meters/bar-meter-motion.svelte.ts',
+      'utf8',
+    );
+    expect(barBinding.match(/createMeterBallistics\(/g)).toHaveLength(1);
+    expect(barBinding.match(/createSmoother\(/g)).toHaveLength(1);
+
     const bar = readFileSync('src/components-v2/meters/BarGauge.svelte', 'utf8');
-    expect(bar.match(/createMeterBallistics\(/g)).toHaveLength(1);
-    expect(bar.match(/createSmoother\(/g)).toHaveLength(1);
+    expect(bar).not.toMatch(/createMeterBallistics\(|createSmoother\(/);
+    expect(bar.match(/createBarMeterMotion\(/g)).toHaveLength(1);
   });
 
   it('delegates smoothing and clears both outputs when either coordinate is absent', () => {
