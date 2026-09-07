@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ScalarAppearance } from '../../../../component-kit-api/src/index';
   import type { FiniteControlAppearance, FiniteRendererContext }
     from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { CommandScalarFeedback } from '../../../primitives/scalar/continuous-scalar.svelte';
@@ -19,6 +20,8 @@
     agcLabels?: Record<string, string>;
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
+    scalarAppearance?: ScalarAppearance;
+    presentationIsCurrent?: () => boolean;
     pendingNb?: boolean | null;
     pendingNr?: boolean | null;
     finiteAppearance?: FiniteControlAppearance<DspFiniteChoiceValue>;
@@ -30,6 +33,7 @@
   }
   let { view, feedback, presentation = 'grouped', scalarPresentation,
     agcLabels = {}, nbLevelMax = 255, nbLevelPercent = false,
+    scalarAppearance, presentationIsCurrent,
     pendingNb = null, pendingNr = null, finiteAppearance, rendererContext = null,
     onToggle, onLevelChange, onNotchModeChange, onAgcModeChange }: Props = $props();
   let finiteSelection = $derived(finiteAppearance === undefined
@@ -57,6 +61,7 @@
   {onNotchModeChange} {onAgcModeChange} {...finiteSelection}>
   {#snippet children(finiteHandles: DspFiniteHandles)}
     <DspScalarHost {view} feedback={scalarFeedback} {nbLevelMax} {nbLevelPercent}
+      {scalarAppearance} {presentationIsCurrent}
       onLevelChange={(field, value) => onLevelChange?.(field, value)}>
       {#snippet children(scalarHandles: DspScalarHandles)}
         {#snippet independentFinite(handles: DspFiniteHandles)}
@@ -76,7 +81,6 @@
           <DspSurface {view} {finiteHandles} scalarHandles={scalarHandles}
             finiteLayout={presentation === 'independent' ? independentFinite : undefined}
             scalarLayout={presentation === 'independent' ? independentScalars : undefined}
-            {nbLevelMax} {nbLevelPercent}
             onLevelChange={(field, value) => onLevelChange?.(field, value)} />
         {/key}
       {/snippet}

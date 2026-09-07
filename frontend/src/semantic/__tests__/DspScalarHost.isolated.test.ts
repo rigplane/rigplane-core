@@ -65,6 +65,7 @@ type Props = {
   view: RadioViewModel; feedback: DspScalarFeedback; presentation: 'grouped' | 'independent';
   scalarPresentation?: Readonly<DspScalarPresentation>; nbLevelMax?: number;
   nbLevelPercent?: boolean; onLevelChange?: (field: DspScalarField, value: number) => void;
+  scalarAppearance?: Skin; presentationIsCurrent?: () => boolean;
 };
 let target: HTMLDivElement;
 beforeEach(() => {
@@ -304,6 +305,27 @@ describe('two-scalar DSP family host', () => {
     flushSync();
     expect(target.querySelectorAll('[data-feedback-lane="nbLevel"]')).toHaveLength(1);
     expect(live()).toHaveLength(1);
+    r.dispose();
+  });
+
+  it('forwards scalarAppearance to the renderer and fences a lease whose presentationIsCurrent is false', () => {
+    activation.selected = undefined;
+    const r = render({
+      scalarAppearance: {
+        name: 'DSP scalar host external appearance', hbar: ExternalScalarRenderer, knob: ExternalScalarRenderer,
+      },
+      presentationIsCurrent: () => false,
+    });
+    // With no global appearance configured, the explicit prop is the only
+    // source of a skin — its reaching the renderer is what makes the
+    // external marker render instead of a bare native slider.
+    expect(target.querySelectorAll('[data-external-scalar-renderer]')).toHaveLength(2);
+    const lease = r.scalar('nbLevel')!.rendererLease;
+    expect(lease.beginPointer()).toBeNull();
+    lease.nativeInput(65);
+    lease.wheel({ direction: 1, fine: false });
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    expect(r.onLevelChange).not.toHaveBeenCalled();
     r.dispose();
   });
 });

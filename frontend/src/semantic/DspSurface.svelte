@@ -1,10 +1,10 @@
 <!--
   Semantic DSP surface (MOR-1305, vocabulary slice 5B).
 
-  Presentation only. It renders five native continuous controls and places
-  two scalar handles plus four finite-control handles owned by the persistent
-  DSP hosts. It holds no state and consults no controller (v3 ADR invariant
-  11), the same discipline `TxAuxSurface` (MOR-1265) established.
+  Presentation only. It renders native continuous controls and
+  finite-control handles owned by the persistent DSP hosts. It holds no
+  state and consults no controller (v3 ADR invariant 11), the same
+  discipline `TxAuxSurface` (MOR-1265) established.
 
   CARRY-FORWARDS (binding, from the MOR-1290 fact-layer decisions this
   surface must not relax):
@@ -45,8 +45,7 @@
   /** `[field, label, min, max, step, format?]` — `nrLevel`/`nbDepth` are
    *  ALREADY the adapter's display-scaled values (carry-forward 3); the rest
    *  are raw wire ranges, verbatim `DspPanel.svelte`'s own slider bounds.
-   *  `nbLevel` is excluded — its ceiling is the caps-echoed `nbLevelMax` prop,
-   *  not a static bound, and is rendered separately below. */
+   *  `nbLevel` is excluded from this array. */
   export const DSP_LEVELS = [
     ['nrLevel', 'NR level', 0, 15, 1],
     ['nbDepth', 'NB depth', 1, 10, 1],
@@ -130,8 +129,6 @@
     finiteLayout?: DspFiniteLayout;
     scalarHandles?: DspScalarHandles;
     scalarLayout?: DspScalarLayout;
-    nbLevelMax?: number;
-    nbLevelPercent?: boolean;
     onLevelChange?: (field: DspLevelField, value: number) => void;
   }
   let {

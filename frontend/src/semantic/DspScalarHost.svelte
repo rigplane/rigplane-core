@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte';
+  import type { ScalarAppearance } from '../../component-kit-api/src/index';
   import { ValueControl } from '../components-v2/controls/value-control';
   import type { HBarIssuedStatusPresentation, HBarIssuedStatusSnapshot }
     from '../components-v2/controls/value-control/skin';
@@ -10,6 +11,7 @@
     type ScalarDomain,
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
+  import { disabledReasonText } from './disabled-reason';
   import type { DspField, RadioViewModel } from './radio-view-model';
   import { DSP_SCALAR_FIELDS, type DspScalarFeedback, type DspScalarField,
     type DspScalarHandles, type DspScalarPresentation } from './dsp-scalars';
@@ -20,11 +22,13 @@
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
     onLevelChange?: (field: DspScalarField, value: number) => void;
+    scalarAppearance?: ScalarAppearance;
+    presentationIsCurrent?: () => boolean;
     children: Snippet<[DspScalarHandles]>;
   }
 
   let { view, feedback, nbLevelMax = 255, nbLevelPercent = false,
-    onLevelChange, children }: Props = $props();
+    onLevelChange, scalarAppearance, presentationIsCurrent, children }: Props = $props();
   let dsp = $derived(view?.dsp);
 
   const LABELS = { nbLevel: 'NB level', nbWidth: 'NB width' } as const;
@@ -58,14 +62,18 @@
     };
   }
 
-  const nbLevelPolicy = createRenderedNativeRangeContinuousScalarPolicy();
-  const nbWidthPolicy = createRenderedNativeRangeContinuousScalarPolicy();
-  const nbLevelBinding = createContinuousScalar(() => input('nbLevel'), nbLevelPolicy);
-  const nbWidthBinding = createContinuousScalar(() => input('nbWidth'), nbWidthPolicy);
-  const bindings = { nbLevel: nbLevelBinding, nbWidth: nbWidthBinding } as const;
+  const policies = Object.fromEntries(DSP_SCALAR_FIELDS.map((field) => [
+    field, createRenderedNativeRangeContinuousScalarPolicy(),
+  ])) as Record<DspScalarField, ReturnType<typeof createRenderedNativeRangeContinuousScalarPolicy>>;
+  const bindings = Object.fromEntries(DSP_SCALAR_FIELDS.map((field) => [
+    field, createContinuousScalar(() => input(field), policies[field]),
+  ])) as Record<DspScalarField, ReturnType<typeof createContinuousScalar>>;
 
-  let issuedStatus = $state<Record<DspScalarField, string | null>>({ nbLevel: null, nbWidth: null });
-  let issuedStatusKey = $state<Record<DspScalarField, string>>({ nbLevel: '', nbWidth: '' });
+  const record = <T,>(value: T) => Object.fromEntries(
+    DSP_SCALAR_FIELDS.map((field) => [field, value]),
+  ) as Record<DspScalarField, T>;
+  let issuedStatus = $state(record<string | null>(null));
+  let issuedStatusKey = $state(record(''));
   function statusPresentation(field: DspScalarField): Readonly<HBarIssuedStatusPresentation> {
     return {
       get text() { return null; },
@@ -82,9 +90,9 @@
       accept(text) { issuedStatus[field] = text; },
     };
   }
-  const statusPresentations = {
-    nbLevel: statusPresentation('nbLevel'), nbWidth: statusPresentation('nbWidth'),
-  } as const;
+  const statusPresentations = Object.fromEntries(DSP_SCALAR_FIELDS.map((field) => [
+    field, statusPresentation(field),
+  ])) as Record<DspScalarField, Readonly<HBarIssuedStatusPresentation>>;
 
   function retireHBarStatus(
     _node: HTMLElement,
@@ -114,8 +122,13 @@
     const error = current.outcome?.error === undefined ? '' : `; ${current.outcome.error}`;
     return `${LABELS[field]}: ${current.phase.replaceAll('-', ' ')}${requested}${confirmed}${error}`;
   }
+  function disabledReason(field: DspScalarField): string | undefined {
+    return enabled(field) ? undefined : disabledReasonText({ structural: true, operational: false });
+  }
 
-  onDestroy(() => { nbLevelBinding.destroy(); nbWidthBinding.destroy(); });
+  onDestroy(() => {
+    for (const field of DSP_SCALAR_FIELDS) bindings[field].destroy();
+  });
 </script>
 
 {#snippet scalar(field: DspScalarField, presentation?: Readonly<DspScalarPresentation>)}
@@ -125,7 +138,7 @@
     {@const label = LABELS[field]}
     {@const current = feedback[field]}
     {@const currentStatus = status(field)}
-    {@const reason = enabled(field) ? undefined : 'Not yet observed'}
+    {@const reason = disabledReason(field)}
     {@const accessibility = {
       description: reason ?? null,
       valueText: `${label}: ${formatValue(field, canonical(field))}${currentStatus === '' ? '' : `; ${currentStatus}`}`,
@@ -143,6 +156,7 @@
         showValue={explicit ? presentation?.showValue ?? true : false}
         compact={explicit ? presentation?.compact ?? false : true}
         title={reason} {accessibility}
+        skin={scalarAppearance} {presentationIsCurrent}
         issuedStatusPresentation={form === 'hbar' ? statusPresentations[field] : undefined} />
       <output data-canonical-value class:sr-only={explicit}
         aria-hidden={explicit ? 'true' : undefined}>{formatValue(field, canonical(field))}</output>
