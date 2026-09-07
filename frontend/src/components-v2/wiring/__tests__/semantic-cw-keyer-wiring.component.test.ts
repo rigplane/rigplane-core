@@ -298,14 +298,42 @@ function submitDelay(value: number): string {
   return vi.mocked(sendCommand).mock.calls.at(-1)![2] as string;
 }
 
-function cwInput(field: 'pitchHz' | 'keyerSpeed'): HTMLInputElement {
-  return el(field)!.querySelector('input') as HTMLInputElement;
+function cwInput(field: 'pitchHz' | 'keyerSpeed'): HTMLElement {
+  const selector = field === 'keyerSpeed' ? '[role="slider"]' : 'input';
+  return el(field)!.querySelector(selector) as HTMLElement;
+}
+
+function cwValue(field: 'pitchHz' | 'keyerSpeed'): string | null {
+  const input = cwInput(field);
+  return input instanceof HTMLInputElement ? input.value : input.getAttribute('aria-valuenow');
+}
+
+function cwDisabled(field: 'pitchHz' | 'keyerSpeed'): boolean {
+  const input = cwInput(field);
+  return input instanceof HTMLInputElement
+    ? input.disabled : input.getAttribute('aria-disabled') === 'true';
 }
 
 function submitCw(field: 'pitchHz' | 'keyerSpeed', value: number): string {
   const input = cwInput(field);
-  input.value = String(value);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
+  if (input instanceof HTMLInputElement) {
+    input.value = String(value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  } else {
+    const frame = input.closest<HTMLElement>('.vc-hbar')!;
+    vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue({
+      left: 0, width: 84,
+    } as DOMRect);
+    Object.assign(input, {
+      setPointerCapture: () => undefined,
+      hasPointerCapture: () => false,
+      releasePointerCapture: () => undefined,
+    });
+    input.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, clientX: (value - 6) * 2, pointerId: 1,
+    }));
+    input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
+  }
   flushSync();
   return vi.mocked(sendCommand).mock.calls.at(-1)![2] as string;
 }
@@ -367,8 +395,9 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('submitted');
     unmount(component!); component = null; target.remove();
     render();
-    expect(cwInput('pitchHz').value).toBe('725');
-    expect(cwInput('keyerSpeed').value).toBe('31');
+    expect(cwValue('pitchHz')).toBe('725');
+    expect(cwValue('keyerSpeed')).toBe('24');
+    expect(cwInput('keyerSpeed').getAttribute('aria-valuetext')).toContain('requested 31 WPM');
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('submitted');
     expect(sendCommand).toHaveBeenCalledTimes(2);
@@ -380,11 +409,11 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
 
     advanceCw(725, 24, 11);
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('confirmed');
-    expect(cwInput('pitchHz').value).toBe('725');
+    expect(cwValue('pitchHz')).toBe('725');
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('awaiting-confirmation');
     deliver(speedId, 'response-error', 'speed rejected');
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('failed');
-    expect(cwInput('keyerSpeed').value).toBe('24');
+    expect(cwValue('keyerSpeed')).toBe('24');
     expect(el('keyerSpeed')!.textContent).toContain('speed rejected');
     expect(txHarness.trace()).toEqual([]);
   });
@@ -396,7 +425,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     submitCw('keyerSpeed', 31);
     deliver(oldId, 'response-error', 'late superseded failure');
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
-    expect(cwInput('pitchHz').value).toBe('700');
+    expect(cwValue('pitchHz')).toBe('700');
     expect(getCommandLifecycle(latestId, 1)?.status).toBe('pending');
     const oldPitchStatus = el('pitchHz')!.querySelector<HTMLElement>('[data-cw-feedback-status]')!;
     const oldPitchText = oldPitchStatus.textContent;
@@ -408,7 +437,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     publishAuthority();
     flushSync();
     for (const field of ['pitchHz', 'keyerSpeed'] as const) {
-      expect(cwInput(field).disabled).toBe(true);
+      expect(cwDisabled(field)).toBe(true);
       expect(cwInput(field).dataset.commandPhase).toBe('unavailable');
       expect(el(field)!.dataset.observed).toBe('false');
     }
@@ -464,6 +493,8 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
         control.value = control.max;
         control.dispatchEvent(new Event('input', { bubbles: true }));
         control.dispatchEvent(new Event('change', { bubbles: true }));
+      } else if (control.getAttribute('role') === 'slider') {
+        control.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
       } else press(control);
     }
     flushSync();

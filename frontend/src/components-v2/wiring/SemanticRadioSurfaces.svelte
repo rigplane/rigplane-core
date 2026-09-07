@@ -107,6 +107,9 @@
   import SemanticControlPanel from '../layout/SemanticControlPanel.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import CwKeyerSurface, { type CwLevelField } from '../../semantic/CwKeyerSurface.svelte';
+  import CwKeyerInstrumentHost, {
+    type CwKeyerInstrumentHandles,
+  } from '../../semantic/CwKeyerInstrumentHost.svelte';
   import ScopeControlsSurface, {
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
@@ -1352,6 +1355,11 @@
     onSelectBand={selectBand} onEnterFrequency={enterFrequency}
   >
   {#snippet children(bandInstruments)}
+  <CwKeyerInstrumentHost
+    {view} {keySpeedFeedback}
+    onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
+  >
+  {#snippet children(cwKeyerInstruments)}
   <DspInstrumentHost
     {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr}
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
@@ -1888,13 +1896,14 @@
     gated inside the surface on the model's one `txPermit`, and the key/unkey
     authority stays the single `<RxTxSurface>` above (decomposition R9).
   -->
-  {#snippet cwKeyerSurface()}
+  {#snippet cwKeyerSurface(showKeyerSpeed = true)}
     {#if view?.cwKeyer}
       <CwKeyerSurface
         {view}
+        continuousHandles={cwKeyerInstruments}
+        {showKeyerSpeed}
         {breakInDelayFeedback}
         {cwPitchFeedback}
-        {keySpeedFeedback}
         {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
         onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
@@ -2033,8 +2042,11 @@
       ritXitScanSurface, allowBare,
     )}
   {/snippet}
-  {#snippet hostedCwKeyer(allowBare = allowBareSurfaces)}
-    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBare)}
+  {#snippet hostedCwKeyer(
+    allowBare = allowBareSurfaces, showKeyerSpeed = true,
+  )}
+    {#snippet body()}{@render cwKeyerSurface(showKeyerSpeed)}{/snippet}
+    {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
@@ -2062,6 +2074,7 @@
       band: hostedBand,
       antenna: hostedAntenna,
       ritXitScan: hostedRitXitScan,
+      cwKeyerInstruments,
       cwKeyer: hostedCwKeyer,
       scopeDisplay: hostedScopeDisplay,
       scopeControls: hostedScopeControls,
@@ -2245,6 +2258,8 @@
   {/if}
   {/snippet}
   </DspInstrumentHost>
+  {/snippet}
+  </CwKeyerInstrumentHost>
   {/snippet}
   </BandInstrumentHost>
   {/snippet}

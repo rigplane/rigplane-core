@@ -9,6 +9,7 @@ import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
 import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
 import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
 import type { BandControlLayout } from '../../semantic/band-instruments';
+import type { CwKeyerInstrumentHandles } from '../../semantic/CwKeyerInstrumentHost.svelte';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
@@ -34,7 +35,8 @@ export interface InstrumentComposition {
   readonly band: Snippet<[allowBare?: boolean, controlLayout?: BandControlLayout]>;
   readonly antenna: Snippet<[allowBare?: boolean]>;
   readonly ritXitScan: Snippet<[allowBare?: boolean]>;
-  readonly cwKeyer: Snippet<[allowBare?: boolean]>;
+  readonly cwKeyerInstruments: CwKeyerInstrumentHandles;
+  readonly cwKeyer: Snippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;
   readonly scopeControls: Snippet<[allowBare?: boolean]>;
   readonly txFaultRecovery: Snippet;

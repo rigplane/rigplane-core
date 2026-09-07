@@ -423,7 +423,16 @@
         {:else}
           {@render instruments.dsp()}
         {/if}
-        {@render instruments.cwKeyer()}
+        {#if skinId === 'desktop-v2'}
+          <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="keyerSpeed">
+            {@render instruments.cwKeyerInstruments.keyerSpeed({
+              form: 'hbar', compact: false, showLabel: true, showValue: true,
+            })}
+          </div>
+          {@render instruments.cwKeyer(undefined, false)}
+        {:else}
+          {@render instruments.cwKeyer()}
+        {/if}
         {@render instruments.txAuxControls(txAuxInstrumentLayout)}
         <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
       </div>
@@ -715,6 +724,7 @@
     gap: 4px 8px;
   }
   .tx-aux-scalar-seat { min-width: 0; }
+  .cw-keyer-instrument-seat { min-width: 0; }
 
   .radio-layout, .radio-layout.semantic-deck {
     height: 100vh;

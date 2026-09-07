@@ -11,6 +11,7 @@
   import type { TxAuxFiniteHandles } from '../../../../semantic/tx-aux-finite';
   import type { VfoOperationHandles } from '../../../../semantic/VfoOperationSeatHost.svelte';
   import type { BandControlLayout } from '../../../../semantic/band-instruments';
+  import type { CwKeyerInstrumentHandles } from '../../../../semantic/CwKeyerInstrumentHost.svelte';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[
@@ -24,6 +25,10 @@
   const band = createRawSnippet<[allowBare?: boolean, controlLayout?: BandControlLayout]>(
     () => ({ render: () => '' }),
   );
+  const cwKeyer = createRawSnippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>(
+    () => ({ render: () => '' }),
+  );
+  const cwKeyerInstruments = { keyerSpeed: empty } satisfies CwKeyerInstrumentHandles;
   const frequency = createRawSnippet<[mount?: ReceiverFrequencyMount]>(() => ({ render: () => '' }));
   const meter = createRawSnippet<[renderer: ReceiverSMeterRenderer]>(() => ({ render: () => '' }));
   const operations = createRawSnippet<[appearance: ReceiverVfoAppearance]>(() => ({ render: () => '' }));
@@ -55,7 +60,7 @@
     receiverInstruments,
     rxAudioInstruments, rfFrontEndInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
-    band, antenna: empty, ritXitScan: empty, cwKeyer: empty,
+    band, antenna: empty, ritXitScan: empty, cwKeyerInstruments, cwKeyer,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,
     modInputTxWarning: empty, managedScope: undefined,
   } satisfies FixtureInstrumentComposition;

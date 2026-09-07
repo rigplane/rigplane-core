@@ -52,6 +52,7 @@
 -->
 <script module lang="ts">
   import { t } from '$lib/i18n';
+  import { CW_CONTINUOUS_LEVELS } from './CwKeyerInstrumentHost.svelte';
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
   import { pressedOf } from './pressed-of';
 
@@ -65,7 +66,8 @@
   /** `[field, label, min, max, step, unit]` in the RAW wire units `CwPanel`
    *  has always used — rescaling here would silently move a setting. */
   export const CW_LEVELS = [
-    ['keyerSpeed', 'Keyer speed', 6, 48, 1, 'WPM'],
+    ...CW_CONTINUOUS_LEVELS.map(([field, label, min, max, step, unit]) =>
+      [field, label, min, max, step, unit] as const),
     ['pitchHz', 'CW pitch', 300, 900, 5, 'Hz'],
     ['breakInDelay', 'Break-in delay', 0, 255, 1, ''],
   ] as const;
@@ -140,6 +142,7 @@
     bindChoiceInstrument,
     bindToggleInstrument,
   } from '../primitives/control-instruments/control-instrument-behavior';
+  import type { CwKeyerInstrumentHandles } from './CwKeyerInstrumentHost.svelte';
   import type { RadioViewModel } from './radio-view-model';
 
   type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
@@ -149,6 +152,8 @@
 
   interface Props {
     view: RadioViewModel;
+    continuousHandles: CwKeyerInstrumentHandles;
+    showKeyerSpeed?: boolean;
     onBreakInMode?: (mode: number) => void;
     onLevelChange?: (field: CwLevelField, value: number) => void;
     onApfOn?: (on: boolean) => void;
@@ -156,13 +161,13 @@
     onReversePaddleToggle?: () => void;
     breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
     cwPitchFeedback?: Readonly<CommandScalarFeedback>;
-    keySpeedFeedback?: Readonly<CommandScalarFeedback>;
     autoTuneAvailable?: boolean;
     onAutoTune?: () => void;
   }
   let {
-    view, onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
-    breakInDelayFeedback, cwPitchFeedback, keySpeedFeedback,
+    view, continuousHandles, showKeyerSpeed = true,
+    onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
+    breakInDelayFeedback, cwPitchFeedback,
     autoTuneAvailable = false, onAutoTune,
   }: Props = $props();
 
@@ -214,14 +219,13 @@
   function setLevel(field: CwLevelField, value: number): void {
     if (cw && usable(cw[field])) onLevelChange?.(field, value);
   }
-  type FeedbackLevelField = 'keyerSpeed' | 'pitchHz';
+  type FeedbackLevelField = 'pitchHz';
   const feedbackLevelDomain = {
-    keyerSpeed: { min: 6, max: 48, step: 1, defaultValue: null, fineStepDivisor: 1 },
     pitchHz: { min: 300, max: 900, step: 5, defaultValue: null, fineStepDivisor: 1 },
   } as const;
   function feedbackLevelInput(field: FeedbackLevelField): Readonly<ContinuousScalarInput> {
     const current = cw?.[field];
-    const feedback = field === 'keyerSpeed' ? keySpeedFeedback : cwPitchFeedback;
+    const feedback = cwPitchFeedback;
     const common = {
       domain: feedbackLevelDomain[field],
       enabled: current !== undefined && usable(current),
@@ -230,7 +234,7 @@
     if (feedback !== undefined) {
       return {
         ...common, evidence: 'command-feedback', feedback,
-        command: field === 'keyerSpeed' ? 'set_key_speed' : 'set_cw_pitch',
+        command: 'set_cw_pitch',
       };
     }
     return {
@@ -239,17 +243,11 @@
         ? { status: 'known', value: current.reading.value } : { status: 'unknown' },
     };
   }
-  const keySpeedScalar = createContinuousScalar(
-    () => feedbackLevelInput('keyerSpeed'), nativeRangeContinuousScalarPolicy,
-  );
   const cwPitchScalar = createContinuousScalar(
     () => feedbackLevelInput('pitchHz'), nativeRangeContinuousScalarPolicy,
   );
-  let keySpeedLease: ContinuousScalarRendererLease | null = $state(null);
   let cwPitchLease: ContinuousScalarRendererLease | null = $state(null);
-  const initialKeySpeedView = untrack(() => keySpeedScalar.view);
   const initialCwPitchView = untrack(() => cwPitchScalar.view);
-  let keySpeedView: Readonly<ContinuousScalarView> = $state(initialKeySpeedView);
   let cwPitchView: Readonly<ContinuousScalarView> = $state(initialCwPitchView);
   type IssuedLevelAnnouncement = Readonly<{
     authorityKey: string;
@@ -286,28 +284,13 @@
       text: current.error === null ? current.announcement : `${current.announcement}: ${current.error}`,
     });
   }
-  let keySpeedAnnouncement: IssuedLevelAnnouncement | null = $state(
-    nextLevelAnnouncement(initialKeySpeedView, null),
-  );
   let cwPitchAnnouncement: IssuedLevelAnnouncement | null = $state(
     nextLevelAnnouncement(initialCwPitchView, null),
   );
   $effect(() => {
-    const lease = keySpeedScalar.attachRenderer();
-    keySpeedLease = lease;
-    return () => lease.dispose();
-  });
-  $effect(() => {
     const lease = cwPitchScalar.attachRenderer();
     cwPitchLease = lease;
     return () => lease.dispose();
-  });
-  $effect(() => {
-    const next = keySpeedLease === null ? keySpeedScalar.view : keySpeedLease.view;
-    keySpeedView = next;
-    keySpeedAnnouncement = nextLevelAnnouncement(
-      next, untrack(() => keySpeedAnnouncement),
-    );
   });
   $effect(() => {
     const next = cwPitchLease === null ? cwPitchScalar.view : cwPitchLease.view;
@@ -317,7 +300,6 @@
     );
   });
   onDestroy(() => {
-    keySpeedScalar.destroy();
     cwPitchScalar.destroy();
     breakInDelayScalar.destroy();
   });
@@ -494,15 +476,17 @@
       </div>
     {/if}
 
-    {#each CW_LEVELS as [field, label, min, max, step, unit] (field)}
+    {#if showKeyerSpeed}
+      {@render continuousHandles.keyerSpeed()}
+    {/if}
+
+    {#each CW_LEVELS.filter(([field]) => field !== 'keyerSpeed') as [field, label, min, max, step, unit] (field)}
       {@const f = cw[field]}
       {#if f.availability.structural}
         <label
           class="cw-keyer-level" data-testid={`cw-keyer-${field}`}
           data-observed={field === 'breakInDelay' ? usable(f)
-            : field === 'keyerSpeed'
-              ? keySpeedView.canonical !== null && keySpeedView.editable
-              : cwPitchView.canonical !== null && cwPitchView.editable}
+            : cwPitchView.canonical !== null && cwPitchView.editable}
         >
           <span class="cw-keyer-name">{label}</span>
           {#if field === 'breakInDelay'}
@@ -539,12 +523,10 @@
               <output data-testid="cw-keyer-breakInDelay-value">{textOf(f)} {unit}</output>
             {/if}
           {:else}
-            {@const levelView = field === 'keyerSpeed' ? keySpeedView : cwPitchView}
-            {@const levelLease = field === 'keyerSpeed' ? keySpeedLease : cwPitchLease}
-            {@const hasFeedback = field === 'keyerSpeed'
-              ? keySpeedFeedback !== undefined : cwPitchFeedback !== undefined}
-            {@const announcement = field === 'keyerSpeed'
-              ? keySpeedAnnouncement : cwPitchAnnouncement}
+            {@const levelView = cwPitchView}
+            {@const levelLease = cwPitchLease}
+            {@const hasFeedback = cwPitchFeedback !== undefined}
+            {@const announcement = cwPitchAnnouncement}
             {@const levelDisplay = feedbackLevelDisplay(levelView)}
             <input
               {...INTEGRATED_RANGE_POLICY} type="range" {min} {max} {step}
