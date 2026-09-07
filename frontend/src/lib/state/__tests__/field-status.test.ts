@@ -46,13 +46,13 @@ describe('field-status parent/child resolution', () => {
     expect(getFieldAvailability(state, 'scopeControls.refDb')).toBe('available');
   });
 
-  it('lets a missing/stale parent override a child that claims available', () => {
+  it('lets a missing parent override a child that claims available', () => {
     const state = stateWith({
       scopeControls: { availability: 'missing', freshness: 'unknown', observed: false },
       'scopeControls.span': { availability: 'available', freshness: 'fresh', observed: true },
     });
-    // The group is unobserved as a whole — one stale-by-inheritance leaf must
-    // not be confirmed even if it carries an `available` own entry.
+    // The group is unobserved as a whole — a leaf inheriting from a missing
+    // parent must not be confirmed even if it carries an `available` own entry.
     expect(getFieldAvailability(state, 'scopeControls.span')).toBe('missing');
   });
 

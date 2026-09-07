@@ -163,7 +163,7 @@ function hasCap(caps: Capabilities | null, name: string): boolean {
  * MOR-1244: the SAME field-status gate `toTxProps`/`toVoxProps` use for these
  * exact controls (`$lib/runtime/props/panel-props.ts`,
  * `components-v2/wiring/state-adapter.ts`) — deliberately the looser
- * "not proven missing/stale" gate (`isFieldAvailable`, defaults to available
+ * "not proven missing" gate (`isFieldAvailable`, defaults to available
  * absent an explicit field-status entry), not this file's own stricter
  * `seen()` three-part gate used for VFO/TX-target identity. `txAux` controls
  * are legacy top-level fields with the same v2 availability story as the
@@ -813,19 +813,6 @@ function deriveDsp(
  * `numOrUndef(rx?.preamp)`/`boolOrUndef(rx?.digisel)` etc., never a `?? 0`/
  * `?? false` stand-in, so an unobserved control never reports a fabricated
  * reading.
- *
- * The field-freshness gate is this file's own `topFieldAvailable`
- * (`isFieldAvailable`, the same "operational" discipline `deriveTxAux`/
- * `deriveDsp` use), NOT the shipped panel's looser `activeFieldShown` (which
- * treats a stale field as still "shown" for UX continuity, `panel-props.ts`)
- * — for `preamp`/`attenuator`/`rfGain`/`squelch`, that is a deliberate
- * deviation (a fact-layer reading must degrade a stale field to `unknown`;
- * the looser gate is presentation policy, not a fact). `digiSel`/`ipPlus`
- * carry NO such deviation: the shipped panel already gates them on the
- * STRICT `activeFieldAvailable` (`panel-props.ts`'s own `digiSelAvailable`/
- * `ipPlusAvailable`), which calls the exact same `isFieldAvailable` this
- * file's `topFieldAvailable` does — so this file's gate is parity-exact for
- * these two, not a deviation, per the MOR-1292 re-verify's finding.
  *
  * `preValues`/`attValues` are the capability-derived choice sets
  * (`Capabilities.preValues`/`.attValues`, verbatim) — see
