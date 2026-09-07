@@ -41,8 +41,8 @@ The post-change result is CI's, so the PR opens here — before REVIEW, not afte
 - Commit with a conventional message: `fix(#$ARGUMENTS): ...` or `feat(#$ARGUMENTS): ...`
 - Push, then `gh pr create` — ready, not `--draft` — with `Closes #$ARGUMENTS`
   in the body: `quick.yml` triggers on push/PR to `main` and its `quick`
-  job's `if:` skips a draft PR, so the branch has no run of its own until a
-  ready PR exists (CLAUDE.md §Agent working rules)
+  job's `if:` skips a draft PR, so the branch has no `quick` job to read
+  until a ready PR exists (CLAUDE.md §Agent working rules)
 - Run `/regression-check` (see `.claude/commands/regression-check.md`), which
   takes its numbers from that PR's `quick` run at this head
 - Compare test results against baseline

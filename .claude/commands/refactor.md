@@ -71,8 +71,8 @@ The suite result is CI's, so the PR opens here — before REVIEW, not after it.
 
 1. Commit (`refactor: <area description>`), push, then `gh pr create` —
    ready, not `--draft`: `quick.yml` triggers on push/PR to `main` and its
-   `quick` job's `if:` skips a draft PR, so the branch has no run of its own
-   until a ready PR exists (CLAUDE.md §Agent working rules)
+   `quick` job's `if:` skips a draft PR, so the branch has no `quick` job to
+   read until a ready PR exists (CLAUDE.md §Agent working rules)
 2. Read the gates off that PR's `quick` run at this head: it runs the pytest
    suite, `ruff check` and `ruff format --check` under its `core` path filter,
    and `mypy --strict src/rigplane/web` under its `frontend` one

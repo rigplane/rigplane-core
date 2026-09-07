@@ -103,8 +103,8 @@ checks green at the exact head → merge → remove the worktree.
 
 - There is no window before the PR: `quick.yml` triggers only on push/PR to
   `main`, and its `quick` job's `if:` skips a draft PR
-  (`.github/workflows/quick.yml`), so a pushed branch has no run of its own
-  until a ready PR exists.
+  (`.github/workflows/quick.yml`), so a pushed branch has no `quick` job to
+  read until a ready PR exists.
 - Read the gate's verdict from the commit status — `gh pr checks <n>`, the
   `Agent Review Gate` row — never from a run list. The publisher job is green
   when it has successfully published a *refusal*, and `issue_comment` runs

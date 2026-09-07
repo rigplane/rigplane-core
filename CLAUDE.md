@@ -278,14 +278,16 @@ nothing prompts for them; each drop has a cost paid later:
   src/rigplane/web` under its `frontend` one. `quick.yml` triggers only on
   push/PR to `main`, and its `quick` job's `if:` skips a draft PR
   (`github.event.pull_request.draft == false`,
-  `.github/workflows/quick.yml`), so a pushed branch gets no `quick` run
-  until it has a ready PR: push, open the PR ready — or `gh pr ready` an
-  existing draft; `ready_for_review` is in the workflow's `pull_request`
-  `types:` — let that head's `quick` run go green, then dispatch the
-  review — the verifier reviews a ready PR, never a draft (AGENTS.md,
-  "Draft PRs must not merge"). The same `if:` skips the job for a
-  docs-only head (`needs.classify.outputs.docs`), which is green without
-  numbers. Single test files may run locally; the full suite may not.
+  `.github/workflows/quick.yml`), so a draft head's `Tests (quick)` run
+  has no `quick` job to read: push, open the PR ready — or `gh pr ready`
+  an existing draft; `ready_for_review` is in the workflow's
+  `pull_request` `types:` — let that head's `quick` run go green, then
+  dispatch the review — the verifier reviews a ready PR, never a draft
+  (AGENTS.md, "Draft PRs must not merge"). A docs-only head gets no
+  `quick.yml` run at all (its `paths-ignore`); its required `quick`
+  context is published green, without numbers, by
+  `.github/workflows/docs-only-quick.yml`. Single test files may run
+  locally; the full suite may not.
 
 Dropping a phase is the owner's call, not the coordinator's. Announce the drop
 and why, before the work, rather than reporting it afterwards.
