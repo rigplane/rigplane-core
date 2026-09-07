@@ -215,7 +215,10 @@
     }
   });
 
-  onDestroy(() => ownedBinding?.destroy());
+  onDestroy(() => {
+    currentRendererOccurrence = Object.freeze({});
+    ownedBinding?.destroy();
+  });
 
   let legacy = $derived<LegacyReadingPresentation>({
     phase: feedbackPhase,

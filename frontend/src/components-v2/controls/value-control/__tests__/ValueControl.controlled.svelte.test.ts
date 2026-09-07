@@ -1785,6 +1785,32 @@ describe('ValueControl external scalar appearances', () => {
     expect(request.mock.calls).toEqual([[30], [30]]);
     binding.destroy();
   });
+
+  it('retires its renderer occurrence when an external owner outlives ValueControl', async () => {
+    const request = vi.fn();
+    const binding = readingBinding(20, request);
+    activationState.selectedScalarAppearance = externalAppearance;
+    const first = mountReactive({ binding, label: 'Unmounted A', renderer: 'hbar' });
+    const nodeA = slider(first.target) as HTMLElement & {
+      readonly rendererSeat: ContinuousScalarRendererSeat;
+    };
+    const seatA = nodeA.rendererSeat;
+
+    components = components.filter((component) => component !== first.component);
+    await unmount(first.component);
+    const second = mountReactive({ binding, label: 'Current B', renderer: 'hbar' });
+    const nodeB = slider(second.target);
+    const staleLateLease = seatA.attachRenderer();
+    staleLateLease.nativeInput(70);
+    seatA.cancel('authority');
+    staleLateLease.dispose();
+
+    expect(request).not.toHaveBeenCalled();
+    expect(binding.view).toMatchObject({ canonical: 20, displayed: 20 });
+    nodeB.click();
+    expect(request).toHaveBeenCalledExactlyOnceWith(30);
+    binding.destroy();
+  });
 });
 
 describe('ValueControl raw effective behavior authority', () => {
