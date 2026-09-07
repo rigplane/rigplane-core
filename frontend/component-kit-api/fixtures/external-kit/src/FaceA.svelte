@@ -42,6 +42,19 @@
       <div class="wide">{@render tx.monitorLevel({ form: 'hbar', showValue: true })}</div>
     </section>
   {/if}
+
+  {#if instruments.stationMeters !== null}
+    {@const station = instruments.stationMeters}
+    <section class="station-meters" data-family="stationMeters" aria-label="Station meters">
+      <div>{@render station.signal()}</div>
+      <div>{@render station.power()}</div>
+      <div>{@render station.swr()}</div>
+      <div>{@render station.alc()}</div>
+      <div>{@render station.drainCurrent()}</div>
+      <div>{@render station.drainVoltage()}</div>
+      <div>{@render station.compression()}</div>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -50,6 +63,7 @@
   .receiver { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
   .operations { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .tx-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .station-meters { grid-template-columns: repeat(7, minmax(0, 1fr)); }
   .wide { grid-column: span 2; }
-  @media (max-width: 44rem) { .operations, .tx-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 44rem) { .operations, .tx-grid, .station-meters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>

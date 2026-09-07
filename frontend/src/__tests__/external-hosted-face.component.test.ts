@@ -9,7 +9,7 @@ import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import { commitExternalPresentationBatch, getPresentationRecord, loadSkin,
   prepareExternalPresentationBatch, type ExternalPresentationRecord } from '../skins/registry';
 import type {
-  HostedFaceComponentV1, ScalarRendererLease, ScalarRendererSeat,
+  HostedFaceComponentV1, MeterAppearance, ScalarRendererLease, ScalarRendererSeat,
 } from '../../component-kit-api/src/index';
 import type { FiniteRendererLease } from '../primitives/control-instruments/control-instrument-renderer.svelte';
 import type { FrequencyInstrumentBinding } from '../primitives/frequency/frequency-instrument.svelte';
@@ -23,7 +23,8 @@ const h = vi.hoisted(() => ({
   radioListeners: new Set<(state: never) => void>(),
   calls: new Map<string, ReturnType<typeof vi.fn>>(),
   frequencyOwners: [] as FrequencyInstrumentBinding[], frequencyLeases: [] as FrequencyInteractionLease[],
-  meterOwners: [] as object[],
+  meterOwners: [] as object[], barMeterOwners: [] as object[],
+  meterAppearance: undefined as MeterAppearance | undefined,
   scalarOwners: [] as object[], finiteSeats: [] as object[],
   scalarSeats: [] as ScalarRendererSeat[], scalarLeases: [] as ScalarRendererLease[],
   finiteLeases: [] as FiniteRendererLease<unknown>[],
@@ -104,10 +105,24 @@ vi.mock('../primitives/frequency/frequency-instrument.svelte', async (importOrig
     h.frequencyOwners.push(captured); return captured;
   } };
 });
+// Station meters take their appearance from the module-level selection, as
+// `MetersSurface` does; only the receiver S meter gets a per-record override.
+// This file builds records directly, bypassing `activateComponentKits`, which
+// is what fills that selection in the app.
+vi.mock('../component-kits/activation', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../component-kits/activation')>(),
+  getSelectedMeterAppearance: () => h.meterAppearance,
+}));
 vi.mock('../components-v2/meters/signal-meter-motion.svelte', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../components-v2/meters/signal-meter-motion.svelte')>();
   return { ...actual, createSignalMeterMotion(...args: Parameters<typeof actual.createSignalMeterMotion>) {
     const owner = actual.createSignalMeterMotion(...args); h.meterOwners.push(owner); return owner;
+  } };
+});
+vi.mock('../components-v2/meters/bar-meter-motion.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components-v2/meters/bar-meter-motion.svelte')>();
+  return { ...actual, createBarMeterMotion(...args: Parameters<typeof actual.createBarMeterMotion>) {
+    const owner = actual.createBarMeterMotion(...args); h.barMeterOwners.push(owner); return owner;
   } };
 });
 vi.mock('../primitives/scalar/continuous-scalar.svelte', async (importOriginal) => {
@@ -252,7 +267,32 @@ function occurrence(
   result = Object.freeze({ ...loaded, isCurrent: () => current.value === result });
   return result;
 }
-const fullPlan = () => new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']]]) as SurfacePlan;
+const fullPlan = () => new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']],
+  ['meters-zone', ['meters']]]) as SurfacePlan;
+const planWithoutMeters = () =>
+  new Map([['receiver-zone', ['vfo']], ['tx-zone', ['txAux']]]) as SurfacePlan;
+/** The six station LEVEL meters are structural only where `deriveMeters` sees
+ *  their raw field, and `projectBarMeters` additionally drops `compression`
+ *  while the compressor reads off. The signal meter needs none of these — it
+ *  comes from `state()`'s own `main.sMeter`. */
+function stationState(): ServerState {
+  return { ...state(), compressorOn: true, powerMeter: 40, swrMeter: 30, alcMeter: 20,
+    compMeter: 10, vdMeter: 60, idMeter: 50 } as unknown as ServerState;
+}
+/** Drops the active receiver's S meter, leaving SWR the only structural
+ *  member of the host's signal-or-SWR composite. */
+function stationStateWithoutSignal(): ServerState {
+  const base = stationState();
+  const { sMeter: _sMeter, ...main } = base.main as unknown as Record<string, unknown>;
+  return { ...base, main } as unknown as ServerState;
+}
+const stationSection = () => target.querySelector('[data-family="stationMeters"]');
+const stationKeys = () => Array.from(
+  target.querySelectorAll<HTMLElement>('[data-family="stationMeters"] [data-fixture-level],'
+    + ' [data-family="stationMeters"] [data-fixture-signal]'),
+  (node) => node.dataset.fixtureLevel ?? 'signal',
+);
+const STATION_ORDER = ['signal', 'power', 'swr', 'alc', 'drainCurrent', 'drainVoltage', 'compression'];
 let target: HTMLDivElement; let mounted: ReturnType<typeof mount> | null = null;
 const clearCalls = () => h.calls.forEach((fn) => fn.mockClear());
 const callCounts = () => Object.fromEntries([...h.calls].map(([name, fn]) => [name, fn.mock.calls.length]));
@@ -264,8 +304,9 @@ function expectOnly(name: string): void {
 beforeEach(() => { h.state = proxy(state()); h.caps = proxy(caps()); h.session = { state: 'connected', epoch: 7 };
   h.calls.forEach((fn) => fn.mockClear()); h.subscribers.clear(); h.radioListeners.clear();
   h.subscribeCount = 0; h.unsubscribeCount = 0;
-  h.omitSpeak = false;
+  h.omitSpeak = false; h.meterAppearance = appearances.meter;
   h.frequencyOwners.length = 0; h.frequencyLeases.length = 0; h.meterOwners.length = 0;
+  h.barMeterOwners.length = 0;
   h.scalarOwners.length = 0; h.finiteSeats.length = 0;
   h.scalarSeats.length = 0; h.scalarLeases.length = 0; h.finiteLeases.length = 0; });
 afterEach(() => { if (mounted) unmount(mounted); mounted = null; document.body.replaceChildren(); });
@@ -284,7 +325,7 @@ describe('external hosted face chain', () => {
       context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => livePlan.current]]) }); flushSync();
     expect(target.querySelector('[data-external-face="a"]')).not.toBeNull();
     expect(target.querySelectorAll('[data-fixture-frequency]')).toHaveLength(2);
-    expect(target.querySelectorAll('[data-fixture-signal]')).toHaveLength(2);
+    expect(target.querySelectorAll('[data-fixture-signal]')).toHaveLength(3);
     expect(target.querySelectorAll('[data-fixture-toggle],[data-fixture-choice],[data-fixture-action]')).toHaveLength(8);
     expect(target.querySelectorAll('[data-fixture-scalar]')).toHaveLength(8);
     expect(h.frequencyOwners).toHaveLength(2); expect(h.frequencyLeases).toHaveLength(2);
@@ -394,7 +435,7 @@ describe('external hosted face chain', () => {
     const face = target.querySelector('[data-external-face="a"]'); const subscriptions = h.subscribers.size;
     const owners = [...h.frequencyOwners, ...h.meterOwners, ...h.scalarOwners, ...h.finiteSeats];
     expect(Array.from(target.querySelectorAll<HTMLElement>('[data-fixture-signal]'),
-      (meter) => meter.dataset.value)).toEqual(['20', '-12']);
+      (meter) => meter.dataset.value)).toEqual(['20', '-12', '20']);
     plan.set(new Map([['tx-zone', ['txAux']]]) as SurfacePlan); flushSync();
     expect(target.querySelector('[data-family="receiver"]')).toBeNull();
     expect(target.querySelector('[data-family="vfoOperations"]')).toBeNull();
@@ -448,7 +489,7 @@ describe('external hosted face chain', () => {
     mounted = mount(SemanticRadioSurfaces, { target, props: { externalPresentation: probe },
       context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => livePlan.current]]) }); flushSync();
     const face = target.querySelector<HTMLElement>('[data-external-face="probe"]')!;
-    expect(face.dataset.topLevelKeys).toBe('receiver,txAux,vfoOperations');
+    expect(face.dataset.topLevelKeys).toBe('receiver,stationMeters,txAux,vfoOperations');
     expect(face.dataset.receiverKeys).toBe('mainFrequency,mainSMeter,subFrequency,subSMeter');
     expect(face.dataset.vfoKeys).toBe('activeReceiver,dualWatch,equalize,quickDualWatch,quickSplit,speak,split,swap');
     expect(face.dataset.txKeys).toBe('antiVoxGain,compressorLevel,driveGain,micGain,monitorLevel,rfPower,voxDelay,voxGain');
@@ -497,5 +538,114 @@ describe('external hosted face chain', () => {
     expect([...h.calls.values()].every((fn) => fn.mock.calls.length === 0)).toBe(true);
     clearCalls(); target.querySelector<HTMLButtonElement>('[data-fixture-action]')!.click();
     expectOnly('onEqual');
+  });
+
+  const mountStation = (
+    presentation: ExternalPresentation, plan: ReturnType<typeof writable<SurfacePlan | null>>,
+  ) => {
+    const props = proxy({ externalPresentation: presentation }); const livePlan = fromStore(plan);
+    mounted = mount(SemanticRadioSurfaces, { target, props,
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => livePlan.current]]) }); flushSync();
+    return props;
+  };
+
+  it('renders the seven station meters in the order each face asks for', async () => {
+    h.state = proxy(stationState());
+    const current = { value: {} };
+    const loadedA = await loadedRecord('station-a', FaceA);
+    const loadedB = await loadedRecord('station-b', FaceB);
+    const a = occurrence(loadedA, current); current.value = a;
+    target = document.createElement('div'); document.body.appendChild(target);
+    const props = mountStation(a, writable<SurfacePlan | null>(fullPlan()));
+    expect(stationSection()).not.toBeNull();
+    expect(stationKeys()).toEqual(STATION_ORDER);
+    const b = occurrence(loadedB, current); current.value = b; props.externalPresentation = b; flushSync();
+    expect(stationKeys()).toEqual([...STATION_ORDER].reverse());
+  });
+
+  it('renders station meters from the record appearance when the global selection is absent', async () => {
+    h.state = proxy(stationState()); h.meterAppearance = undefined;
+    const current = { value: {} }; const a = occurrence(await loadedRecord('station-global-absent', FaceA), current);
+    current.value = a;
+    target = document.createElement('div'); document.body.appendChild(target);
+    mountStation(a, writable<SurfacePlan | null>(fullPlan()));
+    expect(stationKeys()).toEqual(STATION_ORDER);
+    expect(target.querySelectorAll('[data-family="receiver"] [data-fixture-signal]')).toHaveLength(2);
+  });
+
+  it('admits and withdraws the station family from the meters zone alone', async () => {
+    h.state = proxy(stationState());
+    const current = { value: {} }; const a = occurrence(await loadedRecord('station-zone', FaceA), current);
+    current.value = a; const plan = writable<SurfacePlan | null>(fullPlan());
+    target = document.createElement('div'); document.body.appendChild(target);
+    mountStation(a, plan);
+    expect(stationKeys()).toEqual(STATION_ORDER);
+    const subscriptions = h.subscribers.size;
+    const owners = [...h.meterOwners, ...h.barMeterOwners, ...h.frequencyOwners, ...h.scalarOwners];
+    plan.set(planWithoutMeters()); flushSync();
+    expect(stationSection()).toBeNull(); expect(stationKeys()).toEqual([]);
+    expect(h.subscribers.size).toBe(subscriptions);
+    plan.set(fullPlan()); flushSync();
+    expect(stationKeys()).toEqual(STATION_ORDER);
+    expect([...h.meterOwners, ...h.barMeterOwners, ...h.frequencyOwners, ...h.scalarOwners]).toEqual(owners);
+    expect(h.subscribers.size).toBe(subscriptions);
+  });
+
+  it('keeps one station owner set across an A-B-A occurrence swap', async () => {
+    h.state = proxy(stationState());
+    const current = { value: {} };
+    const loadedA = await loadedRecord('station-swap-a', FaceA);
+    const loadedB = await loadedRecord('station-swap-b', FaceB);
+    const a1 = occurrence(loadedA, current); current.value = a1;
+    target = document.createElement('div'); document.body.appendChild(target);
+    const props = mountStation(a1, writable<SurfacePlan | null>(fullPlan()));
+    expect(h.barMeterOwners).toHaveLength(6);
+    const stationOwners = [...h.barMeterOwners]; const signalOwners = [...h.meterOwners];
+    const subscriptions = h.subscribers.size;
+    const b = occurrence(loadedB, current); current.value = b; props.externalPresentation = b; flushSync();
+    expect(stationKeys()).toEqual([...STATION_ORDER].reverse());
+    const a2 = occurrence(loadedA, current); current.value = a2; props.externalPresentation = a2; flushSync();
+    expect(stationKeys()).toEqual(STATION_ORDER);
+    expect(h.barMeterOwners).toEqual(stationOwners); expect(h.meterOwners).toEqual(signalOwners);
+    expect(h.subscribers.size).toBe(subscriptions);
+  });
+
+  it('renders no station signal meter while only SWR is structural', async () => {
+    h.state = proxy(stationStateWithoutSignal());
+    const current = { value: {} }; const a = occurrence(await loadedRecord('station-swr', FaceA), current);
+    current.value = a;
+    target = document.createElement('div'); document.body.appendChild(target);
+    mountStation(a, writable<SurfacePlan | null>(fullPlan()));
+    expect(stationSection()!.querySelectorAll('[data-fixture-signal]')).toHaveLength(0);
+    expect(stationSection()!.querySelector('[data-fixture-level="swr"]')).not.toBeNull();
+    expect(stationKeys()).toEqual(STATION_ORDER.filter((key) => key !== 'signal'));
+    h.state = proxy(stationState());
+    h.subscribers.forEach((handler) => handler(authority() as never)); flushSync();
+    expect(stationKeys()).toEqual(STATION_ORDER);
+  });
+
+  it('disposes the station reset leases and its subscription on unmount', async () => {
+    h.state = proxy(stationState());
+    const current = { value: {} }; const loaded = await loadedRecord('station-dispose', FaceA);
+    const a = occurrence(loaded, current); current.value = a;
+    const plan = writable<SurfacePlan | null>(fullPlan());
+    target = document.createElement('div'); document.body.appendChild(target);
+    mountStation(a, plan);
+    expect(stationKeys()).toEqual(STATION_ORDER);
+    const withStation = h.finiteLeases.length;
+    // FaceA renders the station section last, so the trailing renderer leases
+    // are the reset-peak leases of the three meters `installResetSeat` seats a
+    // reset control for. The second mount below measures that count.
+    const disposals = h.finiteLeases.slice(-3).map((lease) => {
+      const release = lease.dispose.bind(lease); const spy = vi.fn(release);
+      (lease as { dispose: () => void }).dispose = spy; return spy;
+    });
+    unmount(mounted!); mounted = null;
+    for (const spy of disposals) expect(spy).toHaveBeenCalledOnce();
+    expect(h.subscribers.size).toBe(0); expect(h.unsubscribeCount).toBe(h.subscribeCount);
+    h.finiteLeases.length = 0; plan.set(planWithoutMeters());
+    const bare = occurrence(loaded, current); current.value = bare; mountStation(bare, plan);
+    expect(stationSection()).toBeNull();
+    expect(withStation - h.finiteLeases.length).toBe(3);
   });
 });

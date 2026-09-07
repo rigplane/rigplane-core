@@ -218,10 +218,23 @@ export interface TxAuxInstrumentFamilyV1 {
   readonly monitorLevel: TxAuxScalarHandleV1;
 }
 
+export type StationMeterHandleV1 = Snippet<[]>;
+
+export interface StationMeterInstrumentFamilyV1 {
+  readonly signal: StationMeterHandleV1;
+  readonly power: StationMeterHandleV1;
+  readonly swr: StationMeterHandleV1;
+  readonly alc: StationMeterHandleV1;
+  readonly drainCurrent: StationMeterHandleV1;
+  readonly drainVoltage: StationMeterHandleV1;
+  readonly compression: StationMeterHandleV1;
+}
+
 export interface HostedInstrumentFamiliesV1 {
   readonly receiver: ReceiverInstrumentFamilyV1 | null;
   readonly vfoOperations: VfoOperationInstrumentFamilyV1 | null;
   readonly txAux: TxAuxInstrumentFamilyV1 | null;
+  readonly stationMeters: StationMeterInstrumentFamilyV1 | null;
 }
 
 export interface HostedFacePropsV1 {

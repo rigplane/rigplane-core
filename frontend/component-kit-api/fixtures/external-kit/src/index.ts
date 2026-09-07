@@ -55,9 +55,10 @@ const faceALayout: LayoutManifest = {
   zones: [
     { id: 'receiver', surfaces: ['vfo'] },
     { id: 'transmit', surfaces: ['txAux'] },
+    { id: 'meters', surfaces: ['meters'] },
   ],
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
-  requiredSemanticSurfaces: ['vfo', 'txAux'],
+  requiredSemanticSurfaces: ['vfo', 'txAux', 'meters'],
   stageSizing: { mode: 'fluid', responsiveBreakpoints: [640] },
   fallbackLayoutId: null,
 };
@@ -69,9 +70,10 @@ const faceBLayout: LayoutManifest = {
   zones: [
     { id: 'transmit', surfaces: ['txAux'] },
     { id: 'receiver', surfaces: ['vfo'] },
+    { id: 'meters', surfaces: ['meters'] },
   ],
   compatibleTopologies: ['1/single', '1/ab', '2/ab_shared', '2/main_sub'],
-  requiredSemanticSurfaces: ['txAux', 'vfo'],
+  requiredSemanticSurfaces: ['txAux', 'vfo', 'meters'],
   stageSizing: { mode: 'fluid', responsiveBreakpoints: [720] },
   fallbackLayoutId: null,
 };
