@@ -381,6 +381,26 @@ const nativeRangePolicy: ContinuousScalarPolicy = {
 export const nativeRangeContinuousScalarPolicy: Readonly<ContinuousScalarPolicy> =
   Object.freeze(nativeRangePolicy);
 
+export function createRenderedNativeRangeContinuousScalarPolicy(): Readonly<ContinuousScalarPolicy> {
+  const policy: ContinuousScalarPolicy = {
+    name: 'rendered-native-range',
+    preview: 'optimistic',
+    normalize: nativeRangePolicy.normalize,
+    wheel: (current, event, domain) => snap(
+      current + event.direction * domain.step, domain, domain.step,
+    ),
+    key: (current, event, domain) => handleKeyboardStep(
+      current, event.key, domain.step, 1, domain.min, domain.max, false,
+    ),
+    reset: () => null,
+    dispatch: () => 'immediate',
+    dispatchesCanonical: () => true,
+    wheelIdleMs: 0,
+    describeTarget: String,
+  };
+  return Object.freeze(policy);
+}
+
 type AuthorityIdentity = readonly (string | number | boolean | null | undefined)[];
 type LocalCommandRequest = Readonly<{
   source: ScalarSource;

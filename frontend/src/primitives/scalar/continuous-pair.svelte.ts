@@ -21,6 +21,8 @@ import {
   dualParamNormXFromValues,
   dualParamStepAlongAxis,
   dualParamValuesFromNormX,
+  handleKeyboardStep,
+  positionToValue,
 } from './value-control-core';
 
 export interface ContinuousPairValues {
@@ -62,9 +64,17 @@ export type ContinuousPairInput =
   | ReadingContinuousPairInput
   | CommandFeedbackContinuousPairInput;
 
+export interface ContinuousPairAxisPolicy {
+  normalize(axis: number, domain: ScalarDomain): number | null;
+  wheel(currentAxis: number, event: ScalarStepInput, domain: ScalarDomain): number | null;
+  key(currentAxis: number, event: ScalarKeyInput, domain: ScalarDomain): number | null;
+  reset(domain: ScalarDomain): number | null;
+}
+
 export interface ContinuousPairPolicy {
   readonly name: string;
   readonly preview: 'optimistic' | 'confirmed';
+  readonly axis?: Readonly<ContinuousPairAxisPolicy>;
   wheel(
     current: Readonly<ContinuousPairValues>,
     event: ScalarStepInput,
@@ -91,6 +101,49 @@ const nativePolicy: ContinuousPairPolicy = {
 };
 export const nativeRangeContinuousPairPolicy: Readonly<ContinuousPairPolicy> =
   Object.freeze(nativePolicy);
+
+function normalizedAxisStep(domain: ScalarDomain): number | null {
+  const span = domain.max - domain.min;
+  if (!Number.isFinite(domain.min) || !Number.isFinite(domain.max) || span <= 0
+    || !Number.isFinite(domain.step) || domain.step <= 0) return null;
+  const step = domain.step / span;
+  return Number.isFinite(step) && step > 0 ? step : null;
+}
+
+function normalizeRenderedNativeAxis(axis: number, domain: ScalarDomain): number | null {
+  const step = normalizedAxisStep(domain);
+  return step === null || !Number.isFinite(axis) ? null : positionToValue(axis, 0, 1, step);
+}
+
+export function createRenderedNativeRangeContinuousPairPolicy(): Readonly<ContinuousPairPolicy> {
+  const axis: ContinuousPairAxisPolicy = {
+    normalize: normalizeRenderedNativeAxis,
+    wheel: (current, event, domain) => {
+      const step = normalizedAxisStep(domain);
+      return step === null || !Number.isFinite(current) ? null : handleKeyboardStep(
+        current, event.direction > 0 ? 'ArrowRight' : 'ArrowLeft', step, 1, 0, 1, false,
+      );
+    },
+    key: (current, event, domain) => {
+      const step = normalizedAxisStep(domain);
+      return step === null || !Number.isFinite(current) ? null : handleKeyboardStep(
+        current, event.key, step, 1, 0, 1, false,
+      );
+    },
+    reset: () => null,
+  };
+  const policy: ContinuousPairPolicy = {
+    name: 'rendered-native-range-pair',
+    preview: 'optimistic',
+    axis: Object.freeze(axis),
+    wheel: () => null,
+    key: () => null,
+    reset: () => null,
+    dispatch: () => 'immediate',
+    wheelIdleMs: 0,
+  };
+  return Object.freeze(policy);
+}
 
 export function createLegacyContinuousPairPolicy(
   options: Readonly<{ keyboardDebounceMs: number }>,
@@ -418,21 +471,29 @@ export function createContinuousPair(
   const scalarPolicy: ContinuousScalarPolicy = {
     name: policy.name,
     preview: policy.preview,
-    normalize: (value) => Number.isFinite(value) ? clamp(value, 0, 1) : null,
-    wheel: (_axis, event) => {
+    normalize: (value) => {
+      if (policy.axis === undefined) return Number.isFinite(value) ? clamp(value, 0, 1) : null;
+      const normalized = policy.axis.normalize(value, current().domain);
+      if (normalized !== null) projectedCandidate = null;
+      return normalized;
+    },
+    wheel: (axis, event) => {
       const input = current();
+      if (policy.axis !== undefined) return policy.axis.wheel(axis, event, input.domain);
       const pair = effectivePair(input);
       const values = pair === null ? null : policy.wheel(pair, event, input.domain);
       return values === null ? null : rememberCandidate(values, input, 'wheel');
     },
-    key: (_axis, event) => {
+    key: (axis, event) => {
       const input = current();
+      if (policy.axis !== undefined) return policy.axis.key(axis, event, input.domain);
       const pair = effectivePair(input);
       const values = pair === null ? null : policy.key(pair, event, input.domain);
       return values === null ? null : rememberCandidate(values, input, 'keyboard');
     },
     reset: () => {
       const input = current();
+      if (policy.axis !== undefined) return policy.axis.reset(input.domain);
       const values = policy.reset(input.domain);
       return values === null ? null : rememberCandidate(values, input, 'reset');
     },
