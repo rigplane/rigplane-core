@@ -81,6 +81,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getCwPitchControlFeedback: h.cwPitchFeedback,
   getKeySpeedControlFeedback: h.keySpeedFeedback,
   getTxAuxControlFeedback: h.txAuxFeedback,
+  getRfSqlControlFeedback: () => null,
   getPendingFrequencyHz: () => null,
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
@@ -305,7 +306,7 @@ describe('production receiver-indicator partitioning', () => {
   ) => {
     selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
     render(caps('main_sub', 2), state(), {}, props);
-    expect(h.authoritySubscribers.size).toBe(2);
+    expect(h.authoritySubscribers.size).toBe(3);
     const digit = projectFrequencyReadout({ confirmedHz: 14_200_000 }).digits[0];
     const first = retainedInteractions().find((interaction) => !interaction.inert)!;
     first.handleDigitClick(digit, new MouseEvent('click'));

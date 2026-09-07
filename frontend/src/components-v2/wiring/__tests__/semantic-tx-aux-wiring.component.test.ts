@@ -442,7 +442,7 @@ describe('selected finite TX auxiliary authority lifetime', () => {
     expect(q('[data-testid="tx-aux-atu-tune"]')).toBeNull();
     expect(q('[data-testid="external-VOX"]')).toBeNull();
     expect(q('[data-testid="external-TUNE"]')).toBeNull();
-    expect(h.authoritySubscribers.size).toBe(3);
+    expect(h.authoritySubscribers.size).toBe(4);
   });
 
   it('revokes retained A1 synchronously on A-B-A before flush and admits only fresh A3', () => {
