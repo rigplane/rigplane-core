@@ -54,6 +54,7 @@
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
     getSystemHandlers, getDataModeArmed,
+    deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
@@ -125,6 +126,7 @@
   import CwKeyerInstrumentHost, {
     type CwKeyerInstrumentHandles,
   } from '../../semantic/CwKeyerInstrumentHost.svelte';
+  import MemorySurface from '../../semantic/MemorySurface.svelte';
   import ScopeControlsSurface, {
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
@@ -459,6 +461,15 @@
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
   let ritDomain = $derived(toRitXitProps(runtime.state, runtime.caps).ritDomain);
+  /**
+   * MOR-2425 (Memory lane, phase B2). Memory channels are not in the
+   * MOR-1262 RadioViewModel vocabulary (the radio cannot report their
+   * contents), so `memorySurface` below reads `deriveMemoryPanelProps()` /
+   * `getMemoryHandlers()` directly — the SAME panel-adapters singleton the
+   * legacy `MemoryPanel.svelte` wires to, not a second instance.
+   */
+  let memoryFacts = $derived(deriveMemoryPanelProps());
+  const memoryHandlers = getMemoryHandlers();
   /**
    * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
    * `makeCwPanelHandlers` rather than forked. MOR-1606 wires its existing
@@ -2033,6 +2044,26 @@
   {/snippet}
 
   <!--
+    MOR-2425 (Memory lane, phase B2). Unlike every surface above, `memory`
+    carries no MOR-1262 RadioViewModel group — the radio cannot report
+    memory-channel contents at all (`MemorySurface.svelte`'s own header) —
+    so there is no `view?.memory` to structurally gate on, and the surface
+    mounts unconditionally, exactly as the legacy `MemoryPanel` always has.
+    `facts`/`onRecall`/`onStore`/`onClear` route through the SAME
+    `deriveMemoryPanelProps()` / `getMemoryHandlers()` singleton the legacy
+    panel uses (declared above); `onRename` is left unwired, same as the
+    legacy panel — nothing in `panel-commands.ts` owns a rename intent.
+  -->
+  {#snippet memorySurface()}
+    <MemorySurface
+      facts={memoryFacts}
+      onRecall={memoryHandlers.onRecall}
+      onStore={memoryHandlers.onStore}
+      onClear={memoryHandlers.onClear}
+    />
+  {/snippet}
+
+  <!--
     MOR-1312 (vocabulary slice 12B). Same structural gate and same reasoning
     as `txAuxSurface`/`metersSurface` above: the surface mounts only when the
     view model actually carries the MOR-1301 `scopeDisplay` group, so a radio
@@ -2167,6 +2198,9 @@
     {#snippet body()}{@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed)}{/snippet}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare)}
   {/snippet}
+  {#snippet hostedMemory(allowBare = allowBareSurfaces)}
+    {@render zoned('memory', true, memorySurface, allowBare)}
+  {/snippet}
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
   {/snippet}
@@ -2213,6 +2247,7 @@
       ritXitInstruments,
       cwKeyerInstruments,
       cwKeyer: hostedCwKeyer,
+      memory: hostedMemory,
       scopeDisplay: hostedScopeDisplay,
       scopeControls: hostedScopeControls,
       txFaultRecovery,

@@ -470,6 +470,7 @@
             })}
           </div>
           {@render instruments.cwKeyer(undefined, false)}
+          {@render instruments.memory()}
         {:else}
           {@render instruments.cwKeyer()}
         {/if}
