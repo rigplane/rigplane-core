@@ -96,13 +96,15 @@ whose commit changed the tree being compared, valid only while `git diff
 --name-only <that sha>..<your base> -- <those paths>` is empty (CLAUDE.md
 §Agent working rules). One tree state, one instrument.
 
-Then: push → `gh pr create --draft` → `quick` runs on the PR → `gh pr ready` →
+Then: push → `gh pr create` (ready, not draft) → `quick` runs on the PR →
 the implementation or integration owner directly dispatches a fresh independent
 review on the final candidate → receive its immutable packet → confirm required
 checks green at the exact head → merge → remove the worktree.
 
 - There is no window before the PR: `quick.yml` triggers only on push/PR to
-  `main`, so a pushed branch has no run of its own until a PR exists.
+  `main`, and its `quick` job's `if:` skips a draft PR
+  (`.github/workflows/quick.yml`), so a pushed branch has no `quick` job to
+  read until a ready PR exists.
 - Read the gate's verdict from the commit status — `gh pr checks <n>`, the
   `Agent Review Gate` row — never from a run list. The publisher job is green
   when it has successfully published a *refusal*, and `issue_comment` runs
