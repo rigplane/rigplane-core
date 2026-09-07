@@ -5,10 +5,11 @@ import {
   createChoiceRendererSeat,
   createFiniteRendererContext,
   createToggleRendererSeat,
+  type AvailabilityActionRendererInput,
   type ControlOption,
   type FiniteRendererContext,
 } from '../control-instrument-renderer.svelte';
-import type { InstrumentField } from '../control-instrument-behavior';
+import type { InstrumentAvailability, InstrumentField } from '../control-instrument-behavior';
 
 const field = <T>(value: T): InstrumentField<T> => ({
   availability: { structural: true, operational: true },
@@ -19,6 +20,17 @@ const unknown = <T>(): InstrumentField<T> => ({
 });
 
 describe('finite renderer leases', () => {
+  it('rejects mixed action evidence at the renderer boundary', () => {
+    const invoke = vi.fn();
+    const mixed: AvailabilityActionRendererInput = {
+      context: createFiniteRendererContext(), label: 'Run',
+      // @ts-expect-error Renderer action evidence must use exactly one input form.
+      availability: { structural: true, operational: true }, field: field(1), invoke,
+    };
+
+    expect(mixed).toBeDefined();
+  });
+
   it('permanently refuses a retained A1 callback after A-B-A without cleanup', () => {
     let context = createFiniteRendererContext();
     let current = field(1);
@@ -36,6 +48,77 @@ describe('finite renderer leases', () => {
     replacement.invoke();
     expect(replacement.active).toBe(true);
     expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  it('renders availability-only actions without confirmed or status evidence', () => {
+    const context = createFiniteRendererContext();
+    const feedback = { phase: 'submitted' } as const;
+    const seat = createActionRendererSeat(() => ({
+      context, label: 'Equalize', title: 'Match VFOs',
+      availability: { structural: true, operational: true }, feedback, invoke: vi.fn(),
+    }));
+    const view = seat.attachRenderer().view;
+
+    expect(view).toEqual({
+      label: 'Equalize', title: 'Match VFOs', available: true, feedback,
+    });
+    expect('confirmed' in view!).toBe(false);
+    expect('reading' in view!).toBe(false);
+    expect('requested' in view!).toBe(false);
+  });
+
+  it('keeps availability-only leases independent and invokes the current callback once', () => {
+    const context = createFiniteRendererContext();
+    let availability: InstrumentAvailability | undefined = {
+      structural: true, operational: true,
+    };
+    const firstInvoke = vi.fn();
+    const replacementInvoke = vi.fn();
+    let invoke = firstInvoke;
+    const seat = createActionRendererSeat(() => ({
+      context, label: 'Swap', availability, invoke,
+    }));
+    const first = seat.attachRenderer();
+    const second = seat.attachRenderer();
+
+    first.dispose();
+    first.invoke();
+    invoke = replacementInvoke;
+    second.invoke();
+    availability = undefined;
+    second.invoke();
+    availability = { structural: true, operational: true };
+    seat.destroy();
+    second.invoke();
+
+    expect(first.active).toBe(false);
+    expect(second.active).toBe(false);
+    expect(firstInvoke).not.toHaveBeenCalled();
+    expect(replacementInvoke).toHaveBeenCalledOnce();
+  });
+
+  it('revokes availability-only A-B-A leases before reading action evidence', () => {
+    let context: FiniteRendererContext | null = null;
+    const readAvailability = vi.fn(() => ({ structural: true, operational: true }));
+    const invoke = vi.fn();
+    const seat = createActionRendererSeat(() => ({
+      context, label: 'Speak', get availability() { return readAvailability(); }, invoke,
+    }));
+    const absent = seat.attachRenderer();
+    expect(absent.view).toBeUndefined();
+    absent.invoke();
+
+    context = createFiniteRendererContext();
+    const stale = seat.attachRenderer();
+
+    context = createFiniteRendererContext();
+    context = createFiniteRendererContext();
+    expect(stale.view).toBeUndefined();
+    stale.invoke();
+
+    expect(stale.active).toBe(false);
+    expect(readAvailability).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('keeps simultaneous leases independent and destroys all only with the seat', () => {
