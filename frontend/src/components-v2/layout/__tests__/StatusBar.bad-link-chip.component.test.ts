@@ -1,8 +1,10 @@
 /**
  * MOR-2425 R29(3) — `connection.svelte.ts: isStale()` (exposed as
  * `frontend-runtime.ts: get connectionStale()`) has computed WS-update
- * staleness from real timing since MOR-1419, but had zero consumers
- * anywhere in `frontend/src` until this chip. This test drives the REAL
+ * staleness from real timing since MOR-1419, but no consumer ever displayed
+ * it: `isStale()` is read by two `frontend-runtime.ts` getters
+ * (`connectionStale`, and `connection`'s `stale` field), and nothing
+ * rendered either one until this chip. This test drives the REAL
  * staleness mechanism (real `setInterval`, real `markStateUpdated()`) under
  * fake timers, rather than stubbing `connectionStale` directly, so a
  * regression in the wiring between the store and `StatusBar.svelte` cannot
@@ -80,13 +82,17 @@ describe('StatusBar bad-link chip (MOR-2425 R29(3))', () => {
   let flushSync: typeof import('svelte')['flushSync'];
   let StatusBar: (typeof import('../StatusBar.svelte'))['default'];
 
+  // Explicit budget, not vitest's 10s default: these four dynamic imports
+  // (transformed here, not at collection time — see file header for why
+  // they must stay dynamic) cost ~4.8s cold, which blew the default hook
+  // timeout under concurrent test-file load.
   beforeAll(async () => {
     vi.useFakeTimers();
     conn = await import('$lib/stores/connection.svelte');
     ({ t } = await import('$lib/i18n'));
     ({ mount, unmount, flushSync } = await import('svelte'));
     ({ default: StatusBar } = await import('../StatusBar.svelte'));
-  });
+  }, 30_000);
 
   afterAll(() => {
     vi.useRealTimers();
@@ -97,9 +103,9 @@ describe('StatusBar bad-link chip (MOR-2425 R29(3))', () => {
     instance = null;
     target?.remove();
     target = null;
-    // Resync the shared store for the next test: a healthy WS plus a
-    // just-arrived update never leaves the chip showing carryover
-    // staleness from this test's timer advance.
+    // Reset the shared store for the next test: WS disconnected (the
+    // default a fresh mount expects) plus a fresh state-update timestamp,
+    // so no test starts already stale from a prior test's timer advance.
     conn.setWsConnected(false);
     conn.markStateUpdated();
   });
