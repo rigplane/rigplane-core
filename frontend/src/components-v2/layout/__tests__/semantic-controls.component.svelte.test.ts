@@ -32,7 +32,7 @@ function driveLevel(root: HTMLElement, value: number): HTMLElement {
 const TITLES = {
   rxTx: 'TX', txAux: 'TX CONTROLS', meters: 'STATION METERS', rxAudio: 'RX AUDIO',
   filter: 'MODE / FILTER', dsp: 'DSP', rfFrontEnd: 'RF FRONT END', band: 'BAND',
-  antenna: 'ANTENNA', ritXitScan: 'RIT / XIT / SCAN', cwKeyer: 'CW',
+  antenna: 'ANTENNA', ritXitScan: 'RIT / XIT / SCAN', cwKeyer: 'CW', memory: 'MEMORY',
 };
 
 describe('desktop semantic control frames', () => {

@@ -123,11 +123,50 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
 }));
 
+/** MOR-2425 — the `createContinuousScalar` capture wrapper
+ *  `semantic-dsp-wiring.component.test.ts` establishes, so the persistence
+ *  witness below can name the binding OBJECT, not just its DOM projection. */
+const scalars = vi.hoisted(() => ({
+  bindings: [] as Array<{ command: string | null; binding: unknown }>,
+  leases: [] as Array<{ binding: unknown; lease: unknown }>,
+}));
+vi.mock('../../../primitives/scalar/continuous-scalar.svelte', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../primitives/scalar/continuous-scalar.svelte')>();
+  return {
+    ...actual,
+    createContinuousScalar: (...args: Parameters<typeof actual.createContinuousScalar>) => {
+      const binding = actual.createContinuousScalar(...args);
+      const attachRenderer = binding.attachRenderer.bind(binding);
+      binding.attachRenderer = (...attachArgs) => {
+        const lease = attachRenderer(...attachArgs);
+        scalars.leases.push({ binding, lease });
+        return lease;
+      };
+      const source = args[0]();
+      scalars.bindings.push({
+        command: source.evidence === 'command-feedback' ? source.command : null, binding,
+      });
+      return binding;
+    },
+  };
+});
+
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import { sendCommand } from '$lib/transport/ws-client';
-import { getCommandLifecycle, resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import { beginCommand, getCommandLifecycle, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import { CW_CONTINUOUS_LEVELS } from '../../../semantic/CwKeyerInstrumentHost.svelte';
+import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
+import type {
+  ContinuousScalarBinding, ContinuousScalarRendererLease, ContinuousScalarView,
+} from '../../../primitives/scalar/continuous-scalar.svelte';
+import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/declarations';
+import { readWorkspace } from '../../../presentation/workspace/contract';
+import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../../../presentation/workspace/resolution';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 /**
@@ -215,6 +254,44 @@ function render(props: { strips?: 'single' | 'dual' } = {}): void {
   flushSync();
 }
 
+/** Mounts the REAL `RadioLayout` behind a reactive `skinId`, for the
+ *  Standard↔SDR persistence witness below — `props.skinId` can be reassigned
+ *  and `flushSync()`'d without remounting the fixture. */
+function renderHosted() {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy({ skinId: 'desktop-v2' as 'desktop-v2' | 'sdr-test' });
+  const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
+    resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
+      readWorkspace({ version: 1 }).workspace)]]);
+  component = mount(HostedRadioLayoutFixture, { target, props, context });
+  flushSync();
+  return props;
+}
+
+/** The pitch scalar binding, as an OBJECT (there is exactly one). */
+const cwBinding = (command: string): ContinuousScalarBinding => {
+  const found = scalars.bindings.filter((entry) => entry.command === command);
+  expect(found).toHaveLength(1);
+  return found[0]!.binding as ContinuousScalarBinding;
+};
+const latestCwLease = (binding: unknown): ContinuousScalarRendererLease => {
+  for (let index = scalars.leases.length - 1; index >= 0; index -= 1) {
+    if (scalars.leases[index]!.binding === binding) {
+      return scalars.leases[index]!.lease as ContinuousScalarRendererLease;
+    }
+  }
+  throw new Error('renderer lease not captured');
+};
+/** The command-feedback evidence a persistent binding must carry across a switch. */
+const cwLifecycle = (binding: ContinuousScalarBinding) => {
+  const view = binding.view as Extract<ContinuousScalarView, { evidence: 'command-feedback' }>;
+  return {
+    requested: view.requested, confirmed: view.confirmed, phase: view.phase,
+    error: view.error, transitionId: view.feedback.transitionId,
+  };
+};
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 const el = (id: string) => q<HTMLElement>(`[data-testid="cw-keyer-${id}"]`);
 const press = (node: HTMLElement) => node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -299,8 +376,7 @@ function submitDelay(value: number): string {
 }
 
 function cwInput(field: 'pitchHz' | 'keyerSpeed'): HTMLElement {
-  const selector = field === 'keyerSpeed' ? '[role="slider"]' : 'input';
-  return el(field)!.querySelector(selector) as HTMLElement;
+  return el(field)!.querySelector('[role="slider"]') as HTMLElement;
 }
 
 function cwValue(field: 'pitchHz' | 'keyerSpeed'): string | null {
@@ -314,29 +390,41 @@ function cwDisabled(field: 'pitchHz' | 'keyerSpeed'): boolean {
     ? input.disabled : input.getAttribute('aria-disabled') === 'true';
 }
 
+const HBAR_WIDTH = 84;
+
+function cwDomain(field: 'pitchHz' | 'keyerSpeed'): { min: number; max: number } {
+  const [, , min, max] = CW_CONTINUOUS_LEVELS.find(([f]) => f === field)!;
+  return { min, max };
+}
+
 function submitCw(field: 'pitchHz' | 'keyerSpeed', value: number): string {
   const input = cwInput(field);
-  if (input instanceof HTMLInputElement) {
-    input.value = String(value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  } else {
-    const frame = input.closest<HTMLElement>('.vc-hbar')!;
-    vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue({
-      left: 0, width: 84,
-    } as DOMRect);
-    Object.assign(input, {
-      setPointerCapture: () => undefined,
-      hasPointerCapture: () => false,
-      releasePointerCapture: () => undefined,
-    });
-    input.dispatchEvent(new PointerEvent('pointerdown', {
-      bubbles: true, clientX: (value - 6) * 2, pointerId: 1,
-    }));
-    input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
-  }
+  const frame = input.closest<HTMLElement>('.vc-hbar')!;
+  vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue({
+    left: 0, width: HBAR_WIDTH,
+  } as DOMRect);
+  Object.assign(input, {
+    setPointerCapture: () => undefined,
+    hasPointerCapture: () => false,
+    releasePointerCapture: () => undefined,
+  });
+  const { min, max } = cwDomain(field);
+  const clientX = (value - min) * HBAR_WIDTH / (max - min);
+  input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX, pointerId: 1 }));
+  input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
   flushSync();
   return vi.mocked(sendCommand).mock.calls.at(-1)![2] as string;
 }
+
+// The Host's announcement lane is emitted at the Host's own root (see
+// `CwKeyerInstrumentHost.svelte`'s `{#each CW_CONTINUOUS_LEVELS}` block after
+// `{@render children(...)}`), wherever the consumer places each field's seat, not
+// nested inside it — so it is located by `data-feedback-lane`, not by
+// querying inside `el(field)`.
+const feedbackStatus = (field: 'pitchHz' | 'keyerSpeed') =>
+  q<HTMLElement>(`[data-feedback-lane="${field}"]`);
+const feedbackStatuses = (field: 'pitchHz' | 'keyerSpeed') =>
+  target.querySelectorAll<HTMLElement>(`[data-feedback-lane="${field}"]`);
 
 function deliver(commandId: string, kind: CommandDeliveryEvent['kind'], error?: string): void {
   expect(h.delivery).toBeTypeOf('function');
@@ -345,6 +433,8 @@ function deliver(commandId: string, kind: CommandDeliveryEvent['kind'], error?: 
 }
 
 beforeEach(() => {
+  scalars.bindings = [];
+  scalars.leases = [];
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
   setCapabilities(liveCaps(CW_TAGS));
@@ -395,8 +485,9 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('submitted');
     unmount(component!); component = null; target.remove();
     render();
-    expect(cwValue('pitchHz')).toBe('725');
+    expect(cwValue('pitchHz')).toBe('600');
     expect(cwValue('keyerSpeed')).toBe('24');
+    expect(cwInput('pitchHz').getAttribute('aria-valuetext')).toContain('requested 725 Hz');
     expect(cwInput('keyerSpeed').getAttribute('aria-valuetext')).toContain('requested 31 WPM');
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
     expect(cwInput('keyerSpeed').dataset.commandPhase).toBe('submitted');
@@ -425,9 +516,9 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     submitCw('keyerSpeed', 31);
     deliver(oldId, 'response-error', 'late superseded failure');
     expect(cwInput('pitchHz').dataset.commandPhase).toBe('submitted');
-    expect(cwValue('pitchHz')).toBe('700');
+    expect(cwInput('pitchHz').getAttribute('aria-valuetext')).toContain('requested 700 Hz');
     expect(getCommandLifecycle(latestId, 1)?.status).toBe('pending');
-    const oldPitchStatus = el('pitchHz')!.querySelector<HTMLElement>('[data-cw-feedback-status]')!;
+    const oldPitchStatus = feedbackStatus('pitchHz')!;
     const oldPitchText = oldPitchStatus.textContent;
     expect(target.querySelectorAll('[data-cw-feedback-status]')).toHaveLength(2);
 
@@ -450,10 +541,10 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     publishAuthority();
     flushSync();
     submitCw('pitchHz', 700);
-    const newPitchStatus = el('pitchHz')!.querySelector<HTMLElement>('[data-cw-feedback-status]')!;
+    const newPitchStatus = feedbackStatus('pitchHz')!;
     expect(newPitchStatus.textContent).toBe(oldPitchText);
     expect(newPitchStatus).not.toBe(oldPitchStatus);
-    expect(el('pitchHz')!.querySelectorAll('[data-cw-feedback-status]')).toHaveLength(1);
+    expect(feedbackStatuses('pitchHz')).toHaveLength(1);
     expect(sendCommand).toHaveBeenCalledTimes(4);
     expect(txHarness.trace()).toEqual([]);
   });
@@ -602,7 +693,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(sendCommand).toHaveBeenCalledTimes(2);
   });
 
-  it('presents out-of-band truth and fails closed for stale or malformed truth', () => {
+  it('presents out-of-band truth, keeps a stale reading honest, and fails closed for malformed truth', () => {
     render();
     unmount(component!); component = null;
     useState(delayState(72, 11)); render();
@@ -610,13 +701,35 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     expect(delayInput().value).toBe('72');
     expect(sendCommand).not.toHaveBeenCalled();
 
+    // R29: a stale-but-observed field no longer fails the control closed —
+    // `projectControlFeedback` presents the last value with phase 'idle',
+    // never a blanked 'unavailable' placeholder. `disabled` stays `true`
+    // here regardless: `CwKeyerSurface`'s own `usable(cw.breakInDelay)` gate
+    // reads `field.availability.operational` from the SEPARATE, unfixed
+    // `field-status.ts: getFieldAvailability` chokepoint (still 'stale' !==
+    // 'available' there) — a second doctrine site the census flagged and
+    // this PR defers (see PR body's field-status follow-up paragraph), not
+    // a regression introduced here.
     unmount(component!); component = null;
     useState(delayState(72, 12, { freshness: 'stale' })); render();
     expect(delayInput().disabled).toBe(true);
+    expect(delayInput().dataset.commandPhase).toBe('idle');
+    expect(delayInput().value).toBe('72');
+    expect(delayInput().hasAttribute('aria-valuenow')).toBe(true);
+    expect(delayInput().getAttribute('aria-valuenow')).toBe('72');
+    expect(delayInput().getAttribute('aria-valuetext')).toBe('Confirmed 72');
+    expect(el('breakInDelay-value')!.textContent).toContain('72');
+
+    // A REAL disconnect (`state === null`, `projectControlFeedback`'s own
+    // gate, orthogonal to freshness) still greys the control out from this
+    // stale-but-presented starting point.
+    unmount(component!); component = null;
+    h.state = null;
+    h.session = { state: 'disconnected', epoch: 2 };
+    render();
+    expect(delayInput().disabled).toBe(true);
     expect(delayInput().dataset.commandPhase).toBe('unavailable');
-    expect(delayInput().hasAttribute('aria-valuenow')).toBe(false);
-    expect(delayInput().getAttribute('aria-valuetext')).toBe('Break-in delay unavailable');
-    expect(el('breakInDelay-value')!.textContent).toContain('— unavailable');
+    h.session = { state: 'connected', epoch: 1 };
 
     unmount(component!); component = null;
     useState(delayState(256, 13)); render();
@@ -833,5 +946,78 @@ describe('the surface mounts only where a declared zone can hold it', () => {
       .filter((node) => !node.matches(':disabled') && node.tabIndex >= 0
         && node.closest('[data-zone-id]') === null);
     expect(outside).toEqual([]);
+  });
+});
+
+/**
+ * `desktop-v2` seats `pitchHz` outside `<CwKeyerSurface>` (like `keyerSpeed`)
+ * and suppresses the surface's own copy; every other layout still renders it
+ * via the grouped handle. MUTATION KILLED (b1): keeping the seat while the
+ * surface's copy is also shown duplicates it. (b2): dropping the seat without
+ * restoring the surface's copy leaves zero.
+ */
+describe('pitch mounts exactly once regardless of the hosting layout', () => {
+  it.each(['desktop-v2', 'sdr-test'] as const)(
+    'renders exactly one pitchHz and one keyerSpeed control under %s',
+    (skinId) => {
+      target = document.createElement('div');
+      document.body.appendChild(target);
+      component = mount(HostedRadioLayoutFixture, { target, props: { skinId } });
+      flushSync();
+      for (const field of ['pitchHz', 'keyerSpeed'] as const) {
+        expect(target.querySelectorAll(
+          `[data-testid="cw-keyer-${field}"] [role="slider"][aria-label="${
+            field === 'pitchHz' ? 'CW pitch' : 'Keyer speed'}"]`,
+        )).toHaveLength(1);
+      }
+    },
+  );
+});
+
+/**
+ * MOR-2425 — the witness the persistent pitch binding exists for, in the
+ * order its parts must be read (mirrors the `nbWidth` witness in
+ * `semantic-dsp-wiring.component.test.ts`): identity first, then proof the
+ * CURRENT lease still commands, then surviving evidence — only then inertness.
+ */
+describe('the pitch binding survives a Standard→SDR switch (MOR-2425)', () => {
+  it('keeps the pitch binding, its pending evidence and its live lease across the switch', () => {
+    const props = renderHosted();
+    beginCommand({
+      id: 'pending-cw-pitch', name: 'set_cw_pitch', params: { value: 725 }, originalEpoch: 1,
+    });
+    flushSync();
+    const before = cwBinding('set_cw_pitch');
+    const beforeLifecycle = cwLifecycle(before);
+    expect(beforeLifecycle).toMatchObject({ phase: 'submitted', requested: 725, confirmed: 600 });
+    const staleLease = latestCwLease(before);
+
+    props.skinId = 'sdr-test';
+    flushSync();
+    const afterLifecycle = cwLifecycle(before);
+
+    // (i) Identity, positively: the SAME binding object, not a rebuilt one.
+    const after = cwBinding('set_cw_pitch');
+    expect(after).toBe(before);
+
+    // (ii) Admission proven open: the CURRENT lease emits exactly one command.
+    expect(latestCwLease(after)).not.toBe(staleLease);
+    expect(submitCw('pitchHz', 800)).toEqual(expect.any(String));
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith(
+      'set_cw_pitch', { value: 800 }, expect.any(String),
+    );
+
+    // (iii) Evidence survival, read at the moment after the switch — BEFORE
+    // the (ii) submission moved the target on to 800.
+    expect(afterLifecycle).toEqual(beforeLifecycle);
+    expect(feedbackStatuses('pitchHz')).toHaveLength(1);
+
+    // Only now: the retained Standard lease is inert, and adds no command.
+    expect(staleLease.beginPointer()).toBeNull();
+    expect(staleLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    staleLease.nativeInput(900);
+    staleLease.wheel({ direction: 1, fine: false });
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledOnce();
   });
 });

@@ -81,6 +81,19 @@ export function getTxAuxControlFeedback(field: keyof typeof txAuxControls) {
   });
 }
 
+const dspScalarControls = Object.freeze({ nbLevel: 'nb-level', nbWidth: 'nb-width' } as const);
+
+/** MOR-2425 — offline fixtures never fabricate radio-global DSP command-feedback authority. */
+export function getDspControlFeedback(field: keyof typeof dspScalarControls) {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: dspScalarControls[field], receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
 /** The offline fixture has no qualified RF/SQL command-feedback authority. */
 export function getRfSqlControlFeedback(_controlSession: unknown): null {
   return null;
@@ -122,3 +135,26 @@ export function getPendingNrOn(_receiver: 0 | 1): boolean | null {
 export function getDataModeArmed(): { armed: false; value: null } {
   return { armed: false, value: null };
 }
+
+/**
+ * MOR-2425 — `SemanticRadioSurfaces.svelte` now also imports
+ * `deriveMemoryPanelProps`/`getMemoryHandlers` unconditionally (same
+ * MOR-1271/MOR-1320 module-resolution lesson as `getPendingFrequencyHz`
+ * above: a missing export here fails the whole fixture harness, not just
+ * the memory surface). The offline fixture has no real VFO identity or
+ * command authority, so this reports the same unavailable/inert shape
+ * `getBreakInDelayControlFeedback` and friends use above: `vfoIdentityKnown:
+ * false` (the "unknown identity" sentinel `toMemoryPanelProps` itself
+ * returns during a relative-VFO bootstrap epoch) and handlers that report
+ * "refused" without dispatching anything.
+ */
+export function deriveMemoryPanelProps() {
+  return Object.freeze({ activeFreqHz: Number.NaN, activeMode: '---', vfoIdentityKnown: false });
+}
+
+const memoryHandlers = Object.freeze({
+  onRecall: (_channel: number): boolean => false,
+  onStore: (_channel: number, _frequencyHz: number, _mode: string): boolean => false,
+  onClear: (_channel: number): boolean => false,
+});
+export function getMemoryHandlers() { return memoryHandlers; }

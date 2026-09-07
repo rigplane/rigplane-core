@@ -327,7 +327,7 @@ describe('TxPanel v3 command-feedback wiring', () => {
       ]));
   });
 
-  it('fails each malformed or stale authority lane closed, then follows fresh truth', () => {
+  it('fails each malformed or genuinely-unresolved lane closed, keeps a stale lane available, then follows fresh truth', () => {
     render();
     openSettings();
     canonical.state = {
@@ -341,10 +341,15 @@ describe('TxPanel v3 command-feedback wiring', () => {
       },
     } as unknown as ServerState;
     flushSync();
-    for (const field of FIELDS) {
+    for (const field of ['micGain', 'compressorLevel', 'monitorGain'] as const) {
       expect(slider(field).getAttribute('aria-disabled')).toBe('true');
       expect(value(field)).toBe('—');
     }
+    // MOR-2425/R29: driveGain is stale, not malformed/unresolved — it stays
+    // available with its last observed value, unlike its three siblings.
+    expect(slider('driveGain').getAttribute('aria-disabled')).toBe('false');
+    expect(slider('driveGain').getAttribute('aria-valuenow')).toBe(String(VALUES.driveGain));
+    expect(value('driveGain')).toBe(`${Math.round(VALUES.driveGain / 2.55)}%`);
 
     canonical.state = {
       ...connectedState(), micGain: 41, driveGain: 81, compressorLevel: 121, monitorGain: 161,

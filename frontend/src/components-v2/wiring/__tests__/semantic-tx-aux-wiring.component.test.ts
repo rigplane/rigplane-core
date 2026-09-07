@@ -1174,10 +1174,16 @@ describe('the composed TX/VOX controls consume the real feedback lifecycle', () 
     pushRadioState(observed(1, 199, 'fresh'));
     pushSession({ state: 'connected', epoch: 7 });
     expect(input().dataset.commandPhase).toBe('awaiting-confirmation');
+    // R29: a stale readback no longer fails the control closed, even one
+    // that happens to match the requested target exactly — availability and
+    // confirmation are separate axes. `reconcileStateBackedCommands`
+    // (`commands.svelte.ts`) still requires `freshness === 'fresh'` before
+    // marking a command confirmed (untouched by this PR), so the lifecycle
+    // stays 'acknowledged' and the control stays in 'awaiting-confirmation'.
     pushRadioState(observed(2, 200, 'stale'));
     pushSession({ state: 'connected', epoch: 7 });
-    expect(input().dataset.commandPhase).toBe('unavailable');
-    expect(input().getAttribute('aria-disabled')).toBe('true');
+    expect(input().dataset.commandPhase).toBe('awaiting-confirmation');
+    expect(input().getAttribute('aria-disabled')).toBe('false');
     expect(getCommandLifecycles()[0]?.status).toBe('acknowledged');
     pushRadioState(observed(3, 200, 'fresh'));
     expect(getCommandLifecycles()[0]?.status).toBe('confirmed');
@@ -1328,7 +1334,7 @@ describe('MOR-1082 — the semantic vertical consults the resolved surface plan'
 // composition only — rxAudio). Every pin above proves it exclusively against
 // txAux, which was the only one OF THOSE THREE a real manifest declared a
 // zone for when these pins were written (`vfo`/`rxTx` had zones from the
-// start; `desktop-v2` declares all fourteen surfaces today) —
+// start) —
 // a wiring change that special-cased `if (surface === 'txAux')` would pass
 // every one of them just as well. These pins exercise the SAME mechanism
 // against `meters`, a structurally unrelated surface, through a SYNTHETIC

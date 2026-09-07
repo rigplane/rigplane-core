@@ -130,6 +130,36 @@ describe('fallback CwPanel ControlFeedback wiring (MOR-1754)', () => {
     vi.useRealTimers();
   });
 
+  it('keeps a stale-but-observed CW Pitch available with its last value, then greys out on disconnect (MOR-2425/R29)', () => {
+    vi.useFakeTimers(); handlers.onCwPitchChange.mockClear();
+    render();
+    const pitch = target.querySelector<HTMLElement>('[aria-label="CW Pitch"]')!;
+    canonical.state = {
+      ...connectedState(),
+      fieldStatus: { ...connectedState().fieldStatus, cwPitch: { ...fresh(), freshness: 'stale' as const } },
+    };
+    flushSync();
+    // Session stays connected; only the ONE field goes stale. The owner
+    // ruling (R29) says a control greys out only on a real disconnect or
+    // structural absence — a stale-but-observed reading keeps the control
+    // enabled with its last value, never a vacuous placeholder.
+    expect(pitch.getAttribute('aria-disabled')).toBe('false');
+    expect(pitch.getAttribute('aria-valuenow')).toBe('600');
+    expect(vcValue('CW Pitch')).toBe('600 Hz');
+    pitch.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(handlers.onCwPitchChange).toHaveBeenCalledExactlyOnceWith(605);
+
+    // A real disconnect still greys the control out — session disconnected
+    // ALONE, canonical state/caps left populated, isolates this from the
+    // `state === null` gate `projectControlFeedback` already enforces
+    // independently (a real WS close clears both together; this proves the
+    // session term itself still gates, not just the redundant null check).
+    canonical.session = { state: 'disconnected', epoch: 1 }; flushSync();
+    expect(pitch.getAttribute('aria-disabled')).toBe('true');
+    vi.useRealTimers();
+  });
+
   it('keeps normalized input local until one native change commits it', () => {
     handlers.onBreakInDelayChange.mockClear(); const r = render();
     Object.defineProperty(r.input(), 'valueAsNumber', { configurable: true, value: 111.4 });

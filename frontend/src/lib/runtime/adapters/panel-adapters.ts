@@ -38,7 +38,10 @@ import {
   CW_PITCH_COMMAND_DESCRIPTOR,
   DSP_COMMAND_DESCRIPTORS,
   FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  IF_SHIFT_COMMAND_DESCRIPTOR,
   KEY_SPEED_COMMAND_DESCRIPTOR,
+  PBT_INNER_COMMAND_DESCRIPTOR,
+  PBT_OUTER_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR,
   SQUELCH_COMMAND_DESCRIPTOR,
   TX_AUX_COMMAND_DESCRIPTORS,
@@ -54,9 +57,11 @@ import {
 import { currentControlSessionEpoch } from '../commands/radio-intents';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { DisplayObservation } from '../../../semantic/radio-view-model';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
-  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel,
+  controlRangeFromCapsOrDefault, deriveIfShift, nbDepthRawToDisplay,
+  pbtRangeFromCaps, pbtRawToHz, projectNrLevel,
 } from '$lib/radio/filter-controls';
 
 // Re-export types for panel imports
@@ -332,8 +337,15 @@ export function projectControlFeedback<T>(
   if (state === null) return empty('unavailable', null);
   const field = state.fieldStatus?.[descriptor.fieldPath(scope)];
   const confirmed = descriptor.confirmed(state, scope);
-  if (confirmed === null || field?.observed !== true || field.freshness !== 'fresh'
-    || field.availability !== 'available' || typeof field.lastObservedMonotonic !== 'number'
+  // R29(1): a field that has been observed and carries a value stays
+  // available even once it goes stale — only a field the server has never
+  // resolved (`availability: 'missing'`, or any other non-evidentiary
+  // value) gates the control unavailable. Freshness alone is deliberately
+  // not consulted here: `availability` already folds it in 1:1 on the wire
+  // (`_freshness_availability`, `src/rigplane/web/runtime_helpers.py`).
+  if (confirmed === null || field?.observed !== true
+    || (field.availability !== 'available' && field.availability !== 'stale')
+    || typeof field.lastObservedMonotonic !== 'number'
     || !Number.isFinite(field.lastObservedMonotonic)) return empty('unavailable', null);
 
   let latest: CommandLifecycle | null = null;
@@ -401,6 +413,20 @@ export function getFilterWidthControlFeedback(): Readonly<ControlFeedback<number
 type GlobalCwControl = 'cw-pitch' | 'keyer-speed';
 type GlobalCwField = 'cwPitch' | 'keySpeed';
 
+/**
+ * R29(1): a `'stale'` `DisplayObservation` still carries a real last-observed
+ * value (`display-observation.ts: qualifyEvidence`) — only `'unknown'`/
+ * `'unsupported'` mean the field was never resolved. Used by every accessor
+ * below that qualifies a `DisplayObservation` before trusting
+ * `projectControlFeedback`'s result. A type predicate (not a plain boolean
+ * over `.state`) so callers keep type-narrowed access to `.value`.
+ */
+function hasUsableObservation<T extends number | string | boolean>(
+  observation: DisplayObservation<T>,
+): observation is Extract<DisplayObservation<T>, { state: 'current' | 'stale' }> {
+  return observation.state === 'current' || observation.state === 'stale';
+}
+
 function unavailableControlFeedback(
   feedback: Readonly<ControlFeedback<number>>,
 ): Readonly<ControlFeedback<number>> {
@@ -435,7 +461,7 @@ function getGlobalCwControlFeedback(
       value: state?.[field],
     });
     return session.state === 'connected' && epoch >= 0
-      && observation.state === 'current' && Number.isSafeInteger(observation.value)
+      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
       ? feedback : unavailableControlFeedback(feedback);
   } catch {
     return unavailableControlFeedback(feedback);
@@ -495,7 +521,7 @@ export function getTxAuxControlFeedback(
       state, caps, path: field, structural, value: state?.[field],
     });
     return session.state === 'connected' && epoch >= 0
-      && observation.state === 'current' && Number.isSafeInteger(observation.value)
+      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
       ? feedback : unavailableControlFeedback(feedback);
   } catch {
     return unavailableControlFeedback(feedback);
@@ -552,7 +578,7 @@ export function getDspControlFeedback(
         state, caps, path: field, structural: caps?.controls?.nb_depth != null,
         value: state?.[field],
       });
-      return observation.state === 'current' && Number.isSafeInteger(observation.value)
+      return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
         ? feedback : unavailableControlFeedback(feedback);
     }
     const receiverId = activeReceiver;
@@ -564,7 +590,7 @@ export function getDspControlFeedback(
       structural: tags.includes(DSP_FEEDBACK_CAPABILITIES[field]),
       value: receiverState?.[field],
     });
-    return observation.state === 'current' && Number.isSafeInteger(observation.value)
+    return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
       ? feedback : unavailableControlFeedback(feedback);
   } catch {
     return unavailableControlFeedback(feedback);
@@ -661,7 +687,7 @@ export function getRfSqlControlFeedback(
       state, caps, receiver, path: `${base}.${leaf}`, structural,
       value: receiverState?.[leaf],
     });
-    const qualified = observation.state === 'current' ? feedback : Object.freeze({
+    const qualified = hasUsableObservation(observation) ? feedback : Object.freeze({
       ...feedback,
       confirmed: null, target: null, requestedTarget: null,
       phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
@@ -677,6 +703,258 @@ export function getRfSqlControlFeedback(
     sql: lane(
       'set_squelch', SQUELCH_COMMAND_DESCRIPTOR, 'squelch', 'squelch', tags.includes('squelch'),
     ),
+  });
+}
+
+/**
+ * Shared qualification for a single raw receiver-scoped "echo" control
+ * (MOR-2425): PBT inner/outer, and the real `if_shift` command on a radio
+ * that has one. Mirrors `getDspControlFeedback`'s active-receiver/
+ * operational/observation gating; `structuralFor` supplies the one thing
+ * that differs per field (PBT needs both the `pbt` capability tag AND a
+ * usable `pbt_inner` range — MOR-1291 — while `if_shift` needs only its own
+ * capability tag).
+ */
+function getReceiverEchoControlFeedback(
+  currentControlSession: ControlSessionSnapshot | undefined,
+  descriptor: StateBackedCommandDescriptor<number>,
+  control: string,
+  field: 'pbtInner' | 'pbtOuter' | 'ifShift',
+  structuralFor: (caps: Capabilities | null | undefined, tags: readonly string[]) => boolean,
+): Readonly<ControlFeedback<number>> {
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
+  const scope = Object.freeze({ control, receiver });
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const view = toRadioViewModel(state, caps);
+    if (session.state !== 'connected' || epoch < 0
+      || view === null || view.activeReceiver.status !== 'known') {
+      return unavailableControlFeedback(feedback);
+    }
+    const activeReceiver = view.activeReceiver.receiver;
+    const receiverEntries = view.receiverIndicators?.filter(
+      entry => entry.receiver === activeReceiver,
+    ) ?? [];
+    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
+      return unavailableControlFeedback(feedback);
+    }
+    const receiverState = activeReceiver === 'SUB' ? state?.sub : state?.main;
+    const base = activeReceiver === 'SUB' ? 'sub' : 'main';
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver: activeReceiver, path: `${base}.${field}`,
+      structural: structuralFor(caps, tags), value: receiverState?.[field],
+    });
+    return observation.state === 'current' && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+const pbtStructural = (caps: Capabilities | null | undefined, tags: readonly string[]): boolean =>
+  tags.includes('pbt') && pbtRangeFromCaps(caps) !== undefined;
+
+/** Qualified raw PBT Inner feedback (MOR-2425); receiver derives from active-receiver truth. */
+export function getPbtInnerControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getReceiverEchoControlFeedback(
+    currentControlSession, PBT_INNER_COMMAND_DESCRIPTOR, 'pbt-inner', 'pbtInner', pbtStructural,
+  );
+}
+
+/** Qualified raw PBT Outer feedback (MOR-2425); receiver derives from active-receiver truth. */
+export function getPbtOuterControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getReceiverEchoControlFeedback(
+    currentControlSession, PBT_OUTER_COMMAND_DESCRIPTOR, 'pbt-outer', 'pbtOuter', pbtStructural,
+  );
+}
+
+/**
+ * IF-shift feedback is always Hz-domain, never PBT's raw BCD domain: real on
+ * a radio with its own `if_shift` command (raw IS Hz there, identity-
+ * mapped), or derived from the two PBT feedbacks by converting each side's
+ * raw value with `pbtRawToHz` first. `domain` is a real, checkable field —
+ * not a comment that can rot — so a caller or test can assert it instead of
+ * trusting prose about which domain `confirmed`/`target` are in.
+ */
+export interface IfShiftControlFeedback extends ControlFeedback<number> {
+  readonly domain: 'hz';
+}
+
+/**
+ * Non-terminal phases in lifecycle order, least advanced first. Read only
+ * from a side whose `busy` is true, which (per `projectControlFeedback`)
+ * means its `phase` is one of exactly these four — never `'idle'` or a
+ * terminal phase. A `'queued'` (held-for-tx) overlay can land on a command
+ * that is already `'acknowledged'` underneath
+ * (`commands.svelte.ts: applyCommandLifecycleProjection`'s `'held'` branch
+ * accepts both `'pending'` and `'acknowledged'`), so it ranks ahead of
+ * `'awaiting-confirmation'` here: a held command has made less progress
+ * toward confirmation than one merely awaiting its echo, regardless of the
+ * status it was held from.
+ */
+const IN_FLIGHT_ORDER: readonly ControlFeedbackPhase[] = Object.freeze([
+  'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
+]);
+
+/**
+ * The least-advanced of two busy sides' phases, by `IN_FLIGHT_ORDER` — the
+ * derived IF-shift feedback is never more settled than the side that has
+ * made the least progress toward confirmation.
+ */
+function mergeBusyPhase(
+  inner: Readonly<ControlFeedback<number>>, outer: Readonly<ControlFeedback<number>>,
+): ControlFeedbackPhase {
+  if (inner.busy && outer.busy) {
+    return IN_FLIGHT_ORDER.indexOf(inner.phase) <= IN_FLIGHT_ORDER.indexOf(outer.phase)
+      ? inner.phase : outer.phase;
+  }
+  return inner.busy ? inner.phase : outer.phase;
+}
+
+/**
+ * Terminal outcomes ranked worst-first, used only when both sides' records
+ * are live and terminal: a non-`'confirmed'` outcome on either side beats a
+ * `'confirmed'` one on the other. The order among the non-`'confirmed'`
+ * outcomes is otherwise arbitrary but fixed, so two differently-failed
+ * sides still resolve to one deterministic outcome.
+ */
+const TERMINAL_OUTCOME_PRIORITY: readonly ControlFeedbackOutcome[] = Object.freeze([
+  'failed', 'timed-out', 'cancelled', 'superseded', 'confirmed',
+]);
+
+/**
+ * Combines two non-busy sides' phase/outcome. `outcome === null` here means
+ * idle under `getPbtInner/OuterControlFeedback`'s own definition: no
+ * lifecycle ever ran, or one did and its record already retired
+ * (`commands.svelte.ts: retainTerminalOutcome` expires each record
+ * `OUTCOME_RETENTION_MS` after its own terminal transition, independent of
+ * the other side's), or `projectControlFeedback` filtered it out
+ * (`locallyObsolete`, provider-generation mismatch). Idle is therefore not
+ * "no lifecycle ran" — it can equally mean "ran and the evidence is gone" —
+ * which is why an idle side may never promote the other to `'confirmed'`:
+ *
+ *   idle | idle                -> idle       (case A: no evidence either side)
+ *   idle | confirmed           -> idle       (case B: a lone confirmed half
+ *                                              is not corroborated once the
+ *                                              other half's record is gone;
+ *                                              not reported)
+ *   idle | non-confirmed       -> that outcome (case C: while its record
+ *                                                stays live)
+ *   live terminal | live terminal -> `TERMINAL_OUTCOME_PRIORITY` (case D)
+ *
+ * `'confirmed'` is reachable only through case D with both sides confirmed:
+ * a half-failed gesture is never derived as `'confirmed'`, at any point in
+ * its retention window or after.
+ */
+function mergeTerminalOutcome(
+  inner: Readonly<ControlFeedback<number>>, outer: Readonly<ControlFeedback<number>>,
+): { phase: ControlFeedbackPhase; outcome: Readonly<{ phase: ControlFeedbackOutcome; error?: string }> | null } {
+  const bothIdle = inner.outcome === null && outer.outcome === null;
+  if (bothIdle) return { phase: 'idle', outcome: null }; // case A
+
+  const bothLiveTerminal = inner.outcome !== null && outer.outcome !== null;
+  if (bothLiveTerminal) { // case D
+    const winner = TERMINAL_OUTCOME_PRIORITY.indexOf(inner.outcome.phase)
+      <= TERMINAL_OUTCOME_PRIORITY.indexOf(outer.outcome.phase) ? inner : outer;
+    return { phase: winner.phase, outcome: winner.outcome };
+  }
+
+  const live = inner.outcome !== null ? inner : outer; // exactly one side idle
+  if (live.outcome!.phase === 'confirmed') return { phase: 'idle', outcome: null }; // case B
+  return { phase: live.phase, outcome: live.outcome }; // case C
+}
+
+function unavailableIfShiftFeedback(
+  scope: Readonly<ControlFeedbackScope>, sessionEpoch: number,
+  providerGeneration: number | null,
+): Readonly<IfShiftControlFeedback> {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null,
+    providerGeneration, sessionEpoch, scope,
+    repeatPolicy: 'latest-target-wins' as const, domain: 'hz' as const,
+  });
+}
+
+/**
+ * Qualified IF-shift feedback (MOR-2425). Real on a radio with its own
+ * `if_shift` command (Yaesu FTX-1) — gated on the SAME predicate
+ * (`caps.capabilities.includes('if_shift')`) `radio-view-model-adapter.ts`'s
+ * `ifShiftControlStructural` uses to decide whether to show a real IF-shift
+ * control at all. Derived from the two PBT feedbacks on a PBT-only radio
+ * (Icom IC-7300): each side's raw value is converted to Hz with
+ * `pbtRawToHz(raw, pbtRangeFromCaps(caps))` before combining with
+ * `deriveIfShift`, mirroring `deriveFilterPassband`'s own `ifShiftValue`
+ * fallback — this is that same formula's pending-target-aware lifecycle
+ * layer, not a second, independent re-derivation of the confirmed reading.
+ */
+export function getIfShiftControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<IfShiftControlFeedback> {
+  const caps = runtime.caps;
+  const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+
+  if (tags.includes('if_shift')) {
+    const real = getReceiverEchoControlFeedback(
+      currentControlSession, IF_SHIFT_COMMAND_DESCRIPTOR, 'if-shift', 'ifShift',
+      (_c, t) => t.includes('if_shift'),
+    );
+    return Object.freeze({ ...real, domain: 'hz' as const });
+  }
+
+  const state = runtime.state;
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
+  const scope = Object.freeze({ control: 'if-shift', receiver });
+  const inner = getPbtInnerControlFeedback(currentControlSession);
+  const outer = getPbtOuterControlFeedback(currentControlSession);
+  const scale = pbtRangeFromCaps(caps);
+  const providerGeneration = typeof inner.providerGeneration === 'number' ? inner.providerGeneration : null;
+  if (inner.availability !== 'available' || outer.availability !== 'available' || scale === undefined
+    || inner.confirmed === null || outer.confirmed === null) {
+    return unavailableIfShiftFeedback(scope, epoch, providerGeneration);
+  }
+  const toHz = (raw: number): number => pbtRawToHz(raw, scale);
+  const confirmed = deriveIfShift(toHz(inner.confirmed), toHz(outer.confirmed));
+  const busy = inner.busy || outer.busy;
+  const innerForTarget = inner.busy && inner.target !== null ? inner.target : inner.confirmed;
+  const outerForTarget = outer.busy && outer.target !== null ? outer.target : outer.confirmed;
+  const target = busy ? deriveIfShift(toHz(innerForTarget), toHz(outerForTarget)) : null;
+  const innerForRequested = inner.requestedTarget ?? inner.confirmed;
+  const outerForRequested = outer.requestedTarget ?? outer.confirmed;
+  const requestedTarget = inner.requestedTarget === null && outer.requestedTarget === null
+    ? null : deriveIfShift(toHz(innerForRequested), toHz(outerForRequested));
+  const { phase, outcome } = busy
+    ? { phase: mergeBusyPhase(inner, outer), outcome: null }
+    : mergeTerminalOutcome(inner, outer);
+  // Idle carries no ids anywhere else in this file (`empty()`,
+  // `unavailableIfShiftFeedback`) — including here, so that
+  // `mergeTerminalOutcome`'s idle-on-a-retired-confirmation case (case B
+  // above) does not compose a fresh id out of the surviving side's live
+  // outcome and trigger a one-shot announcement for a phase nobody reports.
+  const lifecycleId = phase === 'idle' || (inner.lifecycleId === null && outer.lifecycleId === null)
+    ? null : JSON.stringify([inner.lifecycleId, outer.lifecycleId]);
+  const transitionId = phase === 'idle' || (inner.transitionId === null && outer.transitionId === null)
+    ? null : JSON.stringify([inner.transitionId, outer.transitionId]);
+  return Object.freeze({
+    confirmed, target, requestedTarget, phase, busy, availability: 'available' as const,
+    outcome, lifecycleId, transitionId,
+    providerGeneration, sessionEpoch: inner.sessionEpoch,
+    scope, repeatPolicy: 'latest-target-wins' as const, domain: 'hz' as const,
   });
 }
 

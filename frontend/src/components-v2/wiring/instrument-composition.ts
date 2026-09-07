@@ -4,8 +4,11 @@ import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
 import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
 import type { ReceiverInstrumentHandles } from '../../semantic/ReceiverInstrumentHost.svelte';
 import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
-import type { RfFrontEndLevelHandles } from '../../semantic/rf-front-end-instruments';
+import type {
+  RfFrontEndFiniteLayout, RfFrontEndLevelHandles,
+} from '../../semantic/rf-front-end-instruments';
 import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
+import type { DspScalarLayout } from '../../semantic/dsp-scalars';
 import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
 import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
 import type { BandControlLayout } from '../../semantic/band-instruments';
@@ -33,9 +36,11 @@ export interface InstrumentComposition {
   readonly rfFrontEndInstruments: RfFrontEndLevelHandles;
   readonly meters: Snippet<[allowBare?: boolean]>;
   readonly rxAudio: Snippet<[allowBare?: boolean]>;
-  readonly rfFrontEnd: Snippet<[allowBare?: boolean]>;
+  readonly rfFrontEnd: Snippet<[allowBare?: boolean, finiteLayout?: RfFrontEndFiniteLayout]>;
   readonly filter: Snippet<[allowBare?: boolean, finiteLayout?: FilterFiniteLayout]>;
-  readonly dsp: Snippet<[allowBare?: boolean, finiteLayout?: DspFiniteLayout]>;
+  readonly dsp: Snippet<[
+    allowBare?: boolean, finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout,
+  ]>;
   readonly band: Snippet<[allowBare?: boolean, controlLayout?: BandControlLayout]>;
   readonly antenna: Snippet<[allowBare?: boolean, controlLayout?: Snippet]>;
   readonly antennaInstruments: AntennaInstrumentHandles;
@@ -44,6 +49,7 @@ export interface InstrumentComposition {
   readonly ritXitInstruments: RitXitScanInstrumentHandles;
   readonly cwKeyerInstruments: CwKeyerInstrumentHandles;
   readonly cwKeyer: Snippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>;
+  readonly memory: Snippet<[allowBare?: boolean]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;
   readonly scopeControls: Snippet<[allowBare?: boolean]>;
   readonly txFaultRecovery: Snippet;

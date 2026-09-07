@@ -193,7 +193,6 @@ describe('imperative qualified raw TX/VOX command feedback', () => {
 
   it.each([
     ['not observed', { ...fresh(), observed: false }, VALUES.micGain],
-    ['stale', { ...fresh(), freshness: 'stale' as const }, VALUES.micGain],
     ['unavailable', { ...fresh(), availability: 'unavailable' as const }, VALUES.micGain],
     ['missing marker', { ...fresh(), lastObservedMonotonic: undefined }, VALUES.micGain],
     ['fractional truth', fresh(), 120.5],
@@ -206,6 +205,16 @@ describe('imperative qualified raw TX/VOX command feedback', () => {
     expect(getTxAuxControlFeedback('micGain', connected)).toMatchObject({
       availability: 'unavailable', confirmed: null, target: null,
       requestedTarget: null, phase: 'unavailable', outcome: null,
+    });
+  });
+
+  it('keeps a stale-but-observed field available with its canonical truth (MOR-2425/R29)', () => {
+    h.state = state({
+      micGain: VALUES.micGain,
+      fieldStatus: { ...state().fieldStatus, micGain: { ...fresh(), freshness: 'stale' as const } },
+    });
+    expect(getTxAuxControlFeedback('micGain', connected)).toMatchObject({
+      availability: 'available', confirmed: VALUES.micGain, phase: 'idle',
     });
   });
 

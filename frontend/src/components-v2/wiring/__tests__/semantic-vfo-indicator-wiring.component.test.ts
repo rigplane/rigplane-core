@@ -86,6 +86,11 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getPendingFrequencyHz: () => null,
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
+  // MOR-2425 (Memory lane, phase B2) — `SemanticRadioSurfaces.svelte` now
+  // imports these unconditionally. This file does not exercise memory at
+  // all, so the stubs only need to satisfy the import.
+  deriveMemoryPanelProps: () => ({ activeFreqHz: Number.NaN, activeMode: '---', vfoIdentityKnown: false }),
+  getMemoryHandlers: () => ({ onRecall: () => false, onStore: () => false, onClear: () => false }),
 }));
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
@@ -436,7 +441,7 @@ describe('production receiver-indicator partitioning', () => {
       /<CwKeyerInstrumentHost[\s\S]*?\{keySpeedFeedback\}[\s\S]*?\{#snippet children\(cwKeyerInstruments\)}/,
     );
     expect(source).toMatch(
-      /<CwKeyerSurface(?:(?!\/>)[\s\S])*?\{cwPitchFeedback\}(?:(?!\/>)[\s\S])*?\/>/,
+      /<CwKeyerInstrumentHost[\s\S]*?pitchFeedback=\{cwPitchFeedback\}[\s\S]*?\{#snippet children\(cwKeyerInstruments\)}/,
     );
     expect(source).not.toMatch(
       /<CwKeyerSurface(?:(?!\/>)[\s\S])*?\{keySpeedFeedback\}/,

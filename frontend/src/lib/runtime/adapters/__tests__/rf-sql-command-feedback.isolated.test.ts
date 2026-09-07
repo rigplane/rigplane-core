@@ -166,7 +166,6 @@ describe('qualified RF/SQL command feedback', () => {
 
   it.each([
     ['negative leaf marker', { 'main.rfGain': fresh(-1), 'main.squelch': fresh() }],
-    ['stale present parent', { main: { ...fresh(), freshness: 'stale' as const }, 'main.rfGain': fresh(), 'main.squelch': fresh() }],
     ['missing present parent', { main: { ...fresh(), observed: false }, 'main.rfGain': fresh(), 'main.squelch': fresh() }],
   ])('masks RF when evidence has a %s', (_name, fieldStatus) => {
     h.state = state({ fieldStatus }); h.caps = caps();
@@ -175,6 +174,18 @@ describe('qualified RF/SQL command feedback', () => {
     expect(pair.sql.feedback).toMatchObject(_name === 'negative leaf marker'
       ? { availability: 'available', confirmed: 0.2 }
       : { availability: 'unavailable', confirmed: null });
+  });
+
+  it('keeps both lanes available through a stale present parent (MOR-2425/R29)', () => {
+    h.state = state({
+      fieldStatus: {
+        main: { ...fresh(), freshness: 'stale' as const }, 'main.rfGain': fresh(), 'main.squelch': fresh(),
+      },
+    });
+    h.caps = caps();
+    const pair = getRfSqlControlFeedback(connected)!;
+    expect(pair.rf.feedback).toMatchObject({ availability: 'available', confirmed: 0.5 });
+    expect(pair.sql.feedback).toMatchObject({ availability: 'available', confirmed: 0.2 });
   });
 
   it('preserves the accepted absent-ancestor skip', () => {

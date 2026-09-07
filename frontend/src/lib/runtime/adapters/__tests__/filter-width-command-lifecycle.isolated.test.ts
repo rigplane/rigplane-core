@@ -67,7 +67,8 @@ import {
 } from '../panel-adapters';
 import {
   BREAK_IN_DELAY_COMMAND_DESCRIPTOR, CW_PITCH_COMMAND_DESCRIPTOR, FILTER_WIDTH_COMMAND_DESCRIPTOR,
-  DSP_COMMAND_DESCRIPTORS, KEY_SPEED_COMMAND_DESCRIPTOR,
+  DSP_COMMAND_DESCRIPTORS, IF_SHIFT_COMMAND_DESCRIPTOR, KEY_SPEED_COMMAND_DESCRIPTOR,
+  PBT_INNER_COMMAND_DESCRIPTOR, PBT_OUTER_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR, SQUELCH_COMMAND_DESCRIPTOR,
   STATE_BACKED_COMMAND_DESCRIPTORS,
   TX_AUX_COMMAND_DESCRIPTORS,
@@ -118,6 +119,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
       'set_nr_level', 'set_nb_depth',
       'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
+      'set_pbt_inner', 'set_pbt_outer', 'set_if_shift',
     ]);
     expect(RADIO_INTENT_NAMES).toContain(FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName);
     const main = FILTER_WIDTH_COMMAND_DESCRIPTOR.scope(command({ params: { width: 3000, receiver: 0 } }))!;
@@ -182,8 +184,6 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
   it.each([
     ['missing status', undefined],
     ['unobserved status', { observed: false, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 5 }],
-    ['stale status', { observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5 }],
-    ['unavailable status', { observed: true, freshness: 'fresh', availability: 'stale', lastObservedMonotonic: 5 }],
     ['missing marker', { observed: true, freshness: 'fresh', availability: 'available' }],
     ['non-finite marker', { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: Number.NaN }],
   ])('makes the full projection unavailable from %s evidence', (_case, fieldStatus) => {
@@ -191,6 +191,21 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
     lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
     expect(getFilterWidthCommandLifecycle()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false, outcome: null,
+    });
+  });
+  it.each([
+    // R29 (MOR-2425): a field that is observed and carries a value stays
+    // available whichever of the two wire signals (`freshness`/`availability`)
+    // records the staleness — the server always sets them together
+    // (`_freshness_availability`, `src/rigplane/web/runtime_helpers.py`), but
+    // this predicate does not require them to agree to accept 'stale'.
+    ['stale status', { observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5 }],
+    ['stale availability', { observed: true, freshness: 'fresh', availability: 'stale', lastObservedMonotonic: 5 }],
+  ])('keeps the full projection available with the last value from %s evidence', (_case, fieldStatus) => {
+    runtimeState.state = state({ main: { filterWidth: 3000 }, fieldStatus: { 'main.filterWidth': fieldStatus } });
+    lifecycle.commands = [command({ status: 'acknowledged', ackFieldObservationTimes: { 'main.filterWidth': 4 } })];
+    expect(getFilterWidthCommandLifecycle()).toMatchObject({
+      confirmed: 3000, target: 3000, phase: 'acknowledged', busy: true, outcome: null,
     });
   });
   it('does not let a legacy record without an ACK field boundary confirm', () => {
@@ -602,6 +617,9 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
       ['set_notch_filter', DSP_COMMAND_DESCRIPTORS.notchFilter],
       ['set_manual_notch_width', DSP_COMMAND_DESCRIPTORS.manualNotchWidth],
       ['set_agc_time_constant', DSP_COMMAND_DESCRIPTORS.agcTimeConstant],
+      ['set_pbt_inner', PBT_INNER_COMMAND_DESCRIPTOR],
+      ['set_pbt_outer', PBT_OUTER_COMMAND_DESCRIPTOR],
+      ['set_if_shift', IF_SHIFT_COMMAND_DESCRIPTOR],
     ]);
     const scope = BREAK_IN_DELAY_COMMAND_DESCRIPTOR.scope(delayCommand());
     expect(scope).toEqual({ control: 'break-in-delay', receiver: 0 });
@@ -667,9 +685,6 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     ['missing value', delayState({ breakInDelay: undefined })],
     ['non-integer value', delayState({ breakInDelay: 32.5 })],
     ['missing field status', delayState({ fieldStatus: {} })],
-    ['stale field', delayState({ fieldStatus: { breakInDelay: {
-      observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5,
-    } } })],
     ['unavailable field', delayState({ fieldStatus: { breakInDelay: {
       observed: true, freshness: 'fresh', availability: 'unavailable', lastObservedMonotonic: 5,
     } } })],
@@ -678,6 +693,16 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
     expect(getBreakInDelayControlFeedback()).toMatchObject({
       confirmed: null, target: null, phase: 'unavailable', busy: false,
       availability: 'unavailable',
+    });
+  });
+
+  it('keeps a stale-but-observed field available with its last value (MOR-2425/R29)', () => {
+    runtimeState.state = delayState({ fieldStatus: { breakInDelay: {
+      observed: true, freshness: 'stale', availability: 'available', lastObservedMonotonic: 5,
+    } } });
+    lifecycle.commands = [delayCommand()];
+    expect(getBreakInDelayControlFeedback()).toMatchObject({
+      confirmed: 32, target: 64, phase: 'submitted', busy: true, availability: 'available',
     });
   });
 

@@ -318,6 +318,7 @@ describe('command lifecycle store', () => {
         'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
         'set_nr_level', 'set_nb_depth',
         'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
+        'set_pbt_inner', 'set_pbt_outer', 'set_if_shift',
       ]);
       expect(rfMain).toEqual({ control: 'rf-gain', receiver: 0 });
       expect(rfSub).toEqual({ control: 'rf-gain', receiver: 1 });
@@ -434,6 +435,7 @@ describe('command lifecycle store', () => {
         'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
         'set_nr_level', 'set_nb_depth',
         'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
+        'set_pbt_inner', 'set_pbt_outer', 'set_if_shift',
       ]);
       const pitchScope = store.CW_PITCH_COMMAND_DESCRIPTOR.scope({ params: { value: 640 } })!;
       const speedScope = store.KEY_SPEED_COMMAND_DESCRIPTOR.scope({ params: { speed: 27 } })!;
@@ -763,6 +765,94 @@ describe('command lifecycle store', () => {
       expect(store.getCommandLifecycle('global-width', 7)?.status).toBe('acknowledged');
       expect(store.getCommandLifecycle('main-nr', 7)?.status).toBe('acknowledged');
       expect(store.getCommandLifecycle('global-depth', 7)?.status).toBe('acknowledged');
+    });
+  });
+
+  describe('PBT and IF-shift state-backed descriptors (MOR-2425)', () => {
+    it.each([
+      ['pbtInner', 'set_pbt_inner', 'pbt-inner', 'value', () => store.PBT_INNER_COMMAND_DESCRIPTOR],
+      ['pbtOuter', 'set_pbt_outer', 'pbt-outer', 'value', () => store.PBT_OUTER_COMMAND_DESCRIPTOR],
+      ['ifShift', 'set_if_shift', 'if-shift', 'offset', () => store.IF_SHIFT_COMMAND_DESCRIPTOR],
+    ] as const)('registers %s with exact MAIN/SUB raw scopes and a default receiver', (
+      field, intentName, control, param, descriptorOf,
+    ) => {
+      const descriptor = descriptorOf();
+      const main = descriptor.scope({ params: { [param]: -12, receiver: 0 } })!;
+      const sub = descriptor.scope({ params: { [param]: 300, receiver: 1 } })!;
+      const defaulted = descriptor.scope({ params: { [param]: 5 } })!;
+      expect(descriptor.intentName).toBe(intentName);
+      expect(store.getStateBackedCommandDescriptor(intentName)).toBe(descriptor);
+      expect(main).toEqual({ control, receiver: 0 });
+      expect(sub).toEqual({ control, receiver: 1 });
+      expect(defaulted).toEqual({ control, receiver: 0 });
+      expect(descriptor.fieldPath(main)).toBe(`main.${field}`);
+      expect(descriptor.fieldPath(sub)).toBe(`sub.${field}`);
+      expect(descriptor.target({ params: { [param]: -12, receiver: 0 } })).toBe(-12);
+      expect(descriptor.target({ params: { [param]: 3.5, receiver: 0 } })).toBeNull();
+      expect(descriptor.confirmed({ main: { [field]: -12 }, sub: { [field]: 300 } } as never, main)).toBe(-12);
+      expect(descriptor.confirmed({ main: { [field]: -12 }, sub: { [field]: 300 } } as never, sub)).toBe(300);
+    });
+
+    it.each([
+      ['pbtInner', () => store.PBT_INNER_COMMAND_DESCRIPTOR],
+      ['pbtOuter', () => store.PBT_OUTER_COMMAND_DESCRIPTOR],
+      ['ifShift', () => store.IF_SHIFT_COMMAND_DESCRIPTOR],
+    ] as const)('%s matches only exact raw equality — a one-step echo does not match', (
+      _field, descriptorOf,
+    ) => {
+      const descriptor = descriptorOf();
+      expect(descriptor.matches(131, 131)).toBe(true);
+      expect(descriptor.matches(130, 131)).toBe(false);
+      expect(descriptor.matches(132, 131)).toBe(false);
+    });
+
+    it.each([
+      ['pbtInner', 'set_pbt_inner', 'value', 131, 130],
+      ['pbtOuter', 'set_pbt_outer', 'value', 131, 130],
+      ['ifShift', 'set_if_shift', 'offset', 500, 480],
+    ] as const)('confirms %s only from a newer fresh exact raw field observation', (
+      field, name, param, target, mismatch,
+    ) => {
+      const observed = (value: number, marker: number, freshness: 'fresh' | 'stale' = 'fresh') => ({
+        stateContractVersion: 1, providerGeneration: 3, active: 'MAIN',
+        main: { [field]: value }, sub: {},
+        fieldStatus: { [`main.${field}`]: {
+          observed: true, freshness, availability: 'available', lastObservedMonotonic: marker,
+        } },
+      } as unknown as ServerState);
+      emitState(observed(mismatch, 4));
+      const command = store.beginCommand({
+        id: name, name, params: { [param]: target, receiver: 0 }, originalEpoch: 7,
+      });
+      store.acknowledgeCommand(command.id, 7, 7);
+      const status = () => store.getCommandLifecycle(command.id, 7)?.status;
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 4));
+      emitState(observed(mismatch, 5));
+      emitState(observed(target, 6, 'stale'));
+      expect(status()).toBe('acknowledged');
+      emitState(observed(target, 7));
+      expect(status()).toBe('confirmed');
+    });
+
+    it('rejects a non-integer or non-numeric target without coercion', () => {
+      for (const value of ['1', true, 1.5, Number.POSITIVE_INFINITY, Number.NaN]) {
+        expect(store.PBT_INNER_COMMAND_DESCRIPTOR.target({ params: { value, receiver: 0 } })).toBeNull();
+        expect(store.PBT_OUTER_COMMAND_DESCRIPTOR.target({ params: { value, receiver: 0 } })).toBeNull();
+        expect(store.IF_SHIFT_COMMAND_DESCRIPTOR.target({ params: { offset: value, receiver: 0 } })).toBeNull();
+      }
+    });
+
+    it('rejects an out-of-range or malformed receiver at scope only', () => {
+      for (const receiver of [2, '0', false, null]) {
+        expect(store.PBT_INNER_COMMAND_DESCRIPTOR.scope({ params: { value: 1, receiver } })).toBeNull();
+        expect(store.PBT_OUTER_COMMAND_DESCRIPTOR.scope({ params: { value: 1, receiver } })).toBeNull();
+        expect(store.IF_SHIFT_COMMAND_DESCRIPTOR.scope({ params: { offset: 1, receiver } })).toBeNull();
+      }
+      // Receiver is optional (defaults to 0) — an ABSENT receiver is not malformed.
+      expect(store.PBT_INNER_COMMAND_DESCRIPTOR.scope({ params: { value: 1 } })).toEqual({
+        control: 'pbt-inner', receiver: 0,
+      });
     });
   });
 });

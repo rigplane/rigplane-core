@@ -31,6 +31,8 @@
   import VfoHeader from './VfoHeader.svelte';
   import type { InstrumentComposition } from '../wiring/instrument-composition';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
+  import type { DspScalarHandles } from '../../semantic/dsp-scalars';
+  import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
   import type { BandInstrumentHandles } from '../../semantic/band-instruments';
   import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
@@ -326,6 +328,22 @@
   </div>
 {/snippet}
 
+{#snippet rfFrontEndFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
+  <div class="rf-front-end-finite-grid">
+    <div class="rf-front-end-finite-seat" data-field="preamp">{@render rfFrontEndInstruments.preamp()}</div>
+    <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator()}</div>
+    <div class="rf-front-end-finite-seat" data-field="digiSel">{@render rfFrontEndInstruments.digiSel()}</div>
+    <div class="rf-front-end-finite-seat" data-field="ipPlus">{@render rfFrontEndInstruments.ipPlus()}</div>
+  </div>
+{/snippet}
+
+{#snippet dspScalarLayout(dspScalars: DspScalarHandles)}
+  <div class="dsp-scalar-grid">
+    <div class="dsp-scalar-seat" data-field="nbLevel">{@render dspScalars.nbLevel()}</div>
+    <div class="dsp-scalar-seat" data-field="nbWidth">{@render dspScalars.nbWidth()}</div>
+  </div>
+{/snippet}
+
 {#snippet filterFiniteLayout(filterInstruments: FilterInstrumentHandles)}
   <div class="filter-finite-grid" data-testid="filter-finite-grid">
     <div class="filter-finite-seat" data-field="mode">{@render filterInstruments.mode()}</div>
@@ -414,7 +432,11 @@
       )}
 
       <div class="desktop-controls-left">
-        {@render instruments.rfFrontEnd()}
+        {#if skinId === 'desktop-v2'}
+          {@render instruments.rfFrontEnd(undefined, rfFrontEndFiniteLayout)}
+        {:else}
+          {@render instruments.rfFrontEnd()}
+        {/if}
         {#if skinId === 'desktop-v2'}
           {@render instruments.filter(undefined, filterFiniteLayout)}
         {:else}
@@ -446,7 +468,7 @@
         {@render instruments.modInputTxWarning()}
         {@render instruments.rxAudio()}
         {#if skinId === 'desktop-v2'}
-          {@render instruments.dsp(undefined, dspFiniteLayout)}
+          {@render instruments.dsp(undefined, dspFiniteLayout, dspScalarLayout)}
         {:else}
           {@render instruments.dsp()}
         {/if}
@@ -456,7 +478,13 @@
               form: 'hbar', compact: false, showLabel: true, showValue: true,
             })}
           </div>
+          <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="pitchHz" data-field="pitchHz">
+            {@render instruments.cwKeyerInstruments.pitchHz({
+              form: 'hbar', compact: false, showLabel: true, showValue: true,
+            })}
+          </div>
           {@render instruments.cwKeyer(undefined, false)}
+          {@render instruments.memory()}
         {:else}
           {@render instruments.cwKeyer()}
         {/if}
@@ -734,6 +762,13 @@
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .rf-front-end-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .dsp-scalar-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 8px;
+  }
+  .dsp-scalar-seat { min-width: 0; }
   .filter-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; }
   .filter-finite-seat { display: contents; }
   .filter-finite-grid .filter-finite-seat[data-field='mode'] :global(.filter-choice-group) {

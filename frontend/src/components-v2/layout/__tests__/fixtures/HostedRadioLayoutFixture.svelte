@@ -32,7 +32,7 @@
   const cwKeyer = createRawSnippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>(
     () => ({ render: () => '' }),
   );
-  const cwKeyerInstruments = { keyerSpeed: empty } satisfies CwKeyerInstrumentHandles;
+  const cwKeyerInstruments = { keyerSpeed: empty, pitchHz: empty } satisfies CwKeyerInstrumentHandles;
   const antenna = createRawSnippet<[allowBare?: boolean, controlLayout?: FixtureSnippet]>(
     () => ({ render: () => '' }),
   );
@@ -64,6 +64,7 @@
   } satisfies VfoOperationHandles;
   const rfFrontEndInstruments = {
     kind: 'separate', rfGain: empty, squelch: empty,
+    preamp: empty, attenuator: empty, digiSel: empty, ipPlus: empty,
   } as const;
   const scalars = {
     rfPower: empty, micGain: empty, driveGain: empty, voxGain: empty,
@@ -77,7 +78,7 @@
     rxAudioInstruments, rfFrontEndInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band, antenna, antennaInstruments, antennaLayout,
-    ritXitScan: empty, ritXitInstruments, cwKeyerInstruments, cwKeyer,
+    ritXitScan: empty, ritXitInstruments, cwKeyerInstruments, cwKeyer, memory: empty,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,
     modInputTxWarning: empty, managedScope: undefined,
   } satisfies FixtureInstrumentComposition;

@@ -169,11 +169,14 @@ describe('qualified raw DSP command feedback', () => {
     expect(getDspControlFeedback('nbLevel', connected)).toMatchObject({ target: 100, requestedTarget: 100 });
     expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({ target: -100, confirmed: -80 });
 
+    // R29 (MOR-2425): a stale-but-observed nbLevel field stays available with
+    // its last confirmed value and its own in-flight lifecycle, independent
+    // of notchFilter's.
     h.state = state({
       fieldStatus: { ...state().fieldStatus, 'main.nbLevel': { ...fresh(), freshness: 'stale' } },
     });
     expect(getDspControlFeedback('nbLevel', connected)).toMatchObject({
-      phase: 'unavailable', confirmed: null, target: null, outcome: null,
+      phase: 'submitted', confirmed: 60, target: 100, outcome: null,
     });
     expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({
       phase: 'submitted', confirmed: -80, target: -100,
@@ -224,7 +227,7 @@ describe('qualified raw DSP command feedback', () => {
     expect(getDspControlFeedback('notchFilter', connected).availability).toBe('available');
   });
 
-  it('fails closed for ambiguous and missing or stale transformed observations', () => {
+  it('fails closed for ambiguous or missing observations, but keeps a stale one available (MOR-2425/R29)', () => {
     h.state = state(); h.caps = caps(); h.indicatorCount = 2;
     expect(getDspControlFeedback('nrLevel', connected).availability).toBe('unavailable');
     h.indicatorCount = 1;
@@ -235,7 +238,9 @@ describe('qualified raw DSP command feedback', () => {
     h.state = state({
       fieldStatus: { ...state().fieldStatus, nbDepth: { ...fresh(), freshness: 'stale' } },
     });
-    expect(getDspControlFeedback('nbDepth', connected).availability).toBe('unavailable');
+    expect(getDspControlFeedback('nbDepth', connected)).toMatchObject({
+      availability: 'available', confirmed: VALUES.nbDepth,
+    });
   });
 
   it('drops old provider and session lifecycles after authority replacement', () => {

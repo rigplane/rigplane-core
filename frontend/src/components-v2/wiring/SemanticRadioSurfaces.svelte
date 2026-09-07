@@ -47,12 +47,14 @@
   } from '../../semantic/pbt-presentation-continuity';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import {
-    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getFilterWidthControlFeedback,
+    bindSemanticSurfaceHandlers, getBreakInDelayControlFeedback, getDspControlFeedback,
+    getFilterWidthControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
     getPendingFrequencyHz,
     getPendingFilterSelection, getPendingNbOn, getPendingNrOn, getPendingPreampLevel,
     getSystemHandlers, getDataModeArmed,
+    deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
@@ -70,6 +72,8 @@
   } from '../../semantic/DspSurface.svelte';
   import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
   import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
+  import DspScalarHost from '../../semantic/DspScalarHost.svelte';
+  import type { DspScalarLayout } from '../../semantic/dsp-scalars';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
   import FilterInstrumentHost from '../../semantic/FilterInstrumentHost.svelte';
   import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
@@ -87,9 +91,10 @@
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
   import RfFrontEndSurface, {
-    type RfFrontEndLevelField, type RfFrontEndToggleField,
+    type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
   import RfFrontEndInstrumentHost from '../../semantic/RfFrontEndInstrumentHost.svelte';
+  import type { RfFrontEndFiniteLayout } from '../../semantic/rf-front-end-instruments';
   import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
   import RitXitScanInstrumentHost from '../../semantic/RitXitScanInstrumentHost.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
@@ -122,6 +127,7 @@
   import CwKeyerInstrumentHost, {
     type CwKeyerInstrumentHandles,
   } from '../../semantic/CwKeyerInstrumentHost.svelte';
+  import MemorySurface from '../../semantic/MemorySurface.svelte';
   import ScopeControlsSurface, {
     type ScopeChoiceField, type ScopeToggleField,
   } from '../../semantic/ScopeControlsSurface.svelte';
@@ -433,9 +439,6 @@
     rfGain: (value) => rfFrontEndIntents.onRfGainChange(Math.round(value * 255)),
     squelch: (value) => rfFrontEndIntents.onSquelchChange(Math.round(value * 255)),
   };
-  const RF_FRONT_END_TOGGLE_INTENT: Record<RfFrontEndToggleField, (next: boolean) => void> = {
-    digiSel: rfFrontEndIntents.onDigiSelToggle, ipPlus: rfFrontEndIntents.onIpPlusToggle,
-  };
   /**
    * MOR-1308 (vocabulary slice 8B). The shipped RIT/XIT and scan command
    * vocabularies, composed unmodified — the O1 "one register, two gates"
@@ -456,6 +459,15 @@
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
   let ritDomain = $derived(toRitXitProps(runtime.state, runtime.caps).ritDomain);
+  /**
+   * MOR-2425 (Memory lane, phase B2). Memory channels are not in the
+   * MOR-1262 RadioViewModel vocabulary (the radio cannot report their
+   * contents), so `memorySurface` below reads `deriveMemoryPanelProps()` /
+   * `getMemoryHandlers()` directly — the SAME panel-adapters singleton the
+   * legacy `MemoryPanel.svelte` wires to, not a second instance.
+   */
+  let memoryFacts = $derived(deriveMemoryPanelProps());
+  const memoryHandlers = getMemoryHandlers();
   /**
    * MOR-1310 (slice 9B). The CW intent vocabulary, composed from the SHIPPED
    * `makeCwPanelHandlers` rather than forked. MOR-1606 wires its existing
@@ -630,6 +642,14 @@
     topologyId: string;
     activeReceiver: 'MAIN' | 'SUB' | 'unknown';
   }>;
+  /** MOR-2425 RF-B — same shape as `DspFiniteAuthority`: preamp/attenuator/
+   *  DIGI-SEL/IP+ are per-receiver finite fields, same as DSP's. */
+  type RfFrontEndFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
   type FilterFiniteAuthority = Readonly<{
     sessionEpoch: number;
     providerGeneration: number;
@@ -713,6 +733,26 @@
       || stateGeneration !== capsGeneration) return null;
     const model = toRadioViewModel(state, caps);
     if (model?.dsp === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  function rfFrontEndFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): RfFrontEndFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    if (model?.rfFrontEnd === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
       providerGeneration: stateGeneration as number,
@@ -829,6 +869,16 @@
         && left.topologyId === right.topologyId
         && left.activeReceiver === right.activeReceiver
   );
+  const sameRfFrontEndFiniteAuthority = (
+    left: RfFrontEndFiniteAuthority | null | undefined,
+    right: RfFrontEndFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
   const sameVfoFiniteAuthority = (
     left: VfoFiniteAuthority | null | undefined,
     right: VfoFiniteAuthority | null,
@@ -874,6 +924,7 @@
   let finiteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let txAuxFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let dspFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let rfFrontEndFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let vfoFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let filterFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let bandFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
@@ -881,6 +932,7 @@
   let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
   let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
   let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
+  let lastRfFrontEndFiniteAuthority: RfFrontEndFiniteAuthority | null | undefined;
   let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
   let lastFilterFiniteAuthority: FilterFiniteAuthority | null | undefined;
   let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
@@ -904,6 +956,13 @@
       if (!sameDspFiniteAuthority(lastDspFiniteAuthority, nextDsp)) {
         lastDspFiniteAuthority = nextDsp;
         dspFiniteRendererContext = nextDsp === null ? null : createFiniteRendererContext();
+      }
+      const nextRfFrontEnd = rfFrontEndFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameRfFrontEndFiniteAuthority(lastRfFrontEndFiniteAuthority, nextRfFrontEnd)) {
+        lastRfFrontEndFiniteAuthority = nextRfFrontEnd;
+        rfFrontEndFiniteRendererContext = nextRfFrontEnd === null ? null : createFiniteRendererContext();
       }
       const nextVfo = vfoFiniteAuthority(
         publication.state, publication.caps, publication.session,
@@ -944,6 +1003,10 @@
   let dspFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: dspFiniteRendererContext,
+    });
+  let rfFrontEndFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: rfFrontEndFiniteRendererContext,
     });
   let vfoFiniteRendererSelection = $derived(externalPresentation !== null
     ? {
@@ -1221,6 +1284,15 @@
   let filterWidthFeedback = $derived(getFilterWidthControlFeedback());
   let cwPitchFeedback = $derived(getCwPitchControlFeedback(controlSession));
   let keySpeedFeedback = $derived(getKeySpeedControlFeedback(controlSession));
+  /**
+   * MOR-2425. RAW command feedback for the two NB scalars — no projector:
+   * `nbLevel`/`nbWidth` are wire-raw, unlike `nrLevel`/`nbDepth`, which
+   * `DspSurface` still renders natively from the adapter's display-scaled
+   * projection (carry-forward 3).
+   */
+  let dspScalarFeedback = $derived({
+    nbLevel: getDspControlFeedback('nbLevel'), nbWidth: getDspControlFeedback('nbWidth'),
+  });
   let txAuxLevelFeedback = $derived.by<TxAuxLevelFeedback>(() => Object.fromEntries(
     TX_AUX_FEEDBACK_LEVELS.map(field => [
       field, getTxAuxControlFeedback(TX_AUX_FEEDBACK_FIELD[field], controlSession),
@@ -1417,6 +1489,12 @@
     presentation={rfFrontEndInstrumentPresentation}
     subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
     onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
+    {pendingPreamp}
+    onPreChange={(level) => rfFrontEndIntents.onPreChange(level)}
+    onAttChange={(db) => rfFrontEndIntents.onAttChange(db)}
+    onDigiSelToggle={rfFrontEndIntents.onDigiSelToggle}
+    onIpPlusToggle={rfFrontEndIntents.onIpPlusToggle}
+    {...rfFrontEndFiniteRendererSelection}
   >
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
@@ -1440,8 +1518,10 @@
   >
   {#snippet children(antennaInstruments, antennaLayout)}
   <CwKeyerInstrumentHost
-    {view} {keySpeedFeedback}
+    {view} {keySpeedFeedback} pitchFeedback={cwPitchFeedback}
     onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
+    scalarAppearance={externalPresentation?.record.appearances.scalar}
+    presentationIsCurrent={externalPresentation?.isCurrent}
   >
   {#snippet children(cwKeyerInstruments)}
   <DspInstrumentHost
@@ -1451,6 +1531,13 @@
     onAgcModeChange={agcIntents.onAgcModeChange}
   >
   {#snippet children(dspInstruments)}
+  <DspScalarHost
+    {view} feedback={dspScalarFeedback} {nbLevelMax} {nbLevelPercent}
+    onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
+    scalarAppearance={externalPresentation?.record.appearances.scalar}
+    presentationIsCurrent={externalPresentation?.isCurrent}
+  >
+  {#snippet children(dspScalars)}
   <RitXitScanInstrumentHost
     {...ritXitFiniteRendererSelection} {view}
     onRitToggle={ritXitIntents.onRitToggle}
@@ -1853,7 +1940,7 @@
 
     Like `rxAudioSurface` and UNLIKE `txAuxSurface`/`metersSurface`, it is
     control-bearing (MOR-1304/MOR-1305 zone-mount ruling). `DspSurface`
-    renders up to 8 range inputs and 7 buttons, and `desktop-v2` declared a
+    renders focusable range and choice controls, and `desktop-v2` declared a
     `dsp` zone in MOR-1368 (S9) while the cockpit still declares none; the
     cockpit's MOR-1069 rule forbids mounting any control-bearing surface bare
     in the dual composition: every focusable control must live inside a
@@ -1866,12 +1953,15 @@
 
     `agcLabels`/`nbLevelMax`/`nbLevelPercent` are the caps-echo metadata
     carry-forward (1) requires stay OUT of the view model — read at this seam,
-    from `runtime.caps`, and handed down as plain props.
+    from `runtime.caps`, and handed to the two persistent DSP hosts as plain
+    props (`agcLabels` to the finite host, the two `nbLevel*` to the scalar
+    host), never to this surface.
   -->
-  {#snippet dspSurface(finiteLayout?: DspFiniteLayout)}
+  {#snippet dspSurface(finiteLayout?: DspFiniteLayout, scalarLayout?: DspScalarLayout)}
     {#if view?.dsp}
       <DspSurface
-        {view} finiteHandles={dspInstruments} {finiteLayout} {nbLevelMax} {nbLevelPercent}
+        {view} finiteHandles={dspInstruments} {finiteLayout}
+        scalarHandles={dspScalars} {scalarLayout}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
       />
     {/if}
@@ -1897,16 +1987,9 @@
     the surface the moment a rework slice declares a zone for it there, same
     as `rxAudio` left it — it still renders nothing there today.
   -->
-  {#snippet rfFrontEndSurface()}
+  {#snippet rfFrontEndSurface(finiteLayout?: RfFrontEndFiniteLayout)}
     {#if view?.rfFrontEnd}
-      <RfFrontEndSurface
-        {view}
-        levelHandles={rfFrontEndInstruments}
-        {pendingPreamp}
-        onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
-        onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}
-        onToggle={(field, next) => RF_FRONT_END_TOGGLE_INTENT[field](next)}
-      />
+      <RfFrontEndSurface {view} levelHandles={rfFrontEndInstruments} {finiteLayout} />
     {/if}
   {/snippet}
 
@@ -1989,14 +2072,14 @@
     gated inside the surface on the model's one `txPermit`, and the key/unkey
     authority stays the single `<RxTxSurface>` above (decomposition R9).
   -->
-  {#snippet cwKeyerSurface(showKeyerSpeed = true)}
+  {#snippet cwKeyerSurface(showKeyerSpeed = true, showPitchHz = true)}
     {#if view?.cwKeyer}
       <CwKeyerSurface
         {view}
         continuousHandles={cwKeyerInstruments}
         {showKeyerSpeed}
+        {showPitchHz}
         {breakInDelayFeedback}
-        {cwPitchFeedback}
         {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
         onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
@@ -2006,6 +2089,26 @@
         onAutoTune={cwIntents.onAutoTune}
       />
     {/if}
+  {/snippet}
+
+  <!--
+    MOR-2425 (Memory lane, phase B2). Unlike every surface above, `memory`
+    carries no MOR-1262 RadioViewModel group — the radio cannot report
+    memory-channel contents at all (`MemorySurface.svelte`'s own header) —
+    so there is no `view?.memory` to structurally gate on, and the surface
+    mounts unconditionally, exactly as the legacy `MemoryPanel` always has.
+    `facts`/`onRecall`/`onStore`/`onClear` route through the SAME
+    `deriveMemoryPanelProps()` / `getMemoryHandlers()` singleton the legacy
+    panel uses (declared above); `onRename` is left unwired, same as the
+    legacy panel — nothing in `panel-commands.ts` owns a rename intent.
+  -->
+  {#snippet memorySurface()}
+    <MemorySurface
+      facts={memoryFacts}
+      onRecall={memoryHandlers.onRecall}
+      onStore={memoryHandlers.onStore}
+      onClear={memoryHandlers.onClear}
+    />
   {/snippet}
 
   <!--
@@ -2104,8 +2207,11 @@
   {#snippet hostedRxAudio(allowBare = allowBareSurfaces)}
     {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBare)}
   {/snippet}
-  {#snippet hostedRfFrontEnd(allowBare = allowBareSurfaces)}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBare)}
+  {#snippet hostedRfFrontEnd(
+    allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout,
+  )}
+    {#snippet body()}{@render rfFrontEndSurface(finiteLayout)}{/snippet}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedFilter(
     allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout,
@@ -2118,8 +2224,9 @@
   {/snippet}
   {#snippet hostedDsp(
     allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
+    scalarLayout?: DspScalarLayout,
   )}
-    {#snippet body()}{@render dspSurface(finiteLayout)}{/snippet}
+    {#snippet body()}{@render dspSurface(finiteLayout, scalarLayout)}{/snippet}
     {@render zoned('dsp', view?.dsp !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedBand(allowBare = allowBareSurfaces, controlLayout?: BandControlLayout)}
@@ -2139,8 +2246,11 @@
   {#snippet hostedCwKeyer(
     allowBare = allowBareSurfaces, showKeyerSpeed = true,
   )}
-    {#snippet body()}{@render cwKeyerSurface(showKeyerSpeed)}{/snippet}
+    {#snippet body()}{@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed)}{/snippet}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare)}
+  {/snippet}
+  {#snippet hostedMemory(allowBare = allowBareSurfaces)}
+    {@render zoned('memory', true, memorySurface, allowBare)}
   {/snippet}
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
@@ -2188,6 +2298,7 @@
       ritXitInstruments,
       cwKeyerInstruments,
       cwKeyer: hostedCwKeyer,
+      memory: hostedMemory,
       scopeDisplay: hostedScopeDisplay,
       scopeControls: hostedScopeControls,
       txFaultRecovery,
@@ -2372,6 +2483,8 @@
   {/if}
   {/snippet}
   </RitXitScanInstrumentHost>
+  {/snippet}
+  </DspScalarHost>
   {/snippet}
   </DspInstrumentHost>
   {/snippet}

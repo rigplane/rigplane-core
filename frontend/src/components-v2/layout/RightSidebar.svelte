@@ -72,7 +72,7 @@
     </CollapsiblePanel>
   {/if}
 
-  {#if drag.order.includes('memory')}
+  {#if drag.order.includes('memory') && !declared.has('memory')}
     <CollapsiblePanel title="MEMORY" panelId="memory" draggable onDragStart={drag.handleDragStart} style={drag.dragStyle('memory')}>
       <MemoryPanel />
     </CollapsiblePanel>
