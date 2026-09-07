@@ -126,7 +126,7 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
  * legacy `amber-lcd` alias is accepted via `normalizeLayoutMode`'s
  * `LEGACY_LAYOUT_ALIASES` table.
  */
-const SKIN_LOADERS: SkinLoaderMap = {
+const SKIN_LOADERS = {
   'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
   // MOR-1068 (F8): the cockpit's layout manifest registers under this exact
   // id, so it needs the matching loadable SkinId — it was the only registered
@@ -149,7 +149,7 @@ const SKIN_LOADERS: SkinLoaderMap = {
   'panadapter-first': () => import('./lcd-panadapter-first/LcdPanadapterFirstSkin.svelte'),
   'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
   'dual-sdr-face': () => import('./dual-sdr-face/DualSdrFaceSkin.svelte'),
-};
+} satisfies SkinLoaderMap;
 
 export function loadSkin<Id extends SkinId>(id: Id): Promise<LoadedPresentation<Id>>;
 export async function loadSkin(id: SkinId): Promise<PresentationComponent> {

@@ -11,6 +11,7 @@
  * the mutation it exists to kill.
  */
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { describe, it, expect } from 'vitest';
 import { getLayout, type LayoutManifest } from '../contract';
 // Deliberately through the shared aggregation entry, not `../lcd-declarations`
@@ -27,6 +28,28 @@ const LCD_LAYOUTS: readonly (readonly [string, LayoutManifest])[] = [
   ['lcd-scope', lcdScopeLayout],
 ];
 
+function skinLoaderIds(source: string): string[] {
+  const sourceFile = ts.createSourceFile(
+    'registry.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS,
+  );
+  const declaration = sourceFile.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((candidate) => ts.isIdentifier(candidate.name) && candidate.name.text === 'SKIN_LOADERS');
+  if (declaration?.initializer === undefined) throw new Error('SKIN_LOADERS is not declared');
+
+  let initializer = declaration.initializer;
+  while (ts.isSatisfiesExpression(initializer)
+    || ts.isAsExpression(initializer)
+    || ts.isParenthesizedExpression(initializer)) initializer = initializer.expression;
+  if (!ts.isObjectLiteralExpression(initializer)) throw new Error('SKIN_LOADERS is not an object');
+
+  return initializer.properties.flatMap((property) => {
+    if (!ts.isPropertyAssignment(property) || !ts.isStringLiteralLike(property.name)) return [];
+    return [property.name.text];
+  });
+}
+
 describe('the LCD entrypoints are registered in the real registry', () => {
   // Kills: lcd-declarations.ts defining the manifests but never calling
   // registerLayout — every resolution below would then read undefined.
@@ -40,11 +63,20 @@ describe('the LCD entrypoints are registered in the real registry', () => {
   // "lcd" or "amber-lcd" manifest would register cleanly and address nothing.
   it('covers every LCD entrypoint the skin registry can load, under the same ids', () => {
     const source = readFileSync('src/skins/registry.ts', 'utf8');
-    const start = source.indexOf('const SKIN_LOADERS');
-    const loaders = source.slice(start, source.indexOf('};', start));
-    const lcdSkinIds = [...loaders.matchAll(/'(lcd-[a-z-]+)':/g)].map((m) => m[1]).sort();
+    const lcdSkinIds = skinLoaderIds(source).filter((id) => id.startsWith('lcd-')).sort();
     expect(lcdSkinIds).toEqual(['lcd-cockpit', 'lcd-scope']);
     for (const skinId of lcdSkinIds) expect(getLayout(skinId)).toBeDefined();
+  });
+
+  it.each([
+    ['annotation', `const SKIN_LOADERS: SkinLoaderMap = {
+      'lcd-cockpit': loadCockpit, 'lcd-extra': loadExtra,
+    };`],
+    ['satisfies', `const SKIN_LOADERS = {
+      'lcd-cockpit': loadCockpit, 'lcd-extra': loadExtra,
+    } satisfies SkinLoaderMap;`],
+  ])('detects an extra LCD loader with a typed %s declaration', (_form, source) => {
+    expect(skinLoaderIds(source)).toEqual(['lcd-cockpit', 'lcd-extra']);
   });
 });
 
