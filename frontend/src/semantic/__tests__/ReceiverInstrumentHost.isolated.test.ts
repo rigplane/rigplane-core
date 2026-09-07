@@ -4,6 +4,7 @@ import { fromStore, writable } from 'svelte/store';
 import { readFileSync } from 'node:fs';
 import type { Capabilities, VfoScheme } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import type { FrequencyRenderer } from '../../../component-kit-api/src/index';
 const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
 vi.mock('../../component-kits/activation', () => ({
@@ -24,6 +25,11 @@ function capabilities(receivers = 2, generation = 1, scheme?: VfoScheme): Capabi
     freqRanges: [], modes: [], filters: [],
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
     webrtc: { available: false, enabled: false }, txBands: null,
+    meterCalibrations: { s_meter: [
+      { raw: 0, actual: -54, label: 'S0' },
+      { raw: 130, actual: 0, label: 'S9' },
+      { raw: 240, actual: 40, label: 'S9+40' },
+    ] },
     stateContractVersion: 1, providerGeneration: generation,
   } as Capabilities;
 }
@@ -33,11 +39,13 @@ const available = () => ({
 function state(options: {
   receivers?: number; generation?: number; mainHz?: number; subHz?: number;
   mainS?: number; subS?: number; active?: 'MAIN' | 'SUB'; meterKnown?: boolean;
+  meterQuality?: readonly string[];
   activeKnown?: boolean; mainActiveSlot?: 'A' | 'B'; mainActiveSlotKnown?: boolean;
 } = {}): ServerState {
   const {
     receivers = 2, generation = 1, mainHz = 14_250_000, subHz = 7_100_000,
-    mainS = 200, subS = 78, active = 'MAIN', meterKnown = true, activeKnown = true,
+    mainS = 20, subS = -24, active = 'MAIN', meterKnown = true,
+    meterQuality = ['calibrated'], activeKnown = true,
     mainActiveSlot = 'A', mainActiveSlotKnown = true,
   } = options;
   const slot = (frequencyHz: number) => ({ freqHz: frequencyHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -66,7 +74,11 @@ function state(options: {
     main: receiver(mainHz, mainS, mainActiveSlot),
     ...(receivers === 2 ? { sub: receiver(subHz, subS, 'A') } : {}),
     connection: {} as ServerState['connection'],
-    fieldStatus: Object.fromEntries(paths.map((path) => [path, available()])),
+    fieldStatus: Object.fromEntries(paths.map((path) => [
+      path,
+      path === 'main.sMeter' || path === 'sub.sMeter'
+        ? { ...available(), quality: meterQuality } : available(),
+    ])),
   } as ServerState;
 }
 function publication(options: Parameters<typeof state>[0] & {
@@ -121,10 +133,12 @@ let motion: MotionHarness;
 beforeEach(() => {
   selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
   clearRetainedInteractions(); motion = installMotionHarness();
+  expect(setCapabilities(capabilities())).toBe(true);
 });
 afterEach(() => {
   components.forEach((component) => unmount(component)); components = [];
   document.body.replaceChildren(); selectedFrequency.current = undefined; motion.restore();
+  clearCapabilities();
 });
 function mountFixture(publisher: Publisher, props: Record<string, unknown> = {}): HTMLElement {
   const target = document.createElement('div'); document.body.appendChild(target);
@@ -290,28 +304,54 @@ describe('ReceiverInstrumentHost', () => {
   });
 
   it('uses shared meter continuity for sample, session, source, and unknown transitions', () => {
-    const publisher = new Publisher(publication({ mainS: 200 })); const root = mountFixture(publisher);
+    const publisher = new Publisher(publication({ mainS: 20 })); const root = mountFixture(publisher);
     const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
     const fills = () => meter().querySelectorAll('[data-meter-fill]').length;
     const frame = meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame');
     const high = fills();
-    publisher.emit(publication({ mainS: 26 })); flushSync();
-    expect(fills()).toBe(high); expect(meter().textContent).toContain('26');
+    publisher.emit(publication({ mainS: -48 })); flushSync();
+    expect(fills()).toBe(high); expect(meter().textContent).toContain('S1');
     expect(meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame')).toBe(frame);
-    publisher.emit(publication({ mainS: 26, epoch: 2 })); flushSync();
+    publisher.emit(publication({ mainS: -48, epoch: 2 })); flushSync();
     const low = fills(); expect(low).toBeLessThan(high);
-    publisher.emit(publication({ mainS: 200, generation: 2 })); flushSync();
-    expect(fills()).toBeGreaterThan(low); expect(meter().textContent).toContain('200');
-    publisher.emit(publication({ mainS: 26, generation: 1, epoch: 2 })); flushSync();
+    publisher.emit(publication({ mainS: 20, generation: 2 })); flushSync();
+    expect(fills()).toBeGreaterThan(low); expect(meter().textContent).toContain('S9+20');
+    publisher.emit(publication({ mainS: -48, generation: 1, epoch: 2 })); flushSync();
     expect(fills()).toBe(low);
-    publisher.emit(publication({ mainS: 200, generation: 3, epoch: 3 })); flushSync();
+    publisher.emit(publication({ mainS: 20, generation: 3, epoch: 3 })); flushSync();
     expect(fills()).toBeGreaterThan(low);
-    publisher.emit(publication({ mainS: 26, generation: 3, epoch: -1, sessionState: 'disconnected' })); flushSync();
-    expect(fills()).toBe(0); expect(meter().textContent).toContain('26');
+    publisher.emit(publication({ mainS: -48, generation: 3, epoch: -1, sessionState: 'disconnected' })); flushSync();
+    expect(fills()).toBe(0); expect(meter().textContent).toContain('S1');
     publisher.emit(publication({ meterKnown: false, generation: 3 })); flushSync();
-    expect(fills()).toBe(0); expect(meter().textContent).toContain('S ?');
+    expect(fills()).toBe(0); expect(meter().textContent).toContain('unit unknown');
     motion.reduced(true); expect(motion.frames).toBe(0);
     motion.reduced(false); expect(motion.frames).toBe(4);
+  });
+
+  it('admits only the receiver field domain to S geometry and calibrated motion', () => {
+    const publisher = new Publisher(publication({ mainS: 53, meterQuality: ['uncalibrated'] }));
+    const root = mountFixture(publisher);
+    const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
+    const svg = () => meter().querySelector('svg')!;
+    expect(svg().getAttribute('aria-label')).toContain('raw, uncalibrated');
+    expect(svg().querySelectorAll('line')).toHaveLength(0);
+
+    publisher.emit(publication({ mainS: 53, meterQuality: [] })); flushSync();
+    expect(svg().getAttribute('aria-label')).toContain('unit unknown');
+    expect(svg().querySelectorAll('line')).toHaveLength(0);
+    expect(svg().querySelectorAll('[data-meter-fill]')).toHaveLength(0);
+
+    motion.reduced(true);
+    publisher.emit(publication({ mainS: -12, meterQuality: ['calibrated'] })); flushSync();
+    expect(svg().getAttribute('aria-label')).toMatch(/S meter S[0-9]/);
+    expect(svg().querySelectorAll('line').length).toBeGreaterThan(0);
+    expect(svg().querySelectorAll('[data-meter-fill]').length).toBeGreaterThan(0);
+
+    motion.reduced(false);
+    publisher.emit(publication({ mainS: 20, meterQuality: ['calibrated'], epoch: 2 })); flushSync();
+    const resetFill = svg().querySelectorAll('[data-meter-fill]').length;
+    publisher.emit(publication({ mainS: -48, meterQuality: ['calibrated'], epoch: 2 })); flushSync();
+    expect(svg().querySelectorAll('[data-meter-fill]')).toHaveLength(resetFill);
   });
 
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {
@@ -319,6 +359,7 @@ describe('ReceiverInstrumentHost', () => {
     expect(source).toMatch(/subscribeControlAuthority: SubscribeReceiverAuthority/);
     expect(source).not.toMatch(/subscribeControlAuthority\?|requestAnimationFrame|setInterval|setTimeout|Date\.now/);
     expect(source).toContain('source: meter?.source');
+    expect(source).toContain('projectSignalMeter(value, meter?.domain)');
     expect(source).not.toMatch(/LinearSMeter/);
     expect(source).not.toMatch(/providerGeneration === .*source|controlSessionEpoch ===/);
   });

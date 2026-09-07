@@ -7,6 +7,7 @@ import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import type { FrequencyRenderer } from '../../../../component-kit-api/src/index';
 
 const h = vi.hoisted(() => ({
@@ -98,6 +99,11 @@ const fresh = {
   storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
   lastObservedMonotonic: 0,
 };
+const meterCalibration = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 130, actual: 0, label: 'S9' },
+  { raw: 240, actual: 40, label: 'S9+40' },
+];
 const slot = (frequency: number) => ({ freqHz: frequency, mode: 'USB', filterNum: 1, dataMode: 0 });
 function state(overrides: Partial<ServerState> = {}): ServerState {
   const paths = ['active', 'split', 'dualWatch', 'main.freqHz', 'main.mode', 'main.filter',
@@ -112,7 +118,11 @@ function state(overrides: Partial<ServerState> = {}): ServerState {
     active: 'MAIN', split: false, dualWatch: false,
     tunerStatus: 0, ritOn: false, ritTx: true, ritFreq: 0, txAntenna: 1,
     main: receiver(14_200_000), sub: receiver(7_100_000),
-    fieldStatus: Object.fromEntries(paths.map((path) => [path, fresh])),
+    fieldStatus: Object.fromEntries(paths.map((path) => [
+      path,
+      path === 'main.sMeter' || path === 'sub.sMeter'
+        ? { ...fresh, quality: ['calibrated'] } : fresh,
+    ])),
     ...overrides } as unknown as ServerState;
 }
 function caps(vfoScheme: Capabilities['vfoScheme'], receivers: number, dual = receivers === 2): Capabilities {
@@ -123,7 +133,8 @@ function caps(vfoScheme: Capabilities['vfoScheme'], receivers: number, dual = re
     antennas: 1,
     freqRanges: [], modes: [], filters: [], scopeSource: null, audioFftAvailable: false,
     audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm16'] },
-    webrtc: { available: false, enabled: false } } as unknown as Capabilities;
+    webrtc: { available: false, enabled: false },
+    meterCalibrations: { s_meter: meterCalibration } } as unknown as Capabilities;
 }
 
 let target: HTMLDivElement;
@@ -136,6 +147,7 @@ function render(
   props: ComponentProps<typeof SemanticRadioSurfaces> = { strips: 'dual' },
 ): void {
   h.state = stateValue; h.caps = capabilities; txHarness.emitServerSnapshot(txSnapshot);
+  expect(setCapabilities(capabilities)).toBe(true);
   target = document.createElement('div'); document.body.appendChild(target);
   component = mount(SemanticRadioSurfaces, { target, props }); flushSync();
 }
@@ -155,6 +167,7 @@ function pushMeter(value: number, providerGeneration = 1): void {
   next.main!.sMeter = value;
   h.state = next;
   h.caps = { ...caps('main_sub', 2), providerGeneration };
+  expect(setCapabilities(h.caps)).toBe(true);
   txHarness.emitServerSnapshot({});
   publishAuthority();
   flushSync();
@@ -182,6 +195,7 @@ beforeEach(() => {
   h.sessionSubscriber = null;
   selectedFrequency.current = undefined;
   clearRetainedInteractions();
+  clearCapabilities();
   h.filterWidthFeedback.mockReturnValue(Object.freeze({
     confirmed: null, target: null, requestedTarget: null,
     phase: 'unavailable', busy: false, availability: 'unavailable',
@@ -224,6 +238,7 @@ afterEach(() => {
   expect(h.authoritySubscribers.size).toBe(0);
   selectedFrequency.current = undefined;
   clearRetainedInteractions();
+  clearCapabilities();
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -338,7 +353,7 @@ describe('production receiver-indicator partitioning', () => {
     const fillCount = () => meter().querySelectorAll('[data-meter-fill]').length;
     const hasPeak = () => meter().querySelector('[data-meter-peak]') !== null;
     const arm = (generation = 1) => {
-      pushMeter(240, generation); pushMeter(60, generation);
+      pushMeter(40, generation); pushMeter(-36, generation);
       expect(hasPeak()).toBe(true);
       return fillCount();
     };
@@ -349,7 +364,7 @@ describe('production receiver-indicator partitioning', () => {
     expect(hasPeak()).toBe(false);
 
     const generationFill = arm();
-    pushMeter(60, 2);
+    pushMeter(-36, 2);
     expect(fillCount()).toBe(generationFill);
     expect(hasPeak()).toBe(false);
 
@@ -386,7 +401,7 @@ describe('production receiver-indicator partitioning', () => {
       outstandingFrameIds.delete(frameId);
     });
     render(caps('main_sub', 2), state(), {}, props);
-    expect(requestedFrameIds.size).toBeGreaterThan(0);
+    expect(requestedFrameIds.size).toBe(6);
     expect(outstandingFrameIds).toEqual(requestedFrameIds);
     unmount(component!);
     component = null;

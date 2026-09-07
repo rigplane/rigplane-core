@@ -167,7 +167,7 @@
       && Number.isFinite(meter.reading.value)
       ? meter.reading.value : null;
     return {
-      projection: projectSignalMeter(value),
+      projection: projectSignalMeter(value, meter?.domain),
       present: meter?.availability.structural ?? false,
       source: meter?.source,
       session: authority === null ? null : { controlSessionEpoch: authority.sessionEpoch },
