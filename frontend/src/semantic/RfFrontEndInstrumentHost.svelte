@@ -1,5 +1,30 @@
+<!--
+  RF front-end finite handles (MOR-2425 RF-B). Relocated here from
+  `RfFrontEndSurface.svelte` when preamp/attenuator/DIGI-SEL/IP+ became
+  finite-seat-owned, so this host now owns BOTH the continuous RF/SQL
+  machinery below AND these four (DSP-shaped: one evolving host file, see
+  `DspInstrumentHost.svelte`).
+
+  CARRY-FORWARDS preserved from `RfFrontEndSurface.svelte`'s prior header
+  (MOR-1292/MOR-1293 review rulings):
+
+  (2)+(3) THE PREAMP MUTEX. PRE is genuinely disabled while DIGI-SEL is
+      unobserved, by design (MOR-479 hardware mutex, IC-7610). Rendered as a
+      disabled control WITH AN EXPLANATION, read from `presentation.view`'s
+      `disabledReasons` matched on the DOTTED path `'rfFrontEnd.preamp'` —
+      never a bespoke `preDisabled` boolean, and never `?? false`. The mutex
+      disables the control on TOP of its own field usability.
+  (4) The explanation is keyed off `DisabledReasonCode`, not off "DIGI-SEL" —
+      `'mutually-exclusive-control'` names the SHAPE of the conflict, never
+      this radio's specific peer control.
+
+  PENDING AFFORDANCE (MOR-1441 leg 2). `pendingPreamp` is a plain, command-
+  bus-blind display prop. It never touches the choice seat's own invoke
+  path; a click while pending still dispatches the CLICKED (explicit) value.
+-->
 <script lang="ts">
   import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
+  import { t } from '$lib/i18n';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import DualParamRenderer from '../components-v2/controls/value-control/DualParamRenderer.svelte';
   import { ValueControl } from '../components-v2/controls/value-control';
@@ -12,6 +37,12 @@
     HBarIssuedStatusPresentation,
     HBarIssuedStatusSnapshot,
   } from '../components-v2/controls/value-control/skin';
+  import { bindChoiceInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
+  import {
+    createChoiceRendererSeat, createToggleRendererSeat,
+    type FiniteControlAppearance, type FiniteRendererContext,
+  } from '../primitives/control-instruments/control-instrument-renderer.svelte';
   import {
     createContinuousPair,
     createRenderedNativeRangeContinuousPairPolicy,
@@ -28,21 +59,35 @@
   import { formatKnownLevel } from './format-level';
   import type { RadioViewModel, RfFrontEndField } from './radio-view-model';
   import {
+    DISABLED_REASON_LABEL,
     RF_FRONT_END_LEVELS,
+    RF_FRONT_END_TOGGLES,
     type RfFrontEndAuthorityPublication,
+    type RfFrontEndFiniteChoiceValue,
     type RfFrontEndInstrumentPresentation,
     type RfFrontEndLevelField,
     type RfFrontEndLevelHandles,
+    type RfFrontEndToggleField,
     type RfSqlControlModel,
     type SubscribeRfFrontEndAuthority,
   } from './rf-front-end-instruments';
 
-  interface Props {
+  interface ExistingProps {
     presentation: RfFrontEndInstrumentPresentation;
     subscribeControlAuthority: SubscribeRfFrontEndAuthority;
     onLevelChange?: (field: RfFrontEndLevelField, value: number) => void;
+    pendingPreamp?: number | null;
+    onPreChange?: (level: number) => void;
+    onAttChange?: (db: number) => void;
+    onDigiSelToggle?: (on: boolean) => void;
+    onIpPlusToggle?: (on: boolean) => void;
     children: Snippet<[RfFrontEndLevelHandles]>;
   }
+  type FiniteRendererSelection = { finiteAppearance?: undefined; rendererContext?: undefined } | {
+    finiteAppearance: FiniteControlAppearance<RfFrontEndFiniteChoiceValue>;
+    rendererContext: FiniteRendererContext | null;
+  };
+  type Props = ExistingProps & FiniteRendererSelection;
 
   type Receiver = 'MAIN' | 'SUB';
   interface RfAuthority {
@@ -53,11 +98,21 @@
     readonly form: RfSqlControlModel;
   }
 
-  let { presentation, subscribeControlAuthority, onLevelChange, children }: Props = $props();
+  let {
+    presentation, subscribeControlAuthority, onLevelChange,
+    pendingPreamp = null, onPreChange, onAttChange, onDigiSelToggle, onIpPlusToggle,
+    finiteAppearance, rendererContext, children,
+  }: Props = $props();
   let published = $state.raw<RfFrontEndAuthorityPublication | null>(null);
   let lastAuthority: RfAuthority | null | undefined;
   let stop: (() => void) | null = null;
   let rf = $derived(presentation.view?.rfFrontEnd);
+  /** Carry-forwards 2/3: matched on the DOTTED field path, never re-derived
+   *  from a raw DIGI-SEL read — the fact layer already decided this. */
+  let preMutex = $derived(
+    presentation.view?.disabledReasons.find((reason) => reason.field === 'rfFrontEnd.preamp') ?? null,
+  );
+  const pendingPreampId = $props.id();
 
   const safeGeneration = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -65,6 +120,8 @@
     field?.availability.structural === true
     && field.availability.operational
     && field.reading.status === 'known';
+  const finiteText = (field: RfFrontEndField<unknown> | undefined): string =>
+    field?.reading.status === 'known' ? String(field.reading.value) : '?';
   function formOf(view: RadioViewModel, requested: RfSqlControlModel): RfSqlControlModel {
     return requested === 'combined'
       && view.rfFrontEnd?.rfGain.availability.structural === true
@@ -295,6 +352,42 @@
       + `${laneView.error === null ? '' : `; ${laneView.error}`}`;
   }
 
+  const preampChoices = (): readonly number[] => rf?.preValues ?? [];
+  const attenuatorChoices = (): readonly number[] => rf?.attValues ?? [];
+  const preampBehavior = bindChoiceInstrument<number>(() => ({
+    field: rf?.preamp, choices: preampChoices(), blocked: preMutex !== null,
+    invoke: (level) => onPreChange?.(level),
+  }));
+  const attenuatorBehavior = bindChoiceInstrument<number>(() => ({
+    field: rf?.attenuator, choices: attenuatorChoices(),
+    invoke: (db) => onAttChange?.(db),
+  }));
+  const digiSelBehavior = bindToggleInstrument(() => ({
+    field: rf?.digiSel, invoke: (next) => onDigiSelToggle?.(next),
+  }));
+  const ipPlusBehavior = bindToggleInstrument(() => ({
+    field: rf?.ipPlus, invoke: (next) => onIpPlusToggle?.(next),
+  }));
+
+  const preampSeat = createChoiceRendererSeat<number>(() => ({
+    context: rendererContext ?? null, field: rf?.preamp, label: 'Preamp', blocked: preMutex !== null,
+    options: preampChoices().map((value) => ({ value, label: String(value) })),
+    invoke: (level) => onPreChange?.(level),
+  }));
+  const attenuatorSeat = createChoiceRendererSeat<number>(() => ({
+    context: rendererContext ?? null, field: rf?.attenuator, label: 'Attenuator',
+    options: attenuatorChoices().map((value) => ({ value, label: `${value} dB` })),
+    invoke: (db) => onAttChange?.(db),
+  }));
+  const digiSelSeat = createToggleRendererSeat(() => ({
+    context: rendererContext ?? null, field: rf?.digiSel, label: RF_FRONT_END_TOGGLES[0][1],
+    invoke: (next) => onDigiSelToggle?.(next),
+  }));
+  const ipPlusSeat = createToggleRendererSeat(() => ({
+    context: rendererContext ?? null, field: rf?.ipPlus, label: RF_FRONT_END_TOGGLES[1][1],
+    invoke: (next) => onIpPlusToggle?.(next),
+  }));
+
   onMount(() => {
     stop = subscribeControlAuthority((next) => {
       const nextAuthority = authority(next);
@@ -317,6 +410,10 @@
       pair.destroy();
       scalars.rfGain.destroy();
       scalars.squelch.destroy();
+      preampSeat.destroy();
+      attenuatorSeat.destroy();
+      digiSelSeat.destroy();
+      ipPlusSeat.destroy();
     }
   });
 </script>
@@ -383,9 +480,95 @@
 {#snippet rfGain()}{@render scalar('rfGain')}{/snippet}
 {#snippet squelch()}{@render scalar('squelch')}{/snippet}
 
+{#snippet preamp()}
+  {#if rf?.preamp.availability.structural}
+    {#if finiteAppearance}
+      {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
+        seat={preampSeat} renderer={finiteAppearance.choice}
+      />{/key}{/key}
+    {:else}
+      <div
+        class="rf-front-end-row" role="radiogroup" aria-label="Preamp"
+        data-testid="rf-front-end-preamp"
+        data-observed={usable(rf.preamp)}
+        data-disabled-reason={preMutex?.code}
+        data-preamp-status={pendingPreamp !== null ? 'pending' : 'confirmed'}
+        aria-describedby={pendingPreamp !== null ? pendingPreampId : undefined}
+      >
+        {#each rf.preValues as value (value)}
+          <button
+            type="button" role="radio" class="rf-front-end-choice"
+            data-testid={`rf-front-end-preamp-${value}`}
+            aria-checked={preampBehavior.isSelected(value)}
+            data-pending={pendingPreamp === value}
+            disabled={!preampBehavior.available}
+            onclick={() => preampBehavior.invoke(value)}
+          >{value}</button>
+        {/each}
+        <output data-testid="rf-front-end-preamp-value">{finiteText(rf.preamp)}</output>
+        {#if preMutex}
+          <p data-testid="rf-front-end-preamp-mutex-reason">{DISABLED_REASON_LABEL[preMutex.code]}</p>
+        {/if}
+        {#if pendingPreamp !== null}
+          <span id={pendingPreampId} class="sr-only">{t('core.rfFrontEnd.preamp.pendingAnnouncement')}</span>
+        {/if}
+      </div>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet attenuator()}
+  {#if rf?.attenuator.availability.structural}
+    {#if finiteAppearance}
+      {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
+        seat={attenuatorSeat} renderer={finiteAppearance.choice}
+      />{/key}{/key}
+    {:else}
+      <div
+        class="rf-front-end-row" role="radiogroup" aria-label="Attenuator"
+        data-testid="rf-front-end-attenuator" data-observed={usable(rf.attenuator)}
+      >
+        {#each rf.attValues as value (value)}
+          <button
+            type="button" role="radio" class="rf-front-end-choice"
+            data-testid={`rf-front-end-attenuator-${value}`}
+            aria-checked={attenuatorBehavior.isSelected(value)}
+            disabled={!attenuatorBehavior.available}
+            onclick={() => attenuatorBehavior.invoke(value)}
+          >{value} dB</button>
+        {/each}
+        <output data-testid="rf-front-end-attenuator-value">{finiteText(rf.attenuator)}</output>
+      </div>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet toggleControl(field: RfFrontEndToggleField, label: string)}
+  {@const current = rf?.[field]}
+  {#if current?.availability.structural}
+    {@const behavior = field === 'digiSel' ? digiSelBehavior : ipPlusBehavior}
+    {@const seat = field === 'digiSel' ? digiSelSeat : ipPlusSeat}
+    {#if finiteAppearance}
+      {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
+        seat={seat} renderer={finiteAppearance.toggle}
+      />{/key}{/key}
+    {:else}
+      <button
+        type="button" class="rf-front-end-toggle"
+        data-testid={`rf-front-end-${field}`} data-observed={usable(current)}
+        aria-pressed={behavior.confirmed}
+        disabled={!behavior.available}
+        onclick={() => behavior.invoke()}
+      >{label}: {finiteText(current)}</button>
+    {/if}
+  {/if}
+{/snippet}
+{#snippet digiSel()}{@render toggleControl('digiSel', RF_FRONT_END_TOGGLES[0][1])}{/snippet}
+{#snippet ipPlus()}{@render toggleControl('ipPlus', RF_FRONT_END_TOGGLES[1][1])}{/snippet}
+
 {@render children(currentForm === 'combined'
-  ? { kind: 'combined', rfSql }
-  : { kind: 'separate', rfGain, squelch })}
+  ? { kind: 'combined', rfSql, preamp, attenuator, digiSel, ipPlus }
+  : { kind: 'separate', rfGain, squelch, preamp, attenuator, digiSel, ipPlus })}
 
 {#each RF_FRONT_END_LEVELS as [field] (field)}
   {#if issuedStatus[field] !== null}
@@ -401,6 +584,14 @@
   .rf-front-end-name { min-width: 6ch; }
   .rf-front-end-level :global(.vc-hbar),
   .rf-front-end-level :global(.vc-dual) { width: 100%; min-width: 0; }
+  .rf-front-end-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
+  .rf-front-end-choice[aria-checked='true'] { font-weight: 700; }
+  [data-observed='false'] { font-style: italic; }
+  button:disabled { cursor: not-allowed; }
+  /* MOR-1441 leg 2 — same pending doctrine as `FilterSurface`'s
+     `.filter-choice[data-pending='true']`: structural marker, never
+     color-only. */
+  .rf-front-end-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;

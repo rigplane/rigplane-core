@@ -48,12 +48,23 @@ vi.mock('../../primitives/scalar/continuous-scalar.svelte', async (importOrigina
 
 import ExternalScalarRenderer from '../../components-v2/controls/value-control/__tests__/ExternalScalarRendererFixture.svelte';
 import type { Skin } from '../../components-v2/controls/value-control/skin';
+import {
+  createFiniteRendererContext,
+  type FiniteControlAppearance, type FiniteRendererContext,
+} from '../../primitives/control-instruments/control-instrument-renderer.svelte';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 import type { ContinuousPairBinding } from '../../primitives/scalar/continuous-pair.svelte';
 import type { ContinuousScalarBinding } from '../../primitives/scalar/continuous-scalar.svelte';
 import Fixture from './fixtures/RfFrontEndInstrumentHostFixture.svelte';
+import { topologyFixtures, withRfFrontEnd } from '../fixtures/topologies';
+import type { Availability, DisabledReason, RadioViewModel, RfFrontEndViewModel } from '../radio-view-model';
 import type {
   RfFrontEndAuthorityPublication as Publication,
+  RfFrontEndFiniteChoiceValue,
   RfFrontEndLevelFeedback,
+  RfFrontEndToggleField,
   RfSqlControlModel,
   SubscribeRfFrontEndAuthority,
 } from '../rf-front-end-instruments';
@@ -177,6 +188,7 @@ beforeEach(() => {
   target = document.createElement('div'); document.body.appendChild(target);
   activation.selected = { name: 'RF host test', hbar: ExternalScalarRenderer } satisfies Skin;
   captures.pairs = []; captures.scalars = []; captures.lifecycle = [];
+  resetRetainedInvocations();
 });
 afterEach(() => {
   mounted.forEach((component) => unmount(component)); mounted = [];
@@ -203,6 +215,69 @@ function render(initial = publication(), rfSqlFeedback?: RfFrontEndLevelFeedback
     props.rfSqlFeedback = next;
   };
   return { publisher, props, component, onLevelChange, transition, setFeedback };
+}
+
+/* ── MOR-2425 RF-B: finite handles (preamp/attenuator/DIGI-SEL/IP+) ──── */
+
+const rfAppearance = {
+  action: FiniteControlRendererFixture as FiniteControlAppearance<RfFrontEndFiniteChoiceValue>['action'],
+  toggle: FiniteControlRendererFixture as FiniteControlAppearance<RfFrontEndFiniteChoiceValue>['toggle'],
+  choice: FiniteControlRendererFixture as FiniteControlAppearance<RfFrontEndFiniteChoiceValue>['choice'],
+} satisfies FiniteControlAppearance<RfFrontEndFiniteChoiceValue>;
+
+const finiteBase = (): RadioViewModel => withRfFrontEnd(topologyFixtures['1/single']);
+
+/** Re-shapes one `rfFrontEnd` field's reading, keeping its availability. */
+function rfReading(
+  view: RadioViewModel, name: keyof RfFrontEndViewModel, reading: unknown,
+): RadioViewModel {
+  return {
+    ...view,
+    rfFrontEnd: { ...view.rfFrontEnd!, [name]: { ...view.rfFrontEnd![name], reading } } as RfFrontEndViewModel,
+  };
+}
+
+/** Re-shapes one `rfFrontEnd` field's availability, keeping its reading. */
+function rfAvailability(
+  view: RadioViewModel, name: keyof RfFrontEndViewModel, availability: Availability,
+): RadioViewModel {
+  return {
+    ...view,
+    rfFrontEnd: { ...view.rfFrontEnd!, [name]: { ...view.rfFrontEnd![name], availability } } as RfFrontEndViewModel,
+  };
+}
+
+type FiniteOverrides = Partial<{
+  onPreampChange: (level: number) => void;
+  onAttenuatorChange: (db: number) => void;
+  onToggle: (field: RfFrontEndToggleField, next: boolean) => void;
+  pendingPreamp: number | null;
+  finiteAppearance: FiniteControlAppearance<RfFrontEndFiniteChoiceValue>;
+  rendererContext: FiniteRendererContext | null;
+}>;
+
+/** A minimal mount dedicated to the four finite handles: they read directly
+ *  off `presentation.view.rfFrontEnd`, so — unlike the scalar RF/SQL pair
+ *  above — none of this needs the authority-epoch/receiver A-B-A machinery
+ *  `render()` exists for. */
+function renderFinite(view: RadioViewModel, overrides: FiniteOverrides = {}) {
+  const pub = publication();
+  const subscribeOnce: SubscribeRfFrontEndAuthority = (handler) => {
+    handler(pub); return () => undefined;
+  };
+  const props = proxy({
+    publication: pub, view, subscribeControlAuthority: subscribeOnce,
+    controlModel: 'separate' as RfSqlControlModel, renderSurface: false, layout: 'independent' as const,
+    ...overrides,
+  });
+  const component = mount(Fixture, { target, props });
+  mounted.push(component);
+  flushSync();
+  return {
+    props,
+    el: (id: string) => target.querySelector<HTMLElement>(`[data-testid="rf-front-end-${id}"]`),
+    slot: (name: string) => target.querySelector<HTMLElement>(`[data-finite-slot="${name}"]`)!,
+  };
 }
 
 describe('RfFrontEndInstrumentHost', () => {
@@ -433,5 +508,117 @@ describe('RfFrontEndInstrumentHost', () => {
     expect(r.onLevelChange.mock.calls).toEqual([
       ['rfGain', 1], ['squelch', 1],
     ]);
+  });
+});
+
+describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
+  it.each([0, 1, 2] as const)(
+    'sends preamp level %s exactly once, from a fresh mount, independent of the other buttons',
+    (value) => {
+      const onPreampChange = vi.fn();
+      const r = renderFinite(finiteBase(), { onPreampChange });
+      r.el(`preamp-${value}`)!.click();
+      flushSync();
+      expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(value);
+    },
+  );
+
+  it.each([0, 6, 12, 18] as const)(
+    'sends attenuator step %s dB exactly once, from a fresh mount, independent of the other buttons',
+    (value) => {
+      const onAttenuatorChange = vi.fn();
+      const r = renderFinite(finiteBase(), { onAttenuatorChange });
+      r.el(`attenuator-${value}`)!.click();
+      flushSync();
+      expect(onAttenuatorChange).toHaveBeenCalledExactlyOnceWith(value);
+    },
+  );
+
+  it.each(['digiSel', 'ipPlus'] as const)(
+    'flips %s exactly once, computed from the observed reading',
+    (field) => {
+      const onToggle = vi.fn();
+      const view = rfReading(finiteBase(), field, { status: 'known', value: false });
+      const r = renderFinite(view, { onToggle });
+      r.el(field)!.click();
+      flushSync();
+      expect(onToggle).toHaveBeenCalledExactlyOnceWith(field, true);
+    },
+  );
+
+  it.each(['digiSel', 'ipPlus'] as const)(
+    'refuses to emit %s while its own reading is unread, independent of `disabled`',
+    (field) => {
+      const onToggle = vi.fn();
+      const view = rfReading(finiteBase(), field, { status: 'unknown' });
+      const r = renderFinite(view, { onToggle });
+      r.el(field)!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      flushSync();
+      expect(onToggle).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['preamp', 'attenuator', 'digiSel', 'ipPlus'] as const)(
+    'renders NOTHING for %s when structurally absent — never merely disabled',
+    (field) => {
+      const view = rfAvailability(finiteBase(), field, { structural: false, operational: false });
+      const r = renderFinite(view);
+      expect(r.slot(field).children).toHaveLength(0);
+      expect(r.el(field)).toBeNull();
+    },
+  );
+
+  it.each(['preamp', 'attenuator', 'digiSel', 'ipPlus'] as const)(
+    'renders %s present-and-disabled when structurally present but operationally unread',
+    (field) => {
+      const view = rfAvailability(finiteBase(), field, { structural: true, operational: false });
+      const r = renderFinite(view);
+      const control = r.el(field);
+      expect(control).not.toBeNull();
+      if (field === 'preamp' || field === 'attenuator') {
+        expect(control!.dataset.observed).toBe('false');
+      } else {
+        expect(control!.hasAttribute('disabled')).toBe(true);
+      }
+    },
+  );
+
+  it('keeps the preamp mutex from the host directly: disabled, with the explanation, on top of a usable field', () => {
+    const view: RadioViewModel = {
+      ...finiteBase(),
+      disabledReasons: [{ field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' }] as DisabledReason[],
+    };
+    const r = renderFinite(view);
+    for (const value of [0, 1, 2]) {
+      expect(r.el(`preamp-${value}`)!.hasAttribute('disabled')).toBe(true);
+    }
+    expect(r.el('preamp-mutex-reason')).not.toBeNull();
+  });
+
+  it('keeps the attenuator seat live across an A-B-A finite-appearance swap, with a stale lease inert', () => {
+    const onAttenuatorChange = vi.fn();
+    const a = createFiniteRendererContext(), b = createFiniteRendererContext();
+    const r = renderFinite(finiteBase(), {
+      finiteAppearance: rfAppearance, rendererContext: a, onAttenuatorChange,
+    });
+    const staleA = retainedInvocations.get('Attenuator')!;
+    expect(target.querySelector('[data-testid="external-Attenuator"]')?.getAttribute('data-reading')).toBe('6');
+
+    r.props.rendererContext = b;
+    flushSync();
+    staleA();
+    expect(onAttenuatorChange).not.toHaveBeenCalled();
+
+    r.props.view = rfReading(r.props.view, 'attenuator', { status: 'known', value: 18 });
+    flushSync();
+    expect(target.querySelector('[data-testid="external-Attenuator"]')?.getAttribute('data-reading')).toBe('18');
+    const activeB = retainedInvocations.get('Attenuator')!;
+    activeB(0);
+    expect(onAttenuatorChange).toHaveBeenCalledExactlyOnceWith(0);
+
+    r.props.rendererContext = a;
+    flushSync();
+    activeB(0);
+    expect(onAttenuatorChange).toHaveBeenCalledTimes(1);
   });
 });
