@@ -31,6 +31,7 @@
   import VfoHeader from './VfoHeader.svelte';
   import type { InstrumentComposition } from '../wiring/instrument-composition';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
+  import type { DspScalarHandles } from '../../semantic/dsp-scalars';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
   import type { BandInstrumentHandles } from '../../semantic/band-instruments';
   import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
@@ -326,6 +327,13 @@
   </div>
 {/snippet}
 
+{#snippet dspScalarLayout(dspScalars: DspScalarHandles)}
+  <div class="dsp-scalar-grid">
+    <div class="dsp-scalar-seat" data-field="nbLevel">{@render dspScalars.nbLevel()}</div>
+    <div class="dsp-scalar-seat" data-field="nbWidth">{@render dspScalars.nbWidth()}</div>
+  </div>
+{/snippet}
+
 {#snippet filterFiniteLayout(filterInstruments: FilterInstrumentHandles)}
   <div class="filter-finite-grid" data-testid="filter-finite-grid">
     <div class="filter-finite-seat" data-field="mode">{@render filterInstruments.mode()}</div>
@@ -446,7 +454,7 @@
         {@render instruments.modInputTxWarning()}
         {@render instruments.rxAudio()}
         {#if skinId === 'desktop-v2'}
-          {@render instruments.dsp(undefined, dspFiniteLayout)}
+          {@render instruments.dsp(undefined, dspFiniteLayout, dspScalarLayout)}
         {:else}
           {@render instruments.dsp()}
         {/if}
@@ -734,6 +742,12 @@
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .dsp-scalar-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 8px;
+  }
+  .dsp-scalar-seat { min-width: 0; }
   .filter-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; }
   .filter-finite-seat { display: contents; }
   .filter-finite-grid .filter-finite-seat[data-field='mode'] :global(.filter-choice-group) {
