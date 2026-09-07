@@ -15,8 +15,7 @@
       nothing; a present-but-unobserved field renders disabled, with reason
       `field-not-observed`, never a guessed value or a fabricated selection
       (a control never claims a choice is active unless its OWN reading says
-      so — an unknown `filterShape` on a radio that HAS filters shows neither
-      button pressed, matching v2's fail-open default nowhere).
+      so).
   (3) `filterWidthMin`/`filterWidthMax` are read through their OWN field —
       each one carries its OWN operational flag (the adapter gates them on
       `modeObserved`, `filterWidth` on its own `widthObserved`); this file
@@ -33,15 +32,6 @@
   MOR-1494 fixed. `ifShiftControlStructural` answers the narrower question
   this row needs: does the radio have a REAL `if_shift` command. See
   `radio-view-model.ts`'s `FilterPassbandViewModel` doc comment.
-
-  MOR-1502 applies the SAME split to the `filter-shape` ROW: it gates on
-  `filterPassband.filterShapeControlStructural`, NOT on
-  `filterPassband.filterShape.availability.structural`. The latter stays
-  `true` for any radio with a declared filter catalog at all (the FTX-1 has
-  filters but no `filter_shape` command — showing SHARP/SOFT permanently
-  disabled is the same "shown dead" defect). `filterShapeControlStructural`
-  answers whether the radio has a REAL `filter_shape` command; see
-  `FilterPassbandViewModel.filterShapeControlStructural`'s doc comment.
 
   PENDING AFFORDANCE (MOR-1441 leg 2). The host-owned Filter handle carries
   the pending target separately from confirmed truth.

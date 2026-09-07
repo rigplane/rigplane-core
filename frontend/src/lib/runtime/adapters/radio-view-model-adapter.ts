@@ -658,7 +658,7 @@ function deriveFilterPassband(
     // an honest derived `filterShape` READING for any consumer of the raw
     // fact (`scope-adapter.ts` reads `filterPassband.filterShape` directly).
     // This flag answers a DIFFERENT question — does the radio have a REAL
-    // `filter_shape` COMMAND of its own — for `FilterSurface.svelte` to
+    // `filter_shape` COMMAND of its own — for `FilterInstrumentHost.svelte` to
     // decide whether to show the SHARP/SOFT shape CONTROL at all. The FTX-1
     // (filters, no filter_shape) has no such command; showing the control
     // permanently disabled is a dead control, not a usable one (the owner's
