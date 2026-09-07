@@ -54,7 +54,10 @@
   }
   export type SubscribeAntennaAuthority = (handler: (value: AntennaAuthorityPublication) => void) => () => void;
   export interface AntennaInstrumentHandles { readonly txPort: Snippet; readonly rxAnt: Snippet }
-  export interface AntennaInstrumentLayout { readonly blockedId: string }
+  export interface AntennaInstrumentLayout {
+    readonly blockedId: string;
+    readonly blocked: readonly AntennaSwitchBlock[];
+  }
 </script>
 
 <script lang="ts">
@@ -82,7 +85,10 @@
   let destroyed = false;
   let stop: (() => void) | undefined;
   const id = $props.id();
-  const layout = { blockedId: `antenna-blocked-${id}` };
+  const layout = {
+    blockedId: `antenna-blocked-${id}`,
+    get blocked() { return currentInput().blockedReasons; },
+  };
   const safe = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
   function authority(source: AntennaAuthorityPublication): string | null {
@@ -98,7 +104,8 @@
     void tx;
     const currentTx = readTx();
     const current = published === null ? null : toRadioViewModel(published.state, published.caps, currentTx);
-    return { current, blocked: current === null || antennaSwitchBlocks(current, currentTx).length > 0 };
+    const blockedReasons = current === null ? [] : antennaSwitchBlocks(current, currentTx);
+    return { current, blocked: blockedReasons.length > 0, blockedReasons };
   }
   const txPortSeat = createAbsoluteChoiceRendererSeat<number>(() => {
     const { current, blocked } = currentInput();

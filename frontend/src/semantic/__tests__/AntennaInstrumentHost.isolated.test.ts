@@ -5,7 +5,9 @@ import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
-import type { AntennaAuthorityPublication as Publication, AntennaInstrumentHandles } from '../AntennaInstrumentHost.svelte';
+import { ANTENNA_BLOCKED_LABEL,
+  type AntennaAuthorityPublication as Publication, type AntennaInstrumentHandles,
+} from '../AntennaInstrumentHost.svelte';
 import type { TxAuthoritySnapshot } from '../rx-tx-surface';
 const seats = vi.hoisted(() => ({ destroy: [] as ReturnType<typeof vi.fn>[] }));
 vi.mock('../../primitives/control-instruments/control-instrument-renderer.svelte', async (original) => {
@@ -94,6 +96,23 @@ describe('persistent antenna handles', () => {
     expect(target.querySelectorAll('[role="radio"]')).toHaveLength(2); invoke(r.pair());
     expect(r.onSelectPort).toHaveBeenCalledExactlyOnceWith(2); expect(r.onToggleRxAnt).toHaveBeenCalledOnce();
     expect(r.captures.at(-1)).toBe(handles); expect(target.querySelector('[data-testid="antenna-surface"]')).toBeNull();
+  });
+  it('renders blocked reasons for an independent arrangement, keyed to each seat by aria-describedby', () => {
+    const r = render(false); r.props.arrangement = 'independent'; flushSync();
+    const list = target.querySelector('[data-testid="independent-blocked"]')!;
+    const port = target.querySelector('[data-testid="antenna-port-2"]')!;
+    const toggle = target.querySelector('[data-testid="antenna-rx-toggle"]')!;
+    expect(list.id).not.toBe(''); expect(port.getAttribute('aria-describedby')).toBe(list.id);
+    expect(toggle.getAttribute('aria-describedby')).toBe(list.id);
+    expect(list.children).toHaveLength(0);
+    const p = source(); p.state!.tunerStatus = 2;
+    p.state!.fieldStatus!.tunerStatus = { ...p.state!.fieldStatus!.tunerStatus!, freshness: 'fresh', observed: true };
+    r.publish(p); flushSync();
+    expect(list.children).toHaveLength(1);
+    expect(list.querySelector('[data-reason="tuner-not-ready"]')?.textContent)
+      .toBe(ANTENNA_BLOCKED_LABEL['tuner-not-ready']);
+    r.publish(source()); flushSync();
+    expect(list.children).toHaveLength(0);
   });
   it('admits an unknown absolute destination but refuses unknown relative RX and unoffered ports', () => {
     const r = render(); const p = source(); p.state!.txAntenna = undefined; r.publish(p); flushSync();
