@@ -672,6 +672,20 @@ describe('ATU TUNE is gated by the live App TX authority', () => {
     expect(txHarness.trace()).toEqual([]);
   });
 
+  it.each(['native', 'external'] as const)('rechecks live authority behind the %s TUNE path', (path) => {
+    if (path === 'external') h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const tune = q<HTMLButtonElement>(path === 'native'
+      ? '[data-testid="tx-aux-atu-tune"]' : '[data-testid="external-TUNE"]')!;
+    const invoke = path === 'native' ? () => tune.click() : retainedInvocations.get('TUNE')!;
+    expect(tune.disabled).toBe(false);
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    expect(tune.disabled).toBe(false);
+    invoke();
+    expect(h.atuTune).not.toHaveBeenCalled();
+    expect(txHarness.trace()).toEqual([]);
+  });
+
   it('changes TUNE gating only after a server snapshot, never from a command intent', () => {
     render();
     const tune = q<HTMLButtonElement>('[data-testid="tx-aux-atu-tune"]')!;

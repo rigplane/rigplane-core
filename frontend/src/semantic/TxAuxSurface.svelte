@@ -49,6 +49,8 @@
 {/if}
 
 <style>
-  .tx-aux-surface { display: flex; flex-direction: column; gap: 0.25rem; }
-  .tx-aux-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .tx-aux-surface { display: flex; flex-wrap: wrap; column-gap: 0.5rem; row-gap: 0.25rem; }
+  .tx-aux-row { display: contents; }
+  .tx-aux-surface :global(.tx-aux-level) { order: 2; flex-basis: 100%; }
+  .tx-aux-surface :global(.tx-aux-blocked) { order: 3; flex-basis: 100%; }
 </style>
