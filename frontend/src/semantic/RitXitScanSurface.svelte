@@ -78,27 +78,26 @@
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import { exactDecimalNumber } from '$lib/types/exact-decimal';
   import type { ControlDomain } from '$lib/types/capabilities';
-  import {
-    bindActionInstrument,
-    bindToggleInstrument,
-  } from '../primitives/control-instruments/control-instrument-behavior';
+  import { bindActionInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import type {
+    RitXitScanInstrumentHandles, RitXitScanInstrumentLayout,
+  } from './RitXitScanInstrumentHost.svelte';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
     view: RadioViewModel;
-    onRitToggle?: () => void;
-    onXitToggle?: () => void;
     onRitOffsetChange?: (hz: number) => void;
     onXitOffsetChange?: (hz: number) => void;
-    onClear?: () => void;
     onScanStart?: (type: number) => void;
     onScanStop?: () => void;
     onResumeModeChange?: (mode: number) => void;
     ritDomain?: ControlDomain | null;
+    handles: RitXitScanInstrumentHandles;
+    instrumentLayout?: RitXitScanInstrumentLayout;
   }
   let {
-    view, onRitToggle, onXitToggle, onRitOffsetChange, onXitOffsetChange, onClear,
-    onScanStart, onScanStop, onResumeModeChange, ritDomain,
+    view, onRitOffsetChange, onXitOffsetChange,
+    onScanStart, onScanStop, onResumeModeChange, ritDomain, handles, instrumentLayout,
   }: Props = $props();
 
   let rx = $derived(view.ritXit);
@@ -131,20 +130,6 @@
    *  gate: it is honest about what it is from the moment it exists. */
   let selectedType = $state(DEFAULT_SCAN_TYPE);
 
-  const ritToggle = bindToggleInstrument(() => ({
-    field: rx?.ritActive,
-    blocked: !activeKnown,
-    // The handler owns its zero-argument inversion; the binding's next value
-    // is intentionally not forwarded.
-    invoke: () => onRitToggle?.(),
-  }));
-  const xitToggle = bindToggleInstrument(() => ({
-    field: rx?.xitActive,
-    blocked: !activeKnown,
-    // The handler owns its zero-argument inversion; the binding's next value
-    // is intentionally not forwarded.
-    invoke: () => onXitToggle?.(),
-  }));
   const scanToggle = bindToggleInstrument(() => ({
     field: sc?.scanning,
     invoke: (next) => {
@@ -184,46 +169,38 @@
     event.preventDefault();
     changeOffset(next);
   }
-  // CLEAR is correctly LEFT UNGATED on field observation (F2 fix round):
-  // `onClear` writes `freq: 0` absolutely, not a read-modify-write of the
-  // current offset, so it is honest even while the offset is unobserved —
-  // unlike the toggles, it never reads a guessed value to decide what to
-  // send. Still gated on `activeKnown` (S3b — no receiver to attribute it to).
-  function clear(): void { if (activeKnown) onClear?.(); }
 </script>
+
+{#snippet offsetSlot()}
+  <label class="offset" data-testid="ritxit-offset"
+    data-observed={offset !== undefined && usable(offset)}>
+    <span>Offset</span>
+    <input
+      type="range"
+      min={ritDomain?.raw_min ?? OFFSET_MIN}
+      max={ritDomain?.raw_max ?? OFFSET_MAX}
+      step={ritDomain?.raw_step ?? OFFSET_STEP}
+      value={decodedOffset?.value ?? ritDomain?.raw_origin ?? 0}
+      disabled={!canAdjustOffset}
+      onkeydown={offsetKeydown}
+      oninput={(event) => changeOffset(event.currentTarget.valueAsNumber)}
+    />
+    <output data-testid="ritxit-offset-value">{decodedOffset?.text ?? UNKNOWN_TEXT}</output>
+  </label>
+{/snippet}
 
 {#if rx || sc}
   <section class="ritxit-scan-surface" data-testid="ritxit-scan-surface" aria-label="RIT, XIT and scan">
     {#if rx}
       <div class="row" data-testid="ritxit" data-active-vfo-known={activeKnown}>
-        {#if rx.ritActive.availability.structural}
-          <button
-            type="button" data-testid="ritxit-rit-toggle" aria-pressed={pressedOf(rx.ritActive)}
-            disabled={!ritToggle.available} onclick={() => ritToggle.invoke()}
-          >RIT</button>
+        {#if instrumentLayout}
+          {@render instrumentLayout(handles, offsetSlot)}
+        {:else}
+          {@render handles.rit()}
+          {@render handles.xit()}
+          {@render offsetSlot()}
+          {@render handles.clear()}
         {/if}
-        {#if rx.xitActive.availability.structural}
-          <button
-            type="button" data-testid="ritxit-xit-toggle" aria-pressed={pressedOf(rx.xitActive)}
-            disabled={!xitToggle.available} onclick={() => xitToggle.invoke()}
-          >XIT</button>
-        {/if}
-        <label class="offset" data-testid="ritxit-offset"
-          data-observed={offset !== undefined && usable(offset)}>
-          <span>Offset</span>
-          <input
-            type="range"
-            min={ritDomain?.raw_min ?? OFFSET_MIN}
-            max={ritDomain?.raw_max ?? OFFSET_MAX}
-            step={ritDomain?.raw_step ?? OFFSET_STEP}
-            value={decodedOffset?.value ?? ritDomain?.raw_origin ?? 0}
-            disabled={!canAdjustOffset}
-            onkeydown={offsetKeydown}
-            oninput={(event) => changeOffset(event.currentTarget.valueAsNumber)}
-          />
-          <output data-testid="ritxit-offset-value">{decodedOffset?.text ?? UNKNOWN_TEXT}</output>
-        </label>
-        <button type="button" data-testid="ritxit-clear" disabled={!activeKnown} onclick={clear}>CLEAR</button>
       </div>
     {/if}
 
