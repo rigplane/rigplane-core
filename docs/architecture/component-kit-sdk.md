@@ -73,7 +73,7 @@ seed, only what kits themselves register:
 |---|---|---|
 | Scalar | `ScalarAppearance` (`component-kit-api/src/index.ts`, aliasing `Skin` in `frontend/src/components-v2/controls/value-control/skin.ts`) | `name: string`; optional renderer components `hbar`, `knob`, `bipolar`, `discrete`, one `Component` per continuous-control form |
 | Frequency | `FrequencyRenderer = Component<FrequencyRendererProps>` (`component-kit-api/src/index.ts: FrequencyRenderer`, `FrequencyRendererProps`) | a single renderer component, not a per-form map |
-| Finite control | `FiniteControlAppearance` (`component-kit-api/src/index.ts`, aliasing `frontend/src/primitives/control-instruments/control-instrument-renderer.svelte: FiniteControlAppearance`) | `action`, `toggle`, `choice` — all three required `Component`s (`activation.ts: FINITE_APPEARANCE_KEYS`) |
+| Finite control | `FiniteControlAppearance` (`component-kit-api/src/index.ts`, aliasing `frontend/src/primitives/control-instruments/control-instrument-renderer.svelte.ts: FiniteControlAppearance`) | `action`, `toggle`, `choice` — all three required `Component`s (`activation.ts: FINITE_APPEARANCE_KEYS`) |
 | Meter | `MeterAppearance` (`component-kit-api/src/index.ts`) | `signal`, `level` — both required `Component`s (`activation.ts: METER_APPEARANCE_KEYS`) |
 
 Unlike the scalar category, finite-control and meter appearances have no
@@ -151,29 +151,35 @@ reference (`HostedFaceInstrumentBridge.svelte` builds each snippet purely by
 re-rendering the corresponding host handle; nothing else is passed to
 `<Face>`).
 
-**Occurrence replacement.** `App.svelte` wraps the bridge in `{#key
-externalPresentation}`, so a new presentation load (a fresh loader
-generation in `App.svelte: requestPresentation`) tears down and remounts the
-face and its bridge. The occurrence's `isCurrent()` predicate
+**Occurrence replacement.** `SemanticRadioSurfaces.svelte` wraps the bridge
+in `{#key externalPresentation}` (the `{#if externalPresentation}` branch
+that renders `HostedFaceInstrumentBridge`), so a new presentation load (a
+fresh loader generation in `App.svelte: requestPresentation`) tears down and
+remounts the face and its bridge. The occurrence's `isCurrent()` predicate
 (`frontend/src/components-v2/wiring/SemanticRadioSurfaces.svelte:
 ExternalPresentation.isCurrent`) flows down as the `presentationIsCurrent`
-prop to the renderer-seat hosts (`ReceiverInstrumentHost.svelte`,
-`TxAuxScalarHost.svelte`, `VfoOperationSeatHost.svelte`), each of which
-withholds its renderer context once the predicate is false
-(`VfoOperationSeatHost.svelte`: `(presentationIsCurrent?.() ?? true) ?
-combinedRendererContext : null`) — a handle a torn-down face retained past
-its own replacement stops driving live state. Test: "re-creates the face on
-an occurrence change with the same component and keeps its owners"
-(`external-hosted-face.component.test.ts`).
+prop to three of the renderer-seat hosts — `ReceiverInstrumentHost.svelte`
+(only its `mainFrequency`/`subFrequency` snippets, via
+`FrequencyRendererSeat`), `TxAuxScalarHost.svelte` (`ValueControl`), and
+`VfoOperationSeatHost.svelte` (`(presentationIsCurrent?.() ?? true) ?
+combinedRendererContext : null`) — which withhold their renderer context
+once the predicate is false. Test: "re-creates the face on an occurrence
+change with the same component and keeps its owners"
+(`external-hosted-face.component.test.ts`). This gate does not cover every
+handle; see the §8 limit.
 
 **Station meters** render through the presentation's own meter appearance:
-`HostedFaceInstrumentBridge.svelte` passes
-`meterAppearance={externalPresentation.record.appearances.meter}` into every
-station-meter snippet's `MeterRendererSeat`. A face gets no separate native
-DOM meter — the file's own comment: "An external Face gets no native DOM
-meter: absent an installed meter appearance these seats render nothing."
-Test: "renders station meters from the record appearance when the global
-selection is absent" (`external-hosted-face.component.test.ts`).
+`SemanticRadioSurfaces.svelte` passes
+`meterAppearance={externalPresentation.record.appearances.meter}` into
+`HostedFaceInstrumentBridge.svelte`, which forwards
+`levelRenderer={meterAppearance.level}` to `MeterRendererSeat` in its
+`stationLevel` snippet and `signalRenderer={meterAppearance.signal}` in its
+`stationSignalMeter` snippet — the latter renders `MeterRendererSeat` only
+when `signalFrame !== null`. A face gets no separate native DOM meter — the
+file's own comment: "An external Face gets no native DOM meter: absent an
+installed meter appearance these seats render nothing, the way `mainSMeter`
+does." Test: "renders station meters from the record appearance when the
+global selection is absent" (`external-hosted-face.component.test.ts`).
 
 ## 5. Activation and installation
 
@@ -184,8 +190,13 @@ ComponentKitSelection }`. As checked into this repository it ships
 `{ kits: [] }` — no kit installed. `ComponentKitSelection`'s five optional
 string fields (`scalarAppearance`, `frequencyReadout`,
 `finiteControlAppearance`, `meterAppearance`, `presentation`) each must name
-an id actually registered by the activated batch, or activation throws
-`Selected <kind> "<id>" is not registered.`.
+a registered id, or activation throws `Selected <kind> "<id>" is not
+registered.` — for `scalarAppearance` that includes the host's built-in
+scalar appearances seeded before any kit is merged (§3), e.g.
+`professional` (`components-v2/controls/value-control/skins/index.ts:
+skins`); for the other four, only ids the activated batch itself registered.
+The presentation field's error uses the kind word `external presentation`:
+`Selected external presentation "<id>" is not registered.`.
 
 Activation happens exactly once, before `App.svelte` mounts:
 `frontend/src/main.ts: startApp` awaits `activateComponentKits(config)`
@@ -212,10 +223,12 @@ consumer `package.json` whose `dependencies` point at the two tarballs via
 fixture kit via `build.mjs`, then:
 
 - checks the fixture's `FaceA.svelte`/`FaceB.svelte` sources arrange every
-  handle in all four families exactly once and never import forbidden
-  internals (`assertHostedFaceSources`);
+  `vfoOperations`, `txAux` and `stationMeters` handle exactly once, the four
+  `receiver` handles at least once, and never import forbidden internals
+  (`assertHostedFaceSources`);
 - checks every fixture source file imports only from
-  `@rigplane/component-kit-api` or `svelte` (`assertFixturePublicImports`);
+  `@rigplane/component-kit-api` or `svelte`, with one exception: `index.ts`
+  may also import a sibling `./*.svelte` (`assertFixturePublicImports`);
 - `npm pack`s both packages and asserts the packed file list matches the
   built `dist/` output plus `package.json`, nothing else
   (`assertPackedShape`);
@@ -279,11 +292,17 @@ tests named above. No other consumer is tracked in this repository.
   `filter`, `dsp`, `rfFrontEnd`, `band`, `antenna`, `ritXitScan`, `cwKeyer`,
   `scopeDisplay`, `scopeControls` — have no family in
   `HostedInstrumentFamiliesV1` and are unavailable to a hosted face.
-- **`presentationIsCurrent` semantics** (§4): a face occurrence that outlives
-  its own replacement retains its snippet handles, but the renderer-seat
-  hosts stop honoring them once `isCurrent()` is false — the mechanism is
-  cooperative on the seat-host side, not a hard teardown of the old face's
-  closures.
+- **`presentationIsCurrent` gates only some handles** (§4). It reaches
+  receiver frequency seats (`FrequencyRendererSeat`, via
+  `ReceiverInstrumentHost.svelte`'s `mainFrequency`/`subFrequency` snippets),
+  TX-aux scalars (`ValueControl`, via `TxAuxScalarHost.svelte`), and VFO
+  operation seats (`VfoOperationSeatHost.svelte: currentRendererContext`) —
+  `grep -rl presentationIsCurrent frontend/src` names exactly the six files
+  involved in that chain. It does **not** reach `mainSMeter`/`subSMeter`
+  (`ReceiverInstrumentHost.svelte`) or any of the seven `stationMeters`
+  handles: `frontend/src/component-kits/MeterRendererSeat.svelte` has no
+  currency check at all, so a torn-down face's retained meter handle keeps
+  rendering through the new occurrence's `MeterRendererSeat`.
 - **Resources are limited to a subset of `AppResource`.** The type-level
   union is `AppResource = 'hardware-scope' | 'audio-fft' | 'rx-audio'`
   (`frontend/src/lib/runtime/resource-demand.ts`), but a presentation's
