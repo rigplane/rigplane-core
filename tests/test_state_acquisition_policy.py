@@ -574,6 +574,24 @@ def test_ftx1_profile_declares_slow_control_policies_for_polling_adapter() -> No
     assert ftx1.state_acquisition.policy_for(af_level).cadence_seconds == 30.0
 
 
+def test_ftx1_tx_meters_are_declared_tx_only() -> None:
+    """MOR-2425/T80b: YaesuCatPoller._emit_fast_observations (poller.py) only
+    emits ALC/power/SWR/comp via ``poll_tx_meters`` while PTT observes true;
+    the profile must say so for the startup gate that treats ``tx_only`` as
+    profile-authoritative.
+    """
+    ftx1 = get_radio_profile("FTX-1")
+    assert ftx1.state_acquisition is not None
+
+    for path in (
+        FieldPath.global_("meters", "alc"),
+        FieldPath.global_("meters", "power"),
+        FieldPath.global_("meters", "swr"),
+        FieldPath.global_("meters", "comp"),
+    ):
+        assert ftx1.state_acquisition.policy_for(path).tx_only is True
+
+
 def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
     profile = get_radio_profile("IC-7300")
     acquisition = profile.state_acquisition
