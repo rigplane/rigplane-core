@@ -60,11 +60,11 @@ describe('FilterInstrumentHost finite ownership', () => {
     expect(target.querySelector('[data-testid="filter-shape"]')?.getAttribute('aria-describedby')).toBeNull();
     expect(target.querySelector('[data-testid="filter-select"]')?.getAttribute('aria-describedby')).not.toBeNull();
     expect(target.querySelector('[data-testid="filter-data-mode"]')?.getAttribute('aria-describedby')).not.toBeNull();
-    for (const id of ['filter-mode-LSB', 'filter-select-2', 'filter-shape-0', 'filter-data-mode-1'])
+    for (const id of ['filter-mode-LSB', 'filter-select-2', 'filter-shape-1', 'filter-data-mode-1'])
       (target.querySelector(`[data-testid="${id}"]`) as HTMLButtonElement).click();
     expect(onModeChange).toHaveBeenCalledExactlyOnceWith('LSB');
     expect(onFilterChange).toHaveBeenCalledExactlyOnceWith(2);
-    expect(onFilterShapeChange).toHaveBeenCalledExactlyOnceWith(0);
+    expect(onFilterShapeChange).toHaveBeenCalledExactlyOnceWith(1);
     expect(onDataModeChange).toHaveBeenCalledExactlyOnceWith(1);
     props.presentation = 'independent'; flushSync();
     expect(target.querySelector('[data-testid="grouped-filter-composition"]')).toBeNull();

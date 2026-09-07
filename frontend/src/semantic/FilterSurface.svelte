@@ -3,9 +3,8 @@
 
   Presentation only. Places the host-owned mode and filter handles beside
   the MOR-1280 `modeFilter` width, then renders the MOR-1284
-  `filterPassband` group (filter shape, IF-shift, PBT inner/outer, DATA
-  submode) — the same two groups the v2 `FilterPanel` reads together
-  (`panel-props.ts`'s `deriveFilterProps`).
+  `filterPassband` group — the same two groups the v2 `FilterPanel` reads
+  together (`panel-props.ts`'s `deriveFilterProps`).
 
   Doctrine, same as `TxAuxSurface`/`MetersSurface`:
   (1) Facts only — every value and every min/max bound is READ from the
@@ -45,8 +44,7 @@
   `FilterPassbandViewModel.filterShapeControlStructural`'s doc comment.
 
   PENDING AFFORDANCE (MOR-1441 leg 2). The host-owned Filter handle carries
-  the pending target separately from confirmed truth. DATA remains local and
-  keeps the same separation below.
+  the pending target separately from confirmed truth.
 -->
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';

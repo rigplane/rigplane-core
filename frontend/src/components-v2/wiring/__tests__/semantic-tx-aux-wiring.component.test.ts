@@ -768,10 +768,10 @@ describe('hosted Filter Mode/Filter/Shape/DATA ownership', () => {
     expect(q('[data-testid="external-Mode"]')?.getAttribute('data-reading')).toBe('USB');
     for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
     retainedInvocations.get('Mode')?.('CW'); retainedInvocations.get('Filter')?.(2);
-    retainedInvocations.get('Filter shape')?.(0); retainedInvocations.get('DATA mode')?.(1);
+    retainedInvocations.get('Filter shape')?.(1); retainedInvocations.get('DATA mode')?.(1);
     expect(h.modeChange).toHaveBeenCalledExactlyOnceWith('CW');
     expect(h.filterChange).toHaveBeenCalledExactlyOnceWith(2);
-    expect(h.filterShapeChange).toHaveBeenCalledExactlyOnceWith(0);
+    expect(h.filterShapeChange).toHaveBeenCalledExactlyOnceWith(1);
     expect(h.dataModeChange).toHaveBeenCalledExactlyOnceWith(1);
     const standardMode = retainedInvocations.get('Mode')!;
 
