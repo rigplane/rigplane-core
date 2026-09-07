@@ -28,6 +28,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -87,6 +89,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return { state: 'connected' as const, epoch: 1 }; },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
       handler({
@@ -128,6 +131,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { sendCommand } from '$lib/transport/ws-client';
 import { MOD_INPUT_SOURCES, modInputCommand, modInputStateKey } from '$lib/radio/mod-input';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { makeAudioRoutingHandlers, makeModeHandlers, makeRxAudioHandlers } from '$lib/runtime/commands/panel-commands';
 import { desktopV2Layout } from '../../../presentation/layouts/declarations';
@@ -161,6 +165,7 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1, afLevel: 0.31,
   });
   return {
+    providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false, dataOffModInput: 5,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
@@ -177,6 +182,7 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
+  providerGeneration: 1,
 } as unknown as Capabilities);
 
 const AUDIO_TAGS = ['audio', 'tx', 'dual_rx', 'af_level', 'mod_input_routing'] as const;
@@ -207,9 +213,21 @@ function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan):
   flushSync();
 }
 
+function renderHosted() {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy<{ rxAudioLayout: 'grouped' | 'independent' }>({
+    rxAudioLayout: 'grouped',
+  });
+  component = mount(HostedRadioLayoutFixture, { target, props });
+  flushSync();
+  return props;
+}
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 const el = (id: string) => q<HTMLElement>(`[data-testid="rx-audio-${id}"]`);
 const text = (id: string) => el(id)?.textContent?.trim();
+const afSlider = () => q<HTMLElement>('[data-testid="rx-audio-af"] [role="slider"]');
 
 const SEAM_SPIES = () => [
   audioManager.startRx, audioManager.stopRx, audioManager.setRxVolume,
@@ -269,7 +287,7 @@ describe('AF level: 0..100 becomes 0..1 exactly once, at the adapter seam', () =
   // (renders 42, clamped by the range to 1).
   it('renders a browser volume of 42 as an AF level of 0.42', () => {
     render();
-    expect(q<HTMLInputElement>('[data-testid="rx-audio-af"] input')!.valueAsNumber)
+    expect(Number(afSlider()!.getAttribute('aria-valuenow')))
       .toBeCloseTo(0.42, 10);
     expect(text('af-value')).toBe('0.42');
   });
@@ -277,21 +295,21 @@ describe('AF level: 0..100 becomes 0..1 exactly once, at the adapter seam', () =
   it.each([0, 7, 50, 100])('renders a browser volume of %i on the 0..1 scale', (volume) => {
     h.audio = { muted: false, rxEnabled: true, volume };
     render();
-    expect(q<HTMLInputElement>('[data-testid="rx-audio-af"] input')!.valueAsNumber)
+    expect(Number(afSlider()!.getAttribute('aria-valuenow')))
       .toBeCloseTo(volume / 100, 10);
   });
 
   // MUTATION KILLED: a rescale on the way OUT. Driven through the REAL
   // `makeRxAudioHandlers` the wiring composes, so the round trip 42 → 0.42 →
-  // 42 is proven end to end rather than asserted about a stub.
-  it('returns the same level to the runtime as a 0..100 volume, through the real bus', () => {
+  // 43 is proven end to end rather than asserted about a stub.
+  it('returns one 0.01 step to the runtime as a 0..100 volume, through the real bus', () => {
     render();
-    const input = q<HTMLInputElement>('[data-testid="rx-audio-af"] input')!;
-    input.value = '0.42';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    afSlider()!.dispatchEvent(new KeyboardEvent(
+      'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
+    ));
     flushSync();
-    expect(h.setRxVolume).toHaveBeenCalledExactlyOnceWith(0.42);
-    expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(42);
+    expect(h.setRxVolume).toHaveBeenCalledExactlyOnceWith(0.43);
+    expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(43);
   });
 
   // The command bus this wiring composes IS the shipped one — a fork would
@@ -305,6 +323,78 @@ describe('AF level: 0..100 becomes 0..1 exactly once, at the adapter seam', () =
       const handlers = factory() as Record<string, unknown>;
       for (const name of names) expect(typeof handlers[name]).toBe('function');
     }
+  });
+});
+
+describe('the hosted AF owner survives replaceable presentation layouts', () => {
+  it('cancels route A-B-A and detached drafts while retaining canonical readback', () => {
+    h.audio = proxy({ muted: false, rxEnabled: true, volume: 42 });
+    const props = renderHosted();
+    const originalSubscribers = [...h.authoritySubscribers];
+    const oldSlider = afSlider()!;
+    const frame = oldSlider.closest<HTMLElement>('.vc-hbar')!;
+    frame.getBoundingClientRect = () => ({
+      left: 0, right: 100, top: 0, bottom: 10, width: 100, height: 10, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+    Object.assign(oldSlider, {
+      setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => true,
+    });
+    oldSlider.dispatchEvent(new PointerEvent(
+      'pointerdown', { pointerId: 7, clientX: 42, bubbles: true },
+    ));
+    h.audio.rxEnabled = false;
+    publishAuthority();
+    h.audio.rxEnabled = true;
+    publishAuthority();
+    h.setRxVolume.mockClear();
+    h.setVolume.mockClear();
+    oldSlider.dispatchEvent(new PointerEvent(
+      'pointermove', { pointerId: 7, clientX: 90, bubbles: true },
+    ));
+    oldSlider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 7, bubbles: true }));
+    expect(h.setVolume).not.toHaveBeenCalled();
+
+    oldSlider.dispatchEvent(new PointerEvent(
+      'pointerdown', { pointerId: 8, clientX: 70, bubbles: true },
+    ));
+    flushSync();
+    expect(frame.style.getPropertyValue('--vc-fill-percent')).toBe('70%');
+    expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(70);
+    h.setRxVolume.mockClear();
+    h.setVolume.mockClear();
+
+    props.rxAudioLayout = 'independent';
+    flushSync();
+    const newSlider = q<HTMLElement>('[role="slider"][aria-label="AF"]')!;
+    expect(newSlider).not.toBe(oldSlider);
+    expect(target.querySelector('[data-af-layout="independent"]')).not.toBeNull();
+    expect(target.querySelectorAll('[role="slider"][aria-label="AF"]')).toHaveLength(1);
+    expect([...h.authoritySubscribers]).toEqual(originalSubscribers);
+    expect(h.authoritySubscribers.size).toBe(2);
+    expect(newSlider.closest<HTMLElement>('.vc-hbar')!.style
+      .getPropertyValue('--vc-fill-percent')).toBe('42%');
+    expect(newSlider.getAttribute('aria-valuenow')).toBe('0.42');
+    oldSlider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 8, bubbles: true }));
+    oldSlider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(h.setVolume).not.toHaveBeenCalled();
+
+    newSlider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    flushSync();
+    expect(h.setRxVolume).toHaveBeenCalledExactlyOnceWith(0.43);
+    expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(43);
+
+    h.audio.volume = 43;
+    flushSync();
+    expect(newSlider.getAttribute('aria-valuenow')).toBe('0.43');
+    props.rxAudioLayout = 'grouped';
+    flushSync();
+    expect(afSlider()!.getAttribute('aria-valuenow')).toBe('0.43');
+    expect(target.querySelectorAll('[role="slider"][aria-label="AF"]')).toHaveLength(1);
+    expect([...h.authoritySubscribers]).toEqual(originalSubscribers);
+    unmount(component!);
+    component = null;
+    expect(h.authoritySubscribers.size).toBe(0);
   });
 });
 

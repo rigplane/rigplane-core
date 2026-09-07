@@ -22,6 +22,7 @@
     frequencyTunable: () => true,
     vfoOperations: operations,
   } satisfies ReceiverInstrumentHandles;
+  const rxAudioInstruments = { afLevel: empty };
   const scalars = {
     rfPower: empty, micGain: empty, driveGain: empty, voxGain: empty,
     antiVoxGain: empty, voxDelay: empty, compressorLevel: empty, monitorLevel: empty,
@@ -29,6 +30,7 @@
 
   export const TEST_INSTRUMENTS = {
     vfo, rxTx: empty, txAuxControls: txAux, txAuxScalars: scalars, receiverInstruments,
+    rxAudioInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band: empty, antenna: empty, ritXitScan: empty, cwKeyer: empty,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,
@@ -42,11 +44,21 @@
   import SemanticRadioSurfaces from '../../../wiring/SemanticRadioSurfaces.svelte';
   import type { InstrumentComposition } from '../../../wiring/instrument-composition';
 
-  let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
+  let {
+    skinId = 'desktop-v2', rxAudioLayout = 'production',
+  }: {
+    skinId?: SkinId; rxAudioLayout?: 'production' | 'grouped' | 'independent';
+  } = $props();
 </script>
 
 <SemanticRadioSurfaces>
   {#snippet children(instruments: InstrumentComposition)}
-    <RadioLayout {skinId} {instruments} />
+    {#if rxAudioLayout === 'production'}
+      <RadioLayout {skinId} {instruments} />
+    {:else if rxAudioLayout === 'grouped'}
+      {@render instruments.rxAudio()}
+    {:else}
+      <div data-af-layout="independent">{@render instruments.rxAudioInstruments.afLevel()}</div>
+    {/if}
   {/snippet}
 </SemanticRadioSurfaces>

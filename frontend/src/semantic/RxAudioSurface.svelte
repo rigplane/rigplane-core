@@ -83,21 +83,22 @@
 <script lang="ts">
   import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
+  import type { RxAudioInstrumentHandles } from './rx-audio-instruments';
   import {
     bindAbsoluteChoiceInstrument, bindChoiceInstrument,
   } from '../primitives/control-instruments/control-instrument-behavior';
 
   interface Props {
     view: RadioViewModel;
+    handles: RxAudioInstrumentHandles;
     onMonitorMode?: (mode: MonitorMode) => void;
-    onAfLevel?: (level: number) => void;
     onRoutingFocus?: (focus: AudioFocus) => void;
     onRoutingSplit?: (split: boolean) => void;
     onSetModInputLan?: () => void;
     onModInputChange?: (source: number) => void;
   }
   let {
-    view, onMonitorMode, onAfLevel, onRoutingFocus, onRoutingSplit, onSetModInputLan,
+    view, handles, onMonitorMode, onRoutingFocus, onRoutingSplit, onSetModInputLan,
     onModInputChange,
   }: Props = $props();
 
@@ -161,12 +162,6 @@
   let linkLost = $derived(
     liveOffered && rx?.monitorMode === 'live' && rx.liveAudio.operational === false,
   );
-  /** The slider position while AF is unread is a guess, so the control is
-   *  inert then — the same "never act on an unknown reading" gate slice 1B
-   *  applies, enforced on the widget AND in the handler. */
-  function changeAf(level: number): void {
-    if (rx && usable(rx.afLevel)) onAfLevel?.(level);
-  }
 </script>
 
 {#if rx}
@@ -204,12 +199,7 @@
         <span class="rx-audio-name">AF</span>
         <!-- 0..1 — the contract's OWN unit (rule 4). No rescale in either
              direction: the value in is the fact, the value out is the intent. -->
-        <input
-          type="range" min="0" max="1" step="0.01"
-          value={rx.afLevel.reading.status === 'known' ? rx.afLevel.reading.value : 0}
-          disabled={!usable(rx.afLevel)}
-          oninput={(event) => changeAf(event.currentTarget.valueAsNumber)}
-        />
+        {@render handles.afLevel()}
         <output data-testid="rx-audio-af-value">{textOf(rx.afLevel)}</output>
       </label>
     {/if}
@@ -303,5 +293,5 @@
   /* Second channel beside `data-observed`, never the only one: the unknown
      text itself is the primary one and survives forced-colors. */
   [data-observed='false'] { font-style: italic; }
-  button:disabled, input:disabled, select:disabled { cursor: not-allowed; }
+  button:disabled, select:disabled { cursor: not-allowed; }
 </style>

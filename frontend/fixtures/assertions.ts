@@ -609,11 +609,14 @@ export function runAssertions(
   if (expected.rxAudio !== undefined) {
     const monitor = q<HTMLElement>('[data-testid="rx-audio-monitor"]');
     const liveChoice = q<HTMLElement>('[data-testid="rx-audio-monitor-live"]');
-    const af = q<HTMLInputElement>('[data-testid="rx-audio-af"] input[type="range"]');
+    const af = q<HTMLElement>('[data-testid="rx-audio-af"] [role="slider"]');
+    const afNow = af?.getAttribute('aria-valuenow') ?? null;
+    const normalizedAf = afNow !== null && afNow.trim() !== '' ? Number(afNow) : Number.NaN;
     const actualMode = monitor?.dataset.monitorMode ?? null;
     const actualConnection = liveChoice?.dataset.liveLink === undefined
       ? null : liveChoice.dataset.liveLink === 'true';
-    const actualVolume = actualMode === 'live' && af ? af.valueAsNumber * 100 : null;
+    const actualVolume = actualMode === 'live' && Number.isFinite(normalizedAf)
+      ? normalizedAf * 100 : null;
     check('rx-audio-runtime-axis',
       actualMode === expected.rxAudio.monitorMode
       && actualConnection === expected.rxAudio.connectionAudio

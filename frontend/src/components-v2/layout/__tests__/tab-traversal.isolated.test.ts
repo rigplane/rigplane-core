@@ -58,16 +58,21 @@ vi.mock('../../../lib/media/media-session', () => ({
   destroyMediaSession: vi.fn(),
 }));
 
-const rt = vi.hoisted(() => ({ state: null as unknown, caps: null as unknown }));
+const rt = vi.hoisted(() => ({
+  state: null as unknown,
+  caps: null as unknown,
+  session: { state: 'connected' as const, epoch: 1 },
+}));
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
     onTxAudioDied: () => () => {},
     get state() { return rt.state; },
     get caps() { return rt.caps; },
+    get controlSession() { return rt.session; },
     subscribeControlAuthority(handler: (publication: unknown) => void) {
       handler({
-        state: rt.state, caps: rt.caps, session: { state: 'connected', epoch: 1 },
+        state: rt.state, caps: rt.caps, session: rt.session,
         rxAudioTarget: Object.freeze({ muted: false, rxEnabled: false }),
       });
       return () => {};

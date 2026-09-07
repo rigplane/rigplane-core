@@ -27,13 +27,17 @@ import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import { t } from '$lib/i18n';
-import RxAudioSurface, {
+import {
   FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
 } from '../RxAudioSurface.svelte';
+import Fixture from './fixtures/RxAudioInstrumentHostFixture.svelte';
 import { topologyFixtures, withRxAudio } from '../fixtures/topologies';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
 import type {
   AudioFocus, Availability, MonitorMode, RadioViewModel, RxAudioField, RxAudioViewModel,
 } from '../radio-view-model';
+import type { RxAudioAuthorityPublication } from '../rx-audio-instruments';
 
 const SOURCE = readFileSync('src/semantic/RxAudioSurface.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
@@ -71,15 +75,34 @@ type Handlers = {
   onModInputChange?: (source: number) => void;
 };
 
+const AUTHORITY_STATE = { providerGeneration: 1 } as ServerState;
+const AUTHORITY_CAPS = {
+  model: 'TEST', receivers: 1, vfoScheme: 'single', providerGeneration: 1,
+  capabilities: ['audio', 'af_level'], scope: false, audio: true, tx: false,
+  freqRanges: [], modes: [], filters: [],
+  audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+  webrtc: { available: false, enabled: false }, txBands: null, stateContractVersion: 1,
+} as Capabilities;
+
 function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(RxAudioSurface, { target, props: { view, ...handlers } });
+  const mode = view.rxAudio?.monitorMode;
+  const publication: RxAudioAuthorityPublication = {
+    state: AUTHORITY_STATE, caps: AUTHORITY_CAPS,
+    session: { state: 'connected', epoch: 1 },
+    rxAudioTarget: { muted: mode === 'mute', rxEnabled: mode === 'live' },
+  };
+  const component = mount(Fixture, { target, props: {
+    view, publication, ...handlers,
+    onAfLevelChange: handlers.onAfLevel,
+    subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+  } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
     dispose: () => unmount(component),
     root: () => q('[data-testid="rx-audio-surface"]'),
     el: (id: string) => q<HTMLElement>(`[data-testid="rx-audio-${id}"]`),
-    input: () => q<HTMLInputElement>('[data-testid="rx-audio-af"] input'),
+    slider: () => q<HTMLElement>('[data-testid="rx-audio-af"] [role="slider"]'),
     text: (id: string) => q<HTMLElement>(`[data-testid="rx-audio-${id}"]`)?.textContent?.trim(),
   };
 }
@@ -96,6 +119,7 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     expect([...new Set(specifiers)].sort()).toEqual([
       '$lib/i18n', '$lib/radio/mod-input',
       '../primitives/control-instruments/control-instrument-behavior', './radio-view-model',
+      './rx-audio-instruments',
     ]);
     expect(CODE).toContain('bindAbsoluteChoiceInstrument');
     expect(CODE).toContain('bindChoiceInstrument');
@@ -118,11 +142,11 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     }
   });
 
-  // Kills: the surface growing a second props member and reading live state.
-  it('takes exactly one state prop — the view model — plus intent callbacks', () => {
+  // Kills: the surface reading live state or restoring a private AF owner.
+  it('takes one state prop, the required instrument handles, and finite intent callbacks', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
-      'view', 'onMonitorMode', 'onAfLevel', 'onRoutingFocus', 'onRoutingSplit',
+      'view', 'handles', 'onMonitorMode', 'onRoutingFocus', 'onRoutingSplit',
       'onSetModInputLan', 'onModInputChange',
     ]);
   });
@@ -280,11 +304,10 @@ describe('every unread fact renders honestly, never as the v2 default', () => {
   it('makes the AF slider inert while the level is unread, and emits nothing', () => {
     const onAfLevel = vi.fn();
     const r = render(withRx({ afLevel: unread<number>() }), { onAfLevel });
-    const input = r.input()!;
-    expect(input.disabled).toBe(true);
-    expect(input.valueAsNumber).toBe(0);
-    input.value = '0.7';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const slider = r.slider()!;
+    expect(slider.getAttribute('aria-disabled')).toBe('true');
+    expect(slider.hasAttribute('aria-valuenow')).toBe(false);
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     flushSync();
     expect(onAfLevel).not.toHaveBeenCalled();
     r.dispose();
@@ -351,35 +374,37 @@ describe('AF level is 0..1 end to end — converted exactly once, in the adapter
   // level, i.e. an RxAudioSnapshot volume of 42 already divided by the adapter.
   it('renders the fact verbatim, with no second scaling', () => {
     const r = render(base());
-    expect(r.input()!.valueAsNumber).toBeCloseTo(0.42, 10);
+    expect(Number(r.slider()!.getAttribute('aria-valuenow'))).toBeCloseTo(0.42, 10);
     expect(r.text('af-value')).toBe('0.42');
     r.dispose();
   });
 
   it.each([0, 0.01, 0.5, 1])('renders the level %s verbatim', (value) => {
     const r = render(withRx({ afLevel: known(value) }));
-    expect(r.input()!.valueAsNumber).toBe(value);
+    expect(Number(r.slider()!.getAttribute('aria-valuenow'))).toBe(value);
     r.dispose();
   });
 
   // Kills: `level / 100` or `level * 100` on the way OUT. The command handler
   // (`makeRxAudioHandlers().onAfLevelChange`) takes 0..1, so the round trip
   // must be the identity.
-  it.each([0, 0.25, 0.7, 1])('emits the slider level %s verbatim', (value) => {
+  it('emits one 0.01 AF step with no rescaling', () => {
     const onAfLevel = vi.fn();
     const r = render(base(), { onAfLevel });
-    const input = r.input()!;
-    input.value = String(value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    r.slider()!.dispatchEvent(new KeyboardEvent(
+      'keydown', { key: 'ArrowRight', bubbles: true, cancelable: true },
+    ));
     flushSync();
-    expect(onAfLevel).toHaveBeenCalledExactlyOnceWith(value);
+    expect(onAfLevel).toHaveBeenCalledExactlyOnceWith(0.43);
     r.dispose();
   });
 
   // Kills: a range whose bounds silently rescale the fact.
   it('declares the slider on the contract`s own 0..1 scale', () => {
     const r = render(base());
-    expect([r.input()!.min, r.input()!.max]).toEqual(['0', '1']);
+    expect([
+      r.slider()!.getAttribute('aria-valuemin'), r.slider()!.getAttribute('aria-valuemax'),
+    ]).toEqual(['0', '1']);
     r.dispose();
   });
 });
@@ -495,9 +520,16 @@ describe('MOD-input selection uses observed facts and absolute intents (MOR-2366
   it('follows unknown, readback and unavailable transitions without emitting', () => {
     const facts = new SvelteMap([['view', withRx({ modInputSource: unread<number>() })]]);
     const onModInputChange = vi.fn();
-    const component = mount(RxAudioSurface, {
-      target, props: { get view() { return facts.get('view')!; }, onModInputChange },
-    });
+    const publication: RxAudioAuthorityPublication = {
+      state: AUTHORITY_STATE, caps: AUTHORITY_CAPS,
+      session: { state: 'connected', epoch: 1 },
+      rxAudioTarget: { muted: false, rxEnabled: false },
+    };
+    const component = mount(Fixture, { target, props: {
+      get view() { return facts.get('view')!; },
+      publication, onModInputChange,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+    } });
     flushSync();
     const select = target.querySelector<HTMLSelectElement>('[data-testid="rx-audio-mod-select"]');
     expect(select).not.toBeNull();
@@ -517,9 +549,16 @@ describe('MOD-input selection uses observed facts and absolute intents (MOR-2366
   it('refuses a stale DOM selection and restores the latest observed source', () => {
     const facts = new SvelteMap([['view', base()]]);
     const onModInputChange = vi.fn();
-    const component = mount(RxAudioSurface, {
-      target, props: { get view() { return facts.get('view')!; }, onModInputChange },
-    });
+    const publication: RxAudioAuthorityPublication = {
+      state: AUTHORITY_STATE, caps: AUTHORITY_CAPS,
+      session: { state: 'connected', epoch: 1 },
+      rxAudioTarget: { muted: false, rxEnabled: false },
+    };
+    const component = mount(Fixture, { target, props: {
+      get view() { return facts.get('view')!; },
+      publication, onModInputChange,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+    } });
     flushSync();
     const select = target.querySelector<HTMLSelectElement>('[data-testid="rx-audio-mod-select"]')!;
     facts.set('view', withRx({ modInputSource: known(1, DEGRADED) }));
