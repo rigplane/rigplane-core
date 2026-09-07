@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   bindAbsoluteChoiceInstrument, bindActionInstrument, bindChoiceInstrument, bindToggleInstrument,
-  type InstrumentField,
+  type AvailabilityActionInput, type InstrumentAvailability, type InstrumentField,
 } from '../control-instrument-behavior';
 
 const usable = <T>(value: T): InstrumentField<T> => ({
@@ -15,6 +15,16 @@ const unknown = <T>(): InstrumentField<T> => ({
 });
 
 describe('control-instrument behavior bindings', () => {
+  it('keeps field and availability-only action inputs mutually exclusive', () => {
+    const invoke = vi.fn();
+    const mixed: AvailabilityActionInput = {
+      // @ts-expect-error Action evidence must come from exactly one input form.
+      availability: { structural: true, operational: true }, field: usable(1), invoke,
+    };
+
+    expect(mixed).toBeDefined();
+  });
+
   it('re-checks an action field and blocker at invocation time', () => {
     let field = usable(1);
     let blocked = false;
@@ -23,6 +33,8 @@ describe('control-instrument behavior bindings', () => {
 
     field = unavailable(1);
     behavior.invoke();
+    field = unknown<number>();
+    behavior.invoke();
     blocked = true;
     field = usable(1);
     behavior.invoke();
@@ -30,6 +42,45 @@ describe('control-instrument behavior bindings', () => {
     behavior.invoke();
 
     expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  it('re-checks availability-only action admission and the current callback', () => {
+    let availability: InstrumentAvailability | undefined;
+    let blocked = false;
+    const first = vi.fn();
+    const replacement = vi.fn();
+    let invoke = first;
+    const behavior = bindActionInstrument(() => ({ availability, blocked, invoke }));
+
+    expect(behavior.available).toBe(false);
+    behavior.invoke();
+    availability = { structural: false, operational: true };
+    behavior.invoke();
+    availability = { structural: true, operational: false };
+    behavior.invoke();
+    availability = { structural: true, operational: true };
+    blocked = true;
+    behavior.invoke();
+    blocked = false;
+    invoke = replacement;
+
+    expect(behavior.available).toBe(true);
+    behavior.invoke();
+    expect(first).not.toHaveBeenCalled();
+    expect(replacement).toHaveBeenCalledOnce();
+  });
+
+  it('forwards optional availability-only action feedback without inventing it', () => {
+    const feedback = { phase: 'submitted' } as const;
+    const present = bindActionInstrument(() => ({
+      availability: { structural: true, operational: true }, feedback, invoke: vi.fn(),
+    }));
+    const absent = bindActionInstrument(() => ({
+      availability: { structural: true, operational: true }, invoke: vi.fn(),
+    }));
+
+    expect(present.feedback).toBe(feedback);
+    expect(absent.feedback).toBeUndefined();
   });
 
   it('derives a toggle target from the current confirmed boolean', () => {

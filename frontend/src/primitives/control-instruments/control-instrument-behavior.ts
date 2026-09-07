@@ -22,6 +22,15 @@ interface BindingInput<T, Feedback> {
 }
 
 interface ActionInput<T, Feedback> extends BindingInput<T, Feedback> {
+  readonly availability?: never;
+  readonly invoke: () => void;
+}
+
+export interface AvailabilityActionInput<Feedback = never> {
+  readonly availability: InstrumentAvailability | undefined;
+  readonly field?: never;
+  readonly blocked?: boolean;
+  readonly feedback?: Feedback;
   readonly invoke: () => void;
 }
 
@@ -51,6 +60,18 @@ const canInvoke = <T>(input: BindingInput<T, unknown>): input is BindingInput<T,
   && input.field.availability.operational
   && input.field.reading.status === 'known';
 
+const canInvokeAction = <T>(
+  input: ActionInput<T, unknown> | AvailabilityActionInput<unknown>,
+): boolean => {
+  if ('availability' in input) {
+    return input.blocked !== true
+      && input.availability !== undefined
+      && input.availability.structural
+      && input.availability.operational;
+  }
+  return canInvoke(input);
+};
+
 export interface ActionInstrumentBehavior<Feedback> {
   readonly available: boolean;
   readonly feedback: Feedback | undefined;
@@ -58,14 +79,14 @@ export interface ActionInstrumentBehavior<Feedback> {
 }
 
 export function bindActionInstrument<T, Feedback = never>(
-  current: () => ActionInput<T, Feedback>,
+  current: () => ActionInput<T, Feedback> | AvailabilityActionInput<Feedback>,
 ): ActionInstrumentBehavior<Feedback> {
   return {
-    get available() { return canInvoke(current()); },
+    get available() { return canInvokeAction(current()); },
     get feedback() { return current().feedback; },
     invoke() {
       const input = current();
-      if (canInvoke(input)) input.invoke();
+      if (canInvokeAction(input)) input.invoke();
     },
   };
 }

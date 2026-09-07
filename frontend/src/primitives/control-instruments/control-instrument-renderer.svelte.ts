@@ -4,6 +4,7 @@ import {
   bindActionInstrument,
   bindChoiceInstrument,
   bindToggleInstrument,
+  type InstrumentAvailability,
   type InstrumentField,
   type InstrumentReading,
 } from './control-instrument-behavior';
@@ -42,6 +43,15 @@ interface FieldRendererInput<T, Feedback> extends RendererInput {
 }
 
 export interface ActionRendererInput<T, Feedback = never> extends FieldRendererInput<T, Feedback> {
+  readonly availability?: never;
+  readonly invoke: () => void;
+}
+
+export interface AvailabilityActionRendererInput<Feedback = never> extends RendererInput {
+  readonly availability: InstrumentAvailability | undefined;
+  readonly field?: never;
+  readonly blocked?: boolean;
+  readonly feedback?: Feedback;
   readonly invoke: () => void;
 }
 
@@ -184,7 +194,7 @@ const feedbackView = <Feedback>(feedback: Feedback | undefined) =>
   feedback === undefined ? {} : { feedback };
 
 export function createActionRendererSeat<T, Feedback = never>(
-  readCurrent: () => ActionRendererInput<T, Feedback>,
+  readCurrent: () => ActionRendererInput<T, Feedback> | AvailabilityActionRendererInput<Feedback>,
 ): ActionRendererSeat<Feedback> {
   const behavior = bindActionInstrument<T, Feedback>(() => readCurrent());
   return createSeat(readCurrent, (guard) => ({
