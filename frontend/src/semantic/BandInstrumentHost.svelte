@@ -1,18 +1,30 @@
 <script lang="ts">
-  import { onDestroy, type Snippet } from 'svelte';
+  import { onDestroy, type Component, type Snippet } from 'svelte';
+  import { t } from '$lib/i18n';
   import { bindAbsoluteChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
-    createAbsoluteChoiceRendererSeat,
+    createAbsoluteChoiceRendererSeat, createFiniteRendererContext,
     type FiniteControlAppearance,
     type FiniteRendererContext,
   } from '../primitives/control-instruments/control-instrument-renderer.svelte';
-  import { defaultPermitLabel, type BandInstrumentHandles } from './band-instruments';
+  import {
+    createFrequencyEntryRendererSeat,
+    type FrequencyEntryRendererProps,
+  } from '../primitives/frequency/frequency-entry-renderer.svelte';
+  import BandFrequencyEntry from './BandFrequencyEntry.svelte';
+  import {
+    defaultPermitLabel, interpretFrequencyEntry, mhz, UNKNOWN_TEXT,
+    type BandInstrumentHandles,
+  } from './band-instruments';
   import type { RadioViewModel } from './radio-view-model';
 
   interface ExistingProps {
     view: RadioViewModel | null;
     onSelectBand?: (name: string) => void;
+    onEnterFrequency?: (frequencyHz: number) => void;
+    entryRendererContext?: FiniteRendererContext | null;
+    entryRenderer?: Component<FrequencyEntryRendererProps>;
     children: Snippet<[BandInstrumentHandles]>;
   }
   type RendererSelection = { finiteAppearance?: undefined; rendererContext?: undefined } | {
@@ -21,9 +33,42 @@
   };
   type Props = ExistingProps & RendererSelection;
 
-  let { view, onSelectBand, finiteAppearance, rendererContext, children }: Props = $props();
+  let {
+    view, onSelectBand, onEnterFrequency, finiteAppearance, rendererContext,
+    entryRendererContext, entryRenderer, children,
+  }: Props = $props();
   let band = $derived(view?.band);
   let receiverKnown = $derived(view?.activeReceiver.status === 'known');
+  let boundsKnown = $derived(
+    band !== undefined && band.tuneMinHz !== null && band.tuneMaxHz !== null,
+  );
+  let entryAuthorityAvailable = $derived(entryRendererContext !== null);
+  let entryText = $state('');
+  let bandWasPresent = $state<boolean | undefined>(undefined);
+  let interpretedHz = $derived(
+    boundsKnown && band?.tuneMinHz != null && band?.tuneMaxHz != null
+      ? interpretFrequencyEntry(entryText, band.tuneMinHz, band.tuneMaxHz) : null,
+  );
+  let entryReady = $derived(
+    entryAuthorityAvailable && receiverKnown && boundsKnown && interpretedHz !== null,
+  );
+  let entryValidation = $derived(
+    !entryAuthorityAvailable || !receiverKnown || !boundsKnown ? 'unavailable' as const
+      : entryText.trim() === '' ? 'empty' as const
+        : interpretedHz === null ? 'rejected' as const : 'accepted' as const,
+  );
+  let entryHint = $derived(entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '');
+  let entryRangeText = $derived(boundsKnown && band?.tuneMinHz != null && band?.tuneMaxHz != null
+    ? `${mhz(band.tuneMinHz)} … ${mhz(band.tuneMaxHz)}` : UNKNOWN_TEXT);
+  let entryUnavailableReason = $derived(!boundsKnown
+    ? t('core.band.entry.reason.boundsUnknown')
+    : !receiverKnown ? t('core.band.entry.reason.receiverUnconfirmed') : undefined);
+
+  $effect(() => {
+    const present = band !== undefined;
+    if (bandWasPresent === true && !present) entryText = '';
+    bandWasPresent = present;
+  });
 
   const selectBand = (name: string): void => {
     const choice = band?.bandChoices.find(candidate => candidate.name === name);
@@ -46,7 +91,59 @@
     })),
     invoke: selectBand,
   }));
-  onDestroy(() => bandChoiceSeat.destroy());
+  const fallbackEntryContext = createFiniteRendererContext();
+  let entryContext = $derived(band === undefined ? null
+    : entryRendererContext ?? fallbackEntryContext);
+  const frequencyEntrySeat = createFrequencyEntryRendererSeat(() => ({
+    context: entryContext,
+    view: {
+      label: 'FREQ', draft: entryText, validation: entryValidation,
+      boundsAvailable: boundsKnown, interpretedHz,
+      inputAvailable: entryAuthorityAvailable && receiverKnown && boundsKnown,
+      submitAvailable: entryReady,
+      hint: entryHint, rangeText: entryRangeText,
+      ...(entryUnavailableReason === undefined ? {} : { unavailableReason: entryUnavailableReason }),
+    },
+    setDraft: (raw) => { if (entryIsAvailable()) entryText = raw; },
+    submit: commitFrequency,
+    cancel: cancelEntry,
+    handleKeyDown: handleEntryKeydown,
+  }));
+  onDestroy(() => {
+    bandChoiceSeat.destroy();
+    frequencyEntrySeat.destroy();
+  });
+
+  function entryIsAvailable(): boolean {
+    const currentBand = view?.band;
+    return entryRendererContext !== null && view?.activeReceiver.status === 'known'
+      && currentBand !== undefined
+      && currentBand.tuneMinHz !== null && currentBand.tuneMaxHz !== null;
+  }
+
+  function commitFrequency(): void {
+    const currentBand = view?.band;
+    if (!entryIsAvailable() || currentBand?.tuneMinHz == null || currentBand.tuneMaxHz == null) return;
+    const currentHz = interpretFrequencyEntry(entryText, currentBand.tuneMinHz, currentBand.tuneMaxHz);
+    if (currentHz !== null) onEnterFrequency?.(currentHz);
+  }
+
+  function cancelEntry(): void {
+    entryText = '';
+  }
+
+  function handleEntryKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      commitFrequency();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelEntry();
+      if (event.currentTarget instanceof HTMLElement) event.currentTarget.blur();
+    }
+  }
 </script>
 
 {#snippet externalChoice()}
@@ -76,7 +173,15 @@
   {/if}
 {/snippet}
 
-{@render children({ bandChoice })}
+{#snippet frequencyEntry()}
+  {#if band}
+    {#key entryContext}{#key entryRenderer}<ControlInstrumentRendererHost
+      seat={frequencyEntrySeat} renderer={entryRenderer ?? BandFrequencyEntry}
+    />{/key}{/key}
+  {/if}
+{/snippet}
+
+{@render children({ bandChoice, frequencyEntry })}
 
 <style>
   .band-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
