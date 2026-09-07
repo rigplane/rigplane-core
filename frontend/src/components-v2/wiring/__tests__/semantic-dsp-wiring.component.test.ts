@@ -13,18 +13,21 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+// @ts-expect-error -- Svelte does not publish types for its reactive test harness.
+import { proxy } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  controlSession: { state: 'connected' as const, epoch: 1 as const },
+  controlSession: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   authoritySubscribers: new Set<(next: {
-    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    state: unknown; caps: unknown; session: ControlSessionSnapshot;
     rxAudioTarget: RxAudioTargetSnapshot;
   }) => void>(),
   audio: { muted: true, rxEnabled: false, volume: 0 },
@@ -41,7 +44,13 @@ const h = vi.hoisted(() => ({
   manualNotchWidth: vi.fn(),
   agcTime: vi.fn(),
   agcMode: vi.fn(),
+  selectedFiniteAppearance: undefined as unknown,
 }));
+
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  return { ...actual, getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance };
+});
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
@@ -62,6 +71,7 @@ vi.mock('$lib/runtime', () => ({
     // keeps every fixture below off the rxAudio path — this file tests dsp.
     get audio() { return h.audio; },
     get connectionAudio() { return false; },
+    get radioPowerOn() { return null; },
     // MOR-1312 slice 12B (rebase fix): the wiring now also hands the adapter
     // a scope-display snapshot (the FIFTH argument). This file tests dsp, so
     // this stays on its pre-1312 path regardless of these values.
@@ -170,12 +180,18 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
 });
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
-import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan,
 } from '../../../presentation/workspace/resolution';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
+import { beginCommand, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
@@ -218,6 +234,7 @@ function liveState(withDsp: boolean): ServerState {
       agc: DSP_STATE.agc, agcTimeConstant: DSP_STATE.agcTimeConstant } : {}),
   });
   return {
+    stateContractVersion: 1, providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(14300000),
@@ -227,6 +244,7 @@ function liveState(withDsp: boolean): ServerState {
 }
 
 const liveCaps = (withDsp: boolean): Capabilities => ({
+  stateContractVersion: 1, providerGeneration: 1,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: withDsp ? ['audio', 'tx', 'dual_rx', 'nr', 'nb', 'notch', 'agc'] : ['audio', 'tx', 'dual_rx'],
   receivers: 2, vfoScheme: 'main_sub', freqRanges: [], modes: [], filters: [],
@@ -240,6 +258,12 @@ const liveCaps = (withDsp: boolean): Capabilities => ({
     nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: 10 },
   } } : {}),
 } as unknown as Capabilities);
+
+const finiteAppearance = {
+  action: FiniteControlRendererFixture as FiniteControlAppearance['action'],
+  toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+  choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+} satisfies FiniteControlAppearance;
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -255,13 +279,38 @@ function render(props: { strips?: 'single' | 'dual' } = {}, plan?: SurfacePlan):
   flushSync();
 }
 
+function renderHosted() {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy({ skinId: 'desktop-v2' as 'desktop-v2' | 'sdr-test' });
+  const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
+    resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
+      readWorkspace({ version: 1 }).workspace)]]);
+  component = mount(HostedRadioLayoutFixture, { target, props, context });
+  flushSync();
+  return props;
+}
+
+function publishAuthority(
+  state = h.state, caps = h.caps, session = h.controlSession,
+): void {
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state, caps, session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
+}
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 
 beforeEach(() => {
+  resetCommandLifecycle();
+  resetRetainedInvocations();
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
+  h.controlSession = { state: 'connected', epoch: 1 };
+  h.selectedFiniteAppearance = undefined;
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -270,6 +319,8 @@ beforeEach(() => {
 afterEach(() => {
   if (component) unmount(component);
   component = null;
+  resetCommandLifecycle();
+  resetRetainedInvocations();
   expect(h.authoritySubscribers.size).toBe(0);
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
@@ -485,5 +536,107 @@ describe('desktop-v2 declares a real dsp zone; the cockpit does not (MOR-1368, S
   it('binds the dsp zone id against desktop-v2\'s real plan', () => {
     render({ strips: 'single' }, planFor(desktopV2Layout, {}));
     expect(q('[data-testid="dsp-surface"]')!.closest('[data-zone-id="dsp"]')).not.toBeNull();
+  });
+});
+
+describe('persistent finite DSP composition and authority (MOR-2425)', () => {
+  const external = ['NR', 'NB', 'Notch mode', 'AGC mode'] as const;
+  const ranges = () => target.querySelectorAll('[data-testid="dsp-surface"] input[type="range"]');
+
+  it('moves one hosted set from named Standard seats to grouped SDR without replacing its host', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    const props = renderHosted();
+    const root = q('[data-testid="semantic-radio-surfaces"]');
+    const staleStandardNr = retainedInvocations.get('NR')!;
+
+    expect([...target.querySelectorAll('.dsp-finite-seat')].map(seat => seat.getAttribute('data-field')))
+      .toEqual(['nrActive', 'nbActive', 'notchMode', 'agcMode']);
+    for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    expect(ranges()).toHaveLength(7);
+
+    (h.state as { main: Record<string, unknown> }).main.nr = false;
+    props.skinId = 'sdr-test';
+    flushSync();
+    expect(q('[data-testid="semantic-radio-surfaces"]')).toBe(root);
+    expect(target.querySelectorAll('[data-testid="dsp-surface"]')).toHaveLength(1);
+    expect(target.querySelectorAll('.dsp-finite-seat')).toHaveLength(0);
+    for (const label of external) expect(target.querySelectorAll(`[data-testid="external-${label}"]`)).toHaveLength(1);
+    expect(ranges()).toHaveLength(7);
+
+    staleStandardNr();
+    expect(h.nrMode).not.toHaveBeenCalled();
+    const currentSdrNr = retainedInvocations.get('NR')!;
+    expect(currentSdrNr).not.toBe(staleStandardNr);
+    currentSdrNr();
+    expect(h.nrMode).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it('keeps selected controls inert without authority and adds no DSP subscriber', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.controlSession = { state: 'disconnected', epoch: 1 };
+    render();
+    expect(target.querySelectorAll('.dsp-toggle, .dsp-choice')).toHaveLength(0);
+    for (const label of external) expect(q(`[data-testid="external-${label}"]`)).toBeNull();
+    expect(ranges()).toHaveLength(7);
+    // Receiver + AF + accepted RF level host + the single finite-renderer fan-in.
+    expect(h.authoritySubscribers.size).toBe(4);
+  });
+
+  it.each([
+    ['session', (state: ServerState, caps: Capabilities) =>
+      ({ state, caps, session: { state: 'connected', epoch: 2 } as ControlSessionSnapshot })],
+    ['provider', (state: ServerState, caps: Capabilities) => ({
+      state: { ...state, providerGeneration: 2 } as ServerState,
+      caps: { ...caps, providerGeneration: 2 } as Capabilities, session: h.controlSession,
+    })],
+    ['topology', (state: ServerState, caps: Capabilities) => ({
+      state, caps: { ...caps, vfoScheme: 'ab_shared', receivers: 2 } as Capabilities,
+      session: h.controlSession,
+    })],
+    ['active receiver', (state: ServerState, caps: Capabilities) => ({
+      state: { ...state, active: 'SUB' } as ServerState, caps, session: h.controlSession,
+    })],
+  ] as const)('synchronously fences A1 across %s A-B-A and admits only A3', (_axis, b) => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const state = h.state as ServerState;
+    const caps = h.caps as Capabilities;
+    const retainedA1 = retainedInvocations.get('NR')!;
+    const alternate = b(state, caps);
+    publishAuthority(alternate.state, alternate.caps, alternate.session);
+    publishAuthority(state, caps, h.controlSession);
+    retainedA1();
+    expect(h.nrMode).not.toHaveBeenCalled();
+
+    flushSync();
+    const retainedA3 = retainedInvocations.get('NR')!;
+    expect(retainedA3).not.toBe(retainedA1);
+    retainedA3();
+    expect(h.nrMode).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('keeps context through value, pending, slot, and label changes while views stay current', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.state = proxy(liveState(true) as object);
+    h.caps = proxy(liveCaps(true) as object);
+    render();
+    const retainedNr = retainedInvocations.get('NR')!;
+    const retainedAgc = retainedInvocations.get('AGC mode')!;
+
+    (h.state as { main: Record<string, unknown> }).main = {
+      ...(h.state as { main: Record<string, unknown> }).main, nr: false, activeSlot: 'B',
+    };
+    (h.caps as { agcLabels: Record<string, string> }).agcLabels['1'] = 'QUICK';
+    beginCommand({ id: 'pending-nr', name: 'set_nr', params: { on: true, receiver: 0 }, originalEpoch: 1 });
+    publishAuthority();
+    flushSync();
+
+    expect(retainedInvocations.get('NR')).toBe(retainedNr);
+    expect(retainedInvocations.get('AGC mode')).toBe(retainedAgc);
+    expect(q('[data-testid="external-NR"]')!.getAttribute('aria-pressed')).toBe('false');
+    expect(q('[data-testid="external-AGC mode-1"]')!.textContent).toBe('QUICK');
+    retainedNr();
+    expect(h.nrMode).toHaveBeenCalledExactlyOnceWith(1);
   });
 });

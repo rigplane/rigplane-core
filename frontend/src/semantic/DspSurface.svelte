@@ -1,11 +1,10 @@
 <!--
   Semantic DSP surface (MOR-1305, vocabulary slice 5B).
 
-  Presentation only. It renders the MOR-1290 `dsp` fact group — NR
-  (active/level), NB (active/level/depth/width), notch (mode/freq/manual
-  width), AGC (mode/choice set/time constant) — and emits control intents as
-  callbacks. It holds no state and consults no controller (v3 ADR invariant
-  11), the same discipline `TxAuxSurface` (MOR-1265) established.
+  Presentation only. It renders the seven continuous controls in the MOR-1290
+  `dsp` fact group and places four finite-control handles owned by
+  `DspInstrumentHost`. It holds no state and consults no controller (v3 ADR
+  invariant 11), the same discipline `TxAuxSurface` (MOR-1265) established.
 
   CARRY-FORWARDS (binding, from the MOR-1290 fact-layer decisions this
   surface must not relax):
@@ -16,8 +15,8 @@
       precedent). They arrive as plain props, read directly off `caps` at the
       wiring seam (`SemanticRadioSurfaces.svelte`, which already holds
       `runtime.caps` for the view-model adapter call) — never folded into
-      `DspViewModel`, and never re-derived here from a capabilities import
-      this file is not allowed to hold.
+      `DspViewModel`. The finite host consumes `agcLabels`; this surface
+      consumes only the two scalar display props.
   (2) `agcTimeConstant` may be `structural: true` with no real control on a
       radio that borrows the `agc` capability tag optimistically. That is an
       accepted fact-layer optimism, not something this surface special-cases
@@ -34,22 +33,16 @@
   a present-but-unusable control stays visible and disabled rather than
   guessing a value.
 
-  PENDING AFFORDANCE (MOR-1441 leg 2). `pendingNb`/`pendingNr` are plain,
-  command-bus-blind display props, same "read at the wiring seam" precedent
-  as leg 1's `pendingFrequencyHz`. The toggle bindings keep computing the flipped
-  value from `dsp[field].reading.value` — the CONFIRMED reading — exclusively
-  (see below); pending never becomes the arithmetic base, the same class of
-  defect leg 1's `FrequencyDisplayInteractive` fix closed for the frequency
-  digits.
+  PENDING AFFORDANCE (MOR-1441 leg 2) is owned by `DspInstrumentHost`.
+  `pendingNb`/`pendingNr` stay command-bus-blind display facts there and never
+  become the arithmetic base for a toggle.
 -->
 <script module lang="ts">
   import type { DspField, DspViewModel } from './radio-view-model';
-  import { buildAgcOptions } from '../components-v2/panels/agc-utils';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
+  export { DSP_TOGGLES, type DspToggleField } from './dsp-instruments';
 
-  /** On/off controls, `[field, label]`. */
-  export const DSP_TOGGLES = [['nrActive', 'NR'], ['nbActive', 'NB']] as const;
   /** `[field, label, min, max, step, format?]` — `nrLevel`/`nbDepth` are
    *  ALREADY the adapter's display-scaled values (carry-forward 3); the rest
    *  are raw wire ranges, verbatim `DspPanel.svelte`'s own slider bounds.
@@ -63,9 +56,7 @@
     ['manualNotchWidth', 'Notch width', 0, 2, 1, (v: number) => NOTCH_WIDTH_LABELS[v] ?? String(v)],
     ['agcTimeConstant', 'AGC time', 0, 9, 1, formatAgcTime],
   ] as const;
-  export type DspToggleField = (typeof DSP_TOGGLES)[number][0];
   export type DspLevelField = (typeof DSP_LEVELS)[number][0] | 'nbLevel';
-  const NOTCH_MODES = ['off', 'auto', 'manual'] as const;
   const [, , NR_FALLBACK_MIN, NR_FALLBACK_MAX, NR_FALLBACK_STEP] = DSP_LEVELS[0];
 
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it has been observed. */
@@ -130,68 +121,26 @@
 </script>
 
 <script lang="ts">
-  import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
-  import {
-    bindChoiceInstrument,
-    bindToggleInstrument,
-  } from '../primitives/control-instruments/control-instrument-behavior';
+  import type { DspFiniteHandles, DspFiniteLayout } from './dsp-instruments';
 
   interface Props {
     view: RadioViewModel;
-    agcLabels?: Record<string, string>;
+    finiteHandles: DspFiniteHandles;
+    finiteLayout?: DspFiniteLayout;
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
-    /** MOR-1441 leg 2 — the freshest in-flight `set_nb`/`set_nr` target for
-     *  the active receiver, DISPLAY ONLY (see the file header). `null` when
-     *  nothing is pending. */
-    pendingNb?: boolean | null;
-    pendingNr?: boolean | null;
-    onToggle?: (field: DspToggleField, next: boolean) => void;
     onLevelChange?: (field: DspLevelField, value: number) => void;
-    onNotchModeChange?: (mode: 'off' | 'auto' | 'manual') => void;
-    onAgcModeChange?: (mode: number) => void;
   }
   let {
-    view, agcLabels = {}, nbLevelMax = 255, nbLevelPercent = false,
-    pendingNb = null, pendingNr = null,
-    onToggle, onLevelChange, onNotchModeChange, onAgcModeChange,
+    view, finiteHandles, finiteLayout, nbLevelMax = 255, nbLevelPercent = false, onLevelChange,
   }: Props = $props();
-
-  const pendingToggleIdBase = $props.id();
-  /** `nbActive`/`nrActive` are the only two toggles with a pending source;
-   *  every other `DSP_TOGGLES` entry (there are none today, but the shape
-   *  stays open for a future one) simply has no pending marker. */
-  const pendingOf = (field: DspToggleField): boolean | null =>
-    field === 'nrActive' ? pendingNr : field === 'nbActive' ? pendingNb : null;
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let dsp = $derived(view.dsp);
-  let agcOptions = $derived(dsp ? buildAgcOptions([...dsp.agcModes], agcLabels) : []);
   let nbLevelFormat = $derived(
     nbLevelPercent ? (v: number) => rawToPercentDisplay(v, 0, nbLevelMax) : undefined,
   );
-
-  const toggleBehaviors = {
-    nrActive: bindToggleInstrument(() => ({
-      field: dsp?.nrActive,
-      invoke: (next) => onToggle?.('nrActive', next),
-    })),
-    nbActive: bindToggleInstrument(() => ({
-      field: dsp?.nbActive,
-      invoke: (next) => onToggle?.('nbActive', next),
-    })),
-  } satisfies Record<DspToggleField, ReturnType<typeof bindToggleInstrument>>;
-  const notchBehavior = bindChoiceInstrument(() => ({
-    field: dsp?.notchMode,
-    choices: NOTCH_MODES,
-    invoke: (mode) => onNotchModeChange?.(mode),
-  }));
-  const agcBehavior = bindChoiceInstrument<number>(() => ({
-    field: dsp?.agcMode,
-    choices: agcOptions.map((option) => option.value),
-    invoke: (mode) => onAgcModeChange?.(mode),
-  }));
 
   function level(field: DspLevelField, value: number): void {
     if (!dsp) return;
@@ -208,25 +157,14 @@
 
 {#if dsp}
   <section class="dsp-surface" data-testid="dsp-surface" aria-label="DSP controls">
-    <div class="dsp-row">
-      {#each DSP_TOGGLES as [field, label] (field)}
-        {#if dsp[field].availability.structural}
-          {@const pending = pendingOf(field)}
-          {@const pendingId = `${pendingToggleIdBase}-${field}`}
-          {@const behavior = toggleBehaviors[field]}
-          <button
-            type="button" class="dsp-toggle" data-testid={`dsp-${field}`} data-field={field}
-            data-disabled-reason={reasonOf(dsp[field])} aria-pressed={behavior.confirmed}
-            data-pending-status={pending !== null ? 'pending' : 'confirmed'}
-            aria-describedby={pending !== null ? pendingId : undefined}
-            disabled={!behavior.available} onclick={() => behavior.invoke()}
-          >{label}: {fmt(dsp[field])}</button>
-          {#if pending !== null}
-            <span id={pendingId} class="sr-only">{t('core.dsp.pendingAnnouncement')}</span>
-          {/if}
-        {/if}
-      {/each}
-    </div>
+    {#if finiteLayout}
+      {@render finiteLayout(finiteHandles)}
+    {:else}
+      <div class="dsp-row">
+        {@render finiteHandles.nrActive()}
+        {@render finiteHandles.nbActive()}
+      </div>
+    {/if}
 
     {#each DSP_LEVELS as [field, label, min, max, step, format] (field)}
       {#if dsp[field].availability.structural}
@@ -259,28 +197,9 @@
       </label>
     {/if}
 
-    {#if dsp.notchMode.availability.structural}
-      <div class="dsp-row" data-testid="dsp-notchMode" data-disabled-reason={reasonOf(dsp.notchMode)}>
-        {#each NOTCH_MODES as mode (mode)}
-          <button
-            type="button" class="dsp-choice" data-testid={`dsp-notchMode-${mode}`}
-            aria-pressed={notchBehavior.selected === undefined ? undefined : notchBehavior.isSelected(mode)}
-            disabled={!notchBehavior.available} onclick={() => notchBehavior.invoke(mode)}
-          >{mode}</button>
-        {/each}
-      </div>
-    {/if}
-
-    {#if dsp.agcMode.availability.structural}
-      <div class="dsp-row" data-testid="dsp-agcMode" data-disabled-reason={reasonOf(dsp.agcMode)}>
-        {#each agcOptions as option (option.value)}
-          <button
-            type="button" class="dsp-choice" data-testid={`dsp-agcMode-${option.value}`}
-            aria-pressed={agcBehavior.selected === undefined ? undefined : agcBehavior.isSelected(option.value)}
-            disabled={!agcBehavior.available} onclick={() => agcBehavior.invoke(option.value)}
-          >{option.label}</button>
-        {/each}
-      </div>
+    {#if !finiteLayout}
+      {@render finiteHandles.notchMode()}
+      {@render finiteHandles.agcMode()}
     {/if}
   </section>
 {/if}
@@ -292,14 +211,4 @@
   .dsp-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .dsp-name { min-width: 8ch; }
-  .dsp-toggle[aria-pressed='true'], .dsp-choice[aria-pressed='true'] { font-weight: 700; }
-  .dsp-toggle:disabled, .dsp-choice:disabled { cursor: not-allowed; }
-  /* MOR-1441 leg 2 — same pending doctrine as `FilterSurface`'s
-     `.filter-choice[data-pending='true']`: structural marker, never
-     color-only. */
-  .dsp-toggle[data-pending-status='pending'] { font-style: italic; opacity: 0.75; }
-  .sr-only {
-    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
-  }
 </style>

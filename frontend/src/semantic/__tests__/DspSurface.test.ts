@@ -3,8 +3,8 @@
  *
  * Carry-forward pins from the MOR-1290 fact-layer decisions this surface must
  * not relax (see `DspSurface.svelte`'s header for the full statement):
- *  (1) `agcLabels`/`nbLevelMax`/`nbLevelPercent` arrive as plain props, never
- *      read off a capabilities import inside this file — block 5.
+ *  (1) DSP display metadata arrives as plain host/surface props, never read
+ *      off a capabilities import inside this family — block 5.
  *  (2) a structurally-present, never-observed `agcTimeConstant` renders like
  *      any other unobserved present field — no special-casing — block 2.
  *  (3) every reading renders exactly as the fact group states it — no local
@@ -14,9 +14,10 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import DspSurface, { DSP_LEVELS, DSP_TOGGLES, type DspLevelField, type DspToggleField } from '../DspSurface.svelte';
+import { DSP_LEVELS, DSP_TOGGLES, type DspLevelField, type DspToggleField } from '../DspSurface.svelte';
 import { topologyFixtures, withDsp } from '../fixtures/topologies';
 import type { Availability, DspViewModel, RadioViewModel } from '../radio-view-model';
+import DspInstrumentHostFixture from './fixtures/DspInstrumentHostFixture.svelte';
 
 /** `1/single` + a fully-observed dsp group (nrActive true, nbActive false —
  *  both toggles exercised at least once by the base fixture). */
@@ -97,7 +98,9 @@ type Props = Handlers & {
 };
 
 function render(view: RadioViewModel, props: Props = {}) {
-  const component = mount(DspSurface, { target, props: { view, ...props } });
+  const component = mount(DspInstrumentHostFixture, {
+    target, props: { view, presentation: 'grouped', ...props },
+  });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -647,10 +650,13 @@ describe('this surface stays presentation-only', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
   const source = withoutComments(readFileSync('src/semantic/DspSurface.svelte', 'utf8'));
+  const hostSource = withoutComments(readFileSync('src/semantic/DspInstrumentHost.svelte', 'utf8'));
 
   it('imports no transport, store or command-bus module', () => {
-    expect(source).not.toMatch(/\$lib\/transport/);
-    expect(source).not.toMatch(/\$lib\/stores/);
-    expect(source).not.toMatch(/command-bus/);
+    for (const text of [source, hostSource]) {
+      expect(text).not.toMatch(/\$lib\/transport/);
+      expect(text).not.toMatch(/\$lib\/stores/);
+      expect(text).not.toMatch(/command-bus/);
+    }
   });
 });

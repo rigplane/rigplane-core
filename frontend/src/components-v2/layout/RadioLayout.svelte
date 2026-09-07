@@ -30,6 +30,7 @@
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
   import type { InstrumentComposition } from '../wiring/instrument-composition';
+  import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -313,6 +314,15 @@
   {@render txAuxScalars()}
 {/snippet}
 
+{#snippet dspFiniteLayout(dspInstruments: DspFiniteHandles)}
+  <div class="dsp-finite-grid">
+    <div class="dsp-finite-seat" data-field="nrActive">{@render dspInstruments.nrActive()}</div>
+    <div class="dsp-finite-seat" data-field="nbActive">{@render dspInstruments.nbActive()}</div>
+    <div class="dsp-finite-seat" data-field="notchMode">{@render dspInstruments.notchMode()}</div>
+    <div class="dsp-finite-seat" data-field="agcMode">{@render dspInstruments.agcMode()}</div>
+  </div>
+{/snippet}
+
 {#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic', allowBare = false)}
   {@render instruments.vfo(appearance, allowBare)}
   {@render instruments.rxTx(allowBare)}
@@ -367,7 +377,11 @@
         {@render instruments.txFaultRecovery()}
         {@render instruments.modInputTxWarning()}
         {@render instruments.rxAudio()}
-        {@render instruments.dsp()}
+        {#if skinId === 'desktop-v2'}
+          {@render instruments.dsp(undefined, dspFiniteLayout)}
+        {:else}
+          {@render instruments.dsp()}
+        {/if}
         {@render instruments.cwKeyer()}
         {@render instruments.txAuxControls(txAuxInstrumentLayout)}
         <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
@@ -642,6 +656,7 @@
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

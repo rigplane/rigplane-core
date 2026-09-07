@@ -5,6 +5,7 @@ import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
 import type { ReceiverInstrumentHandles } from '../../semantic/ReceiverInstrumentHost.svelte';
 import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
 import type { RfFrontEndLevelHandles } from '../../semantic/rf-front-end-instruments';
+import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
@@ -21,7 +22,7 @@ export interface InstrumentComposition {
   readonly rxAudio: Snippet<[allowBare?: boolean]>;
   readonly rfFrontEnd: Snippet<[allowBare?: boolean]>;
   readonly filter: Snippet<[allowBare?: boolean]>;
-  readonly dsp: Snippet<[allowBare?: boolean]>;
+  readonly dsp: Snippet<[allowBare?: boolean, finiteLayout?: DspFiniteLayout]>;
   readonly band: Snippet<[allowBare?: boolean]>;
   readonly antenna: Snippet<[allowBare?: boolean]>;
   readonly ritXitScan: Snippet<[allowBare?: boolean]>;
