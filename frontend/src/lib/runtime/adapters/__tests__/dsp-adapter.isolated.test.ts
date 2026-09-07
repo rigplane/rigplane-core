@@ -388,13 +388,17 @@ describe('nrLevel/nbDepth are deterministic in (state, caps) — MOR-1290 (F1, v
 describe('dsp honesty gate — no notchMode derivation from a half-observed input (MOR-1290, F2 lesson)', () => {
   const notchCaps = caps({ capabilities: ['notch'] });
 
-  it('autoNotch observed, manualNotch UNOBSERVED (stale) — notchMode must NOT derive from a fabricated manualNotch default', () => {
+  // MOR-2425/R29: a stale-but-observed manualNotch is `available` (carries
+  // its last value, `false`), so `manualNotchObserved` is true too — both
+  // inputs are honestly observed, and notchMode derives 'auto' from
+  // autoNotch=true the same way the fresh-both case below does.
+  it('autoNotch observed, manualNotch stale-but-observed — notchMode derives from its last value (MOR-2425/R29)', () => {
     const view = model(bareState({
       main: { ...bareState().main, autoNotch: true, manualNotch: false },
       fieldStatus: { ...bareState().fieldStatus, 'main.autoNotch': fresh, 'main.manualNotch': stale },
     }), notchCaps);
     expect(view.dsp!.notchMode).toEqual({
-      reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 'auto' }, availability: { structural: true, operational: true },
     });
   });
 

@@ -39,11 +39,11 @@ describe('field-status parent/child resolution', () => {
     expect(isFieldAvailable(state, 'scopeControls.span')).toBe(false);
   });
 
-  it('inherits a stale parent when the child has no own entry', () => {
+  it('inherits a stale-but-observed parent as available when the child has no own entry (MOR-2425/R29)', () => {
     const state = stateWith({
       scopeControls: { availability: 'stale', freshness: 'stale', observed: true },
     });
-    expect(getFieldAvailability(state, 'scopeControls.refDb')).toBe('stale');
+    expect(getFieldAvailability(state, 'scopeControls.refDb')).toBe('available');
   });
 
   it('lets a missing/stale parent override a child that claims available', () => {
@@ -56,12 +56,12 @@ describe('field-status parent/child resolution', () => {
     expect(getFieldAvailability(state, 'scopeControls.span')).toBe('missing');
   });
 
-  it('keeps an own stale entry unavailable regardless of parent', () => {
+  it('treats an own stale-but-observed entry as available regardless of parent (MOR-2425/R29)', () => {
     const state = stateWith({
       'scopeControls.span': { availability: 'stale', freshness: 'stale', observed: true },
     });
-    expect(getFieldAvailability(state, 'scopeControls.span')).toBe('stale');
-    expect(isFieldAvailable(state, 'scopeControls.span')).toBe(false);
+    expect(getFieldAvailability(state, 'scopeControls.span')).toBe('available');
+    expect(isFieldAvailable(state, 'scopeControls.span')).toBe(true);
   });
 });
 

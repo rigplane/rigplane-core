@@ -5,6 +5,9 @@ import { proxy } from 'svelte/internal/client';
 import type { Capabilities, VfoScheme } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+import { getRfSqlControlFeedback } from '$lib/runtime/adapters/panel-adapters';
+import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
 const activation = vi.hoisted(() => ({ selected: undefined as unknown }));
 const captures = vi.hoisted(() => ({
@@ -686,5 +689,170 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
       .map((node) => node.dataset.testid)
       .filter((id): id is string => documented.includes(id ?? ''));
     expect(order).toEqual(documented);
+  });
+});
+
+/**
+ * MOR-2425/R29 weakest witness (census §E): unlike every other test in this
+ * file, `view` here is built by the REAL `toRadioViewModel(state, caps)` —
+ * a genuine consumer of the fixed `field-status.ts` primitive, not a
+ * hand-shaped `RfFrontEndViewModel` (`finiteBase()`/`rfReading`/
+ * `rfAvailability` above construct the reading/availability directly and so
+ * never touch `field-status.ts` at all).
+ *
+ * The "real disconnect" half is modelled as a field that has NEVER been
+ * observed (`observed: false`, `availability: 'missing'`), not a live
+ * `ManagedAppTxController` session transition: verified before writing this
+ * (against `semantic-rf-front-end-wiring.component.test.ts`) that publishing
+ * a `disconnected` session, or even a `null` state, through that file's own
+ * authority mock leaves every preamp button's `disabled` unchanged, because
+ * that wiring's `canonicalView` re-reads `runtime.state`/`runtime.caps` with
+ * no reactive subscription of its own — unlike the separate, session-aware
+ * continuous-scalar level bindings its rfGain/squelch disconnect tests
+ * exercise. `missing`/`observed: false` is the shape `field-status.ts`'s own
+ * fix actually distinguishes from stale-but-observed (its own-entry branch:
+ * `if (status.observed) return 'available'; return status.availability;`),
+ * so it is the honest way to exercise "a real disconnect or structural
+ * absence" (the fix's own docstring) for this fact.
+ */
+describe('MOR-2425/R29 weakest witness: preamp stays enabled while stale-but-observed', () => {
+  const r29Caps = (): Capabilities => ({
+    stateContractVersion: 1, providerGeneration: 1,
+    model: 'R29-WITNESS', scope: false, audio: true, tx: false,
+    capabilities: ['audio', 'preamp'],
+    receivers: 1, vfoScheme: 'single',
+    freqRanges: [], modes: [], filters: [], preValues: [0, 1, 2], attValues: [],
+    audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+    webrtc: { available: false, enabled: false }, txBands: null,
+  } as Capabilities);
+
+  const r29Fresh = { storePath: 'main.preamp', observed: true, freshness: 'fresh', availability: 'available' };
+
+  function r29State(preampStatus: Record<string, unknown>): ServerState {
+    return {
+      stateContractVersion: 1, providerGeneration: 1,
+      revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+      updatedAt: '2026-09-07T00:00:00Z', active: 'MAIN',
+      ptt: false, split: false, dualWatch: false, tunerStatus: 0,
+      txTarget: { status: 'unknown', reason: 'not-observed' },
+      main: {
+        freqHz: 14_250_000, mode: 'USB', filter: 1, dataMode: 0,
+        att: 0, preamp: 1, nb: false, nr: false, afLevel: 0.5, rfGain: 1, squelch: 0, sMeter: 0,
+      },
+      connection: {} as ServerState['connection'],
+      fieldStatus: {
+        active: r29Fresh, split: r29Fresh, dualWatch: r29Fresh, txTarget: r29Fresh,
+        'main.freqHz': r29Fresh, 'main.mode': r29Fresh, 'main.filter': r29Fresh,
+        'main.preamp': preampStatus,
+      },
+    } as unknown as ServerState;
+  }
+
+  it(
+    'keeps the choice enabled with its last selection while stale-but-observed, and a click still dispatches exactly one command',
+    () => {
+      const stale = { storePath: 'main.preamp', observed: true, freshness: 'stale', availability: 'stale' };
+      const view = toRadioViewModel(r29State(stale), r29Caps());
+      expect(view).not.toBeNull();
+      const onPreampChange = vi.fn();
+      const r = renderFinite(view!, { onPreampChange });
+
+      expect(r.el('preamp-1')!.getAttribute('aria-checked')).toBe('true');
+      expect(r.el('preamp-2')!.hasAttribute('disabled')).toBe(false);
+      r.el('preamp-2')!.click();
+      flushSync();
+      expect(onPreampChange).toHaveBeenCalledExactlyOnceWith(2);
+    },
+  );
+
+  it(
+    'disables the choice once the field has never been observed at all (structural absence, not staleness)',
+    () => {
+      const missing = { storePath: 'main.preamp', observed: false, freshness: 'unknown', availability: 'missing' };
+      const view = toRadioViewModel(r29State(missing), r29Caps());
+      expect(view).not.toBeNull();
+      const onPreampChange = vi.fn();
+      const r = renderFinite(view!, { onPreampChange });
+
+      for (const value of [0, 1, 2]) expect(r.el(`preamp-${value}`)!.hasAttribute('disabled')).toBe(true);
+      r.el('preamp-1')!.click();
+      flushSync();
+      expect(onPreampChange).not.toHaveBeenCalled();
+    },
+  );
+});
+
+/**
+ * Consistency witness (census §E, closing the verifier's Non-blocking(4)):
+ * one stale-but-observed state feeds BOTH the REAL scalar accessor
+ * (`panel-adapters.ts: getRfSqlControlFeedback`, fixed by #3357, now merged
+ * to `main`) and the REAL finite seat (`field-status.ts`, fixed by THIS
+ * PR) — through the actual `$lib/stores/radio.svelte`/`capabilities.svelte`
+ * stores this file's other describe blocks never touch, not a
+ * hand-shaped stand-in for either mechanism. Closes the "scalar enabled,
+ * finite neighbor disabled" split the verifier flagged for the state as of
+ * #3357 alone.
+ */
+describe('MOR-2425/R29 consistency witness: one stale-but-observed state, scalar AND finite seat both available', () => {
+  const consistencyCaps = (): Capabilities => ({
+    stateContractVersion: 1, providerGeneration: 1,
+    model: 'R29-CONSISTENCY', scope: false, audio: true, tx: false,
+    capabilities: ['audio', 'preamp', 'rf_gain'],
+    receivers: 1, vfoScheme: 'single',
+    freqRanges: [], modes: [], filters: [], preValues: [0, 1, 2], attValues: [],
+    audioConfig: { sampleRate: 48_000, channels: 1, codecs: [] },
+    webrtc: { available: false, enabled: false }, txBands: null,
+  } as Capabilities);
+
+  function consistencyState(): ServerState {
+    const fresh = {
+      storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+      lastObservedMonotonic: 1,
+    };
+    const stale = {
+      storePath: 'x', observed: true, freshness: 'stale', availability: 'stale',
+      lastObservedMonotonic: 1,
+    };
+    return {
+      stateContractVersion: 1, providerGeneration: 1,
+      revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+      updatedAt: '2026-09-07T00:00:00Z', active: 'MAIN',
+      ptt: false, split: false, dualWatch: false, tunerStatus: 0,
+      txTarget: { status: 'unknown', reason: 'not-observed' },
+      main: {
+        freqHz: 14_250_000, mode: 'USB', filter: 1, dataMode: 0,
+        att: 0, preamp: 1, nb: false, nr: false, afLevel: 0.5, rfGain: 0.5, squelch: 0, sMeter: 0,
+      },
+      connection: { rigConnected: true, radioReady: true, controlConnected: true },
+      fieldStatus: {
+        active: fresh, split: fresh, dualWatch: fresh, txTarget: fresh,
+        'main.freqHz': fresh, 'main.mode': fresh, 'main.filter': fresh,
+        // One state, two stale-but-observed fields: rfGain (scalar,
+        // `panel-adapters.ts`) and preamp (finite, `field-status.ts`).
+        'main.preamp': stale, 'main.rfGain': stale,
+      },
+    } as unknown as ServerState;
+  }
+
+  afterEach(() => { resetRadioState(); clearCapabilities(); });
+
+  it('rfGain (scalar, panel-adapters.ts) and preamp (finite, field-status.ts) are both available from the same state', () => {
+    const caps = consistencyCaps();
+    const state = consistencyState();
+    expect(setCapabilities(caps)).toBe(true);
+    expect(setRadioState(state)).toBe(true);
+
+    // Scalar side — the REAL panel-adapters.ts accessor the wiring's rfGain
+    // slider consumes.
+    const feedback = getRfSqlControlFeedback({ state: 'connected', epoch: 1 });
+    expect(feedback!.rf.feedback.availability).toBe('available');
+    expect(feedback!.rf.feedback.confirmed).toBe(0.5);
+
+    // Finite side — the REAL field-status.ts-backed preamp choice seat.
+    const view = toRadioViewModel(state, caps);
+    expect(view).not.toBeNull();
+    const r = renderFinite(view!, {});
+    expect(r.el('preamp-1')!.getAttribute('aria-checked')).toBe('true');
+    expect(r.el('preamp-1')!.hasAttribute('disabled')).toBe(false);
   });
 });

@@ -158,7 +158,6 @@ describe('NR-level semantic projection (MOR-1736)', () => {
   });
 
   it.each([
-    ['stale readback', 4, 'stale'],
     ['unread value', undefined, 'missing'],
     ['below-domain value', -1, 'available'],
     ['above-domain value', 11, 'available'],
@@ -170,6 +169,20 @@ describe('NR-level semantic projection (MOR-1736)', () => {
       adjustable: false,
     });
     expect(dsp.nrLevel.reading).toEqual({ status: 'unknown' });
+  });
+
+  // MOR-2425/R29: a stale-but-observed readback carries its last value and
+  // is `available`, not failed closed — same shape as the fresh case above.
+  // Verified by running this exact scenario through `toRadioViewModel`
+  // (`/tmp/probe3.out.json`, 2026-09-07).
+  it('projects a stale-but-observed readback the same as a fresh one (MOR-2425/R29)', () => {
+    const dsp = model(4, caps(EXACT_NR_DOMAIN), 'stale').dsp!;
+    expect(projectionOf(dsp)).toEqual({
+      value: 4,
+      domain: EXACT_DISPLAY_DOMAIN,
+      adjustable: true,
+    });
+    expect(dsp.nrLevel.reading).toEqual({ status: 'known', value: 4 });
   });
 
   it.each([
