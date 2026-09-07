@@ -12,6 +12,8 @@
     active: boolean;
     receiver: 'main' | 'sub';
     vfoFreqHook: boolean;
+    renderer?: FrequencyRenderer;
+    presentationIsCurrent?: () => boolean;
   }
 
   let {
@@ -21,34 +23,45 @@
     active,
     receiver,
     vfoFreqHook,
+    renderer,
+    presentationIsCurrent,
   }: Props = $props();
 
   let attachedBinding = untrack(() => binding);
   let attachedContext = untrack(() => attachedBinding.context);
-  let attachedRenderer = untrack(() => getSelectedFrequencyReadout());
+  let attachedRenderer = untrack(() => renderer ?? getSelectedFrequencyReadout());
+  let attachedPresentationIsCurrent = untrack(() => presentationIsCurrent);
   let selectedRenderer = $state.raw<FrequencyRenderer | undefined>(attachedRenderer);
   const attachLease = (
     owner: FrequencyInstrumentBinding,
-    renderer: FrequencyRenderer | undefined,
+    selected: FrequencyRenderer | undefined,
+    isPresentationCurrent: (() => boolean) | undefined,
   ) => owner.attachRenderer(
-    () => Object.is(binding, owner) && getSelectedFrequencyReadout() === renderer,
+    () => Object.is(binding, owner)
+      && (renderer ?? getSelectedFrequencyReadout()) === selected
+      && (isPresentationCurrent?.() ?? true),
   );
-  let lease = $state.raw(attachLease(attachedBinding, attachedRenderer));
+  let lease = $state.raw(attachLease(
+    attachedBinding, attachedRenderer, attachedPresentationIsCurrent,
+  ));
 
   $effect.pre(() => {
     const nextBinding = binding;
     const nextContext = nextBinding.context;
-    const nextRenderer = getSelectedFrequencyReadout();
+    const nextRenderer = renderer ?? getSelectedFrequencyReadout();
+    const nextPresentationIsCurrent = presentationIsCurrent;
     if (Object.is(nextBinding, attachedBinding)
       && Object.is(nextContext, attachedContext)
       && nextRenderer === attachedRenderer
+      && nextPresentationIsCurrent === attachedPresentationIsCurrent
       && (nextContext === null || !lease.revoked)) return;
     lease.revoke();
     attachedBinding = nextBinding;
     attachedContext = nextContext;
     attachedRenderer = nextRenderer;
+    attachedPresentationIsCurrent = nextPresentationIsCurrent;
     selectedRenderer = nextRenderer;
-    lease = attachLease(nextBinding, nextRenderer);
+    lease = attachLease(nextBinding, nextRenderer, nextPresentationIsCurrent);
   });
 
   onDestroy(() => lease.revoke());

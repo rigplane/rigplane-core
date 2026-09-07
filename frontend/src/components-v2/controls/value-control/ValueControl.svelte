@@ -53,6 +53,7 @@
     skin?: Skin;
     valueProjection?: Readonly<HBarValueProjection>;
     issuedStatusPresentation?: Readonly<HBarIssuedStatusPresentation>;
+    presentationIsCurrent?: () => boolean;
   }
 
   interface RawProps {
@@ -132,6 +133,7 @@
     skin,
     valueProjection,
     issuedStatusPresentation,
+    presentationIsCurrent,
   }: Props = $props();
 
   let effectiveOnChange = $derived(onChange ?? onchange ?? (() => {}));
@@ -244,28 +246,36 @@
   let attachedSeatRenderer = untrack(() => renderer);
   let attachedSeatAppearance = initialAppearance;
   let attachedSeatComponent = untrack(() => skinComponent);
+  let attachedPresentationIsCurrent = untrack(() => presentationIsCurrent);
   let currentRendererOccurrence: object;
 
-  function makeRendererSeat(binding: ContinuousScalarBinding): ContinuousScalarRendererSeat {
+  function makeRendererSeat(
+    binding: ContinuousScalarBinding,
+    isPresentationCurrent: (() => boolean) | undefined,
+  ): ContinuousScalarRendererSeat {
     const occurrence = Object.freeze({});
     currentRendererOccurrence = occurrence;
     return createContinuousScalarRendererSeat(
       binding,
-      () => currentRendererOccurrence === occurrence,
+      () => currentRendererOccurrence === occurrence && (isPresentationCurrent?.() ?? true),
     );
   }
 
-  let rendererSeat = $state(makeRendererSeat(untrack(() => scalarBinding)));
+  let rendererSeat = $state(makeRendererSeat(
+    untrack(() => scalarBinding), attachedPresentationIsCurrent,
+  ));
   $effect.pre(() => {
     if (scalarBinding === attachedSeatBinding
       && renderer === attachedSeatRenderer
       && effectiveAppearance === attachedSeatAppearance
-      && skinComponent === attachedSeatComponent) return;
+      && skinComponent === attachedSeatComponent
+      && presentationIsCurrent === attachedPresentationIsCurrent) return;
     attachedSeatBinding = scalarBinding;
     attachedSeatRenderer = renderer;
     attachedSeatAppearance = effectiveAppearance;
     attachedSeatComponent = skinComponent;
-    rendererSeat = makeRendererSeat(scalarBinding);
+    attachedPresentationIsCurrent = presentationIsCurrent;
+    rendererSeat = makeRendererSeat(scalarBinding, presentationIsCurrent);
   });
 
   let rendererProps = $derived({

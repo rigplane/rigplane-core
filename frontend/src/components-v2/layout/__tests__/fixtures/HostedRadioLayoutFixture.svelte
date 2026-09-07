@@ -30,7 +30,7 @@
   );
   const cwKeyerInstruments = { keyerSpeed: empty } satisfies CwKeyerInstrumentHandles;
   const frequency = createRawSnippet<[mount?: ReceiverFrequencyMount]>(() => ({ render: () => '' }));
-  const meter = createRawSnippet<[renderer: ReceiverSMeterRenderer]>(() => ({ render: () => '' }));
+  const meter = createRawSnippet<[renderer?: ReceiverSMeterRenderer]>(() => ({ render: () => '' }));
   const operations = createRawSnippet<[appearance: ReceiverVfoAppearance]>(() => ({ render: () => '' }));
   const receiverInstruments = {
     mainFrequency: frequency, subFrequency: frequency,

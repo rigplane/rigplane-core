@@ -393,6 +393,16 @@ describe('external presentation records share the built-in catalog', () => {
     expect(second.loader).toHaveBeenCalledTimes(1);
   });
 
+  it('loads the exact external record without looking it up again by id', async () => {
+    const catalogRecord = externalRecord('correlated-face', faceB);
+    commitExternalPresentationBatch(prepareExternalPresentationBatch([catalogRecord]));
+    const capturedRecord = externalRecord('correlated-face', faceA);
+
+    await expect(loadSkin(capturedRecord)).resolves.toBe(faceA);
+    expect(capturedRecord.loader).toHaveBeenCalledTimes(1);
+    expect(catalogRecord.loader).not.toHaveBeenCalled();
+  });
+
   it('does not fall back for unknown or inherited ids', async () => {
     expect(getPresentationRecord('absent-external')).toBeUndefined();
     await expect(loadSkin('absent-external')).rejects.toThrow(/not registered/i);

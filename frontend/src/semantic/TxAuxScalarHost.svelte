@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte';
+  import type { ScalarAppearance } from '../../component-kit-api/src/index';
   import { ValueControl } from '../components-v2/controls/value-control';
   import type {
     HBarIssuedStatusPresentation,
@@ -29,10 +30,14 @@
     view: RadioViewModel | null;
     levelFeedback?: TxAuxLevelFeedback;
     onLevelChange?: (field: TxAuxLevelField, value: number) => void;
+    scalarAppearance?: ScalarAppearance;
+    presentationIsCurrent?: () => boolean;
     children: Snippet<[TxAuxScalarHandles]>;
   }
 
-  let { view, levelFeedback, onLevelChange, children }: Props = $props();
+  let {
+    view, levelFeedback, onLevelChange, scalarAppearance, presentationIsCurrent, children,
+  }: Props = $props();
   let txAux = $derived(view?.txAux);
 
   const LEVEL_COMMAND: Readonly<Record<TxAuxFeedbackLevelField, string>> = {
@@ -213,6 +218,8 @@
           compact={explicitPresentation ? presentation?.compact ?? false : true}
           title={disabledReason}
           {accessibility}
+          skin={scalarAppearance}
+          {presentationIsCurrent}
         />
       {:else}
         <ValueControl
@@ -224,6 +231,8 @@
           compact={explicitPresentation ? presentation?.compact ?? false : true}
           title={disabledReason}
           {accessibility}
+          skin={scalarAppearance}
+          {presentationIsCurrent}
           issuedStatusPresentation={form === 'hbar'
             ? statusPresentations[field as TxAuxFeedbackLevelField]
             : undefined}
