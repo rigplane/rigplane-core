@@ -684,6 +684,15 @@
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .filter-finite-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+  .filter-finite-seat { display: contents; }
+  .filter-finite-grid .filter-finite-seat[data-field='mode'] :global(.filter-choice-group) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .filter-finite-grid .filter-finite-seat[data-field='filter'] :global(.filter-choice-group) {
+    display: flex;
+  }
   .vfo-operation-instrument-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;
