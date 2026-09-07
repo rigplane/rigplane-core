@@ -18,8 +18,8 @@ vi.mock('../../primitives/scalar/continuous-scalar.svelte', async (importOrigina
       const binding = actual.createContinuousScalar(...args);
       const attachRenderer = binding.attachRenderer.bind(binding);
       const destroy = binding.destroy.bind(binding);
-      binding.attachRenderer = () => {
-        const lease = attachRenderer();
+      binding.attachRenderer = (...rendererArgs: Parameters<typeof attachRenderer>) => {
+        const lease = attachRenderer(...rendererArgs);
         capture.leases.push({ binding, lease });
         return lease;
       };

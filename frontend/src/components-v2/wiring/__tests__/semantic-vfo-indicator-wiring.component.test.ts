@@ -433,7 +433,13 @@ describe('production receiver-indicator partitioning', () => {
       /keySpeedFeedback\s*=\s*\$derived\(getKeySpeedControlFeedback\(controlSession\)\)/,
     );
     expect(source).toMatch(
-      /<CwKeyerSurface[\s\S]*?\{cwPitchFeedback\}[\s\S]*?\{keySpeedFeedback\}[\s\S]*?\/>/,
+      /<CwKeyerInstrumentHost[\s\S]*?\{keySpeedFeedback\}[\s\S]*?\{#snippet children\(cwKeyerInstruments\)}/,
+    );
+    expect(source).toMatch(
+      /<CwKeyerSurface(?:(?!\/>)[\s\S])*?\{cwPitchFeedback\}(?:(?!\/>)[\s\S])*?\/>/,
+    );
+    expect(source).not.toMatch(
+      /<CwKeyerSurface(?:(?!\/>)[\s\S])*?\{keySpeedFeedback\}/,
     );
     expect(h.cwPitchFeedback()).toMatchObject({
       phase: 'unavailable', scope: { control: 'cw-pitch', receiver: 0 },
