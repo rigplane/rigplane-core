@@ -40,13 +40,14 @@ vi.mock('$lib/runtime', () => ({
       h.sessionSubscriber = handler;
       return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
     },
+    authoritySubscribers: h.authoritySubscribers,
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
-      h.authoritySubscribers.add(handler);
+      this.authoritySubscribers.add(handler);
       handler({
         state: h.state, caps: h.caps, session: h.session,
         rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
       });
-      return () => { h.authoritySubscribers.delete(handler); };
+      return () => { this.authoritySubscribers.delete(handler); };
     },
     get audio() { return h.audio; },
     get connectionAudio() { return false; },
@@ -138,12 +139,15 @@ function render(
   target = document.createElement('div'); document.body.appendChild(target);
   component = mount(SemanticRadioSurfaces, { target, props }); flushSync();
 }
-function pushSession(next: ControlSessionSnapshot): void {
-  h.session = next; h.sessionSubscriber?.(next);
+function publishAuthority(): void {
   for (const subscriber of h.authoritySubscribers) subscriber({
     state: h.state, caps: h.caps, session: h.session,
     rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
   });
+}
+function pushSession(next: ControlSessionSnapshot): void {
+  h.session = next; h.sessionSubscriber?.(next);
+  publishAuthority();
   flushSync();
 }
 function pushMeter(value: number, providerGeneration = 1): void {
@@ -152,11 +156,21 @@ function pushMeter(value: number, providerGeneration = 1): void {
   h.state = next;
   h.caps = { ...caps('main_sub', 2), providerGeneration };
   txHarness.emitServerSnapshot({});
-  for (const subscriber of h.authoritySubscribers) subscriber({
-    state: h.state, caps: h.caps, session: h.session,
-    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
-  });
+  publishAuthority();
   flushSync();
+}
+function frequencyState(display: 'unknown' | 'current' | 'stale'): ServerState {
+  const next = state();
+  for (const path of ['main.freqHz', 'main.vfoA.freqHz']) {
+    if (display === 'unknown') delete next.fieldStatus?.[path];
+    else if (display === 'stale') next.fieldStatus![path] = {
+      ...fresh, freshness: 'stale', availability: 'stale',
+    };
+  }
+  return next;
+}
+function pushState(next: ServerState): void {
+  h.state = next; txHarness.emitServerSnapshot({}); publishAuthority(); flushSync();
 }
 const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')]
   .map((row) => row.dataset.indicatorReceiver);
@@ -217,31 +231,89 @@ afterEach(() => {
 
 describe('production receiver-indicator partitioning', () => {
   it.each([
+    ['dual semantic receiver strip', { strips: 'dual' }],
+    ['single semantic VFO surface', { strips: 'single' }],
+    ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
+  ] as const)('keeps one %s renderer through unknown/current/stale/current', (_name, props) => {
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+    render(caps('main_sub', 2), frequencyState('unknown'), {}, props);
+    const selector = '[data-vfo-receiver="MAIN"] [data-alternate-frequency-readout]';
+    const renderer = target.querySelector<HTMLElement>(selector)!;
+    expect(renderer).not.toBeNull();
+    expect(renderer.getAttribute('aria-disabled')).toBe('true');
+    const cardinality = () => [
+      target.querySelectorAll('[data-testid="vfo-surface"]').length,
+      target.querySelectorAll('[data-testid="vfo-ops"]').length,
+    ];
+    const initialCardinality = cardinality();
+
+    pushState(frequencyState('current'));
+    expect(target.querySelector(selector)).toBe(renderer);
+    const digit = renderer.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!;
+    digit.click();
+    renderer.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    const currentCalls = h.noop.mock.calls.length;
+    expect(currentCalls).toBeGreaterThan(0);
+
+    pushState(frequencyState('stale'));
+    expect(target.querySelector(selector)).toBe(renderer);
+    expect(renderer.textContent).toContain('14200000');
+    const staleWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    renderer.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.dispatchEvent(staleWheel);
+    expect(renderer.getAttribute('aria-disabled')).toBe('true');
+    expect(staleWheel.defaultPrevented).toBe(false);
+    expect(h.noop).toHaveBeenCalledTimes(currentCalls);
+    expect(cardinality()).toEqual(initialCardinality);
+
+    pushState(frequencyState('current'));
+    expect(target.querySelector(selector)).toBe(renderer);
+    expect(renderer.getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it.each([
+    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard'],
+    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr'],
+  ] as const)('renders one operation group and status in %s', (_name, props, surfaces, appearance) => {
+    render(caps('main_sub', 2), state(), {}, props);
+    expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(surfaces);
+    expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
+    expect(target.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
+  });
+
+  it.each([
     ['dual receiver strip', { strips: 'dual' }],
     ['single VFO surface', { strips: 'single' }],
     ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
-  ] as const)('rotates the %s frequency authority on session and provider identity', (
+  ] as const)('closes the %s before-flush A-B-A gap and rotates provider identity', (
     _name, props,
   ) => {
     selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
     render(caps('main_sub', 2), state(), {}, props);
+    expect(h.authoritySubscribers.size).toBe(1);
     const digit = projectFrequencyReadout({ confirmedHz: 14_200_000 }).digits[0];
     const first = retainedInteractions().find((interaction) => !interaction.inert)!;
     first.handleDigitClick(digit, new MouseEvent('click'));
     expect(first.selectedDigitIndex).toBe(digit.digitIndex);
-    pushSession({ state: 'connected', epoch: 2 });
-    expect(first.inert).toBe(true);
+    h.session = { state: 'connected', epoch: 2 }; publishAuthority();
+    h.session = { state: 'connected', epoch: 1 }; publishAuthority();
     const callsAfterSession = h.noop.mock.calls.length;
     const staleSessionWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
     first.handleDigitClick(digit, new MouseEvent('click'));
     first.handleWheel(digit, staleSessionWheel);
     expect(staleSessionWheel.defaultPrevented).toBe(false);
+    expect(first.inert).toBe(true);
     expect(h.noop).toHaveBeenCalledTimes(callsAfterSession);
 
+    flushSync();
     const second = retainedInteractions().find((interaction) => !interaction.inert)!;
     expect(second).not.toBe(first);
     second.handleDigitClick(digit, new MouseEvent('click'));
     expect(second.selectedDigitIndex).toBe(digit.digitIndex);
+    const freshKey = new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true });
+    second.handleKeyDown(freshKey);
+    expect(freshKey.defaultPrevented).toBe(true);
+    expect(h.noop).toHaveBeenCalledTimes(callsAfterSession + 1);
     pushMeter(50, 2);
     expect(second.inert).toBe(true);
     const callsAfterProvider = h.noop.mock.calls.length;
@@ -377,6 +449,19 @@ describe('production receiver-indicator partitioning', () => {
     expect(rowReceivers(target)).toEqual(['MAIN', 'SUB']);
     expect(sub.dataset.indicatorOperational).toBe('false');
     expect(sub.querySelector('[data-testid="receiver-s-meter-unknown"]')).not.toBeNull();
+  });
+
+  it.each([
+    ['semantic', { strips: 'dual' }],
+    ['Standard', { strips: 'single', vfoAppearance: 'standard' }],
+  ] as const)('matches unavailable SUB wrapper metadata to its inert renderer in %s', (_name, props) => {
+    render(caps('main_sub', 2, false), state(), {}, props);
+    const instrument = target.querySelector<HTMLElement>(props.strips === 'dual'
+      ? '[data-testid="channel-strip-SUB"]' : '[data-receiver-instrument="SUB"]')!;
+    const frequency = instrument.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    expect(frequency.dataset.freqTunable).toBe('false');
+    expect(frequency.querySelector('.freq')?.getAttribute('aria-disabled')).toBe('true');
+    expect(frequency.querySelector('.freq')?.getAttribute('tabindex')).toBe('-1');
   });
 
   it('keeps both S-meter shells mounted but unknown across a provider mismatch', () => {

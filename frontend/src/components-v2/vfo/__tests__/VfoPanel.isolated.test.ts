@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { mount, unmount, flushSync } from 'svelte';
+import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import VfoPanel from '../VfoPanel.svelte';
 import LegacyVfoPanelAdapter from '../LegacyVfoPanelAdapter.svelte';
@@ -435,6 +435,7 @@ describe('explicit presentation contract', () => {
   it('keeps the established wrapper hook and the real frequency control in tab order', () => {
     const t = mountPanel(explicit);
     expect(t.querySelector('[data-vfo-freq]')?.classList.contains('vfo-freq')).toBe(true);
+    expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('true');
     expect(t.querySelector('.freq')?.getAttribute('tabindex')).toBe('0');
   });
 
@@ -445,6 +446,16 @@ describe('explicit presentation contract', () => {
     expect(unknown.querySelector('[data-testid="receiver-s-meter"]')?.getAttribute('aria-label')).toContain('S meter unknown');
     const absent = mountPanel({ ...explicit, meterPresent: false });
     expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
+  });
+
+  it('places a caller-owned frequency snippet in the established seat', () => {
+    const frequency = createRawSnippet(() => ({
+      render: () => '<span data-hosted-frequency>host frequency</span>',
+    }));
+    const t = mountPanel({ ...explicit, frequency, frequencyDisabled: true });
+    expect(t.querySelector('[data-hosted-frequency]')?.closest('[data-vfo-freq]')).not.toBeNull();
+    expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('false');
+    expect(t.querySelector('.freq.interactive')).toBeNull();
   });
 
   it('emits the exact explicit slot choice key without inventing A/B', () => {
@@ -467,13 +478,13 @@ describe('explicit presentation contract', () => {
     expect(source).not.toMatch(/stores\/|runtime\/|capabilities/);
   });
 
-  it('forwards optional meter context while the legacy adapter omits it', () => {
+  it('forwards optional meter context while the legacy adapter omits the new frequency owner', () => {
     const panel = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
     const meter = panel.match(/<LinearSMeter([\s\S]*?)\/>/)?.[1] ?? '';
     expect(meter).toMatch(/source=\{meterSource\}/);
     expect(meter).toMatch(/session=\{continuitySession\}/);
     const legacy = readFileSync('src/components-v2/vfo/LegacyVfoPanelAdapter.svelte', 'utf8');
     const call = legacy.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
-    expect(call).not.toMatch(/meterSource|continuitySession/);
+    expect(call).not.toMatch(/frequency=|meterSource|continuitySession/);
   });
 });

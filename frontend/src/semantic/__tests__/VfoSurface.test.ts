@@ -18,10 +18,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { mount, unmount, flushSync } from 'svelte';
+import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
+import type {
+  ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverVfoAppearance,
+} from '../ReceiverInstrumentHost.svelte';
 import {
   validateRadioViewModel, type RadioViewModel, type ReceiverId,
   type ReceiverIndicatorViewModel, type VfoSlot,
@@ -247,6 +250,19 @@ function withReceiverIndicators(id: TopologyFixtureId): RadioViewModel {
   return validateRadioViewModel({
     ...base, receiverIndicators: receivers.map(receiverIndicator),
   });
+}
+
+function hostedReceiverInstruments(): ReceiverInstrumentHandles {
+  const frequency = (receiver: ReceiverId) => createRawSnippet<[ReceiverFrequencyMount?]>(() => ({
+    render: () => `<span data-hosted-frequency="${receiver}">${receiver} frequency</span>`,
+  }));
+  return {
+    mainFrequency: frequency('MAIN'), subFrequency: frequency('SUB'),
+    frequencyTunable: () => true,
+    vfoOperations: createRawSnippet<[appearance: ReceiverVfoAppearance]>((appearance) => ({
+      render: () => `<span data-hosted-vfo-operations="${appearance()}">VFO operations</span>`,
+    })),
+  };
 }
 
 describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
@@ -2361,15 +2377,40 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(group).not.toMatch(/phase\??:|['\"](?:idle|pending|failed)['\"]/);
   });
 
-  it('forwards fixed-receiver meter context through every instrument branch', () => {
+  it('keeps local meter source/session on every receiver branch', () => {
     const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
     expect(source.match(/<VfoIndicatorRow/g)).toHaveLength(3);
     expect(source).toMatch(/radioWide=\{viewModel\.radioWideIndicators\}[\s\S]*?\{continuitySession\}/);
     expect(source).toMatch(/slotLabel=\{instrumentSlot\(receiver\)\} \{continuitySession\}/);
-    expect(source).toContain('<VfoIndicatorRow {indicator} {continuitySession} />');
     const panel = source.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
     expect(panel).toMatch(/meterSource=\{indicator\?\.sMeter\.source\}/);
-    expect(panel).toMatch(/continuitySession/);
+    expect(panel).toMatch(/\{continuitySession\}/);
+  });
+
+  it.each(['semantic', 'sdr', 'standard'] as const)(
+    'uses named frequency handles and its local operation group in grouped %s',
+    (appearance) => {
+      const root = mountSurface({
+        viewModel: withReceiverIndicators('2/main_sub'), appearance,
+        receiverInstruments: hostedReceiverInstruments(),
+      });
+      for (const receiver of ['MAIN', 'SUB']) {
+        expect(root.querySelectorAll(`[data-hosted-frequency="${receiver}"]`)).toHaveLength(1);
+      }
+      expect(root.querySelector('[data-hosted-vfo-operations]')).toBeNull();
+      expect(root.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
+      expect(root.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
+      expect(root.querySelector('[data-hosted-frequency]')?.closest('[data-vfo-freq]')).not.toBeNull();
+    },
+  );
+
+  it('keeps standalone VfoSurface on its established local frequency and meter owners', () => {
+    const root = mountSurface({
+      viewModel: withReceiverIndicators('2/main_sub'), onTuneFrequency: vi.fn(),
+    });
+    expect(root.querySelector('[data-hosted-frequency]')).toBeNull();
+    expect(root.querySelectorAll('.freq.interactive')).toHaveLength(2);
+    expect(root.querySelectorAll('[data-testid="receiver-s-meter"] svg')).toHaveLength(2);
   });
 
   it.each(['sdr', 'standard'] as const)('pairs addressed facts and one bridge in %s', (appearance) => {

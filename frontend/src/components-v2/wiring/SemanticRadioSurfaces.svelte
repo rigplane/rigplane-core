@@ -71,6 +71,9 @@
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import ScopeDisplaySurface from '../../semantic/ScopeDisplaySurface.svelte';
+  import ReceiverInstrumentHost, {
+    type ReceiverVfoAppearance,
+  } from '../../semantic/ReceiverInstrumentHost.svelte';
   import TxAuxScalarHost from '../../semantic/TxAuxScalarHost.svelte';
   import TxAuxSurface, {
     TX_AUX_FEEDBACK_LEVELS, type TxAuxFeedbackLevelField, type TxAuxLevelFeedback,
@@ -705,14 +708,6 @@
   const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
   const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
   let controlSession = $state(readControlSession?.() ?? { state: 'disconnected' as const, epoch: -1 });
-  let frequencyLifetimeKey = $derived.by(() => {
-    void canonicalView;
-    const stateGeneration = runtime.state?.providerGeneration;
-    const capsGeneration = runtime.caps?.providerGeneration;
-    const matchedGeneration = Number.isSafeInteger(stateGeneration)
-      && stateGeneration === capsGeneration ? stateGeneration : 'unmatched';
-    return `${controlSession.state}:${controlSession.epoch}:${matchedGeneration}`;
-  });
   let meterContinuitySession: MeterContinuitySession | null = $derived(
     controlSession.state === 'connected'
       && Number.isSafeInteger(controlSession.epoch) && controlSession.epoch >= 0
@@ -946,6 +941,33 @@
 </script>
 
 <div class="semantic-surfaces" class:hosted={hostedChildren !== undefined} data-testid="semantic-radio-surfaces">
+  {#snippet receiverVfoOperations(appearance: ReceiverVfoAppearance)}
+    {#if view}
+      <VfoSurface
+        viewModel={view}
+        {appearance}
+        showVfoList={false}
+        groupLabel={t('core.vfo.radioWideGroupLabel')}
+        {hasDualReceiver}
+        onToggleSplit={vfo.onSplitToggle}
+        onToggleDualWatch={toggleDualWatch}
+        onEqualizeVfos={vfo.onEqual}
+        onSwapVfos={vfo.onSwap}
+        onQuickSplit={vfo.onQuickSplit}
+        onQuickDualWatch={vfo.onQuickDw}
+        onSelectMainReceiver={vfo.onMainVfoClick}
+        onSelectSubReceiver={vfo.onSubVfoClick}
+        onSpeak={systemIntents.onSpeak}
+      />
+    {/if}
+  {/snippet}
+  <ReceiverInstrumentHost
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    {pendingFrequencyHz}
+    onTuneFrequency={tuneFrequency}
+    vfoOperations={receiverVfoOperations}
+  >
+  {#snippet children(receiverInstruments)}
   {#if readonlyDisplay}
     {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
@@ -994,8 +1016,8 @@
               onTuneFrequency={tuneFrequency}
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
+              {receiverInstruments}
               continuitySession={meterContinuitySession}
-              {frequencyLifetimeKey}
               {pendingFrequencyHz}
             />
           </div>
@@ -1019,22 +1041,7 @@
             Same placement rule split/dual-watch already follow, for the same
             reason: one radio-wide action must not appear once per receiver.
           -->
-          <VfoSurface
-            viewModel={view}
-            showVfoList={false}
-            groupLabel={t('core.vfo.radioWideGroupLabel')}
-            {hasDualReceiver}
-            onToggleSplit={vfo.onSplitToggle}
-            onToggleDualWatch={toggleDualWatch}
-            onEqualizeVfos={vfo.onEqual}
-            onSwapVfos={vfo.onSwap}
-            onQuickSplit={vfo.onQuickSplit}
-            onQuickDualWatch={vfo.onQuickDw}
-            onSelectMainReceiver={vfo.onMainVfoClick}
-            onSelectSubReceiver={vfo.onSubVfoClick}
-            onSpeak={systemIntents.onSpeak}
-            {frequencyLifetimeKey}
-          />
+          {@render receiverInstruments.vfoOperations(vfoAppearance)}
         </div>
       {/if}
     {/if}
@@ -1065,8 +1072,8 @@
         onSelectMainReceiver={vfo.onMainVfoClick}
         onSelectSubReceiver={vfo.onSubVfoClick}
         onSpeak={systemIntents.onSpeak}
+        {receiverInstruments}
         continuitySession={meterContinuitySession}
-        {frequencyLifetimeKey}
         {pendingFrequencyHz}
       />
     {/if}
@@ -1648,6 +1655,7 @@
       rxTx: hostedRxTx,
       txAuxControls: hostedTxAux,
       txAuxScalars,
+      receiverInstruments,
       meters: hostedMeters,
       rxAudio: hostedRxAudio,
       rfFrontEnd: hostedRfFrontEnd,
@@ -1828,6 +1836,8 @@
   {/snippet}
   </TxAuxScalarHost>
   {/if}
+  {/snippet}
+  </ReceiverInstrumentHost>
 </div>
 
 <style>

@@ -3,6 +3,7 @@
 </script>
 
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import LinearSMeter from '../meters/LinearSMeter.svelte';
   import FrequencyDisplayInteractive from '../../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import { StatusIndicator } from '$lib/Button';
@@ -37,7 +38,8 @@
     receiver: 'main' | 'sub';
     receiverLabel: string;
     slotTag: string;
-    freq: number | null;
+    frequency?: Snippet;
+    freq?: number | null;
     displayHz?: number | null;
     pendingDisplayHz?: number | null;
     frequencyState?: 'current' | 'stale' | 'unknown' | 'unsupported';
@@ -63,7 +65,7 @@
   }
 
   let {
-    receiver, receiverLabel, slotTag, freq, displayHz, pendingDisplayHz = null,
+    receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
     frequencyState = 'current', staleReason, contextKey, frequencyDisabled = false,
     mode, filter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
@@ -122,9 +124,12 @@
   <div class="panel-body">
     <div class="display-row">
       <div class="freq-row">
-        <span class="vfo-freq" data-vfo-freq data-display-state={frequencyState} class:display-unknown={displayHz === null}
+        <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
+          data-display-state={frequencyState} class:display-unknown={displayHz === null}
           aria-describedby={staleDisplay ? staleId : undefined}>
-          {#if freq !== null && Number.isFinite(freq)}
+          {#if frequency}
+            {@render frequency()}
+          {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
             <FrequencyDisplayInteractive
               {freq} {displayHz} {pendingDisplayHz} {contextKey}
               disabled={frequencyDisabled || frequencyState !== 'current'}

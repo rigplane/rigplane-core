@@ -41,6 +41,7 @@
   import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
   import VfoOperationGroup, { type VfoOperationIntent } from './VfoOperationGroup.svelte';
+  import type { ReceiverInstrumentHandles } from './ReceiverInstrumentHost.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
@@ -143,6 +144,7 @@
     indicatorReceiver?: ReceiverId;
     continuitySession?: MeterContinuitySession | null;
     frequencyLifetimeKey?: string;
+    receiverInstruments?: ReceiverInstrumentHandles;
     /**
      * MOR-1321 (v3-rework slice S3a) — the VFO-scoped ACTIONS the legacy
      * `VfoOps` bridge carried and the semantic deck lost at MOR-1313: equalize
@@ -182,6 +184,7 @@
     indicatorReceiver,
     continuitySession,
     frequencyLifetimeKey,
+    receiverInstruments,
     onEqualizeVfos,
     onSwapVfos,
     onQuickSplit,
@@ -332,11 +335,16 @@
   }
 
   function hasDigitReadout(vfo: VfoViewModel): boolean {
+    if (receiverInstruments !== undefined) return vfo.isActiveSlot
+      && (vfo.receiver === 'MAIN' || receiverInstruments.subFrequency !== undefined);
     return vfo.isActiveSlot && onTuneFrequency !== undefined
       && (vfo.frequencyHz !== null || vfo.display !== undefined);
   }
 
   function hasTunableFrequency(vfo: VfoViewModel): boolean {
+    if (receiverInstruments !== undefined) return vfo.isActiveSlot
+      && receiverInstruments.frequencyTunable(vfo.receiver)
+      && (vfo.receiver === 'MAIN' || receiverInstruments.subFrequency !== undefined);
     return vfo.isActiveSlot && vfo.frequencyHz !== null && onTuneFrequency !== undefined;
   }
 
@@ -577,6 +585,13 @@
       {@const displayFilter = displayValue(vfo.display?.filter, vfo.filter)}
       {@const staleDisplay = Object.values(vfo.display ?? {}).some((field) => field.state === 'stale')}
       {@const staleId = `${reasonIdPrefix}-display-${i}`}
+      {#snippet hostedFrequency()}
+        {#if vfo.receiver === 'MAIN'}
+          {@render receiverInstruments!.mainFrequency({ compact: appearance === 'semantic', vfoFreqHook: false })}
+        {:else if receiverInstruments!.subFrequency}
+          {@render receiverInstruments!.subFrequency({ compact: appearance === 'semantic', vfoFreqHook: false })}
+        {/if}
+      {/snippet}
       <div
         class="vfo-tile"
         class:is-active={vfo.isActive}
@@ -599,7 +614,9 @@
           aria-disabled={hasDigitReadout(vfo) && readoutDisabled(vfo) ? 'true' : undefined}
           aria-describedby={staleDisplay ? staleId : undefined}
         >
-          {#if hasDigitReadout(vfo)}
+          {#if receiverInstruments !== undefined && hasDigitReadout(vfo)}
+            {@render hostedFrequency()}
+          {:else if receiverInstruments === undefined && hasDigitReadout(vfo)}
             <!--
               MOR-1441 REVIEW FIX (severe): `freq` is ALWAYS confirmed radio
               truth (`vfo.frequencyHz`), never `pendingHz` — the pending
@@ -782,6 +799,11 @@
     {@const activeSlot = records.find((item) => item.isActiveSlot)}
     {@const dominant = activeSlot ?? (records.length === 1 ? records[0] : undefined)}
     {@const indicator = receiverIndicators.find((item) => item.receiver === receiver)}
+    {@const frequencyHandle = receiver === 'MAIN'
+      ? receiverInstruments?.mainFrequency : receiverInstruments?.subFrequency}
+    {#snippet hostedFrequency()}
+      {@render frequencyHandle!({ compact: false, vfoFreqHook: false })}
+    {/snippet}
     {@const choices = viewModel.vfos.flatMap((choice, index) =>
         choice.receiver === receiver && choice !== dominant
           ? [{
@@ -806,12 +828,18 @@
         <VfoPanel
           receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={receiver}
           slotTag={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
-          freq={dominant?.frequencyHz ?? null}
-          displayHz={dominant ? displayValue(dominant.display?.frequencyHz, dominant.frequencyHz) : null}
-          pendingDisplayHz={dominant ? pendingFrequencyHz?.[receiver] ?? null : null}
+          frequency={receiverInstruments !== undefined && dominant && frequencyHandle
+            ? hostedFrequency : undefined}
+          freq={receiverInstruments === undefined ? dominant?.frequencyHz ?? null : undefined}
+          displayHz={receiverInstruments === undefined && dominant
+            ? displayValue(dominant.display?.frequencyHz, dominant.frequencyHz) : undefined}
+          pendingDisplayHz={receiverInstruments === undefined && dominant
+            ? pendingFrequencyHz?.[receiver] ?? null : undefined}
           frequencyState={dominant?.display?.frequencyHz.state ?? (dominant?.frequencyHz == null ? 'unknown' : 'current')}
           staleReason={t('core.rxTx.target.reason.stale')}
-          contextKey={`${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`}
+          contextKey={receiverInstruments === undefined
+            ? `${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`
+            : undefined}
           frequencyDisabled={!dominant || readoutDisabled(dominant)}
           mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
           filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}
@@ -824,7 +852,8 @@
           isActive={dominant?.isActive ?? false} badgeItems={standardBadges(indicator)}
           bandText={dominant ? standardBand(dominant) : null}
           rit={dominant ? standardRit(dominant) : undefined} slotChoices={choices}
-          onFreqChange={dominant ? (hz) => tuneFrequency(dominant, hz) : undefined}
+          onFreqChange={receiverInstruments === undefined && dominant
+            ? (hz) => tuneFrequency(dominant, hz) : undefined}
           onSelectSlot={(key) => {
             const choice = viewModel.vfos[Number(key)];
             if (choice) selectVfo(choice);
@@ -853,6 +882,7 @@
       {/each}
     </div>
   {:else}
+    {#if appearance !== 'semantic' && !showVfoList}{@render activeReceiverStatus()}{/if}
     {#if showVfoList}
       <div class="vfo-list" data-testid="vfo-list">
         {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}{@render vfoTile(vfo, i)}{/each}
@@ -860,7 +890,9 @@
       {@render identitySelectors()}
       {#if receiverIndicators.length > 0}
         <div class="receiver-indicators" data-testid="vfo-receiver-indicators">
-          {#each receiverIndicators as indicator (indicator.receiver)}<VfoIndicatorRow {indicator} {continuitySession} />{/each}
+          {#each receiverIndicators as indicator (indicator.receiver)}
+            <VfoIndicatorRow {indicator} {continuitySession} />
+          {/each}
         </div>
       {/if}
     {/if}
