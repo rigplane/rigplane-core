@@ -38,11 +38,17 @@
  *     `desktop-v2` is resolved.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
-import { getWorkspace, initWorkspaceStore, setDesignLanguage, setLayout } from '../presentation/workspace/store.svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
+import {
+  getWorkspace, initWorkspaceStore, setDensity, setDesignLanguage, setLayout,
+} from '../presentation/workspace/store.svelte';
 
 const h = vi.hoisted(() => ({
-  pending: [] as Array<{ id: string; resolve: (c: unknown) => void }>,
+  pending: [] as Array<{
+    id: string;
+    resolve: (c: unknown) => void;
+    reject: (error: unknown) => void;
+  }>,
   loadSkin: vi.fn(),
   plan: vi.fn(),
   bootstrap: vi.fn(),
@@ -101,6 +107,7 @@ vi.mock('../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
 });
 
 import App from '../App.svelte';
+import LayoutStub from './LayoutStub.svelte';
 
 /**
  * `App.svelte`'s own top-level `initWorkspaceStore()` call is inside its
@@ -133,7 +140,7 @@ beforeEach(() => {
   h.provide.mockImplementation(() => h.txHost);
   h.bootstrap.mockResolvedValue(vi.fn());
   h.loadSkin.mockImplementation(
-    (id: string) => new Promise((resolve) => { h.pending.push({ id, resolve }); }),
+    (id: string) => new Promise((resolve, reject) => { h.pending.push({ id, resolve, reject }); }),
   );
   h.plan.mockReturnValue([]);
 });
@@ -147,53 +154,115 @@ afterEach(() => {
 });
 
 describe('segmentline activation, in a rendered App', () => {
-  it('A: segmentline explicitly selected, peer-split resolved -> [data-design-language="segmentline"]', () => {
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 4; index++) await Promise.resolve();
+    await tick();
+    flushSync();
+  }
+  function pendingIndex(id: string): number {
+    for (let index = h.pending.length - 1; index >= 0; index -= 1) {
+      if (h.pending[index]?.id === id) return index;
+    }
+    return -1;
+  }
+
+  async function complete(id: string): Promise<void> {
+    const index = pendingIndex(id);
+    if (index < 0) throw new Error(`no pending load for ${id}`);
+    h.pending.splice(index, 1)[0].resolve(LayoutStub);
+    await settle();
+  }
+  async function fail(id: string): Promise<void> {
+    const index = pendingIndex(id);
+    if (index < 0) throw new Error(`no pending load for ${id}`);
+    h.pending.splice(index, 1)[0].reject(new Error(`failed ${id}`));
+    await settle();
+  }
+  function setWidth(width: number): void {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+    window.dispatchEvent(new Event('resize'));
+    flushSync();
+  }
+
+  it('A: activates metadata only after the selected presentation commits', async () => {
     const instance = mountApp();
 
     setLayout('peer-split');
     setDesignLanguage('segmentline');
     flushSync();
 
+    expect(document.documentElement.dataset.designLanguage).toBeUndefined();
+    expect(document.documentElement.dataset.languageMode).toBeUndefined();
+    expect(document.documentElement.dataset.density).toBeUndefined();
+
+    await complete('peer-split');
     expect(document.documentElement.dataset.designLanguage).toBe('segmentline');
 
     unmount(instance);
   });
 
-  it('B: selecting only the peer-split LAYOUT (no explicit language) still activates segmentline', () => {
+  it('B: selecting only the peer-split LAYOUT (no explicit language) still activates segmentline', async () => {
     const instance = mountApp();
     expect(getWorkspace().designLanguage).toBe('studioline'); // the DEFAULT_WORKSPACE value
 
     setLayout('peer-split');
     flushSync();
 
+    expect(document.documentElement.dataset.designLanguage).toBeUndefined();
+    await complete('peer-split');
     expect(document.documentElement.dataset.designLanguage).toBe('segmentline');
 
     unmount(instance);
   });
 
-  it('C: segmentline stored + a skin it cannot activate on still yields a styled surface, and the stored preference survives the round trip', () => {
+  it('C: pending and failed replacement keeps committed language/density while workspace updates', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const instance = mountApp();
 
     setLayout('peer-split');
-    setDesignLanguage('segmentline');
+    setDensity('dense');
+    flushSync();
+    await complete('peer-split');
+    expect(document.documentElement.dataset.designLanguage).toBe('segmentline');
+    expect(document.documentElement.dataset.density).toBe('comfortable');
+    const committedLanguageMode = document.documentElement.dataset.languageMode;
+    expect(committedLanguageMode).toBeDefined();
+
+    setWidth(390); // requests mobile, which has no compatible design language
+
+    // The requested mobile presentation is still pending. Its absent language
+    // must not clear metadata from the committed peer-split face.
+    expect(document.documentElement.dataset.designLanguage).toBe('segmentline');
+    expect(document.documentElement.dataset.languageMode).toBe(committedLanguageMode);
+    expect(document.documentElement.dataset.density).toBe('comfortable');
+    expect(getWorkspace().designLanguage).toBe('studioline');
+
+    // A workspace update while B is pending still resolves against committed A.
+    setDensity('comfortable');
+    flushSync();
+    expect(document.documentElement.dataset.density).toBe('comfortable');
+    setDensity('dense');
     flushSync();
     expect(document.documentElement.dataset.designLanguage).toBe('segmentline');
+    expect(document.documentElement.dataset.density).toBe('comfortable');
 
-    setLayout('standard'); // resolves to desktop-v2, which segmentline declares incompatible
-    flushSync();
+    await fail('mobile');
+    expect(consoleError).toHaveBeenCalledWith(
+      '[rigplane] presentation "mobile" failed to load:', expect.any(Error),
+    );
+    expect(document.documentElement.dataset.designLanguage).toBe('segmentline');
+    expect(document.documentElement.dataset.languageMode).toBe(committedLanguageMode);
+    expect(document.documentElement.dataset.density).toBe('comfortable');
 
-    // Styled, not absent — the operator must never see an unstyled surface as
-    // a result of a stored preference.
+    // A later successful desktop request commits component metadata together.
+    setLayout('standard');
+    setWidth(1200);
+    await complete('desktop-v2');
     expect(document.documentElement.dataset.designLanguage).toBe('studioline');
-    // The hard boundary: resolution never rewrites the STORED preference.
-    expect(getWorkspace().designLanguage).toBe('segmentline');
-
-    setLayout('peer-split');
-    flushSync();
-
-    // No re-choice needed: the untouched stored preference reactivates on its own.
-    expect(document.documentElement.dataset.designLanguage).toBe('segmentline');
+    expect(document.documentElement.dataset.density).toBe('dense');
+    expect(getWorkspace().designLanguage).toBe('studioline');
 
     unmount(instance);
+    consoleError.mockRestore();
   });
 });

@@ -78,6 +78,12 @@
     hasAnyScope: hasAnyScope(),
   }));
 
+  type CommittedPresentation =
+    | { id: SkinId; component: InstrumentHandlesPresentation; hostMode: 'instrument-handles' }
+    | { id: SkinId; component: SelfContainedPresentation; hostMode: 'self-contained' };
+  let presentation = $state<CommittedPresentation | null>(null);
+  let committedSkinId = $derived<SkinId | null>(presentation?.id ?? null);
+
   // MOR-1081: the workspace's `designLanguage` is the ONLY source the
   // `[data-design-language]` activation attribute (MOR-1278) is written from,
   // and this is its only writer — the MOR-1275 renderer wiring and the
@@ -94,9 +100,16 @@
   // rules arrive with the cutover — and it is absent entirely wherever the
   // language is not active, so no shipped v2 skin sees a new attribute.
   $effect(() => {
+    const layoutId = committedSkinId;
+    if (layoutId === null) {
+      delete document.documentElement.dataset.designLanguage;
+      delete document.documentElement.dataset.languageMode;
+      delete document.documentElement.dataset.density;
+      return;
+    }
     const stored = getDesignLanguage(getWorkspace().designLanguage);
     let language = stored;
-    let activated = designLanguageActivation(stored, skinId);
+    let activated = designLanguageActivation(stored, layoutId);
     if (activated === null) {
       // The stored preference cannot activate on the resolved skin
       // (e.g. `segmentline` off `peer-split`, or the default `studioline` ON
@@ -108,7 +121,7 @@
       // falls back, so leaving `peer-split` restores it without a re-choice.
       for (const id of listDesignLanguageIds()) {
         const candidate = getDesignLanguage(id);
-        const candidateActivated = designLanguageActivation(candidate, skinId);
+        const candidateActivated = designLanguageActivation(candidate, layoutId);
         if (candidateActivated !== null) {
           language = candidate;
           activated = candidateActivated;
@@ -124,7 +137,7 @@
       const theme = getAvailableThemes().find(({ id }) => id === getWorkspace().theme);
       document.documentElement.dataset.languageMode = theme?.category === 'light' ? 'light' : 'dark';
     }
-    const density = densityActivation(language, skinId, getWorkspace().density);
+    const density = densityActivation(language, layoutId, getWorkspace().density);
     if (density === null) delete document.documentElement.dataset.density;
     else document.documentElement.dataset.density = density;
   });
@@ -133,7 +146,9 @@
   // against the ACTIVE layout manifest and handed down as a getter.
   // A getter, so a consumer's `$derived` re-runs when either input changes.
   provideSurfacePlan(() => {
-    const manifest = getLayout(skinId);
+    const layoutId = committedSkinId;
+    if (layoutId === null) return null;
+    const manifest = getLayout(layoutId);
     return manifest === undefined ? null : resolveSurfacePlan(manifest, getWorkspace());
   });
 
@@ -149,10 +164,6 @@
   // loader is in flight, so a switch never blanks the operator's screen and
   // never replays bootstrap, transport, audio or TX ownership — all of which
   // live above this seam (MOR-973, MOR-1008, MOR-1059).
-  type CommittedPresentation =
-    | { id: SkinId; component: InstrumentHandlesPresentation; hostMode: 'instrument-handles' }
-    | { id: SkinId; component: SelfContainedPresentation; hostMode: 'self-contained' };
-  let presentation = $state<CommittedPresentation | null>(null);
   let presentationFailed = $state(false);
   let HostedPresentation = $derived(
     presentation?.hostMode === 'instrument-handles' ? presentation.component : null,

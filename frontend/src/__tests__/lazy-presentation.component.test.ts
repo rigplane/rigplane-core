@@ -36,6 +36,7 @@ const h = vi.hoisted(() => ({
   provide: vi.fn(),
   registerBarrier: vi.fn(),
   txHost: undefined as { refreshAuthority: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> } | undefined,
+  surfacePlanSource: undefined as (() => ReadonlyMap<string, readonly string[]> | null) | undefined,
 }));
 
 // The presentation subtree under test is the *loader result*, so the skin
@@ -50,6 +51,16 @@ vi.mock('../skins/registry', () => ({
 vi.mock('../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('./LayoutStub.svelte')).default,
 }));
+vi.mock('../presentation/workspace/resolution', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../presentation/workspace/resolution')>();
+  return {
+    ...actual,
+    provideSurfacePlan: (source: () => ReadonlyMap<string, readonly string[]> | null) => {
+      h.surfacePlanSource = source;
+      actual.provideSurfacePlan(source as Parameters<typeof actual.provideSurfacePlan>[0]);
+    },
+  };
+});
 
 vi.mock('../lib/runtime/frontend-runtime', () => ({
   runtime: {
@@ -128,6 +139,12 @@ const mountedSkin = (): string | null =>
 const mountedCount = () => document.querySelectorAll('.layout-stub').length;
 const globalHost = () => document.querySelector('.spectrum-panel-stub');
 const errorSurface = () => document.querySelector('[data-testid="presentation-load-error"]');
+const surfacePlanSnapshot = (): string | null => {
+  const plan = h.surfacePlanSource?.();
+  return plan === null || plan === undefined
+    ? null
+    : JSON.stringify(Array.from(plan, ([zone, surfaces]) => [zone, [...surfaces]]));
+};
 
 /** Drain the microtask queue past App's post-commit `await tick()`. */
 async function settle(): Promise<void> {
@@ -180,6 +197,7 @@ beforeEach(() => {
   h.releasedLeases.length = 0;
   h.demand.clear();
   h.resourcesEnded = false;
+  h.surfacePlanSource = undefined;
   document.body.innerHTML = '';
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
@@ -534,6 +552,41 @@ describe('identity preserved across a presentation switch', () => {
 });
 
 describe('presentation loader failure', () => {
+  it('keeps the committed surface plan during a delayed and failed switch', async () => {
+    const instance = mountApp();
+    await settle();
+
+    // Before the first presentation commits, no requested manifest configures
+    // a component that is not on screen yet.
+    expect(surfacePlanSnapshot()).toBeNull();
+    completeLoad('desktop-v2');
+    await settle();
+    const desktopPlan = surfacePlanSnapshot();
+    expect(desktopPlan).not.toBeNull();
+
+    selectSkin('mobile');
+    await settle();
+    expect(mountedSkin()).toBe('desktop-v2');
+    expect(surfacePlanSnapshot()).toBe(desktopPlan);
+
+    failLoad('mobile');
+    await settle();
+    expect(mountedSkin()).toBe('desktop-v2');
+    expect(surfacePlanSnapshot()).toBe(desktopPlan);
+
+    // A later successful request changes component and plan together.
+    selectSkin('desktop-v2');
+    await settle();
+    selectSkin('mobile');
+    await settle();
+    completeLoad('mobile');
+    await settle();
+    expect(mountedSkin()).toBe('mobile');
+    expect(surfacePlanSnapshot()).not.toBe(desktopPlan);
+
+    unmount(instance);
+  });
+
   // MUTATION KILLED: clearing the committed presentation (or tearing the
   // runtime down) when a switch fails to load. The operator would lose the
   // working screen because an unrelated chunk 404'd.
