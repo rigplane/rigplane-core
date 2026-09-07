@@ -1,19 +1,23 @@
 <script module lang="ts">
   import type { Snippet } from 'svelte';
+  import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
 
   export type ReceiverFrequencyMount = Readonly<{ compact?: boolean; vfoFreqHook?: boolean }>;
+  export type ReceiverSMeterRenderer = Snippet<[frame: SignalMeterFrame]>;
   export type ReceiverVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
   export interface ReceiverInstrumentHandles {
     readonly mainFrequency: Snippet<[mount?: ReceiverFrequencyMount]>;
     readonly subFrequency?: Snippet<[mount?: ReceiverFrequencyMount]>;
+    readonly mainSMeter: Snippet<[renderer: ReceiverSMeterRenderer]>;
+    readonly subSMeter?: Snippet<[renderer: ReceiverSMeterRenderer]>;
     readonly frequencyTunable: (receiver: 'MAIN' | 'SUB') => boolean;
     readonly vfoOperations: Snippet<[appearance: ReceiverVfoAppearance]>;
   }
 </script>
 
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import type { Capabilities } from '$lib/types/capabilities';
   import type { ServerState } from '$lib/types/state';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -23,6 +27,12 @@
     createFrequencyInstrumentBinding,
     type FrequencyInstrumentBinding,
   } from '../primitives/frequency/frequency-instrument.svelte';
+  import {
+    createSignalMeterMotion,
+    type SignalMeterMotionBinding,
+    type SignalMeterMotionInput,
+  } from '../components-v2/meters/signal-meter-motion.svelte';
+  import { projectSignalMeter } from '../components-v2/meters/smeter-scale';
   import type { RadioViewModel, ReceiverId, VfoViewModel } from './radio-view-model';
 
   type ReceiverAuthorityPublication = Readonly<{
@@ -53,6 +63,7 @@
   interface ReceiverOwner {
     readonly receiver: ReceiverId;
     readonly frequency: FrequencyInstrumentBinding;
+    readonly motion: SignalMeterMotionBinding;
     readonly model: RadioViewModel | null;
     readonly context: object | null;
     readonly active: boolean;
@@ -72,6 +83,7 @@
   let subOwner = $state.raw<ReceiverOwner | null>(null);
   let mainOwnerRoot: (() => void) | null = null;
   let subOwnerRoot: (() => void) | null = null;
+  let mounted = false;
   let destroyed = false;
 
   const safeGeneration = (value: unknown): value is number =>
@@ -145,6 +157,23 @@
     };
   }
 
+  function meterMotionInput(
+    model: RadioViewModel | null, receiver: ReceiverId,
+    authority: ReceiverFrequencyAuthority | null,
+  ): SignalMeterMotionInput {
+    const meter = model?.receiverIndicators?.find((item) => item.receiver === receiver)?.sMeter;
+    const value = meter?.availability.operational === true
+      && meter.reading.status === 'known'
+      && Number.isFinite(meter.reading.value)
+      ? meter.reading.value : null;
+    return {
+      projection: projectSignalMeter(value),
+      present: meter?.availability.structural ?? false,
+      source: meter?.source,
+      session: authority === null ? null : { controlSessionEpoch: authority.sessionEpoch },
+    };
+  }
+
   function createOwner(
     receiver: ReceiverId, initialModel: RadioViewModel,
     initialAuthority: ReceiverFrequencyAuthority | null,
@@ -171,9 +200,13 @@
           ? undefined : (frequencyHz: number) => onTuneFrequency?.(receiver, frequencyHz);
       },
     });
+    const motion = createSignalMeterMotion(
+      meterMotionInput(initialModel, receiver, initialAuthority),
+    );
     return {
       receiver,
       frequency,
+      motion,
       get model() { return model; },
       get context() { return context; },
       get active() { return activeRecord(model, receiver)?.isActive ?? false; },
@@ -182,11 +215,14 @@
         if (nextModel !== null) model = nextModel;
         if (!sameAuthority(authority, nextAuthority)) context = nextAuthority === null ? null : {};
         authority = nextAuthority;
+        motion.sync(meterMotionInput(model, receiver, authority));
       },
     };
   }
 
   function stopOwner(receiver: ReceiverId): void {
+    const owner = receiver === 'MAIN' ? mainOwner : subOwner;
+    owner?.motion.stop();
     if (receiver === 'MAIN') {
       mainOwnerRoot?.(); mainOwnerRoot = null; mainOwner = null;
     } else {
@@ -209,6 +245,7 @@
     } else {
       subOwner = created; subOwnerRoot = dispose;
     }
+    if (mounted) created.motion.start();
     return created;
   }
 
@@ -246,9 +283,17 @@
   let unsubscribe: () => void = () => undefined;
   unsubscribe = initialSubscribe(applyPublication);
 
+  onMount(() => {
+    mounted = true;
+    mainOwner?.motion.start();
+    subOwner?.motion.start();
+  });
+
   onDestroy(() => {
     destroyed = true;
     unsubscribe();
+    mainOwner?.motion.stop();
+    subOwner?.motion.stop();
     mainOwnerRoot?.();
     subOwnerRoot?.();
   });
@@ -271,8 +316,22 @@
   {/if}
 {/snippet}
 
+{#snippet mainSMeter(renderer: ReceiverSMeterRenderer)}
+  {#if mainOwner !== null}
+    {@render renderer(mainOwner.motion.frame)}
+  {/if}
+{/snippet}
+
+{#snippet subSMeter(renderer: ReceiverSMeterRenderer)}
+  {#if subOwner !== null}
+    {@render renderer(subOwner.motion.frame)}
+  {/if}
+{/snippet}
+
 {#if subOwner === null}
-  {@render children({ mainFrequency, frequencyTunable, vfoOperations })}
+  {@render children({ mainFrequency, mainSMeter, frequencyTunable, vfoOperations })}
 {:else}
-  {@render children({ mainFrequency, subFrequency, frequencyTunable, vfoOperations })}
+  {@render children({
+    mainFrequency, subFrequency, mainSMeter, subSMeter, frequencyTunable, vfoOperations,
+  })}
 {/if}
