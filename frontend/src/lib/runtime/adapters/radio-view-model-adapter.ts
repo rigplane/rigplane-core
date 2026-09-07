@@ -308,7 +308,8 @@ function meterField(
   source: Omit<MeterSourceIdentity, 'providerGeneration'> | null,
   receiverOperational = true,
 ): MeterField {
-  const operational = structural && receiverOperational && observation.state === 'current';
+  const operational = structural && receiverOperational
+    && (observation.state === 'current' || observation.state === 'stale');
   const providerGeneration = state.providerGeneration;
   return {
     reading: operational ? { status: 'known', value: observation.value } : { status: 'unknown' },
