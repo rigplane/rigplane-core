@@ -1,11 +1,11 @@
 <!--
   Semantic mode/filter surface (MOR-1304, vocabulary slice 4B).
 
-  Presentation only. Renders BOTH the MOR-1280 `modeFilter` group (mode,
-  filter selection, filter width) and the MOR-1284 `filterPassband` group
-  (filter shape, IF-shift, PBT inner/outer, DATA submode) — the same two
-  groups the v2 `FilterPanel` reads together (`panel-props.ts`'s
-  `deriveFilterProps`). A surface consuming only one half would be half-built.
+  Presentation only. Places the host-owned mode and filter handles beside
+  the MOR-1280 `modeFilter` width, then renders the MOR-1284
+  `filterPassband` group (filter shape, IF-shift, PBT inner/outer, DATA
+  submode) — the same two groups the v2 `FilterPanel` reads together
+  (`panel-props.ts`'s `deriveFilterProps`).
 
   Doctrine, same as `TxAuxSurface`/`MetersSurface`:
   (1) Facts only — every value and every min/max bound is READ from the
@@ -44,15 +44,9 @@
   answers whether the radio has a REAL `filter_shape` command; see
   `FilterPassbandViewModel.filterShapeControlStructural`'s doc comment.
 
-  PENDING AFFORDANCE (MOR-1441 leg 2). `pendingFilter` is a plain, command-
-  bus-blind display prop — same "read at the wiring seam, hand down a plain
-  value" precedent as `pendingFrequencyHz` (leg 1, `VfoSurface`). It marks
-  the targeted filter-select CHOICE distinctly (`data-pending`) and the
-  group `data-filter-status="pending"`, but `isSelected`/`aria-pressed`
-  keep reading `modeFilter.currentFilter`'s CONFIRMED reading exclusively —
-  the leg-1 lesson applied here: pending never becomes a selection source,
-  so a click while pending still dispatches the CLICKED (explicit) value,
-  never something computed off the pending display.
+  PENDING AFFORDANCE (MOR-1441 leg 2). The host-owned Filter handle carries
+  the pending target separately from confirmed truth. DATA remains local and
+  keeps the same separation below.
 -->
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';
@@ -101,19 +95,16 @@
     type CommandScalarFeedback, type ContinuousScalarInput,
     type ContinuousScalarRendererLease, type ContinuousScalarView,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import type { FilterFiniteLayout, FilterInstrumentHandles } from './filter-instruments';
   import type { RadioViewModel } from './radio-view-model';
 
   interface Props {
     view: RadioViewModel;
-    /** MOR-1441 leg 2 — the freshest in-flight `set_filter` target for the
-     *  active receiver, DISPLAY ONLY (see the file header). `null` when
-     *  nothing is pending. */
-    pendingFilter?: number | null;
+    handles: FilterInstrumentHandles;
+    finiteLayout?: FilterFiniteLayout;
     pendingDataMode?: number | null;
     filterWidthFeedback?: Readonly<CommandScalarFeedback>;
     onDataModeChange?: (mode: number) => void;
-    onModeChange?: (mode: string) => void;
-    onFilterChange?: (filter: number) => void;
     onFilterWidthChange?: (width: number) => void;
     onFilterShapeChange?: (shape: number) => void;
     onIfShiftChange?: (value: number) => void;
@@ -121,8 +112,8 @@
     onPbtOuterChange?: (value: number) => void;
   }
   let {
-    view, pendingFilter = null, pendingDataMode = null, filterWidthFeedback,
-    onDataModeChange, onModeChange, onFilterChange, onFilterWidthChange,
+    view, handles, finiteLayout, pendingDataMode = null, filterWidthFeedback,
+    onDataModeChange, onFilterWidthChange,
     onFilterShapeChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
   }: Props = $props();
 
@@ -213,19 +204,6 @@
     );
   });
   onDestroy(() => filterWidthScalar.destroy());
-  function modeInstrument() {
-    return bindChoiceInstrument(() => ({
-      field: modeFilter?.currentMode, choices: modeFilter?.modeChoices ?? [],
-      invoke: (value) => onModeChange?.(value),
-    }));
-  }
-  function filterInstrument() {
-    return bindChoiceInstrument(() => ({
-      field: modeFilter?.currentFilter,
-      choices: (modeFilter?.filterChoices ?? []).map((_choice, index) => index + 1),
-      invoke: (value) => onFilterChange?.(value),
-    }));
-  }
   function shapeInstrument() {
     return bindChoiceInstrument(() => ({
       field: filterPassband?.filterShape, choices: FILTER_SHAPES.map(([value]) => value),
@@ -255,43 +233,9 @@
 {#if modeFilter || filterPassband}
   <section class="filter-surface" data-testid="filter-surface" aria-label="Mode and filter controls">
     {#if modeFilter}
-      {#if modeFilter.currentMode.availability.structural}
-        {@const behavior = modeInstrument()}
-        <div
-          class="filter-choice-group" data-testid="filter-mode"
-          data-disabled-reason={reasonOf(modeFilter.currentMode)}
-        >
-          {#each modeFilter.modeChoices as choice (choice)}
-            <button
-              type="button" class="filter-choice" data-testid={`filter-mode-${choice}`}
-              aria-pressed={behavior.available && behavior.isSelected(choice)}
-              disabled={!behavior.available}
-              onclick={() => behavior.invoke(choice)}
-            >{choice}</button>
-          {/each}
-        </div>
-      {/if}
-      {#if modeFilter.currentFilter.availability.structural}
-        {@const behavior = filterInstrument()}
-        <div
-          class="filter-choice-group" data-testid="filter-select"
-          data-disabled-reason={reasonOf(modeFilter.currentFilter)}
-          data-filter-status={pendingFilter !== null ? 'pending' : 'confirmed'}
-          aria-describedby={pendingFilter !== null ? pendingFilterId : undefined}
-        >
-          {#each modeFilter.filterChoices as choice, index (choice)}
-            <button
-              type="button" class="filter-choice" data-testid={`filter-select-${index + 1}`}
-              aria-pressed={behavior.available && behavior.isSelected(index + 1)}
-              data-pending={pendingFilter === index + 1}
-              disabled={!behavior.available}
-              onclick={() => behavior.invoke(index + 1)}
-            >{choice}</button>
-          {/each}
-          {#if pendingFilter !== null}
-            <span id={pendingFilterId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>
-          {/if}
-        </div>
+      {#if finiteLayout}{@render finiteLayout(handles)}{:else}
+        {@render handles.mode()}
+        {@render handles.filter()}
       {/if}
       {#if modeFilter.filterWidth.availability.structural}
         <label class="filter-level" data-testid="filter-width" data-disabled-reason={reasonOf(modeFilter.filterWidth)}>

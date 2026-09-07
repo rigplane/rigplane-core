@@ -244,6 +244,7 @@ function createChoiceLease<T, Feedback, Input extends RendererInput & {
   guard: LeaseGuard<Input>,
   behavior: ReturnType<typeof bindChoiceInstrument<T, Feedback>>,
   readingOf: (input: Input) => InstrumentReading<T>,
+  selectionRequiresAvailability = false,
 ): ChoiceRendererLease<T, Feedback> {
   return {
     get active() { return guard.current() !== undefined; },
@@ -251,7 +252,9 @@ function createChoiceLease<T, Feedback, Input extends RendererInput & {
       const input = guard.current();
       return input === undefined ? undefined : {
         ...labelView(input), available: behavior.available, reading: readingOf(input),
-        selected: behavior.selected, options: input.options,
+        selected: selectionRequiresAvailability && !behavior.available
+          ? undefined : behavior.selected,
+        options: input.options,
         ...(input.defaultValue === undefined ? {} : { defaultValue: input.defaultValue }),
         ...(input.requested === undefined ? {} : { requested: input.requested }),
         ...feedbackView(input.feedback),
@@ -268,6 +271,7 @@ function createChoiceLease<T, Feedback, Input extends RendererInput & {
 
 export function createChoiceRendererSeat<T, Feedback = never>(
   readCurrent: () => ChoiceRendererInput<T, Feedback>,
+  options: { readonly selectionRequiresAvailability?: boolean } = {},
 ): ChoiceRendererSeat<T, Feedback> {
   const behavior = bindChoiceInstrument<T, Feedback>(() => {
     const input = readCurrent();
@@ -279,6 +283,7 @@ export function createChoiceRendererSeat<T, Feedback = never>(
   });
   return createSeat(readCurrent, guard => createChoiceLease(
     guard, behavior, input => input.field?.reading ?? { status: 'unknown' },
+    options.selectionRequiresAvailability,
   ));
 }
 

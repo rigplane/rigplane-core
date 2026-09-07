@@ -13,9 +13,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { getLocale, setLocale } from '$lib/i18n';
-import FilterSurface, {
+import {
   FILTER_PASSBAND_LEVELS, FILTER_SHAPES, type FilterPassbandLevelField,
 } from '../FilterSurface.svelte';
+import FilterInstrumentHostFixture from './fixtures/FilterInstrumentHostFixture.svelte';
 import { topologyFixtures, withFilterPassband, withModeFilter } from '../fixtures/topologies';
 import type {
   Availability, FilterPassbandViewModel, ModeFilterViewModel, RadioViewModel,
@@ -111,10 +112,13 @@ type PendingProps = {
   pendingFilter?: number | null;
   pendingDataMode?: number | null;
   filterWidthFeedback?: Readonly<CommandScalarFeedback>;
+  presentation?: 'grouped' | 'independent';
 };
 function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingProps = {}) {
-  const component = mount(FilterSurface, { target, props: {
+  const component = mount(FilterInstrumentHostFixture, { target, props: {
     get view() { return view; },
+    renderSurface: true,
+    get presentation() { return extra.presentation; },
     get pendingFilter() { return extra.pendingFilter; },
     get pendingDataMode() { return extra.pendingDataMode; },
     get filterWidthFeedback() { return extra.filterWidthFeedback; },
@@ -140,6 +144,27 @@ function render(view: RadioViewModel, handlers: Handlers = {}, extra: PendingPro
     output: (testId: string) => q<HTMLElement>(`[data-testid="${testId}"] output`),
   };
 }
+
+describe('hosted Mode and Filter placement', () => {
+  it('renders grouped and independent Mode/Filter once and preserves every residual owner once', () => {
+    for (const presentation of ['grouped', 'independent'] as const) {
+      withSurface(base(), (s) => {
+        expect(target.querySelectorAll('[data-testid="filter-mode"]')).toHaveLength(1);
+        expect(target.querySelectorAll('[data-testid="filter-select"]')).toHaveLength(1);
+        expect(target.querySelectorAll('[data-testid="filter-width"]')).toHaveLength(1);
+        expect(target.querySelectorAll('[data-testid="filter-shape"]')).toHaveLength(1);
+        expect(target.querySelectorAll('[data-testid="filter-data-mode"]')).toHaveLength(1);
+        for (const field of ['ifShift', 'pbtInner', 'pbtOuter']) {
+          expect(target.querySelectorAll(`[data-testid="filter-${field}"]`)).toHaveLength(1);
+        }
+        expect(target.querySelectorAll('[data-slot="mode"], [data-slot="filter"]')).toHaveLength(
+          presentation === 'independent' ? 2 : 0,
+        );
+        expect(s.root()).not.toBeNull();
+      }, {}, { presentation });
+    }
+  });
+});
 
 function withSurface(
   view: RadioViewModel, fn: (s: ReturnType<typeof render>) => void, handlers: Handlers = {},

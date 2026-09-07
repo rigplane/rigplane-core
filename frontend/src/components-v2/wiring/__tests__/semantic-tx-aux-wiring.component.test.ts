@@ -39,6 +39,8 @@ const h = vi.hoisted(() => ({
   voxDelay: vi.fn(),
   compLevel: vi.fn(),
   monLevel: vi.fn(),
+  modeChange: vi.fn(),
+  filterChange: vi.fn(),
   split: vi.fn(),
   dualWatch: vi.fn(),
   mainReceiver: vi.fn(),
@@ -178,10 +180,10 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
     // intent vocabulary; `makeModeHandlers` is composed at both call sites
     // (rxAudio's MOD-input remedy and filterIntents), so the stub carries both.
     makeModeHandlers: () => ({
-      onModInputChange: h.noop, onModeChange: h.noop, onDataModeChange: h.noop,
+      onModInputChange: h.noop, onModeChange: h.modeChange, onDataModeChange: h.noop,
     }),
     makeFilterHandlers: () => ({
-      onFilterChange: h.noop, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
+      onFilterChange: h.filterChange, onFilterWidthChange: h.noop, onFilterShapeChange: h.noop,
       onIfShiftChange: h.noop, onPbtInnerChange: h.noop, onPbtOuterChange: h.noop,
     }),
     // MOR-1305 — the wiring now also composes the dsp intent vocabulary. This
@@ -302,6 +304,32 @@ const vfoCaps = (): Capabilities => ({
   ],
 });
 
+function filterState(): ServerState {
+  const state = liveState(true);
+  const receiver = (value: typeof state.main) => ({
+    ...value, filterWidth: 2400, filterShape: 1, ifShift: 0,
+    pbtInner: 128, pbtOuter: 128, dataMode: 0,
+  });
+  const fields = ['filterWidth', 'filterShape', 'ifShift', 'pbtInner', 'pbtOuter', 'dataMode'];
+  return {
+    ...state, main: receiver(state.main), sub: receiver(state.sub!),
+    fieldStatus: {
+      ...state.fieldStatus,
+      ...Object.fromEntries(['main', 'sub'].flatMap(rx => fields.map(field => [`${rx}.${field}`, fresh]))),
+    },
+  } as ServerState;
+}
+
+const filterCaps = (): Capabilities => ({
+  ...liveCaps(true),
+  capabilities: [...liveCaps(true).capabilities, 'filter_shape', 'if_shift', 'pbt', 'data_mode'],
+  modes: ['USB', 'CW', 'FM'], filters: ['FIL1', 'FIL2', 'FIL3'],
+  dataModeCount: 2,
+  controls: {
+    pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1200, display_max: 1200 },
+  },
+} as unknown as Capabilities);
+
 const finiteFixture = FiniteControlRendererFixture as FiniteControlAppearance['action'];
 const finiteAppearance = {
   action: finiteFixture,
@@ -333,14 +361,22 @@ function render(
 }
 
 function renderHostedDesktop(): void {
+  renderHostedLayout('desktop-v2');
+}
+
+function renderHostedLayout(skinId: 'desktop-v2' | 'sdr-test') {
   target = document.createElement('div');
   document.body.appendChild(target);
-  const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
+  const props = proxy({ skinId });
   component = mount(HostedRadioLayoutFixture, {
-    target,
-    context: new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => plan]]),
+    target, props,
+    context: new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () => resolveSurfacePlan(
+      props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
+      readWorkspace({ version: 1 }).workspace,
+    )]]),
   });
   flushSync();
+  return props;
 }
 
 function push(next: ManagedAppTxServerSnapshot): void {
@@ -688,6 +724,88 @@ describe('selected finite TX auxiliary authority lifetime', () => {
     expect(h.voxToggle).toHaveBeenCalledOnce();
     expect(h.split).toHaveBeenCalledOnce();
   });
+});
+
+describe('hosted Filter Mode and Filter ownership', () => {
+  const residual = [
+    'filter-width', 'filter-shape', 'filter-ifShift',
+    'filter-pbtInner', 'filter-pbtOuter', 'filter-data-mode',
+  ] as const;
+
+  it('places named Standard and grouped SDR seats once while residual owners stay single', () => {
+    h.state = filterState(); h.caps = filterCaps(); h.selectedFiniteAppearance = finiteAppearance;
+    const layout = renderHostedLayout('desktop-v2');
+    const subscribers = [...h.authoritySubscribers];
+    const grid = q('[data-testid="filter-finite-grid"]')!;
+    expect([...grid.children].map(node => node.getAttribute('data-field'))).toEqual(['mode', 'filter']);
+    expect(target.querySelectorAll('[data-testid="external-Mode"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="external-Filter"]')).toHaveLength(1);
+    expect(q('[data-testid="external-Mode"]')?.getAttribute('data-reading')).toBe('USB');
+    for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
+    retainedInvocations.get('Mode')?.('CW'); retainedInvocations.get('Filter')?.(2);
+    expect(h.modeChange).toHaveBeenCalledExactlyOnceWith('CW');
+    expect(h.filterChange).toHaveBeenCalledExactlyOnceWith(2);
+    const standardMode = retainedInvocations.get('Mode')!;
+
+    publishAuthority(); flushSync();
+    expect(retainedInvocations.get('Mode')).toBe(standardMode);
+    expect(q('[data-testid="external-Mode"]')?.getAttribute('data-reading')).toBe('USB');
+    layout.skinId = 'sdr-test'; flushSync();
+
+    expect(q('[data-testid="filter-finite-grid"]')).toBeNull();
+    expect(target.querySelectorAll('[data-testid="external-Mode"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="external-Filter"]')).toHaveLength(1);
+    for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
+    expect([...h.authoritySubscribers]).toEqual(subscribers);
+    const sdrMode = retainedInvocations.get('Mode')!;
+    expect(sdrMode).not.toBe(standardMode);
+    standardMode('FM'); expect(h.modeChange).toHaveBeenCalledTimes(1);
+    sdrMode('FM'); expect(h.modeChange).toHaveBeenLastCalledWith('FM');
+  });
+
+  it('keeps selected appearance inert at null Filter authority without hiding residual controls', () => {
+    h.state = filterState(); h.caps = filterCaps(); h.selectedFiniteAppearance = finiteAppearance;
+    h.session = { state: 'disconnected', epoch: 7 };
+    renderHostedDesktop();
+
+    expect(q('[data-testid="external-Mode"]')).toBeNull();
+    expect(q('[data-testid="external-Filter"]')).toBeNull();
+    expect(q('[data-testid="filter-mode"]')).toBeNull();
+    expect(q('[data-testid="filter-select"]')).toBeNull();
+    for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
+    expect(h.authoritySubscribers.size).toBe(4);
+  });
+
+  it.each(['session', 'provider', 'topology', 'receiver', 'unknown'] as const)(
+    'fences retained A1 through synchronous %s A-B-A and admits only fresh A3',
+    (kind) => {
+      h.state = filterState(); h.caps = filterCaps(); h.selectedFiniteAppearance = finiteAppearance;
+      renderHostedDesktop();
+      const stateA = h.state as ServerState, capsA = h.caps as Capabilities, sessionA = h.session;
+      const retainedA1 = retainedInvocations.get('Mode')!;
+      if (kind === 'session') h.session = { state: 'connected', epoch: 8 };
+      if (kind === 'provider') {
+        h.state = { ...stateA, providerGeneration: 2 }; h.caps = { ...capsA, providerGeneration: 2 };
+      }
+      if (kind === 'topology') {
+        h.caps = { ...capsA, receivers: 1, vfoScheme: 'single',
+          capabilities: capsA.capabilities.filter(capability => capability !== 'dual_rx') };
+      }
+      if (kind === 'receiver') h.state = { ...stateA, active: 'SUB' };
+      if (kind === 'unknown') {
+        const fieldStatus = { ...stateA.fieldStatus }; delete fieldStatus.active;
+        h.state = { ...stateA, fieldStatus };
+      }
+      publishAuthority();
+      h.state = stateA; h.caps = capsA; h.session = sessionA; publishAuthority();
+      retainedA1('CW'); expect(h.modeChange).not.toHaveBeenCalled();
+      flushSync();
+      const retainedA3 = retainedInvocations.get('Mode')!;
+      expect(retainedA3).not.toBe(retainedA1);
+      retainedA3('CW'); expect(h.modeChange).toHaveBeenCalledExactlyOnceWith('CW');
+      retainedA1('FM'); expect(h.modeChange).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 // ── 1. The structural gate: absent group ⇒ no surface, no element drift ────
