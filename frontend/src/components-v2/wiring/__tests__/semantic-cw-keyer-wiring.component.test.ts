@@ -416,9 +416,9 @@ function submitCw(field: 'pitchHz' | 'keyerSpeed', value: number): string {
   return vi.mocked(sendCommand).mock.calls.at(-1)![2] as string;
 }
 
-// The Host's announcement lane is a SIBLING of every field's own
-// `data-testid="cw-keyer-{field}"` seat (see `CwKeyerInstrumentHost.svelte`'s
-// `{#each CW_CONTINUOUS_LEVELS}` block after `{@render children(...)}`), not
+// The Host's announcement lane is emitted at the Host's own root (see
+// `CwKeyerInstrumentHost.svelte`'s `{#each CW_CONTINUOUS_LEVELS}` block after
+// `{@render children(...)}`), wherever the consumer places each field's seat, not
 // nested inside it — so it is located by `data-feedback-lane`, not by
 // querying inside `el(field)`.
 const feedbackStatus = (field: 'pitchHz' | 'keyerSpeed') =>
@@ -930,8 +930,8 @@ describe('the surface mounts only where a declared zone can hold it', () => {
 /**
  * `desktop-v2` seats `pitchHz` outside `<CwKeyerSurface>` (like `keyerSpeed`)
  * and suppresses the surface's own copy; every other layout still renders it
- * via the grouped handle. MUTATION KILLED (b1): dropping the seat while the
- * surface's copy stays shown duplicates it. (b2): dropping the seat without
+ * via the grouped handle. MUTATION KILLED (b1): keeping the seat while the
+ * surface's copy is also shown duplicates it. (b2): dropping the seat without
  * restoring the surface's copy leaves zero.
  */
 describe('pitch mounts exactly once regardless of the hosting layout', () => {
