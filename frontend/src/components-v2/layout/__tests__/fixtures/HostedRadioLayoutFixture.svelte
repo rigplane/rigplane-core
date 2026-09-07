@@ -4,6 +4,9 @@
     InstrumentComposition as FixtureInstrumentComposition,
     InstrumentVfoAppearance as FixtureVfoAppearance,
   } from '../../../wiring/instrument-composition';
+  import type {
+    ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverSMeterMount,
+  } from '../../../../semantic/ReceiverInstrumentHost.svelte';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[appearance: FixtureVfoAppearance, allowBare?: boolean]>(
@@ -12,13 +15,19 @@
   const txAux = createRawSnippet<[scalarLayout: FixtureSnippet, allowBare?: boolean]>(
     () => ({ render: () => '' }),
   );
+  const frequency = createRawSnippet<[mount?: ReceiverFrequencyMount]>(() => ({ render: () => '' }));
+  const sMeter = createRawSnippet<[mount?: ReceiverSMeterMount]>(() => ({ render: () => '' }));
+  const receiverInstruments = {
+    mainFrequency: frequency, subFrequency: frequency,
+    mainSMeter: sMeter, subSMeter: sMeter, vfoOperations: empty,
+  } satisfies ReceiverInstrumentHandles;
   const scalars = {
     rfPower: empty, micGain: empty, driveGain: empty, voxGain: empty,
     antiVoxGain: empty, voxDelay: empty, compressorLevel: empty, monitorLevel: empty,
   };
 
   export const TEST_INSTRUMENTS = {
-    vfo, rxTx: empty, txAuxControls: txAux, txAuxScalars: scalars,
+    vfo, rxTx: empty, txAuxControls: txAux, txAuxScalars: scalars, receiverInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band: empty, antenna: empty, ritXitScan: empty, cwKeyer: empty,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,

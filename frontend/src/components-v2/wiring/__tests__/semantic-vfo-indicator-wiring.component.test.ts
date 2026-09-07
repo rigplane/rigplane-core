@@ -138,12 +138,15 @@ function render(
   target = document.createElement('div'); document.body.appendChild(target);
   component = mount(SemanticRadioSurfaces, { target, props }); flushSync();
 }
-function pushSession(next: ControlSessionSnapshot): void {
-  h.session = next; h.sessionSubscriber?.(next);
+function publishAuthority(): void {
   for (const subscriber of h.authoritySubscribers) subscriber({
     state: h.state, caps: h.caps, session: h.session,
     rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
   });
+}
+function pushSession(next: ControlSessionSnapshot): void {
+  h.session = next; h.sessionSubscriber?.(next);
+  publishAuthority();
   flushSync();
 }
 function pushMeter(value: number, providerGeneration = 1): void {
@@ -152,10 +155,7 @@ function pushMeter(value: number, providerGeneration = 1): void {
   h.state = next;
   h.caps = { ...caps('main_sub', 2), providerGeneration };
   txHarness.emitServerSnapshot({});
-  for (const subscriber of h.authoritySubscribers) subscriber({
-    state: h.state, caps: h.caps, session: h.session,
-    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
-  });
+  publishAuthority();
   flushSync();
 }
 const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')]
@@ -220,28 +220,35 @@ describe('production receiver-indicator partitioning', () => {
     ['dual receiver strip', { strips: 'dual' }],
     ['single VFO surface', { strips: 'single' }],
     ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
-  ] as const)('rotates the %s frequency authority on session and provider identity', (
+  ] as const)('closes the %s before-flush A-B-A gap and rotates provider identity', (
     _name, props,
   ) => {
     selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
     render(caps('main_sub', 2), state(), {}, props);
+    expect(h.authoritySubscribers.size).toBe(1);
     const digit = projectFrequencyReadout({ confirmedHz: 14_200_000 }).digits[0];
     const first = retainedInteractions().find((interaction) => !interaction.inert)!;
     first.handleDigitClick(digit, new MouseEvent('click'));
     expect(first.selectedDigitIndex).toBe(digit.digitIndex);
-    pushSession({ state: 'connected', epoch: 2 });
-    expect(first.inert).toBe(true);
+    h.session = { state: 'connected', epoch: 2 }; publishAuthority();
+    h.session = { state: 'connected', epoch: 1 }; publishAuthority();
     const callsAfterSession = h.noop.mock.calls.length;
     const staleSessionWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
     first.handleDigitClick(digit, new MouseEvent('click'));
     first.handleWheel(digit, staleSessionWheel);
     expect(staleSessionWheel.defaultPrevented).toBe(false);
+    expect(first.inert).toBe(true);
     expect(h.noop).toHaveBeenCalledTimes(callsAfterSession);
 
+    flushSync();
     const second = retainedInteractions().find((interaction) => !interaction.inert)!;
     expect(second).not.toBe(first);
     second.handleDigitClick(digit, new MouseEvent('click'));
     expect(second.selectedDigitIndex).toBe(digit.digitIndex);
+    const freshKey = new KeyboardEvent('keydown', { key: 'ArrowUp', cancelable: true });
+    second.handleKeyDown(freshKey);
+    expect(freshKey.defaultPrevented).toBe(true);
+    expect(h.noop).toHaveBeenCalledTimes(callsAfterSession + 1);
     pushMeter(50, 2);
     expect(second.inert).toBe(true);
     const callsAfterProvider = h.noop.mock.calls.length;
@@ -314,7 +321,8 @@ describe('production receiver-indicator partitioning', () => {
       outstandingFrameIds.delete(frameId);
     });
     render(caps('main_sub', 2), state(), {}, props);
-    expect(requestedFrameIds.size).toBeGreaterThan(0);
+    // Two schedules per receiver motion binding, plus the existing MetersSurface pair.
+    expect(requestedFrameIds.size).toBe(6);
     expect(outstandingFrameIds).toEqual(requestedFrameIds);
     unmount(component!);
     component = null;
