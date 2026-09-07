@@ -4,9 +4,10 @@
  * registration proof. Each test's doc line names the mutation it exists to
  * kill.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
-  registerLayout, getLayout, listLayoutIds, LayoutValidationError,
+  registerLayout, registerLayouts, getLayout, listLayoutIds, LayoutValidationError,
 } from '../contract';
 import { sdrTestLayout } from '../declarations';
 import { validLayoutManifest } from './fixtures';
@@ -43,6 +44,57 @@ describe('count-agnostic registration', () => {
     registerLayout(validLayoutManifest({ id: 'hypothetical-layout' }));
     expect(listLayoutIds().length).toBe(before + 1);
     expect(getLayout('hypothetical-layout')?.id).toBe('hypothetical-layout');
+  });
+
+  it('registers a validated batch in input order', () => {
+    const before = listLayoutIds().length;
+    const first = validLayoutManifest({ id: 'batch-order-first' });
+    const second = validLayoutManifest({ id: 'batch-order-second' });
+
+    registerLayouts([first, second]);
+
+    expect(listLayoutIds().slice(before)).toEqual(['batch-order-first', 'batch-order-second']);
+    expect(getLayout(first.id)).toBe(first);
+    expect(getLayout(second.id)).toBe(second);
+  });
+});
+
+describe('atomic batch registration', () => {
+  it('keeps single-item registration on the batch path', () => {
+    const source = readFileSync('src/presentation/layouts/contract.ts', 'utf8');
+    expect(source).toMatch(
+      /export function registerLayout\(manifest: LayoutManifest\): void \{\s*registerLayouts\(\[manifest\]\);\s*\}/,
+    );
+  });
+
+  it('does not commit an earlier valid item when a later manifest is invalid', () => {
+    const valid = validLayoutManifest({ id: 'batch-before-invalid' });
+    const invalid = validLayoutManifest({
+      id: 'batch-invalid',
+      compatibleTopologies: [],
+    });
+
+    expect(() => registerLayouts([valid, invalid])).toThrow(LayoutValidationError);
+    expect(getLayout(valid.id)).toBeUndefined();
+    expect(getLayout(invalid.id)).toBeUndefined();
+  });
+
+  it('checks collisions with the current registry before committing any batch item', () => {
+    const existing = validLayoutManifest({ id: 'batch-existing' });
+    const fresh = validLayoutManifest({ id: 'batch-fresh-before-existing' });
+    registerLayout(existing);
+
+    expect(() => registerLayouts([fresh, existing])).toThrow(/already registered/);
+    expect(getLayout(existing.id)).toBe(existing);
+    expect(getLayout(fresh.id)).toBeUndefined();
+  });
+
+  it('checks collisions inside the batch before committing any item', () => {
+    const first = validLayoutManifest({ id: 'batch-duplicate' });
+    const duplicate = validLayoutManifest({ id: 'batch-duplicate' });
+
+    expect(() => registerLayouts([first, duplicate])).toThrow(/more than once in the batch/);
+    expect(getLayout(first.id)).toBeUndefined();
   });
 });
 

@@ -25,46 +25,28 @@ export type InstrumentHandlesPresentation = Component<{ instruments: InstrumentC
 export type SelfContainedPresentation = Component;
 export type PresentationComponent = InstrumentHandlesPresentation | SelfContainedPresentation;
 
-type PresentationPropsBySkin = {
-  'desktop-v2': { instruments: InstrumentComposition };
-  'sdr-test': { instruments: InstrumentComposition };
-  'dual-receiver-cockpit': Record<string, never>;
-  'lcd-cockpit': Record<string, never>;
-  'lcd-scope': Record<string, never>;
-  'mobile': Record<string, never>;
-  'peer-split': Record<string, never>;
-  'dual-sdr-face': Record<string, never>;
-  'unified-instrument': Record<string, never>;
-  'panadapter-first': Record<string, never>;
-};
+type BuiltInPresentationRecord<Id extends SkinId> =
+  | {
+      readonly id: Id;
+      readonly kind: 'built-in-instrument-layout';
+      readonly loader: () => Promise<{ default: InstrumentHandlesPresentation }>;
+      readonly resources: readonly AppResource[];
+    }
+  | {
+      readonly id: Id;
+      readonly kind: 'built-in-self-contained';
+      readonly loader: () => Promise<{ default: SelfContainedPresentation }>;
+      readonly resources: readonly AppResource[];
+    };
 
-type SkinLoaderMap = {
-  [Id in SkinId]: () => Promise<{ default: Component<PresentationPropsBySkin[Id]> }>;
-};
-type LoadedPresentation<Id extends SkinId> = Id extends SkinId
-  ? Component<PresentationPropsBySkin[Id]>
-  : never;
-
-/**
- * Whether App supplies the persistent semantic instrument host for a skin.
- * Kept total over SkinId so a new presentation cannot silently inherit the
- * hosted lifetime contract without choosing it explicitly.
- */
-const PRESENTATION_HOST_MODE: Readonly<Record<SkinId, PresentationHostMode>> = {
-  'desktop-v2': 'instrument-handles',
-  'dual-receiver-cockpit': 'self-contained',
-  'lcd-cockpit': 'self-contained',
-  'lcd-scope': 'self-contained',
-  'mobile': 'self-contained',
-  'peer-split': 'self-contained',
-  'sdr-test': 'instrument-handles',
-  'dual-sdr-face': 'self-contained',
-  'unified-instrument': 'self-contained',
-  'panadapter-first': 'self-contained',
+type BuiltInPresentationCatalog = {
+  readonly [Id in SkinId]: BuiltInPresentationRecord<Id>;
 };
 
 export function presentationHostMode(id: SkinId): PresentationHostMode {
-  return PRESENTATION_HOST_MODE[id];
+  return SKIN_LOADERS[id].kind === 'built-in-instrument-layout'
+    ? 'instrument-handles'
+    : 'self-contained';
 }
 
 export interface SkinResolutionContext {
@@ -115,28 +97,51 @@ export function resolveSkinId(ctx: SkinResolutionContext): SkinId {
 }
 
 /**
- * Lazy-load a skin component by ID.
+ * One total built-in catalog keeps the lazy loader, host contract and resource
+ * bridge plan on the same discriminated record. A new SkinId cannot silently
+ * inherit any of those three decisions from a separate table.
  *
- * Returns the default export of the skin's entry Svelte component.
- * Skins are code-split — only the active skin is loaded.
- *
- * Each LCD variant has its own wrapper that mounts `LcdLayout` with the
- * appropriate `variant` prop — this is how the cockpit/scope/peer-split
- * selection reaches LcdLayout (registry → skin wrapper → LcdLayout). The
- * legacy `amber-lcd` alias is accepted via `normalizeLayoutMode`'s
- * `LEGACY_LAYOUT_ALIASES` table.
+ * Resource membership only permits bridging: `App.svelte` bridges a resource
+ * solely while it is already demanded, so presentation choice cannot start a
+ * service. `rx-audio` is absent because the runtime owns that lease.
+ * Loaders remain lazy, so only the selected skin's entry component is loaded.
  */
 const SKIN_LOADERS = {
-  'desktop-v2': () => import('./desktop-v2/DesktopSkin.svelte'),
+  'desktop-v2': {
+    id: 'desktop-v2',
+    kind: 'built-in-instrument-layout',
+    loader: () => import('./desktop-v2/DesktopSkin.svelte'),
+    resources: ['hardware-scope', 'audio-fft'],
+  },
   // MOR-1068 (F8): the cockpit's layout manifest registers under this exact
   // id, so it needs the matching loadable SkinId — it was the only registered
   // manifest the App had no way to load. `resolveSkinId` does not yet return
   // it (that needs a `LayoutMode` preference and a picker affordance, tracked
   // separately); the entry here is what makes the id addressable at all.
-  'dual-receiver-cockpit': () => import('./dual-receiver-cockpit/DualReceiverCockpit.svelte'),
-  'lcd-cockpit': () => import('./lcd-cockpit/LcdCockpitSkin.svelte'),
-  'lcd-scope': () => import('./lcd-scope/LcdScopeSkin.svelte'),
-  'mobile': () => import('./mobile/MobileSkin.svelte'),
+  'dual-receiver-cockpit': {
+    id: 'dual-receiver-cockpit',
+    kind: 'built-in-self-contained',
+    loader: () => import('./dual-receiver-cockpit/DualReceiverCockpit.svelte'),
+    resources: [],
+  },
+  'lcd-cockpit': {
+    id: 'lcd-cockpit',
+    kind: 'built-in-self-contained',
+    loader: () => import('./lcd-cockpit/LcdCockpitSkin.svelte'),
+    resources: ['audio-fft'],
+  },
+  'lcd-scope': {
+    id: 'lcd-scope',
+    kind: 'built-in-self-contained',
+    loader: () => import('./lcd-scope/LcdScopeSkin.svelte'),
+    resources: ['audio-fft'],
+  },
+  'mobile': {
+    id: 'mobile',
+    kind: 'built-in-self-contained',
+    loader: () => import('./mobile/MobileSkin.svelte'),
+    resources: ['hardware-scope'],
+  },
   // MOR-2155 made `peer-split` addressable and loadable; MOR-2152 (see the
   // `resolveSkinId` branch below) is what makes a forced 'peer-split'
   // preference actually resolve to it. MOR-2153 PR-1 retargeted the loader
@@ -144,16 +149,44 @@ const SKIN_LOADERS = {
   // shell wrapper: `lcd-peer-split/LcdPeerSplitSkin.svelte` mounts
   // `LcdLayout` with `variant="peer-split"`, which renders the glass inside
   // the shell rather than loading it standalone.
-  'peer-split': () => import('./lcd-peer-split/LcdPeerSplitSkin.svelte'),
-  'unified-instrument': () => import('./lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte'),
-  'panadapter-first': () => import('./lcd-panadapter-first/LcdPanadapterFirstSkin.svelte'),
-  'sdr-test': () => import('./sdr-test/SdrTestSkin.svelte'),
-  'dual-sdr-face': () => import('./dual-sdr-face/DualSdrFaceSkin.svelte'),
-} satisfies SkinLoaderMap;
+  'peer-split': {
+    id: 'peer-split',
+    kind: 'built-in-self-contained',
+    loader: () => import('./lcd-peer-split/LcdPeerSplitSkin.svelte'),
+    resources: ['audio-fft'],
+  },
+  'unified-instrument': {
+    id: 'unified-instrument',
+    kind: 'built-in-self-contained',
+    loader: () => import('./lcd-unified-instrument/LcdUnifiedInstrumentSkin.svelte'),
+    resources: ['audio-fft'],
+  },
+  'panadapter-first': {
+    id: 'panadapter-first',
+    kind: 'built-in-self-contained',
+    loader: () => import('./lcd-panadapter-first/LcdPanadapterFirstSkin.svelte'),
+    resources: ['hardware-scope', 'audio-fft'],
+  },
+  'sdr-test': {
+    id: 'sdr-test',
+    kind: 'built-in-instrument-layout',
+    loader: () => import('./sdr-test/SdrTestSkin.svelte'),
+    resources: ['hardware-scope', 'audio-fft'],
+  },
+  'dual-sdr-face': {
+    id: 'dual-sdr-face',
+    kind: 'built-in-self-contained',
+    loader: () => import('./dual-sdr-face/DualSdrFaceSkin.svelte'),
+    resources: ['hardware-scope'],
+  },
+} satisfies BuiltInPresentationCatalog;
+
+type LoadedPresentation<Id extends SkinId> =
+  Awaited<ReturnType<(typeof SKIN_LOADERS)[Id]['loader']>>['default'];
 
 export function loadSkin<Id extends SkinId>(id: Id): Promise<LoadedPresentation<Id>>;
 export async function loadSkin(id: SkinId): Promise<PresentationComponent> {
-  return (await SKIN_LOADERS[id]()).default;
+  return (await SKIN_LOADERS[id].loader()).default;
 }
 
 /**
@@ -183,30 +216,6 @@ export async function loadSkin(id: SkinId): Promise<PresentationComponent> {
  * solely while it is already demanded, so a presentation choice can never
  * manufacture a live service (v3 ADR invariant 12).
  */
-const SKIN_RESOURCE_PLAN: Record<SkinId, readonly AppResource[]> = {
-  'desktop-v2': ['hardware-scope', 'audio-fft'],
-  // Empty by construction: the cockpit mounts the VFO/RX-TX surfaces only —
-  // no SpectrumPanel, no AudioSpectrumPanel. Membership only permits
-  // bridging, so naming a resource this tree cannot consume would be a
-  // presentation manufacturing a live service (v3 ADR invariant 12).
-  'dual-receiver-cockpit': [],
-  'lcd-cockpit': ['audio-fft'],
-  'lcd-scope': ['audio-fft'],
-  'mobile': ['hardware-scope'],
-  // MOR-2153 PR-1: `peer-split` now mounts the LCD shell (`LcdLayout`
-  // variant="peer-split"), which reuses `RightSidebar` unmodified — the
-  // same `AudioSpectrumPanel`-behind-`hasAudioFft()` producer `lcd-cockpit`/
-  // `lcd-scope` already demand `audio-fft` for. No component in the tree
-  // mounts `SpectrumPanel`, so `hardware-scope` stays absent. Matches
-  // `lcd-cockpit`/`lcd-scope` below, re-derived from this shared shell
-  // rather than copied from them.
-  'peer-split': ['audio-fft'],
-  'unified-instrument': ['audio-fft'],
-  'panadapter-first': ['hardware-scope', 'audio-fft'],
-  'sdr-test': ['hardware-scope', 'audio-fft'],
-  'dual-sdr-face': ['hardware-scope'],
-};
-
 export function presentationResourcePlan(id: SkinId): readonly AppResource[] {
-  return SKIN_RESOURCE_PLAN[id] ?? [];
+  return SKIN_LOADERS[id]?.resources ?? [];
 }

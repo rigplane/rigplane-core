@@ -432,9 +432,11 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     // If production ever diverges from the table this file switches on, the
     // whole matrix below is measuring the wrong thing.
     const source = readFileSync('src/skins/registry.ts', 'utf8');
-    const table = source.slice(source.indexOf('const SKIN_RESOURCE_PLAN'));
+    const table = source.slice(source.indexOf('const SKIN_LOADERS'));
     for (const [id, plan] of Object.entries(SKIN_PLAN)) {
-      const line = table.match(new RegExp(`'${id}':\\s*\\[([^\\]]*)\\]`));
+      const line = table.match(new RegExp(
+        `'${id}':\\s*\\{[\\s\\S]*?resources:\\s*\\[([^\\]]*)\\]`,
+      ));
       expect(line, `no plan entry for ${id}`).not.toBeNull();
       const declared = [...line![1].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
       expect(declared).toEqual([...plan].sort());

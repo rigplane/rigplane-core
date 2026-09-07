@@ -246,17 +246,33 @@ export function validateLayoutManifest(manifest: LayoutManifest): void {
 const registry = new Map<string, LayoutManifest>();
 
 /**
- * Validates then registers `manifest`. Rejects a duplicate ID — unlike the
- * design-language registry's overwrite semantics, a silently swapped layout
- * definition can replace the semantic declaration already in use, so MOR-1066
- * treats "duplicate IDs" as its own rejection class rather than an overwrite.
+ * Validates and registers a batch atomically. Every manifest and every
+ * collision against the current registry or another batch item is checked
+ * before the first write. Input order is retained in the registry.
+ */
+export function registerLayouts(manifests: readonly LayoutManifest[]): void {
+  const batchIds = new Set<string>();
+  for (const manifest of manifests) {
+    validateLayoutManifest(manifest);
+    if (registry.has(manifest.id)) {
+      throw new LayoutValidationError(`Layout id "${manifest.id}" is already registered.`);
+    }
+    if (batchIds.has(manifest.id)) {
+      throw new LayoutValidationError(`Layout id "${manifest.id}" appears more than once in the batch.`);
+    }
+    batchIds.add(manifest.id);
+  }
+  for (const manifest of manifests) {
+    registry.set(manifest.id, manifest);
+  }
+}
+
+/**
+ * Registers one manifest through the same atomic path used for batches.
+ * Duplicate IDs remain a rejection rather than overwrite semantics.
  */
 export function registerLayout(manifest: LayoutManifest): void {
-  validateLayoutManifest(manifest);
-  if (registry.has(manifest.id)) {
-    throw new LayoutValidationError(`Layout id "${manifest.id}" is already registered.`);
-  }
-  registry.set(manifest.id, manifest);
+  registerLayouts([manifest]);
 }
 export function getLayout(id: string): LayoutManifest | undefined {
   return registry.get(id);

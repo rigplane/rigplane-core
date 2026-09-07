@@ -6,8 +6,9 @@
  * registry instead of a hardcoded pair list (the previous version of this
  * file covered only `desktop-v2`/`sdr-test`).
  *
- * `SKIN_LOADERS` — the registry's `Record<SkinId, () => Promise<...>>` of
- * lazy dynamic imports — is not exported; only `loadSkin(id)` is. Every case
+ * `SKIN_LOADERS` — the registry's private total catalog containing each lazy
+ * dynamic import, host kind and resource plan — is not exported; only the
+ * existing App-facing functions are. Every case
  * below that mounts a component fetches it through `loadSkin`, the same
  * function `App.svelte` calls, instead of importing a skin's `.svelte` file
  * directly — a loader repointed at the wrong module is visible here exactly
@@ -16,7 +17,7 @@
  *
  * Completeness has two layers, because there is no runtime-enumerable list
  * of `SkinId` values to iterate — the union has no runtime representation,
- * and both `SKIN_LOADERS` and the sibling `SKIN_RESOURCE_PLAN` are private:
+ * and `SKIN_LOADERS` is private:
  *
  * 1. `SKIN_ENTRYPOINT_COVERAGE` below is typed `Record<SkinId, ...>`. A
  *    `SkinId` added to the registry without a matching entry here is a
