@@ -117,6 +117,7 @@
     min: RF_FRONT_END_LEVELS[0][2], max: RF_FRONT_END_LEVELS[0][3],
     step: RF_FRONT_END_LEVELS[0][4], defaultValue: null, fineStepDivisor: 10,
   } as const;
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const currentAuthority = (): RfAuthority | null => published === null ? null : authority(published);
   const presentedAuthority = (): RfAuthority | null => authority(
     presentation, presentation.controlModel,
@@ -363,6 +364,7 @@
       <span class="rf-front-end-name">{label}</span>
       {#key rendererEpoch}
         <ValueControl
+          {...feedbackIntegratedControl}
           binding={binding} {label} renderer="hbar" showLabel={false} showValue={false} compact={true}
           displayFn={valueText} issuedStatusPresentation={scalarIssuedStatuses[field]}
         />
