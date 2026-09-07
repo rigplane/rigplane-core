@@ -489,6 +489,19 @@ describe('the meters surface mounts only when the view model carries the group',
     };
 
     armRetainedPeak(1, 1);
+    const sameTurnPower = barSvg('power');
+    const subscribers = h.authoritySubscribers.size;
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    txHarness.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' });
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    vi.advanceTimersByTime(100);
+    flushSync();
+    expect(h.authoritySubscribers.size).toBe(subscribers);
+    expect(barSvg('power')).toBe(sameTurnPower);
+    expect(barFillCount('power')).toBe(1);
+    expect(barPeakX('power')).toBe(64);
+
+    armRetainedPeak(1, 1);
     pushSession({ state: 'connected', epoch: 2 });
     expect(barFillCount('power')).toBe(1);
     expect(barPeakX('power')).toBe(64);
@@ -517,7 +530,7 @@ describe('the meters surface mounts only when the view model carries the group',
       },
     };
     push({ intent: 'transmit', observedPtt: 'on' });
-    expect(barSvg('power')).toBe(mountedPower);
+    expect(barSvg('power')).not.toBe(mountedPower);
     expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('false');
     expect(barFillCount('power')).toBe(0);
     expect(barPeakX('power')).toBeNull();

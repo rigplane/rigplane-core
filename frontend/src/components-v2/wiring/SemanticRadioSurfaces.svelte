@@ -62,7 +62,13 @@
   import FilterInstrumentHost from '../../semantic/FilterInstrumentHost.svelte';
   import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
+  import StationMeterInstrumentHost, {
+    type StationMeterAuthorityPublication,
+    type StationMeterInstrumentHandles,
+    type SubscribeStationMeterAuthority,
+  } from '../../semantic/StationMeterInstrumentHost.svelte';
   import type { MeterContinuitySession } from '../../primitives/meters/meter-ballistics.svelte';
+  import type { ControlAuthorityPublication } from '$lib/runtime/frontend-runtime';
   import {
     createFiniteRendererContext,
     type FiniteRendererContext,
@@ -462,7 +468,60 @@
   const tx = getManagedAppTxController();
 
   let txState = $state.raw(tx.snapshot());
-  const stopWatchingTx = tx.subscribe((next) => { txState = next; });
+  let stationSubscriber: Parameters<SubscribeStationMeterAuthority>[0] | null = null;
+  let stationControl: ControlAuthorityPublication | null = null;
+
+  const stationSession = (
+    publication: ControlAuthorityPublication,
+  ): MeterContinuitySession | null => publication.session.state === 'connected'
+    && Number.isSafeInteger(publication.session.epoch)
+    && publication.session.epoch >= 0
+    ? { controlSessionEpoch: publication.session.epoch }
+    : null;
+
+  function publishStationMeters(): void {
+    if (stationSubscriber === null || stationControl === null) return;
+    const publication: StationMeterAuthorityPublication = {
+      view: guardRadioViewModel(
+        toRadioViewModel(stationControl.state, stationControl.caps, txState),
+      ),
+      session: stationSession(stationControl),
+    };
+    stationSubscriber(publication);
+  }
+
+  const subscribeStationMeterAuthority: SubscribeStationMeterAuthority = (subscriber) => {
+    if (stationSubscriber !== null) throw new Error('Station meter authority already subscribed');
+    stationSubscriber = subscriber;
+    try {
+      const stop = runtime.subscribeControlAuthority((publication) => {
+        if (stationSubscriber !== subscriber) return;
+        stationControl = publication;
+        publishStationMeters();
+      });
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        if (stationSubscriber === subscriber) {
+          stationSubscriber = null;
+          stationControl = null;
+        }
+        stop();
+      };
+    } catch (error) {
+      if (stationSubscriber === subscriber) {
+        stationSubscriber = null;
+        stationControl = null;
+      }
+      throw error;
+    }
+  };
+
+  const stopWatchingTx = tx.subscribe((next) => {
+    txState = next;
+    publishStationMeters();
+  });
 
   onDestroy(() => {
     stopWatchingTx();
@@ -1230,6 +1289,8 @@
     onAgcModeChange={agcIntents.onAgcModeChange}
   >
   {#snippet children(dspInstruments)}
+  <StationMeterInstrumentHost {subscribeStationMeterAuthority}>
+  {#snippet children(stationMeters: StationMeterInstrumentHandles)}
   {#if readonlyDisplay}
     {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
@@ -1480,14 +1541,14 @@
     (`dual-receiver-cockpit.ts`) declares no `meters` zone. The zone schema
     stays config-free (risk R3) either way.
 
-    It takes NO authority snapshot and no intent callbacks. That is the R9
-    boundary made structural: the meters are a readout, their TX truth is
-    already decided inside `view.meters` by the App-owned authority the
-    adapter was handed, and this component has nothing else to give them.
+    It takes no intent callbacks. The persistent station host above every
+    replaceable body owns the authority subscription and motion; this slot only
+    places its passive handles. TX truth is still decided by the adapter from
+    the App-owned authority, and the surface remains a readout.
   -->
   {#snippet metersSurface()}
     {#if view?.meters}
-      <MetersSurface {view} continuitySession={meterContinuitySession} />
+      <MetersSurface handles={stationMeters} />
     {/if}
   {/snippet}
 
@@ -2113,6 +2174,8 @@
   {/snippet}
   </TxAuxScalarHost>
   {/if}
+  {/snippet}
+  </StationMeterInstrumentHost>
   {/snippet}
   </DspInstrumentHost>
   {/snippet}
