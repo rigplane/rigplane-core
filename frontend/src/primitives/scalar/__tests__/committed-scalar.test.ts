@@ -247,9 +247,11 @@ describe('createCommittedScalar', () => {
     rendererA.commit(90);
 
     const rendererB = scalar.attachRenderer();
-    expect(rendererB.view).toMatchObject({
+    const rendererBView = rendererB.view;
+    expect(rendererBView).toMatchObject({
       draft: null, displayed: 64, editing: false, announcement: 'Failed: 111',
     });
+    expect(rendererBView.presentation.politeAnnouncement).toBeNull();
     rendererB.input(99);
     rendererB.commit(99);
     expect(request).toHaveBeenCalledExactlyOnceWith(99);
