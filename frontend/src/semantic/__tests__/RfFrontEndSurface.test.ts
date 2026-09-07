@@ -63,6 +63,32 @@ const pairFeedback = (
 
 let target: HTMLDivElement;
 
+interface LevelDriver {
+  readonly range: () => readonly [string, string];
+  readonly value: () => number;
+  readonly disabled: () => boolean;
+  readonly attribute: (name: string) => string | null;
+  readonly data: (name: string) => string | undefined;
+  readonly input: (value: number) => void;
+}
+
+// This intermediate driver intentionally covers only the Surface's current native input.
+function levelDriver(root: ParentNode): LevelDriver {
+  const input = root.querySelector<HTMLInputElement>('input');
+  if (input === null) throw new Error('Expected current native RF level input');
+  return {
+    range: () => [input.min, input.max],
+    value: () => input.valueAsNumber,
+    disabled: () => input.disabled,
+    attribute: (name) => input.getAttribute(name),
+    data: (name) => input.dataset[name],
+    input: (value) => {
+      input.value = String(value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    },
+  };
+}
+
 function render(view: RadioViewModel, handlers: Record<string, unknown> = {}) {
   target = document.createElement('div');
   document.body.appendChild(target);
@@ -74,6 +100,10 @@ function render(view: RadioViewModel, handlers: Record<string, unknown> = {}) {
     root: () => q('[data-testid="rf-front-end-surface"]'),
     el: (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`),
     text: (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`)?.textContent?.trim(),
+    level: (id: string) => {
+      const root = q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
+      return root === null ? null : levelDriver(root);
+    },
   };
 }
 
@@ -125,11 +155,10 @@ describe('carry-forward 1: a stale/unread reading renders unknown, never its las
   it('makes the RF-gain slider inert while the level is unread, and emits nothing', () => {
     const onLevelChange = vi.fn();
     const r = render(withRf({ rfGain: unread<number>(DEGRADED) }), { onLevelChange });
-    const input = r.el('rfGain')!.querySelector('input')!;
-    expect(input.disabled).toBe(true);
-    expect(input.valueAsNumber).toBe(0);
-    input.value = '0.7';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rfGain')!;
+    expect(input.disabled()).toBe(true);
+    expect(input.value()).toBe(0);
+    input.input(0.7);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -216,8 +245,8 @@ describe('carry-forwards 2+3: the PREAMP mutex disables the control WITH AN EXPL
   it('never disables the attenuator, RF gain or squelch controls for the preamp mutex', () => {
     const r = render(withReasons([MUTEX]));
     expect(r.el('attenuator-6')!.hasAttribute('disabled')).toBe(false);
-    expect(r.el('rfGain')!.querySelector('input')!.disabled).toBe(false);
-    expect(r.el('squelch')!.querySelector('input')!.disabled).toBe(false);
+    expect(r.level('rfGain')!.disabled()).toBe(false);
+    expect(r.level('squelch')!.disabled()).toBe(false);
     r.dispose();
   });
 });
@@ -283,17 +312,16 @@ describe('preamp and attenuator render as choice groups from the capability-deri
 describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
   it.each(RF_FRONT_END_LEVELS)('declares the %s slider on the 0..1 scale', (field, _label, min, max) => {
     const r = render(base());
-    const input = r.el(field)!.querySelector('input')!;
-    expect([input.min, input.max]).toEqual([String(min), String(max)]);
+    const input = r.level(field)!;
+    expect(input.range()).toEqual([String(min), String(max)]);
     r.dispose();
   });
 
   it('emits the slider value verbatim, on the way out', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { onLevelChange });
-    const input = r.el('squelch')!.querySelector('input')!;
-    input.value = '0.33';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('squelch')!;
+    input.input(0.33);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('squelch', 0.33);
     r.dispose();
@@ -303,9 +331,8 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
   it('the level handler refuses to emit for an unusable field, independent of `disabled`', () => {
     const onLevelChange = vi.fn();
     const r = render(withRf({ squelch: unread<number>(DEGRADED) }), { onLevelChange });
-    const input = r.el('squelch')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('squelch')!;
+    input.input(0.5);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -317,7 +344,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
   it('renders a known RF-gain reading as a rounded percent, not the raw wire float', () => {
     const r = render(withRf({ rfGain: known(0.8196078431372549) }));
     expect(r.el('rfGain')!.dataset.feedbackIntegration).toBe('compatibility-reading');
-    expect(r.el('rfGain')!.querySelector('input')!.getAttribute('feedback-policy'))
+    expect(r.level('rfGain')!.attribute('feedback-policy'))
       .toBe('feedback-integrated');
     expect(r.text('rfGain')).toContain('82%');
     expect(r.text('rfGain')).not.toContain('0.8196078431372549');
@@ -335,13 +362,12 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     const r = render(base(), { rfSqlFeedback: null, onLevelChange });
     for (const field of ['rfGain', 'squelch'] as const) {
       const group = r.el(field)!;
-      const input = group.querySelector('input')!;
+      const input = levelDriver(group);
       expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
       expect(group.dataset.observed).toBe('false');
-      expect(input.disabled).toBe(true);
+      expect(input.disabled()).toBe(true);
       expect(group.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
-      input.value = '0.5';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.input(0.5);
     }
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
@@ -364,23 +390,21 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     });
     const rfGroup = r.el('rfGain')!;
     const sqlGroup = r.el('squelch')!;
-    const rfInput = rfGroup.querySelector('input')!;
-    const sqlInput = sqlGroup.querySelector('input')!;
+    const rfInput = levelDriver(rfGroup);
+    const sqlInput = levelDriver(sqlGroup);
     expect(rfGroup.dataset.feedbackIntegration).toBe('command-feedback');
     expect(rfGroup.dataset.commandPhase).toBe('awaiting-confirmation');
     expect(rfGroup.getAttribute('aria-busy')).toBe('true');
     expect(rfGroup.dataset.observed).toBe('true');
-    expect(rfInput.valueAsNumber).toBe(0.75);
+    expect(rfInput.value()).toBe(0.75);
     expect(rfGroup.querySelector('output')?.textContent).toBe('75%');
-    expect(rfInput.disabled).toBe(false);
+    expect(rfInput.disabled()).toBe(false);
     expect(sqlGroup.dataset.commandPhase).toBe('unavailable');
     expect(sqlGroup.dataset.observed).toBe('false');
     expect(sqlGroup.querySelector('output')?.textContent).toBe(UNKNOWN_TEXT);
-    expect(sqlInput.disabled).toBe(true);
-    rfInput.value = '0.55';
-    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
-    sqlInput.value = '0.4';
-    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(sqlInput.disabled()).toBe(true);
+    rfInput.input(0.55);
+    sqlInput.input(0.4);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0.55);
     r.dispose();
@@ -395,11 +419,10 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     });
     expect(r.el('rf-sql')).toBeNull();
     expect(r.el('squelch')).toBeNull();
-    const rfInput = r.el('rfGain')!.querySelector('input')!;
-    expect(rfInput.disabled).toBe(false);
-    expect(rfInput.valueAsNumber).toBe(0.4);
-    rfInput.value = '0.3';
-    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
+    const rfInput = r.level('rfGain')!;
+    expect(rfInput.disabled()).toBe(false);
+    expect(rfInput.value()).toBe(0.4);
+    rfInput.input(0.3);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0.3);
     r.dispose();
@@ -415,18 +438,17 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
       get rfSqlFeedback() { return feedback.get('current') ?? null; },
     } });
     flushSync();
-    const input = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rfGain"] input')!;
-    input.value = '0.9';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = levelDriver(target.querySelector('[data-testid="rf-front-end-rfGain"]')!);
+    input.input(0.9);
     flushSync();
-    expect(input.valueAsNumber).toBe(0.9);
+    expect(input.value()).toBe(0.9);
     feedback.set('current', pairFeedback({ rf: { confirmed: 0.4 } }, 4));
     flushSync();
-    expect(input.valueAsNumber).toBe(0.4);
+    expect(input.value()).toBe(0.4);
     expect(target.querySelectorAll('[data-testid="rf-front-end-rfGain"] [data-control-feedback-status]')).toHaveLength(0);
     feedback.delete('current');
     flushSync();
-    expect(input.disabled).toBe(true);
+    expect(input.disabled()).toBe(true);
     expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent).toBe(UNKNOWN_TEXT);
     unmount(component);
     target.remove();
@@ -442,12 +464,10 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
       get rfSqlFeedback() { return feedback.get('current')!; },
     } });
     flushSync();
-    const rfInput = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rfGain"] input')!;
-    const sqlInput = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-squelch"] input')!;
-    rfInput.value = '0.7';
-    rfInput.dispatchEvent(new Event('input', { bubbles: true }));
-    sqlInput.value = '0.6';
-    sqlInput.dispatchEvent(new Event('input', { bubbles: true }));
+    const rfInput = levelDriver(target.querySelector('[data-testid="rf-front-end-rfGain"]')!);
+    const sqlInput = levelDriver(target.querySelector('[data-testid="rf-front-end-squelch"]')!);
+    rfInput.input(0.7);
+    sqlInput.input(0.6);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledTimes(2);
 
@@ -458,7 +478,7 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
       },
     }));
     flushSync();
-    expect(sqlInput.valueAsNumber).toBe(0.6);
+    expect(sqlInput.value()).toBe(0.6);
 
     feedback.set('current', pairFeedback({
       rf: {
@@ -470,10 +490,10 @@ describe('RF gain and squelch render as 0..1 sliders, no rescale', () => {
     flushSync();
     feedback.set('current', pairFeedback({ rf: { confirmed: 204 / 255 } }));
     flushSync();
-    expect(rfInput.valueAsNumber).toBe(0.8);
+    expect(rfInput.value()).toBe(0.8);
     expect(target.querySelector('[data-testid="rf-front-end-rfGain"] output')?.textContent)
       .toBe('80%');
-    expect(sqlInput.valueAsNumber).toBe(0.6);
+    expect(sqlInput.value()).toBe(0.6);
     expect(onLevelChange).toHaveBeenCalledTimes(2);
     unmount(component);
     target.remove();
@@ -529,9 +549,9 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
 
   it('declares the combined slider on the 0..1 scale', () => {
     const r = render(base(), { controlModel: 'combined' });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect([input.min, input.max]).toEqual(['0', '1']);
-    expect(input.getAttribute('feedback-policy')).toBe('feedback-integrated');
+    const input = r.level('rf-sql')!;
+    expect(input.range()).toEqual(['0', '1']);
+    expect(input.attribute('feedback-policy')).toBe('feedback-integrated');
     r.dispose();
   });
 
@@ -539,14 +559,13 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', rfSqlFeedback: null, onLevelChange });
     const group = r.el('rf-sql')!;
-    const input = group.querySelector('input')!;
+    const input = levelDriver(group);
     expect(group.dataset.feedbackIntegration).toBe('authority-unresolved');
     expect(group.dataset.observed).toBe('false');
-    expect(input.disabled).toBe(true);
+    expect(input.disabled()).toBe(true);
     expect(r.text('rf-sql-rf-value')).toBe(UNKNOWN_TEXT);
     expect(r.text('rf-sql-sql-value')).toBe(UNKNOWN_TEXT);
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.input(1);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -558,15 +577,14 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
       controlModel: 'combined', rfSqlFeedback: pairFeedback(), onLevelChange,
     });
     const group = r.el('rf-sql')!;
-    const input = group.querySelector('input')!;
+    const input = levelDriver(group);
     expect(group.dataset.feedbackIntegration).toBe('command-feedback');
     expect(group.dataset.observed).toBe('true');
-    expect(input.disabled).toBe(false);
-    expect(input.valueAsNumber).toBeCloseTo(0.632, 3);
+    expect(input.disabled()).toBe(false);
+    expect(input.value()).toBeCloseTo(0.632, 3);
     expect(r.text('rf-sql-rf-value')).toBe('50%');
     expect(r.text('rf-sql-sql-value')).toBe('20%');
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.input(1);
     flushSync();
     expect(onLevelChange.mock.calls).toEqual([['rfGain', 1], ['squelch', 1]]);
     r.dispose();
@@ -623,12 +641,12 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
       onLevelChange: vi.fn(),
     } });
     flushSync();
-    const input = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rf-sql"] input')!;
-    input.value = '1'; input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
-    expect(input.valueAsNumber).toBe(1);
+    const input = levelDriver(target.querySelector('[data-testid="rf-front-end-rf-sql"]')!);
+    input.input(1); flushSync();
+    expect(input.value()).toBe(1);
     values.set('feedback', pairFeedback({ rf: { confirmed: 1 }, sql: { confirmed: 0 } }, 4));
     flushSync();
-    expect(input.valueAsNumber).toBe(0.5);
+    expect(input.value()).toBe(0.5);
     unmount(component); target.remove();
   });
 
@@ -642,9 +660,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   it('a hard-left drag emits ONLY rfGain — squelch is already at min, unchanged', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    input.value = '0';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    input.input(0);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('rfGain', 0);
     r.dispose();
@@ -653,9 +670,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   it('the knob center emits NOTHING — RF is already max and SQL already min, the "at rest" position', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    input.input(0.5);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -664,12 +680,10 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   it('uses the pair binding to dispatch a canonical reversal after an unconfirmed request', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.dataset.pairEvidence).toBe('reading');
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.value = '0.5';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    expect(input.data('pairEvidence')).toBe('reading');
+    input.input(1);
+    input.input(0.5);
     flushSync();
     expect(onLevelChange.mock.calls).toEqual([
       ['squelch', 1],
@@ -691,17 +705,15 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
       },
     });
     flushSync();
-    const input = target.querySelector<HTMLInputElement>('[data-testid="rf-front-end-rf-sql"] input')!;
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = levelDriver(target.querySelector('[data-testid="rf-front-end-rf-sql"]')!);
+    input.input(1);
     flushSync();
-    expect(input.valueAsNumber).toBe(1);
+    expect(input.value()).toBe(1);
 
     views.set('current', withRfFrontEnd(topologyFixtures['2/ab_shared']));
     flushSync();
-    expect(input.valueAsNumber).toBe(0.5);
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.value()).toBe(0.5);
+    input.input(1);
     flushSync();
     expect(onLevelChange.mock.calls).toEqual([
       ['squelch', 1],
@@ -714,9 +726,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   it('a hard-right drag emits ONLY squelch — RF is already at max, unchanged (owner semantics: "hard right = SQL max (RF max)")', () => {
     const onLevelChange = vi.fn();
     const r = render(base(), { controlModel: 'combined', onLevelChange });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    input.input(1);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('squelch', 1);
     r.dispose();
@@ -729,9 +740,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(withRf({ rfGain: known(1), squelch: known(0.5) }), {
       controlModel: 'combined', onLevelChange,
     });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    input.value = '0.23';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    input.input(0.23);
     flushSync();
     expect(onLevelChange).toHaveBeenCalledTimes(2);
     expect(onLevelChange).toHaveBeenCalledWith('rfGain', 0.5);
@@ -746,8 +756,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(withRf({ rfGain: known(0.8196078431372549), squelch: known(0.2) }), {
       controlModel: 'combined',
     });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.valueAsNumber).toBeCloseTo(0.632, 3);
+    const input = r.level('rf-sql')!;
+    expect(input.value()).toBeCloseTo(0.632, 3);
     r.dispose();
   });
 
@@ -755,8 +765,8 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
   // left leg.
   it('positions the knob on the left leg when RF reads below max and SQL is at min', () => {
     const r = render(withRf({ rfGain: known(0.5), squelch: known(0) }), { controlModel: 'combined' });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.valueAsNumber).toBeCloseTo(0.23, 3);
+    const input = r.level('rf-sql')!;
+    expect(input.value()).toBeCloseTo(0.23, 3);
     r.dispose();
   });
 
@@ -772,10 +782,9 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(withRf({ squelch: unread<number>(DEGRADED) }), {
       controlModel: 'combined', onLevelChange,
     });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.disabled).toBe(true);
-    input.value = '1';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    expect(input.disabled()).toBe(true);
+    input.input(1);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
@@ -790,10 +799,9 @@ describe('the combined RF/SQL knob (controlModel="combined")', () => {
     const r = render(withRf({ rfGain: unread<number>(DEGRADED) }), {
       controlModel: 'combined', onLevelChange,
     });
-    const input = r.el('rf-sql')!.querySelector('input')!;
-    expect(input.disabled).toBe(true);
-    input.value = '0';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const input = r.level('rf-sql')!;
+    expect(input.disabled()).toBe(true);
+    input.input(0);
     flushSync();
     expect(onLevelChange).not.toHaveBeenCalled();
     r.dispose();
