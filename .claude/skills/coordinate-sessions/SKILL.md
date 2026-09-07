@@ -195,9 +195,9 @@ exact head → merge → remove the worktree.
 - Put a `Linear:` reference in the **body only**. A ticket id in the branch
   name or in a commit message auto-attaches the PR and flips that ticket to
   Done on merge; the body does not.
-- `gh pr merge <n> --squash --match-head-commit "$head_sha"`. AGENTS.md gives
-  the fused check-and-merge snippet for the queued-run race, and the rule
-  against `--delete-branch` while a child PR is based on the branch.
+- `gh pr merge <n> --squash --match-head-commit "$head_sha"`. AGENTS.md
+  requires that guard on every merge, and gives the rule against
+  `--delete-branch` while a child PR is based on the branch.
 - After merge or a FAILED/SKIPPED outcome: `git worktree remove <path>
   --force`, then `git worktree prune`. Never `rm -rf`.
 - **Conflicts with `main` are resolved by merging `main` into the branch, not
