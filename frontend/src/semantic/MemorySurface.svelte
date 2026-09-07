@@ -28,10 +28,6 @@
   stored" would be dishonest. The active-VFO readout below is gated on
   `facts.vfoIdentityKnown` FIRST, never on `Number.isFinite` alone, and the
   store affordance is refused (no callback fires) under the same gate.
-
-  NOT YET WIRED (MOR-2425 phase B). No zone mounts this component, and no
-  `memory` entry exists in `SEMANTIC_SURFACE_NAMES` yet — see the phase A
-  handoff report for why that specific step did not land in this change.
 -->
 <script module lang="ts">
   import { MAX_MEMORY_CHANNELS, loadMemoryChannels, persistMemoryChannels } from './memory-channels';

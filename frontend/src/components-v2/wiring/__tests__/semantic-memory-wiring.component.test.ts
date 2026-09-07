@@ -14,10 +14,9 @@
  *   (a) desktop-v2 mounts exactly one semantic Memory surface, inside the
  *       declared `memory` zone, with zero legacy `MemoryPanel` twins.
  *   (b) recall dispatches the real `panel-commands.ts` intent, per channel.
- *   (c) store is refused, end to end, when the adapter reports
- *       `vfoIdentityKnown: false` — the WRONG-VFO doctrine
- *       `MemorySurface.svelte`'s header documents, proven through the REAL
- *       adapter rather than a unit-test fixture.
+ *   (c) when the REAL adapter reports `vfoIdentityKnown: false`, the store
+ *       affordance is disabled and a forced click dispatches nothing (the
+ *       handler-level guard itself is pinned in `MemorySurface.test.ts`).
  *   (d) the surface unmounts on a layout that declares no `memory` zone, and
  *       remounts exactly once switching back.
  *
@@ -172,11 +171,7 @@ const liveCaps = (): Capabilities => ({
  * A single-receiver `ab`-scheme radio with `vfoReadback: 'selected_unselected'`
  * and NO `main.activeSlot` observation — the one shape
  * `relativeVfoIdentityUnknown()` reports true for (`panel-props.ts`), which
- * is what `MemorySurface.svelte`'s `facts.vfoIdentityKnown` gate reads. Only
- * the FACTS path (`deriveMemoryPanelProps`, reading the mocked `runtime`)
- * needs this shape; the command-authority store is left untouched from
- * `beforeEach`'s reset, since the surface's own guard must refuse the click
- * before any command authority is even consulted.
+ * is what `MemorySurface.svelte`'s `facts.vfoIdentityKnown` gate reads.
  */
 function relativeIdentityUnknownState(): ServerState {
   return { active: 'MAIN', main: { freqHz: 7_100_000, mode: 'LSB' }, fieldStatus: {} } as unknown as ServerState;
@@ -202,11 +197,9 @@ function useState(state: ServerState, caps: Capabilities): void {
 }
 
 /**
- * Sets ONLY the runtime-mock facts (`deriveMemoryPanelProps` reads
- * `runtime.state`/`runtime.caps`), leaving the command-authority store as
- * given — used by the store-refusal test below to prove the refusal is a
- * handler-level guard in `MemorySurface.svelte` ahead of the command
- * authority, not merely an artifact of an empty store.
+ * Sets the runtime-mock facts (`deriveMemoryPanelProps` reads
+ * `runtime.state`/`runtime.caps`). The mocked `subscribeControlAuthority`
+ * pushes the same state into the command-authority store on subscribe.
  */
 function useFacts(state: ServerState, caps: Capabilities): void {
   h.state = state;
@@ -286,14 +279,6 @@ describe('recall dispatches the real memory-to-vfo intent, per channel', () => {
 /* ── (c) STORE refused under the WRONG-VFO doctrine ────────────── */
 
 describe('store is refused end to end when vfoIdentityKnown is false', () => {
-  // The command-authority store is set to a FULLY VALID state — the same
-  // fixture the recall tests prove dispatches successfully — while only the
-  // runtime-mock FACTS report identity-unknown. If the refusal were merely
-  // an artifact of an empty/invalid store, this store would let the click
-  // through; it does not, which is what isolates the refusal to
-  // `MemorySurface.svelte`'s own `if (!facts.vfoIdentityKnown) return;`
-  // guard (the WRONG-VFO doctrine its header documents) rather than to
-  // `panel-commands.ts`'s command authority.
   it('never dispatches a command, even bypassing the disabled store button', () => {
     useState(liveState(), liveCaps());
     useFacts(relativeIdentityUnknownState(), relativeIdentityUnknownCaps());
