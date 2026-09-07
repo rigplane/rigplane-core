@@ -6589,8 +6589,7 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 #: the get_selected_mode selector read) where filter_shape's 0x16/0x56 read
 #: used to, since filter_num sits earlier in field_policies declaration
 #: order. filter_shape and data_mode still populate, just on a later burst
-#: this one-tick test doesn't drive. No frame count changed (still 42): the
-#: burst cap and the rest of the poll/prime mix are untouched.
+#: this one-tick test doesn't drive. No frame count changed (still 42).
 _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1C, 0x00, b""),
     (0x25, None, b"\x00"),

@@ -564,9 +564,9 @@ freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"
 adaptive_decay = false
 
-# MOR-2425/R36b: same event-driven-only shape as filter_width above --
-# without this entry, prime_unobserved() never reaches these two paths (it
-# only iterates field_policies), so they could never be observed at startup.
+# Same event-driven-only shape as filter_width above: prime_unobserved()
+# iterates field_policies only, so without this entry these two paths are
+# never primed.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_num"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0

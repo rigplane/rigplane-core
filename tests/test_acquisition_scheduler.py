@@ -2936,11 +2936,9 @@ def test_ic7300_real_profile_filter_num_and_data_mode_have_capability() -> None:
     declare these two fields. Both are command_response_observable-only
     (event-driven, like ``filter_width``), not ``polling_only``.
 
-    MOR-2425/R36b: a command_response_observable field with no
-    ``field_policies`` entry is invisible to
-    ``AcquisitionScheduler.prime_unobserved`` (it only iterates
-    ``field_policies``), so it could never be observed at startup. Both
-    fields now carry the same event-driven ``field_policies`` shape as
+    A command_response_observable field with no ``field_policies`` entry is
+    never primed by ``AcquisitionScheduler.prime_unobserved`` (it only
+    iterates ``field_policies``). Both fields now carry the same event-driven ``field_policies`` shape as
     ``filter_width`` -- not ``polling_only``, so ``due_requests`` still never
     touches them and the standing serial budget accounted for at the bottom
     of ``rigs/ic7300.toml`` is unaffected.

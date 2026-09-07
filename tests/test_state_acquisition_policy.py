@@ -28,11 +28,11 @@ from _acquisition_query_helpers import (
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 
-# MOR-2425/R36b: fields exempted from
+# Fields exempted from
 # test_command_response_observable_fields_are_reachable_by_prime_or_poll.
-# IC-9700 sub-receiver freq/mode is declared command_response_observable, but
-# whether the shared resolve_freq_mode CI-V path actually addresses the SUB
-# receiver via cmd29 (rather than silently reading MAIN) is unverified, so no
+# IC-9700 sub-receiver freq/mode is declared command_response_observable and
+# resolves to the unselected-VFO (selector 1) read, but no IC-9700 has been
+# on the bench to confirm the radio answers that read with SUB data, so no
 # field_policies entry is added for it here.
 _UNPRIMABLE_COMMAND_RESPONSE_EXEMPTIONS: dict[str, frozenset[FieldPath]] = {
     "IC-9700": frozenset(
@@ -490,12 +490,11 @@ def test_command_response_observable_fields_are_reachable_by_prime_or_poll() -> 
     """R36b gates the web listener on every declared field observed once.
 
     A ``command_response_observable`` field with a non-polling capability
-    (``polling=False``) is only ever reachable through
+    (``polling=False``) is primed only by
     ``AcquisitionScheduler.prime_unobserved``, which iterates
-    ``field_policies`` (see that method's docstring). A field in neither
-    ``polling_only`` (``capability.polling``) nor ``field_policies`` would
-    stay UNKNOWN forever, so R36b's gate could never complete for it. Every
-    such field must be covered, except the named exemptions above.
+    ``field_policies`` (see that method's docstring). Every such field must
+    be in ``polling_only`` (``capability.polling``) or ``field_policies``,
+    except the named exemptions above.
     """
 
     failures: list[str] = []
