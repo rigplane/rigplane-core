@@ -305,6 +305,7 @@ describe('the meters surface mounts only when the view model carries the group',
     'vfo-receiver-indicators',
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-surface', 'vfo-active-receiver',
     'vfo-shared-indicators',
     // MOR-1321 (S3a): the VFO ops row and the split RX/TX digest are part of
     // the vfo surface's radio-wide half now, so they belong to the default

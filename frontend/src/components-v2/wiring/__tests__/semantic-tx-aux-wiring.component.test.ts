@@ -401,6 +401,7 @@ describe('the txAux surface mounts only when the view model carries the group', 
     'vfo-receiver-indicators',
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
     'vfo-indicator-row', 'receiver-s-meter', 'receiver-s-meter-unknown',
+    'vfo-surface', 'vfo-active-receiver',
     'vfo-shared-indicators',
     // MOR-1321 (S3a): the VFO ops row and the split RX/TX digest are part of
     // the vfo surface's radio-wide half now, so they belong to the default
@@ -456,7 +457,7 @@ describe('the txAux surface mounts only when the view model carries the group', 
   const DEFAULT_PATH_OUTLINE = 'div p div div span span div span span span span span span span span span span span span span span span span '
     + 'div span span span span span span button div span span div span span span span span span span span span span span span span span button '
     + 'div span span span span span span button div section header strong div div div '
-    + 'section header strong div div div section div span '
+    + 'section header strong div div div div p section div span '
     + 'div button button div div button button p span span section p span span span p div button button '
     + 'ul section div button button button label span input output div button button button output '
     + 'div button button output';
@@ -864,17 +865,17 @@ describe('MOR-1082 — the semantic vertical consults the resolved surface plan'
       zoneOrder: { 'portrait-deck': ['rxTx', 'vfo'] },
     }));
 
-    expect(surfaceOrder()).toEqual(['rx-tx-surface', 'vfo-surface']);
+    expect(surfaceOrder()).toEqual(['rx-tx-surface', 'vfo-surface', 'vfo-surface']);
   });
 
   it('keeps the default sequence with a plan that expresses nothing, and with none at all', () => {
     render({ strips: 'single' }, planFor(sdrTestLayout, {}));
-    expect(surfaceOrder()).toEqual(['vfo-surface', 'rx-tx-surface']);
+    expect(surfaceOrder()).toEqual(['vfo-surface', 'vfo-surface', 'rx-tx-surface']);
 
     if (component) unmount(component);
     document.body.innerHTML = '';
     render({ strips: 'single' });
-    expect(surfaceOrder()).toEqual(['vfo-surface', 'rx-tx-surface']);
+    expect(surfaceOrder()).toEqual(['vfo-surface', 'vfo-surface', 'rx-tx-surface']);
   });
 });
 
