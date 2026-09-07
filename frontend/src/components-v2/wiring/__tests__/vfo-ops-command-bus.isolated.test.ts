@@ -73,7 +73,7 @@ const commandSource = readFileSync('src/lib/runtime/commands/panel-commands.ts',
   .replace(/\/\/.*$/gm, '');
 
 /**
- * The seven surface props and the exact frontend intent tuple each facade
+ * The nine surface props and the exact frontend intent tuple each facade
  * receives. Read as pairs so a cross-wiring fails on the command, not merely
  * on "something was called".
  */
@@ -141,7 +141,7 @@ describe('the wiring binds every VFO op to a handler the real command bus provid
     expect(command[0]).not.toMatch(/ptt|key|start_tx|stop_tx|tune/i);
   });
 
-  // R9. None of the seven may touch a key path: the transmitter is keyed only
+  // R9. None of the nine may touch a key path: the transmitter is keyed only
   // through the App TX controller, never from a VFO action.
   it('no VFO op emits a TX key/unkey command', () => {
     for (const { handler } of OPS) {

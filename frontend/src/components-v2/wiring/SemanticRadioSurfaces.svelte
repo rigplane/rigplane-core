@@ -726,7 +726,7 @@
       finiteAppearance: selectedFiniteAppearance, rendererContext: dspFiniteRendererContext,
     });
   let vfoFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
-    ? null : {
+    ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: vfoFiniteRendererContext,
     });
 
@@ -1130,10 +1130,6 @@
       splitUnknown: t('core.vfo.split.unknownReason'),
       dualWatchUnknown: t('core.vfo.dualWatch.unknownReason'),
     },
-  });
-  const EMPTY_VFO_OPERATION_HANDLES: VfoOperationHandles = Object.freeze({
-    split: null, dualWatch: null, activeReceiver: null, equalize: null,
-    swap: null, quickSplit: null, quickDualWatch: null, speak: null,
   });
 </script>
 
@@ -2063,17 +2059,13 @@
   {/snippet}
   </DspInstrumentHost>
   {/snippet}
-  {#if vfoFiniteRendererSelection !== null && vfoOperationInput !== null}
-    <VfoOperationSeatHost
-      {...vfoFiniteRendererSelection} input={vfoOperationInput} scheme={view!.vfoScheme}
-    >
-      {#snippet children(vfoOperations)}
-        {@render vfoInstrumentComposition(vfoOperations)}
-      {/snippet}
-    </VfoOperationSeatHost>
-  {:else}
-    {@render vfoInstrumentComposition(EMPTY_VFO_OPERATION_HANDLES)}
-  {/if}
+  <VfoOperationSeatHost
+    {...vfoFiniteRendererSelection} input={vfoOperationInput} scheme={view?.vfoScheme ?? null}
+  >
+    {#snippet children(vfoOperations)}
+      {@render vfoInstrumentComposition(vfoOperations)}
+    {/snippet}
+  </VfoOperationSeatHost>
   {/snippet}
   </RfFrontEndInstrumentHost>
   {/snippet}

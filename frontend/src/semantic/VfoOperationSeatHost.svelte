@@ -21,13 +21,18 @@
     speak: VfoOperationHandle | null;
   }>;
 
-  interface Props {
-    input: VfoOperationProjectionInput;
-    finiteAppearance: FiniteControlAppearance<string | number>;
-    rendererContext: FiniteRendererContext | null;
-    scheme: RadioViewModel['vfoScheme'];
+  interface ExistingProps {
+    input: VfoOperationProjectionInput | null;
+    scheme: RadioViewModel['vfoScheme'] | null;
     children: Snippet<[VfoOperationHandles]>;
   }
+  type RendererSelection =
+    | { finiteAppearance?: undefined; rendererContext?: undefined }
+    | {
+        finiteAppearance: FiniteControlAppearance<string | number>;
+        rendererContext: FiniteRendererContext | null;
+      };
+  type Props = ExistingProps & RendererSelection;
 </script>
 
 <script lang="ts">
@@ -47,48 +52,54 @@
 
   let { input, finiteAppearance, rendererContext, scheme, children }: Props = $props();
 
-  const projection = (): VfoOperationProjection => projectVfoOperations(input);
-  const invoke = (intent: VfoOperationIntent): void => invokeVfoOperation(() => input, intent);
+  const projection = (): VfoOperationProjection | null =>
+    input === null ? null : projectVfoOperations(input);
+  const invoke = (intent: VfoOperationIntent): void => {
+    const current = input;
+    if (current !== null) invokeVfoOperation(() => current, intent);
+  };
 
   function toggleInput(
-    operation: VfoToggleOperation,
+    operation: VfoToggleOperation | undefined,
     label: string,
     intent: VfoOperationIntent,
   ): ToggleRendererInput {
     return {
-      context: rendererContext,
-      field: { availability: operation.availability, reading: operation.reading },
+      context: rendererContext ?? null,
+      field: operation === undefined
+        ? undefined
+        : { availability: operation.availability, reading: operation.reading },
       label,
-      title: operation.availability.reason,
+      title: operation?.availability.reason,
       invoke: () => invoke(intent),
     };
   }
 
   function actionInput(
-    operation: VfoActionOperation,
+    operation: VfoActionOperation | undefined,
     label: string,
     intent: VfoOperationIntent,
   ): AvailabilityActionRendererInput {
     return {
-      context: rendererContext,
-      availability: operation.availability,
+      context: rendererContext ?? null,
+      availability: operation?.availability,
       label,
-      title: operation.availability.reason,
+      title: operation?.availability.reason,
       invoke: () => invoke(intent),
     };
   }
 
   function receiverInput(): AbsoluteChoiceRendererInput<VfoOperationReceiver> {
-    const operation = projection().activeReceiver;
+    const operation = projection()?.activeReceiver;
     return {
-      context: rendererContext,
-      reading: operation.reading.status === 'known'
+      context: rendererContext ?? null,
+      reading: operation?.reading.status === 'known'
         ? { status: 'known', value: operation.reading.receiver }
         : { status: 'unknown' },
-      available: operation.availability.operational,
+      available: operation?.availability.operational ?? false,
       label: 'Receiver',
       accessibleLabel: 'Active receiver',
-      options: operation.options
+      options: (operation?.options ?? [])
         .filter((option) => option.availability.structural)
         .map((option) => ({
           value: option.value,
@@ -102,26 +113,30 @@
   }
 
   const splitSeat = createToggleRendererSeat(() => toggleInput(
-    projection().split, t('core.vfo.split.label'), { kind: 'toggle-split' },
+    projection()?.split, t('core.vfo.split.label'), { kind: 'toggle-split' },
   ));
   const dualWatchSeat = createToggleRendererSeat(() => toggleInput(
-    projection().dualWatch, t('core.vfo.dualWatch.label'), { kind: 'toggle-dual-watch' },
+    projection()?.dualWatch, t('core.vfo.dualWatch.label'), { kind: 'toggle-dual-watch' },
   ));
   const receiverSeat = createAbsoluteChoiceRendererSeat(receiverInput);
   const equalizeSeat = createActionRendererSeat(() => actionInput(
-    projection().equalize, vfoEqualLabel(scheme), { kind: 'equalize' },
+    projection()?.equalize,
+    scheme === null ? t('core.vfo.ops.equalize') : vfoEqualLabel(scheme),
+    { kind: 'equalize' },
   ));
   const swapSeat = createActionRendererSeat(() => actionInput(
-    projection().swap, vfoSwapLabel(scheme), { kind: 'swap' },
+    projection()?.swap,
+    scheme === null ? t('core.vfo.ops.swap') : vfoSwapLabel(scheme),
+    { kind: 'swap' },
   ));
   const quickSplitSeat = createActionRendererSeat(() => actionInput(
-    projection().quickSplit, t('core.vfo.ops.quickSplit'), { kind: 'quick-split' },
+    projection()?.quickSplit, t('core.vfo.ops.quickSplit'), { kind: 'quick-split' },
   ));
   const quickDualWatchSeat = createActionRendererSeat(() => actionInput(
-    projection().quickDualWatch, t('core.vfo.ops.quickDualWatch'), { kind: 'quick-dual-watch' },
+    projection()?.quickDualWatch, t('core.vfo.ops.quickDualWatch'), { kind: 'quick-dual-watch' },
   ));
   const speakSeat = createActionRendererSeat(() => actionInput(
-    projection().speak, 'SPEAK', { kind: 'speak' },
+    projection()?.speak, 'SPEAK', { kind: 'speak' },
   ));
 
   const seats = [
@@ -134,6 +149,12 @@
 
   function handles(): VfoOperationHandles {
     const current = projection();
+    if (current === null || finiteAppearance === undefined) {
+      return {
+        split: null, dualWatch: null, activeReceiver: null, equalize: null,
+        swap: null, quickSplit: null, quickDualWatch: null, speak: null,
+      };
+    }
     return {
       split: current.split.availability.structural ? split : null,
       dualWatch: current.dualWatch.availability.structural ? dualWatch : null,
@@ -148,44 +169,44 @@
 </script>
 
 {#snippet split()}
-  {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
+  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
     seat={splitSeat} renderer={finiteAppearance.toggle}
-  />{/key}{/key}
+  />{/key}{/key}{/if}
 {/snippet}
 {#snippet dualWatch()}
-  {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
+  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
     seat={dualWatchSeat} renderer={finiteAppearance.toggle}
-  />{/key}{/key}
+  />{/key}{/key}{/if}
 {/snippet}
 {#snippet activeReceiver()}
-  {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
+  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
     seat={receiverSeat} renderer={finiteAppearance.choice}
-  />{/key}{/key}
+  />{/key}{/key}{/if}
 {/snippet}
 {#snippet equalize()}
-  {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
+  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
     seat={equalizeSeat} renderer={finiteAppearance.action}
-  />{/key}{/key}
+  />{/key}{/key}{/if}
 {/snippet}
 {#snippet swap()}
-  {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
+  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
     seat={swapSeat} renderer={finiteAppearance.action}
-  />{/key}{/key}
+  />{/key}{/key}{/if}
 {/snippet}
 {#snippet quickSplit()}
-  {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
+  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
     seat={quickSplitSeat} renderer={finiteAppearance.action}
-  />{/key}{/key}
+  />{/key}{/key}{/if}
 {/snippet}
 {#snippet quickDualWatch()}
-  {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
+  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
     seat={quickDualWatchSeat} renderer={finiteAppearance.action}
-  />{/key}{/key}
+  />{/key}{/key}{/if}
 {/snippet}
 {#snippet speak()}
-  {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
+  {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
     seat={speakSeat} renderer={finiteAppearance.action}
-  />{/key}{/key}
+  />{/key}{/key}{/if}
 {/snippet}
 
 {@render children(handles())}

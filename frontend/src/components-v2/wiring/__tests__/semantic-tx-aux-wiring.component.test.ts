@@ -362,7 +362,7 @@ function pushSession(next: ControlSessionSnapshot): void {
   flushSync();
 }
 
-function pushRadioState(next: ServerState): void {
+function pushRadioState(next: ServerState | null): void {
   h.state = next;
   for (const listener of h.radioListeners) listener(next);
   publishAuthority();
@@ -602,6 +602,35 @@ describe('hosted Standard VFO operation instruments', () => {
     for (const spy of [
       h.split, h.dualWatch, h.subReceiver, h.equalize, h.swap, h.speak,
     ]) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the accepted neighboring host subtree mounted through a temporary null view', () => {
+    h.caps = vfoCaps();
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+    const layout = q('.radio-layout');
+    const retainedVox = retainedInvocations.get('VOX')!;
+    const subscribers = [...h.authoritySubscribers];
+
+    h.caps = null;
+    pushRadioState(null);
+    push({});
+    expect(q('[data-testid="vfo-surface"]')).toBeNull();
+    expect(q('[data-testid="external-VOX"]')).toBeNull();
+    expect(q('.radio-layout')).toBe(layout);
+    expect([...h.authoritySubscribers]).toEqual(subscribers);
+    retainedVox();
+    expect(h.voxToggle).not.toHaveBeenCalled();
+
+    h.caps = vfoCaps();
+    pushRadioState(liveState(true));
+    push({});
+    expect(q('.radio-layout')).toBe(layout);
+    expect(q('[data-testid="external-VOX"]')).not.toBeNull();
+    expect([...h.authoritySubscribers]).toEqual(subscribers);
+    expect(retainedInvocations.get('VOX')).not.toBe(retainedVox);
+    retainedInvocations.get('VOX')!();
+    expect(h.voxToggle).toHaveBeenCalledOnce();
   });
 });
 
