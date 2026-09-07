@@ -110,11 +110,12 @@
     onIfShiftChange?: (value: number) => void;
     onPbtInnerChange?: (value: number) => void;
     onPbtOuterChange?: (value: number) => void;
+    onPbtReset?: () => void;
   }
   let {
     view, handles, finiteLayout, pendingDataMode = null, filterWidthFeedback,
     onDataModeChange, onFilterWidthChange,
-    onFilterShapeChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange,
+    onFilterShapeChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange, onPbtReset,
   }: Props = $props();
 
   const pendingFilterId = $props.id();
@@ -330,6 +331,12 @@
           {/if}
         {/if}
       {/each}
+      {#if filterPassband.pbtInner.availability.structural && filterPassband.pbtOuter.availability.structural}
+        <button
+          type="button" class="pbt-reset-button" data-testid="filter-pbt-reset"
+          onclick={() => onPbtReset?.()}
+        >Reset</button>
+      {/if}
       {#if filterPassband.dataMode.availability.structural}
         {@const behavior = dataModeInstrument()}
         <div
@@ -374,6 +381,7 @@
   .pbt-cue { width: 1ch; }
   .filter-choice[aria-pressed='true'] { font-weight: 700; }
   .filter-choice:disabled { cursor: not-allowed; }
+  .pbt-reset-button { align-self: flex-start; }
   /* MOR-1441 leg 2 — a pending (unconfirmed) target never renders identically
      to confirmed truth. Structural (italic + reduced opacity), never a
      color-only tell — same doctrine `.freq[data-freq-status='pending']`

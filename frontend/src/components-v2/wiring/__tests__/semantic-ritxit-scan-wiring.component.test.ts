@@ -26,6 +26,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { DF_SPANS, RESUME_MODES, SCAN_TYPES } from '../../../semantic/RitXitScanSurface.svelte';
 import type { Capabilities, ControlDomain } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -163,6 +164,17 @@ const FTX_RIT_DOMAIN: ControlDomain = {
  *  scan commands additionally require the declared `scan` capability. */
 const RIT_XIT_TAGS = ['tx', 'rit', 'xit', 'scan'] as const;
 const SILENT_TAGS = ['tx'] as const;
+/** MOR-2425 restore: `rit`/`xit` present but `scan` absent — the scan FACT
+ *  group still renders (per-field "ever reported", no capability check),
+ *  but the command layer's `hasCapability('scan')` gate means the new
+ *  TYPE/SPAN/RESUME button groups must HIDE while the pre-existing
+ *  toggle/readouts stay unaffected (census §3's "silent trap"). */
+const NO_SCAN_TAGS = ['tx', 'rit', 'xit'] as const;
+const hexId = (value: number) => `0x${value.toString(16).padStart(2, '0')}`;
+const scanTypeCases = SCAN_TYPES.map(([value, label]) => ({ value, label, hex: hexId(value) }));
+const dfSpanSample = [DF_SPANS[0]!, DF_SPANS[DF_SPANS.length - 1]!]
+  .map(([value, label]) => ({ value, label, hex: hexId(value) }));
+const resumeCases = RESUME_MODES.map(([value, label]) => ({ value, label, hex: hexId(value) }));
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -418,12 +430,97 @@ describe('the surface intents reach the shipped command vocabulary', () => {
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_stop', {});
   });
+});
 
-  it('cycling resume mode sends scan_set_resume with the advanced mask', () => {
+/* ── MOR-2425 restore: TYPE, ΔF SPAN, RESUME reach the real command bus ── */
+
+describe('MOR-2425: scan TYPE buttons reach the real command bus', () => {
+  it.each(scanTypeCases)('$label ($hex) sends scan_start with its own byte exactly once', ({ value, hex }) => {
     render();
-    el('scan-resume-cycle')!.click();
+    el(`scan-type-${hex}`)!.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: 0xD2 });
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_start', { type: value });
+  });
+
+  it('hides the TYPE group — not merely disables it — when the radio has no scan capability', () => {
+    h.caps = liveCaps(NO_SCAN_TAGS);
+    setCapabilities(liveCaps(NO_SCAN_TAGS));
+    render();
+    expect(el('scan-type-group')).toBeNull();
+    // The pre-existing scan toggle/readouts stay unaffected — this PR adds
+    // no new gate on them.
+    expect(el('scan-toggle')).not.toBeNull();
+    expect(el('scan-type-value')).not.toBeNull();
+  });
+});
+
+describe('MOR-2425: ΔF SPAN buttons reach the real command bus', () => {
+  it('is absent by default (PROG selected, no active ΔF scan)', () => {
+    render();
+    expect(el('scan-span-group')).toBeNull();
+  });
+
+  // Representative sample, not the full seven: `RitXitScanSurface.test.ts`
+  // already exhaustively pins all seven ΔF-SPAN bytes against the surface's
+  // own `onDfSpanChange` callback (its `dfSpanCases` `it.each`) — this layer
+  // additionally proves the wire shape (`scan_set_df_span`, `span` key) is
+  // correct, which the surface-level test cannot see.
+  it.each(dfSpanSample)('$label ($hex) sends scan_set_df_span with its own byte exactly once, once ΔF is selected', ({ value, hex }) => {
+    render();
+    el('scan-type-0x03')!.click();
+    flushSync();
+    // Selecting ΔF itself fires `scan_start` (v2.11.1 `handleTypeClick`,
+    // restored above) — clear it so the assertion below is about the SPAN
+    // click alone, not "was ever called with this value".
+    vi.mocked(sendCommand).mockClear();
+    el(`scan-span-${hex}`)!.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_df_span', { span: value });
+  });
+
+  it('hides the SPAN group when the radio has no scan capability, even were ΔF selectable', () => {
+    h.caps = liveCaps(NO_SCAN_TAGS);
+    setCapabilities(liveCaps(NO_SCAN_TAGS));
+    render();
+    expect(el('scan-type-group')).toBeNull();
+    expect(el('scan-span-group')).toBeNull();
+  });
+});
+
+describe('MOR-2425: RESUME buttons reach the real command bus (replacing the cycle)', () => {
+  it.each(resumeCases)('$label ($hex) sends scan_set_resume with its own literal byte exactly once', ({ value, hex }) => {
+    render();
+    el(`scan-resume-${hex}`)!.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: value });
+  });
+
+  // The load-bearing divergence from the old single cycle button (which
+  // required a KNOWN reading to compute its next value): none of the four
+  // explicit buttons reads `scanResumeMode.reading` at all, so all four must
+  // still reach the wire even when the radio has never reported it.
+  it('fires even while scanResumeMode is unobserved (stale/unavailable, not merely absent)', () => {
+    const state = liveState();
+    useState({
+      ...state,
+      fieldStatus: {
+        ...state.fieldStatus,
+        scanResumeMode: { ...fresh, freshness: 'stale', availability: 'stale' },
+      },
+    } as ServerState);
+    render();
+    expect(el('scan-resume-value')!.textContent?.trim()).toBe('—');
+    el('scan-resume-0xd1')!.click();
+    flushSync();
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: 0xD1 });
+  });
+
+  it('hides the RESUME group when the radio has no scan capability', () => {
+    h.caps = liveCaps(NO_SCAN_TAGS);
+    setCapabilities(liveCaps(NO_SCAN_TAGS));
+    render();
+    expect(el('scan-resume-group')).toBeNull();
+    expect(el('scan-resume-value')).not.toBeNull();
   });
 });
 
