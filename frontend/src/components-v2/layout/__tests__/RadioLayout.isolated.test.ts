@@ -595,6 +595,20 @@ describe('RadioLayout structure', () => {
     const t = mountLayout(UNDECLARED);
     expect(t.querySelector('.receiver-deck .vfo-header')).not.toBeNull();
   });
+
+  // MOR-2425 C-R3: the link-fault veil's statement is a slot that is always
+  // present in every branch this shell renders — the desktop pair off the
+  // `desktop-control-face` root, and the generic root an undeclared layout
+  // falls through to. `getWsConnected` is mocked false above, so the veil is
+  // on here and the slot carries its sentence.
+  it.each(['desktop-v2', 'sdr-test', UNDECLARED] as const)(
+    'renders the link-fault statement slot as a child of the face root for %s',
+    (skinId) => {
+      const t = mountLayout(skinId);
+      const root = t.querySelector('.radio-layout');
+      expect(root?.querySelector(':scope > [data-link-fault-statement]')).not.toBeNull();
+    },
+  );
 });
 
 describe('Band instrument placement', () => {

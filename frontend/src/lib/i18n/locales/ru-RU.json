@@ -28,6 +28,8 @@
   "core.statusbar.indicator.http": "HTTP состояния: {state}",
   "core.statusbar.badLink.label": "плохая связь",
   "core.statusbar.badLink.tooltip": "Управляющий WebSocket подключён, но обновления состояния давно не поступали.",
+  "core.linkFault.wsDown": "связь с RigPlane потеряна",
+  "core.linkFault.radioSilent": "трансивер не отвечает",
   "core.statusbar.txCodecFallback.label": "PCM16",
   "core.statusbar.txCodecFallback.tooltip": "TX-аудио: сервер не умеет декодировать Opus, поэтому микрофон передаёт PCM16. Передача работает.",
   "core.statusbar.health.radioLinkLost": "связь с трансивером потеряна",
