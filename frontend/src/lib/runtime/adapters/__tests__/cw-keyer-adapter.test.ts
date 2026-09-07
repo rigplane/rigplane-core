@@ -186,22 +186,26 @@ describe('cwKeyer per-field derivation (MOR-1296)', () => {
     expect(cw.apf.availability.operational).toBe(true);
   });
 
+  // MOR-2425/R29: a stale-but-observed field carries its last decoded value
+  // and is `available`, not degraded to unknown — the fourth column is that
+  // decoded view value (`breakIn` decodes 1 to 'semi', `dashRatio` decodes
+  // -1 to reversePaddle:true; the rest pass their raw value through).
   const STALE_FIELDS = [
-    ['breakIn', 'breakIn', 1],
-    ['breakInDelay', 'breakInDelay', 100],
-    ['keySpeed', 'keyerSpeed', 30],
-    ['cwPitch', 'pitchHz', 750],
-    ['dashRatio', 'reversePaddle', -1],
+    ['breakIn', 'breakIn', 1, 'semi'],
+    ['breakInDelay', 'breakInDelay', 100, 100],
+    ['keySpeed', 'keyerSpeed', 30, 30],
+    ['cwPitch', 'pitchHz', 750, 750],
+    ['dashRatio', 'reversePaddle', -1, true],
   ] as const;
 
   it.each(STALE_FIELDS)(
-    'degrades a stale %s field to unknown while keeping structural availability true',
-    (rawField, viewField, rawValue) => {
+    'keeps a stale %s field available with its last value (MOR-2425/R29)',
+    (rawField, viewField, rawValue, viewValue) => {
       const state = bareState({
         [rawField]: rawValue, fieldStatus: { ...bareState().fieldStatus, [rawField]: stale },
       } as Partial<ServerState>);
       expect(model(state, fullCaps).cwKeyer![viewField]).toEqual({
-        reading: { status: 'unknown' }, availability: { structural: true, operational: false },
+        reading: { status: 'known', value: viewValue }, availability: { structural: true, operational: true },
       });
     },
   );
@@ -329,15 +333,18 @@ describe('cwKeyer APF/TPF mode mutex (MOR-1296)', () => {
     expect(fields).toContain('cwKeyer.twinPeak');
   });
 
-  it('FAILS CLOSED on an unobserved mode: both disabled, no fabricated USB/CW guess', () => {
+  it('a stale-but-observed mode resolves to its last known value, not both-disabled (MOR-2425/R29)', () => {
     const state = bareState({
       fieldStatus: { ...bareState().fieldStatus, 'main.mode': stale },
     } as Partial<ServerState>);
     const capabilities = { ...cwCaps(), modes: ['USB', 'CW'] } as Capabilities;
     const view = model(state, capabilities);
-    expect(view.modeFilter!.currentMode.reading).toEqual({ status: 'unknown' });
-    expect(reasonFields(view)).toContain('cwKeyer.apf');
-    expect(reasonFields(view)).toContain('cwKeyer.twinPeak');
+    // bareState()'s main.mode is 'CW'; a stale reading still carries that
+    // last value (R29), so this behaves like the fresh-CW case above: APF
+    // stays enabled, only the mutually-exclusive TPF is disabled.
+    expect(view.modeFilter!.currentMode.reading).toEqual({ status: 'known', value: 'CW' });
+    expect(reasonFields(view)).not.toContain('cwKeyer.apf');
+    expect(view.disabledReasons).toContainEqual({ field: 'cwKeyer.twinPeak', code: 'mutually-exclusive-control' });
   });
 
   it('FAILS CLOSED when the modeFilter group is absent entirely — no mode fact, no enablement', () => {

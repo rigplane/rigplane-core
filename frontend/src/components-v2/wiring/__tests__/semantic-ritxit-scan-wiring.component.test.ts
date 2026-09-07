@@ -499,7 +499,7 @@ describe('MOR-2425: RESUME buttons reach the real command bus (replacing the cyc
   // required a KNOWN reading to compute its next value): none of the four
   // explicit buttons reads `scanResumeMode.reading` at all, so all four must
   // still reach the wire even when the radio has never reported it.
-  it('fires even while scanResumeMode is unobserved (stale/unavailable, not merely absent)', () => {
+  it('fires and shows its last value while scanResumeMode is stale-but-observed (MOR-2425/R29)', () => {
     const state = liveState();
     useState({
       ...state,
@@ -509,7 +509,9 @@ describe('MOR-2425: RESUME buttons reach the real command bus (replacing the cyc
       },
     } as ServerState);
     render();
-    expect(el('scan-resume-value')!.textContent?.trim()).toBe('—');
+    // A stale-but-observed reading still carries its last value (R29) —
+    // `liveState()`'s raw `scanResumeMode` is 1.
+    expect(el('scan-resume-value')!.textContent?.trim()).toBe('1');
     el('scan-resume-0xd1')!.click();
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('scan_set_resume', { mode: 0xD1 });

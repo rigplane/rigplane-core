@@ -1105,7 +1105,13 @@ describe('RF gain additive display observation', () => {
     }
     const strictJson = JSON.stringify(legacyView, (key, value) => ['display', 'activeFilterConfiguration', 'dataModeChoices'].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
-    expect(digest).toBe(stale ? 'b4b5cff2b85557e39baa48e4d73c756e12ff026488ffa05a1ef558ca0b3f0507' : '379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');
+    // MOR-2425/R29: a stale-but-observed rfGain now resolves `available`
+    // (operational: true) instead of `stale` (operational: false), which
+    // changes the serialized legacy view and therefore this digest. The
+    // stale=true digest below was read off this test's own failure diff
+    // (`expected … to be … received …`) when run against the fixed
+    // `field-status.ts`, not computed by hand.
+    expect(digest).toBe(stale ? 'f5bbe4001f523e4393feacdf07d670fa99d74da8a100b8914f31acefdab31429' : '379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');
   });
   it.each([false, true])('projects explicit display without admitting stale RFgain, stale=%s', (stale) => {
     const view = model(displayState(stale), displayCaps, RECEIVING);

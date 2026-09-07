@@ -244,7 +244,7 @@ describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
     ['RIT', 'ritOn', false, true, 'RIT', [mountCockpit, mountScope]],
   ] as const;
 
-  it.each(tokenCases)('%s distinguishes fresh off/on from missing/stale', (
+  it.each(tokenCases)('%s distinguishes fresh off/on from missing, and presents its last state when stale (R29)', (
     _name, field, offValue, onValue, label, mounts,
   ) => {
     for (const mountPanel of mounts) {
@@ -257,28 +257,37 @@ describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
       expect(on).toBeDefined();
       expect(on?.classList.contains('active')).toBe(true);
       expect(indicator(mountPanel(stateFor(field, onValue, missing)), label)).toBeUndefined();
-      expect(indicator(mountPanel(stateFor(field, onValue, stale)), label)).toBeUndefined();
+
+      const staleOn = indicator(mountPanel(stateFor(field, onValue, stale)), label);
+      expect(staleOn).toBeDefined();
+      expect(staleOn?.classList.contains('active')).toBe(true);
     }
   });
 
-  it('distinguishes ATU from TUNE and never fabricates a PROC level', () => {
+  it('distinguishes ATU from TUNE and never fabricates a PROC level for a missing reading; a stale one keeps its last level (R29)', () => {
     const tuning = indicator(mountCockpit(stateFor('tunerStatus', 2, fresh)), 'TUNE');
     expect(tuning?.classList.contains('active')).toBe(true);
-    for (const status of [missing, stale]) {
-      expect(indicator(mountCockpit(stateFor('tunerStatus', 2, status)), 'TUNE')).toBeUndefined();
-      expect(indicator(mountCockpit(stateFor('compressorLevel', 7, status)), 'PROC')).toBeDefined();
-      expect(indicator(mountScope(stateFor('compressorLevel', 7, status)), 'PROC')).toBeDefined();
-      expect(indicator(mountCockpit(stateFor('compressorLevel', 7, status)), 'PROC 7')).toBeUndefined();
-      expect(indicator(mountScope(stateFor('compressorLevel', 7, status)), 'PROC 7')).toBeUndefined();
-    }
+
+    expect(indicator(mountCockpit(stateFor('tunerStatus', 2, missing)), 'TUNE')).toBeUndefined();
+    expect(indicator(mountCockpit(stateFor('compressorLevel', 7, missing)), 'PROC')).toBeDefined();
+    expect(indicator(mountScope(stateFor('compressorLevel', 7, missing)), 'PROC')).toBeDefined();
+    expect(indicator(mountCockpit(stateFor('compressorLevel', 7, missing)), 'PROC 7')).toBeUndefined();
+    expect(indicator(mountScope(stateFor('compressorLevel', 7, missing)), 'PROC 7')).toBeUndefined();
+
+    const staleTuning = indicator(mountCockpit(stateFor('tunerStatus', 2, stale)), 'TUNE');
+    expect(staleTuning?.classList.contains('active')).toBe(true);
+    expect(indicator(mountCockpit(stateFor('compressorLevel', 7, stale)), 'PROC')).toBeUndefined();
+    expect(indicator(mountScope(stateFor('compressorLevel', 7, stale)), 'PROC')).toBeUndefined();
+    expect(indicator(mountCockpit(stateFor('compressorLevel', 7, stale)), 'PROC 7')).toBeDefined();
+    expect(indicator(mountScope(stateFor('compressorLevel', 7, stale)), 'PROC 7')).toBeDefined();
   });
 
-  it('shows inline XIT only for fresh XIT-on and hides missing/stale XIT', () => {
+  it('shows inline XIT for fresh or stale XIT-on (R29) and hides only a missing XIT', () => {
     for (const status of [fresh, missing, stale]) {
       const state = stateFor('ritTx', true, status) as any;
       state.ritOn = false;
       const label = mountCockpit(state).querySelector('.rit-label')?.textContent;
-      expect(label).toBe(status === fresh ? 'XIT' : undefined);
+      expect(label).toBe(status === missing ? undefined : 'XIT');
     }
   });
 
@@ -290,12 +299,12 @@ describe('Amber TX and inline RIT availability (MOR-1586 review)', () => {
     expect(mountCockpit(state).querySelector('.rit-label')).toBeNull();
   });
 
-  it('does not let stale RIT steal inline XIT label priority', () => {
+  it('gives a stale-but-observed RIT-on the same label priority as a fresh one (R29)', () => {
     const state = stateFor('ritTx', true, fresh) as any;
     state.ritOn = true;
     state.fieldStatus.ritOn = stale;
 
-    expect(mountCockpit(state).querySelector('.rit-label')?.textContent).toBe('XIT');
+    expect(mountCockpit(state).querySelector('.rit-label')?.textContent).toBe('RIT');
   });
 });
 

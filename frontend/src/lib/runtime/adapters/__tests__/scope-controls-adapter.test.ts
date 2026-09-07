@@ -162,20 +162,27 @@ describe('scopeControls per-field derivation (MOR-1298/MOR-1299/MOR-1330)', () =
     'duringTx', 'centerType', 'vbwNarrow', 'rbw',
   ] as const;
 
+  // MOR-2425/R29: a stale-but-observed leaf carries its own last raw value
+  // and is `available`, not degraded to unknown — `SCOPE_CONTROLS_FIXTURE`
+  // below is the same fixture the pre-R29 version of this test used.
+  const SCOPE_CONTROLS_FIXTURE = {
+    receiver: 1, dual: true, mode: 0, span: 4, edge: 0, hold: false, refDb: 0, speed: 1,
+    duringTx: false, centerType: 0, vbwNarrow: false, rbw: 0,
+  } as const;
+
   it.each(STALE_FIELDS)(
-    'degrades a stale scopeControls.%s to unknown while keeping structural availability true',
+    'keeps a stale scopeControls.%s field available with its last value (MOR-2425/R29)',
     (leaf) => {
       const state = bareState({
         scopeControls: {
-          receiver: 1, dual: true, mode: 0, span: 4, edge: 0, hold: false, refDb: 0, speed: 1,
-          duringTx: false, centerType: 0, vbwNarrow: false, rbw: 0,
+          ...SCOPE_CONTROLS_FIXTURE,
           fixedEdge: { rangeIndex: 0, edge: 0, startHz: 0, endHz: 0 },
         },
         fieldStatus: { ...bareState().fieldStatus, [`scopeControls.${leaf}`]: stale },
       } as Partial<ServerState>);
       const field = model(state, fullCaps).scopeControls![leaf];
-      expect(field.reading).toEqual({ status: 'unknown' });
-      expect(field.availability).toEqual({ structural: true, operational: false });
+      expect(field.reading).toEqual({ status: 'known', value: SCOPE_CONTROLS_FIXTURE[leaf] });
+      expect(field.availability).toEqual({ structural: true, operational: true });
     },
   );
 

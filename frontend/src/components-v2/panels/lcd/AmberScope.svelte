@@ -78,7 +78,8 @@
   let activeRxKey = $derived<'main' | 'sub'>(radioState?.active === 'SUB' ? 'sub' : 'main');
 
   // MOR-429: gate active-receiver indicators on fieldStatus availability so an
-  // unobserved/stale/default value is never presented as a confirmed reading.
+  // unobserved/default value is never presented as a confirmed reading (a stale
+  // observed value stays available — owner ruling R29, 2026-09-07).
   function rxAvailable(field: string): boolean {
     return isFieldAvailable(radioState, `${activeRxKey}.${field}`);
   }
