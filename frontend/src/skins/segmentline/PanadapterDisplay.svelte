@@ -1,4 +1,5 @@
 <script lang="ts">
+  import LcdTxMeterScales from './LcdTxMeterScales.svelte';
   import type { PeerSplitDisplayModel } from '../../semantic/radio-display-model';
   import LcdAfFft from './LcdAfFft.svelte';
   import LcdFilterScope from './LcdFilterScope.svelte';
@@ -37,9 +38,6 @@
   const telemetryItems = $derived([
     { label: 'VD', field: model.telemetry.drainVoltage },
     { label: 'ID', field: model.telemetry.drainCurrent },
-    { label: 'PWR', field: model.telemetry.power },
-    { label: 'SWR', field: model.telemetry.swr },
-    { label: 'ALC', field: model.telemetry.alc },
     { label: 'COMP', field: model.telemetry.compression },
   ]);
 </script>
@@ -113,6 +111,7 @@
             </span>
           {/if}
         {/each}
+        <LcdTxMeterScales power={model.telemetry.power} swr={model.telemetry.swr} alc={model.telemetry.alc} />
       </div>
     </aside>
   </div>
@@ -199,7 +198,9 @@
   .unknown-af-plot { min-height: 0; }
   .telemetry {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    min-height: 62px;
+    align-content: end;
     gap: 4px 10px;
     border-top: 1px solid var(--ink-soft);
     padding-top: 8px;

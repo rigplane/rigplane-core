@@ -1,4 +1,5 @@
 <script lang="ts">
+  import LcdTxMeterScales from './LcdTxMeterScales.svelte';
   import type {
     DisplayValue,
     PeerSplitDisplayModel,
@@ -86,9 +87,6 @@
   const telemetry = $derived([
     { label: 'VD', field: model.telemetry.drainVoltage },
     { label: 'ID', field: model.telemetry.drainCurrent },
-    { label: 'PWR', field: model.telemetry.power },
-    { label: 'SWR', field: model.telemetry.swr },
-    { label: 'ALC', field: model.telemetry.alc },
     { label: 'COMP', field: model.telemetry.compression },
   ]);
 </script>
@@ -175,6 +173,7 @@
         style:visibility={item.field.state === 'unsupported' ? 'hidden' : 'visible'}
       ><small>{item.label}</small> {telemetryText(item.field)}</span>
     {/each}
+    <LcdTxMeterScales power={model.telemetry.power} swr={model.telemetry.swr} alc={model.telemetry.alc} />
   </footer>
 </div>
 
