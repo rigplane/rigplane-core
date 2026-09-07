@@ -1031,21 +1031,24 @@
   [data-vfo-appearance='standard'] .receiver-instrument .secondary-slot .vfo-select {
     grid-column: 4; grid-row: 1;
   }
-  /* ── SDR receiver deck (V1, "side by side") ────────────────────────────
+  /* ── SDR receiver deck (V2, "hero + secondary") ────────────────────────
      Presentation only, and every rule is gated on the sdr appearance so the
      Standard face and the semantic list keep the paint they already had.
+     The tiles, the S-meter and the A/B selectors share ONE grid — the
+     indicator row's own, declared in VfoIndicatorRow — which is what lets
+     the meter sit under the hero frequency instead of above both tiles.
      Rhythm: 8px inside a group, 16px between groups, 24px deck padding. */
   [data-vfo-appearance='sdr'] .receiver-instrument { padding: 24px; }
-  [data-vfo-appearance='sdr'] .freq-stack {
-    display: grid; grid-template-columns: 1fr 1fr;
-    column-gap: 16px; row-gap: 16px; align-items: start;
+  [data-vfo-appearance='sdr'] .freq-stack { display: contents; }
+  [data-vfo-appearance='sdr'] .receiver-instrument .vfo-tile { grid-row: 2; }
+  /* Hero left, secondary right. `.secondary-slot` is this surface's own "not
+     the active slot" marker; moving it last in the grid's placement order
+     never pins two tiles to one cell, however the radio reports. */
+  [data-vfo-appearance='sdr'] .receiver-instrument .secondary-slot {
+    order: 1; align-self: start;
   }
-  /* Selected left, unselected right. `.secondary-slot` is this surface's own
-     "not the active slot" marker; moving it last in the grid's placement
-     order never pins two tiles to one cell, however the radio reports. */
-  [data-vfo-appearance='sdr'] .freq-stack > .secondary-slot { order: 1; }
-  [data-vfo-appearance='sdr'] .freq-stack > .vfo-identity-selectors {
-    grid-column: 1 / -1; justify-content: flex-end; gap: 8px;
+  [data-vfo-appearance='sdr'] .vfo-identity-selectors {
+    grid-column: 2; grid-row: 3; align-self: start; gap: 8px;
   }
   [data-vfo-appearance='sdr'] .receiver-instrument :where(.vfo-tile) { gap: 8px; }
   [data-vfo-appearance='sdr'] .receiver-instrument .vfo-role {
@@ -1053,6 +1056,8 @@
     color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
   }
   [data-vfo-appearance='sdr'] .receiver-instrument .vfo-mode {
+    justify-self: start; padding: 2px 6px; border-radius: 3px;
+    border: 1px solid var(--v2-border-panel, rgba(255, 255, 255, 0.12));
     font-size: 11px; letter-spacing: .08em;
     color: var(--v2-text-subdued, rgba(255, 255, 255, 0.55));
   }
@@ -1062,7 +1067,7 @@
   }
   [data-vfo-appearance='sdr'] .receiver-instrument .is-active .vfo-freq { text-shadow: none; }
   [data-vfo-appearance='sdr'] .receiver-instrument .secondary-slot .vfo-freq {
-    font-size: clamp(20px, 2.2vw, 28px); margin: 8px 0 0;
+    font-size: clamp(18px, 1.8vw, 24px); margin: 8px 0 0;
   }
 
   @media (max-width: 1050px) {

@@ -250,8 +250,16 @@
   .indicator-row[data-indicator-appearance='sdr'], .indicator-row[data-indicator-appearance='standard'] {
     padding: 0; border: 0; background: transparent; border-radius: 0; gap: 6px;
   }
-  /* Deck rhythm (sdr only): 16px between the header, meter, tiles and facts. */
-  .indicator-row[data-indicator-appearance='sdr']:not(.shared-indicators) { gap: 16px; }
+  /* One grid for the whole sdr receiver deck (V2 "hero + secondary"): the
+     header and the facts span it, the meter sits under the hero column, and
+     VfoSurface places its own tiles (row 2) and A/B selectors (column 2,
+     row 3) into it. Rhythm: 16px between groups. */
+  .indicator-row[data-indicator-appearance='sdr']:not(.shared-indicators) {
+    grid-template-columns: 2fr 1fr; column-gap: 16px; row-gap: 16px;
+  }
+  [data-indicator-appearance='sdr']:not(.shared-indicators) header { grid-column: 1 / -1; grid-row: 1; }
+  [data-indicator-appearance='sdr']:not(.shared-indicators) .s-meter { grid-column: 1; grid-row: 3; }
+  [data-indicator-appearance='sdr']:not(.shared-indicators) .facts { grid-column: 1 / -1; grid-row: 4; }
   [data-indicator-appearance='sdr'] header { justify-content: space-between; letter-spacing: .14em; }
   [data-indicator-appearance='sdr'] .fact { padding: 2px 6px; border-radius: 3px; letter-spacing: .06em; }
   [data-indicator-appearance='sdr'] .facts { gap: 5px; min-height: 24px; }
