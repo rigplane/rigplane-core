@@ -1,6 +1,13 @@
 <script module lang="ts">
+  import type { MeterAppearance } from '../../../../component-kit-api/src/index';
+  import FixtureLevelMeter from '../../../../component-kit-api/fixtures/external-kit/src/FixtureLevelMeter.svelte';
+  import FixtureSignalMeter from '../../../../component-kit-api/fixtures/external-kit/src/FixtureSignalMeter.svelte';
   import type { StationMeterAuthorityPublication,
     SubscribeStationMeterAuthority } from '../../StationMeterInstrumentHost.svelte';
+  export const fixtureMeterAppearance = {
+    signal: FixtureSignalMeter,
+    level: FixtureLevelMeter,
+  } satisfies MeterAppearance;
   export class StationMeterTestPublisher {
     readonly handlers = new Set<(publication: StationMeterAuthorityPublication) => void>();
     current: StationMeterAuthorityPublication;

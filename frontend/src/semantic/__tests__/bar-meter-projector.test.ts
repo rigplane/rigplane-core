@@ -12,6 +12,7 @@ import type {
 import {
   projectBarMeters,
   projectSwrMeter,
+  projectTxMeterPresentation,
   type BarMeterKey,
 } from '../bar-meter-projector';
 
@@ -73,6 +74,25 @@ function calibratedCaps(): Capabilities {
 afterEach(() => clearCapabilities());
 
 describe('projectBarMeters', () => {
+  it('retains standardized TX evidence without changing live-value admission', () => {
+    const current = base();
+    setDisplay(current, 'power', { state: 'current', value: 75 });
+    expect(projectTxMeterPresentation(current.meters!.power, 'transmitting')).toMatchObject({
+      state: 'current', evidence: { state: 'current', value: 75 }, value: 75,
+    });
+
+    setDisplay(current, 'power', { state: 'stale', value: 75 });
+    expect(projectTxMeterPresentation(current.meters!.power, 'transmitting')).toMatchObject({
+      state: 'stale', evidence: { state: 'stale', value: 75 }, value: null,
+    });
+    expect(projectTxMeterPresentation({
+      ...current.meters!.power,
+      availability: { structural: false, operational: false },
+    }, 'transmitting')).toMatchObject({
+      state: 'unsupported', evidence: { state: 'unsupported' }, value: null,
+    });
+  });
+
   it('projects the five real rows in priority order with only consumed fields', () => {
     const view = base();
     const source = {
@@ -93,7 +113,7 @@ describe('projectBarMeters', () => {
       { key: 'compression', label: 'COMP' },
     ]);
     expect(Object.keys(projected[0]).sort()).toEqual([
-      'accessibleDescription', 'displayText', 'domain', 'fault', 'gauge', 'key',
+      'accessibleDescription', 'displayText', 'domain', 'evidence', 'fault', 'gauge', 'key',
       'label', 'motionFraction', 'observed', 'relevant', 'showPeak', 'source',
       'state', 'stateText',
     ]);
@@ -119,6 +139,7 @@ describe('projectBarMeters', () => {
 
     const projected = projectBarMeters(view);
     expect(projected.find(({ key }) => key === 'power')).toMatchObject({
+      evidence: { state: 'current', value: 50 },
       motionFraction: 0.25,
       displayText: '50W',
       observed: true,
@@ -144,6 +165,7 @@ describe('projectBarMeters', () => {
     setDisplay(view, 'power', { state: 'stale', value: 170 });
     setMeter(view, 'power', { domain: { kind: 'raw' } });
     expect(projectBarMeters(view)[0]).toMatchObject({
+      evidence: { state: 'stale', value: 170 },
       state: 'stale',
       domain: { kind: 'raw' },
       motionFraction: null,
@@ -156,6 +178,7 @@ describe('projectBarMeters', () => {
 
     setDisplay(view, 'power', { state: 'unknown', reason: 'not-observed' });
     expect(projectBarMeters(view)[0]).toMatchObject({
+      evidence: { state: 'unknown' },
       state: 'unknown',
       motionFraction: null,
       displayText: '?',
@@ -168,6 +191,7 @@ describe('projectBarMeters', () => {
     setMeter(view, 'power', { relevant: false });
     setDisplay(view, 'power', { state: 'current', value: 170 });
     expect(projectBarMeters(view)[0]).toMatchObject({
+      evidence: { state: 'idle' },
       state: 'idle',
       motionFraction: null,
       displayText: 'IDLE',
@@ -204,10 +228,23 @@ describe('projectBarMeters', () => {
       displayText: '?',
     });
     expect(projectBarMeters(view).find(({ key }) => key === 'drainCurrent')).toMatchObject({
+      evidence: { state: 'unknown' },
       gauge: false,
       observed: false,
       motionFraction: null,
       displayText: 'Id ?',
+    });
+  });
+
+  it('does not retain a known non-TX sample when operational availability is false', () => {
+    const view = base();
+    setMeter(view, 'drainVoltage', {
+      reading: { status: 'known', value: 13.8 },
+      availability: { structural: true, operational: false },
+    });
+    expect(projectBarMeters(view).find(({ key }) => key === 'drainVoltage')).toMatchObject({
+      evidence: { state: 'unknown' }, state: 'unknown', observed: false,
+      motionFraction: null, displayText: 'Vd ?',
     });
   });
 

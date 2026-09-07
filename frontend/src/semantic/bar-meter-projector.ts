@@ -28,6 +28,9 @@ import type {
 export type BarMeterKey = Exclude<keyof MetersViewModel, 'rfState' | 'signal' | 'swr'>;
 export type LevelMeterKey = Exclude<keyof MetersViewModel, 'rfState' | 'signal'>;
 export type LevelMeterState = 'unsupported' | 'idle' | 'current' | 'stale' | 'unknown';
+export type LevelMeterEvidence =
+  | Readonly<{ state: 'current' | 'stale'; value: number }>
+  | Readonly<{ state: 'unsupported' | 'idle' | 'unknown' }>;
 
 export interface LevelMeterProjection<Key extends LevelMeterKey = LevelMeterKey> {
   readonly key: Key;
@@ -35,6 +38,7 @@ export interface LevelMeterProjection<Key extends LevelMeterKey = LevelMeterKey>
   readonly relevant: boolean;
   readonly observed: boolean;
   readonly state: LevelMeterState;
+  readonly evidence: LevelMeterEvidence;
   readonly domain: MeterValueDomain | undefined;
   readonly motionFraction: number | null;
   readonly displayText: string;
@@ -89,21 +93,33 @@ export function projectTxMeterPresentation(
   rfState: MeterRfState,
 ): {
   readonly state: LevelMeterState;
+  readonly evidence: LevelMeterEvidence;
   readonly value: number | null;
   readonly text: string;
   readonly description: string;
 } {
   const projected = projectTxMeterDisplay(field, rfState);
   if (!projected.supported) {
-    return { state: 'unsupported', value: null, text: '?', description: 'Not observed' };
+    return {
+      state: 'unsupported', evidence: { state: 'unsupported' },
+      value: null, text: '?', description: 'Not observed',
+    };
   }
   const { relevance, observation } = projected;
   if (relevance === 'idle') {
-    return { state: 'idle', value: null, text: 'IDLE', description: 'Not measuring in RX' };
+    return {
+      state: 'idle', evidence: { state: 'idle' },
+      value: null, text: 'IDLE', description: 'Not measuring in RX',
+    };
   }
   const cue = relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
+  const evidence: LevelMeterEvidence = observation.state === 'current'
+    || observation.state === 'stale'
+    ? { state: observation.state, value: observation.value }
+    : { state: observation.state };
   return {
     state: observation.state,
+    evidence,
     value: observation.state === 'current' ? observation.value : null,
     text: observation.state === 'stale' ? 'STALE' : observation.state === 'current'
       ? (relevance === 'indeterminate' ? ' ?' : '') : '?',
@@ -130,6 +146,8 @@ function projectLevelMeter<Key extends LevelMeterKey>(
     : `${label} ?`;
   const motionFraction = isObserved ? level(value, field.domain) : null;
   const state: LevelMeterState = tx?.state ?? (isObserved ? 'current' : 'unknown');
+  const evidence: LevelMeterEvidence = tx?.evidence
+    ?? (isObserved ? { state: 'current', value } : { state: 'unknown' });
 
   return {
     key,
@@ -137,6 +155,7 @@ function projectLevelMeter<Key extends LevelMeterKey>(
     relevant: field.relevant,
     observed: isObserved,
     state,
+    evidence,
     domain: field.domain,
     motionFraction,
     displayText,
