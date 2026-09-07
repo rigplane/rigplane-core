@@ -1,10 +1,10 @@
 <!--
   Semantic DSP surface (MOR-1305, vocabulary slice 5B).
 
-  Presentation only. It renders the seven continuous controls in the MOR-1290
-  `dsp` fact group and places four finite-control handles owned by
-  `DspInstrumentHost`. It holds no state and consults no controller (v3 ADR
-  invariant 11), the same discipline `TxAuxSurface` (MOR-1265) established.
+  Presentation only. It renders five native continuous controls and places
+  two scalar handles plus four finite-control handles owned by the persistent
+  DSP hosts. It holds no state and consults no controller (v3 ADR invariant
+  11), the same discipline `TxAuxSurface` (MOR-1265) established.
 
   CARRY-FORWARDS (binding, from the MOR-1290 fact-layer decisions this
   surface must not relax):
@@ -15,8 +15,8 @@
       precedent). They arrive as plain props, read directly off `caps` at the
       wiring seam (`SemanticRadioSurfaces.svelte`, which already holds
       `runtime.caps` for the view-model adapter call) — never folded into
-      `DspViewModel`. The finite host consumes `agcLabels`; this surface
-      consumes only the two scalar display props.
+      `DspViewModel`. The finite host consumes `agcLabels`; the scalar host
+      consumes the two scalar display props.
   (2) `agcTimeConstant` may be `structural: true` with no real control on a
       radio that borrows the `agc` capability tag optimistically. That is an
       accepted fact-layer optimism, not something this surface special-cases
@@ -33,14 +33,13 @@
   a present-but-unusable control stays visible and disabled rather than
   guessing a value.
 
-  PENDING AFFORDANCE (MOR-1441 leg 2) is owned by `DspInstrumentHost`.
-  `pendingNb`/`pendingNr` stay command-bus-blind display facts there and never
-  become the arithmetic base for a toggle.
+  FINITE PENDING AFFORDANCE (MOR-1441 leg 2) is owned by
+  `DspInstrumentHost`. `pendingNb`/`pendingNr` stay command-bus-blind display
+  facts there and never become the arithmetic base for a toggle.
 -->
 <script module lang="ts">
   import type { DspField, DspViewModel } from './radio-view-model';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
-  import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   export { DSP_TOGGLES, type DspToggleField } from './dsp-instruments';
 
   /** `[field, label, min, max, step, format?]` — `nrLevel`/`nbDepth` are
@@ -123,24 +122,24 @@
 <script lang="ts">
   import type { RadioViewModel } from './radio-view-model';
   import type { DspFiniteHandles, DspFiniteLayout } from './dsp-instruments';
+  import type { DspScalarHandles, DspScalarLayout } from './dsp-scalars';
 
   interface Props {
     view: RadioViewModel;
     finiteHandles: DspFiniteHandles;
     finiteLayout?: DspFiniteLayout;
+    scalarHandles?: DspScalarHandles;
+    scalarLayout?: DspScalarLayout;
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
     onLevelChange?: (field: DspLevelField, value: number) => void;
   }
   let {
-    view, finiteHandles, finiteLayout, nbLevelMax = 255, nbLevelPercent = false, onLevelChange,
+    view, finiteHandles, finiteLayout, scalarHandles, scalarLayout, onLevelChange,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let dsp = $derived(view.dsp);
-  let nbLevelFormat = $derived(
-    nbLevelPercent ? (v: number) => rawToPercentDisplay(v, 0, nbLevelMax) : undefined,
-  );
 
   function level(field: DspLevelField, value: number): void {
     if (!dsp) return;
@@ -166,8 +165,14 @@
       </div>
     {/if}
 
+    {#if scalarHandles && scalarLayout}
+      {@render scalarLayout(scalarHandles)}
+    {/if}
+
     {#each DSP_LEVELS as [field, label, min, max, step, format] (field)}
-      {#if dsp[field].availability.structural}
+      {#if field === 'nbWidth'}
+        {#if scalarHandles && !scalarLayout}{@render scalarHandles.nbWidth()}{/if}
+      {:else if dsp[field].availability.structural}
         {@const nr = field === 'nrLevel' ? nrPresentation(dsp) : null}
         <label
           class="dsp-level" data-testid={`dsp-${field}`} data-field={field}
@@ -185,17 +190,7 @@
       {/if}
     {/each}
 
-    {#if dsp.nbLevel.availability.structural}
-      <label class="dsp-level" data-testid="dsp-nbLevel" data-field="nbLevel" data-disabled-reason={reasonOf(dsp.nbLevel)}>
-        <span class="dsp-name">NB level</span>
-        <input
-          type="range" min={0} max={nbLevelMax} step={1} value={numberOf(dsp.nbLevel, 0)}
-          disabled={!usable(dsp.nbLevel)}
-          oninput={(event) => level('nbLevel', event.currentTarget.valueAsNumber)}
-        />
-        <output>{fmt(dsp.nbLevel, nbLevelFormat)}</output>
-      </label>
-    {/if}
+    {#if scalarHandles && !scalarLayout}{@render scalarHandles.nbLevel()}{/if}
 
     {#if !finiteLayout}
       {@render finiteHandles.notchMode()}
