@@ -183,6 +183,15 @@ freshness_ttl_seconds = 4.0
 reconciliation_priority = "command_response"
 external_cat_pause = "pause_polling"
 
+# MOR-2425/R36b: same event-driven-only shape as ic7300.toml's filter_width
+# entry -- without this, prime_unobserved() never reaches this path (it only
+# iterates field_policies), so it could never be observed at startup.
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
 [state_acquisition.field_policies."receiver.main.meters.s_meter"]
 cadence_seconds = 0.25
 freshness_ttl_seconds = 1.0

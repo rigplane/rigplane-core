@@ -242,9 +242,9 @@ command_response_observable = [
     # ``ensure_fresh`` request for a path with no declared capability
     # (UNKNOWN availability), so their armed confirm could not even reach
     # the post-write-readback table added here (``_POST_WRITE_READBACK_FIELDS``
-    # in radio_poller.py) without this. Same event-driven-only shape as
-    # ``filter_width`` above -- no periodic cadence, so this adds nothing to
-    # the standing serial budget accounted at the bottom of this file.
+    # in radio_poller.py) without this. MOR-2425: also given a field_policies
+    # entry below (same shape as ``filter_width``) so prime_unobserved() can
+    # reach them, per R36b.
     "receiver.main.active.freq_mode.filter_num",
     "receiver.main.active.freq_mode.data_mode",
     "receiver.main.operator_controls.filter_shape",
@@ -559,6 +559,21 @@ reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+# MOR-2425/R36b: same event-driven-only shape as filter_width above --
+# without this entry, prime_unobserved() never reaches these two paths (it
+# only iterates field_policies), so they could never be observed at startup.
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_num"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = 25.0
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.data_mode"]
 cadence_seconds = 25.0
 freshness_ttl_seconds = 25.0
 reconciliation_priority = "command_response"
