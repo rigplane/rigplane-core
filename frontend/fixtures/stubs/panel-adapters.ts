@@ -81,6 +81,27 @@ export function getTxAuxControlFeedback(field: keyof typeof txAuxControls) {
   });
 }
 
+const dspScalarControls = Object.freeze({
+  nbLevel: 'nb-level',
+  nbWidth: 'nb-width',
+  nrLevel: 'nr-level',
+  nbDepth: 'nb-depth',
+  notchFilter: 'notch-position',
+  manualNotchWidth: 'manual-notch-width',
+  agcTimeConstant: 'agc-time',
+} as const);
+
+/** MOR-2425 — offline fixtures never fabricate radio-global DSP command-feedback authority. */
+export function getDspControlFeedback(field: keyof typeof dspScalarControls) {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null, sessionEpoch: 1,
+    scope: Object.freeze({ control: dspScalarControls[field], receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins' as const,
+  });
+}
+
 /** The offline fixture has no qualified RF/SQL command-feedback authority. */
 export function getRfSqlControlFeedback(_controlSession: unknown): null {
   return null;
