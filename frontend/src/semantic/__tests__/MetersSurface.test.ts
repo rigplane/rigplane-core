@@ -284,8 +284,9 @@ describe('structural availability decides whether a meter EXISTS', () => {
       const tile = s.tile(field)!;
       expect(tile).not.toBeNull();
       expect(tile.dataset.observed).toBe('false');
-      // The S meter ('signal') has its own vocabulary, unaffected by this PR
-      // (MOR-2425/R32), and still shows its own '?' placeholder.
+      // The S meter ('signal') has its own vocabulary for an
+      // operationally-unavailable reading and still shows its own '?'
+      // placeholder.
       if (field === 'signal') {
         expect(tile.querySelectorAll('svg')).toHaveLength(1);
         expect(tile.textContent).toContain('?');
@@ -1182,6 +1183,42 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       clearCapabilities();
     }
   });
+
+  // MUTATION KILLED: `swrLowerScale` in MetersSurface.svelte gating its
+  // `stateText` (the digit readout shown in place of ticks on a non-ratio
+  // scale) on `projection.state === 'current'` alone — a stale reading on
+  // an uncalibrated/raw SWR domain then loses its digits while a current
+  // one keeps them. R29: stale must render identically to current.
+  it('keeps the SWR lower-row digits identical between current and stale on a non-ratio domain', () => {
+    setCapabilities(makeFaultCaps());
+    try {
+      const view = base('transmitting');
+      view.meters!.swr = {
+        ...view.meters!.swr,
+        domain: { kind: 'unknown' },
+        display: { state: 'current', value: 120 },
+      };
+      const props: { view: RadioViewModel } = proxy({ view });
+      const component = mount(MetersSurface, { target, props });
+      flushSync();
+      const lowerText = () => target.querySelector('[data-lower-relevant]')?.textContent ?? '';
+      const currentText = lowerText();
+      expect(currentText).toContain('120');
+
+      props.view = {
+        ...props.view,
+        meters: {
+          ...props.view.meters!,
+          swr: { ...props.view.meters!.swr, display: { state: 'stale', value: 120 } },
+        },
+      };
+      flushSync();
+      expect(lowerText()).toBe(currentText);
+      unmount(component);
+    } finally {
+      clearCapabilities();
+    }
+  });
 });
 
 // ── 12. MOR-2250 (PR 2 of 2) — the shared lower-scale bar ──────────────────
@@ -1454,9 +1491,11 @@ describe('persistent TX instruments', () => {
               expect(el.getAttribute('data-fault')).not.toBe('true');
             } else {
               // current or stale (R29): the retained value renders
-              // identically either way. The SWR lower row shows only tick
-              // positions on a ratio scale, never raw digits — pre-existing,
-              // unrelated to this PR — so the digit check is power/alc only.
+              // identically either way. This fixture leaves the SWR
+              // `domain` unset, which `hasSwrRatioScale` treats as a ratio
+              // scale (ticks, not raw digits) — see the non-ratio SWR test
+              // above for the digit case — so the digit check here is
+              // power/alc only.
               if (key !== 'swr') expect(text).toContain('170');
               expect(el.querySelectorAll(key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]').length).toBeGreaterThan(0);
               if (indeterminate) expect(description).toContain('RF relevance indeterminate');

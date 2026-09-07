@@ -36,7 +36,8 @@
       valueFraction: frame.motion.smoothedFraction,
       fault: projection.fault,
       relevant: projection.relevant,
-      stateText: projection.state === 'current' && !projection.ratioScale
+      stateText: (projection.state === 'current' || projection.state === 'stale')
+        && !projection.ratioScale
         ? projection.displayText : projection.stateText,
       accessibleDescription: projection.accessibleDescription ?? 'SWR: Not observed',
     };

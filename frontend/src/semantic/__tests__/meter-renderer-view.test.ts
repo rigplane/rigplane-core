@@ -270,6 +270,22 @@ describe('toLevelMeterRendererView', () => {
     expect(Object.isFrozen(view.evidence.domain)).toBe(true);
   });
 
+  // MUTATION KILLED: `toLevelMeterRendererView`'s `live` gate keying only on
+  // `evidence.state === 'current'` — a stale reading with otherwise-valid
+  // geometry then loses its fill/peak while an identical current one keeps
+  // it. R29: stale renders identically to current, fill included.
+  it('keeps displayedFraction/peakFraction for a stale reading identical to current (R29)', () => {
+    const frameFor = (state: 'current' | 'stale') => levelFrame('power', {
+      evidence: { state, value: 50 }, state,
+    }, { smoothedFraction: 0.6666666666666666, peakFraction: 0.8 });
+    const current = toLevelMeterRendererView(frameFor('current'));
+    const stale = toLevelMeterRendererView(frameFor('stale'));
+    expect(current.displayedFraction).toBe(0.6666666666666666);
+    expect(current.peakFraction).toBe(0.8);
+    expect(stale.displayedFraction).toBe(current.displayedFraction);
+    expect(stale.peakFraction).toBe(current.peakFraction);
+  });
+
   it.each([
     ['idle', 'idle'], ['unknown', 'unknown'], ['unsupported', 'unsupported'],
   ] as const)('keeps %s evidence nonnumeric and live geometry absent', (_name, state) => {

@@ -114,10 +114,9 @@ export function projectTxMeterPresentation(
     };
   }
   // R29/R32: a stale reading keeps its last value on the scale (digits and
-  // fill), same as a current one — only the aria description and the
-  // caller's `data-meter-state` attribute name it as stale. Anything else
-  // (never observed, or a stray non-numeric state) is an empty scale: no
-  // value, no placeholder glyph — the accessible description names that too.
+  // fill), same as a current one. Anything else (never observed, or a
+  // stray non-numeric state) is an empty scale: no value, no placeholder
+  // glyph — the accessible description names that too.
   const cue = relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
   const retained = observation.state === 'current' || observation.state === 'stale';
   const evidence: LevelMeterEvidence = retained
