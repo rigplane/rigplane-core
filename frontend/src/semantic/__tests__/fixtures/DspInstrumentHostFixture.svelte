@@ -38,7 +38,7 @@
   {#snippet children(handles: DspFiniteHandles)}
     {#key presentation}
       {#if presentation === 'grouped'}
-        <DspSurface {view} finiteHandles={handles} {nbLevelMax} {nbLevelPercent} {onLevelChange} />
+        <DspSurface {view} finiteHandles={handles} {onLevelChange} />
       {:else}
         <section data-testid="independent-dsp-composition">
           <div data-slot="toggles">{@render handles.nrActive()}{@render handles.nbActive()}</div>

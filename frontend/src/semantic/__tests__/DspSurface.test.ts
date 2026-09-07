@@ -17,7 +17,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { DSP_LEVELS, DSP_TOGGLES, type DspLevelField, type DspToggleField } from '../DspSurface.svelte';
 import { topologyFixtures, withDsp } from '../fixtures/topologies';
 import type { Availability, DspViewModel, RadioViewModel } from '../radio-view-model';
-import DspInstrumentHostFixture from './fixtures/DspInstrumentHostFixture.svelte';
+import DspScalarHostFixture from './fixtures/DspScalarHostFixture.svelte';
 
 /** `1/single` + a fully-observed dsp group (nrActive true, nbActive false —
  *  both toggles exercised at least once by the base fixture). */
@@ -39,6 +39,7 @@ type AnyField = keyof DspViewModel;
 const NUMERIC_FIELDS: readonly AnyField[] = [
   ...DSP_TOGGLES.map(([f]) => f), ...DSP_LEVELS.map(([f]) => f), 'nbLevel',
 ] as readonly AnyField[];
+const NATIVE_LEVELS = DSP_LEVELS.filter(([field]) => field !== 'nbWidth');
 /** The thumb position an unread level control MUST claim (MOR-1304/1305 F2)
  *  — `numberOf`'s own fallback, verbatim, so a fallback-value mutation is
  *  pinned rather than left free to claim any position. `nbLevel` falls back
@@ -98,7 +99,7 @@ type Props = Handlers & {
 };
 
 function render(view: RadioViewModel, props: Props = {}) {
-  const component = mount(DspInstrumentHostFixture, {
+  const component = mount(DspScalarHostFixture, {
     target, props: { view, presentation: 'grouped', ...props },
   });
   flushSync();
@@ -108,6 +109,7 @@ function render(view: RadioViewModel, props: Props = {}) {
     root: () => q('[data-testid="dsp-surface"]'),
     control: (field: string) => q<HTMLElement>(`[data-testid="dsp-${field}"]`),
     input: (field: string) => q<HTMLInputElement>(`[data-testid="dsp-${field}"] input`),
+    slider: (field: string) => q<HTMLElement>(`[data-testid="dsp-${field}"] [role="slider"]`),
     notchButton: (mode: string) => q<HTMLButtonElement>(`[data-testid="dsp-notchMode-${mode}"]`),
     agcButton: (mode: number) => q<HTMLButtonElement>(`[data-testid="dsp-agcMode-${mode}"]`),
   };
@@ -122,7 +124,8 @@ function withSurface(view: RadioViewModel, fn: (s: ReturnType<typeof render>) =>
 function isDisabled(s: ReturnType<typeof render>, field: string): boolean {
   const el = s.control(field)!;
   if (el instanceof HTMLButtonElement) return el.disabled;
-  return s.input(field)!.disabled;
+  const input = s.input(field);
+  return input ? input.disabled : s.slider(field)?.getAttribute('aria-disabled') === 'true';
 }
 
 // ── 1. Structural gating: absent, never a disabled promise ─────────────────
@@ -266,7 +269,7 @@ describe('toggle intents compute the next boolean from the current reading', () 
 // ── 4. Level intents carry the field and the raw value ─────────────────────
 
 describe('level intents reach the caller with the field and the raw value', () => {
-  it.each(DSP_LEVELS)('emits (%s, value) on input with the declared range', (field, _label, min, max, step, _fmt?) => {
+  it.each(NATIVE_LEVELS)('emits (%s, value) on input with the declared range', (field, _label, min, max, step, _fmt?) => {
     const onLevelChange = vi.fn();
     withSurface(base(), (s) => {
       const input = s.input(field)!;
@@ -441,15 +444,15 @@ describe('manual-notch position stays in the documented raw domain', () => {
 describe('nbLevel is range-parameterised by the caps-echoed nbLevelMax/nbLevelPercent props', () => {
   it('uses the default 0..255 raw range when no props are supplied', () => {
     withSurface(base(), (s) => {
-      expect(s.input('nbLevel')!.max).toBe('255');
-      expect(s.input('nbLevel')!.valueAsNumber).toBe(64); // withDsp() fixture value
+      expect(s.slider('nbLevel')!.getAttribute('aria-valuemax')).toBe('255');
+      expect(s.slider('nbLevel')!.getAttribute('aria-valuenow')).toBe('64');
       expect(s.control('nbLevel')!.textContent).toContain('64');
     });
   });
 
   it('uses a caller-supplied ceiling (FTX-1-shaped: native 0..10, raw display)', () => {
     withSurface(base(), (s) => {
-      expect(s.input('nbLevel')!.max).toBe('10');
+      expect(s.slider('nbLevel')!.getAttribute('aria-valuemax')).toBe('10');
       // Raw pass-through display (carry-forward 3): the fixture's raw
       // reading (64) renders verbatim, regardless of the ceiling prop.
       expect(s.control('nbLevel')!.textContent).toContain('64');
@@ -465,12 +468,14 @@ describe('nbLevel is range-parameterised by the caps-echoed nbLevelMax/nbLevelPe
 
   it('emits the raw nbLevel value unrescaled regardless of display mode', () => {
     const onLevelChange = vi.fn();
-    withSurface(base(), (s) => {
-      const input = s.input('nbLevel')!;
-      input.value = '5';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+    const view = base();
+    const withLevelFive = { ...view, dsp: { ...view.dsp!, nbLevel: {
+      ...view.dsp!.nbLevel, reading: { status: 'known' as const, value: 5 },
+    } } };
+    withSurface(withLevelFive, (s) => {
+      s.slider('nbLevel')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
       flushSync();
-      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('nbLevel', 5);
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('nbLevel', 6);
     }, { onLevelChange, nbLevelMax: 10, nbLevelPercent: false });
   });
 });
