@@ -38,7 +38,10 @@ import {
   CW_PITCH_COMMAND_DESCRIPTOR,
   DSP_COMMAND_DESCRIPTORS,
   FILTER_WIDTH_COMMAND_DESCRIPTOR,
+  IF_SHIFT_COMMAND_DESCRIPTOR,
   KEY_SPEED_COMMAND_DESCRIPTOR,
+  PBT_INNER_COMMAND_DESCRIPTOR,
+  PBT_OUTER_COMMAND_DESCRIPTOR,
   RF_GAIN_COMMAND_DESCRIPTOR,
   SQUELCH_COMMAND_DESCRIPTOR,
   TX_AUX_COMMAND_DESCRIPTORS,
@@ -56,7 +59,8 @@ import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
-  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel,
+  controlRangeFromCapsOrDefault, deriveIfShift, nbDepthRawToDisplay,
+  pbtRangeFromCaps, pbtRawToHz, projectNrLevel,
 } from '$lib/radio/filter-controls';
 
 // Re-export types for panel imports
@@ -677,6 +681,185 @@ export function getRfSqlControlFeedback(
     sql: lane(
       'set_squelch', SQUELCH_COMMAND_DESCRIPTOR, 'squelch', 'squelch', tags.includes('squelch'),
     ),
+  });
+}
+
+/**
+ * Shared qualification for a single raw receiver-scoped "echo" control
+ * (MOR-2425): PBT inner/outer, and the real `if_shift` command on a radio
+ * that has one. Mirrors `getDspControlFeedback`'s active-receiver/
+ * operational/observation gating; `structuralFor` supplies the one thing
+ * that differs per field (PBT needs both the `pbt` capability tag AND a
+ * usable `pbt_inner` range — MOR-1291 — while `if_shift` needs only its own
+ * capability tag).
+ */
+function getReceiverEchoControlFeedback(
+  currentControlSession: ControlSessionSnapshot | undefined,
+  descriptor: StateBackedCommandDescriptor<number>,
+  control: string,
+  field: 'pbtInner' | 'pbtOuter' | 'ifShift',
+  structuralFor: (caps: Capabilities | null | undefined, tags: readonly string[]) => boolean,
+): Readonly<ControlFeedback<number>> {
+  const state = runtime.state;
+  const caps = runtime.caps;
+  const commands = getCommandLifecycles();
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
+  const scope = Object.freeze({ control, receiver });
+  const feedback = projectControlFeedback(
+    descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
+  );
+  try {
+    const view = toRadioViewModel(state, caps);
+    if (session.state !== 'connected' || epoch < 0
+      || view === null || view.activeReceiver.status !== 'known') {
+      return unavailableControlFeedback(feedback);
+    }
+    const activeReceiver = view.activeReceiver.receiver;
+    const receiverEntries = view.receiverIndicators?.filter(
+      entry => entry.receiver === activeReceiver,
+    ) ?? [];
+    if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
+      return unavailableControlFeedback(feedback);
+    }
+    const receiverState = activeReceiver === 'SUB' ? state?.sub : state?.main;
+    const base = activeReceiver === 'SUB' ? 'sub' : 'main';
+    const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+    const observation = qualifyDisplayObservation({
+      state, caps, receiver: activeReceiver, path: `${base}.${field}`,
+      structural: structuralFor(caps, tags), value: receiverState?.[field],
+    });
+    return observation.state === 'current' && Number.isSafeInteger(observation.value)
+      ? feedback : unavailableControlFeedback(feedback);
+  } catch {
+    return unavailableControlFeedback(feedback);
+  }
+}
+
+const pbtStructural = (caps: Capabilities | null | undefined, tags: readonly string[]): boolean =>
+  tags.includes('pbt') && pbtRangeFromCaps(caps) !== undefined;
+
+/** Qualified raw PBT Inner feedback (MOR-2425); receiver derives from active-receiver truth. */
+export function getPbtInnerControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getReceiverEchoControlFeedback(
+    currentControlSession, PBT_INNER_COMMAND_DESCRIPTOR, 'pbt-inner', 'pbtInner', pbtStructural,
+  );
+}
+
+/** Qualified raw PBT Outer feedback (MOR-2425); receiver derives from active-receiver truth. */
+export function getPbtOuterControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<ControlFeedback<number>> {
+  return getReceiverEchoControlFeedback(
+    currentControlSession, PBT_OUTER_COMMAND_DESCRIPTOR, 'pbt-outer', 'pbtOuter', pbtStructural,
+  );
+}
+
+/**
+ * IF-shift feedback is always Hz-domain, never PBT's raw BCD domain: real on
+ * a radio with its own `if_shift` command (raw IS Hz there, identity-
+ * mapped), or derived from the two PBT feedbacks by converting each side's
+ * raw value with `pbtRawToHz` first. `domain` is a real, checkable field —
+ * not a comment that can rot — so a caller or test can assert it instead of
+ * trusting prose about which domain `confirmed`/`target` are in.
+ */
+export interface IfShiftControlFeedback extends ControlFeedback<number> {
+  readonly domain: 'hz';
+}
+
+/**
+ * Total order over `ControlFeedbackPhase` from least to most settled, used
+ * only to pick between two REAL phase values already produced by
+ * `projectControlFeedback` — never to invent a new one. A terminal outcome
+ * phase counts as more settled than any in-flight phase but less settled
+ * than `idle`, so a just-finished side's outcome still surfaces over a
+ * boringly idle counterpart.
+ */
+const PHASE_PROGRESS: readonly ControlFeedbackPhase[] = Object.freeze([
+  'awaiting-confirmation', 'dispatched', 'queued', 'submitted',
+  'confirmed', 'failed', 'timed-out', 'cancelled', 'superseded',
+  'idle', 'unavailable',
+]);
+const lessSettled = <T extends { phase: ControlFeedbackPhase }>(a: T, b: T): T =>
+  PHASE_PROGRESS.indexOf(a.phase) <= PHASE_PROGRESS.indexOf(b.phase) ? a : b;
+
+function unavailableIfShiftFeedback(
+  scope: Readonly<ControlFeedbackScope>, sessionEpoch: number,
+  providerGeneration: number | null,
+): Readonly<IfShiftControlFeedback> {
+  return Object.freeze({
+    confirmed: null, target: null, requestedTarget: null,
+    phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,
+    outcome: null, lifecycleId: null, transitionId: null,
+    providerGeneration, sessionEpoch, scope,
+    repeatPolicy: 'latest-target-wins' as const, domain: 'hz' as const,
+  });
+}
+
+/**
+ * Qualified IF-shift feedback (MOR-2425). Real on a radio with its own
+ * `if_shift` command (Yaesu FTX-1) — gated on the SAME predicate
+ * (`caps.capabilities.includes('if_shift')`) `radio-view-model-adapter.ts`'s
+ * `ifShiftControlStructural` uses to decide whether to show a real IF-shift
+ * control at all. Derived from the two PBT feedbacks on a PBT-only radio
+ * (Icom IC-7300): each side's raw value is converted to Hz with
+ * `pbtRawToHz(raw, pbtRangeFromCaps(caps))` before combining with
+ * `deriveIfShift`, mirroring `deriveFilterPassband`'s own `ifShiftValue`
+ * fallback — this is that same formula's pending-target-aware lifecycle
+ * layer, not a second, independent re-derivation of the confirmed reading.
+ */
+export function getIfShiftControlFeedback(
+  currentControlSession?: ControlSessionSnapshot,
+): Readonly<IfShiftControlFeedback> {
+  const caps = runtime.caps;
+  const tags = Array.isArray(caps?.capabilities) ? caps.capabilities : [];
+
+  if (tags.includes('if_shift')) {
+    const real = getReceiverEchoControlFeedback(
+      currentControlSession, IF_SHIFT_COMMAND_DESCRIPTOR, 'if-shift', 'ifShift',
+      (_c, t) => t.includes('if_shift'),
+    );
+    return Object.freeze({ ...real, domain: 'hz' as const });
+  }
+
+  const state = runtime.state;
+  const session = currentControlSession ?? runtime.controlSession;
+  const epoch = Number.isSafeInteger(session.epoch) && session.epoch >= 0 ? session.epoch : -1;
+  const receiver: 0 | 1 = state?.active === 'SUB' ? 1 : 0;
+  const scope = Object.freeze({ control: 'if-shift', receiver });
+  const inner = getPbtInnerControlFeedback(currentControlSession);
+  const outer = getPbtOuterControlFeedback(currentControlSession);
+  const scale = pbtRangeFromCaps(caps);
+  const providerGeneration = typeof inner.providerGeneration === 'number' ? inner.providerGeneration : null;
+  if (inner.availability !== 'available' || outer.availability !== 'available' || scale === undefined
+    || inner.confirmed === null || outer.confirmed === null) {
+    return unavailableIfShiftFeedback(scope, epoch, providerGeneration);
+  }
+  const toHz = (raw: number): number => pbtRawToHz(raw, scale);
+  const confirmed = deriveIfShift(toHz(inner.confirmed), toHz(outer.confirmed));
+  const busy = inner.busy || outer.busy;
+  const innerForTarget = inner.busy && inner.target !== null ? inner.target : inner.confirmed;
+  const outerForTarget = outer.busy && outer.target !== null ? outer.target : outer.confirmed;
+  const target = busy ? deriveIfShift(toHz(innerForTarget), toHz(outerForTarget)) : null;
+  const innerForRequested = inner.requestedTarget ?? inner.confirmed;
+  const outerForRequested = outer.requestedTarget ?? outer.confirmed;
+  const requestedTarget = inner.requestedTarget === null && outer.requestedTarget === null
+    ? null : deriveIfShift(toHz(innerForRequested), toHz(outerForRequested));
+  const winner = lessSettled(inner, outer);
+  const phase = winner.phase;
+  const outcome = busy ? null : winner.outcome;
+  const lifecycleId = inner.lifecycleId === null && outer.lifecycleId === null
+    ? null : JSON.stringify([inner.lifecycleId, outer.lifecycleId]);
+  const transitionId = inner.transitionId === null && outer.transitionId === null
+    ? null : JSON.stringify([inner.transitionId, outer.transitionId]);
+  return Object.freeze({
+    confirmed, target, requestedTarget, phase, busy, availability: 'available' as const,
+    outcome, lifecycleId, transitionId,
+    providerGeneration, sessionEpoch: inner.sessionEpoch,
+    scope, repeatPolicy: 'latest-target-wins' as const, domain: 'hz' as const,
   });
 }
 

@@ -319,6 +319,60 @@ export const DSP_COMMAND_DESCRIPTORS = Object.freeze({
   ),
 }) satisfies Readonly<Record<DspCommandFeedbackField, StateBackedCommandDescriptor<number>>>;
 
+type RawReceiverEchoField = 'pbtInner' | 'pbtOuter' | 'ifShift';
+type RawReceiverEchoParam = 'value' | 'offset';
+type RawReceiverEchoIntent = 'set_pbt_inner' | 'set_pbt_outer' | 'set_if_shift';
+
+/**
+ * Mirrors `FILTER_WIDTH_COMMAND_DESCRIPTOR`'s exact-raw-equality shape
+ * (MOR-2425 census `pbt-descriptor-lane-census-20260907.md` §A/§F4): receiver
+ * defaults to 0 when omitted, `target` reads the named param directly (both
+ * `set_pbt_inner`/`set_pbt_outer`'s `value` and `set_if_shift`'s `offset` are
+ * already raw at dispatch — `panel-commands.ts`'s `onPbtInnerChange`/
+ * `onPbtOuterChange` call `pbtHzToRaw` before `dispatchRadioIntent`, and the
+ * FTX-1 `if_shift` command is identity-mapped Hz), and `confirmed` reads the
+ * SAME raw `ServerState` field the command's own CI-V/CAT echo populates —
+ * never the Hz-converted `filterPassband.*` view-model. Factors PBT inner,
+ * PBT outer, and IF-shift into one helper instead of three near-identical
+ * blocks, the same shape `rawReceiverDspCommandDescriptor` above uses for the
+ * DSP family.
+ */
+function rawReceiverEchoCommandDescriptor(
+  intentName: RawReceiverEchoIntent,
+  control: string,
+  field: RawReceiverEchoField,
+  param: RawReceiverEchoParam,
+): StateBackedCommandDescriptor<number> {
+  return Object.freeze({
+    intentName, repeatPolicy: 'latest-target-wins' as const,
+    scope: (command: Pick<CommandLifecycle, 'params'>) => {
+      const receiver = command.params.receiver;
+      return receiver === undefined || receiver === 0 || receiver === 1
+        ? Object.freeze({ control, receiver: receiver === 1 ? 1 : 0 }) : null;
+    },
+    fieldPath: (scope: ControlFeedbackScope) => `${scope.receiver === 1 ? 'sub' : 'main'}.${field}`,
+    target: (command: Pick<CommandLifecycle, 'params'>) => safeInteger(command.params[param]),
+    confirmed: (state: ServerState, scope: ControlFeedbackScope) =>
+      finiteNumber((scope.receiver === 1 ? state.sub : state.main)?.[field]),
+    matches: (confirmed: number, target: number) => confirmed === target,
+  });
+}
+
+export const PBT_INNER_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
+  rawReceiverEchoCommandDescriptor('set_pbt_inner', 'pbt-inner', 'pbtInner', 'value');
+export const PBT_OUTER_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
+  rawReceiverEchoCommandDescriptor('set_pbt_outer', 'pbt-outer', 'pbtOuter', 'value');
+/**
+ * Only meaningful where `if_shift` is a real command (Yaesu FTX-1) — Icom
+ * radios never dispatch `set_if_shift` (`onIfShiftChange`'s PBT-only branch
+ * dispatches `set_pbt_inner`/`set_pbt_outer` instead), so this descriptor
+ * simply never engages there. `panel-adapters.ts`'s `getIfShiftControlFeedback`
+ * derives a PBT-only radio's IF-shift feedback from the two PBT descriptors
+ * instead of using this one.
+ */
+export const IF_SHIFT_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> =
+  rawReceiverEchoCommandDescriptor('set_if_shift', 'if-shift', 'ifShift', 'offset');
+
 export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, StateBackedCommandDescriptor<unknown>> =
   new Map([
     [FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName, FILTER_WIDTH_COMMAND_DESCRIPTOR],
@@ -333,6 +387,9 @@ export const STATE_BACKED_COMMAND_DESCRIPTORS: ReadonlyMap<RadioIntentName, Stat
     ...Object.values(DSP_COMMAND_DESCRIPTORS).map(
       descriptor => [descriptor.intentName, descriptor] as const,
     ),
+    [PBT_INNER_COMMAND_DESCRIPTOR.intentName, PBT_INNER_COMMAND_DESCRIPTOR],
+    [PBT_OUTER_COMMAND_DESCRIPTOR.intentName, PBT_OUTER_COMMAND_DESCRIPTOR],
+    [IF_SHIFT_COMMAND_DESCRIPTOR.intentName, IF_SHIFT_COMMAND_DESCRIPTOR],
   ]);
 export const getStateBackedCommandDescriptor = (intentName: string): StateBackedCommandDescriptor<unknown> | undefined =>
   (STATE_BACKED_COMMAND_DESCRIPTORS as ReadonlyMap<string, StateBackedCommandDescriptor<unknown>>).get(intentName);
