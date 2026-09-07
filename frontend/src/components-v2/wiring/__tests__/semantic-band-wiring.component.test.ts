@@ -35,6 +35,7 @@ import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  controlSession: { state: 'connected' as const, epoch: 1 as const },
   authoritySubscribers: new Set<(next: {
     state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
     rxAudioTarget: RxAudioTargetSnapshot;
@@ -79,10 +80,11 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return h.controlSession; },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
       handler({
-        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        state: h.state, caps: h.caps, session: h.controlSession,
         rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
       });
       return () => { h.authoritySubscribers.delete(handler); };
@@ -176,7 +178,7 @@ let txHarness: ManagedAppTxHarness;
 function publishAuthority(): void {
   for (const subscriber of h.authoritySubscribers) {
     subscriber({
-      state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+      state: h.state, caps: h.caps, session: h.controlSession,
       rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
     });
   }

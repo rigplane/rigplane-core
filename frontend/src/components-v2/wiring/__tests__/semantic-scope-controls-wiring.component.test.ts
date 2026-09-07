@@ -525,7 +525,7 @@ describe('selected finite Scope authority lifetime (MOR-2425)', () => {
     render();
     expect(el('scope-hold')).not.toBeNull();
     expect(el('external-HOLD')).toBeNull();
-    expect(h.authoritySubscribers.size).toBe(1);
+    expect(h.authoritySubscribers.size).toBe(2);
   });
 });
 

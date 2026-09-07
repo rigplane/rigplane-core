@@ -458,7 +458,7 @@ describe('the txAux surface mounts only when the view model carries the group', 
     + 'div span span span span span span button div section header strong div div div '
     + 'section header strong div div div section div span '
     + 'div button button div div button button p span span section p span span span p div button button '
-    + 'ul section div button button button label span input output div button button button output '
+    + 'ul section div button button button label span div div div div div div output div button button button output '
     + 'div button button output';
 
   it.each(['single', 'dual'] as const)('renders no txAux surface at all without the group (%s)', (strips) => {
