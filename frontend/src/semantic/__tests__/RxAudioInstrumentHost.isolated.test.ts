@@ -22,16 +22,28 @@ vi.mock('../../primitives/scalar/continuous-scalar.svelte', async (importOrigina
   };
 });
 
+import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import ExternalScalarRenderer from '../../components-v2/controls/value-control/__tests__/ExternalScalarRendererFixture.svelte';
 import type { Skin } from '../../components-v2/controls/value-control/skin';
+import {
+  createFiniteRendererContext, type FiniteControlAppearance,
+} from '../../primitives/control-instruments/control-instrument-renderer.svelte';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 import type {
   ContinuousScalarBinding,
   ContinuousScalarRendererLease,
 } from '../../primitives/scalar/continuous-scalar.svelte';
 import Fixture from './fixtures/RxAudioInstrumentHostFixture.svelte';
-import type { RxAudioViewModel } from '../radio-view-model';
+import { topologyFixtures, withRxAudio } from '../fixtures/topologies';
+import type { AudioFocus, RadioViewModel, RxAudioViewModel } from '../radio-view-model';
+import {
+  FOCUS_CHOICES, MONITOR_MODES, SPLIT_CHOICES,
+} from '../rx-audio-instruments';
 import type {
   RxAudioAuthorityPublication as Publication,
+  RxAudioFiniteChoiceValue,
   SubscribeRxAudioAuthority,
 } from '../rx-audio-instruments';
 
@@ -261,4 +273,197 @@ describe('RxAudioInstrumentHost', () => {
     lease.pointer(token, 0.8); lease.endPointer(token);
     expect(r.onAfLevelChange).not.toHaveBeenCalled();
   });
+});
+
+/**
+ * RX-B/RX-C — the five finite handles (`monitorMode`, `routingFocus`,
+ * `routingSplit`, `modInputSource`, `setModInputLan`). Per the RX-B/RX-C
+ * census, these are discrete choice/action instruments recomputed reactively
+ * every render, not scalars with drag-gesture state — so the correctness
+ * burden here is the finite seat/lease discipline (an inactive renderer's
+ * lease must not invoke after a context swap), exercised below through the
+ * shared `FiniteControlRendererFixture` test double, the same one
+ * `DspInstrumentHost.isolated.test.ts` uses for its own finite seats.
+ */
+describe('RxAudioInstrumentHost finite handles (RX-B/RX-C)', () => {
+  const appearance = {
+    action: FiniteControlRendererFixture as FiniteControlAppearance<RxAudioFiniteChoiceValue>['action'],
+    toggle: FiniteControlRendererFixture as FiniteControlAppearance<RxAudioFiniteChoiceValue>['toggle'],
+    choice: FiniteControlRendererFixture as FiniteControlAppearance<RxAudioFiniteChoiceValue>['choice'],
+  } satisfies FiniteControlAppearance<RxAudioFiniteChoiceValue>;
+
+  const rxBase = (): RadioViewModel => withRxAudio(topologyFixtures['1/single']);
+  const withRx = (over: Partial<RxAudioViewModel>): RadioViewModel => {
+    const view = rxBase();
+    return { ...view, rxAudio: { ...view.rxAudio!, ...over } };
+  };
+  const AVAILABLE = { structural: true, operational: true };
+  const UNAVAILABLE = { structural: false, operational: false };
+  type Handlers = {
+    onMonitorMode?: (mode: RxAudioViewModel['monitorMode']) => void;
+    onRoutingFocus?: (focus: AudioFocus) => void;
+    onRoutingSplit?: (split: boolean) => void;
+    onModInputChange?: (source: number) => void;
+    onSetModInputLan?: () => void;
+  };
+
+  function renderFinite(view: RadioViewModel, handlers: Handlers = {}) {
+    const publication: Publication = {
+      state: null, caps: null, session: { state: 'connected', epoch: 1 },
+      rxAudioTarget: { muted: false, rxEnabled: false },
+    };
+    const component = mount(Fixture, { target, props: {
+      view, publication, ...handlers,
+      subscribeControlAuthority: (handler) => { handler(publication); return () => undefined; },
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+    } });
+    components.push(component);
+    flushSync();
+    return { component };
+  }
+
+  beforeEach(() => resetRetainedInvocations());
+
+  it('routes each finite handle to its own callback with its own value, never crossed', () => {
+    const onMonitorMode = vi.fn();
+    const onRoutingFocus = vi.fn();
+    const onRoutingSplit = vi.fn();
+    const onModInputChange = vi.fn();
+    const onSetModInputLan = vi.fn();
+    const view = withRx({ modInputReadiness: { status: 'mismatch', source: 0 } });
+    renderFinite(view, {
+      onMonitorMode, onRoutingFocus, onRoutingSplit, onModInputChange, onSetModInputLan,
+    });
+
+    for (const mode of MONITOR_MODES) {
+      target.querySelector<HTMLButtonElement>(`[data-testid="external-Monitor mode-${mode}"]`)!.click();
+    }
+    expect(onMonitorMode.mock.calls).toEqual(MONITOR_MODES.map((mode) => [mode]));
+
+    for (const focus of FOCUS_CHOICES) {
+      target.querySelector<HTMLButtonElement>(`[data-testid="external-Audio focus-${focus}"]`)!.click();
+    }
+    expect(onRoutingFocus.mock.calls).toEqual(FOCUS_CHOICES.map((focus) => [focus]));
+
+    for (const [value] of SPLIT_CHOICES) {
+      target.querySelector<HTMLButtonElement>(`[data-testid="external-Stereo split-${value}"]`)!.click();
+    }
+    expect(onRoutingSplit.mock.calls).toEqual(SPLIT_CHOICES.map(([value]) => [value]));
+
+    for (const option of MOD_INPUT_SOURCES) {
+      target.querySelector<HTMLButtonElement>(`[data-testid="external-MOD input-${option.value}"]`)!.click();
+    }
+    expect(onModInputChange.mock.calls).toEqual(MOD_INPUT_SOURCES.map((option) => [option.value]));
+
+    target.querySelector<HTMLButtonElement>('[data-testid="external-Set LAN"]')!.click();
+    expect(onSetModInputLan).toHaveBeenCalledTimes(1);
+
+    // Cross-check: none of the five leaked into a sibling's callback.
+    expect(onMonitorMode).toHaveBeenCalledTimes(MONITOR_MODES.length);
+    expect(onRoutingFocus).toHaveBeenCalledTimes(FOCUS_CHOICES.length);
+    expect(onRoutingSplit).toHaveBeenCalledTimes(SPLIT_CHOICES.length);
+    expect(onModInputChange).toHaveBeenCalledTimes(MOD_INPUT_SOURCES.length);
+  });
+
+  it('offers `live` only while liveAudio is structural, never re-derived from anything else', () => {
+    const { component: absent } = renderFinite(withRx({ liveAudio: UNAVAILABLE }));
+    expect(target.querySelector('[data-testid="external-Monitor mode-live"]')).toBeNull();
+    expect(target.querySelector('[data-testid="external-Monitor mode-local"]')).not.toBeNull();
+    unmount(absent);
+    components = components.filter((item) => item !== absent);
+
+    renderFinite(withRx({ liveAudio: AVAILABLE }));
+    expect(target.querySelectorAll('[data-testid="external-Monitor mode-live"]')).toHaveLength(1);
+  });
+
+  it('renders no external composition for a structurally-absent focus, split or MOD-input group', () => {
+    renderFinite(withRx({
+      routingFocus: { reading: { status: 'unknown' }, availability: UNAVAILABLE },
+      routingSplit: { reading: { status: 'unknown' }, availability: UNAVAILABLE },
+      modInputSource: { reading: { status: 'unknown' }, availability: UNAVAILABLE },
+      modInputReadiness: { status: 'unknown' },
+    }));
+    expect(target.querySelector('[data-testid="external-Audio focus"]')).toBeNull();
+    expect(target.querySelector('[data-testid="external-Stereo split"]')).toBeNull();
+    expect(target.querySelector('[data-testid="external-MOD input"]')).toBeNull();
+  });
+
+  it('blocks an unrecognized MOD-input reading and offers no LAN remedy outside a mismatch', () => {
+    const onModInputChange = vi.fn();
+    const onSetModInputLan = vi.fn();
+    renderFinite(
+      withRx({
+        modInputSource: { reading: { status: 'known', value: 99 }, availability: AVAILABLE },
+        modInputReadiness: { status: 'unknown' },
+      }),
+      { onModInputChange, onSetModInputLan },
+    );
+    const modExternal = target.querySelector('[data-testid="external-MOD input"]')!;
+    expect(modExternal).not.toBeNull();
+    target.querySelector<HTMLButtonElement>('[data-testid="external-MOD input-0"]')!.click();
+    expect(onModInputChange).not.toHaveBeenCalled();
+    expect(target.querySelector('[data-testid="external-Set LAN"]')).toBeNull();
+    expect(onSetModInputLan).not.toHaveBeenCalled();
+  });
+
+  it(
+    'keeps the monitor-mode (absolute choice) and Set-LAN (action) seats owner-correct '
+    + 'across an A-B-A context swap: a detached lease stays inert, the active one still emits once',
+    () => {
+      const onMonitorMode = vi.fn();
+      const onSetModInputLan = vi.fn();
+      const a = createFiniteRendererContext();
+      const b = createFiniteRendererContext();
+      const view = withRx({ modInputReadiness: { status: 'mismatch', source: 0 } });
+      const publication: Publication = {
+        state: null, caps: null, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: { muted: false, rxEnabled: false },
+      };
+      const props = proxy({
+        view, publication,
+        subscribeControlAuthority: ((handler) => {
+          handler(publication); return () => undefined;
+        }) as SubscribeRxAudioAuthority,
+        finiteAppearance: appearance, rendererContext: a, onMonitorMode, onSetModInputLan,
+      });
+      const component = mount(Fixture, { target, props });
+      flushSync();
+      const staleMonitor = retainedInvocations.get('Monitor mode')!;
+      const staleLan = retainedInvocations.get('Set LAN')!;
+      expect(staleMonitor).toBeDefined();
+      expect(staleLan).toBeDefined();
+
+      props.rendererContext = b;
+      flushSync();
+      const activeMonitor = retainedInvocations.get('Monitor mode')!;
+      const activeLan = retainedInvocations.get('Set LAN')!;
+
+      staleMonitor('mute');
+      staleLan();
+      expect(onMonitorMode).not.toHaveBeenCalled();
+      expect(onSetModInputLan).not.toHaveBeenCalled();
+
+      activeMonitor('mute');
+      activeLan();
+      expect(onMonitorMode).toHaveBeenCalledExactlyOnceWith('mute');
+      expect(onSetModInputLan).toHaveBeenCalledTimes(1);
+
+      // Swap A back: the (new) A lease is live, the old B lease is now stale.
+      props.rendererContext = a;
+      flushSync();
+      const finalMonitor = retainedInvocations.get('Monitor mode')!;
+      const finalLan = retainedInvocations.get('Set LAN')!;
+      activeLan();
+      expect(onSetModInputLan).toHaveBeenCalledTimes(1);
+
+      // Host teardown (`onDestroy`'s seat.destroy() loop) is the LAST fence:
+      // a lease retained past `unmount` must stay inert too, independent of
+      // any later context swap ever happening.
+      unmount(component);
+      finalMonitor('local');
+      finalLan();
+      expect(onMonitorMode).toHaveBeenCalledTimes(1);
+      expect(onSetModInputLan).toHaveBeenCalledTimes(1);
+    },
+  );
 });

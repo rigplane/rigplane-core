@@ -48,29 +48,12 @@
   prefs were never restored", which renders present-and-unobserved.
 -->
 <script module lang="ts">
-  import { MOD_INPUT_SOURCES, modInputSourceLabel } from '$lib/radio/mod-input';
-  import type {
-    AudioFocus, ModInputReadiness, MonitorMode, RxAudioField,
-  } from './radio-view-model';
+  import type { RxAudioField } from './radio-view-model';
+  import { UNKNOWN_TEXT } from './rx-audio-instruments';
 
-  /** The three monitor modes, in the shipped `RxAudioPanel` order. */
-  export const MONITOR_MODES: readonly MonitorMode[] = ['local', 'live', 'mute'];
-  /** Dual-RX focus choices, verbatim `AudioRoutingControl`'s own order. */
-  export const FOCUS_CHOICES: readonly AudioFocus[] = ['main', 'sub', 'both'];
-  /** Stereo split as two ABSOLUTE choices rather than one relative toggle: a
-   *  toggle computed from an unknown reading would arm a guess (the 1B rule),
-   *  and it would leave the control permanently dead while routing is
-   *  unobserved. `[value, label]`. */
-  export const SPLIT_CHOICES = [[true, 'on'], [false, 'off']] as const;
-  /** The ONE rendering of "not measured". Never 0, never 'both', never 'off'. */
-  export const UNKNOWN_TEXT = '—';
-  /** MOR-1384 — audio-link loss without an inferred retry state. */
-  export const LINK_LOST_TEXT = 'live audio link lost';
-  /** Readiness words. `mismatch` names the consequence, not just the state. */
-  export const READINESS_LABEL: Record<ModInputReadiness['status'], string> = {
-    'not-applicable': 'n/a', ready: 'LAN', unknown: UNKNOWN_TEXT,
-    mismatch: 'not LAN — web voice TX would modulate from the wrong source',
-  };
+  export {
+    FOCUS_CHOICES, LINK_LOST_TEXT, MONITOR_MODES, READINESS_LABEL, SPLIT_CHOICES, UNKNOWN_TEXT,
+  } from './rx-audio-instruments';
 
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it was actually read. */
   export const usable = (f: RxAudioField<unknown>): boolean =>
@@ -81,116 +64,31 @@
 </script>
 
 <script lang="ts">
-  import { t } from '$lib/i18n';
   import type { RadioViewModel } from './radio-view-model';
   import type { RxAudioInstrumentHandles } from './rx-audio-instruments';
-  import {
-    bindAbsoluteChoiceInstrument, bindChoiceInstrument,
-  } from '../primitives/control-instruments/control-instrument-behavior';
 
   interface Props {
     view: RadioViewModel;
     handles: RxAudioInstrumentHandles;
-    onMonitorMode?: (mode: MonitorMode) => void;
-    onRoutingFocus?: (focus: AudioFocus) => void;
-    onRoutingSplit?: (split: boolean) => void;
-    onSetModInputLan?: () => void;
-    onModInputChange?: (source: number) => void;
   }
-  let {
-    view, handles, onMonitorMode, onRoutingFocus, onRoutingSplit, onSetModInputLan,
-    onModInputChange,
-  }: Props = $props();
+  let { view, handles }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine):
    *  a radio with no audio chain gets no empty panel and no zone had to learn
    *  about it. */
   let rx = $derived(view.rxAudio);
-  /** Rule (3): the FACT, not a capability re-derivation. */
-  let liveOffered = $derived(rx?.liveAudio.structural === true);
-  const monitorBehavior = bindAbsoluteChoiceInstrument<MonitorMode>(() => ({
-    choices: MONITOR_MODES.filter((mode) => mode !== 'live' || liveOffered),
-    selected: rx?.monitorMode,
-    available: rx !== undefined,
-    invoke: (mode) => onMonitorMode?.(mode),
-  }));
-  const focusBehavior = bindAbsoluteChoiceInstrument<AudioFocus>(() => ({
-    choices: FOCUS_CHOICES,
-    selected: rx?.routingFocus.reading.status === 'known'
-      ? rx.routingFocus.reading.value : undefined,
-    available: rx?.routingFocus.availability.structural === true,
-    invoke: (focus) => onRoutingFocus?.(focus),
-  }));
-  const splitBehavior = bindAbsoluteChoiceInstrument<boolean>(() => ({
-    choices: SPLIT_CHOICES.map(([value]) => value),
-    selected: rx?.routingSplit.reading.status === 'known'
-      ? rx.routingSplit.reading.value : undefined,
-    available: rx?.routingSplit.availability.structural === true,
-    invoke: (split) => onRoutingSplit?.(split),
-  }));
-  let modInputRecognized = $derived(
-    rx?.modInputSource.reading.status === 'known'
-      && modInputSourceLabel(rx.modInputSource.reading.value) !== null,
-  );
-  const modInputBehavior = bindChoiceInstrument<number>(() => ({
-    field: rx?.modInputSource,
-    choices: MOD_INPUT_SOURCES.map((option) => option.value),
-    blocked: !modInputRecognized,
-    invoke: (source) => onModInputChange?.(source),
-  }));
-  let modInputValue = $derived(
-    modInputBehavior.selected === undefined ? '' : String(modInputBehavior.selected),
-  );
-
-  function changeModInput(select: HTMLSelectElement): void {
-    const value = select.value;
-    const source = MOD_INPUT_SOURCES.find((option) => String(option.value) === value);
-    select.value = modInputValue;
-    if (source) modInputBehavior.invoke(source.value);
-  }
-  /** MOR-1384 — the v2 `RxAudioPanel` link-lost readout, restored from the SAME
-   *  underlying fact (`liveAudio.operational` is `runtime.connectionAudio`, the
-   *  identical audio-WS health the retired panel read as `isAudioConnected`).
-   *
-   *  All three legs are load-bearing, and `monitorMode === 'live'` is the
-   *  EPISTEMIC one: the audio WS is opened BECAUSE the operator selects `live`
-   *  (see rule 3), so while `local`/`mute` is selected a down link was never
-   *  requested and is not a loss. Reporting "lost" there would be a claim about
-   *  an observation that was never made — and an operator who trusts it
-   *  mis-reads a working radio. Structurally absent live audio has no link to
-   *  lose at all. Nothing here is new: no timer, no history, no retry state. */
-  let linkLost = $derived(
-    liveOffered && rx?.monitorMode === 'live' && rx.liveAudio.operational === false,
-  );
 </script>
 
 {#if rx}
   <section class="rx-audio-surface" data-testid="rx-audio-surface" aria-label="Receive audio">
-    <div
-      class="rx-audio-row" role="radiogroup" aria-label="Monitor mode"
-      data-testid="rx-audio-monitor" data-monitor-mode={rx.monitorMode}
-    >
-      {#each MONITOR_MODES as mode (mode)}
-        {#if mode !== 'live' || liveOffered}
-          <button
-            type="button" role="radio" class="rx-audio-choice"
-            data-testid={`rx-audio-monitor-${mode}`} data-mode={mode}
-            data-live-link={mode === 'live' ? rx.liveAudio.operational : undefined}
-            aria-checked={monitorBehavior.isSelected(mode)}
-            disabled={!monitorBehavior.available}
-            onclick={() => monitorBehavior.invoke(mode)}
-          >{mode}</button>
-        {/if}
-      {/each}
-    </div>
-
-    <!-- Beside the monitor row, next to the `live` choice whose
-         `data-live-link` already carries this fact machine-readably: the
-         operator gets it in WORDS. Zero focusable elements, so the rx-audio
-         zone's tab order is unchanged (MOR-1069/MOR-1304 mounting canon). -->
-    {#if linkLost}
-      <p class="rx-audio-row" data-testid="rx-audio-link">{LINK_LOST_TEXT}</p>
-    {/if}
+    <!-- Monitor-mode radiogroup and the paired link-lost annotation
+         (MOR-1384) are one `RxAudioInstrumentHost` handle: the annotation
+         must never separate from the control it explains. Optional chaining
+         throughout this section: the five finite handles are optional on
+         `RxAudioInstrumentHandles` only so pre-existing `InstrumentComposition`
+         fixtures outside this cut, still built with `afLevel` alone, keep
+         type-checking (rx-audio-instruments.ts has the full account). -->
+    {@render handles.monitorMode?.()}
 
     {#if rx.afLevel.availability.structural}
       <label
@@ -204,79 +102,15 @@
       </label>
     {/if}
 
-    {#if rx.routingFocus.availability.structural}
-      <div
-        class="rx-audio-row" role="radiogroup" aria-label="Audio focus"
-        data-testid="rx-audio-focus" data-observed={usable(rx.routingFocus)}
-      >
-        {#each FOCUS_CHOICES as focus (focus)}
-          <button
-            type="button" role="radio" class="rx-audio-choice"
-            data-testid={`rx-audio-focus-${focus}`}
-            aria-checked={focusBehavior.isSelected(focus)}
-            disabled={!focusBehavior.available}
-            onclick={() => focusBehavior.invoke(focus)}
-          >{focus}</button>
-        {/each}
-        <output data-testid="rx-audio-focus-value">{textOf(rx.routingFocus)}</output>
-      </div>
-    {/if}
-
-    {#if rx.routingSplit.availability.structural}
-      <div
-        class="rx-audio-row" role="radiogroup" aria-label="Stereo split"
-        data-testid="rx-audio-split" data-observed={usable(rx.routingSplit)}
-      >
-        {#each SPLIT_CHOICES as [value, label] (label)}
-          <button
-            type="button" role="radio" class="rx-audio-choice"
-            data-testid={`rx-audio-split-${label}`}
-            aria-checked={splitBehavior.isSelected(value)}
-            disabled={!splitBehavior.available}
-            onclick={() => splitBehavior.invoke(value)}
-          >split {label}</button>
-        {/each}
-        <output data-testid="rx-audio-split-value">{textOf(rx.routingSplit)}</output>
-      </div>
-    {/if}
-
-    {#if rx.modInputSource.availability.structural}
-      <p
-        class="rx-audio-row" data-testid="rx-audio-mod-input"
-        data-readiness={rx.modInputReadiness.status}
-        data-observed={usable(rx.modInputSource)}
-      >
-        <label class="rx-audio-mod-selector">
-          <span>{t('core.modePanel.modInputLabel')}</span>
-          <select
-            data-testid="rx-audio-mod-select"
-            aria-label={t('core.modePanel.modInputAria')}
-            value={modInputValue}
-            disabled={!modInputBehavior.available}
-            onchange={(event) => changeModInput(event.currentTarget)}
-          >
-            {#if modInputValue === ''}
-              <option value="" disabled>{UNKNOWN_TEXT}</option>
-            {/if}
-            {#each MOD_INPUT_SOURCES as option (option.value)}
-              <option value={String(option.value)}>{option.label}</option>
-            {/each}
-          </select>
-        </label>
-        <span data-testid="rx-audio-mod-source">MOD: {rx.modInputSource.reading.status === 'known'
-          ? modInputSourceLabel(rx.modInputSource.reading.value) ?? UNKNOWN_TEXT
-          : UNKNOWN_TEXT}</span>
-        <span data-testid="rx-audio-mod-readiness"
-        >{READINESS_LABEL[rx.modInputReadiness.status]}</span>
-        {#if rx.modInputReadiness.status === 'mismatch'}
-          <!-- The one-click remedy, same command path as ModInputTxWarning's
-               "Set LAN" (rule: a mismatch must never be a dead end). -->
-          <button
-            type="button" data-testid="rx-audio-mod-set-lan" onclick={() => onSetModInputLan?.()}
-          >Set LAN</button>
-        {/if}
-      </p>
-    {/if}
+    {@render handles.routingFocus?.()}
+    {@render handles.routingSplit?.()}
+    <!-- MOD-input readiness/source readouts and the one-click LAN remedy
+         (MOR-2366) are two adjacent handles, not one: `ModInputTxWarning`
+         must be able to render the SAME remedy independently later without
+         a second owner of the command (rx-tx-surface.ts::keyBlockedReasons
+         doctrine). -->
+    {@render handles.modInputSource?.()}
+    {@render handles.setModInputLan?.()}
   </section>
 {/if}
 
@@ -284,14 +118,9 @@
   /* Structure only — a design language owns colour and must never become the
      sole state channel (MOR-977, forced-colors). Nothing here animates. */
   .rx-audio-surface { display: flex; flex-direction: column; gap: 0.25rem; }
-  .rx-audio-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .rx-audio-level { display: flex; align-items: baseline; gap: 0.5rem; }
-  .rx-audio-mod-selector { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; max-width: 100%; }
-  .rx-audio-mod-selector select { min-width: 0; max-width: 100%; }
   .rx-audio-name { min-width: 4ch; }
-  .rx-audio-choice[aria-checked='true'] { font-weight: 700; }
   /* Second channel beside `data-observed`, never the only one: the unknown
      text itself is the primary one and survives forced-colors. */
   [data-observed='false'] { font-style: italic; }
-  button:disabled, select:disabled { cursor: not-allowed; }
 </style>

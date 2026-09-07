@@ -113,16 +113,10 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports only facts, MOD-input vocabulary, localization and control behavior', () => {
+  it('imports only facts and the RxAudioInstrumentHost handle contract', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
-    expect([...new Set(specifiers)].sort()).toEqual([
-      '$lib/i18n', '$lib/radio/mod-input',
-      '../primitives/control-instruments/control-instrument-behavior', './radio-view-model',
-      './rx-audio-instruments',
-    ]);
-    expect(CODE).toContain('bindAbsoluteChoiceInstrument');
-    expect(CODE).toContain('bindChoiceInstrument');
+    expect([...new Set(specifiers)].sort()).toEqual(['./radio-view-model', './rx-audio-instruments']);
   });
 
   // Kills: `onMount(() => audioManager.startRx())` and every relative of it.
@@ -142,13 +136,12 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
     }
   });
 
-  // Kills: the surface reading live state or restoring a private AF owner.
-  it('takes one state prop, the required instrument handles, and finite intent callbacks', () => {
+  // Kills: the surface reading live state, restoring a private AF owner, or
+  // regrowing a second owner of a finite control `RxAudioInstrumentHost`
+  // already owns.
+  it('takes one state prop and the required instrument handles, nothing else', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
-    expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
-      'view', 'handles', 'onMonitorMode', 'onRoutingFocus', 'onRoutingSplit',
-      'onSetModInputLan', 'onModInputChange',
-    ]);
+    expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual(['view', 'handles']);
   });
 
   // Kills: rendering an empty audio panel for a radio that has no audio chain.
