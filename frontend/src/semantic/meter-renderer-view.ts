@@ -1,4 +1,6 @@
 import type {
+  LevelMeterRendererView,
+  MeterNumericEvidence,
   MeterDisplayDomain,
   SignalMeterEvidence,
   SignalMeterMark,
@@ -8,6 +10,7 @@ import type {
 import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
 import { projectSignalMeter } from '../components-v2/meters/smeter-scale';
 import type { MeterReading, MeterValueDomain } from './radio-view-model';
+import type { StationLevelMeterFrame } from './StationMeterInstrumentHost.svelte';
 
 function validFraction(value: number | null): boolean {
   return value === null || (Number.isFinite(value) && value >= 0 && value <= 1);
@@ -51,6 +54,7 @@ export function toSignalMeterRendererView(
   frame: SignalMeterFrame,
   reading: MeterReading,
   domain: MeterValueDomain | undefined,
+  relevant?: boolean,
 ): SignalMeterRendererView {
   const current = reading.status === 'known' && Number.isFinite(reading.value);
   const projection = domain === undefined
@@ -69,6 +73,7 @@ export function toSignalMeterRendererView(
   return Object.freeze({
     kind: 'signal',
     evidence: evidence(reading, publicDomain),
+    ...(relevant === undefined ? {} : { relevant }),
     scaleMode: validStaticGeometry ? projection.scaleMode : 'none',
     displayedFraction: live ? frame.smoothedFraction : null,
     peakFraction: live ? frame.peakFraction : null,
@@ -79,4 +84,58 @@ export function toSignalMeterRendererView(
     marks: validStaticGeometry ? marks(projection.marks) : Object.freeze([]),
     ticks: validStaticGeometry ? ticks(projection.ticks) : Object.freeze([]),
   });
+}
+
+function levelEvidence(
+  frame: StationLevelMeterFrame,
+  domain: MeterDisplayDomain,
+): MeterNumericEvidence {
+  const evidence = frame.projection.evidence;
+  if ((evidence.state === 'current' || evidence.state === 'stale')
+    && Number.isFinite(evidence.value)) {
+    return Object.freeze({ state: evidence.state, value: evidence.value, domain });
+  }
+  return Object.freeze({
+    state: evidence.state === 'current' || evidence.state === 'stale'
+      ? 'unknown' : evidence.state,
+    domain,
+  });
+}
+
+/** Copy one Core-owned station frame into the smaller public, immutable renderer graph. */
+export function toLevelMeterRendererView(
+  frame: StationLevelMeterFrame,
+): LevelMeterRendererView {
+  const projection = frame.projection;
+  const domain = displayDomain(projection.domain);
+  const publicEvidence = levelEvidence(frame, domain);
+  const live = publicEvidence.state === 'current'
+    && projection.motionFraction !== null
+    && validFraction(projection.motionFraction)
+    && validFraction(frame.motion.smoothedFraction);
+  const base = {
+    kind: 'level' as const,
+    key: projection.key,
+    label: projection.label,
+    evidence: publicEvidence,
+    relevant: projection.relevant,
+    observed: projection.observed,
+    displayedFraction: live ? frame.motion.smoothedFraction : null,
+    peakFraction: live && projection.showPeak && validFraction(frame.motion.peakFraction)
+      ? frame.motion.peakFraction : null,
+    displayText: projection.displayText,
+    stateText: projection.stateText,
+    ...(projection.accessibleDescription === undefined
+      ? {} : { accessibleDescription: projection.accessibleDescription }),
+    gauge: projection.gauge,
+    fault: projection.fault,
+    peakEnabled: projection.showPeak,
+  };
+  return projection.key === 'swr'
+    ? Object.freeze({
+        ...base,
+        key: 'swr',
+        ratioScale: (projection as StationLevelMeterFrame<'swr'>['projection']).ratioScale,
+      })
+    : Object.freeze(base) as LevelMeterRendererView;
 }

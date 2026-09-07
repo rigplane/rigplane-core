@@ -655,9 +655,9 @@ describe('the cold-start window renders fail-closed', () => {
   });
 });
 
-// ── 4. R9: the meters surface is a readout, never an action path ─────────
+// ── 4. R9: native meters add no radio-command path ───────────────────────
 
-describe('the meters surface adds no control and no TX path', () => {
+describe('the native meters surface adds no control and no TX path', () => {
   it('keeps exactly one key/unkey authority in the composed tree', () => {
     render();
     expect(target.querySelectorAll('[data-testid="rx-tx-surface"]')).toHaveLength(1);
@@ -665,10 +665,10 @@ describe('the meters surface adds no control and no TX path', () => {
     expect(target.querySelectorAll('[data-testid="rx-tx-unkey"]')).toHaveLength(1);
   });
 
-  // MUTATION KILLED: a meters surface that grew a peak-reset / source-select
-  // control. Zero controls also keeps the cockpit's focus order and its
-  // zone-less-control count exactly as MOR-1069/1070 pinned them.
-  it('contributes no focusable control to the composition', () => {
+  // MUTATION KILLED: a native/default meters surface that grew a source-select
+  // or radio-command control. The separately tested public meter appearance
+  // may expose only its host-owned local peak-reset lease.
+  it('contributes no focusable control with no selected meter appearance', () => {
     render({ strips: 'dual' });
     const surface = q('[data-testid="meters-surface"]')!;
     expect(surface.querySelectorAll('button, input, select, a[href], [tabindex]'))

@@ -68,6 +68,7 @@
 
 <script lang="ts">
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
+  import MeterRendererSeat from '../component-kits/MeterRendererSeat.svelte';
   import { RF_LABEL, RF_MARK } from './rx-tx-surface';
   import StationMeterBarPlacement from './StationMeterBarPlacement.svelte';
   import type {
@@ -91,7 +92,7 @@
 {#if presentGroup}
   {@const display = signalProjection ? meterDisplay(signalProjection) : null}
   {@const signalDisplay = signalProjection?.crossoverFraction == null ? null : display}
-  {#snippet level(frame: StationLevelMeterFrame, resetPeakSeat?: ActionRendererSeat)}
+  {#snippet nativeLevel(frame: StationLevelMeterFrame, resetPeakSeat?: ActionRendererSeat)}
     {@const bar = frame.projection}
     <div class="meter-tile" data-meter-tile data-meter={bar.key} data-testid={`meter-${bar.key}`}
       data-relevant={bar.relevant} data-observed={bar.observed} data-fault={bar.fault}
@@ -103,7 +104,16 @@
       {:else}<span class="meter-unknown">{bar.displayText}</span>{/if}
     </div>
   {/snippet}
+  {#snippet level(frame: StationLevelMeterFrame, resetPeakSeat?: ActionRendererSeat)}
+    {#key resetPeakSeat}
+      <MeterRendererSeat kind="level" {frame} {resetPeakSeat} fallback={nativeLevel} />
+    {/key}
+  {/snippet}
   {#snippet power(frame: StationLevelMeterFrame<'power'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
+  {#snippet nativeSwr(_frame: StationLevelMeterFrame)}{/snippet}
+  {#snippet swr(frame: StationLevelMeterFrame<'swr'>)}
+    <MeterRendererSeat kind="level" {frame} fallback={nativeSwr} />
+  {/snippet}
   {#snippet alc(frame: StationLevelMeterFrame<'alc'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
   {#snippet drainCurrent(frame: StationLevelMeterFrame<'drainCurrent'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
   {#snippet drainVoltage(frame: StationLevelMeterFrame<'drainVoltage'>)}{@render level(frame)}{/snippet}
@@ -119,22 +129,29 @@
 
     {#if signalFrame !== null}
       {@const field = signalFrame.field}
-      <div
-        class="meter-tile" data-meter-tile data-meter={present(field) ? "signal" : "swr"} data-testid={present(field) ? "meter-signal" : "meter-swr"}
-        data-relevant={field.relevant} data-observed={observed(field)}
-        role="group" aria-label={present(field) ? "S meter" : "SWR meter"}
-        {...signalDisplay?.attributes ?? {}}
-      >
-        <LinearSMeter
-          frame={signalFrame.motion} label="S" compact
-          mainPresent={present(field)}
-          display={signalDisplay?.display ?? undefined}
-          lowerScale={swrFrame ? swrLowerScale(swrFrame) : undefined}
-          relevant={field.relevant}
-        />
-      </div>
+      {@const reading = observed(field) && field.reading.status === 'known'
+        && Number.isFinite(field.reading.value) ? field.reading : { status: 'unknown' } as const}
+      {#snippet nativeSignal(_frame: typeof signalFrame.motion)}
+        <div
+          class="meter-tile" data-meter-tile data-meter={present(field) ? "signal" : "swr"} data-testid={present(field) ? "meter-signal" : "meter-swr"}
+          data-relevant={field.relevant} data-observed={observed(field)}
+          role="group" aria-label={present(field) ? "S meter" : "SWR meter"}
+          {...signalDisplay?.attributes ?? {}}
+        >
+          <LinearSMeter
+            frame={signalFrame.motion} label="S" compact
+            mainPresent={present(field)}
+            display={signalDisplay?.display ?? undefined}
+            lowerScale={swrFrame ? swrLowerScale(swrFrame) : undefined}
+            relevant={field.relevant}
+          />
+        </div>
+      {/snippet}
+      <MeterRendererSeat frame={signalFrame.motion} {reading} domain={field.domain}
+        relevant={field.relevant} selectedPresent={present(field)} fallback={nativeSignal} />
     {/if}
     {@render handles.power(power)}
+    {@render handles.swr(swr)}
     {@render handles.alc(alc)}
     {@render handles.drainCurrent(drainCurrent)}
     {@render handles.drainVoltage(drainVoltage)}

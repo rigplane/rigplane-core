@@ -2,6 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
+import type { MeterAppearance, SignalMeterRendererView } from '../../../component-kit-api/src/index';
+const selectedMeter = vi.hoisted(() => ({ current: undefined as MeterAppearance | undefined }));
+const rendererViews = vi.hoisted(() => ({ signals: [] as SignalMeterRendererView[] }));
+vi.mock('../../component-kits/activation', () => ({
+  getSelectedMeterAppearance: () => selectedMeter.current,
+}));
+vi.mock('../meter-renderer-view', async (original) => {
+  const actual = await original<typeof import('../meter-renderer-view')>();
+  return { ...actual,
+    toSignalMeterRendererView(...args: Parameters<typeof actual.toSignalMeterRendererView>) {
+      const projected = actual.toSignalMeterRendererView(...args);
+      rendererViews.signals.push(projected);
+      return projected;
+    },
+  };
+});
 const motion = vi.hoisted(() => ({ bars: [] as any[], signals: [] as any[] }));
 vi.mock('../../components-v2/meters/bar-meter-motion.svelte', async (original) => {
   const actual = await original<typeof import('../../components-v2/meters/bar-meter-motion.svelte')>();
@@ -21,7 +37,9 @@ vi.mock('../../components-v2/meters/signal-meter-motion.svelte', async (original
     motion.signals.push(wrapped); return wrapped;
   } };
 });
-import Fixture, { StationMeterTestPublisher, stationMeterProbe } from './fixtures/StationMeterInstrumentHostFixture.svelte';
+import Fixture, {
+  StationMeterTestPublisher, fixtureMeterAppearance, stationMeterProbe,
+} from './fixtures/StationMeterInstrumentHostFixture.svelte';
 import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';
 import type { MeterSourceIdentity, MeterValueDomain, RadioViewModel } from '../radio-view-model';
 import type { StationMeterAuthorityPublication, SubscribeStationMeterAuthority } from '../StationMeterInstrumentHost.svelte';
@@ -50,9 +68,12 @@ let component: ReturnType<typeof mount> | null;
 beforeEach(() => {
   target = document.createElement('div'); document.body.appendChild(target);
   component = null; motion.bars = []; motion.signals = []; stationMeterProbe.clear();
+  rendererViews.signals = [];
+  selectedMeter.current = undefined;
   window.matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() });
 });
-afterEach(() => { if (component) unmount(component); target.remove(); vi.restoreAllMocks(); });
+afterEach(() => { if (component) unmount(component); target.remove(); vi.restoreAllMocks();
+  selectedMeter.current = undefined; });
 function render(initial: StationMeterAuthorityPublication = { view: view(), session: { controlSessionEpoch: 1 } }) {
   const publisher = new StationMeterTestPublisher(initial);
   const props = proxy({ subscribeStationMeterAuthority: publisher.subscribe, presentation: 'native', probe: true });
@@ -61,6 +82,132 @@ function render(initial: StationMeterAuthorityPublication = { view: view(), sess
 }
 const expectStopped = () => { expect(motion.signals[0].stop).toHaveBeenCalledOnce(); for (const binding of motion.bars) expect(binding.stop).toHaveBeenCalledOnce(); };
 describe('StationMeterInstrumentHost', () => {
+  it.each([
+    ['native', true, true], ['native', true, false], ['native', false, true], ['native', false, false],
+    ['external', true, true], ['external', true, false],
+    ['external', false, true], ['external', false, false],
+  ] as const)('%s selection keeps station siblings live for signal=%s SWR=%s',
+    (selection, signalPresent, swrPresent) => {
+      selectedMeter.current = selection === 'external' ? fixtureMeterAppearance : undefined;
+      let current = view();
+      current = field(current, 'signal', {
+        availability: { structural: signalPresent, operational: signalPresent },
+      });
+      current = field(current, 'swr', {
+        availability: { structural: swrPresent, operational: swrPresent },
+      });
+      render({ view: current, session: { controlSessionEpoch: 1 } });
+
+      const externalSignal = target.querySelectorAll('[data-fixture-signal]');
+      const externalLevels = [...target.querySelectorAll<HTMLElement>('[data-fixture-level]')]
+        .map((node) => node.dataset.fixtureLevel);
+      if (selection === 'external') {
+        expect(externalSignal).toHaveLength(signalPresent ? 1 : 0);
+        expect(externalLevels).toEqual([
+          'power', ...(swrPresent ? ['swr'] : []), 'alc',
+          'drainCurrent', 'drainVoltage', 'compression',
+        ]);
+        expect(target.querySelector('[data-meter-tile]')).toBeNull();
+      } else {
+        expect(externalSignal).toHaveLength(0);
+        expect(externalLevels).toEqual([]);
+        expect(target.querySelector('[data-testid="meter-power"]')).not.toBeNull();
+        expect(target.querySelector('[data-testid="meter-alc"]')).not.toBeNull();
+        expect(target.querySelector('[data-testid="meter-drainCurrent"]')).not.toBeNull();
+        expect(target.querySelector('[data-testid="meter-drainVoltage"]')).not.toBeNull();
+        expect(target.querySelector('[data-testid="meter-compression"]')).not.toBeNull();
+        expect(target.querySelector('[data-testid="meter-signal"]') !== null).toBe(signalPresent);
+        expect(target.querySelector('[data-testid="meter-swr"]') !== null)
+          .toBe(!signalPresent && swrPresent);
+      }
+    });
+
+  it('mounts all seven real external meter renderers without adding motion owners', () => {
+    selectedMeter.current = fixtureMeterAppearance;
+    render();
+    expect(target.querySelectorAll('[data-fixture-signal]')).toHaveLength(1);
+    expect([...target.querySelectorAll<HTMLElement>('[data-fixture-level]')]
+      .map((node) => node.dataset.fixtureLevel)).toEqual([
+        'power', 'swr', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
+      ]);
+    expect([motion.signals.length, motion.bars.length]).toEqual([1, 6]);
+    expect([...target.querySelectorAll<HTMLElement>('[data-fixture-level] button')]
+      .map((button) => button.parentElement?.dataset.fixtureLevel)).toEqual([
+        'power', 'alc', 'drainCurrent',
+    ]);
+  });
+
+  it('shows exact engineering, raw, and unknown evidence through the real external fixture', () => {
+    selectedMeter.current = fixtureMeterAppearance;
+    let current = field(view(), 'power', { domain: { kind: 'engineering', unit: 'w' } });
+    current = field(current, 'alc', { domain: { kind: 'raw' } });
+    current = field(current, 'drainVoltage', { domain: undefined });
+    render({ view: current, session: { controlSessionEpoch: 1 } });
+    const meter = (key: string) => target.querySelector<HTMLElement>(`[data-fixture-level="${key}"]`)!;
+    expect(meter('power').dataset).toMatchObject({ state: 'current', domain: 'engineering:w', value: '0.6' });
+    expect(meter('alc').dataset).toMatchObject({ state: 'current', domain: 'raw', value: '40' });
+    expect(meter('drainVoltage').dataset).toMatchObject({ state: 'current', domain: 'unknown', value: '200' });
+  });
+
+  it('keeps a structurally present unavailable-known signal external but fail-closed', () => {
+    selectedMeter.current = fixtureMeterAppearance;
+    const unavailable = field(view('receiving'), 'signal', {
+      reading: { status: 'known', value: 120 },
+      availability: { structural: true, operational: false },
+    });
+    render({ view: unavailable, session: { controlSessionEpoch: 1 } });
+    const signal = target.querySelector<HTMLElement>('[data-fixture-signal]')!;
+    const publicView = rendererViews.signals.at(-1)!;
+    expect(signal).not.toBeNull();
+    expect(signal.dataset.state).toBe('unknown');
+    expect(signal.hasAttribute('data-value')).toBe(false);
+    expect(publicView.evidence).toEqual({ state: 'unknown', domain: { kind: 'unknown' } });
+    expect(publicView.displayedFraction).toBeNull();
+    expect(publicView.peakFraction).toBeNull();
+  });
+
+  it('routes real external reset leases and revokes a retained A-B-A button', () => {
+    selectedMeter.current = fixtureMeterAppearance;
+    const { publisher } = render();
+    const button = (key: string) => target.querySelector<HTMLButtonElement>(
+      `[data-fixture-level="${key}"] button`,
+    );
+    button('power')!.click(); button('alc')!.click(); button('drainCurrent')!.click();
+    expect(motion.bars[0].resetPeak).toHaveBeenCalledOnce();
+    expect(motion.bars[1].resetPeak).toHaveBeenCalledOnce();
+    expect(motion.bars[2].resetPeak).toHaveBeenCalledOnce();
+    expect(button('swr')).toBeNull(); expect(button('drainVoltage')).toBeNull();
+    expect(button('compression')).toBeNull();
+
+    const retained = button('power')!;
+    publisher.emit({ view: field(view(), 'power', {
+      source: { ...source('powerMeter'), providerGeneration: 2 },
+    }), session: { controlSessionEpoch: 2 } });
+    publisher.emit({ view: view(), session: { controlSessionEpoch: 1 } });
+    flushSync();
+    retained.click();
+    expect(motion.bars[0].resetPeak).toHaveBeenCalledOnce();
+    button('power')!.click();
+    expect(motion.bars[0].resetPeak).toHaveBeenCalledTimes(2);
+
+    publisher.emit({ view: view('receiving'), session: { controlSessionEpoch: 1 } }); flushSync();
+    expect(button('power')).toBeNull();
+    publisher.emit({ view: view(), session: { controlSessionEpoch: 1 } }); flushSync();
+    expect(button('power')).not.toBeNull();
+  });
+
+  it('keeps owners stable across external-native-external surface replacement', () => {
+    selectedMeter.current = fixtureMeterAppearance;
+    const { props } = render();
+    expect(target.querySelectorAll('[data-fixture-signal], [data-fixture-level]')).toHaveLength(7);
+    selectedMeter.current = undefined; props.presentation = 'native-b'; flushSync();
+    expect(target.querySelectorAll('[data-fixture-signal], [data-fixture-level]')).toHaveLength(0);
+    expect(target.querySelector('[data-testid="meter-signal"]')).not.toBeNull();
+    selectedMeter.current = fixtureMeterAppearance; props.presentation = 'external-again'; flushSync();
+    expect(target.querySelectorAll('[data-fixture-signal], [data-fixture-level]')).toHaveLength(7);
+    expect([motion.signals.length, motion.bars.length]).toEqual([1, 6]);
+  });
+
   it('owns seven live bindings, stable passive frames, and tears them down once', () => {
     let id = 0; const add = vi.fn(); const remove = vi.fn();
     window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: add, removeEventListener: remove });
@@ -138,11 +285,15 @@ describe('StationMeterInstrumentHost', () => {
     expect(motion.bars[0].resetPeak).not.toHaveBeenCalled();
   });
   it('preserves both SWR ratio-scale projections without exposing source', () => {
+    selectedMeter.current = fixtureMeterAppearance;
     const { publisher } = render({ view: domain(view(), undefined), session: { controlSessionEpoch: 1 } });
     const frame = () => stationMeterProbe.frames.get('swr') as any;
+    const external = () => target.querySelector<HTMLElement>('[data-fixture-level="swr"]')!;
     expect(frame().projection.ratioScale).toBe(true);
+    expect(external().dataset.ratioScale).toBe('true');
     publisher.emit({ view: domain(view(), { kind: 'raw' }), session: { controlSessionEpoch: 1 } }); flushSync();
-    expect(frame().projection.ratioScale).toBe(false); expect(Object.hasOwn(frame().projection, 'source')).toBe(false);
+    expect(frame().projection.ratioScale).toBe(false); expect(external().dataset.ratioScale).toBe('false');
+    expect(Object.hasOwn(frame().projection, 'source')).toBe(false);
   });
   it('keeps custom level palettes without admitting a signal owner or gauge', () => {
     const original = getDesignLanguage('fieldline')!; const zones = [{ end: 1, color: '#123456' }] as const;

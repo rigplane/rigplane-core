@@ -505,6 +505,15 @@ describe('motion and forced-colors mechanisms are reused, not forked', () => {
     expect(SOURCE).toMatch(/import LinearSMeter from '\.\.\/components-v2\/meters\/LinearSMeter\.svelte'/);
   });
 
+  it('places the shared meter seat inside the station continuation without changing the owner', () => {
+    expect(SOURCE).toMatch(/import MeterRendererSeat from '\.\.\/component-kits\/MeterRendererSeat\.svelte'/);
+    expect(SOURCE.match(/handles\.swr\(swr\)/g)).toHaveLength(1);
+    expect(SOURCE).toMatch(/#snippet station\([\s\S]*handles\.power\(power\)[\s\S]*handles\.swr\(swr\)/);
+    expect(SOURCE).not.toMatch(/getSelectedMeterAppearance/);
+    expect(HOST_SOURCE).not.toMatch(/MeterRendererSeat/);
+    expect(HOST_SOURCE).toMatch(/@render renderer\(signalOwner\?\.frame/);
+  });
+
   // MUTATION KILLED: a CSS transition/animation on the relevance dim — under
   // `prefers-reduced-motion` the cockpit's harness assertion requires that
   // NOTHING inside it animates, and a surface that transitions its own opacity
