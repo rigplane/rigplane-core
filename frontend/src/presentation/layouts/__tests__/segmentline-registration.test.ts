@@ -47,14 +47,14 @@ describe('the peer-split entrypoint is registered in the real registry', () => {
     expect(peerSplitLayout.id).toBe('peer-split');
   });
 
-  // Kills: removing or renaming the 'peer-split' key in SKIN_LOADERS — the
+  // Kills: removing or renaming the 'peer-split' record in SKIN_LOADERS — the
   // manifest id would then have no addressable skin to activate under. The
   // canonical registry deliberately points at the LCD-shell wrapper rather
   // than the bare segmentline glass; skins registry/entrypoint tests pin the
   // exact wrapper identity and mount behavior.
-  it('keeps a `peer-split` key in the skin registry loader table', () => {
+  it('keeps a `peer-split` loader in the built-in presentation catalog', () => {
     const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
-    expect(registrySource).toMatch(/'peer-split':\s*\(\)\s*=>\s*import\(/);
+    expect(registrySource).toMatch(/'peer-split':\s*\{[^}]*loader:\s*\(\)\s*=>\s*import\(/s);
   });
 });
 

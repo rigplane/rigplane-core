@@ -80,6 +80,23 @@ const resolve = (overrides: Partial<Parameters<typeof resolveSkinId>[0]> = {}) =
   });
 
 describe('skin registry', () => {
+  it('keeps loader, host kind and resources in one discriminated built-in record table', () => {
+    expect(registrySource).not.toContain('const PRESENTATION_HOST_MODE');
+    expect(registrySource).not.toContain('const SKIN_RESOURCE_PLAN');
+
+    const catalog = registrySource.slice(
+      registrySource.indexOf('const SKIN_LOADERS'),
+      registrySource.indexOf('} satisfies BuiltInPresentationCatalog;') + 1,
+    );
+    for (const id of Object.keys(entrypoints) as SkinId[]) {
+      const record = catalog.match(new RegExp(`'${id}':\\s*\\{([\\s\\S]*?)\\n  \\},`));
+      expect(record, `no unified catalog record for ${id}`).not.toBeNull();
+      expect(record![1]).toMatch(/kind:\s*'built-in-(instrument-layout|self-contained)'/);
+      expect(record![1]).toMatch(/loader:\s*\(\)\s*=>\s*import\(/);
+      expect(record![1]).toMatch(/resources:\s*\[/);
+    }
+  });
+
   it('gives mobile precedence over every forced layout preference', () => {
     for (const layoutPreference of [
       'auto', 'lcd', 'lcd-cockpit', 'lcd-scope', 'standard', 'sdr-test', 'peer-split',
@@ -234,8 +251,8 @@ describe('presentation resource plan', () => {
   // five of six skins, no failure anywhere. `Record<SkinId, ...>` is the
   // same technique the sibling `entrypoints.test.ts` already uses for this
   // exact constraint (see that file's header: there is no runtime-
-  // enumerable list of `SkinId` values, and both `SKIN_LOADERS` and
-  // `SKIN_RESOURCE_PLAN` in registry.ts are module-private), so a skin
+  // enumerable list of `SkinId` values, and the unified `SKIN_LOADERS`
+  // catalog in registry.ts is module-private), so a skin
   // missing from this table is now a `npm run check` compile error instead
   // of a silent gap. `everySkin` is derived from this table's own keys, so
   // the two can no longer drift from each other either.

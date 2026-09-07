@@ -38,7 +38,9 @@ describe('the sdr-test entrypoint is registered in the real registry', () => {
   // declaration if the two agree.
   it('shares its id with the skin registry loader SdrTestSkin.svelte resolves under', () => {
     const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
-    expect(registrySource).toMatch(/'sdr-test':\s*\(\)\s*=>\s*import\(['"]\.\/sdr-test\/SdrTestSkin\.svelte['"]\)/);
+    expect(registrySource).toMatch(
+      /'sdr-test':\s*\{[^}]*loader:\s*\(\)\s*=>\s*import\(['"]\.\/sdr-test\/SdrTestSkin\.svelte['"]\)/s,
+    );
     const skinSource = readFileSync('src/skins/sdr-test/SdrTestSkin.svelte', 'utf8');
     expect(skinSource).toMatch(/skinId=["']sdr-test["']/);
   });
