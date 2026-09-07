@@ -1,13 +1,12 @@
 <script module lang="ts">
-  import type { DisplayObservedMeterField, MeterRfState, MeterField } from './radio-view-model';
-  import { isSwrFault, swrLevel } from '../components-v2/panels/meter-utils';
+  import type { MeterField } from './radio-view-model';
   import {
     projectSignalMeter,
     type SignalMeterProjection,
   } from '../components-v2/meters/smeter-scale';
   import { renderSlot } from './design-language-renderers';
   import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
-  import { projectTxMeterPresentation } from './bar-meter-projector';
+  import type { SwrMeterProjection } from './bar-meter-projector';
 
   /** Level 1 — does this radio HAVE the meter at all. */
   const present = (f: MeterField): boolean => f.availability.structural;
@@ -34,14 +33,22 @@
     { value: 1, label: '∞' },
   ] as const;
 
-  function swrLowerScale(f: DisplayObservedMeterField, rfState: MeterRfState): LowerScaleDescriptor {
-    const state = projectTxMeterPresentation(f, rfState);
+  function swrLowerScale(projection: SwrMeterProjection): LowerScaleDescriptor {
+    const hasRatioScale = projection.domain === undefined
+      || (
+        projection.domain.kind === 'engineering'
+        && projection.domain.unit === 'ratio'
+        && projection.motionFraction !== null
+      );
     return {
-      label: 'SWR', ticks: SWR_LOWER_SCALE_TICKS,
-      valueFraction: state.value === null ? 0 : swrLevel(state.value),
-      fault: state.value !== null && f.relevant && isSwrFault(state.value),
-      relevant: f.relevant, stateText: state.text,
-      accessibleDescription: `SWR: ${state.description}`,
+      label: 'SWR',
+      ticks: hasRatioScale ? SWR_LOWER_SCALE_TICKS : [],
+      valueFraction: projection.motionFraction ?? 0,
+      fault: projection.fault,
+      relevant: projection.relevant,
+      stateText: projection.state === 'current' && !hasRatioScale
+        ? projection.displayText : projection.stateText,
+      accessibleDescription: projection.accessibleDescription ?? 'SWR: Not observed',
     };
   }
 
@@ -75,7 +82,7 @@
   import type { RadioViewModel } from './radio-view-model';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import { RF_LABEL, RF_MARK } from './rx-tx-surface';
-  import { projectBarMeters } from './bar-meter-projector';
+  import { projectBarMeters, projectSwrMeter } from './bar-meter-projector';
 
   interface Props {
     view: RadioViewModel;
@@ -93,6 +100,7 @@
     meters?.signal.domain,
   ));
   let barMeters = $derived(projectBarMeters(view));
+  let swrProjection = $derived(projectSwrMeter(view));
 
   /**
    * The active design language's `meters` descriptor for this render, or
@@ -135,7 +143,7 @@
           projection={signalProjection} label="S" compact
           mainPresent={present(meters.signal)}
           display={signalDisplay?.display ?? undefined}
-          lowerScale={present(meters.swr) ? swrLowerScale(meters.swr, meters.rfState) : undefined}
+          lowerScale={swrProjection ? swrLowerScale(swrProjection) : undefined}
           relevant={meters.signal.relevant}
           source={meters.signal.source}
           session={continuitySession}

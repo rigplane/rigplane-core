@@ -255,6 +255,63 @@ describe('formatAlc / alcLevel / isAlcFault (calibrated: input is normalized 0-1
   });
 });
 
+describe('explicit meter domains override capability metadata (MOR-2425)', () => {
+  const raw = { kind: 'raw' } as const;
+  const unknown = { kind: 'unknown' } as const;
+
+  it('keeps an explicit raw sample raw even when calibrated tables exist', () => {
+    expect(formatPowerWatts(50, raw)).toBe('50 raw');
+    expect(normalizePower(50, raw)).toBeCloseTo(50 / 255);
+    expect(formatSwr(3, raw)).toBe('3 raw');
+    expect(swrLevel(120, raw)).toBeCloseTo(120 / 255);
+    expect(isSwrFault(3, raw)).toBe(false);
+    expect(formatAlc(0.95, raw)).toBe('1 raw');
+    expect(alcLevel(120, raw)).toBeCloseTo(120 / 255);
+    expect(isAlcFault(255, raw)).toBe(false);
+    expect(formatVolts(13.8, raw)).toBe('14 raw');
+    expect(vdLevel(13.8, raw)).toBeCloseTo(13.8 / 255);
+    expect(formatAmps(10, raw)).toBe('10 raw');
+    expect(idLevel(10, raw)).toBeCloseTo(10 / 255);
+    expect(formatCompDb(15, raw)).toBe('15 raw');
+    expect(compLevel(15, raw)).toBeCloseTo(15 / 255);
+  });
+
+  it('retains known numeric evidence for an unknown unit without geometry or faults', () => {
+    expect(formatPowerWatts(50, unknown)).toBe('50 unit unknown');
+    expect(normalizePower(50, unknown)).toBeNull();
+    expect(formatSwr(3, unknown)).toBe('3 unit unknown');
+    expect(swrLevel(3, unknown)).toBeNull();
+    expect(isSwrFault(3, unknown)).toBe(false);
+    expect(formatAlc(0.95, unknown)).toBe('0.95 unit unknown');
+    expect(alcLevel(0.95, unknown)).toBeNull();
+    expect(isAlcFault(0.95, unknown)).toBe(false);
+    expect(formatVolts(13.8, unknown)).toBe('13.8 unit unknown');
+    expect(vdLevel(13.8, unknown)).toBeNull();
+    expect(formatAmps(10, unknown)).toBe('10 unit unknown');
+    expect(idLevel(10, unknown)).toBeNull();
+    expect(formatCompDb(15, unknown)).toBe('15 unit unknown');
+    expect(compLevel(15, unknown)).toBeNull();
+  });
+
+  it('keeps declared engineering units when a physical scale is unavailable', () => {
+    clearCapabilities();
+    expect(formatPowerWatts(50, { kind: 'engineering', unit: 'w' })).toBe('50W');
+    expect(normalizePower(50, { kind: 'engineering', unit: 'w' })).toBeNull();
+    expect(formatVolts(13.8, { kind: 'engineering', unit: 'v' })).toBe('13.8 V');
+    expect(vdLevel(13.8, { kind: 'engineering', unit: 'v' })).toBeNull();
+    expect(formatSwr(2.25, { kind: 'engineering', unit: 'ratio' })).toBe('2.3');
+    expect(swrLevel(2.25, { kind: 'engineering', unit: 'ratio' })).toBeNull();
+    expect(isSwrFault(2.25, { kind: 'engineering', unit: 'ratio' })).toBe(true);
+    expect(formatAlc(0.95, { kind: 'engineering', unit: 'normalized' })).toBe('95%');
+    expect(alcLevel(0.95, { kind: 'engineering', unit: 'normalized' })).toBe(0.95);
+    expect(isAlcFault(0.95, { kind: 'engineering', unit: 'normalized' })).toBe(true);
+    expect(formatAmps(10, { kind: 'engineering', unit: 'a' })).toBe('10.0 A');
+    expect(idLevel(10, { kind: 'engineering', unit: 'a' })).toBeNull();
+    expect(formatCompDb(15, { kind: 'engineering', unit: 'db' })).toBe('15 dB');
+    expect(compLevel(15, { kind: 'engineering', unit: 'db' })).toBeNull();
+  });
+});
+
 describe('formatVolts / vdLevel (calibrated: input is volts)', () => {
   it('renders the bench supply voltage as-is', () => {
     expect(formatVolts(13.8)).toBe('13.8 V');

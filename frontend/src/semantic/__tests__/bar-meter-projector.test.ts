@@ -9,7 +9,11 @@ import type {
   MetersViewModel,
   RadioViewModel,
 } from '../radio-view-model';
-import { projectBarMeters, type BarMeterKey } from '../bar-meter-projector';
+import {
+  projectBarMeters,
+  projectSwrMeter,
+  type BarMeterKey,
+} from '../bar-meter-projector';
 
 function base(rfState: MeterRfState = 'transmitting'): RadioViewModel {
   const view = withMeters(withTxAux(topologyFixtures['1/single']), rfState);
@@ -89,8 +93,9 @@ describe('projectBarMeters', () => {
       { key: 'compression', label: 'COMP' },
     ]);
     expect(Object.keys(projected[0]).sort()).toEqual([
-      'accessibleDescription', 'displayText', 'fault', 'gauge', 'key', 'label',
-      'motionFraction', 'observed', 'relevant', 'showPeak', 'source',
+      'accessibleDescription', 'displayText', 'domain', 'fault', 'gauge', 'key',
+      'label', 'motionFraction', 'observed', 'relevant', 'showPeak', 'source',
+      'state', 'stateText',
     ]);
     expect(projected[0]).toMatchObject({
       motionFraction: 128 / 255,
@@ -137,7 +142,10 @@ describe('projectBarMeters', () => {
   it('keeps stale, unknown, idle, and indeterminate TX observations distinct', () => {
     const view = base();
     setDisplay(view, 'power', { state: 'stale', value: 170 });
+    setMeter(view, 'power', { domain: { kind: 'raw' } });
     expect(projectBarMeters(view)[0]).toMatchObject({
+      state: 'stale',
+      domain: { kind: 'raw' },
       motionFraction: null,
       displayText: 'STALE',
       accessibleDescription: 'Po: Stale observation',
@@ -148,6 +156,7 @@ describe('projectBarMeters', () => {
 
     setDisplay(view, 'power', { state: 'unknown', reason: 'not-observed' });
     expect(projectBarMeters(view)[0]).toMatchObject({
+      state: 'unknown',
       motionFraction: null,
       displayText: '?',
       accessibleDescription: 'Po: Not observed',
@@ -159,6 +168,7 @@ describe('projectBarMeters', () => {
     setMeter(view, 'power', { relevant: false });
     setDisplay(view, 'power', { state: 'current', value: 170 });
     expect(projectBarMeters(view)[0]).toMatchObject({
+      state: 'idle',
       motionFraction: null,
       displayText: 'IDLE',
       accessibleDescription: 'Po: Not measuring in RX',
@@ -169,6 +179,7 @@ describe('projectBarMeters', () => {
     view.meters!.rfState = 'unknown';
     setMeter(view, 'power', { relevant: true });
     expect(projectBarMeters(view)[0]).toMatchObject({
+      state: 'current',
       motionFraction: 170 / 255,
       displayText: '170 raw ?',
       accessibleDescription: 'Po: RF relevance indeterminate. Current observation. 170 raw',
@@ -232,5 +243,74 @@ describe('projectBarMeters', () => {
     setMeter(view, 'alc', { relevant: true });
     setDisplay(view, 'alc', { state: 'stale', value: 0.95 });
     expect(projectBarMeters(view).find(({ key }) => key === 'alc')?.fault).toBe(false);
+  });
+
+  it('arbitrates identical current values by each field\'s explicit domain', () => {
+    setCapabilities(calibratedCaps());
+    const raw = base();
+    setDisplay(raw, 'power', { state: 'current', value: 50 });
+    setMeter(raw, 'power', { domain: { kind: 'raw' } });
+    expect(projectBarMeters(raw)[0]).toMatchObject({
+      state: 'current',
+      domain: { kind: 'raw' },
+      motionFraction: 50 / 255,
+      displayText: '50 raw',
+      fault: false,
+      showPeak: false,
+    });
+
+    const engineering = base();
+    setDisplay(engineering, 'power', { state: 'current', value: 50 });
+    setMeter(engineering, 'power', { domain: { kind: 'engineering', unit: 'w' } });
+    expect(projectBarMeters(engineering)[0]).toMatchObject({
+      state: 'current',
+      domain: { kind: 'engineering', unit: 'w' },
+      motionFraction: 0.25,
+      displayText: '50W',
+      showPeak: true,
+    });
+
+    const unknown = base();
+    setDisplay(unknown, 'power', { state: 'current', value: 50 });
+    setMeter(unknown, 'power', { domain: { kind: 'unknown' } });
+    expect(projectBarMeters(unknown)[0]).toMatchObject({
+      state: 'current',
+      domain: { kind: 'unknown' },
+      motionFraction: null,
+      displayText: '50 unit unknown',
+      fault: false,
+      showPeak: false,
+    });
+  });
+
+  it('projects SWR once with explicit state/domain and no raw-derived fault', () => {
+    setCapabilities(calibratedCaps());
+    const view = base();
+    view.meters!.swr = {
+      ...view.meters!.swr,
+      domain: { kind: 'raw' },
+      display: { state: 'current', value: 120 },
+    };
+    expect(projectSwrMeter(view)).toMatchObject({
+      key: 'swr',
+      state: 'current',
+      domain: { kind: 'raw' },
+      motionFraction: 120 / 255,
+      displayText: '120 raw',
+      fault: false,
+      showPeak: false,
+    });
+
+    view.meters!.swr = {
+      ...view.meters!.swr,
+      domain: { kind: 'unknown' },
+    };
+    expect(projectSwrMeter(view)).toMatchObject({
+      state: 'current',
+      domain: { kind: 'unknown' },
+      motionFraction: null,
+      displayText: '120 unit unknown',
+      fault: false,
+    });
   });
 });

@@ -145,6 +145,18 @@ function withSignalDomain(view: RadioViewModel, domain: MeterValueDomain): Radio
   };
 }
 
+function withMeterDomain(
+  view: RadioViewModel, field: MeterKey | 'swr', domain: MeterValueDomain,
+): RadioViewModel {
+  return {
+    ...view,
+    meters: {
+      ...view.meters!,
+      [field]: { ...view.meters![field], domain },
+    },
+  };
+}
+
 /** Sets the MOR-1244 `txAux.compressor` fact, or drops the whole group. */
 function compressor(view: RadioViewModel, value: boolean | 'unknown' | 'no-group'): RadioViewModel {
   if (value === 'no-group') {
@@ -1033,10 +1045,10 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // MUTATION KILLED: either surface/projector reimplementing the threshold
   // instead of importing the shared predicates — the same instrument as the
   // PEAK_DECAY_MS parity test above (block 10).
-  it('the surface, projector, and MetersDockPanel import their fault predicates from shared meter-utils', () => {
+  it('the shared projector and MetersDockPanel import their fault predicates from shared meter-utils', () => {
     const dockSource = readFileSync('src/components-v2/panels/MetersDockPanel.svelte', 'utf8');
-    expect(SOURCE).toMatch(/import\s*\{[^}]*isSwrFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
-    expect(PROJECTOR_SOURCE).toMatch(/import\s*\{[^}]*isAlcFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
+    expect(SOURCE).toMatch(/projectSwrMeter/);
+    expect(PROJECTOR_SOURCE).toMatch(/import\s*\{[^}]*isAlcFault[^}]*isSwrFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
     expect(dockSource).toMatch(/import\s*\{[^}]*isSwrFault[^}]*\}\s*from\s*'\.\/meter-utils'/);
     expect(dockSource).toMatch(/import\s*\{[^}]*isAlcFault[^}]*\}\s*from\s*'\.\/meter-utils'/);
     expect(SOURCE).not.toMatch(/function\s+isSwrFault|function\s+isAlcFault/);
@@ -1049,6 +1061,49 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   it('carries the fault as a boolean/attribute only — its own stylesheet stays colour-free', () => {
     const styles = SOURCE.slice(SOURCE.indexOf('<style>'));
     expect(styles).not.toMatch(/#[0-9a-f]{3,8}\b|\brgb\(|\bhsl\(/i);
+  });
+});
+
+describe('station level meters honor explicit sample domains (MOR-2425)', () => {
+  it('keeps calibrated metadata from turning explicit raw ALC/SWR into physical claims', () => {
+    setCapabilities(makeFaultCaps());
+    try {
+      let view = withRaw(base('transmitting'), 'alc', 255);
+      view = withMeterDomain(view, 'alc', { kind: 'raw' });
+      view = withRaw(view, 'swr', 120);
+      view = withMeterDomain(view, 'swr', { kind: 'raw' });
+      withSurface(view, (s) => {
+        expect(s.tile('alc')!.textContent).toContain('255 raw');
+        expect(s.tile('alc')!.dataset.fault).toBe('false');
+        expect(s.tile('alc')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
+        expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
+        expect(s.signalSvg()!.textContent).toContain('120 raw');
+        expect(s.signalSvg()!.querySelectorAll('[data-lower-tick-mark]')).toHaveLength(0);
+        expect(s.lowerFillCount()).toBeGreaterThan(0);
+      });
+    } finally {
+      clearCapabilities();
+    }
+  });
+
+  it('keeps a known unknown-domain value visible but suppresses motion, fault, and peak', () => {
+    setCapabilities(makeFaultCaps());
+    try {
+      let view = withRaw(base('transmitting'), 'power', 50);
+      view = withMeterDomain(view, 'power', { kind: 'unknown' });
+      view = withRaw(view, 'swr', 3);
+      view = withMeterDomain(view, 'swr', { kind: 'unknown' });
+      withSurface(view, (s) => {
+        expect(s.tile('power')!.textContent).toContain('50 unit unknown');
+        expect(s.tile('power')!.querySelectorAll('[data-gauge-fill]')).toHaveLength(0);
+        expect(s.tile('power')!.querySelector('[data-testid="bar-gauge-peak-marker"]')).toBeNull();
+        expect(s.signalSvg()!.textContent).toContain('3 unit unknown');
+        expect(s.signalSvg()!.querySelectorAll('[data-lower-fill]')).toHaveLength(0);
+        expect(s.signalSvg()!.getAttribute('data-lower-fault')).toBe('false');
+      });
+    } finally {
+      clearCapabilities();
+    }
   });
 });
 
