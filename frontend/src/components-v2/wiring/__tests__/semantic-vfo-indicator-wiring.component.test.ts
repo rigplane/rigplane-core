@@ -6,6 +6,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import type { FrequencyRenderer } from '../../../../component-kit-api/src/index';
 
 const h = vi.hoisted(() => ({
@@ -17,7 +18,11 @@ const h = vi.hoisted(() => ({
   txAuxFeedback: vi.fn(),
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
-  authoritySubscribers: new Set<(next: { state: ServerState | null; caps: Capabilities | null; session: ControlSessionSnapshot }) => void>(),
+  authoritySubscribers: new Set<(next: {
+    state: ServerState | null; caps: Capabilities | null; session: ControlSessionSnapshot;
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
 }));
 const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
 const group = new Proxy({}, { get: () => h.noop });
@@ -37,10 +42,13 @@ vi.mock('$lib/runtime', () => ({
     },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
-      handler({ state: h.state, caps: h.caps, session: h.session });
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
       return () => { h.authoritySubscribers.delete(handler); };
     },
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     get defaultScopeStatus() {
       return { source: null, available: false, resourceSelected: false, demand: 0,
@@ -132,7 +140,10 @@ function render(
 }
 function pushSession(next: ControlSessionSnapshot): void {
   h.session = next; h.sessionSubscriber?.(next);
-  for (const subscriber of h.authoritySubscribers) subscriber({ state: h.state, caps: h.caps, session: h.session });
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
   flushSync();
 }
 function pushMeter(value: number, providerGeneration = 1): void {
@@ -141,7 +152,10 @@ function pushMeter(value: number, providerGeneration = 1): void {
   h.state = next;
   h.caps = { ...caps('main_sub', 2), providerGeneration };
   txHarness.emitServerSnapshot({});
-  for (const subscriber of h.authoritySubscribers) subscriber({ state: h.state, caps: h.caps, session: h.session });
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
   flushSync();
 }
 const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')]

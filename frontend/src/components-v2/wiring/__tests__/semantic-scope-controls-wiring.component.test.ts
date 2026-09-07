@@ -30,6 +30,7 @@ import SpectrumPanelStub from '../../layout/__tests__/SpectrumPanelStub.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 
 const h = vi.hoisted(() => ({
@@ -39,7 +40,10 @@ const h = vi.hoisted(() => ({
   selectedFiniteAppearance: undefined as unknown,
   controlSession: { state: 'connected', epoch: 1 } as { state: string; epoch: number },
   controlSessionSubscriber: null as ((next: { state: string; epoch: number }) => void) | null,
-  authoritySubscriber: null as ((next: { state: unknown; caps: unknown; session: { state: string; epoch: number } }) => void) | null,
+  authoritySubscriber: null as ((next: {
+    state: unknown; caps: unknown; session: { state: string; epoch: number };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void) | null,
   txController: null as ManagedAppTxController | null,
   audio: { muted: true, rxEnabled: false, volume: 0 },
   audioConnected: false,
@@ -72,6 +76,7 @@ vi.mock('$lib/runtime', () => ({
         state: (h.live as Map<string, unknown> | null)?.get('state') ?? h.state,
         caps: (h.live as Map<string, unknown> | null)?.get('caps') ?? h.caps,
         session: h.controlSession,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
       });
       return () => { if (h.authoritySubscriber === handler) h.authoritySubscriber = null; };
     },
@@ -211,7 +216,10 @@ function publishAuthority(
   h.controlSession = session;
   (h.live as SvelteMap<string, unknown>).set('state', state);
   (h.live as SvelteMap<string, unknown>).set('caps', caps);
-  h.authoritySubscriber?.({ state, caps, session });
+  h.authoritySubscriber?.({
+    state, caps, session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
 }
 
 const finiteFixture = FiniteControlRendererFixture as FiniteControlAppearance['action'];

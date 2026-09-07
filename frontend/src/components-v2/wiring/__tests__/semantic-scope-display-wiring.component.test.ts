@@ -30,6 +30,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 type ScopeStatus = {
   source: 'hardware' | 'audio_fft' | null;
@@ -51,7 +52,11 @@ const LIVE_SCOPE_STATUS: ScopeStatus = {
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   txController: null as ManagedAppTxController | null,
   noop: vi.fn(),
   scopeStatus: {
@@ -69,10 +74,13 @@ vi.mock('$lib/runtime', () => ({
     get caps() { return h.caps; },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
-      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
       return () => { h.authoritySubscribers.delete(handler); };
     },
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     // MOR-1312 slice 12B: the wiring's `scopeDisplaySnapshot` (the FIFTH
     // adapter argument) is built from these three reads.

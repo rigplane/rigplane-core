@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
 let txHarness: ManagedAppTxHarness;
@@ -30,7 +31,13 @@ const h = vi.hoisted(() => {
   const box = {
     state: null as unknown,
     caps: null as unknown,
-    authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: ControlSessionSnapshot }) => void>(),
+    authoritySubscribers: new Set<(next: {
+      state: unknown;
+      caps: unknown;
+      session: ControlSessionSnapshot;
+      rxAudioTarget: RxAudioTargetSnapshot;
+    }) => void>(),
+    audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
     audioFft: false,
     /** [resource, consumer] pairs, in order, against the fake App session. */
     acquired: [] as [string, string][],
@@ -92,6 +99,10 @@ const h = vi.hoisted(() => {
             handler({
               state: h.state, caps: h.caps,
               session: { state: 'disconnected', epoch: -1 },
+              rxAudioTarget: Object.freeze({
+                muted: h.audio.muted,
+                rxEnabled: h.audio.rxEnabled,
+              }),
             });
             return () => { h.authoritySubscribers.delete(handler); };
           },
@@ -100,7 +111,7 @@ const h = vi.hoisted(() => {
           controlSession: Object.freeze({ state: 'disconnected', epoch: -1 }) satisfies ControlSessionSnapshot,
           radioPowerOn: null,
           connection: { status: 'disconnected', radioPowerOn: null },
-          audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+          get audio() { return h.audio; },
           connectionAudio: false,
           // MOR-1312 slice 12B: the scope-display snapshot (the FIFTH
           // adapter argument) — no fixture here declares a scope capability.
@@ -121,6 +132,7 @@ function publishAuthority(): void {
   const next = {
     state: h.state, caps: h.caps,
     session: { state: 'disconnected' as const, epoch: -1 },
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
   };
   for (const subscriber of h.authoritySubscribers) subscriber(next);
 }

@@ -90,6 +90,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import '../../../presentation/languages/declarations';
 import { getDesignLanguage, listDesignLanguageIds } from '../../../presentation/languages/contract';
@@ -102,7 +103,11 @@ import MetersSurface from '../../../semantic/MetersSurface.svelte';
 const h = vi.hoisted(() => ({
   state: null as ServerState | null,
   caps: null as Capabilities | null,
-  authoritySubscribers: new Set<(next: { state: ServerState | null; caps: Capabilities | null; session: { state: 'connected'; epoch: 1 } }) => void>(),
+  authoritySubscribers: new Set<(next: {
+    state: ServerState | null; caps: Capabilities | null; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   txController: null as ManagedAppTxController | null,
 }));
 vi.mock('$lib/runtime', () => ({
@@ -112,10 +117,13 @@ vi.mock('$lib/runtime', () => ({
     get caps() { return h.caps; },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
-      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
       return () => { h.authoritySubscribers.delete(handler); };
     },
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     get defaultScopeStatus() {
       return {

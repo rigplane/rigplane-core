@@ -20,6 +20,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
@@ -41,6 +42,11 @@ const h = vi.hoisted(() => ({
   noop: vi.fn(),
   session: { state: 'connected', epoch: 7 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: ControlSessionSnapshot;
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   radioListeners: new Set<(state: ServerState | null) => void>(),
 }));
 
@@ -54,10 +60,18 @@ vi.mock('$lib/runtime', () => ({
       h.sessionSubscriber = handler;
       return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
     },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an
     // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
     // browser stream keeps every fixture below on its pre-1279 path.
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     // MOR-1312 slice 12B: the wiring now also hands the adapter a
     // scope-display snapshot (the FIFTH argument). Every fixture below
@@ -78,6 +92,14 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     get state() { return h.state; },
     get caps() { return h.caps; },
     get controlSession() { return h.session; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -283,15 +305,24 @@ function push(next: ManagedAppTxServerSnapshot): void {
   flushSync();
 }
 
+function publishAuthority(): void {
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
+}
+
 function pushSession(next: ControlSessionSnapshot): void {
   h.session = next;
   h.sessionSubscriber?.(next);
+  publishAuthority();
   flushSync();
 }
 
 function pushRadioState(next: ServerState): void {
   h.state = next;
   for (const listener of h.radioListeners) listener(next);
+  publishAuthority();
   flushSync();
 }
 
@@ -316,6 +347,7 @@ afterEach(() => {
   component = null;
   resetCommandLifecycle();
   expect(h.sessionSubscriber).toBeNull();
+  expect(h.authoritySubscribers.size).toBe(0);
   document.body.innerHTML = '';
 });
 

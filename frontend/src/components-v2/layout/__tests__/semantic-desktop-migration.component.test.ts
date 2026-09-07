@@ -24,21 +24,37 @@ const txHarness = new ManagedAppTxHarness();
 import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
 import { readFileSync } from 'fs';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import type { SkinId } from '../../../skins/registry';
 
 const h = vi.hoisted(() => {
   const box = { state: null as unknown, caps: null as unknown };
+  const audio = { rxEnabled: false, txEnabled: false, volume: 50, muted: false };
+  const authoritySubscribers = new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'disconnected'; epoch: -1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>();
   return {
     ...box,
+    audio,
+    authoritySubscribers,
     runtime: {
     onTxAudioDied: () => () => {},
       get state() { return h.state; },
       get caps() { return h.caps; },
       controlSession: Object.freeze({ state: 'disconnected' as const, epoch: -1 }),
+      subscribeControlAuthority(handler: (typeof authoritySubscribers extends Set<infer T> ? T : never)) {
+        authoritySubscribers.add(handler);
+        handler({
+          state: h.state, caps: h.caps, session: { state: 'disconnected', epoch: -1 },
+          rxAudioTarget: Object.freeze({ muted: audio.muted, rxEnabled: audio.rxEnabled }),
+        });
+        return () => { authoritySubscribers.delete(handler); };
+      },
       connectionStatus: 'disconnected',
       radioPowerOn: null,
       connection: { status: 'disconnected', radioPowerOn: null },
-      audio: { rxEnabled: false, txEnabled: false, volume: 50, muted: false },
+      audio,
       connectionAudio: false,
       // MOR-1312 slice 12B: `SemanticRadioSurfaces` now also reads
       // `runtime.defaultScopeStatus` / `runtime.scope.hardwareScopeConnected`
@@ -231,6 +247,10 @@ function useQualifiedMainSMeter(rawState: unknown, value = 120): void {
     },
   };
   h.caps = { ...(h.caps as object), stateContractVersion: 1, providerGeneration: 1 };
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: { state: 'disconnected', epoch: -1 },
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
 }
 
 /** One representative capability set per canonical topology fixture id. */
@@ -273,6 +293,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mounted.forEach((c) => unmount(c));
+  expect(h.authoritySubscribers.size).toBe(0);
   document.body.innerHTML = '';
 });
 

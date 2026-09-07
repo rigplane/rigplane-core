@@ -29,11 +29,16 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities, ControlDomain } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
   txController: null as ManagedAppTxController | null,
   audio: { muted: true, rxEnabled: false, volume: 0 },
   audioConnected: false,
@@ -50,6 +55,14 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
     get audio() { return h.audio; },
     get connectionAudio() { return h.audioConnected; },
     // MOR-1312 slice 12B (rebase fix): the wiring now also hands the adapter
@@ -181,6 +194,7 @@ afterEach(() => {
   component = null;
   expect(txHarness.listenerCount()).toBe(0);
   expect(txHarness.trace()).toEqual([]);
+  expect(h.authoritySubscribers.size).toBe(0);
   document.body.innerHTML = '';
 });
 

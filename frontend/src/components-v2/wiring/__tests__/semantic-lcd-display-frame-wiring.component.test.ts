@@ -7,6 +7,7 @@ import {
 import { createClassComponent } from 'svelte/legacy';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type {
   LcdSpectrumFrame, LcdSpectrumFrameResolution, LcdSpectrumSource,
@@ -19,7 +20,11 @@ type Authority = Readonly<{
 }>;
 
 const h = vi.hoisted(() => ({
-  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   events: [] as string[],
   hostInstances: [] as Array<{
     authorities: Array<Authority | null>;
@@ -106,10 +111,13 @@ vi.mock('$lib/runtime', async () => {
       get caps() { return getCapabilities(); },
       subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
         h.authoritySubscribers.add(handler);
-        handler({ state: radio.current, caps: getCapabilities(), session: { state: 'connected', epoch: 1 } });
+        handler({
+          state: radio.current, caps: getCapabilities(), session: { state: 'connected', epoch: 1 },
+          rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+        });
         return () => { h.authoritySubscribers.delete(handler); };
       },
-      get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+      get audio() { return h.audio; },
       get connectionAudio() { return false; },
       get defaultScopeStatus() {
         return {
@@ -190,7 +198,11 @@ const readonlyDisplay = createRawSnippet<[RadioViewModel, LcdSpectrumFrame?]>(
 ) as Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
 
 function publishAuthority(): void {
-  const next = { state: radio.current, caps: getCapabilities(), session: { state: 'connected' as const, epoch: 1 as const } };
+  const next = {
+    state: radio.current, caps: getCapabilities(),
+    session: { state: 'connected' as const, epoch: 1 as const },
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  };
   for (const subscriber of h.authoritySubscribers) subscriber(next);
 }
 
