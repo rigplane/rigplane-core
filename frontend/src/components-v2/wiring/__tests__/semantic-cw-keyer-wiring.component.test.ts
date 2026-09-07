@@ -38,10 +38,15 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { CommandDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: ControlSessionTransition;
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
   audio: { muted: false, rxEnabled: true, volume: 42 },
   audioConnected: true,
   rxEnabled: true,
@@ -79,6 +84,14 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     subscribeControlSession(handler: (event: ControlSessionTransition) => void) {
       h.sessionSubscriber = handler;
       return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = undefined; };
+    },
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
     },
     get audio() { return h.audio; },
     get connectionAudio() { return h.audioConnected; },
@@ -222,6 +235,13 @@ function useState(state: ServerState): void {
   setRadioState(state);
 }
 
+function publishAuthority(): void {
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
+}
+
 function delayState(
   value: number | undefined, marker: number,
   status: Partial<(typeof fresh)> = {},
@@ -243,6 +263,7 @@ function advanceDelay(value: number, marker: number): void {
   const state = delayState(value, marker);
   h.state = state;
   setRadioState(state);
+  publishAuthority();
   flushSync();
 }
 
@@ -260,6 +281,7 @@ function advanceCw(cwPitch: number, keySpeed: number, marker: number): void {
   };
   h.state = state;
   setRadioState(state);
+  publishAuthority();
   flushSync();
 }
 
@@ -313,6 +335,7 @@ afterEach(() => {
   resetCommandLifecycle();
   vi.useRealTimers();
   expect(h.sessionSubscriber).toBeUndefined();
+  expect(h.authoritySubscribers.size).toBe(0);
 });
 
 /* ── (a) THE NO-KEY-PATH PIN ───────────────────────────────────── */
@@ -382,6 +405,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     h.session = { state: 'disconnected', epoch: 2 };
     h.transition!({ state: 'disconnected', epoch: 2 });
     h.sessionSubscriber!({ state: 'disconnected', epoch: 2 });
+    publishAuthority();
     flushSync();
     for (const field of ['pitchHz', 'keyerSpeed'] as const) {
       expect(cwInput(field).disabled).toBe(true);
@@ -394,6 +418,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     h.session = { state: 'connected', epoch: 3 };
     h.transition!({ state: 'connected', epoch: 3 });
     h.sessionSubscriber!({ state: 'connected', epoch: 3 });
+    publishAuthority();
     flushSync();
     submitCw('pitchHz', 700);
     const newPitchStatus = el('pitchHz')!.querySelector<HTMLElement>('[data-cw-feedback-status]')!;
@@ -539,7 +564,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     delayInput().value = '99';
     delayInput().dispatchEvent(new Event('input', { bubbles: true }));
     h.session = { state: 'disconnected', epoch: 1 };
-    h.transition!({ state: 'disconnected', epoch: 1 }); flushSync();
+    h.transition!({ state: 'disconnected', epoch: 1 }); publishAuthority(); flushSync();
     expect(delayInput().dataset.commandPhase).toBe('cancelled');
     expect(delayInput().value).toBe('64');
     delayInput().dispatchEvent(new Event('change', { bubbles: true })); flushSync();
@@ -607,6 +632,7 @@ describe('the CW surface never becomes a second key path (decomposition R9)', ()
     const before = el('surface')!.outerHTML;
     txHarness.emitServerSnapshot({ intent: 'ptt', observedPtt: 'on' });
     h.state = liveState({ ptt: true } as Partial<ServerState>);
+    publishAuthority();
     flushSync();
     expect(el('surface')!.outerHTML).toBe(before);
   });

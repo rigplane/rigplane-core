@@ -8,6 +8,7 @@ import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type { LcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import * as passband from '$lib/runtime/adapters/scope-passband-display';
@@ -18,6 +19,11 @@ const h = vi.hoisted(() => ({
   scope: null as unknown as ScopeController, resources: null as unknown as PresentationResourceHost<unknown>,
   tx: null as unknown as ManagedAppTxController, session: { state: 'connected', epoch: 1 },
   listeners: new Set<(next: { state: string; epoch: number }) => void>(),
+  authoritySubscribers: new Set<(next: {
+    state: ServerState | null; caps: Capabilities | null; session: { state: string; epoch: number };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   frequency: vi.fn(), width: vi.fn(), raw: vi.fn(), acquire: vi.fn(),
 }));
 vi.mock('$lib/runtime', async () => {
@@ -27,7 +33,15 @@ vi.mock('$lib/runtime', async () => {
     get state() { return radio.current; }, get caps() { return getCapabilities(); },
     get scope() { return h.scope; }, get controlSession() { return h.session; },
     subscribeControlSession: (fn: (next: typeof h.session) => void) => { h.listeners.add(fn); return () => h.listeners.delete(fn); },
-    onTxAudioDied: () => () => {}, audio: { muted: true, rxEnabled: false, volume: 0 }, connectionAudio: false,
+    subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
+      h.authoritySubscribers.add(handler);
+      handler({
+        state: radio.current, caps: getCapabilities(), session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
+      return () => { h.authoritySubscribers.delete(handler); };
+    },
+    onTxAudioDied: () => () => {}, get audio() { return h.audio; }, connectionAudio: false,
     connectionStatus: 'connected', radioPowerOn: true, connection: { status: 'connected' },
     defaultScopeStatus: { source: 'hardware', available: true, resourceSelected: true, demand: 1,
       lifecycle: 'streaming', transport: 'connected', frameSeen: true },
@@ -51,6 +65,13 @@ import { clearCapabilities, setCapabilities, getCapabilities } from '$lib/stores
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import RadioLayout from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
+
+function publishAuthority(): void {
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: radio.current, caps: getCapabilities(), session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
+}
 
 function channel() {
   const binary = new Set<(buffer: ArrayBuffer) => void>(), states = new Set<(state: string) => void>();
@@ -91,13 +112,14 @@ function fixture(scheme: 'single' | 'ab' = 'single') {
     filterConfig: { USB: { defaults: [2400], minHz: 100, maxHz: 3600, stepHz: 100 } },
     txBands: [], audioConfig: { sampleRate: 48000, channels: 1, codecs: [] }, webrtc: { available: false, enabled: false },
   } as unknown as Capabilities)).toBe(true);
+  publishAuthority();
 }
 function renew(marker: number, stale = false) {
   const next = JSON.parse(JSON.stringify(radio.current!)) as ServerState;
   for (const status of Object.values(next.fieldStatus!)) status.lastObservedMonotonic = marker;
   for (const path of ['main.filterWidth', 'main.ifShift']) Object.assign(next.fieldStatus![path],
     { freshness: stale ? 'stale' : 'fresh', availability: stale ? 'stale' : 'available' });
-  radio.current = next; flushSync();
+  radio.current = next; publishAuthority(); flushSync();
 }
 let wire: ReturnType<typeof channel>, target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null, legacyComponent: ReturnType<typeof createClassComponent> | null;
@@ -133,7 +155,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   if (component) await unmount(component); legacyComponent?.$destroy(); flushSync(); await h.resources.teardown();
-  expect(h.listeners.size).toBe(0); expect(tx.trace()).toEqual([]);
+  expect(h.listeners.size).toBe(0); expect(h.authoritySubscribers.size).toBe(0); expect(tx.trace()).toEqual([]);
   document.body.innerHTML = ''; resetRadioState(); clearCapabilities(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers();
 });
 
@@ -144,7 +166,7 @@ describe('one managed scope owner through the real region and panel', () => {
     renew(10, true); expect(push).toHaveBeenCalledTimes(1);
     expect(target.querySelector('.passband-freshness')!.textContent).toContain('◷');
     renew(10); expect(push).toHaveBeenCalledTimes(1);
-    radio.current!.ptt = true; flushSync(); expect(push).toHaveBeenCalledTimes(1);
+    radio.current!.ptt = true; publishAuthority(); flushSync(); expect(push).toHaveBeenCalledTimes(1);
     wire.frame(); expect(push).toHaveBeenCalledTimes(2);
     const shared = h.resources.acquire('hardware-scope', 'independent');
     toggle(); clear(); wire.frame(); expect(push).toHaveBeenCalledTimes(2);
@@ -231,7 +253,7 @@ describe('one managed scope owner through the real region and panel', () => {
     fixture(scheme); const project = vi.spyOn(passband, 'projectScopePassbandDisplay'); await render(false);
     expect(project.mock.lastCall?.[1].selection).toEqual({ receiver: 'MAIN', slot: scheme === 'single' ? 'single' : 'A' });
     if (scheme === 'ab') {
-      radio.current!.fieldStatus!['main.activeSlot'].observed = false; flushSync(); wire.frame();
+      radio.current!.fieldStatus!['main.activeSlot'].observed = false; publishAuthority(); flushSync(); wire.frame();
       expect(project.mock.lastCall?.[1].selection).toBeNull();
       expect(region!()!.projection?.passband.state).toBe('unknown');
     }
@@ -247,12 +269,13 @@ describe('one managed scope owner through the real region and panel', () => {
     await render(); expect(overlay()).not.toBeNull();
     if (boundary === 'unknown receiver') radio.current!.fieldStatus!.active.observed = false;
     else setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
-    flushSync(); clear();
+    publishAuthority(); flushSync(); clear();
   });
   it('delivers coalesced disconnected/connected session boundaries before reactive effects can hide them', async () => {
     await render(); const shared = h.resources.acquire('hardware-scope', 'independent');
     for (const state of ['disconnected', 'connected']) {
       h.session = { state, epoch: 1 }; for (const fn of h.listeners) fn(h.session);
+      publishAuthority();
     }
     flushSync(); expect(overlay()).toBeNull(); wire.frame(); expect(overlay()).toBeNull();
     renew(11); expect(overlay()).not.toBeNull(); h.resources.release(shared);
@@ -325,7 +348,7 @@ describe('one managed scope owner through the real region and panel', () => {
     if (identity === 'receiver') setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'ab_shared', capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
     const path = identity === 'receiver' ? 'active' : 'main.activeSlot';
     radio.current!.fieldStatus![path].observed = false; await render(); expect(overlay()).toBeNull();
-    radio.current!.fieldStatus![path].observed = true; flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
+    radio.current!.fieldStatus![path].observed = true; publishAuthority(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
     expect(overlay()).not.toBeNull(); expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
   it('reacquires only its own resource binding when provider generation changes', async () => {
@@ -334,7 +357,7 @@ describe('one managed scope owner through the real region and panel', () => {
     radio.current!.providerGeneration = 2;
     for (const status of Object.values(radio.current!.fieldStatus!)) status.lastObservedMonotonic = 1;
     setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
-    flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame();
+    publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame();
     expect(overlay()).toBeNull(); renew(2); wire.frame(); expect(overlay()).not.toBeNull();
     expect(acquired).toHaveBeenCalledOnce(); expect(released).toHaveBeenCalledOnce(); expect(watch).toHaveBeenCalledOnce();
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);

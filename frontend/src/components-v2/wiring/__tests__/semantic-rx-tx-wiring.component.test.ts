@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import { setLocale, _resetLocale } from '$lib/i18n/store.svelte';
 
 type Snapshot = {
@@ -14,7 +15,11 @@ type Snapshot = {
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 } }) => void>(),
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   snapshot: null as unknown,
   listeners: new Set<(next: unknown) => void>(),
   start: vi.fn(),
@@ -42,13 +47,16 @@ vi.mock('$lib/runtime', () => ({
     get caps() { return h.caps; },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
-      handler({ state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 } });
+      handler({
+        state: h.state, caps: h.caps, session: { state: 'connected', epoch: 1 },
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
       return () => { h.authoritySubscribers.delete(handler); };
     },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an
     // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
     // browser stream keeps every fixture below on its pre-1279 path.
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     // MOR-1312 slice 12B: the wiring now also hands the adapter a
     // scope-display snapshot (the FIFTH argument). Every fixture below

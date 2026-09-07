@@ -1,12 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { mount, tick, unmount } from 'svelte';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CANONICAL_LAYOUT_MODES, type CanonicalLayoutMode } from '../../../presentation/layout-mode';
 import { TEST_INSTRUMENTS } from '../../../components-v2/layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 const lifecycle = vi.hoisted(() => ({
   acquire: vi.fn(() => ({ resource: 'hardware-scope', token: Symbol('lease') })),
   release: vi.fn(() => true),
+  authoritySubscribers: new Set<(next: {
+    state: null; caps: null; session: { state: 'disconnected'; epoch: -1 };
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: false, rxEnabled: false, volume: 0 },
 }));
 
 const navigation = vi.hoisted(() => ({
@@ -28,6 +34,20 @@ const navigation = vi.hoisted(() => ({
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    state: null,
+    caps: null,
+    controlSession: Object.freeze({ state: 'disconnected' as const, epoch: -1 }),
+    subscribeControlAuthority(handler: (typeof lifecycle.authoritySubscribers extends Set<infer T> ? T : never)) {
+      lifecycle.authoritySubscribers.add(handler);
+      handler({
+        state: null, caps: null, session: { state: 'disconnected', epoch: -1 },
+        rxAudioTarget: Object.freeze({
+          muted: lifecycle.audio.muted, rxEnabled: lifecycle.audio.rxEnabled,
+        }),
+      });
+      return () => { lifecycle.authoritySubscribers.delete(handler); };
+    },
+    get audio() { return lifecycle.audio; },
     acquireHardwareScope: lifecycle.acquire,
     releaseHardwareScope: lifecycle.release,
     scope: {
@@ -56,6 +76,10 @@ describe('DualSdrFaceSkin production entrypoint', () => {
     lifecycle.acquire.mockClear();
     lifecycle.release.mockClear();
     navigation.selections.length = 0;
+  });
+
+  afterEach(() => {
+    expect(lifecycle.authoritySubscribers.size).toBe(0);
   });
 
   it('mounts the exact face through the canonical read-only semantic view', () => {

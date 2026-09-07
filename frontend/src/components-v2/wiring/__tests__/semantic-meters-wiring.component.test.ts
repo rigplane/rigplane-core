@@ -22,6 +22,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 
 const h = vi.hoisted(() => ({
@@ -30,7 +31,11 @@ const h = vi.hoisted(() => ({
   txController: null as ManagedAppTxController | null,
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
-  authoritySubscribers: new Set<(next: { state: unknown; caps: unknown; session: ControlSessionSnapshot }) => void>(),
+  authoritySubscribers: new Set<(next: {
+    state: unknown; caps: unknown; session: ControlSessionSnapshot;
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   noop: vi.fn(),
 }));
 
@@ -46,13 +51,16 @@ vi.mock('$lib/runtime', () => ({
     },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
-      handler({ state: h.state, caps: h.caps, session: h.session });
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
       return () => { h.authoritySubscribers.delete(handler); };
     },
     // MOR-1279 slice 3B: the wiring now also hands the adapter an
     // App-owned RX-audio snapshot (the FOURTH argument). Muted with no
     // browser stream keeps every fixture below on its pre-1279 path.
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     // MOR-1312 slice 12B: the wiring now also hands the adapter a
     // scope-display snapshot (the FIFTH argument). Every fixture below
@@ -219,14 +227,20 @@ function render(props: { strips?: 'single' | 'dual' } = {}): void {
 
 function push(next: ManagedAppTxServerSnapshot): void {
   txHarness.emitServerSnapshot(next);
-  for (const subscriber of h.authoritySubscribers) subscriber({ state: h.state, caps: h.caps, session: h.session });
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
   flushSync();
 }
 
 function pushSession(next: ControlSessionSnapshot): void {
   h.session = next;
   h.sessionSubscriber?.(next);
-  for (const subscriber of h.authoritySubscribers) subscriber({ state: h.state, caps: h.caps, session: h.session });
+  for (const subscriber of h.authoritySubscribers) subscriber({
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  });
   flushSync();
 }
 

@@ -3,6 +3,7 @@ import {
   harness, type FixtureFrameAuthority, type FixtureFrameEvidence,
 } from '../harness-state';
 import type { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 /**
  * MOR-1320: `SemanticRadioSurfaces.svelte` gained a `runtime.audio` /
@@ -32,6 +33,7 @@ type FixtureAuthoritySubscriber = (next: Readonly<{
   state: typeof harness.state;
   caps: typeof harness.caps;
   session: typeof FIXTURE_CONTROL_SESSION;
+  rxAudioTarget: RxAudioTargetSnapshot;
 }>) => void;
 const fixtureAuthoritySubscribers = new Set<FixtureAuthoritySubscriber>();
 
@@ -115,7 +117,15 @@ export const runtime = {
   },
   subscribeControlAuthority(handler: FixtureAuthoritySubscriber) {
     fixtureAuthoritySubscribers.add(handler);
-    handler(Object.freeze({ state: harness.state, caps: harness.caps, session: FIXTURE_CONTROL_SESSION }));
+    handler(Object.freeze({
+      state: harness.state,
+      caps: harness.caps,
+      session: FIXTURE_CONTROL_SESSION,
+      rxAudioTarget: Object.freeze({
+        muted: harness.audioRuntime.muted,
+        rxEnabled: harness.audioRuntime.rxEnabled,
+      }),
+    }));
     return () => { fixtureAuthoritySubscribers.delete(handler); };
   },
   get audio() {

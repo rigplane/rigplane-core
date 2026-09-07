@@ -34,6 +34,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import {
   acknowledgeCommand, beginCommand, confirmCommand, failCommand, resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
@@ -63,7 +64,11 @@ const h = vi.hoisted(() => ({
   ipPlus: vi.fn(),
   session: { state: 'connected', epoch: 7 } as TestControlSession,
   sessionListeners: new Set<(next: TestControlSession) => void>(),
-  authorityListeners: new Set<(next: { state: unknown; caps: unknown; session: TestControlSession }) => void>(),
+  authorityListeners: new Set<(next: {
+    state: unknown; caps: unknown; session: TestControlSession;
+    rxAudioTarget: RxAudioTargetSnapshot;
+  }) => void>(),
+  audio: { muted: true, rxEnabled: false, volume: 0 },
   sentCommands: [] as Array<{
     name: string; params: Record<string, unknown>; id: string; originalEpoch: number;
   }>,
@@ -102,15 +107,18 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
-    get audio() { return { muted: true, rxEnabled: false, volume: 0 }; },
+    get audio() { return h.audio; },
     get connectionAudio() { return false; },
     get controlSession() { return h.session; },
     subscribeControlSession(handler: (next: typeof h.session) => void) {
       h.sessionListeners.add(handler); return () => h.sessionListeners.delete(handler);
     },
-    subscribeControlAuthority(handler: (next: { state: unknown; caps: unknown; session: TestControlSession }) => void) {
+    subscribeControlAuthority(handler: (typeof h.authorityListeners extends Set<infer T> ? T : never)) {
       h.authorityListeners.add(handler);
-      handler({ state: h.state, caps: h.caps, session: h.session });
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
       return () => { h.authorityListeners.delete(handler); };
     },
     // MOR-1312 slice 12B (rebase fix): the wiring now also hands the adapter
@@ -130,9 +138,12 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
     get state() { return h.state; },
     get caps() { return h.caps; },
-    subscribeControlAuthority(handler: (next: { state: unknown; caps: unknown; session: TestControlSession }) => void) {
+    subscribeControlAuthority(handler: (typeof h.authorityListeners extends Set<infer T> ? T : never)) {
       h.authorityListeners.add(handler);
-      handler({ state: h.state, caps: h.caps, session: h.session });
+      handler({
+        state: h.state, caps: h.caps, session: h.session,
+        rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+      });
       return () => { h.authorityListeners.delete(handler); };
     },
   },
@@ -322,7 +333,10 @@ const el = (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
 let acceptedState: ServerState;
 
 function publishAuthority(): void {
-  const next = { state: h.state, caps: h.caps, session: h.session };
+  const next = {
+    state: h.state, caps: h.caps, session: h.session,
+    rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
+  };
   for (const listener of h.authorityListeners) listener(next);
 }
 
