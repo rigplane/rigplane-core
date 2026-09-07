@@ -1726,7 +1726,7 @@ export function makeKeyboardHandlers() {
             // `data-testid` hooks rather than inventing a parallel
             // `data-panel`/`data-control` vocabulary no component emits.
             const selectors: Record<string, string> = {
-              af: '[data-testid="rx-audio-af"] input',
+              af: '[data-testid="rx-audio-af"] [role="slider"], [data-testid="rx-audio-af"] input[type="range"]',
               rf: '[data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-rfGain"] input',
               squelch: '[data-testid="rf-front-end-rf-sql"] input, [data-testid="rf-front-end-squelch"] input',
               filter: '[data-testid="filter-select"] button',
