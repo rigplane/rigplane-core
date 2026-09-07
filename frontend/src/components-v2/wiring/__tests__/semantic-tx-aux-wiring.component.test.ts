@@ -39,6 +39,15 @@ const h = vi.hoisted(() => ({
   voxDelay: vi.fn(),
   compLevel: vi.fn(),
   monLevel: vi.fn(),
+  split: vi.fn(),
+  dualWatch: vi.fn(),
+  mainReceiver: vi.fn(),
+  subReceiver: vi.fn(),
+  equalize: vi.fn(),
+  swap: vi.fn(),
+  quickSplit: vi.fn(),
+  quickDualWatch: vi.fn(),
+  speak: vi.fn(),
   noop: vi.fn(),
   session: { state: 'connected', epoch: 7 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
@@ -135,8 +144,17 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   return {
     ...actual,
     makeVfoHandlers: () => ({
-      onVfoSelect: h.noop, onSplitToggle: h.noop, onDualWatchToggle: h.noop,
+      onVfoSelect: h.noop,
+      onSplitToggle: h.split,
+      onDualWatchToggle: h.dualWatch,
+      onMainVfoClick: h.mainReceiver,
+      onSubVfoClick: h.subReceiver,
+      onEqual: h.equalize,
+      onSwap: h.swap,
+      onQuickSplit: h.quickSplit,
+      onQuickDw: h.quickDualWatch,
     }),
+    makeSystemHandlers: () => ({ onSpeak: h.speak }),
     makeVoxHandlers: () => ({
       onVoxToggle: h.voxToggle, onVoxGainChange: h.voxGain,
       onAntiVoxGainChange: h.antiVoxGain, onVoxDelayChange: h.voxDelay,
@@ -276,6 +294,14 @@ const liveCaps = (withTxAux: boolean): Capabilities => ({
   scopeSource: null, audioFftAvailable: false,
 } as unknown as Capabilities);
 
+const vfoCaps = (): Capabilities => ({
+  ...liveCaps(true),
+  capabilities: [
+    ...liveCaps(true).capabilities,
+    'dual_watch', 'split', 'vfo_equalize', 'vfo_swap', 'speech',
+  ],
+});
+
 const finiteFixture = FiniteControlRendererFixture as FiniteControlAppearance['action'];
 const finiteAppearance = {
   action: finiteFixture,
@@ -336,7 +362,7 @@ function pushSession(next: ControlSessionSnapshot): void {
   flushSync();
 }
 
-function pushRadioState(next: ServerState): void {
+function pushRadioState(next: ServerState | null): void {
   h.state = next;
   for (const listener of h.radioListeners) listener(next);
   publishAuthority();
@@ -421,6 +447,193 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
   });
 });
 
+describe('hosted Standard VFO operation instruments', () => {
+  it('keeps native absolute receiver options actionable when current identity is unknown', () => {
+    h.caps = vfoCaps();
+    const unknownActive = liveState(true);
+    delete unknownActive.fieldStatus?.active;
+    h.state = unknownActive;
+    renderHostedDesktop();
+
+    const main = q<HTMLButtonElement>('[data-active-receiver-segment="MAIN"]')!;
+    const sub = q<HTMLButtonElement>('[data-active-receiver-segment="SUB"]')!;
+    expect(main.ariaChecked).toBe('false');
+    expect(sub.ariaChecked).toBe('false');
+    expect(sub.disabled).toBe(false);
+    sub.click();
+    expect(h.subReceiver).toHaveBeenCalledOnce();
+  });
+
+  it('places every admitted named seat once, invokes current callbacks, and keeps one digest', () => {
+    h.caps = vfoCaps();
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+
+    const grid = q('[data-testid="vfo-operation-instrument-grid"]')!;
+    expect([...grid.children].map((seat) => seat.getAttribute('data-field'))).toEqual([
+      'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap', 'speak',
+    ]);
+    expect(q('[data-vfo-split]')).toBeNull();
+    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(1);
+    expect(q('[data-testid="external-Quick split"]')).toBeNull();
+    expect(q('[data-testid="external-Quick dual watch"]')).toBeNull();
+
+    q<HTMLButtonElement>('[data-testid="external-Split"]')!.click();
+    q<HTMLButtonElement>('[data-testid="external-Dual watch"]')!.click();
+    q<HTMLButtonElement>('[data-testid="external-Receiver-SUB"]')!.click();
+    q<HTMLButtonElement>('[data-testid="external-M=S"]')!.click();
+    q<HTMLButtonElement>('[data-testid="external-M↔S"]')!.click();
+    q<HTMLButtonElement>('[data-testid="external-SPEAK"]')!.click();
+    expect(h.split).toHaveBeenCalledOnce();
+    expect(h.dualWatch).toHaveBeenCalledExactlyOnceWith(true);
+    expect(h.subReceiver).toHaveBeenCalledOnce();
+    expect(h.equalize).toHaveBeenCalledOnce();
+    expect(h.swap).toHaveBeenCalledOnce();
+    expect(h.speak).toHaveBeenCalledOnce();
+    expect(h.quickSplit).not.toHaveBeenCalled();
+    expect(h.quickDualWatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown receiver unselected while admitted external MAIN and SUB establish identity', () => {
+    h.caps = vfoCaps();
+    const unknownActive = liveState(true);
+    delete unknownActive.fieldStatus?.active;
+    h.state = unknownActive;
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+
+    const main = q<HTMLButtonElement>('[data-testid="external-Receiver-MAIN"]')!;
+    const sub = q<HTMLButtonElement>('[data-testid="external-Receiver-SUB"]')!;
+    expect(main.ariaChecked).toBe('false');
+    expect(sub.ariaChecked).toBe('false');
+    expect(main.disabled).toBe(false);
+    expect(sub.disabled).toBe(false);
+    main.click();
+    sub.click();
+    expect(h.mainReceiver).toHaveBeenCalledOnce();
+    expect(h.subReceiver).toHaveBeenCalledOnce();
+  });
+
+  it('retains asymmetric receiver reasons without disabling the offered MAIN option', () => {
+    h.caps = vfoCaps();
+    const degraded = liveState(true);
+    delete (degraded as Partial<ServerState>).sub;
+    h.state = degraded;
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+
+    const main = q<HTMLButtonElement>('[data-testid="external-Receiver-MAIN"]')!;
+    const sub = q<HTMLButtonElement>('[data-testid="external-Receiver-SUB"]')!;
+    expect(main.disabled).toBe(false);
+    expect(main.title).toBe('');
+    expect(sub.disabled).toBe(true);
+    expect(sub.title.length).toBeGreaterThan(0);
+    expect(document.getElementById(sub.getAttribute('aria-describedby')!)?.textContent).toBe(sub.title);
+    main.click();
+    expect(h.mainReceiver).toHaveBeenCalledOnce();
+  });
+
+  it('does not rotate radio-wide authority when only selected receiver truth becomes unknown', () => {
+    h.caps = vfoCaps();
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+    const receiver = q('[data-testid="external-Receiver"]');
+    const retained = retainedInvocations.get('Receiver')!;
+
+    const unknownActive = liveState(true);
+    delete unknownActive.fieldStatus?.active;
+    pushRadioState(unknownActive);
+    push({});
+
+    expect(q('[data-testid="external-Receiver"]')).toBe(receiver);
+    expect(retainedInvocations.get('Receiver')).toBe(retained);
+    expect(q<HTMLButtonElement>('[data-testid="external-Receiver-MAIN"]')!.ariaChecked).toBe('false');
+    expect(q<HTMLButtonElement>('[data-testid="external-Receiver-SUB"]')!.ariaChecked).toBe('false');
+    retained('SUB');
+    expect(h.subReceiver).toHaveBeenCalledOnce();
+  });
+
+  it('re-reads same-context admission and keeps unknown relative toggles inert', () => {
+    h.caps = vfoCaps();
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+    const retained = retainedInvocations.get('Split')!;
+
+    const unknownSplit = liveState(true);
+    delete unknownSplit.fieldStatus?.split;
+    pushRadioState(unknownSplit);
+    push({});
+    expect(q<HTMLButtonElement>('[data-testid="external-Split"]')!.disabled).toBe(true);
+    h.split.mockClear();
+    retained();
+    expect(h.split).not.toHaveBeenCalled();
+
+    pushRadioState(liveState(true));
+    push({});
+    retained();
+    expect(h.split).toHaveBeenCalledOnce();
+  });
+
+  it('fails selected appearance closed at null authority without losing the digest', () => {
+    h.caps = vfoCaps();
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.session = { state: 'disconnected', epoch: 7 };
+    renderHostedDesktop();
+
+    expect(q('[data-vfo-split]')).toBeNull();
+    expect(q('[data-testid="external-Split"]')).toBeNull();
+    expect(q('[data-testid="external-Receiver"]')).toBeNull();
+    expect(target.querySelectorAll('[data-testid="vfo-split-digest"]')).toHaveLength(1);
+  });
+
+  it('revokes every retained VFO renderer when the persistent host is destroyed', () => {
+    h.caps = vfoCaps();
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+    const retained = ['Split', 'Dual watch', 'Receiver', 'M=S', 'M↔S', 'SPEAK']
+      .map((label) => retainedInvocations.get(label)!);
+    unmount(component!);
+    component = null;
+
+    retained[0]!();
+    retained[1]!();
+    retained[2]!('SUB');
+    for (const invoke of retained.slice(3)) invoke();
+    for (const spy of [
+      h.split, h.dualWatch, h.subReceiver, h.equalize, h.swap, h.speak,
+    ]) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the accepted neighboring host subtree mounted through a temporary null view', () => {
+    h.caps = vfoCaps();
+    h.selectedFiniteAppearance = finiteAppearance;
+    renderHostedDesktop();
+    const layout = q('.radio-layout');
+    const retainedVox = retainedInvocations.get('VOX')!;
+    const subscribers = [...h.authoritySubscribers];
+
+    h.caps = null;
+    pushRadioState(null);
+    push({});
+    expect(q('[data-testid="vfo-surface"]')).toBeNull();
+    expect(q('[data-testid="external-VOX"]')).toBeNull();
+    expect(q('.radio-layout')).toBe(layout);
+    expect([...h.authoritySubscribers]).toEqual(subscribers);
+    retainedVox();
+    expect(h.voxToggle).not.toHaveBeenCalled();
+
+    h.caps = vfoCaps();
+    pushRadioState(liveState(true));
+    push({});
+    expect(q('.radio-layout')).toBe(layout);
+    expect(q('[data-testid="external-VOX"]')).not.toBeNull();
+    expect([...h.authoritySubscribers]).toEqual(subscribers);
+    expect(retainedInvocations.get('VOX')).not.toBe(retainedVox);
+    retainedInvocations.get('VOX')!();
+    expect(h.voxToggle).toHaveBeenCalledOnce();
+  });
+});
+
 describe('selected finite TX auxiliary authority lifetime', () => {
   it('keeps one external Standard reason list after every scalar', () => {
     h.selectedFiniteAppearance = finiteAppearance;
@@ -446,24 +659,34 @@ describe('selected finite TX auxiliary authority lifetime', () => {
   });
 
   it('revokes retained A1 synchronously on A-B-A before flush and admits only fresh A3', () => {
+    h.caps = vfoCaps();
     h.selectedFiniteAppearance = finiteAppearance;
-    render();
+    renderHostedDesktop();
     const retainedA1 = retainedInvocations.get('VOX')!;
+    const retainedVfoA1 = retainedInvocations.get('Split')!;
 
     h.session = { state: 'connected', epoch: 8 };
     publishAuthority();
     h.session = { state: 'connected', epoch: 7 };
     publishAuthority();
     retainedA1();
+    retainedVfoA1();
     expect(h.voxToggle).not.toHaveBeenCalled();
+    expect(h.split).not.toHaveBeenCalled();
 
     flushSync();
     const retainedA3 = retainedInvocations.get('VOX')!;
+    const retainedVfoA3 = retainedInvocations.get('Split')!;
     expect(retainedA3).not.toBe(retainedA1);
+    expect(retainedVfoA3).not.toBe(retainedVfoA1);
     retainedA3();
+    retainedVfoA3();
     expect(h.voxToggle).toHaveBeenCalledOnce();
+    expect(h.split).toHaveBeenCalledOnce();
     retainedA1();
+    retainedVfoA1();
     expect(h.voxToggle).toHaveBeenCalledOnce();
+    expect(h.split).toHaveBeenCalledOnce();
   });
 });
 

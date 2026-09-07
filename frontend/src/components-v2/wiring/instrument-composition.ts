@@ -6,11 +6,17 @@ import type { ReceiverInstrumentHandles } from '../../semantic/ReceiverInstrumen
 import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
 import type { RfFrontEndLevelHandles } from '../../semantic/rf-front-end-instruments';
 import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
+import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
 export interface InstrumentComposition {
-  readonly vfo: Snippet<[appearance: InstrumentVfoAppearance, allowBare?: boolean]>;
+  readonly vfo: Snippet<[
+    appearance: InstrumentVfoAppearance,
+    allowBare?: boolean,
+    operationControls?: Snippet,
+  ]>;
+  readonly vfoOperations: VfoOperationHandles;
   readonly rxTx: Snippet<[allowBare?: boolean]>;
   readonly txAuxControls: Snippet<[scalarLayout: Snippet, allowBare?: boolean]>;
   readonly txAuxScalars: TxAuxScalarHandles;

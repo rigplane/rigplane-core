@@ -86,6 +86,12 @@
   } from '../../semantic/TxAuxSurface.svelte';
   import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
   import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
+  import VfoOperationSeatHost, {
+    type VfoOperationHandles,
+  } from '../../semantic/VfoOperationSeatHost.svelte';
+  import type {
+    VfoOperationCallbacks, VfoOperationProjectionInput,
+  } from '../../semantic/vfo-operation-projection';
   import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import SemanticControlPanel from '../layout/SemanticControlPanel.svelte';
@@ -538,6 +544,11 @@
     topologyId: string;
     activeReceiver: 'MAIN' | 'SUB' | 'unknown';
   }>;
+  type VfoFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+  }>;
   const slotIdentity = (slot: VfoSlot): string => {
     if (slot.kind === 'slotted') return `slotted:${slot.id}`;
     if (slot.kind === 'relative') return `relative:${slot.role}`;
@@ -606,6 +617,23 @@
         ? model.activeReceiver.receiver : 'unknown',
     });
   }
+  function vfoFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): VfoFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    return model === null ? null : Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+    });
+  }
   const sameScopeFiniteAuthority = (
     left: ScopeFiniteAuthority | null | undefined,
     right: ScopeFiniteAuthority | null,
@@ -637,15 +665,26 @@
         && left.topologyId === right.topologyId
         && left.activeReceiver === right.activeReceiver
   );
+  const sameVfoFiniteAuthority = (
+    left: VfoFiniteAuthority | null | undefined,
+    right: VfoFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+  );
   const readSelectedFiniteAppearance = 'getSelectedFiniteControlAppearance' in componentKitActivation
     ? componentKitActivation.getSelectedFiniteControlAppearance : undefined;
   const selectedFiniteAppearance = readSelectedFiniteAppearance?.();
   let finiteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let txAuxFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let dspFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let vfoFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
   let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
   let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
+  let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
   const unsubscribeScopeFiniteAuthority = selectedFiniteAppearance === undefined ? undefined
     : runtime.subscribeControlAuthority((publication) => {
       const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
@@ -667,6 +706,13 @@
         lastDspFiniteAuthority = nextDsp;
         dspFiniteRendererContext = nextDsp === null ? null : createFiniteRendererContext();
       }
+      const nextVfo = vfoFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameVfoFiniteAuthority(lastVfoFiniteAuthority, nextVfo)) {
+        lastVfoFiniteAuthority = nextVfo;
+        vfoFiniteRendererContext = nextVfo === null ? null : createFiniteRendererContext();
+      }
     });
   onDestroy(() => unsubscribeScopeFiniteAuthority?.());
   let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
@@ -678,6 +724,10 @@
   let dspFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: dspFiniteRendererContext,
+    });
+  let vfoFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: vfoFiniteRendererContext,
     });
 
   let scopeFrameSource = $derived(
@@ -1053,6 +1103,34 @@
   function toggleDualWatch(): void {
     if (view?.dualWatch.status === 'known') vfo.onDualWatchToggle(!view.dualWatch.value);
   }
+
+  const vfoOperationCallbacks = Object.freeze({
+    onToggleSplit: vfo.onSplitToggle,
+    onToggleDualWatch: toggleDualWatch,
+    onSelectMainReceiver: vfo.onMainVfoClick,
+    onSelectSubReceiver: vfo.onSubVfoClick,
+    onEqualizeVfos: vfo.onEqual,
+    onSwapVfos: vfo.onSwap,
+    onQuickSplit: vfo.onQuickSplit,
+    onQuickDualWatch: vfo.onQuickDw,
+    onSpeak: systemIntents.onSpeak,
+  }) satisfies VfoOperationCallbacks;
+  let vfoOperationInput: VfoOperationProjectionInput | null = $derived(view === null ? null : {
+    hasVfoPair: view.vfos.length > 1,
+    hasDualReceiver,
+    relativeIdentityUnknown: view.vfos.some((candidate) => candidate.slot.kind === 'relative'),
+    activeReceiver: view.activeReceiver,
+    split: view.split,
+    dualWatch: view.dualWatch,
+    actions: view.radioWideIndicators?.actions,
+    callbacks: vfoOperationCallbacks,
+    reasons: {
+      receiverUnavailable: t('core.vfo.select.receiverUnavailableReason'),
+      identityUnknown: t('core.vfo.ops.identityUnknownReason'),
+      splitUnknown: t('core.vfo.split.unknownReason'),
+      dualWatchUnknown: t('core.vfo.dualWatch.unknownReason'),
+    },
+  });
 </script>
 
 <div class="semantic-surfaces" class:hosted={hostedChildren !== undefined} data-testid="semantic-radio-surfaces">
@@ -1062,17 +1140,9 @@
         viewModel={view}
         {appearance}
         showVfoList={false}
+        operationInput={vfoOperationInput ?? undefined}
         groupLabel={t('core.vfo.radioWideGroupLabel')}
         {hasDualReceiver}
-        onToggleSplit={vfo.onSplitToggle}
-        onToggleDualWatch={toggleDualWatch}
-        onEqualizeVfos={vfo.onEqual}
-        onSwapVfos={vfo.onSwap}
-        onQuickSplit={vfo.onQuickSplit}
-        onQuickDualWatch={vfo.onQuickDw}
-        onSelectMainReceiver={vfo.onMainVfoClick}
-        onSelectSubReceiver={vfo.onSubVfoClick}
-        onSpeak={systemIntents.onSpeak}
       />
     {/if}
   {/snippet}
@@ -1095,6 +1165,7 @@
     onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
   >
   {#snippet children(rfFrontEndInstruments)}
+  {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
   <DspInstrumentHost
     {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr}
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
@@ -1189,23 +1260,18 @@
     site below is where the default path's VFO already was, so an unresolved
     or default plan reproduces today's element sequence exactly.
   -->
-  {#snippet vfoSurface(appearance: InstrumentVfoAppearance = vfoAppearance)}
+  {#snippet vfoSurface(
+    appearance: InstrumentVfoAppearance = vfoAppearance, operationControls?: Snippet,
+  )}
     {#if view}
       <VfoSurface
         viewModel={view}
         {appearance}
+        operationInput={vfoOperationInput ?? undefined}
+        {operationControls}
         onSelectVfo={selectVfo}
         onTuneFrequency={tuneFrequency}
         {hasDualReceiver}
-        onToggleSplit={vfo.onSplitToggle}
-        onToggleDualWatch={toggleDualWatch}
-        onEqualizeVfos={vfo.onEqual}
-        onSwapVfos={vfo.onSwap}
-        onQuickSplit={vfo.onQuickSplit}
-        onQuickDualWatch={vfo.onQuickDw}
-        onSelectMainReceiver={vfo.onMainVfoClick}
-        onSelectSubReceiver={vfo.onSubVfoClick}
-        onSpeak={systemIntents.onSpeak}
         {receiverInstruments}
         continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
@@ -1726,8 +1792,15 @@
   >
   {#snippet children(txAuxInstruments)}
   {#snippet txAuxBody()}{@render txAuxSurface(txAuxInstruments, txAuxScalars)}{/snippet}
-  {#snippet hostedVfo(appearance: InstrumentVfoAppearance, allowBare = allowBareSurfaces)}
-    {#snippet body()}{@render vfoSurface(appearance)}{/snippet}
+  {#snippet hostedVfo(
+    appearance: InstrumentVfoAppearance,
+    allowBare = allowBareSurfaces,
+    operationControls?: Snippet,
+  )}
+    {#snippet body()}{@render vfoSurface(
+      appearance,
+      selectedFiniteAppearance === undefined ? undefined : operationControls,
+    )}{/snippet}
     {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBare)}
   {/snippet}
   {#snippet hostedRxTx(allowBare = allowBareSurfaces)}
@@ -1786,6 +1859,7 @@
   {#if hostedChildren}
     {@render hostedChildren({
       vfo: hostedVfo,
+      vfoOperations,
       rxTx: hostedRxTx,
       txAuxControls: hostedTxAux,
       txAuxScalars,
@@ -1984,6 +2058,14 @@
   {/if}
   {/snippet}
   </DspInstrumentHost>
+  {/snippet}
+  <VfoOperationSeatHost
+    {...vfoFiniteRendererSelection} input={vfoOperationInput} scheme={view?.vfoScheme ?? null}
+  >
+    {#snippet children(vfoOperations)}
+      {@render vfoInstrumentComposition(vfoOperations)}
+    {/snippet}
+  </VfoOperationSeatHost>
   {/snippet}
   </RfFrontEndInstrumentHost>
   {/snippet}

@@ -323,8 +323,21 @@
   </div>
 {/snippet}
 
+{#snippet vfoOperationControls()}
+  <div class="vfo-operation-instrument-grid" data-testid="vfo-operation-instrument-grid">
+    {#if instruments.vfoOperations.split}<div class="vfo-operation-instrument-seat" data-field="split">{@render instruments.vfoOperations.split()}</div>{/if}
+    {#if instruments.vfoOperations.dualWatch}<div class="vfo-operation-instrument-seat" data-field="dualWatch">{@render instruments.vfoOperations.dualWatch()}</div>{/if}
+    {#if instruments.vfoOperations.activeReceiver}<div class="vfo-operation-instrument-seat" data-field="activeReceiver">{@render instruments.vfoOperations.activeReceiver()}</div>{/if}
+    {#if instruments.vfoOperations.equalize}<div class="vfo-operation-instrument-seat" data-field="equalize">{@render instruments.vfoOperations.equalize()}</div>{/if}
+    {#if instruments.vfoOperations.swap}<div class="vfo-operation-instrument-seat" data-field="swap">{@render instruments.vfoOperations.swap()}</div>{/if}
+    {#if instruments.vfoOperations.quickSplit}<div class="vfo-operation-instrument-seat" data-field="quickSplit">{@render instruments.vfoOperations.quickSplit()}</div>{/if}
+    {#if instruments.vfoOperations.quickDualWatch}<div class="vfo-operation-instrument-seat" data-field="quickDualWatch">{@render instruments.vfoOperations.quickDualWatch()}</div>{/if}
+    {#if instruments.vfoOperations.speak}<div class="vfo-operation-instrument-seat" data-field="speak">{@render instruments.vfoOperations.speak()}</div>{/if}
+  </div>
+{/snippet}
+
 {#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic', allowBare = false)}
-  {@render instruments.vfo(appearance, allowBare)}
+  {@render instruments.vfo(appearance, allowBare, vfoOperationControls)}
   {@render instruments.rxTx(allowBare)}
   {@render instruments.txFaultRecovery()}
   {@render instruments.modInputTxWarning()}
@@ -355,7 +368,9 @@
     <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
     <section class="receiver-deck" bind:this={receiverDeckElement} style={receiverDeckStyle}>
-      {@render instruments.vfo(skinId === 'sdr-test' ? 'sdr' : 'standard')}
+      {@render instruments.vfo(
+        skinId === 'sdr-test' ? 'sdr' : 'standard', undefined, vfoOperationControls,
+      )}
 
       <div class="desktop-controls-left">
         {@render instruments.rfFrontEnd()}
@@ -657,6 +672,7 @@
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .vfo-operation-instrument-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

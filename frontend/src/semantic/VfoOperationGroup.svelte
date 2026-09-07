@@ -1,4 +1,5 @@
 <script module lang="ts">
+  import type { Snippet } from 'svelte';
   import type {
     BooleanFact,
     RadioViewModel,
@@ -14,6 +15,7 @@
     projection: VfoOperationProjection;
     digest?: { rx: string; tx: string; splitState: 'true' | 'false' | 'mixed' };
     onIntent: (intent: VfoOperationIntent) => void;
+    controls?: Snippet;
   }
 
   let sequence = 0;
@@ -31,6 +33,7 @@
     projection,
     digest,
     onIntent,
+    controls,
   }: Props = $props();
 
   const reasonIdPrefix = `vfo-operation-reason-${++sequence}`;
@@ -68,6 +71,9 @@
   }
 </script>
 
+  {#if controls}
+    {@render controls()}
+  {:else}
   <div class="fact-toggles" data-vfo-operation-appearance={appearance}>
     {#if projection.split.availability.structural}
       {@const splitReasonId = reasonId('split', projection.split.availability.reason)}
@@ -179,6 +185,7 @@
         {#if id}<span {id} class="sr-only">{projection.speak.availability.reason}</span>{/if}
       {/if}
     </div>
+  {/if}
   {/if}
 
   {#if digest}
