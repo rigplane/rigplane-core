@@ -48,7 +48,13 @@ const h = vi.hoisted(() => ({
   }) => void>(),
   audio: { muted: true, rxEnabled: false, volume: 0 },
   radioListeners: new Set<(state: ServerState | null) => void>(),
+  selectedFiniteAppearance: undefined as unknown,
 }));
+
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  return { ...actual, getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance };
+});
 
 vi.mock('$lib/runtime', () => ({
   runtime: {
@@ -216,6 +222,10 @@ import {
   TX_AUX_COMMAND_DESCRIPTORS, acknowledgeCommand, beginCommand, getCommandLifecycles,
   resetCommandLifecycle,
 } from '$lib/stores/commands.svelte';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 0 };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -265,6 +275,13 @@ const liveCaps = (withTxAux: boolean): Capabilities => ({
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: null, audioFftAvailable: false,
 } as unknown as Capabilities);
+
+const finiteFixture = FiniteControlRendererFixture as FiniteControlAppearance['action'];
+const finiteAppearance = {
+  action: finiteFixture,
+  toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+  choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+} satisfies FiniteControlAppearance;
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -337,6 +354,8 @@ beforeEach(() => {
   h.caps = liveCaps(true);
   h.session = { state: 'connected', epoch: 7 };
   h.sessionSubscriber = null;
+  h.selectedFiniteAppearance = undefined;
+  resetRetainedInvocations();
   for (const value of Object.values(h)) {
     if (typeof value === 'function' && 'mockReset' in value) (value as ReturnType<typeof vi.fn>).mockReset();
   }
@@ -346,13 +365,14 @@ afterEach(() => {
   if (component) unmount(component);
   component = null;
   resetCommandLifecycle();
+  resetRetainedInvocations();
   expect(h.sessionSubscriber).toBeNull();
   expect(h.authoritySubscribers.size).toBe(0);
   document.body.innerHTML = '';
 });
 
 describe('L1 hosted desktop TX auxiliary composition', () => {
-  it('places all eight scalar handles independently beside one finite/TUNE remainder', () => {
+  it('places all five finite and eight scalar handles independently', () => {
     renderHostedDesktop();
 
     const fields = [
@@ -361,14 +381,27 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
     ] as const;
     const zone = q('[data-zone-id="tx-aux"]');
     const remainder = q('[data-testid="tx-aux-surface"]');
+    const finiteGrid = q('.tx-aux-finite-grid');
     const grid = q('.tx-aux-scalar-grid');
 
     expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
     expect(zone).not.toBeNull();
     expect(remainder?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
+    expect(finiteGrid?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
     expect(grid?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
+    expect(finiteGrid?.querySelectorAll(':scope > .tx-aux-finite-seat')).toHaveLength(5);
     expect(grid?.querySelectorAll(':scope > .tx-aux-scalar-seat')).toHaveLength(8);
+
+    for (const [field, testid] of [
+      ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
+      ['monitor', 'tx-aux-monitor'], ['atuTune', 'tx-aux-atu-tune'],
+    ] as const) {
+      const seat = finiteGrid?.querySelector(`:scope > .tx-aux-finite-seat[data-field="${field}"]`);
+      expect(seat, `${field} seat`).not.toBeNull();
+      expect(seat?.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
+      expect(target.querySelectorAll(`[data-testid="${testid}"]`)).toHaveLength(1);
+    }
 
     for (const field of fields) {
       const seat = grid?.querySelector(`:scope > .tx-aux-scalar-seat[data-field="${field}"]`);
@@ -380,6 +413,41 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
     expect(remainder?.querySelector('.tx-aux-scalar-grid')).toBeNull();
     expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
     expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(4);
+  });
+});
+
+describe('selected finite TX auxiliary authority lifetime', () => {
+  it('keeps the selected external appearance inert when authority is absent', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    h.session = { state: 'disconnected', epoch: 7 };
+    render();
+
+    expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(0);
+    expect(q('[data-testid="tx-aux-atu-tune"]')).toBeNull();
+    expect(q('[data-testid="external-VOX"]')).toBeNull();
+    expect(q('[data-testid="external-TUNE"]')).toBeNull();
+    expect(h.authoritySubscribers.size).toBe(3);
+  });
+
+  it('revokes retained A1 synchronously on A-B-A before flush and admits only fresh A3', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    render();
+    const retainedA1 = retainedInvocations.get('VOX')!;
+
+    h.session = { state: 'connected', epoch: 8 };
+    publishAuthority();
+    h.session = { state: 'connected', epoch: 7 };
+    publishAuthority();
+    retainedA1();
+    expect(h.voxToggle).not.toHaveBeenCalled();
+
+    flushSync();
+    const retainedA3 = retainedInvocations.get('VOX')!;
+    expect(retainedA3).not.toBe(retainedA1);
+    retainedA3();
+    expect(h.voxToggle).toHaveBeenCalledOnce();
+    retainedA1();
+    expect(h.voxToggle).toHaveBeenCalledOnce();
   });
 });
 

@@ -302,6 +302,17 @@
   </div>
 {/snippet}
 
+{#snippet txAuxInstrumentLayout()}
+  <div class="tx-aux-finite-grid">
+    <div class="tx-aux-finite-seat" data-field="atu">{@render instruments.txAuxInstruments.atu()}</div>
+    <div class="tx-aux-finite-seat" data-field="vox">{@render instruments.txAuxInstruments.vox()}</div>
+    <div class="tx-aux-finite-seat" data-field="compressor">{@render instruments.txAuxInstruments.compressor()}</div>
+    <div class="tx-aux-finite-seat" data-field="monitor">{@render instruments.txAuxInstruments.monitor()}</div>
+    <div class="tx-aux-finite-seat" data-field="atuTune">{@render instruments.txAuxInstruments.atuTune()}</div>
+  </div>
+  {@render txAuxScalars()}
+{/snippet}
+
 {#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic', allowBare = false)}
   {@render instruments.vfo(appearance, allowBare)}
   {@render instruments.rxTx(allowBare)}
@@ -317,7 +328,7 @@
   {@render instruments.cwKeyer(allowBare)}
   {@render instruments.scopeControls(allowBare)}
   {@render instruments.scopeDisplay(allowBare)}
-  {@render instruments.txAuxControls(txAuxScalars, allowBare)}
+  {@render instruments.txAuxControls(txAuxInstrumentLayout, allowBare)}
   {@render instruments.meters(allowBare)}
 {/snippet}
 
@@ -358,7 +369,7 @@
         {@render instruments.rxAudio()}
         {@render instruments.dsp()}
         {@render instruments.cwKeyer()}
-        {@render instruments.txAuxControls(txAuxScalars)}
+        {@render instruments.txAuxControls(txAuxInstrumentLayout)}
         <div class="content-right"><RightSidebar hideTxPanel={semanticRxTx} {declared} /></div>
       </div>
 
@@ -630,6 +641,7 @@
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
+  .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

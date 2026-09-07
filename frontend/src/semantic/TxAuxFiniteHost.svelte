@@ -50,7 +50,7 @@
   }
   type RendererSelection =
     | { finiteAppearance?: undefined; rendererContext?: undefined }
-    | { finiteAppearance: FiniteControlAppearance; rendererContext: FiniteRendererContext | null };
+    | { finiteAppearance: FiniteControlAppearance<string | number>; rendererContext: FiniteRendererContext | null };
   type Props = ExistingProps & RendererSelection;
 
   let {

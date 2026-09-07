@@ -7,6 +7,7 @@
   import type {
     ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverVfoAppearance,
   } from '../../../../semantic/ReceiverInstrumentHost.svelte';
+  import type { TxAuxFiniteHandles } from '../../../../semantic/tx-aux-finite';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[appearance: FixtureVfoAppearance, allowBare?: boolean]>(
@@ -23,13 +24,17 @@
     vfoOperations: operations,
   } satisfies ReceiverInstrumentHandles;
   const rxAudioInstruments = { afLevel: empty };
+  const txAuxInstruments = {
+    atu: empty, vox: empty, compressor: empty, monitor: empty, atuTune: empty,
+  } satisfies TxAuxFiniteHandles;
   const scalars = {
     rfPower: empty, micGain: empty, driveGain: empty, voxGain: empty,
     antiVoxGain: empty, voxDelay: empty, compressorLevel: empty, monitorLevel: empty,
   };
 
   export const TEST_INSTRUMENTS = {
-    vfo, rxTx: empty, txAuxControls: txAux, txAuxScalars: scalars, receiverInstruments,
+    vfo, rxTx: empty, txAuxControls: txAux, txAuxScalars: scalars, txAuxInstruments,
+    receiverInstruments,
     rxAudioInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band: empty, antenna: empty, ritXitScan: empty, cwKeyer: empty,

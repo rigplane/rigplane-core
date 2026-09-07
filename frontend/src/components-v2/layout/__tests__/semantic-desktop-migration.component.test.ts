@@ -1379,6 +1379,15 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
     }
     expect(root.querySelectorAll(KEY_AUTHORITIES)).toHaveLength(1);
     expect(root.querySelector('.desktop-controls-right [data-testid="rx-tx-unkey"]')).not.toBeNull();
+    for (const [field, testid] of [
+      ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
+      ['monitor', 'tx-aux-monitor'], ['atuTune', 'tx-aux-atu-tune'],
+    ] as const) {
+      const seat = root.querySelector(`.desktop-controls-right .tx-aux-finite-seat[data-field="${field}"]`);
+      expect(seat, `${field} finite seat`).not.toBeNull();
+      expect(seat?.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
+      expect(root.querySelectorAll(`[data-testid="${testid}"]`)).toHaveLength(1);
+    }
     expect(root.querySelector('.desktop-controls-center .content-row')).not.toBeNull();
   });
 
