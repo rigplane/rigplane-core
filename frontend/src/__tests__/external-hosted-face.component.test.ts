@@ -474,4 +474,28 @@ describe('external hosted face chain', () => {
     invoke('[data-probe="value"] button', 'onAntiVoxGainChange');
     expect(h.scalarOwners).toEqual(owners);
   });
+
+  it('re-creates the face on an occurrence change with the same component and keeps its owners', async () => {
+    const current = { value: {} };
+    const loaded = await loadedRecord('keying', FaceA);
+    const a1 = occurrence(loaded, current); current.value = a1;
+    const props = proxy({ externalPresentation: a1 }); const plan = writable<SurfacePlan | null>(fullPlan());
+    const livePlan = fromStore(plan); target = document.createElement('div'); document.body.appendChild(target);
+    mounted = mount(SemanticRadioSurfaces, { target, props,
+      context: new Map([[SURFACE_PLAN_CONTEXT_KEY, () => livePlan.current]]) }); flushSync();
+    const faceA1 = target.querySelector('[data-external-face="a"]');
+    const owners = [...h.frequencyOwners, ...h.meterOwners, ...h.scalarOwners, ...h.finiteSeats];
+    const subscriptions = h.subscribers.size;
+    const oldButton = target.querySelector<HTMLButtonElement>('[data-fixture-action]')!;
+    const oldLease = h.finiteLeases[3] as FiniteRendererLease<unknown> & { invoke(): void };
+    const a1b = occurrence(loaded, current); current.value = a1b; props.externalPresentation = a1b; flushSync();
+    const faceA1b = target.querySelector('[data-external-face="a"]');
+    expect(faceA1b).not.toBeNull(); expect(faceA1b).not.toBe(faceA1);
+    expect([...h.frequencyOwners, ...h.meterOwners, ...h.scalarOwners, ...h.finiteSeats]).toEqual(owners);
+    expect(h.subscribers.size).toBe(subscriptions);
+    clearCalls(); oldLease.invoke(); oldButton.click();
+    expect([...h.calls.values()].every((fn) => fn.mock.calls.length === 0)).toBe(true);
+    clearCalls(); target.querySelector<HTMLButtonElement>('[data-fixture-action]')!.click();
+    expectOnly('onEqual');
+  });
 });
