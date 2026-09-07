@@ -37,8 +37,7 @@ vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' })
 vi.mock('../../../../skins/registry', () => ({
   resolveSkinId: h.resolveSkin,
   loadSkin: async () => (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
-  presentationHostMode: () => 'self-contained',
-  presentationResourcePlan: () => [],
+  getPresentationRecord: (id: unknown) => ({ id, kind: 'built-in-self-contained', resources: [] }),
 }));
 vi.mock('../../../../components-v2/wiring/SemanticRadioSurfaces.svelte', async () => ({
   default: (await import('../../../../components-v2/layout/__tests__/SpectrumPanelStub.svelte')).default,
@@ -138,6 +137,20 @@ describe('App TX lifecycle', () => {
     await settle();
     expect(h.provide).toHaveBeenCalledOnce();
     expect(h.host!.refreshAuthority).toHaveBeenCalledOnce();
+    // MOR-2425 C1 PR-2 follow-up: the loaded presentation (SpectrumPanelStub,
+    // via `loadSkin`) must actually be in the mounted tree, not merely
+    // implied by the TX-host assertions above — AppGlobalHost and
+    // LocalExtensionsHost are stubbed with the same component and always
+    // render as siblings, so a failed presentation load (2 stubs) is
+    // distinguishable from a successful one (3 stubs: presentation + the
+    // two siblings). `loadSkin`'s dynamic import settles a macrotask after
+    // `settle()`'s microtask drain, so poll rather than assert immediately —
+    // same idiom as `integration-page-lifecycle.isolated.test.ts`'s
+    // `capturedController` wait.
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelectorAll('.spectrum-panel-stub')).toHaveLength(3);
+    });
     h.radio!.ptt = true;
     h.radio!.observationSeq++;
     h.caps!.capabilities.push('voice_tx');
