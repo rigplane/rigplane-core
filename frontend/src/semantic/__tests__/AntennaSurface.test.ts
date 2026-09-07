@@ -23,9 +23,10 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import AntennaSurface, {
+import {
   ANTENNA_BLOCKED_LABEL, ANTENNA_PORTS, UNKNOWN_TEXT, antennaSwitchBlocks, tunerIdle,
 } from '../AntennaSurface.svelte';
+import AntennaSurface from './fixtures/AntennaInstrumentHostFixture.svelte';
 import { topologyFixtures, withAntenna, withTxAux } from '../fixtures/topologies';
 import { keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
 import type {
@@ -33,6 +34,7 @@ import type {
 } from '../radio-view-model';
 
 const SOURCE = readFileSync('src/semantic/AntennaSurface.svelte', 'utf8');
+const HOST = readFileSync('src/semantic/AntennaInstrumentHost.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
  *  source-scanning test matches. */
 const CODE = SOURCE
@@ -130,7 +132,7 @@ describe('the antenna surface owns no state and no TX authority (R9)', () => {
     expect([...new Set(specifiers)].sort())
       .toEqual([
         '../primitives/control-instruments/control-instrument-behavior',
-        './pressed-of', './radio-view-model', './rx-tx-surface',
+        './AntennaInstrumentHost.svelte', './pressed-of', './radio-view-model', './rx-tx-surface',
       ]);
     expect(CODE).toContain('bindAbsoluteChoiceInstrument');
     expect(CODE).toContain('bindToggleInstrument');
@@ -162,7 +164,7 @@ describe('the antenna surface owns no state and no TX authority (R9)', () => {
   it('takes exactly two state props — the view model and the TX snapshot', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1]))
-      .toEqual(['view', 'tx', 'onSelectPort', 'onToggleRxAnt']);
+      .toEqual(['view', 'tx', 'onSelectPort', 'onToggleRxAnt', 'handles', 'layout']);
   });
 });
 
@@ -346,7 +348,7 @@ describe('antenna switching is gated while the transmitter is not provably idle'
 
   // Kills: a local re-derivation of TX truth drifting from the shared one.
   it('shares the transmitter-busy vocabulary with the key gate', () => {
-    expect(CODE).toContain('keyBlockedReasons');
+    expect(HOST).toContain('keyBlockedReasons');
     expect(antennaSwitchBlocks(base(), TRANSMITTING)).toContain('radio-transmitting');
     expect(antennaSwitchBlocks(base(), { ...RECEIVING, phase: 'key-confirm-pending' }))
       .toContain('tx-busy');
@@ -401,7 +403,7 @@ describe('ATU readiness comes from txAux.atu and fails closed (CF1, CF2)', () =>
   // quietly preferring it.
   it('reads no tuner fact from the antenna group, which carries none', () => {
     expect(Object.keys(base().antenna!).sort()).toEqual(['antennaCount', 'rxAnt', 'txAntenna']);
-    expect(CODE).toContain('view.txAux?.atu');
+    expect(HOST).toContain('view.txAux?.atu');
     expect(CODE).not.toMatch(/antenna[^\n]*\.(atu|tuner)/);
   });
 
