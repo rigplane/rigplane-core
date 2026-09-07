@@ -370,6 +370,40 @@ describe('RxAudioInstrumentHost finite handles (RX-B/RX-C)', () => {
     expect(onModInputChange).toHaveBeenCalledTimes(MOD_INPUT_SOURCES.length);
   });
 
+  // The split seat's reading is the LABEL ('on'/'off') mapped from the raw
+  // `routingSplit` boolean fact by `splitLabelOf`; these two rows are literal
+  // (not derived via `SPLIT_CHOICES.find`) so a `splitLabelOf` that maps the
+  // fact to the wrong label is caught rather than agreed with.
+  it("reports the split seat's data-reading and aria-checked from a known-true routingSplit", () => {
+    renderFinite(withRx({
+      routingSplit: { reading: { status: 'known', value: true }, availability: AVAILABLE },
+    }));
+    expect(
+      target.querySelector('[data-testid="external-Stereo split"]')?.getAttribute('data-reading'),
+    ).toBe('on');
+    expect(
+      target.querySelector('[data-testid="external-Stereo split-on"]')?.getAttribute('aria-checked'),
+    ).toBe('true');
+    expect(
+      target.querySelector('[data-testid="external-Stereo split-off"]')?.getAttribute('aria-checked'),
+    ).toBe('false');
+  });
+
+  it("reports the split seat's data-reading and aria-checked from a known-false routingSplit", () => {
+    renderFinite(withRx({
+      routingSplit: { reading: { status: 'known', value: false }, availability: AVAILABLE },
+    }));
+    expect(
+      target.querySelector('[data-testid="external-Stereo split"]')?.getAttribute('data-reading'),
+    ).toBe('off');
+    expect(
+      target.querySelector('[data-testid="external-Stereo split-off"]')?.getAttribute('aria-checked'),
+    ).toBe('true');
+    expect(
+      target.querySelector('[data-testid="external-Stereo split-on"]')?.getAttribute('aria-checked'),
+    ).toBe('false');
+  });
+
   it('offers `live` only while liveAudio is structural, never re-derived from anything else', () => {
     const { component: absent } = renderFinite(withRx({ liveAudio: UNAVAILABLE }));
     expect(target.querySelector('[data-testid="external-Monitor mode-live"]')).toBeNull();

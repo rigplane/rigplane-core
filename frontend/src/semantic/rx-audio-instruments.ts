@@ -87,5 +87,5 @@ export interface RxAudioInstrumentHandles {
  *  snippet that places the finite five wherever the active face wants them,
  *  in place of `RxAudioSurface`'s own default grouping (MOR-2425 RX-B/RX-C).
  *  Takes the full handles record (`afLevel` included) — `RxAudioSurface.svelte`
- *  keeps rendering `afLevel` itself unconditionally either way. */
+ *  keeps rendering `afLevel` itself regardless of `finiteLayout`. */
 export type RxAudioFiniteLayout = Snippet<[RxAudioInstrumentHandles]>;

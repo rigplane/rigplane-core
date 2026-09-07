@@ -36,12 +36,11 @@
   /** Usable ⇔ the radio HAS it, it is readable NOW, and it was actually read.
    *  Deliberately re-declared rather than imported from `RxAudioSurface.svelte`
    *  — the same small-predicate duplication `DspInstrumentHost`/`DspSurface`
-   *  and `TxAuxFiniteHost`/`RxTxSurface` already carry between a host and its
-   *  paired surface. */
+   *  already carry between a host and its paired surface (both declare their
+   *  own `usable`). */
   const usable = (f: RxAudioField<unknown>): boolean =>
     f.availability.structural && f.availability.operational && f.reading.status === 'known';
-  /** Honest text: an unread fact reads as unknown, never as a default.
-   *  Deliberately re-declared for the same reason `usable` above is. */
+  /** Honest text: an unread fact reads as unknown, never as a default. */
   const textOf = (f: RxAudioField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
 
