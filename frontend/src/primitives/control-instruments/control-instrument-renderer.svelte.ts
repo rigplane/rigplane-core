@@ -25,6 +25,7 @@ export interface ControlOption<T> {
   readonly value: T;
   readonly label: string;
   readonly disabled?: boolean;
+  readonly disabledReason?: string;
 }
 
 export interface RequestedTarget<T> {

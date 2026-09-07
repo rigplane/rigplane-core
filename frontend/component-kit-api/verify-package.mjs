@@ -208,6 +208,7 @@ try {
   defineComponentKit,
   type ComponentKitDeclaration,
   type ChoiceRendererProps,
+  type ControlOption,
   type FiniteChoiceValue,
   type FiniteControlAppearance,
   type FiniteControlReading,
@@ -225,15 +226,21 @@ const layout: LayoutManifest | undefined = declaration.layouts?.[0];
 const presentation: PresentationDeclaration | undefined = declaration.presentations?.[0];
 const finite: FiniteControlAppearance | undefined = declaration.finiteControlAppearances?.fixture;
 const numericChoiceRenderer: Component<ChoiceRendererProps<number>> | undefined = finite?.choice;
+const oldChoiceOption: ControlOption<'OFF'> = { value: 'OFF', label: 'Off' };
+const reasonedChoiceOption: ControlOption<'DATA1'> = {
+  value: 'DATA1', label: 'Data 1', disabled: true, disabledReason: 'Not available',
+};
 function inspectChoice(props: ChoiceRendererProps<'OFF' | 'DATA1'>):
   FiniteControlReading<'OFF' | 'DATA1'> | undefined {
   const view = props.lease.view;
   if (view === undefined) return undefined;
   const option = view.options[0]?.value;
+  const disabledReason: string | undefined = view.options[0]?.disabledReason;
   const supported: FiniteChoiceValue | undefined = option;
   const optionalEvidence = [view.defaultValue, view.requested, view.feedback] as const;
   const request = option === undefined ? undefined : () => props.lease.invoke(option);
   void supported;
+  void disabledReason;
   void optionalEvidence;
   void request;
   return view.reading;
@@ -244,6 +251,8 @@ void scalar;
 void layout;
 void presentation;
 void numericChoiceRenderer;
+void oldChoiceOption;
+void reasonedChoiceOption;
 void inspectChoice;
 export const installedKit = defineComponentKit(declaration);
 export const apiVersion = COMPONENT_KIT_API_VERSION;

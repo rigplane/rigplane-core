@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import ControlInstrumentRenderHarness from './ControlInstrumentRenderHarness.svelte';
+import FiniteControlRendererFixture from './support/FiniteControlRendererFixture.svelte';
 import type { InstrumentField } from '../control-instrument-behavior';
+import {
+  createAbsoluteChoiceRendererSeat, createFiniteRendererContext,
+} from '../control-instrument-renderer.svelte';
 
 const usable = <T>(value: T): InstrumentField<T> => ({
   availability: { structural: true, operational: true }, reading: { status: 'known', value },
@@ -39,6 +43,52 @@ describe('control-instrument renderer independence', () => {
     expect(r.radio('A').closest('[role="radiogroup"]')).toBe(r.choiceGroup());
     expect(r.radio('B').closest('[role="radiogroup"]')).toBe(r.choiceGroup());
     r.dispose();
+  });
+
+  it('renders per-option reasons as unique non-live descriptions without changing admission', () => {
+    const invoke = vi.fn();
+    const context = createFiniteRendererContext();
+    const seat = createAbsoluteChoiceRendererSeat(() => ({
+      context,
+      reading: { status: 'unknown' as const },
+      available: true,
+      label: 'Active receiver',
+      options: [
+        { value: 'MAIN', label: 'MAIN', disabled: true, disabledReason: 'MAIN unavailable' },
+        { value: 'SUB', label: 'SUB', disabledReason: 'SUB remains available' },
+      ],
+      invoke,
+    }));
+    const firstLease = seat.attachRenderer();
+    const secondLease = seat.attachRenderer();
+    const first = mount(FiniteControlRendererFixture, { target, props: { lease: firstLease } });
+    const secondTarget = document.createElement('div');
+    target.appendChild(secondTarget);
+    const second = mount(FiniteControlRendererFixture, {
+      target: secondTarget, props: { lease: secondLease },
+    });
+    flushSync();
+
+    const main = target.querySelector<HTMLButtonElement>('[data-testid="external-Active receiver-MAIN"]')!;
+    const sub = target.querySelector<HTMLButtonElement>('[data-testid="external-Active receiver-SUB"]')!;
+    const reasonId = main.getAttribute('aria-describedby');
+    const describedIds = [...target.querySelectorAll<HTMLButtonElement>('[aria-describedby]')]
+      .map(button => button.getAttribute('aria-describedby'));
+    expect(main.disabled).toBe(true);
+    expect(main.title).toBe('MAIN unavailable');
+    expect(reasonId).not.toBeNull();
+    expect(target.querySelector(`#${reasonId}`)?.textContent).toBe('MAIN unavailable');
+    expect(new Set(describedIds).size).toBe(describedIds.length);
+    expect(target.querySelector('[role="status"], [aria-live]')).toBeNull();
+
+    main.click();
+    sub.click();
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('SUB');
+
+    unmount(first);
+    unmount(second);
+    firstLease.dispose();
+    secondLease.dispose();
   });
 
   it('renders unknown checkbox as mixed and leaves an out-of-list observed choice unselected', () => {
