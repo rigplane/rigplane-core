@@ -1,4 +1,4 @@
-import type { Component } from 'svelte';
+import type { Component, Snippet } from 'svelte';
 import type { Skin as HostScalarAppearance } from '../../src/components-v2/controls/value-control/skin';
 import type { FrequencyInteraction as HostFrequencyInteraction } from '../../src/primitives/frequency/frequency-interaction.svelte';
 import type { FrequencyReadoutModel as HostFrequencyReadoutModel } from '../../src/primitives/frequency/frequency-readout';
@@ -156,7 +156,95 @@ export interface PresentationDeclaration {
   readonly resources: PresentationResources;
 }
 
-export interface ComponentKitDeclaration {
+export interface ReceiverFrequencyPresentationV1 {
+  readonly compact?: boolean;
+}
+
+export type ReceiverFrequencyHandleV1 = Snippet<[
+  presentation?: Readonly<ReceiverFrequencyPresentationV1>,
+]>;
+
+export type ReceiverSignalMeterHandleV1 = Snippet<[]>;
+
+export interface ReceiverInstrumentFamilyV1 {
+  readonly mainFrequency: ReceiverFrequencyHandleV1;
+  readonly subFrequency: ReceiverFrequencyHandleV1 | null;
+  readonly mainSMeter: ReceiverSignalMeterHandleV1;
+  readonly subSMeter: ReceiverSignalMeterHandleV1 | null;
+}
+
+export type VfoOperationHandleV1 = Snippet<[]>;
+
+export interface VfoOperationInstrumentFamilyV1 {
+  readonly split: VfoOperationHandleV1 | null;
+  readonly dualWatch: VfoOperationHandleV1 | null;
+  readonly activeReceiver: VfoOperationHandleV1 | null;
+  readonly equalize: VfoOperationHandleV1 | null;
+  readonly swap: VfoOperationHandleV1 | null;
+  readonly quickSplit: VfoOperationHandleV1 | null;
+  readonly quickDualWatch: VfoOperationHandleV1 | null;
+  readonly speak: VfoOperationHandleV1 | null;
+}
+
+export type TxAuxContinuousFormV1 = 'hbar' | 'knob';
+
+export interface TxAuxScalarPresentationV1 {
+  readonly form?: TxAuxContinuousFormV1;
+  readonly compact?: boolean;
+  readonly showLabel?: boolean;
+  readonly showValue?: boolean;
+}
+
+export type TxAuxScalarHandleV1 = Snippet<[
+  presentation?: Readonly<TxAuxScalarPresentationV1>,
+]>;
+
+export interface TxAuxInstrumentFamilyV1 {
+  readonly rfPower: TxAuxScalarHandleV1;
+  readonly micGain: TxAuxScalarHandleV1;
+  readonly driveGain: TxAuxScalarHandleV1;
+  readonly voxGain: TxAuxScalarHandleV1;
+  readonly antiVoxGain: TxAuxScalarHandleV1;
+  readonly voxDelay: TxAuxScalarHandleV1;
+  readonly compressorLevel: TxAuxScalarHandleV1;
+  readonly monitorLevel: TxAuxScalarHandleV1;
+}
+
+export interface HostedInstrumentFamiliesV1 {
+  readonly receiver: ReceiverInstrumentFamilyV1 | null;
+  readonly vfoOperations: VfoOperationInstrumentFamilyV1 | null;
+  readonly txAux: TxAuxInstrumentFamilyV1 | null;
+}
+
+export interface HostedFacePropsV1 {
+  readonly instruments: HostedInstrumentFamiliesV1;
+}
+
+export type HostedFaceComponentV1 = Component<HostedFacePropsV1>;
+
+export interface HostedFaceAppearanceIdsV1 {
+  readonly scalar: string;
+  readonly frequency: string;
+  readonly finite: string;
+  readonly meter: string;
+}
+
+export interface HostedFacePresentationV1 {
+  readonly hostMode: 'external-instruments-v1';
+  readonly id: string;
+  readonly layoutId: string;
+  readonly loader: () => Promise<HostedFaceComponentV1>;
+  readonly resources: PresentationResources;
+  readonly appearances: HostedFaceAppearanceIdsV1;
+}
+
+export type ComponentKitPresentationDeclarationV1 =
+  | PresentationDeclaration
+  | HostedFacePresentationV1;
+
+export interface ComponentKitDeclaration<
+  P extends ComponentKitPresentationDeclarationV1 = PresentationDeclaration,
+> {
   readonly apiVersion: ComponentKitApiVersion;
   readonly id: string;
   readonly scalarAppearances?: Readonly<Record<string, ScalarAppearance>>;
@@ -166,9 +254,14 @@ export interface ComponentKitDeclaration {
   readonly designLanguages?: readonly DesignLanguageManifest[];
   readonly layouts?: readonly LayoutManifest[];
   readonly instrumentGroups?: readonly InstrumentGroup[];
-  readonly presentations?: readonly PresentationDeclaration[];
+  readonly presentations?: readonly P[];
 }
 
-export function defineComponentKit<const T extends ComponentKitDeclaration>(kit: T): T {
+export type HostedComponentKitDeclarationV1 =
+  ComponentKitDeclaration<ComponentKitPresentationDeclarationV1>;
+
+export function defineComponentKit<
+  const T extends ComponentKitDeclaration<ComponentKitPresentationDeclarationV1>,
+>(kit: T): T {
   return kit;
 }

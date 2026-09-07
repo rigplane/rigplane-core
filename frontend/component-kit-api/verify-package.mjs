@@ -100,6 +100,21 @@ function moduleSpecifiers(source, file) {
   return specifiers;
 }
 
+function interfaceMembers(source, interfaceName) {
+  const parsed = ts.createSourceFile(
+    'component-kit-api.d.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS,
+  );
+  const declaration = parsed.statements.find((statement) =>
+    ts.isInterfaceDeclaration(statement) && statement.name.text === interfaceName
+  );
+  assert(declaration && ts.isInterfaceDeclaration(declaration));
+  return declaration.members.map((member) => {
+    assert(ts.isPropertySignature(member));
+    assert(member.name && ts.isIdentifier(member.name));
+    return { name: member.name.text, optional: member.questionToken !== undefined };
+  });
+}
+
 async function assertClosedDeclarations(root, allowedBare) {
   const declarations = (await filesUnder(root)).filter((file) => file.endsWith('.d.ts'));
   assert(declarations.length > 0);
@@ -128,6 +143,58 @@ async function assertClosedDeclarations(root, allowedBare) {
     }
   }
   return declarations;
+}
+
+async function assertHostedFaceSources() {
+  const faceFiles = ['FaceA.svelte', 'FaceB.svelte']
+    .map((name) => path.join(fixtureRoot, 'src', name));
+  const sources = await Promise.all(faceFiles.map((file) => readFile(file, 'utf8')));
+  const operations = [
+    'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap',
+    'quickSplit', 'quickDualWatch', 'speak',
+  ];
+  const txSeats = [
+    'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain',
+    'voxDelay', 'compressorLevel', 'monitorLevel',
+  ];
+
+  for (const [index, source] of sources.entries()) {
+    const imports = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/gu)]
+      .map((match) => match[1]);
+    assert.deepEqual(imports, ['@rigplane/component-kit-api']);
+    assert(source.includes('instruments.receiver !== null'));
+    assert(source.includes('receiver.mainFrequency'));
+    assert(source.includes('receiver.mainSMeter'));
+    assert(source.includes('receiver.subFrequency !== null'));
+    assert(source.includes('receiver.subSMeter !== null'));
+    assert(source.includes('instruments.vfoOperations !== null'));
+    assert(source.includes('instruments.txAux !== null'));
+    for (const field of operations) {
+      assert.equal(
+        [...source.matchAll(new RegExp(`operations\\.${field}\\(`, 'gu'))].length,
+        1,
+        `${path.basename(faceFiles[index])} must arrange ${field} exactly once`,
+      );
+    }
+    for (const field of txSeats) {
+      assert.equal(
+        [...source.matchAll(new RegExp(`tx\\.${field}\\(`, 'gu'))].length,
+        1,
+        `${path.basename(faceFiles[index])} must arrange ${field} exactly once`,
+      );
+    }
+    for (const forbidden of [
+      '$lib', '/frontend/src/', 'InstrumentComposition', 'SignalMeterFrame',
+      'vfoFreqHook', 'onFreqChange',
+    ]) assert(!source.includes(forbidden));
+  }
+  assert(sources[0].indexOf('data-family="receiver"') < sources[0].indexOf('data-family="txAux"'));
+  assert(sources[1].indexOf('data-family="txAux"') < sources[1].indexOf('data-family="receiver"'));
+  assert(sources[0].includes("tx.rfPower({ form: 'hbar'"));
+  assert(sources[1].includes("tx.rfPower({ form: 'knob'"));
+  assert(sources.every((source) => source.includes('compact:')));
+  assert(sources.every((source) => source.includes('showLabel:')));
+  assert(sources.every((source) => source.includes('showValue:')));
 }
 
 function pack(directory, destination) {
@@ -164,6 +231,7 @@ async function installedSveltePackages(nodeModules) {
 }
 
 execute(process.execPath, [path.join(packageRoot, 'build.mjs')], frontendRoot);
+await assertHostedFaceSources();
 
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'rigplane-component-kit-'));
 try {
@@ -196,6 +264,68 @@ try {
     apiDeclarations.map((file) => readFile(file, 'utf8')),
   )).join('\n');
   assert(!apiDeclarationSource.includes('PresentationHostMode'));
+  assert(apiDeclarationSource.includes("'external-instruments-v1'"));
+  assert(apiDeclarationSource.includes('HostedFacePropsV1'));
+  assert(apiDeclarationSource.includes('ReceiverFrequencyHandleV1'));
+  assert(apiDeclarationSource.includes('VfoOperationHandleV1'));
+  assert(apiDeclarationSource.includes('TxAuxInstrumentFamilyV1'));
+  assert(!apiDeclarationSource.includes('ReceiverMeterHandleV1'));
+  assert(!apiDeclarationSource.includes('ReceiverVfoOperationsHandleV1'));
+  assert(!apiDeclarationSource.includes('SignalMeterFrame'));
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'ReceiverInstrumentFamilyV1'), [
+    { name: 'mainFrequency', optional: false },
+    { name: 'subFrequency', optional: false },
+    { name: 'mainSMeter', optional: false },
+    { name: 'subSMeter', optional: false },
+  ]);
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'ReceiverFrequencyPresentationV1'), [
+    { name: 'compact', optional: true },
+  ]);
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'VfoOperationInstrumentFamilyV1'), [
+    { name: 'split', optional: false },
+    { name: 'dualWatch', optional: false },
+    { name: 'activeReceiver', optional: false },
+    { name: 'equalize', optional: false },
+    { name: 'swap', optional: false },
+    { name: 'quickSplit', optional: false },
+    { name: 'quickDualWatch', optional: false },
+    { name: 'speak', optional: false },
+  ]);
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'TxAuxScalarPresentationV1'), [
+    { name: 'form', optional: true },
+    { name: 'compact', optional: true },
+    { name: 'showLabel', optional: true },
+    { name: 'showValue', optional: true },
+  ]);
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'TxAuxInstrumentFamilyV1'), [
+    { name: 'rfPower', optional: false },
+    { name: 'micGain', optional: false },
+    { name: 'driveGain', optional: false },
+    { name: 'voxGain', optional: false },
+    { name: 'antiVoxGain', optional: false },
+    { name: 'voxDelay', optional: false },
+    { name: 'compressorLevel', optional: false },
+    { name: 'monitorLevel', optional: false },
+  ]);
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'HostedInstrumentFamiliesV1'), [
+    { name: 'receiver', optional: false },
+    { name: 'vfoOperations', optional: false },
+    { name: 'txAux', optional: false },
+  ]);
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'HostedFaceAppearanceIdsV1'), [
+    { name: 'scalar', optional: false },
+    { name: 'frequency', optional: false },
+    { name: 'finite', optional: false },
+    { name: 'meter', optional: false },
+  ]);
+  assert.deepEqual(interfaceMembers(apiDeclarationSource, 'HostedFacePresentationV1'), [
+    { name: 'hostMode', optional: false },
+    { name: 'id', optional: false },
+    { name: 'layoutId', optional: false },
+    { name: 'loader', optional: false },
+    { name: 'resources', optional: false },
+    { name: 'appearances', optional: false },
+  ]);
   const fixtureDeclarations = await assertClosedDeclarations(
     path.join(fixtureRoot, 'dist'),
     new Set(['@rigplane/component-kit-api', 'svelte']),
@@ -206,6 +336,15 @@ try {
   assert(!apiRuntime.includes('frequency-interaction'));
   assert(!apiRuntime.includes('control-instrument-renderer'));
   assert(!apiRuntime.includes('createFiniteRendererContext'));
+  const fixtureRuntime = await readFile(path.join(fixtureRoot, 'dist', 'index.js'), 'utf8');
+  assert(fixtureRuntime.includes('external-instruments-v1'));
+  assert(fixtureRuntime.includes('fixture-face-a'));
+  assert(fixtureRuntime.includes('fixture-face-b'));
+  assert(fixtureRuntime.includes('data-external-face'));
+  assert(!fixtureRuntime.includes('$lib'));
+  assert(!fixtureRuntime.includes('/frontend/src/'));
+  assert(!fixtureRuntime.includes('InstrumentComposition'));
+  assert(!fixtureRuntime.includes('SignalMeterFrame'));
 
   await writeFile(path.join(consumer, 'package.json'), JSON.stringify({
     name: 'component-kit-portable-consumer',
@@ -250,6 +389,10 @@ export default {
   type FiniteControlAppearance,
   type FiniteControlReading,
   type FrequencyRendererProps,
+  type HostedComponentKitDeclarationV1,
+  type HostedFaceComponentV1,
+  type HostedFacePresentationV1,
+  type HostedFacePropsV1,
   type LayoutManifest,
   type LevelMeterRendererProps,
   type MeterAppearance,
@@ -258,20 +401,58 @@ export default {
   type ScalarAppearance,
   type SignalMeterRendererProps,
   type SignalMeterEvidence,
+  type TxAuxScalarPresentationV1,
 } from '@rigplane/component-kit-api';
 import type { Component } from 'svelte';
-import fixtureKit from '@rigplane/external-component-kit-fixture';
+import fixtureKit, {
+  FixtureFaceA,
+  FixtureFaceB,
+  faceAPresentation,
+  faceBPresentation,
+  reservedPresentation,
+} from '@rigplane/external-component-kit-fixture';
 
-const declaration: ComponentKitDeclaration = fixtureKit;
+const declaration: HostedComponentKitDeclarationV1 = fixtureKit;
 const scalar: ScalarAppearance | undefined = declaration.scalarAppearances?.fixture;
 const layout: LayoutManifest | undefined = declaration.layouts?.[0];
-const presentation: PresentationDeclaration | undefined = declaration.presentations?.[0];
 const finite: FiniteControlAppearance | undefined = declaration.finiteControlAppearances?.fixture;
 const numericChoiceRenderer: Component<ChoiceRendererProps<number>> | undefined = finite?.choice;
 const meter: MeterAppearance | undefined = declaration.meterAppearances?.fixture;
 const signalMeterRenderer: Component<SignalMeterRendererProps> | undefined = meter?.signal;
 const levelMeterRenderer: Component<LevelMeterRendererProps> | undefined = meter?.level;
-const oldShape: ComponentKitDeclaration = { apiVersion: 1, id: 'old-shape' };
+const oldShape: ComponentKitDeclaration = {
+  apiVersion: 1,
+  id: 'old-shape',
+  presentations: [reservedPresentation],
+};
+const oldPresentation: PresentationDeclaration | undefined = oldShape.presentations?.[0];
+const faceA: HostedFaceComponentV1 = FixtureFaceA;
+const faceB: HostedFaceComponentV1 = FixtureFaceB;
+const hostedA: HostedFacePresentationV1 = faceAPresentation;
+const hostedB: HostedFacePresentationV1 = faceBPresentation;
+const inferredHosted = defineComponentKit({
+  apiVersion: 1,
+  id: 'inferred-hosted',
+  presentations: [faceAPresentation] as const,
+  extensionMarker: 'preserved' as const,
+});
+const inferredMarker: 'preserved' = inferredHosted.extensionMarker;
+const hosted = declaration.presentations?.[0];
+if (hosted !== undefined && 'hostMode' in hosted) {
+  const mode: 'external-instruments-v1' = hosted.hostMode;
+  void mode;
+}
+const txPresentation: TxAuxScalarPresentationV1 = {
+  form: 'knob', compact: true, showLabel: false, showValue: true,
+};
+function inspectHostedFace(props: HostedFacePropsV1): void {
+  const receiver = props.instruments.receiver;
+  const operations = props.instruments.vfoOperations;
+  const txAux = props.instruments.txAux;
+  if (receiver !== null) void [receiver.mainFrequency, receiver.subFrequency, receiver.mainSMeter];
+  if (operations !== null) void [operations.split, operations.equalize, operations.speak];
+  if (txAux !== null) void [txAux.rfPower, txAux.voxDelay, txAux.monitorLevel];
+}
 // @ts-expect-error a current numeric observation always carries its value
 const invalidCurrentEvidence: MeterNumericEvidence = { state: 'current', domain: { kind: 'engineering', unit: 'w' } };
 // @ts-expect-error unknown signal evidence cannot smuggle a numeric value
@@ -299,17 +480,25 @@ type FrequencyProps = FrequencyRendererProps;
 void (null as FrequencyProps | null);
 void scalar;
 void layout;
-void presentation;
 void numericChoiceRenderer;
 void signalMeterRenderer;
 void levelMeterRenderer;
 void oldShape;
+void oldPresentation;
+void faceA;
+void faceB;
+void hostedA;
+void hostedB;
+void inferredMarker;
+void txPresentation;
+void inspectHostedFace;
 void invalidCurrentEvidence;
 void invalidUnknownSignal;
 void oldChoiceOption;
 void reasonedChoiceOption;
 void inspectChoice;
 export const installedKit = defineComponentKit(declaration);
+export const installedOldKit = defineComponentKit(oldShape);
 export const apiVersion = COMPONENT_KIT_API_VERSION;
 `);
   await writeFile(path.join(consumer, 'src', 'private-root-negative.ts'), `// @ts-expect-error host authority is not a public root export
@@ -318,13 +507,89 @@ import type { FiniteRendererContext } from '@rigplane/component-kit-api';
 import type { createFiniteRendererContext, createChoiceRendererSeat } from '@rigplane/component-kit-api';
 // @ts-expect-error declaration-tree subpaths are not exported
 import type { ChoiceRendererInput } from '@rigplane/component-kit-api/dist/types/src/primitives/control-instruments/control-instrument-renderer.svelte';
+// @ts-expect-error private hosted composition types are not public root exports
+import type { InstrumentComposition, SignalMeterFrame, FrequencyInstrumentBinding, ReceiverSMeterRenderer } from '@rigplane/component-kit-api';
+import type {
+  HostedFaceComponentV1,
+  HostedFacePresentationV1,
+  HostedInstrumentFamiliesV1,
+  ReceiverFrequencyHandleV1,
+  ReceiverFrequencyPresentationV1,
+  ReceiverInstrumentFamilyV1,
+  ReceiverSignalMeterHandleV1,
+  TxAuxInstrumentFamilyV1,
+  TxAuxScalarHandleV1,
+  TxAuxScalarPresentationV1,
+  VfoOperationHandleV1,
+  VfoOperationInstrumentFamilyV1,
+} from '@rigplane/component-kit-api';
+import type { Snippet } from 'svelte';
+
+const wrongMode = 'instrument-handles';
+// @ts-expect-error external faces have one admitted host discriminator
+const wrongHostMode: HostedFacePresentationV1['hostMode'] = wrongMode;
+// @ts-expect-error the internal DOM hook is not a hosted-seat presentation option
+const privateFrequencyHook: ReceiverFrequencyPresentationV1 = { vfoFreqHook: true };
+// @ts-expect-error TX auxiliaries admit continuous hbar and knob forms only
+const discreteTxControl: TxAuxScalarPresentationV1 = { form: 'discrete' };
+// @ts-expect-error appearance IDs are resolved by the host declaration, not by a seat call
+const invocationAppearance: TxAuxScalarPresentationV1 = { appearanceId: 'fixture' };
+declare const frequency: ReceiverFrequencyHandleV1;
+declare const meter: ReceiverSignalMeterHandleV1;
+declare const scalar: TxAuxScalarHandleV1;
+declare const operation: VfoOperationHandleV1;
+declare const face: HostedFaceComponentV1;
+// @ts-expect-error the hosted discriminator is required
+const missingHostMode = { id: 'bad', layoutId: 'bad', loader: async () => face, resources: [], appearances: { scalar: 'x', frequency: 'x', finite: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
+// @ts-expect-error receiver seats are exact and do not carry host values
+const receiverWithRawValue: ReceiverInstrumentFamilyV1 = { mainFrequency: frequency, subFrequency: null, mainSMeter: meter, subSMeter: null, confirmedHz: 14074000 };
+// @ts-expect-error SUB structural absence is represented by required null fields
+const receiverWithoutSub: ReceiverInstrumentFamilyV1 = { mainFrequency: frequency, mainSMeter: meter };
+// @ts-expect-error every family key is required even though each family is nullable
+const propsWithoutOperations: HostedInstrumentFamiliesV1 = { receiver: null, txAux: null };
+// @ts-expect-error family absence is null, never undefined
+const undefinedReceiver: HostedInstrumentFamiliesV1 = { receiver: undefined, vfoOperations: null, txAux: null };
+// @ts-expect-error all eight named VFO operation seats are required when admitted
+const operationsWithoutSpeak: VfoOperationInstrumentFamilyV1 = { split: operation, dualWatch: operation, activeReceiver: operation, equalize: operation, swap: operation, quickSplit: operation, quickDualWatch: operation };
+// @ts-expect-error operation-seat absence is null, never undefined
+const undefinedOperation: VfoOperationInstrumentFamilyV1 = { split: undefined, dualWatch: null, activeReceiver: null, equalize: null, swap: null, quickSplit: null, quickDualWatch: null, speak: null };
+// @ts-expect-error unoffered aggregate members are not admitted operation seats
+const operationsWithAggregate = { split: null, dualWatch: null, activeReceiver: null, equalize: null, swap: null, quickSplit: null, quickDualWatch: null, speak: null, standard: operation } satisfies VfoOperationInstrumentFamilyV1;
+declare const oldAggregateOperation: Snippet<[appearance: 'semantic' | 'sdr' | 'standard']>;
+// @ts-expect-error old aggregate appearance vocabulary is not an opaque operation seat
+const publicOperation: VfoOperationHandleV1 = oldAggregateOperation;
+// @ts-expect-error all eight named TX scalar seats are required when admitted
+const txWithoutMonitor: TxAuxInstrumentFamilyV1 = { rfPower: scalar, micGain: scalar, driveGain: scalar, voxGain: scalar, antiVoxGain: scalar, voxDelay: scalar, compressorLevel: scalar };
+// @ts-expect-error layoutId is required on hosted declarations
+const missingLayout = { hostMode: 'external-instruments-v1', id: 'bad', loader: async () => face, resources: [], appearances: { scalar: 'x', frequency: 'x', finite: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
+// @ts-expect-error resources are required on hosted declarations
+const missingResources = { hostMode: 'external-instruments-v1', id: 'bad', layoutId: 'bad', loader: async () => face, appearances: { scalar: 'x', frequency: 'x', finite: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
+// @ts-expect-error scalar appearance is required
+const missingScalarAppearance = { hostMode: 'external-instruments-v1', id: 'bad', layoutId: 'bad', loader: async () => face, resources: [], appearances: { frequency: 'x', finite: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
+// @ts-expect-error frequency appearance is required
+const missingFrequencyAppearance = { hostMode: 'external-instruments-v1', id: 'bad', layoutId: 'bad', loader: async () => face, resources: [], appearances: { scalar: 'x', finite: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
+// @ts-expect-error finite appearance is required
+const missingFiniteAppearance = { hostMode: 'external-instruments-v1', id: 'bad', layoutId: 'bad', loader: async () => face, resources: [], appearances: { scalar: 'x', frequency: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
+// @ts-expect-error meter appearance is required
+const missingMeterAppearance = { hostMode: 'external-instruments-v1', id: 'bad', layoutId: 'bad', loader: async () => face, resources: [], appearances: { scalar: 'x', frequency: 'x', finite: 'x' } } satisfies HostedFacePresentationV1;
+// @ts-expect-error hosted declarations must provide a component loader
+const missingLoader = { hostMode: 'external-instruments-v1', id: 'bad', layoutId: 'bad', resources: [], appearances: { scalar: 'x', frequency: 'x', finite: 'x', meter: 'x' } } satisfies HostedFacePresentationV1;
 
 export type PrivateRootMustStayUnavailable = [
   FiniteRendererContext,
   typeof createFiniteRendererContext,
   typeof createChoiceRendererSeat,
   ChoiceRendererInput<string>,
+  InstrumentComposition,
+  SignalMeterFrame,
+  FrequencyInstrumentBinding,
+  ReceiverSMeterRenderer,
 ];
+void [wrongHostMode, privateFrequencyHook, discreteTxControl, invocationAppearance, missingHostMode];
+void [receiverWithRawValue, receiverWithoutSub, propsWithoutOperations, undefinedReceiver];
+void [operationsWithoutSpeak, undefinedOperation, operationsWithAggregate, publicOperation, txWithoutMonitor];
+void [missingLayout, missingResources, missingScalarAppearance, missingFrequencyAppearance];
+void [missingFiniteAppearance, missingMeterAppearance, missingLoader];
 `);
   await writeFile(path.join(consumer, 'index.html'), `<main id="app"></main><script type="module" src="/src/mount.ts"></script>`);
   await writeFile(path.join(consumer, 'src', 'mount.ts'), `import { mount } from 'svelte';
@@ -332,7 +597,10 @@ import App from './App.svelte';
 mount(App, { target: document.querySelector('#app')! });
 `);
   await writeFile(path.join(consumer, 'src', 'App.svelte'), `<script lang="ts">
-  import fixtureKit from '@rigplane/external-component-kit-fixture';
+  import fixtureKit, {
+    FixtureFaceA,
+    FixtureFaceB,
+  } from '@rigplane/external-component-kit-fixture';
   import type {
     ActionRendererLease,
     LevelMeterRendererView,
@@ -448,8 +716,83 @@ mount(App, { target: document.querySelector('#app')! });
   const retainedResetInvoke = resetPeak.invoke.bind(resetPeak);
   counter.__disposeReset = () => resetPeak.dispose();
   counter.__invokeReset = retainedResetInvoke;
+
+  let face = $state<'a' | 'b'>('a');
+  let receiverPresent = $state(true);
+  let subPresent = $state(true);
+  let operationsPresent = $state(true);
+  let txPresent = $state(true);
+  let hiddenOperation = $state<string | null>(null);
+  let operationInvocations = $state(0);
+  const harness = globalThis as typeof globalThis & {
+    __setFace: (value: 'a' | 'b') => void;
+    __setFamily: (family: 'receiver' | 'vfoOperations' | 'txAux', present: boolean) => void;
+    __setSub: (present: boolean) => void;
+    __hideOperation: (name: string | null) => void;
+    __operationInvocations: () => number;
+  };
+  harness.__setFace = (value) => { face = value; };
+  harness.__setFamily = (family, present) => {
+    if (family === 'receiver') receiverPresent = present;
+    if (family === 'vfoOperations') operationsPresent = present;
+    if (family === 'txAux') txPresent = present;
+  };
+  harness.__setSub = (present) => { subPresent = present; };
+  harness.__hideOperation = (name) => { hiddenOperation = name; };
+  harness.__operationInvocations = () => operationInvocations;
 </script>
 
+{#snippet mainFrequency(p = {})}<span data-seat="mainFrequency" data-compact={p.compact ?? false}>MAIN</span>{/snippet}
+{#snippet subFrequency(p = {})}<span data-seat="subFrequency" data-compact={p.compact ?? false}>SUB</span>{/snippet}
+{#snippet mainSMeter()}<span data-seat="mainSMeter">S MAIN</span>{/snippet}
+{#snippet subSMeter()}<span data-seat="subSMeter">S SUB</span>{/snippet}
+{#snippet split()}<button data-seat="split" disabled>Split</button>{/snippet}
+{#snippet dualWatch()}<button data-seat="dualWatch">Dual watch</button>{/snippet}
+{#snippet activeReceiver()}<button data-seat="activeReceiver">Active receiver</button>{/snippet}
+{#snippet equalize()}<button data-seat="equalize" onclick={() => operationInvocations += 1}>Equalize</button>{/snippet}
+{#snippet swap()}<button data-seat="swap">Swap</button>{/snippet}
+{#snippet quickSplit()}<button data-seat="quickSplit">Quick split</button>{/snippet}
+{#snippet quickDualWatch()}<button data-seat="quickDualWatch">Quick dual watch</button>{/snippet}
+{#snippet speak()}<button data-seat="speak">Speak</button>{/snippet}
+{#snippet rfPower(p = {})}<span data-seat="rfPower" data-form={p.form}>RF power</span>{/snippet}
+{#snippet micGain(p = {})}<span data-seat="micGain" data-form={p.form}>Mic gain</span>{/snippet}
+{#snippet driveGain(p = {})}<span data-seat="driveGain" data-form={p.form}>Drive</span>{/snippet}
+{#snippet voxGain(p = {})}<span data-seat="voxGain" data-form={p.form}>VOX</span>{/snippet}
+{#snippet antiVoxGain(p = {})}<span data-seat="antiVoxGain" data-form={p.form}>Anti VOX</span>{/snippet}
+{#snippet voxDelay(p = {})}<span data-seat="voxDelay" data-form={p.form}>VOX delay</span>{/snippet}
+{#snippet compressorLevel(p = {})}<span data-seat="compressorLevel" data-form={p.form}>Compressor</span>{/snippet}
+{#snippet monitorLevel(p = {})}<span data-seat="monitorLevel" data-form={p.form}>Monitor</span>{/snippet}
+{#snippet hostedFace()}
+  {@const instruments = {
+    receiver: receiverPresent ? {
+      mainFrequency,
+      subFrequency: subPresent ? subFrequency : null,
+      mainSMeter,
+      subSMeter: subPresent ? subSMeter : null,
+    } : null,
+    vfoOperations: operationsPresent ? {
+      split: hiddenOperation === 'split' ? null : split,
+      dualWatch: hiddenOperation === 'dualWatch' ? null : dualWatch,
+      activeReceiver: hiddenOperation === 'activeReceiver' ? null : activeReceiver,
+      equalize: hiddenOperation === 'equalize' ? null : equalize,
+      swap: hiddenOperation === 'swap' ? null : swap,
+      quickSplit: hiddenOperation === 'quickSplit' ? null : quickSplit,
+      quickDualWatch: hiddenOperation === 'quickDualWatch' ? null : quickDualWatch,
+      speak: hiddenOperation === 'speak' ? null : speak,
+    } : null,
+    txAux: txPresent ? {
+      rfPower, micGain, driveGain, voxGain, antiVoxGain,
+      voxDelay, compressorLevel, monitorLevel,
+    } : null,
+  }}
+  {#if face === 'a'}
+    <FixtureFaceA {instruments} />
+  {:else}
+    <FixtureFaceB {instruments} />
+  {/if}
+{/snippet}
+
+{@render hostedFace()}
 {#each signals as view}<Signal {view} />{/each}
 {#each levels as view, index}<Level {view} resetPeak={index === 0 ? resetPeak : undefined} />{/each}
 `);
@@ -481,6 +824,73 @@ mount(App, { target: document.querySelector('#app')! });
         }
       });
       await page.goto(origin, { waitUntil: 'networkidle' });
+      const operationNames = [
+        'split', 'dualWatch', 'activeReceiver', 'equalize', 'swap',
+        'quickSplit', 'quickDualWatch', 'speak',
+      ];
+      const seatNames = [
+        'mainFrequency', 'subFrequency', 'mainSMeter', 'subSMeter',
+        ...operationNames,
+        'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain',
+        'voxDelay', 'compressorLevel', 'monitorLevel',
+      ];
+      assert.equal(await page.locator('[data-external-face="a"]').count(), 1);
+      assert.equal(await page.locator('[data-seat]').count(), 20);
+      for (const name of seatNames) {
+        assert.equal(await page.locator(`[data-seat="${name}"]`).count(), 1);
+      }
+      assert.equal(await page.locator('[data-seat="split"]').isDisabled(), true);
+      await page.evaluate(() => {
+        globalThis.__retainedEqualize = document.querySelector('[data-seat="equalize"]');
+        globalThis.__setFace('b');
+      });
+      await page.locator('[data-external-face="b"]').waitFor();
+      assert.equal(await page.locator('[data-seat]').count(), 20);
+      for (const name of seatNames) {
+        assert.equal(await page.locator(`[data-seat="${name}"]`).count(), 1);
+      }
+      await page.evaluate(() => globalThis.__retainedEqualize.click());
+      assert.equal(await page.evaluate(() => globalThis.__operationInvocations()), 0);
+      await page.locator('[data-seat="equalize"]').click();
+      assert.equal(await page.evaluate(() => globalThis.__operationInvocations()), 1);
+      await page.evaluate(() => globalThis.__setFace('a'));
+      await page.locator('[data-external-face="a"]').waitFor();
+
+      await page.evaluate(() => globalThis.__setSub(false));
+      await page.locator('[data-seat="subFrequency"]').waitFor({ state: 'detached' });
+      assert.equal(await page.locator('[data-seat="subSMeter"]').count(), 0);
+      assert.equal(await page.locator('[data-seat]').count(), 18);
+      for (const hidden of operationNames) {
+        await page.evaluate((name) => globalThis.__hideOperation(name), hidden);
+        await page.locator(`[data-seat="${hidden}"]`).waitFor({ state: 'detached' });
+        assert.equal(await page.locator('[data-family="vfoOperations"] [data-seat]').count(), 7);
+        for (const visible of operationNames.filter((name) => name !== hidden)) {
+          assert.equal(await page.locator(`[data-seat="${visible}"]`).count(), 1);
+        }
+        await page.evaluate(() => globalThis.__hideOperation(null));
+        await page.locator(`[data-seat="${hidden}"]`).waitFor();
+      }
+      await page.evaluate(() => globalThis.__setFamily('receiver', false));
+      await page.locator('[data-family="receiver"]').waitFor({ state: 'detached' });
+      assert.equal(await page.locator('[data-seat="mainFrequency"]').count(), 0);
+      await page.evaluate(() => globalThis.__setFamily('receiver', true));
+      await page.locator('[data-family="receiver"]').waitFor();
+      await page.evaluate(() => globalThis.__setFamily('vfoOperations', false));
+      await page.locator('[data-family="vfoOperations"]').waitFor({ state: 'detached' });
+      assert.equal(await page.locator('[data-seat="split"]').count(), 0);
+      await page.evaluate(() => globalThis.__setFamily('vfoOperations', true));
+      await page.locator('[data-family="vfoOperations"]').waitFor();
+      await page.evaluate(() => globalThis.__setFamily('txAux', false));
+      await page.locator('[data-family="txAux"]').waitFor({ state: 'detached' });
+      assert.equal(await page.locator('[data-seat="rfPower"]').count(), 0);
+      await page.evaluate(() => {
+        globalThis.__setFamily('txAux', true);
+        globalThis.__setSub(true);
+        globalThis.__hideOperation(null);
+      });
+      await page.locator('[data-seat="subFrequency"]').waitFor();
+      await page.locator('[data-seat="speak"]').waitFor();
+      assert.equal(await page.locator('[data-seat]').count(), 20);
       const signals = page.locator('[data-fixture-signal]');
       const levels = page.locator('[data-fixture-level]');
       assert.equal(await signals.count(), 5);
@@ -517,10 +927,31 @@ mount(App, { target: document.querySelector('#app')! });
 
   await writeFile(path.join(consumer, 'inspect.mjs'), `import assert from 'node:assert/strict';
 import * as api from '@rigplane/component-kit-api';
-import fixtureKit from '@rigplane/external-component-kit-fixture';
+import fixtureKit, {
+  FixtureFaceA,
+  FixtureFaceB,
+  faceAPresentation,
+  faceBPresentation,
+  reservedPresentation,
+} from '@rigplane/external-component-kit-fixture';
 assert.deepEqual(Object.keys(api).sort(), ['COMPONENT_KIT_API_VERSION', 'defineComponentKit']);
 assert.equal(api.COMPONENT_KIT_API_VERSION, 1);
 assert.equal(api.defineComponentKit(fixtureKit), fixtureKit);
+assert.notEqual(FixtureFaceA, FixtureFaceB);
+assert.equal(faceAPresentation.hostMode, 'external-instruments-v1');
+assert.equal(faceBPresentation.hostMode, 'external-instruments-v1');
+assert.equal(faceAPresentation.layoutId, 'fixture-face-a');
+assert.equal(faceBPresentation.layoutId, 'fixture-face-b');
+assert.deepEqual(faceAPresentation.appearances, {
+  scalar: 'fixture', frequency: 'fixture', finite: 'fixture', meter: 'fixture',
+});
+assert.deepEqual(faceAPresentation.resources, []);
+assert.deepEqual(faceBPresentation.resources, []);
+assert.equal(await faceAPresentation.loader(), FixtureFaceA);
+assert.equal(await faceBPresentation.loader(), FixtureFaceB);
+assert.equal(reservedPresentation.id, 'fixture-reserved-presentation');
+assert.deepEqual(fixtureKit.layouts?.map(({ id }) => id), ['fixture-face-a', 'fixture-face-b']);
+assert.deepEqual(fixtureKit.presentations?.map(({ id }) => id), ['fixture-face-a', 'fixture-face-b']);
 `);
   execute(process.execPath, ['inspect.mjs'], consumer);
   const deepImport = execute(process.execPath, [
@@ -549,9 +980,9 @@ assert.equal(api.defineComponentKit(fixtureKit), fixtureKit);
     path.join(consumer, 'node_modules', 'svelte', 'package.json'),
     'utf8',
   ));
-  assert.equal(installedApi.version, '0.3.0');
+  assert.equal(installedApi.version, '0.4.0');
   assert.equal(installedApi.peerDependencies.svelte, '>=5.45.2 <6');
-  assert.equal(installedFixture.peerDependencies['@rigplane/component-kit-api'], '0.3.0');
+  assert.equal(installedFixture.peerDependencies['@rigplane/component-kit-api'], '0.4.0');
 
   console.log('component-kit-api portable package verification: OK');
   console.log(`runtime exports: COMPONENT_KIT_API_VERSION, defineComponentKit`);
