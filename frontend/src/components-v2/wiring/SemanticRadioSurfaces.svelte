@@ -67,6 +67,7 @@
   import RfFrontEndSurface, {
     type RfFrontEndLevelField, type RfFrontEndToggleField,
   } from '../../semantic/RfFrontEndSurface.svelte';
+  import RfFrontEndInstrumentHost from '../../semantic/RfFrontEndInstrumentHost.svelte';
   import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxAudioInstrumentHost from '../../semantic/RxAudioInstrumentHost.svelte';
@@ -894,6 +895,14 @@
     activeReceiverIndex === null ? null : getPendingPreampLevel(activeReceiverIndex),
   );
   let rfSqlFeedback = $derived(getRfSqlControlFeedback(controlSession));
+  let rfFrontEndInstrumentPresentation = $derived({
+    state: runtime.state,
+    caps: runtime.caps,
+    session: runtime.controlSession,
+    view: canonicalView,
+    controlModel: rfSqlControlModel,
+    rfSqlFeedback,
+  });
   let pendingNb = $derived(activeReceiverIndex === null ? null : getPendingNbOn(activeReceiverIndex));
   let pendingNr = $derived(activeReceiverIndex === null ? null : getPendingNrOn(activeReceiverIndex));
 
@@ -1029,6 +1038,12 @@
     onAfLevelChange={rxAudioIntents.onAfLevelChange}
   >
   {#snippet children(rxAudioInstruments)}
+  <RfFrontEndInstrumentHost
+    presentation={rfFrontEndInstrumentPresentation}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
+  >
+  {#snippet children(rfFrontEndInstruments)}
   {#if readonlyDisplay}
     {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
@@ -1479,12 +1494,10 @@
     {#if view?.rfFrontEnd}
       <RfFrontEndSurface
         {view}
-        controlModel={rfSqlControlModel}
-        {rfSqlFeedback}
+        levelHandles={rfFrontEndInstruments}
         {pendingPreamp}
         onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
         onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}
-        onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
         onToggle={(field, next) => RF_FRONT_END_TOGGLE_INTENT[field](next)}
       />
     {/if}
@@ -1720,6 +1733,7 @@
       txAuxInstruments,
       receiverInstruments,
       rxAudioInstruments,
+      rfFrontEndInstruments,
       meters: hostedMeters,
       rxAudio: hostedRxAudio,
       rfFrontEnd: hostedRfFrontEnd,
@@ -1909,6 +1923,8 @@
   {/snippet}
   </TxAuxScalarHost>
   {/if}
+  {/snippet}
+  </RfFrontEndInstrumentHost>
   {/snippet}
   </RxAudioInstrumentHost>
   {/snippet}

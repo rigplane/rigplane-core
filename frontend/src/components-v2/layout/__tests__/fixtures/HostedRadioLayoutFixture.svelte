@@ -30,6 +30,9 @@
   const txAuxInstruments = {
     atu: empty, vox: empty, compressor: empty, monitor: empty, atuTune: empty,
   } satisfies TxAuxFiniteHandles;
+  const rfFrontEndInstruments = {
+    kind: 'separate', rfGain: empty, squelch: empty,
+  } as const;
   const scalars = {
     rfPower: empty, micGain: empty, driveGain: empty, voxGain: empty,
     antiVoxGain: empty, voxDelay: empty, compressorLevel: empty, monitorLevel: empty,
@@ -38,7 +41,7 @@
   export const TEST_INSTRUMENTS = {
     vfo, rxTx: empty, txAuxControls: txAux, txAuxScalars: scalars, txAuxInstruments,
     receiverInstruments,
-    rxAudioInstruments,
+    rxAudioInstruments, rfFrontEndInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
     band: empty, antenna: empty, ritXitScan: empty, cwKeyer: empty,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,
@@ -53,15 +56,27 @@
   import type { InstrumentComposition } from '../../../wiring/instrument-composition';
 
   let {
-    skinId = 'desktop-v2', rxAudioLayout = 'production',
+    skinId = 'desktop-v2', rxAudioLayout = 'production', rfFrontEndLayout = 'production',
   }: {
     skinId?: SkinId; rxAudioLayout?: 'production' | 'grouped' | 'independent';
+    rfFrontEndLayout?: 'production' | 'grouped' | 'independent';
   } = $props();
 </script>
 
 <SemanticRadioSurfaces>
   {#snippet children(instruments: InstrumentComposition)}
-    {#if rxAudioLayout === 'production'}
+    {#if rfFrontEndLayout === 'grouped'}
+      {@render instruments.rfFrontEnd()}
+    {:else if rfFrontEndLayout === 'independent'}
+      <div data-rf-layout="independent" data-handle-kind={instruments.rfFrontEndInstruments.kind}>
+        {#if instruments.rfFrontEndInstruments.kind === 'combined'}
+          {@render instruments.rfFrontEndInstruments.rfSql()}
+        {:else}
+          {@render instruments.rfFrontEndInstruments.rfGain()}
+          {@render instruments.rfFrontEndInstruments.squelch()}
+        {/if}
+      </div>
+    {:else if rxAudioLayout === 'production'}
       <RadioLayout {skinId} {instruments} />
     {:else if rxAudioLayout === 'grouped'}
       {@render instruments.rxAudio()}
