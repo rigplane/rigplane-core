@@ -115,6 +115,7 @@
     ...basePolicy,
     reset: (domain: ScalarDomain) => domain.defaultValue,
   });
+  const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
   const afLevelBinding = createContinuousScalar(input, policy);
 
   onMount(() => {
@@ -134,6 +135,7 @@
 
 {#snippet afLevel()}
   <ValueControl
+    {...feedbackIntegratedControl}
     binding={afLevelBinding} label="AF" renderer="hbar"
     showLabel={false} showValue={false} compact={true}
   />

@@ -23,6 +23,7 @@ let txHarness: ManagedAppTxHarness;
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
+  session: { state: 'disconnected' as const, epoch: 0 },
   selectVfo: vi.fn(),
   splitToggle: vi.fn(),
   dualWatchToggle: vi.fn(),
@@ -40,9 +41,10 @@ vi.mock('$lib/runtime', () => ({
     onTxAudioDied: () => () => {},
     get state() { return h.state; },
     get caps() { return h.caps; },
+    get controlSession() { return h.session; },
     subscribeControlAuthority(handler: (publication: unknown) => void) {
       handler({
-        state: h.state, caps: h.caps, session: { state: 'disconnected', epoch: 0 },
+        state: h.state, caps: h.caps, session: h.session,
         rxAudioTarget: Object.freeze({ muted: true, rxEnabled: false }),
       });
       return () => {};
