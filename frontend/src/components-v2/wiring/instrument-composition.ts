@@ -1,6 +1,7 @@
 import type { Snippet } from 'svelte';
 import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
 import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
+import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
 import type { ReceiverInstrumentHandles } from '../../semantic/ReceiverInstrumentHost.svelte';
 import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instruments';
 
@@ -11,6 +12,7 @@ export interface InstrumentComposition {
   readonly rxTx: Snippet<[allowBare?: boolean]>;
   readonly txAuxControls: Snippet<[scalarLayout: Snippet, allowBare?: boolean]>;
   readonly txAuxScalars: TxAuxScalarHandles;
+  readonly txAuxInstruments: TxAuxFiniteHandles;
   readonly receiverInstruments: ReceiverInstrumentHandles;
   readonly rxAudioInstruments: RxAudioInstrumentHandles;
   readonly meters: Snippet<[allowBare?: boolean]>;

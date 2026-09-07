@@ -76,11 +76,13 @@
     type ReceiverVfoAppearance,
   } from '../../semantic/ReceiverInstrumentHost.svelte';
   import TxAuxScalarHost from '../../semantic/TxAuxScalarHost.svelte';
+  import TxAuxFiniteHost from '../../semantic/TxAuxFiniteHost.svelte';
   import TxAuxSurface, {
     TX_AUX_FEEDBACK_LEVELS, type TxAuxFeedbackLevelField, type TxAuxLevelFeedback,
     type TxAuxLevelField, type TxAuxToggleField,
   } from '../../semantic/TxAuxSurface.svelte';
   import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
+  import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
   import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import SemanticControlPanel from '../layout/SemanticControlPanel.svelte';
@@ -522,6 +524,11 @@
     activeReceiver: 'MAIN' | 'SUB' | 'unknown';
     activeSlots: readonly string[];
   }>;
+  type TxAuxFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+  }>;
   const slotIdentity = (slot: VfoSlot): string => {
     if (slot.kind === 'slotted') return `slotted:${slot.id}`;
     if (slot.kind === 'relative') return `relative:${slot.role}`;
@@ -553,6 +560,23 @@
       })),
     });
   }
+  function txAuxFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): TxAuxFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    return model?.txAux === undefined ? null : Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+    });
+  }
   const sameScopeFiniteAuthority = (
     left: ScopeFiniteAuthority | null | undefined,
     right: ScopeFiniteAuthority | null,
@@ -565,21 +589,44 @@
         && left.activeSlots.length === right.activeSlots.length
         && left.activeSlots.every((slot, index) => slot === right.activeSlots[index])
   );
+  const sameTxAuxFiniteAuthority = (
+    left: TxAuxFiniteAuthority | null | undefined,
+    right: TxAuxFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+  );
   const readSelectedFiniteAppearance = 'getSelectedFiniteControlAppearance' in componentKitActivation
     ? componentKitActivation.getSelectedFiniteControlAppearance : undefined;
   const selectedFiniteAppearance = readSelectedFiniteAppearance?.();
   let finiteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let txAuxFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
+  let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
   const unsubscribeScopeFiniteAuthority = selectedFiniteAppearance === undefined ? undefined
     : runtime.subscribeControlAuthority((publication) => {
       const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
-      if (sameScopeFiniteAuthority(lastScopeFiniteAuthority, next)) return;
-      lastScopeFiniteAuthority = next;
-      finiteRendererContext = next === null ? null : createFiniteRendererContext();
+      if (!sameScopeFiniteAuthority(lastScopeFiniteAuthority, next)) {
+        lastScopeFiniteAuthority = next;
+        finiteRendererContext = next === null ? null : createFiniteRendererContext();
+      }
+      const nextTxAux = txAuxFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameTxAuxFiniteAuthority(lastTxAuxFiniteAuthority, nextTxAux)) {
+        lastTxAuxFiniteAuthority = nextTxAux;
+        txAuxFiniteRendererContext = nextTxAux === null ? null : createFiniteRendererContext();
+      }
     });
   onDestroy(() => unsubscribeScopeFiniteAuthority?.());
   let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : { finiteAppearance: selectedFiniteAppearance, rendererContext: finiteRendererContext });
+  let txAuxFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: txAuxFiniteRendererContext,
+    });
 
   let scopeFrameSource = $derived(
     displayFrameSource ?? (hostedChildren !== undefined && getScopeSource() === 'hardware' ? 'hardware' : undefined),
@@ -1213,13 +1260,12 @@
     {/if}
   {/snippet}
 
-  {#snippet txAuxSurface(scalarHandles: TxAuxScalarHandles, showScalars = true)}
+  {#snippet txAuxSurface(
+    finiteHandles: TxAuxFiniteHandles, scalarHandles: TxAuxScalarHandles,
+    showFinite = true, showScalars = true,
+  )}
     {#if view?.txAux}
-      <TxAuxSurface
-        {view} tx={txState} {scalarHandles} {showScalars}
-        onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()}
-        onAtuTune={requestAtuTune}
-      />
+      <TxAuxSurface {view} tx={txState} {finiteHandles} {scalarHandles} {showFinite} {showScalars} />
     {/if}
   {/snippet}
 
@@ -1604,12 +1650,13 @@
     {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBareSurfaces)}
   {/snippet}
 
-  <TxAuxScalarHost
-    {view} levelFeedback={txAuxLevelFeedback}
-    onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
+  {#snippet txAuxFiniteComposition(txAuxScalars: TxAuxScalarHandles)}
+  <TxAuxFiniteHost
+    {...txAuxFiniteRendererSelection} {view} tx={txState}
+    onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()} onAtuTune={requestAtuTune}
   >
-  {#snippet children(txAuxScalars)}
-  {#snippet txAuxBody()}{@render txAuxSurface(txAuxScalars)}{/snippet}
+  {#snippet children(txAuxInstruments)}
+  {#snippet txAuxBody()}{@render txAuxSurface(txAuxInstruments, txAuxScalars)}{/snippet}
   {#snippet hostedVfo(appearance: InstrumentVfoAppearance, allowBare = allowBareSurfaces)}
     {#snippet body()}{@render vfoSurface(appearance)}{/snippet}
     {@render zoned('vfo', view !== null && singleOrder.includes('vfo'), body, allowBare)}
@@ -1617,10 +1664,10 @@
   {#snippet hostedRxTx(allowBare = allowBareSurfaces)}
     {@render zoned('rxTx', view !== null && singleOrder.includes('rxTx'), rxTxSurface, allowBare)}
   {/snippet}
-  {#snippet hostedTxAux(scalarLayout: Snippet, allowBare = allowBareSurfaces)}
+  {#snippet hostedTxAux(instrumentLayout: Snippet, allowBare = allowBareSurfaces)}
     {#snippet body()}
-      {@render txAuxSurface(txAuxScalars, false)}
-      {@render scalarLayout()}
+      {@render instrumentLayout()}
+      {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
     {/snippet}
     {@render zoned('txAux', view?.txAux !== undefined, body, allowBare)}
   {/snippet}
@@ -1670,6 +1717,7 @@
       rxTx: hostedRxTx,
       txAuxControls: hostedTxAux,
       txAuxScalars,
+      txAuxInstruments,
       receiverInstruments,
       rxAudioInstruments,
       meters: hostedMeters,
@@ -1849,6 +1897,15 @@
     {@render txAdjacentAlerts()}
     {/if}
   {/if}
+  {/snippet}
+  </TxAuxFiniteHost>
+  {/snippet}
+  <TxAuxScalarHost
+    {view} levelFeedback={txAuxLevelFeedback}
+    onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
+  >
+  {#snippet children(txAuxScalars)}
+    {@render txAuxFiniteComposition(txAuxScalars)}
   {/snippet}
   </TxAuxScalarHost>
   {/if}
