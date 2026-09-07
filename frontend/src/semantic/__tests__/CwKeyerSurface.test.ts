@@ -43,13 +43,11 @@ import { t } from '$lib/i18n';
 import type {
   ControlFeedbackPresentationInput, PresentationPhase,
 } from '../../primitives/control-feedback/control-feedback-presentation';
-import type { CommandScalarFeedback } from '../../primitives/scalar/continuous-scalar.svelte';
 
 type BreakInDelayFeedback = ControlFeedbackPresentationInput<number> & {
   readonly sessionEpoch?: number;
   readonly scope?: Readonly<{ control: string; receiver: number; slot?: string }>;
 };
-type CwLevelFeedback = Readonly<CommandScalarFeedback>;
 
 const SOURCE = readFileSync('src/semantic/CwKeyerSurface.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
@@ -87,8 +85,6 @@ type Handlers = {
   onTwinPeakToggle?: () => void;
   onReversePaddleToggle?: () => void;
   breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
-  cwPitchFeedback?: CwLevelFeedback;
-  keySpeedFeedback?: CwLevelFeedback;
   onAutoTune?: () => void;
 };
 
@@ -136,38 +132,6 @@ const feedback = (
   confirmed: 64, target: null, requestedTarget: null, phase,
   transitionId: null, outcome: null, ...over,
 });
-const cwFeedback = (
-  control: 'cw-pitch' | 'keyer-speed',
-  phase: PresentationPhase = 'idle',
-  over: Partial<CommandScalarFeedback> = {},
-): CwLevelFeedback => Object.freeze({
-  confirmed: 600, target: null, requestedTarget: null, phase,
-  busy: ['submitted', 'queued', 'dispatched', 'awaiting-confirmation'].includes(phase),
-  availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
-  providerGeneration: 1, sessionEpoch: 1,
-  scope: Object.freeze({ control, receiver: 0 as const }),
-  repeatPolicy: 'latest-target-wins', ...over,
-});
-
-function renderReactiveCwLevels(
-  pitch: CwLevelFeedback = cwFeedback('cw-pitch'),
-  speed: CwLevelFeedback = cwFeedback('keyer-speed', 'idle', { confirmed: 24 }),
-) {
-  const onLevelChange = vi.fn();
-  const props = proxy({
-    view: base(), onLevelChange, cwPitchFeedback: pitch, keySpeedFeedback: speed,
-  });
-  const component = mount(CwKeyerInstrumentHostFixture, { target, props });
-  flushSync();
-  const input = (field: 'pitchHz' | 'keyerSpeed') => target.querySelector<HTMLInputElement>(
-    `[data-testid="cw-keyer-${field}"] input`,
-  )!;
-  const row = (field: 'pitchHz' | 'keyerSpeed') => target.querySelector<HTMLElement>(
-    `[data-testid="cw-keyer-${field}"]`,
-  )!;
-  return { dispose: () => unmount(component), input, row, onLevelChange, props };
-}
-
 /* ── (a) the surface is not a key path ────────────────────────── */
 
 describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
@@ -195,7 +159,6 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       'svelte',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
-      '../primitives/scalar/continuous-scalar.svelte',
       '../primitives/scalar/value-control-core',
       '../primitives/control-instruments/control-instrument-behavior',
     ]);
@@ -209,8 +172,9 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     expect(CODE).toContain('invoke: () => onTwinPeakToggle?.()');
     expect(CODE).toContain('invoke: () => onReversePaddleToggle?.()');
     expect(CODE).toContain('{@render continuousHandles.keyerSpeed()}');
+    expect(CODE).toContain('{@render continuousHandles.pitchHz()}');
     expect(CODE).not.toContain('keySpeedScalar');
-    expect(CODE).toContain('const cwPitchScalar = createContinuousScalar');
+    expect(CODE).not.toContain('cwPitchScalar');
   });
 
   // Kills: `onMount(() => …)` and every relative of it, plus a dynamic import
@@ -240,9 +204,9 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   it('takes exactly one state prop — the view model — plus SETTING intents', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1])).toEqual([
-      'view', 'continuousHandles', 'showKeyerSpeed', 'onBreakInMode', 'onLevelChange',
+      'view', 'continuousHandles', 'showKeyerSpeed', 'showPitchHz', 'onBreakInMode', 'onLevelChange',
       'onApfOn', 'onTwinPeakToggle', 'onReversePaddleToggle', 'breakInDelayFeedback',
-      'cwPitchFeedback', 'autoTuneAvailable', 'onAutoTune',
+      'autoTuneAvailable', 'onAutoTune',
     ]);
   });
 
@@ -317,204 +281,14 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       else press(control);
     }
     flushSync();
+    // pitchHz is now a hosted ValueControl scalar (pointer/keyboard driven, no
+    // native <input>) — its own routing is proven in
+    // CwKeyerInstrumentHost.isolated.test.ts, not by this DOM sweep.
     expect(seen).toEqual([
       'breakIn:0', 'breakIn:1', 'breakIn:2',
-      'level:pitchHz:900', 'level:breakInDelay:255',
+      'level:breakInDelay:255',
       'reversePaddle', 'apf:false', 'apf:true', 'twinPeak',
     ]);
-    r.dispose();
-  });
-});
-
-/* ── MOR-2411 — native CW scalar feedback ownership ──────────── */
-
-describe('CW pitch and keyer speed own independent command feedback', () => {
-  it('treats explicit unavailable feedback as authoritative over retained raw readings', () => {
-    const unavailable = (control: 'cw-pitch' | 'keyer-speed'): CwLevelFeedback => cwFeedback(
-      control, 'unavailable', {
-        confirmed: null, availability: 'unavailable', sessionEpoch: 2,
-      },
-    );
-    const r = renderReactiveCwLevels(unavailable('cw-pitch'));
-    const field = 'pitchHz';
-    expect(r.input(field).disabled).toBe(true);
-    expect(r.input(field).dataset.commandPhase).toBe('unavailable');
-    expect(r.row(field).dataset.observed).toBe('false');
-    expect(r.row(field).textContent).toContain(UNKNOWN_TEXT);
-    slide(r.input(field), Number(r.input(field).max));
-    expect(r.onLevelChange).not.toHaveBeenCalled();
-    r.dispose();
-  });
-
-  it('keeps the remaining native pitch input mapped exactly once', () => {
-    const r = renderReactiveCwLevels();
-    slide(r.input('pitchHz'), 725);
-    expect(r.onLevelChange.mock.calls).toEqual([['pitchHz', 725]]);
-    expect(r.input('pitchHz').value).toBe('725');
-    r.dispose();
-  });
-
-  it.each([
-    ['idle', false, 600, null],
-    ['submitted', true, 725, null],
-    ['queued', true, 725, null],
-    ['dispatched', true, 725, null],
-    ['awaiting-confirmation', true, 725, null],
-    ['confirmed', false, 725, 'confirmed'],
-    ['failed', false, 600, 'failed'],
-    ['timed-out', false, 600, 'timed-out'],
-    ['cancelled', false, 600, 'cancelled'],
-    ['superseded', false, 600, 'superseded'],
-  ] as const)('projects pitch phase %s through its scalar owner', (phase, busy, shown, outcome) => {
-    const active = busy;
-    const terminal = outcome === null ? null : {
-      phase: outcome, ...(outcome === 'failed' ? { error: 'pitch rejected' } : {}),
-    };
-    const pitch = cwFeedback('cw-pitch', phase, {
-      confirmed: phase === 'confirmed' ? 725 : 600,
-      target: active ? 725 : null,
-      requestedTarget: phase === 'idle' ? null : 725,
-      lifecycleId: phase === 'idle' ? null : 'pitch-command',
-      transitionId: phase === 'idle' ? null : `pitch-${phase}`,
-      outcome: terminal,
-    });
-    const r = renderReactiveCwLevels(pitch);
-    expect(r.input('pitchHz').value).toBe(String(shown));
-    expect(r.input('pitchHz').dataset.commandPhase).toBe(phase);
-    expect(r.input('pitchHz').getAttribute('aria-busy')).toBe(String(busy));
-    if (phase === 'failed') expect(r.row('pitchHz').textContent).toContain('pitch rejected');
-    r.dispose();
-  });
-
-  it.each([
-    ['pitchHz', 'cw-pitch', 600, 725],
-  ] as const)('mounts and remounts %s at its pre-existing active target', (
-    field, control, confirmed, targetValue,
-  ) => {
-    const pending = cwFeedback(control, 'awaiting-confirmation', {
-      confirmed, target: targetValue, requestedTarget: targetValue,
-      lifecycleId: `${control}-command`, transitionId: `${control}-awaiting`,
-    });
-    const renderPending = () => field === 'pitchHz'
-      ? renderReactiveCwLevels(pending) : renderReactiveCwLevels(undefined, pending);
-    let r = renderPending();
-    expect(r.input(field).value).toBe(String(targetValue));
-    expect(r.onLevelChange).not.toHaveBeenCalled();
-    r.dispose(); target.innerHTML = '';
-    r = renderPending();
-    expect(r.input(field).value).toBe(String(targetValue));
-    expect(r.onLevelChange).not.toHaveBeenCalled();
-    r.dispose();
-  });
-
-  it.each([
-    ['pitchHz', 'cw-pitch', 600, 725],
-  ] as const)('keeps terminal %s requested target distinct from canonical display', (
-    field, control, confirmed, requestedTarget,
-  ) => {
-    const terminal = cwFeedback(control, 'failed', {
-      confirmed, requestedTarget, lifecycleId: `${control}-command`,
-      transitionId: `${control}-failed`, outcome: { phase: 'failed', error: 'rejected' },
-    });
-    const r = field === 'pitchHz'
-      ? renderReactiveCwLevels(terminal) : renderReactiveCwLevels(undefined, terminal);
-    expect(r.input(field).value).toBe(String(confirmed));
-    expect(r.input(field).getAttribute('aria-valuenow')).toBe(String(confirmed));
-    expect(r.row(field).querySelector('output')?.textContent).toContain(String(confirmed));
-    expect(r.row(field).querySelector('output')?.textContent).not.toContain(String(requestedTarget));
-    r.dispose();
-  });
-
-  it.each([
-    ['pitchHz', 'cw-pitch', 600, 605, 725],
-  ] as const)('invalidates and reissues the %s live event across authority replacement', (
-    field, control, confirmed, rerendered, requestedTarget,
-  ) => {
-    const failed = (canonical: number, providerGeneration = 1, sessionEpoch = 1) => cwFeedback(
-      control, 'failed', {
-        confirmed: canonical, requestedTarget, providerGeneration, sessionEpoch,
-        lifecycleId: `${control}-command`, transitionId: `${control}-failed`,
-        outcome: { phase: 'failed', error: 'rejected' },
-      },
-    );
-    const r = field === 'pitchHz'
-      ? renderReactiveCwLevels(failed(confirmed))
-      : renderReactiveCwLevels(undefined, failed(confirmed));
-    const status = () => r.row(field).querySelector<HTMLElement>('[data-cw-feedback-status]');
-    const initial = status()!;
-    const initialText = initial.textContent;
-    const update = (next: CwLevelFeedback) => {
-      if (field === 'pitchHz') r.props.cwPitchFeedback = next;
-      else r.props.keySpeedFeedback = next;
-      flushSync();
-    };
-    update(failed(rerendered));
-    expect(status()).toBe(initial);
-    expect(status()?.textContent).toBe(initialText);
-
-    update(failed(rerendered, 2, 2));
-    const replaced = status()!;
-    expect(replaced).not.toBe(initial);
-    expect(replaced.textContent).toBe(initialText);
-    expect(r.row(field).querySelectorAll('[data-cw-feedback-status]')).toHaveLength(1);
-
-    update(cwFeedback(control, 'unavailable', {
-      confirmed: null, availability: 'unavailable', providerGeneration: 3, sessionEpoch: 3,
-    }));
-    expect(status()).toBeNull();
-    update(failed(rerendered, 3, 3));
-    expect(status()).not.toBeNull();
-    expect(status()).not.toBe(replaced);
-    expect(status()?.textContent).toBe(initialText);
-    expect(r.row(field).querySelectorAll('[data-cw-feedback-status]')).toHaveLength(1);
-    r.dispose();
-  });
-
-  it('keeps mixed phases, errors and polite announcements lane-local and nonduplicated', () => {
-    const pitch = cwFeedback('cw-pitch', 'failed', {
-      requestedTarget: 725, lifecycleId: 'pitch-command', transitionId: 'pitch-failed',
-      outcome: { phase: 'failed', error: 'pitch rejected' },
-    });
-    const speed = cwFeedback('keyer-speed', 'timed-out', {
-      confirmed: 24, requestedTarget: 31, lifecycleId: 'speed-command',
-      transitionId: 'speed-timeout', outcome: { phase: 'timed-out' },
-    });
-    const r = renderReactiveCwLevels(pitch, speed);
-    expect(r.input('pitchHz').dataset.commandPhase).toBe('failed');
-    expect(r.row('keyerSpeed').dataset.commandPhase).toBe('timed-out');
-    expect(r.row('pitchHz').textContent).toContain('pitch rejected');
-    const announcements = [...target.querySelectorAll<HTMLElement>(
-      '[data-cw-feedback-status]',
-    )];
-    expect(announcements).toHaveLength(2);
-    expect(announcements.map((node) => node.dataset.feedbackLane).sort())
-      .toEqual(['keyerSpeed', 'pitchHz']);
-    expect(announcements.every((node) => node.getAttribute('aria-live') === 'polite')).toBe(true);
-    r.dispose();
-  });
-
-  it('clears a rapid optimistic target when either lane receives replacement authority', () => {
-    const r = renderReactiveCwLevels();
-    slide(r.input('pitchHz'), 650);
-    slide(r.input('pitchHz'), 700);
-    expect(r.input('pitchHz').value).toBe('700');
-
-    r.props.cwPitchFeedback = cwFeedback('cw-pitch', 'unavailable', {
-      confirmed: null, availability: 'unavailable', providerGeneration: 2, sessionEpoch: 2,
-    });
-    flushSync();
-    expect(r.input('pitchHz').disabled).toBe(true);
-    expect(r.input('pitchHz').value).toBe('300');
-    expect(r.onLevelChange.mock.calls).toEqual([['pitchHz', 650], ['pitchHz', 700]]);
-    r.dispose();
-  });
-
-  it('retains pitch reading compatibility when its optional feedback prop is omitted', () => {
-    const onLevelChange = vi.fn();
-    const r = render(base(), { onLevelChange });
-    expect(r.input('pitchHz')?.dataset.commandPhase).toBeUndefined();
-    slide(r.input('pitchHz')!, 725);
-    expect(onLevelChange.mock.calls).toEqual([['pitchHz', 725]]);
     r.dispose();
   });
 });
@@ -1017,7 +791,7 @@ describe('the mutex reasons are rendered with the other mode NAMED (MOR-1296 O1)
 /* ── facts render honestly ─────────────────────────────────────── */
 
 describe('every unread fact renders honestly, never as a v2 default', () => {
-  const NATIVE_LEVELS = CW_LEVELS.filter(([field]) => field !== 'keyerSpeed');
+  const NATIVE_LEVELS = CW_LEVELS.filter(([field]) => field !== 'keyerSpeed' && field !== 'pitchHz');
 
   it.each(NATIVE_LEVELS)('renders the %s fact verbatim on its raw wire scale', (field, _l, min, max) => {
     const r = render(withCw({ [field]: known(max) } as Partial<CwKeyerViewModel>));

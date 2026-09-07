@@ -68,7 +68,6 @@
   export const CW_LEVELS = [
     ...CW_CONTINUOUS_LEVELS.map(([field, label, min, max, step, unit]) =>
       [field, label, min, max, step, unit] as const),
-    ['pitchHz', 'CW pitch', 300, 900, 5, 'Hz'],
     ['breakInDelay', 'Break-in delay', 0, 255, 1, ''],
   ] as const;
   export type CwLevelField = (typeof CW_LEVELS)[number][0];
@@ -132,11 +131,6 @@
     type PresentationPhase,
   } from '../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../primitives/scalar/committed-scalar.svelte';
-  import {
-    createContinuousScalar, nativeRangeContinuousScalarPolicy,
-    type CommandScalarFeedback, type ContinuousScalarInput,
-    type ContinuousScalarRendererLease, type ContinuousScalarView,
-  } from '../primitives/scalar/continuous-scalar.svelte';
   import { clamp, snapToStep } from '../primitives/scalar/value-control-core';
   import {
     bindChoiceInstrument,
@@ -154,20 +148,20 @@
     view: RadioViewModel;
     continuousHandles: CwKeyerInstrumentHandles;
     showKeyerSpeed?: boolean;
+    showPitchHz?: boolean;
     onBreakInMode?: (mode: number) => void;
     onLevelChange?: (field: CwLevelField, value: number) => void;
     onApfOn?: (on: boolean) => void;
     onTwinPeakToggle?: () => void;
     onReversePaddleToggle?: () => void;
     breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
-    cwPitchFeedback?: Readonly<CommandScalarFeedback>;
     autoTuneAvailable?: boolean;
     onAutoTune?: () => void;
   }
   let {
-    view, continuousHandles, showKeyerSpeed = true,
+    view, continuousHandles, showKeyerSpeed = true, showPitchHz = true,
     onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle,
-    breakInDelayFeedback, cwPitchFeedback,
+    breakInDelayFeedback,
     autoTuneAvailable = false, onAutoTune,
   }: Props = $props();
 
@@ -219,101 +213,9 @@
   function setLevel(field: CwLevelField, value: number): void {
     if (cw && usable(cw[field])) onLevelChange?.(field, value);
   }
-  type FeedbackLevelField = 'pitchHz';
-  const feedbackLevelDomain = {
-    pitchHz: { min: 300, max: 900, step: 5, defaultValue: null, fineStepDivisor: 1 },
-  } as const;
-  function feedbackLevelInput(field: FeedbackLevelField): Readonly<ContinuousScalarInput> {
-    const current = cw?.[field];
-    const feedback = cwPitchFeedback;
-    const common = {
-      domain: feedbackLevelDomain[field],
-      enabled: current !== undefined && usable(current),
-      request: (value: number) => setLevel(field, value),
-    } as const;
-    if (feedback !== undefined) {
-      return {
-        ...common, evidence: 'command-feedback', feedback,
-        command: 'set_cw_pitch',
-      };
-    }
-    return {
-      ...common, evidence: 'reading', ownerKey: `cw-keyer-${field}-reading`,
-      reading: current?.reading.status === 'known'
-        ? { status: 'known', value: current.reading.value } : { status: 'unknown' },
-    };
-  }
-  const cwPitchScalar = createContinuousScalar(
-    () => feedbackLevelInput('pitchHz'), nativeRangeContinuousScalarPolicy,
-  );
-  let cwPitchLease: ContinuousScalarRendererLease | null = $state(null);
-  const initialCwPitchView = untrack(() => cwPitchScalar.view);
-  let cwPitchView: Readonly<ContinuousScalarView> = $state(initialCwPitchView);
-  type IssuedLevelAnnouncement = Readonly<{
-    authorityKey: string;
-    eventKey: string;
-    text: string;
-  }>;
-  function feedbackAuthorityKey(current: Readonly<ContinuousScalarView>): string {
-    const domain = current.domain;
-    const shared = [
-      current.evidence, current.editable, domain.min, domain.max, domain.step,
-      domain.defaultValue, domain.fineStepDivisor, domain.keyboardStep,
-    ];
-    if (current.evidence === 'reading') {
-      return JSON.stringify([...shared, current.reading.status]);
-    }
-    const feedback = current.feedback;
-    return JSON.stringify([
-      ...shared, feedback.providerGeneration ?? null, feedback.sessionEpoch,
-      feedback.availability, feedback.scope.control, feedback.scope.receiver, feedback.scope.slot,
-    ]);
-  }
-  function nextLevelAnnouncement(
-    current: Readonly<ContinuousScalarView>,
-    previous: IssuedLevelAnnouncement | null,
-  ): IssuedLevelAnnouncement | null {
-    const authorityKey = feedbackAuthorityKey(current);
-    const issued = current.presentation?.politeAnnouncement;
-    if (issued === null || issued === undefined || current.announcement === null) {
-      return previous?.authorityKey === authorityKey ? previous : null;
-    }
-    return Object.freeze({
-      authorityKey,
-      eventKey: JSON.stringify([authorityKey, issued.transitionId]),
-      text: current.error === null ? current.announcement : `${current.announcement}: ${current.error}`,
-    });
-  }
-  let cwPitchAnnouncement: IssuedLevelAnnouncement | null = $state(
-    nextLevelAnnouncement(initialCwPitchView, null),
-  );
-  $effect(() => {
-    const lease = cwPitchScalar.attachRenderer();
-    cwPitchLease = lease;
-    return () => lease.dispose();
-  });
-  $effect(() => {
-    const next = cwPitchLease === null ? cwPitchScalar.view : cwPitchLease.view;
-    cwPitchView = next;
-    cwPitchAnnouncement = nextLevelAnnouncement(
-      next, untrack(() => cwPitchAnnouncement),
-    );
-  });
   onDestroy(() => {
-    cwPitchScalar.destroy();
     breakInDelayScalar.destroy();
   });
-  function feedbackLevelValueText(
-    label: string, current: Readonly<ContinuousScalarView>, displayed: number | null, unit: string,
-  ): string {
-    if (displayed === null) return `${label} unavailable`;
-    const phase = current.phase?.replaceAll('-', ' ');
-    const error = current.error === null ? '' : `; ${current.error}`;
-    return `${label} ${displayed}${unit === '' ? '' : ` ${unit}`}${phase ? `; ${phase}` : ''}${error}`;
-  }
-  const feedbackLevelDisplay = (current: Readonly<ContinuousScalarView>): number | null =>
-    current.draft ?? (current.evidence === 'command-feedback' && current.busy
-      ? current.target : null) ?? current.canonical;
   const BUSY_BREAK_IN_DELAY_PHASES: ReadonlySet<PresentationPhase> = new Set([
     'submitted', 'queued', 'dispatched', 'awaiting-confirmation',
   ]);
@@ -479,14 +381,16 @@
     {#if showKeyerSpeed}
       {@render continuousHandles.keyerSpeed()}
     {/if}
+    {#if showPitchHz}
+      {@render continuousHandles.pitchHz()}
+    {/if}
 
-    {#each CW_LEVELS.filter(([field]) => field !== 'keyerSpeed') as [field, label, min, max, step, unit] (field)}
+    {#each CW_LEVELS.filter(([field]) => field !== 'keyerSpeed' && field !== 'pitchHz') as [field, label, min, max, step, unit] (field)}
       {@const f = cw[field]}
       {#if f.availability.structural}
         <label
           class="cw-keyer-level" data-testid={`cw-keyer-${field}`}
-          data-observed={field === 'breakInDelay' ? usable(f)
-            : cwPitchView.canonical !== null && cwPitchView.editable}
+          data-observed={usable(f)}
         >
           <span class="cw-keyer-name">{label}</span>
           {#if field === 'breakInDelay'}
@@ -521,38 +425,6 @@
             {/if}
             {:else}
               <output data-testid="cw-keyer-breakInDelay-value">{textOf(f)} {unit}</output>
-            {/if}
-          {:else}
-            {@const levelView = cwPitchView}
-            {@const levelLease = cwPitchLease}
-            {@const hasFeedback = cwPitchFeedback !== undefined}
-            {@const announcement = cwPitchAnnouncement}
-            {@const levelDisplay = feedbackLevelDisplay(levelView)}
-            <input
-              {...INTEGRATED_RANGE_POLICY} type="range" {min} {max} {step}
-              value={levelDisplay ?? min}
-              disabled={!levelView.editable}
-              data-command-phase={levelView.phase ?? undefined}
-              aria-busy={hasFeedback ? levelView.busy : undefined}
-              aria-valuenow={hasFeedback && levelDisplay !== null ? levelDisplay : undefined}
-              aria-valuetext={hasFeedback
-                ? feedbackLevelValueText(label, levelView, levelDisplay, unit) : undefined}
-              oninput={(event) => levelLease?.nativeInput(event.currentTarget.valueAsNumber)}
-            />
-            <output data-testid={`cw-keyer-${field}-value`} data-command-phase={levelView.phase ?? undefined}
-            >{levelDisplay === null ? UNKNOWN_TEXT : levelDisplay} {unit}
-              {#if hasFeedback && levelView.phase !== null}
-                <span class:command-pending={levelView.busy}>{levelView.phase.replaceAll('-', ' ')}</span>
-                {#if levelView.error !== null}<span>{levelView.error}</span>{/if}
-              {/if}
-            </output>
-            {#if hasFeedback && announcement !== null}
-              {#key announcement.eventKey}
-                <span
-                  class="sr-only" role="status" aria-live="polite" aria-atomic="true"
-                  data-control-feedback-status data-cw-feedback-status data-feedback-lane={field}
-                >{announcement.text}</span>
-              {/key}
             {/if}
           {/if}
         </label>
