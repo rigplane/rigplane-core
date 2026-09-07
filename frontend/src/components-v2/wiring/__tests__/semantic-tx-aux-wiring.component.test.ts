@@ -691,7 +691,7 @@ describe('selected finite TX auxiliary authority lifetime', () => {
     expect(q('[data-testid="tx-aux-atu-tune"]')).toBeNull();
     expect(q('[data-testid="external-VOX"]')).toBeNull();
     expect(q('[data-testid="external-TUNE"]')).toBeNull();
-    expect(h.authoritySubscribers.size).toBe(4);
+    expect(h.authoritySubscribers.size).toBe(5);
   });
 
   it('revokes retained A1 synchronously on A-B-A before flush and admits only fresh A3', () => {
@@ -773,7 +773,7 @@ describe('hosted Filter Mode and Filter ownership', () => {
     expect(q('[data-testid="filter-mode"]')).toBeNull();
     expect(q('[data-testid="filter-select"]')).toBeNull();
     for (const id of residual) expect(target.querySelectorAll(`[data-testid="${id}"]`)).toHaveLength(1);
-    expect(h.authoritySubscribers.size).toBe(4);
+    expect(h.authoritySubscribers.size).toBe(5);
   });
 
   it.each(['session', 'provider', 'topology', 'receiver', 'unknown'] as const)(

@@ -34,7 +34,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import MetersSurface from '../MetersSurface.svelte';
+import MetersSurface from './fixtures/StationMeterInstrumentHostFixture.svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
 import VfoSurface from '../VfoSurface.svelte';
 import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';

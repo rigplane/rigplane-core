@@ -53,7 +53,7 @@ describe('mounted PBT continuity is fenced by the live control session (MOR-1706
     render(); const initialInner = value('pbtInner'), initialOuter = value('pbtOuter'); expect(initialInner).not.toBeNull(); expect(initialOuter).not.toBeNull(); expect(h.commands).not.toHaveBeenCalled();
     const staleInput = target.querySelector<HTMLInputElement>('[data-testid="filter-pbtInner"] input'); expect(staleInput).not.toBeNull();
     accept(state(null, -200, 2)); flushSync(); expect(value('pbtInner')).toBe(initialInner); expect(value('pbtOuter')).toBe(initialOuter);
-    expect(h.listeners.size).toBe(4); transition('disconnected', 1, false); transition('connected', 1, false); flushSync(); expect(value('pbtInner')).toBeNull(); expect(value('pbtOuter')).toBeNull();
+    expect(h.listeners.size).toBe(5); transition('disconnected', 1, false); transition('connected', 1, false); flushSync(); expect(value('pbtInner')).toBeNull(); expect(value('pbtOuter')).toBeNull();
     staleInput!.value = '500'; staleInput!.dispatchEvent(new Event('input', { bubbles: true })); flushSync(); expect(h.commands).not.toHaveBeenCalled(); expect(txHarness.trace()).toEqual([]);
     transition('connected', 1); expect(value('pbtInner')).toBeNull(); accept(state(300, -400, 3)); flushSync(); expect(value('pbtInner')).not.toBeNull();
     transition('connected', 2); expect(value('pbtInner')).toBeNull(); accept(state(500, -600, 4)); flushSync(); expect(value('pbtOuter')).not.toBeNull();
