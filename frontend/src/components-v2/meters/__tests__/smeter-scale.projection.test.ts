@@ -41,15 +41,17 @@ afterEach(() => clearCapabilities());
 
 describe('projectSignalMeter', () => {
   it('projects one calibrated reading into motion, text, crossover, and labeled marks', () => {
-    const projection = projectSignalMeter(-48);
+    const projection = projectSignalMeter(-48, { kind: 'engineering', unit: 'db' });
 
     expect(Object.keys(projection).sort()).toEqual([
-      'marks', 'motionFraction', 'primaryText', 's9Fraction', 'secondaryText', 'ticks',
+      'accessibleDescription', 'crossoverFraction', 'marks', 'motionFraction', 'primaryText',
+      'scaleMode', 'secondaryText', 'ticks',
     ]);
+    expect(projection.scaleMode).toBe('s');
     expect(projection.motionFraction).toBeCloseTo(11 / 9 / 20);
     expect(projection.primaryText).toBe('S1');
     expect(projection.secondaryText).toBe('\u2212121 dBm');
-    expect(projection.s9Fraction).toBe(11 / 20);
+    expect(projection.crossoverFraction).toBe(11 / 20);
     expect(projection.marks.map(({ actual, text }) => ({ actual, text }))).toEqual([
       { actual: -48, text: 'S1' },
       { actual: -36, text: 'S3' },
@@ -78,7 +80,8 @@ describe('projectSignalMeter', () => {
       motionFraction: null,
       primaryText: 'S ?',
       secondaryText: '',
-      s9Fraction: 11 / 20,
+      crossoverFraction: 11 / 20,
+      scaleMode: 's',
     });
     expect(unknown.marks).toEqual(zero.marks);
     expect(unknown.ticks).toEqual(zero.ticks);
@@ -161,12 +164,67 @@ describe('projectSignalMeter', () => {
 
     const projection = projectSignalMeter(53);
     expect(projection.motionFraction).toBeCloseTo((53 / 127.5) * 11 / 20);
+    expect(projection.scaleMode).toBe('raw');
     expect(projection.primaryText).toBe('53');
     expect(projection.secondaryText).toBe('uncalibrated');
-    expect(projection.s9Fraction).toBe(11 / 20);
+    expect(projection.crossoverFraction).toBeNull();
     expect(projection.marks).toEqual([]);
-    expect(projection.ticks).toEqual([
-      { fraction: 0, kind: 'major', color: 'var(--v2-text-bright)' },
-    ]);
+    expect(projection.ticks).toEqual([]);
+  });
+
+  it('honors an explicit raw domain even when a calibration table is available', () => {
+    const projection = projectSignalMeter(53, { kind: 'raw' });
+
+    expect(projection).toMatchObject({
+      scaleMode: 'raw',
+      primaryText: '53',
+      secondaryText: 'uncalibrated',
+      crossoverFraction: null,
+      marks: [],
+      ticks: [],
+    });
+    expect(projection.motionFraction).toBeCloseTo((53 / 127.5) * 11 / 20);
+    expect(projection.accessibleDescription).not.toMatch(/S[0-9]|dBm/);
+  });
+
+  it('keeps engineering text but suppresses unsupported geometry without calibration', () => {
+    setCapabilities(capabilities(false));
+
+    const projection = projectSignalMeter(-12, { kind: 'engineering', unit: 'db' });
+    expect(projection).toMatchObject({
+      scaleMode: 'none',
+      motionFraction: null,
+      primaryText: '\u221212 dB rel S9',
+      secondaryText: 'scale unavailable',
+      crossoverFraction: null,
+      marks: [],
+      ticks: [],
+    });
+    expect(projection.accessibleDescription).toContain('\u221212 decibels relative to S9');
+  });
+
+  it('never infers units or S geometry for an explicit unknown domain', () => {
+    const projection = projectSignalMeter(53, { kind: 'unknown' });
+
+    expect(projection).toMatchObject({
+      scaleMode: 'none',
+      motionFraction: null,
+      primaryText: '53',
+      secondaryText: 'unit unknown',
+      crossoverFraction: null,
+      marks: [],
+      ticks: [],
+    });
+    expect(projection.accessibleDescription).not.toMatch(/S[0-9]|dBm|raw/);
+  });
+
+  it('does not emit an S-unit placeholder for an unknown sample with explicit unknown domain', () => {
+    const projection = projectSignalMeter(null, { kind: 'unknown' });
+
+    expect(projection).toMatchObject({
+      scaleMode: 'none', motionFraction: null, primaryText: '?',
+      secondaryText: 'unit unknown', crossoverFraction: null, marks: [], ticks: [],
+    });
+    expect(projection.primaryText).not.toContain('S');
   });
 });

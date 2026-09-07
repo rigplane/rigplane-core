@@ -336,6 +336,50 @@ describe('LinearSMeter calibrated S-meter domain', () => {
     expect(sdr.querySelector('[data-sdr-segment="40"]')?.getAttribute('fill')).toBe('#1a2230');
   });
 
+  it('renders explicit raw domain without S marks, dBm, or an S9 color crossover', () => {
+    const projection = projectSignalMeter(53, { kind: 'raw' });
+    const frame = {
+      projection,
+      smoothedFraction: projection.motionFraction!,
+      peakFraction: 0.9,
+    } satisfies SignalMeterFrame;
+    const normal = mountMeter({ frame });
+    const sdr = mountMeter({ frame, variant: 'sdr-screen' });
+
+    for (const target of [normal, sdr]) {
+      expect(target.textContent).toContain('53');
+      expect(target.textContent).toContain('uncalibrated');
+      expect(target.textContent).not.toMatch(/S[0-9]|dBm/);
+      expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe(
+        projection.accessibleDescription,
+      );
+    }
+    expect(normal.querySelectorAll('line')).toHaveLength(1);
+    expect(sdr.textContent).toContain('raw');
+    expect(sdr.querySelector('[data-sdr-segment="40"]')?.getAttribute('fill')).toBe('#1a2230');
+    expect(sdr.querySelector('[data-sdr-segment="79"]')?.getAttribute('fill')).toBe('#1a2230');
+  });
+
+  it.each([
+    [{ kind: 'engineering', unit: 'db' } as const, '\u221212 dB rel S9', 'scale unavailable'],
+    [{ kind: 'unknown' } as const, '-12', 'unit unknown'],
+  ])('suppresses motion, peak, and geometry for unprojectable domain %j', (domain, primary, secondary) => {
+    if (domain.kind === 'engineering') setCapabilities(makeCaps());
+    const projection = projectSignalMeter(-12, domain);
+    const target = mountMeter({
+      frame: { projection, smoothedFraction: 0.8, peakFraction: 0.95 },
+    });
+
+    expect(target.textContent).toContain(primary);
+    expect(target.textContent).toContain(secondary);
+    expect(target.querySelectorAll('[data-meter-fill]')).toHaveLength(0);
+    expect(target.querySelector('[data-meter-peak]')).toBeNull();
+    expect(target.querySelectorAll('line')).toHaveLength(0);
+    expect(target.querySelector('svg')?.getAttribute('aria-label')).toBe(
+      projection.accessibleDescription,
+    );
+  });
+
   it('starts no local motion owner for a host frame while compatibility callers start one', () => {
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockReturnValue({

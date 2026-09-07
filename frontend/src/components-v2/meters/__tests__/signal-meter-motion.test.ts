@@ -24,12 +24,15 @@ const SESSION_2 = { controlSessionEpoch: 2 } as const satisfies MeterContinuityS
 function projection(
   motionFraction: number | null,
   primaryText = motionFraction === null ? 'S ?' : 'S5',
+  scaleMode: SignalMeterProjection['scaleMode'] = motionFraction === null ? 'none' : 's',
 ): SignalMeterProjection {
   return {
+    scaleMode,
     motionFraction,
     primaryText,
     secondaryText: motionFraction === null ? '' : '\u2212121 dBm',
-    s9Fraction: 0.55,
+    accessibleDescription: primaryText,
+    crossoverFraction: scaleMode === 's' ? 0.55 : null,
     marks: [],
     ticks: [],
   };
@@ -164,11 +167,11 @@ describe('createSignalMeterMotion', () => {
   });
 
   it('keeps known raw projection text but resets motion for unknown or absent samples', () => {
-    const raw = projection(0.4, 'raw 103');
+    const raw = projection(0.4, 'raw 103', 'raw');
     const binding = createSignalMeterMotion({ projection: raw, present: true });
     expect(binding.frame.projection.primaryText).toBe('raw 103');
 
-    const unknown = projection(null);
+    const unknown = projection(null, '103, unit unknown', 'none');
     binding.sync({ projection: unknown, present: true });
     expect(binding.frame.projection).toBe(unknown);
     expect(binding.frame.smoothedFraction).toBe(0);

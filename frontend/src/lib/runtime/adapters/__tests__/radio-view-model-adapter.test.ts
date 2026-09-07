@@ -339,6 +339,7 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
     const signature = (view: RadioViewModel) => view.receiverIndicators?.map((indicator) => ({
       receiver: indicator.receiver,
       s: indicator.sMeter.reading,
+      domain: indicator.sMeter.domain,
       source: indicator.sMeter.source,
       bw: indicator.bandwidthHz.reading,
       agc: indicator.agcMode.reading,
@@ -353,6 +354,7 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
     expect(signature(before)).toEqual([
       {
         receiver: 'MAIN', s: { status: 'known', value: 0 },
+        domain: { kind: 'unknown' },
         source: { providerGeneration: 1, scope: 'receiver', receiver: 'MAIN', path: 'main.sMeter' },
         bw: { status: 'known', value: 2400 }, agc: { status: 'known', value: 0 },
         nb: { status: 'known', value: false }, att: { status: 'known', value: 0 },
@@ -361,12 +363,29 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
       },
       {
         receiver: 'SUB', s: { status: 'known', value: -37 },
+        domain: { kind: 'unknown' },
         source: { providerGeneration: 1, scope: 'receiver', receiver: 'SUB', path: 'sub.sMeter' },
         bw: { status: 'known', value: 500 }, agc: { status: 'known', value: 'SLOW' },
         nb: { status: 'known', value: true }, att: { status: 'known', value: 12 },
         pre: { status: 'known', value: 2 }, rfg: { status: 'known', value: 0.75 },
         digi: { status: 'known', value: true }, ip: { status: 'known', value: false },
       },
+    ]);
+  });
+
+  it('keeps MAIN and SUB S-meter domains receiver-addressed', () => {
+    const state = indicatorState();
+    state.fieldStatus!['main.sMeter'] = {
+      ...state.fieldStatus!['main.sMeter'], quality: ['calibrated'],
+    };
+    state.fieldStatus!['sub.sMeter'] = {
+      ...state.fieldStatus!['sub.sMeter'], quality: ['uncalibrated'],
+    };
+
+    const indicators = model(state, INDICATOR_CAPS, RECEIVING).receiverIndicators!;
+    expect(indicators.map(({ receiver, sMeter }) => ({ receiver, domain: sMeter.domain }))).toEqual([
+      { receiver: 'MAIN', domain: { kind: 'engineering', unit: 'db' } },
+      { receiver: 'SUB', domain: { kind: 'raw' } },
     ]);
   });
 
@@ -389,6 +408,7 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
       .receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN');
     expect(main?.sMeter.reading).toEqual({ status: 'unknown' });
     expect(main?.sMeter.availability.operational).toBe(false);
+    expect(main?.sMeter.domain).toEqual({ kind: 'unknown' });
     expect(main?.sMeter.source).toBeNull();
   });
 
@@ -404,6 +424,7 @@ describe('receiver indicators are structural-receiver addressed (MOR-2299 slice 
       .receiverIndicators?.find((indicator) => indicator.receiver === 'MAIN')!;
     expect(main.sMeter.reading).toEqual({ status: 'unknown' });
     expect(main.sMeter.availability.operational).toBe(false);
+    expect(main.sMeter.domain).toEqual({ kind: 'unknown' });
     expect(main.sMeter.source).toBeNull();
     expect(main.nbActive.reading).toEqual({ status: 'known', value: false });
   });
@@ -1074,8 +1095,14 @@ describe('RF gain additive display observation', () => {
     const legacyView = structuredClone(view);
     for (const field of [
       'signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent',
-    ] as const) delete legacyView.meters?.[field].source;
-    for (const indicator of legacyView.receiverIndicators ?? []) delete indicator.sMeter.source;
+    ] as const) {
+      delete legacyView.meters?.[field].source;
+      delete legacyView.meters?.[field].domain;
+    }
+    for (const indicator of legacyView.receiverIndicators ?? []) {
+      delete indicator.sMeter.source;
+      delete indicator.sMeter.domain;
+    }
     const strictJson = JSON.stringify(legacyView, (key, value) => ['display', 'activeFilterConfiguration', 'dataModeChoices'].includes(key) ? undefined : value);
     const digest = createHash('sha256').update(strictJson).digest('hex');
     expect(digest).toBe(stale ? 'b4b5cff2b85557e39baa48e4d73c756e12ff026488ffa05a1ef558ca0b3f0507' : '379a5f00e3bebae780e4215af4e014351df2a07fc067d412f97df6aeadca840f');

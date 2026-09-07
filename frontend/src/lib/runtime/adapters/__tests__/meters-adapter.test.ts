@@ -162,6 +162,46 @@ describe('canonical meter source identity (MOR-2400)', () => {
       meters.drainVoltage, meters.drainCurrent,
     ]) expect(field.source).toBeNull();
   });
+
+  it.each([
+    [['calibrated'], { kind: 'engineering', unit: 'db' }],
+    [['uncalibrated'], { kind: 'raw' }],
+    [[], { kind: 'unknown' }],
+    [['calibrated', 'calibrated'], { kind: 'unknown' }],
+    [['calibrated', 'uncalibrated'], { kind: 'unknown' }],
+    [['driver-note', 'calibrated'], { kind: 'engineering', unit: 'db' }],
+    [[3], { kind: 'unknown' }],
+  ] as const)('derives the station signal domain from strict quality evidence %#', (quality, domain) => {
+    const state = meterState();
+    state.fieldStatus!['main.sMeter'] = {
+      ...fresh, quality: quality as unknown as string[],
+    };
+    expect(model(state, caps(), RX).meters!.signal.domain).toEqual(domain);
+  });
+
+  it('emits unknown domain when a calibrated marker is not current', () => {
+    const state = meterState();
+    state.fieldStatus!['main.sMeter'] = { ...stale, quality: ['calibrated'] };
+    expect(model(state, caps(), RX).meters!.signal.domain).toEqual({ kind: 'unknown' });
+  });
+
+  it('maps calibrated quality to each meter field\'s canonical engineering unit', () => {
+    const state = meterState();
+    state.fieldStatus = Object.fromEntries(Object.entries(state.fieldStatus!).map(([path, status]) => [
+      path, METER_PATHS.includes(path as typeof METER_PATHS[number])
+        ? { ...status, quality: ['calibrated'] } : status,
+    ]));
+    const meters = model(state, caps(), TX).meters!;
+    const keys = [
+      'signal', 'power', 'swr', 'alc', 'compression', 'drainVoltage', 'drainCurrent',
+    ] as const;
+    expect(Object.fromEntries(keys.map((key) => [key, meters[key].domain]))).toEqual({
+      signal: { kind: 'engineering', unit: 'db' }, power: { kind: 'engineering', unit: 'w' },
+      swr: { kind: 'engineering', unit: 'ratio' }, alc: { kind: 'engineering', unit: 'normalized' },
+      compression: { kind: 'engineering', unit: 'db' }, drainVoltage: { kind: 'engineering', unit: 'v' },
+      drainCurrent: { kind: 'engineering', unit: 'a' },
+    });
+  });
 });
 
 describe('target meter display provenance (MOR-2359)', () => {
@@ -225,6 +265,7 @@ describe('target meter display provenance (MOR-2359)', () => {
           expect(strict).toEqual({
             reading: operational ? { status: 'known', value: state[path] } : { status: 'unknown' },
             availability: { structural: true, operational }, relevant,
+            domain: { kind: 'unknown' },
             source: operational
               ? { providerGeneration: 1, scope: 'radio', receiver: null, path }
               : null,
@@ -287,7 +328,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     const meters = model(meterState({ alcMeter: undefined }), caps(), TX).meters!;
     expect(meters.alc).toEqual({
       reading: { status: 'unknown' }, availability: { structural: false, operational: false }, relevant: true,
-      display: { state: 'unsupported' }, source: null,
+      display: { state: 'unsupported' }, domain: { kind: 'unknown' }, source: null,
     });
   });
 
@@ -297,7 +338,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
     }), caps(), TX).meters!;
     expect(meters.swr).toEqual({
       reading: { status: 'unknown' }, availability: { structural: true, operational: false }, relevant: true,
-      display: { state: 'stale', value: 20 }, source: null,
+      display: { state: 'stale', value: 20 }, domain: { kind: 'unknown' }, source: null,
     });
   });
 
@@ -406,6 +447,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       reading: { status: 'unknown' },
       availability: { structural: true, operational: false },
       relevant: true,
+      domain: { kind: 'unknown' },
       source: null,
     });
   });
@@ -420,6 +462,7 @@ describe('meters evidence gate and per-meter derivation (MOR-1262 slice 2A)', ()
       reading: { status: 'unknown' },
       availability: { structural: true, operational: false },
       relevant: true,
+      domain: { kind: 'unknown' },
       source: null,
     });
   });

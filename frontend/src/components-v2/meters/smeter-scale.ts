@@ -29,6 +29,7 @@ import {
   rawToSUnit as rawToSUnitForCalibration,
   type SmeterCalibrationPoint,
 } from '../../primitives/meters/s-meter-scale';
+import type { MeterValueDomain } from '../../semantic/radio-view-model';
 
 export interface SmeterMark {
   raw: number;
@@ -51,10 +52,13 @@ export interface SignalMeterProjectionTick {
 }
 
 export interface SignalMeterProjection {
+  readonly scaleMode: 's' | 'raw' | 'none';
   readonly motionFraction: number | null;
   readonly primaryText: string;
   readonly secondaryText: string;
-  readonly s9Fraction: number;
+  readonly accessibleDescription: string;
+  /** S9 crossover in `s` mode; absent for raw/unprojectable geometry. */
+  readonly crossoverFraction: number | null;
   readonly marks: readonly SignalMeterProjectionMark[];
   readonly ticks: readonly SignalMeterProjectionTick[];
 }
@@ -224,39 +228,97 @@ export function getScaleMarks(): SmeterMark[] {
  * The facade remains the only store reader; the pure primitives above own all
  * calibration, interpolation, labeling, and raw fallback behavior.
  */
-export function projectSignalMeter(value: number | null): SignalMeterProjection {
+export function projectSignalMeter(
+  value: number | null, domain?: MeterValueDomain,
+): SignalMeterProjection {
   const calibration = getCal();
-  const scale = scaleMarks(calibration);
+  // Omission is a compatibility path for pre-MOR-2425 internal callers. Live
+  // adapter-produced facts always pass an explicit domain, including unknown.
+  const calibrated = isSmeterCalibratedForCalibration(calibration);
+  const scaleMode: SignalMeterProjection['scaleMode'] = domain === undefined
+    ? (calibrated ? 's' : 'raw')
+    : domain.kind === 'raw' ? 'raw'
+      : domain.kind === 'engineering' && domain.unit === 'db' && calibrated ? 's' : 'none';
+  const projectionCalibration = scaleMode === 's' ? calibration : [];
+  const scale = scaleMode === 's' ? scaleMarks(calibration) : [];
   const marks = scale.map((mark) => ({
     actual: mark.actual,
-    fraction: rawToSegmentsForCalibration(mark.raw, calibration) / SEGMENT_DOMAIN,
+    fraction: rawToSegmentsForCalibration(mark.raw, projectionCalibration) / SEGMENT_DOMAIN,
     text: mark.text,
     color: mark.color,
   }));
-  const ticks = scaleTicks(scale, calibration);
-  const s9Fraction = rawToSegmentsForCalibration(
-    getS9RawForCalibration(calibration),
-    calibration,
-  ) / SEGMENT_DOMAIN;
+  const ticks = scaleMode === 's' ? scaleTicks(scale, projectionCalibration) : [];
+  const crossoverFraction = scaleMode === 's'
+    ? rawToSegmentsForCalibration(
+        getS9RawForCalibration(projectionCalibration), projectionCalibration,
+      ) / SEGMENT_DOMAIN
+    : null;
 
   if (value === null) {
+    const legacy = domain === undefined;
+    const primaryText = legacy || scaleMode === 's' ? 'S ?' : '?';
+    const secondaryText = legacy ? ''
+      : scaleMode === 'raw' ? 'uncalibrated'
+        : scaleMode === 'none' && domain?.kind === 'engineering' ? 'scale unavailable'
+          : scaleMode === 'none' ? 'unit unknown' : '';
     return {
+      scaleMode,
       motionFraction: null,
-      primaryText: 'S ?',
-      secondaryText: '',
-      s9Fraction,
+      primaryText,
+      secondaryText,
+      accessibleDescription: `S meter reading unknown${secondaryText ? `, ${secondaryText}` : ''}`,
+      crossoverFraction,
       marks,
       ticks,
     };
   }
 
+  if (scaleMode === 'raw') {
+    const primaryText = calibratedToSUnitForCalibration(value, projectionCalibration);
+    return {
+      scaleMode,
+      motionFraction: calibratedToSegmentsForCalibration(value, projectionCalibration) / SEGMENT_DOMAIN,
+      primaryText,
+      secondaryText: 'uncalibrated',
+      accessibleDescription: `S meter ${primaryText} raw, uncalibrated`,
+      crossoverFraction,
+      marks,
+      ticks,
+    };
+  }
+
+  if (scaleMode === 'none') {
+    const engineeringDb = domain?.kind === 'engineering' && domain.unit === 'db';
+    const signedValue = `${value < 0 ? '\u2212' : value > 0 ? '+' : ''}${Math.abs(value)}`;
+    const valueText = engineeringDb
+      ? `${signedValue} dB rel S9`
+      : String(value);
+    const stateText = engineeringDb ? 'scale unavailable' : 'unit unknown';
+    return {
+      scaleMode,
+      motionFraction: null,
+      primaryText: valueText,
+      secondaryText: stateText,
+      accessibleDescription: engineeringDb
+        ? `S meter ${signedValue} decibels relative to S9, ${stateText}`
+        : `S meter ${valueText}, ${stateText}`,
+      crossoverFraction,
+      marks,
+      ticks,
+    };
+  }
+
+  const primaryText = calibratedToSUnitForCalibration(value, projectionCalibration);
+  const secondaryText = formatDbmForCalibration(
+    calibratedToDbmForCalibration(value, projectionCalibration),
+  );
   return {
-    motionFraction: calibratedToSegmentsForCalibration(value, calibration) / SEGMENT_DOMAIN,
-    primaryText: calibratedToSUnitForCalibration(value, calibration),
-    secondaryText: formatDbmForCalibration(
-      calibratedToDbmForCalibration(value, calibration),
-    ),
-    s9Fraction,
+    scaleMode,
+    motionFraction: calibratedToSegmentsForCalibration(value, projectionCalibration) / SEGMENT_DOMAIN,
+    primaryText,
+    secondaryText,
+    accessibleDescription: `S meter ${primaryText}, ${secondaryText}`,
+    crossoverFraction,
     marks,
     ticks,
   };

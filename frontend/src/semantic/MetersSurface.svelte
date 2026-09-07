@@ -59,10 +59,11 @@
    * never once per gauge.
    */
   const signalDisplay = (signalProjection: SignalMeterProjection): ReturnType<typeof renderSlot> =>
-    renderSlot('meters', {
+    signalProjection.scaleMode !== 's' || signalProjection.crossoverFraction === null ? null
+      : renderSlot('meters', {
       value: signalProjection.motionFraction,
       max: 1,
-      s9: signalProjection.s9Fraction,
+      s9: signalProjection.crossoverFraction,
     });
 </script>
 
@@ -87,6 +88,7 @@
 
   let signalProjection = $derived(projectSignalMeter(
     meters && observed(meters.signal) ? rawOf(meters.signal) : null,
+    meters?.signal.domain,
   ));
   let barMeters = $derived(projectBarMeters(view));
 
