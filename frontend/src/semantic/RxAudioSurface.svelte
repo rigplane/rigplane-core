@@ -49,6 +49,7 @@
 -->
 <script module lang="ts">
   import { MOD_INPUT_SOURCES, modInputSourceLabel } from '$lib/radio/mod-input';
+  import { formatKnownLevel } from './format-level';
   import type {
     AudioFocus, ModInputReadiness, MonitorMode, RxAudioField,
   } from './radio-view-model';
@@ -78,6 +79,17 @@
   /** Honest text: an unread fact reads as unknown, never as a default. */
   export const textOf = (f: RxAudioField<unknown>): string =>
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
+  /** `afLevel`'s declared domain (rule 4 above, and `RxAudioViewModel.afLevel`
+   *  in the contract). `formatKnownLevel` reads that domain — not the value —
+   *  to decide the readout, so a 0..1 fraction shows as a percent instead of
+   *  the wire float `String()` printed. */
+  const AF_LEVEL_MIN = 0;
+  const AF_LEVEL_MAX = 1;
+  /** The AF readout. The fact stays 0..1 (rule 4); only the STRING changes. */
+  const afText = (f: RxAudioField<number>): string =>
+    f.reading.status === 'known'
+      ? formatKnownLevel(f.reading.value, AF_LEVEL_MIN, AF_LEVEL_MAX)
+      : UNKNOWN_TEXT;
 </script>
 
 <script lang="ts">
@@ -200,7 +212,7 @@
         <!-- 0..1 — the contract's OWN unit (rule 4). No rescale in either
              direction: the value in is the fact, the value out is the intent. -->
         {@render handles.afLevel()}
-        <output data-testid="rx-audio-af-value">{textOf(rx.afLevel)}</output>
+        <output data-testid="rx-audio-af-value">{afText(rx.afLevel)}</output>
       </label>
     {/if}
 

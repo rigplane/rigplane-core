@@ -7,6 +7,8 @@
   import type { Snippet } from 'svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
+  import { formatKnownLevel } from './format-level';
+  import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -36,10 +38,17 @@
     return field.reading.status === 'known' ? String(field.reading.value) : '—';
   }
 
-  function rfGainNumber(field: DisplayObservedField<number>): string {
-    if (!field.display) return numeric(field);
-    return field.display.state === 'current' || field.display.state === 'stale'
-      ? String(field.display.value) : '—';
+  /** RF gain's declared domain — the same `RF_FRONT_END_LEVELS[0]` tuple
+   *  `RfFrontEndInstrumentHost` reads for the RF-gain scalar's own domain.
+   *  The declared domain decides the readout, never the value itself. */
+  const [, , RF_GAIN_MIN, RF_GAIN_MAX] = RF_FRONT_END_LEVELS[0];
+
+  function rfGainText(field: DisplayObservedField<number>): string {
+    const level = field.display
+      ? (field.display.state === 'current' || field.display.state === 'stale'
+        ? field.display.value : undefined)
+      : (field.reading.status === 'known' ? field.reading.value : undefined);
+    return level === undefined ? '—' : formatKnownLevel(level, RF_GAIN_MIN, RF_GAIN_MAX);
   }
 
   function agc(field: ReceiverIndicatorViewModel['agcMode']): string {
@@ -162,8 +171,8 @@
         role="img"
         data-state={indicator.rfGain.reading.status}
         data-display-state={indicator.rfGain.display?.state ?? (indicator.rfGain.reading.status === 'known' ? 'current' : 'unknown')}
-        aria-label={`RF gain ${rfGainNumber(indicator.rfGain)}${indicator.rfGain.display?.state === 'stale' ? ' (stale, last observed)' : ''}`}
-      >RFG {rfGainNumber(indicator.rfGain)}<span
+        aria-label={`RF gain ${rfGainText(indicator.rfGain)}${indicator.rfGain.display?.state === 'stale' ? ' (stale, last observed)' : ''}`}
+      >RFG {rfGainText(indicator.rfGain)}<span
           class="stale-cue"
           style:display="inline-block"
           style:width="1ch"
