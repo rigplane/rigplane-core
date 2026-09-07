@@ -33,6 +33,7 @@
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
   import type { BandInstrumentHandles } from '../../semantic/band-instruments';
+  import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -341,6 +342,28 @@
   </div>
 {/snippet}
 
+<!--
+  MOR-2425. The Standard face arranges the two persistent antenna seats itself
+  instead of mounting the grouped `AntennaSurface`, so the blocked-reason list
+  the seats' `aria-describedby` points at has to be rendered here too — the
+  host hands both the id and the reason codes on `instruments.antennaLayout`.
+-->
+{#snippet antennaControlLayout()}
+  <div class="antenna-control-grid" data-testid="antenna-control-grid">
+    <div class="antenna-control-seat" data-field="txPort">
+      {@render instruments.antennaInstruments.txPort()}
+    </div>
+    <div class="antenna-control-seat" data-field="rxAnt">
+      {@render instruments.antennaInstruments.rxAnt()}
+    </div>
+  </div>
+  <ul class="antenna-blocked" id={instruments.antennaLayout.blockedId} data-testid="antenna-blocked">
+    {#each instruments.antennaLayout.blocked as code (code)}
+      <li data-reason={code}>{ANTENNA_BLOCKED_LABEL[code]}</li>
+    {/each}
+  </ul>
+{/snippet}
+
 {#snippet vfoOperationControls()}
   <div class="vfo-operation-instrument-grid" data-testid="vfo-operation-instrument-grid">
     {#if instruments.vfoOperations.split}<div class="vfo-operation-instrument-seat" data-field="split">{@render instruments.vfoOperations.split()}</div>{/if}
@@ -402,7 +425,11 @@
         {:else}
           {@render instruments.band()}
         {/if}
-        {@render instruments.antenna()}
+        {#if skinId === 'desktop-v2'}
+          {@render instruments.antenna(undefined, antennaControlLayout)}
+        {:else}
+          {@render instruments.antenna()}
+        {/if}
         {@render instruments.ritXitScan()}
         <div class="content-left"><LeftSidebar hideTxPanel={semanticRxTx} {declared} /></div>
       </div>
@@ -717,6 +744,10 @@
     display: flex;
   }
   .band-control-grid, .band-control-seat { display: contents; }
+  .antenna-control-grid { display: flex; flex-direction: column; gap: 0.25rem; }
+  .antenna-control-seat { display: contents; }
+  .antenna-blocked { margin: 0; padding-inline-start: 1.2em; }
+  .antenna-blocked:empty { display: none; }
   .vfo-operation-instrument-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;

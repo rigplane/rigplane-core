@@ -61,6 +61,7 @@
   } from '../../presentation/workspace/resolution';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import AntennaSurface from '../../semantic/AntennaSurface.svelte';
+  import AntennaInstrumentHost from '../../semantic/AntennaInstrumentHost.svelte';
   import BandSurface from '../../semantic/BandSurface.svelte';
   import BandInstrumentHost from '../../semantic/BandInstrumentHost.svelte';
   import type { BandControlLayout } from '../../semantic/band-instruments';
@@ -1373,6 +1374,14 @@
     onSelectBand={selectBand} onEnterFrequency={enterFrequency}
   >
   {#snippet children(bandInstruments)}
+  <AntennaInstrumentHost
+    {view} tx={txState} readTx={() => tx.snapshot()}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
+    onToggleRxAnt={antennaIntents.onToggleRxAnt}
+    finiteAppearance={selectedFiniteAppearance}
+  >
+  {#snippet children(antennaInstruments, antennaLayout)}
   <CwKeyerInstrumentHost
     {view} {keySpeedFeedback}
     onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
@@ -1759,13 +1768,15 @@
     still takes no lease and keys nothing — exactly one `<RxTxSurface>`
     remains the key/unkey authority (R9).
   -->
-  {#snippet antennaSurface()}
+  {#snippet antennaSurface(controlLayout?: Snippet)}
     {#if view?.antenna}
-      <AntennaSurface
-        {view} tx={txState}
-        onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
-        onToggleRxAnt={antennaIntents.onToggleRxAnt}
-      />
+      {#if controlLayout}
+        {@render controlLayout()}
+      {:else}
+        <AntennaSurface
+          {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
+        />
+      {/if}
     {/if}
   {/snippet}
 
@@ -2051,8 +2062,9 @@
     {#snippet body()}{@render bandSurface(controlLayout)}{/snippet}
     {@render zoned('band', view?.band !== undefined, body, allowBare)}
   {/snippet}
-  {#snippet hostedAntenna(allowBare = allowBareSurfaces)}
-    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBare)}
+  {#snippet hostedAntenna(allowBare = allowBareSurfaces, controlLayout?: Snippet)}
+    {#snippet body()}{@render antennaSurface(controlLayout)}{/snippet}
+    {@render zoned('antenna', view?.antenna !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedRitXitScan(allowBare = allowBareSurfaces)}
     {@render zoned(
@@ -2106,6 +2118,8 @@
       dsp: hostedDsp,
       band: hostedBand,
       antenna: hostedAntenna,
+      antennaInstruments,
+      antennaLayout,
       ritXitScan: hostedRitXitScan,
       cwKeyerInstruments,
       cwKeyer: hostedCwKeyer,
@@ -2295,6 +2309,8 @@
   </DspInstrumentHost>
   {/snippet}
   </CwKeyerInstrumentHost>
+  {/snippet}
+  </AntennaInstrumentHost>
   {/snippet}
   </BandInstrumentHost>
   {/snippet}
