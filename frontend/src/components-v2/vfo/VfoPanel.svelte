@@ -336,7 +336,7 @@
 
   .slot-choice:disabled { opacity: 0.55; cursor: not-allowed; }
   .slot-choice .vfo-role { font-size: 8px; }
-  .slot-choice .vfo-freq { font-size: 9px; }
+  .control-strip .slot-choice .vfo-freq { font-size: 9px; }
 
   .mode-badge-wrapper {
     cursor: pointer;
