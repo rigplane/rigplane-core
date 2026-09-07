@@ -169,7 +169,7 @@ const liveCaps = (): Capabilities => ({
 
 /**
  * A single-receiver `ab`-scheme radio with `vfoReadback: 'selected_unselected'`
- * and NO `main.activeSlot` observation — the one shape
+ * and NO `main.activeSlot` observation — one of the shapes
  * `relativeVfoIdentityUnknown()` reports true for (`panel-props.ts`), which
  * is what `MemorySurface.svelte`'s `facts.vfoIdentityKnown` gate reads.
  */
@@ -198,8 +198,7 @@ function useState(state: ServerState, caps: Capabilities): void {
 
 /**
  * Sets the runtime-mock facts (`deriveMemoryPanelProps` reads
- * `runtime.state`/`runtime.caps`). The mocked `subscribeControlAuthority`
- * pushes the same state into the command-authority store on subscribe.
+ * `runtime.state`/`runtime.caps`).
  */
 function useFacts(state: ServerState, caps: Capabilities): void {
   h.state = state;
