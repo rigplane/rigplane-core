@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import DualParamRenderer from '../DualParamRenderer.svelte';
+import type { DualParamIssuedStatusPresentation } from '../dual-param-issued-status';
 import {
+  createContinuousPair,
+  nativeRangeContinuousPairPolicy,
+  type CommandFeedbackContinuousPairInput,
   type ContinuousPairBinding,
   type ContinuousPairInput,
   type ContinuousPairLaneView,
@@ -83,7 +87,111 @@ function slider(target: HTMLElement): HTMLElement {
   return target.querySelector('[role="slider"]') as HTMLElement;
 }
 
+function commandFeedback(
+  control: string,
+  confirmed: number,
+  over: Partial<CommandScalarFeedback>,
+): CommandScalarFeedback {
+  return {
+    confirmed, target: null, requestedTarget: null, phase: 'idle', busy: false,
+    availability: 'available', outcome: null, lifecycleId: null, transitionId: null,
+    providerGeneration: 3, sessionEpoch: 7, scope: { control, receiver: 0 },
+    repeatPolicy: 'latest-target-wins', ...over,
+  };
+}
+
+function commandPairInput(
+  rf: Partial<CommandScalarFeedback>,
+  sql: Partial<CommandScalarFeedback>,
+): CommandFeedbackContinuousPairInput {
+  return {
+    evidence: 'command-feedback', enabled: true,
+    domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
+    requestRf: vi.fn(), requestSql: vi.fn(),
+    rf: { command: 'set_rf_gain', feedback: commandFeedback('rf-gain', 0.5, rf) },
+    sql: { command: 'set_squelch', feedback: commandFeedback('squelch', 0.2, sql) },
+  };
+}
+
 describe('binding-only DualParamRenderer', () => {
+  it('issues actual pair transitions once through independent external lane presentations', () => {
+    const state = $state({ input: commandPairInput({
+      target: 0.55, phase: 'submitted', busy: true,
+      lifecycleId: 'rf-1', transitionId: 'rf-submitted',
+    }, {
+      requestedTarget: 0.3, phase: 'failed',
+      outcome: { phase: 'failed', error: 'radio rejected' },
+      lifecycleId: 'sql-1', transitionId: 'sql-failed',
+    }) });
+    const pair = createContinuousPair(() => state.input, nativeRangeContinuousPairPolicy);
+    let ownerViewReads = 0;
+    const binding: ContinuousPairBinding = {
+      get view() { ownerViewReads += 1; return pair.view; },
+      attachRenderer: () => pair.attachRenderer(),
+      cancel: reason => pair.cancel(reason),
+      destroy: () => pair.destroy(),
+    };
+    const acceptRf = vi.fn();
+    const acceptSql = vi.fn();
+    const presentation = {
+      rf: {
+        text: null,
+        format: vi.fn(({ lane, laneView, announcement }) =>
+          `${lane}:${laneView.phase}:${announcement.message}`),
+        accept: acceptRf,
+      },
+      sql: {
+        text: null,
+        format: vi.fn(({ lane, laneView, announcement }) =>
+          `${lane}:${laneView.phase}:${announcement.message}`),
+        accept: acceptSql,
+      },
+    } satisfies DualParamIssuedStatusPresentation;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    mounted.push(mount(DualParamRenderer, {
+      target, props: { binding, issuedStatusPresentation: presentation },
+    }));
+    flushSync();
+
+    expect(ownerViewReads).toBe(0);
+    expect(presentation.rf.format).toHaveBeenCalledOnce();
+    expect(presentation.sql.format).toHaveBeenCalledOnce();
+    expect(acceptRf).toHaveBeenCalledExactlyOnceWith(
+      'rf:submitted:Submitting: 0.55',
+    );
+    expect(acceptSql).toHaveBeenCalledExactlyOnceWith(
+      'sql:failed:Failed: 0.3',
+    );
+    expect(target.querySelectorAll('[data-control-feedback-status]')).toHaveLength(0);
+
+    state.input = commandPairInput({}, {});
+    flushSync();
+    expect(acceptRf).toHaveBeenLastCalledWith(null);
+    expect(acceptSql).toHaveBeenLastCalledWith(null);
+    expect(presentation.rf.format).toHaveBeenCalledOnce();
+    expect(presentation.sql.format).toHaveBeenCalledOnce();
+  });
+
+  it('preserves default local output for actual stateful pair announcements', () => {
+    const input = commandPairInput({
+      target: 0.55, phase: 'submitted', busy: true,
+      lifecycleId: 'rf-1', transitionId: 'rf-submitted',
+    }, {
+      requestedTarget: 0.3, phase: 'failed',
+      outcome: { phase: 'failed', error: 'radio rejected' },
+      lifecycleId: 'sql-1', transitionId: 'sql-failed',
+    });
+    const pair = createContinuousPair(() => input, nativeRangeContinuousPairPolicy);
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    mounted.push(mount(DualParamRenderer, { target, props: { binding: pair } }));
+    flushSync();
+
+    expect([...target.querySelectorAll('[data-control-feedback-status]')]
+      .map(status => status.textContent)).toEqual(['Submitting: 0.55', 'Failed: 0.3']);
+  });
+
   it('owns one lease, forwards every gesture, and disposes leases without destroying owners', async () => {
     const first = fakeBinding(11);
     const second = fakeBinding(22);
