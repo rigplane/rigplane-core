@@ -10,6 +10,13 @@
 import type { Component } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { AppResource } from '$lib/runtime/resource-demand';
+import type {
+  FiniteControlAppearance,
+  FrequencyRenderer,
+  HostedFaceComponentV1,
+  MeterAppearance,
+  ScalarAppearance,
+} from '../../component-kit-api/src/index';
 import type { InstrumentComposition } from '../components-v2/wiring/instrument-composition';
 import {
   normalizeLayoutMode,
@@ -20,10 +27,29 @@ export type SkinId =
   | 'desktop-v2' | 'dual-receiver-cockpit' | 'lcd-cockpit' | 'lcd-scope' | 'mobile' | 'peer-split'
   | 'sdr-test' | 'dual-sdr-face' | 'unified-instrument' | 'panadapter-first';
 
-export type PresentationHostMode = 'self-contained' | 'instrument-handles';
+export type PresentationId = string;
+export type PresentationHostMode =
+  'self-contained' | 'instrument-handles' | 'external-instruments-v1';
 export type InstrumentHandlesPresentation = Component<{ instruments: InstrumentComposition }>;
 export type SelfContainedPresentation = Component;
-export type PresentationComponent = InstrumentHandlesPresentation | SelfContainedPresentation;
+export type PresentationComponent =
+  InstrumentHandlesPresentation | SelfContainedPresentation | HostedFaceComponentV1;
+
+export interface ResolvedHostedFaceAppearancesV1 {
+  readonly scalar: ScalarAppearance;
+  readonly frequency: FrequencyRenderer;
+  readonly finite: FiniteControlAppearance;
+  readonly meter: MeterAppearance;
+}
+
+export interface ExternalPresentationRecord {
+  readonly id: string;
+  readonly kind: 'external-instruments-v1';
+  readonly loader: () => Promise<HostedFaceComponentV1>;
+  readonly resources: readonly AppResource[];
+  readonly layoutId: string;
+  readonly appearances: ResolvedHostedFaceAppearancesV1;
+}
 
 type BuiltInPresentationRecord<Id extends SkinId> =
   | {
@@ -43,10 +69,10 @@ type BuiltInPresentationCatalog = {
   readonly [Id in SkinId]: BuiltInPresentationRecord<Id>;
 };
 
-export function presentationHostMode(id: SkinId): PresentationHostMode {
-  return SKIN_LOADERS[id].kind === 'built-in-instrument-layout'
-    ? 'instrument-handles'
-    : 'self-contained';
+export type PresentationRecord = BuiltInPresentationRecord<SkinId> | ExternalPresentationRecord;
+
+export interface PreparedExternalPresentationBatch {
+  readonly records: readonly ExternalPresentationRecord[];
 }
 
 export interface SkinResolutionContext {
@@ -181,12 +207,75 @@ const SKIN_LOADERS = {
   },
 } satisfies BuiltInPresentationCatalog;
 
+const hasOwn = (value: object, key: PropertyKey): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+/**
+ * Built-in ids, previously committed external ids and Object.prototype names
+ * are all unavailable. The latter matters because SKIN_LOADERS intentionally
+ * remains the one normal-prototype literal catalog parsed by existing guards.
+ */
+export function isPresentationIdReserved(id: string): boolean {
+  return id in SKIN_LOADERS;
+}
+
+export function getPresentationRecord(id: PresentationId): PresentationRecord | undefined {
+  if (!hasOwn(SKIN_LOADERS, id)) return undefined;
+  return (SKIN_LOADERS as unknown as Record<string, PresentationRecord>)[id];
+}
+
+function requirePresentationRecord(id: PresentationId): PresentationRecord {
+  const record = getPresentationRecord(id);
+  if (record === undefined) throw new Error(`Presentation "${id}" is not registered.`);
+  return record;
+}
+
+export function prepareExternalPresentationBatch(
+  records: readonly ExternalPresentationRecord[],
+): PreparedExternalPresentationBatch {
+  const batchIds = new Set<string>();
+  const prepared: ExternalPresentationRecord[] = [];
+  for (const record of records) {
+    if (isPresentationIdReserved(record.id)) {
+      throw new Error(`Presentation id "${record.id}" is registered or reserved.`);
+    }
+    if (batchIds.has(record.id)) {
+      throw new Error(`Presentation id "${record.id}" appears more than once in the batch.`);
+    }
+    batchIds.add(record.id);
+    prepared.push(Object.freeze({
+      ...record,
+      resources: Object.freeze([...record.resources]),
+      appearances: Object.freeze({ ...record.appearances }),
+    }));
+  }
+  return Object.freeze({ records: Object.freeze(prepared) });
+}
+
+/** Commit only a synchronously prepared batch; all fallible work is upstream. */
+export function commitExternalPresentationBatch(batch: PreparedExternalPresentationBatch): void {
+  const catalog = SKIN_LOADERS as unknown as Record<string, PresentationRecord>;
+  for (const record of batch.records) catalog[record.id] = record;
+}
+
+export function presentationHostMode(id: SkinId): Exclude<PresentationHostMode, 'external-instruments-v1'>;
+export function presentationHostMode(id: PresentationId): PresentationHostMode;
+export function presentationHostMode(id: PresentationId): PresentationHostMode {
+  const record = requirePresentationRecord(id);
+  if (record.kind === 'built-in-instrument-layout') return 'instrument-handles';
+  if (record.kind === 'external-instruments-v1') return 'external-instruments-v1';
+  return 'self-contained';
+}
+
 type LoadedPresentation<Id extends SkinId> =
   Awaited<ReturnType<(typeof SKIN_LOADERS)[Id]['loader']>>['default'];
 
 export function loadSkin<Id extends SkinId>(id: Id): Promise<LoadedPresentation<Id>>;
-export async function loadSkin(id: SkinId): Promise<PresentationComponent> {
-  return (await SKIN_LOADERS[id].loader()).default;
+export function loadSkin(id: PresentationId): Promise<PresentationComponent>;
+export async function loadSkin(id: PresentationId): Promise<PresentationComponent> {
+  const record = requirePresentationRecord(id);
+  if (record.kind === 'external-instruments-v1') return record.loader();
+  return (await record.loader()).default;
 }
 
 /**
@@ -216,6 +305,6 @@ export async function loadSkin(id: SkinId): Promise<PresentationComponent> {
  * solely while it is already demanded, so a presentation choice can never
  * manufacture a live service (v3 ADR invariant 12).
  */
-export function presentationResourcePlan(id: SkinId): readonly AppResource[] {
-  return SKIN_LOADERS[id]?.resources ?? [];
+export function presentationResourcePlan(id: PresentationId): readonly AppResource[] {
+  return requirePresentationRecord(id).resources;
 }

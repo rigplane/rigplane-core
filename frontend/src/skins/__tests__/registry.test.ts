@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { AppResource } from '$lib/runtime/resource-demand';
+import type { HostedFaceComponentV1 } from '../../../component-kit-api/src/index';
 import type { SkinId } from '../registry';
 
 // MOR-2074: which SkinId is QA-gated, read off `resolveSkinId`'s actual
@@ -66,7 +67,10 @@ vi.mock('../dual-receiver-cockpit/DualReceiverCockpit.svelte', () => lazyImports
 vi.mock('../dual-sdr-face/DualSdrFaceSkin.svelte', () => lazyImports['dual-sdr-face']());
 
 import {
-  loadSkin, presentationHostMode, presentationResourcePlan, resolveSkinId,
+  commitExternalPresentationBatch, getPresentationRecord, isPresentationIdReserved,
+  loadSkin, prepareExternalPresentationBatch, presentationHostMode,
+  presentationResourcePlan, resolveSkinId,
+  type ExternalPresentationRecord,
   type PresentationHostMode,
 } from '../registry';
 
@@ -315,4 +319,91 @@ describe('presentation host mode', () => {
     'selects %s as %s',
     (skinId, mode) => expect(presentationHostMode(skinId)).toBe(mode),
   );
+});
+
+describe('external presentation records share the built-in catalog', () => {
+  const faceA = (() => ({})) as unknown as HostedFaceComponentV1;
+  const faceB = (() => ({})) as unknown as HostedFaceComponentV1;
+  const appearances = {
+    scalar: { name: 'External' },
+    frequency: (() => ({})),
+    finite: { action: () => ({}), toggle: () => ({}), choice: () => ({}) },
+    meter: { signal: () => ({}), level: () => ({}) },
+  } as unknown as ExternalPresentationRecord['appearances'];
+
+  function externalRecord(
+    id: string,
+    face: HostedFaceComponentV1,
+    resources: AppResource[] = [],
+  ): ExternalPresentationRecord {
+    return {
+      id,
+      kind: 'external-instruments-v1',
+      layoutId: `${id}-layout`,
+      loader: vi.fn(async () => face),
+      resources,
+      appearances,
+    };
+  }
+
+  it.each(['desktop-v2', '__proto__', 'constructor', 'toString'])(
+    'rejects registered or inherited catalog id %s before commit',
+    (id) => {
+      expect(isPresentationIdReserved(id)).toBe(true);
+      expect(() => prepareExternalPresentationBatch([externalRecord(id, faceA)]))
+        .toThrow(/registered or reserved/i);
+      if (id !== 'desktop-v2') expect(getPresentationRecord(id)).toBeUndefined();
+    },
+  );
+
+  it('rejects a duplicate external id before commit', () => {
+    expect(() => prepareExternalPresentationBatch([
+      externalRecord('duplicate-external', faceA),
+      externalRecord('duplicate-external', faceB),
+    ])).toThrow(/more than once/i);
+    expect(getPresentationRecord('duplicate-external')).toBeUndefined();
+  });
+
+  it('commits two immutable records and keeps their direct loaders lazy', async () => {
+    const resources: AppResource[] = ['hardware-scope'];
+    const first = externalRecord('external-face-one', faceA, resources);
+    const second = externalRecord('external-face-two', faceB, ['audio-fft']);
+    const prepared = prepareExternalPresentationBatch([first, second]);
+    resources.length = 0;
+
+    expect(first.loader).not.toHaveBeenCalled();
+    expect(second.loader).not.toHaveBeenCalled();
+    commitExternalPresentationBatch(prepared);
+
+    const committed = getPresentationRecord('external-face-one');
+    expect(committed).toMatchObject({
+      kind: 'external-instruments-v1',
+      layoutId: 'external-face-one-layout',
+      resources: ['hardware-scope'],
+    });
+    expect(Object.isFrozen(committed)).toBe(true);
+    expect(committed?.kind === 'external-instruments-v1'
+      && Object.isFrozen(committed.appearances)).toBe(true);
+    expect(Object.isFrozen(committed?.resources)).toBe(true);
+    expect(presentationHostMode('external-face-one')).toBe('external-instruments-v1');
+    expect(presentationResourcePlan('external-face-two')).toEqual(['audio-fft']);
+    await expect(loadSkin('external-face-one')).resolves.toBe(faceA);
+    await expect(loadSkin('external-face-two')).resolves.toBe(faceB);
+    expect(first.loader).toHaveBeenCalledTimes(1);
+    expect(second.loader).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fall back for unknown or inherited ids', async () => {
+    expect(getPresentationRecord('absent-external')).toBeUndefined();
+    await expect(loadSkin('absent-external')).rejects.toThrow(/not registered/i);
+    expect(() => presentationHostMode('toString')).toThrow(/not registered/i);
+    expect(() => presentationResourcePlan('__proto__')).toThrow(/not registered/i);
+  });
+
+  it('retains one literal catalog and one loader implementation', () => {
+    expect(registrySource.match(/const SKIN_LOADERS/g)).toHaveLength(1);
+    expect(registrySource.match(/export async function loadSkin/g)).toHaveLength(1);
+    expect(registrySource).not.toContain('EXTERNAL_SKIN_LOADERS');
+    expect(registrySource).not.toContain('EXTERNAL_PRESENTATION_CATALOG');
+  });
 });
