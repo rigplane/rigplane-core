@@ -418,7 +418,9 @@ describe('orientation change preserves App authority (MOR-1086 doctrine)', () =>
     expect(mobileLayoutSource).not.toContain('displayFrameSource');
     // The plan still names hardware-scope for mobile, owned by SpectrumPanel.
     const registrySource = readFileSync('src/skins/registry.ts', 'utf8');
-    expect(registrySource).toContain("'mobile': ['hardware-scope']");
+    expect(registrySource).toMatch(
+      /'mobile':\s*\{[^}]*resources:\s*\['hardware-scope'\]/s,
+    );
   });
 
   it('presentation rotation preserves canonical latched TRANSMIT without commands', () => {

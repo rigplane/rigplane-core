@@ -96,7 +96,10 @@ const hostedSkinSources: Readonly<Record<string, string>> = {
 };
 const sharedShellMounts = (manifest: LayoutManifest): boolean => {
   const skinSource = hostedSkinSources[manifest.id];
-  const registryMode = new RegExp(`['"]${manifest.id}['"]:\\s*['"]instrument-handles['"]`);
+  const registryMode = new RegExp(
+    `['"]${manifest.id}['"]:\\s*\\{[^}]*kind:\\s*['"]built-in-instrument-layout['"]`,
+    's',
+  );
   const forwardsComposition = new RegExp(
     `<RadioLayout\\s+skinId=['"]${manifest.id}['"]\\s+\\{instruments\\}\\s*/>`,
   );
