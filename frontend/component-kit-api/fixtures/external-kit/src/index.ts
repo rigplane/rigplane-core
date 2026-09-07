@@ -7,10 +7,13 @@ import {
   type FrequencyRenderer,
   type InstrumentGroup,
   type LayoutManifest,
+  type MeterAppearance,
   type PresentationComponent,
   type PresentationDeclaration,
   type ScalarAppearance,
 } from '@rigplane/component-kit-api';
+import FixtureLevelMeter from './FixtureLevelMeter.svelte';
+import FixtureSignalMeter from './FixtureSignalMeter.svelte';
 
 const component = (() => ({})) as unknown as PresentationComponent;
 const scalarRenderer = (() => ({})) as unknown as NonNullable<ScalarAppearance['hbar']>;
@@ -29,6 +32,10 @@ const choiceRenderer = ((_internals, { lease }) => {
   void request;
   return {};
 }) satisfies FiniteControlAppearance['choice'];
+const meterAppearance = {
+  signal: FixtureSignalMeter,
+  level: FixtureLevelMeter,
+} satisfies MeterAppearance;
 
 const language: DesignLanguageManifest = {
   id: 'fixture-line',
@@ -82,6 +89,7 @@ export const fixtureKit: ComponentKitDeclaration = defineComponentKit({
   finiteControlAppearances: {
     fixture: { action: actionRenderer, toggle: toggleRenderer, choice: choiceRenderer },
   },
+  meterAppearances: { fixture: meterAppearance },
   designLanguages: [language],
   layouts: [layout],
   instrumentGroups: [group],

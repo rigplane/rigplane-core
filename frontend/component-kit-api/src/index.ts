@@ -59,6 +59,80 @@ export type ChoiceRendererProps<T extends FiniteChoiceValue = FiniteChoiceValue>
   HostChoiceRendererProps<T>;
 export type FiniteControlAppearance = HostFiniteControlAppearance<FiniteChoiceValue>;
 
+export type MeterDisplayDomain =
+  | Readonly<{ kind: 'engineering'; unit: 'db' | 'normalized' | 'w' | 'ratio' | 'v' | 'a' }>
+  | Readonly<{ kind: 'raw' }>
+  | Readonly<{ kind: 'unknown' }>;
+
+export type MeterNumericEvidence =
+  | Readonly<{
+    state: 'current' | 'stale';
+    value: number;
+    domain: MeterDisplayDomain;
+  }>
+  | Readonly<{
+    state: 'idle' | 'unknown' | 'unsupported';
+    domain: MeterDisplayDomain;
+  }>;
+export type SignalMeterEvidence =
+  | Readonly<{ state: 'current'; value: number; domain: MeterDisplayDomain }>
+  | Readonly<{ state: 'unknown'; domain: MeterDisplayDomain }>;
+export type SignalMeterScaleMode = 's' | 'raw' | 'none';
+export type SignalMeterTickKind = 'major' | 'mid' | 'minor';
+export interface SignalMeterMark {
+  readonly actual: number;
+  readonly fraction: number;
+  readonly text: string;
+}
+export interface SignalMeterTick {
+  readonly fraction: number;
+  readonly kind: SignalMeterTickKind;
+}
+export interface SignalMeterRendererView {
+  readonly kind: 'signal';
+  readonly evidence: SignalMeterEvidence;
+  readonly relevant?: boolean;
+  readonly scaleMode: SignalMeterScaleMode;
+  readonly displayedFraction: number | null;
+  readonly peakFraction: number | null;
+  readonly primaryText: string;
+  readonly secondaryText: string;
+  readonly accessibleDescription: string;
+  readonly crossoverFraction: number | null;
+  readonly marks: readonly SignalMeterMark[];
+  readonly ticks: readonly SignalMeterTick[];
+}
+export type LevelMeterKey =
+  | 'power' | 'swr' | 'alc' | 'drainCurrent' | 'drainVoltage' | 'compression';
+interface LevelMeterRendererViewBase<Key extends LevelMeterKey> {
+  readonly kind: 'level';
+  readonly key: Key;
+  readonly label: string;
+  readonly evidence: MeterNumericEvidence;
+  readonly relevant: boolean;
+  readonly observed: boolean;
+  readonly displayedFraction: number | null;
+  readonly peakFraction: number | null;
+  readonly displayText: string;
+  readonly stateText: string;
+  readonly accessibleDescription?: string;
+  readonly gauge: boolean;
+  readonly fault: boolean;
+  readonly peakEnabled: boolean;
+}
+export type LevelMeterRendererView =
+  | Readonly<LevelMeterRendererViewBase<Exclude<LevelMeterKey, 'swr'>>>
+  | Readonly<LevelMeterRendererViewBase<'swr'> & { readonly ratioScale: boolean }>;
+export interface SignalMeterRendererProps { readonly view: Readonly<SignalMeterRendererView> }
+export interface LevelMeterRendererProps {
+  readonly view: Readonly<LevelMeterRendererView>;
+  readonly resetPeak?: ActionRendererLease;
+}
+export interface MeterAppearance {
+  readonly signal: Component<SignalMeterRendererProps>;
+  readonly level: Component<LevelMeterRendererProps>;
+}
+
 export interface FrequencyRendererProps {
   readonly model: Readonly<FrequencyReadoutModel>;
   readonly interaction: FrequencyInteraction;
@@ -83,6 +157,7 @@ export interface ComponentKitDeclaration {
   readonly scalarAppearances?: Readonly<Record<string, ScalarAppearance>>;
   readonly frequencyReadouts?: Readonly<Record<string, FrequencyRenderer>>;
   readonly finiteControlAppearances?: Readonly<Record<string, FiniteControlAppearance>>;
+  readonly meterAppearances?: Readonly<Record<string, MeterAppearance>>;
   readonly designLanguages?: readonly DesignLanguageManifest[];
   readonly layouts?: readonly LayoutManifest[];
   readonly instrumentGroups?: readonly InstrumentGroup[];

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { build } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.dirname(packageRoot);
@@ -11,6 +12,7 @@ const apiDist = path.join(packageRoot, 'dist');
 const fixtureRoot = path.join(packageRoot, 'fixtures', 'external-kit');
 const fixtureDist = path.join(fixtureRoot, 'dist');
 const tsc = path.join(frontendRoot, 'node_modules', 'typescript', 'bin', 'tsc');
+const svelteCheck = path.join(frontendRoot, 'node_modules', 'svelte-check', 'bin', 'svelte-check');
 
 function runTypeScript(config) {
   const result = spawnSync(process.execPath, [tsc, '-p', config], {
@@ -22,10 +24,20 @@ function runTypeScript(config) {
   }
 }
 
-async function bundle(entry, outDir, external) {
+function runSvelteCheck(config) {
+  const result = spawnSync(process.execPath, [
+    svelteCheck, '--workspace', fixtureRoot, '--tsconfig', config, '--threshold', 'error',
+  ], { cwd: frontendRoot, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`Svelte fixture check failed.\n${result.stdout}${result.stderr}`);
+  }
+}
+
+async function bundle(entry, outDir, external, plugins = []) {
   await build({
     configFile: false,
     logLevel: 'warn',
+    plugins,
     publicDir: false,
     build: {
       emptyOutDir: false,
@@ -76,9 +88,11 @@ async function buildFixture() {
   await bundle(
     path.join(fixtureRoot, 'src', 'index.ts'),
     fixtureDist,
-    ['@rigplane/component-kit-api', 'svelte'],
+    (id) => id === '@rigplane/component-kit-api' || id === 'svelte' || id.startsWith('svelte/'),
+    [svelte()],
   );
   const temporaryConfig = path.join(fixtureDist, 'tsconfig.build.json');
+  const checkConfig = path.join(fixtureDist, 'tsconfig.check.json');
   await writeFile(temporaryConfig, JSON.stringify({
     extends: '../../../../tsconfig.app.json',
     compilerOptions: {
@@ -102,10 +116,26 @@ async function buildFixture() {
     },
     include: ['../src/index.ts'],
   }, null, 2));
+  await writeFile(checkConfig, JSON.stringify({
+    extends: '../../../../tsconfig.app.json',
+    compilerOptions: {
+      allowJs: false,
+      baseUrl: '../../../..',
+      checkJs: false,
+      paths: {
+        '@rigplane/component-kit-api': [
+          'component-kit-api/dist/types/component-kit-api/src/index.d.ts',
+        ],
+      },
+    },
+    include: ['../src/**/*.ts', '../src/**/*.svelte'],
+  }, null, 2));
   try {
+    runSvelteCheck(checkConfig);
     runTypeScript(temporaryConfig);
   } finally {
     await unlink(temporaryConfig).catch(() => {});
+    await unlink(checkConfig).catch(() => {});
   }
 }
 

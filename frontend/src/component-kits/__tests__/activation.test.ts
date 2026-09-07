@@ -3,6 +3,7 @@ import type {
   ComponentKitDeclaration,
   FiniteControlAppearance,
   FrequencyRenderer,
+  MeterAppearance,
   ScalarAppearance,
 } from '../../../component-kit-api/src/index';
 
@@ -11,6 +12,8 @@ const scalarRenderer = (() => ({})) as unknown as NonNullable<ScalarAppearance['
 const actionRenderer = (() => ({})) as unknown as FiniteControlAppearance['action'];
 const toggleRenderer = (() => ({})) as unknown as FiniteControlAppearance['toggle'];
 const choiceRenderer = (() => ({})) as unknown as FiniteControlAppearance['choice'];
+const signalMeterRenderer = (() => ({})) as unknown as MeterAppearance['signal'];
+const levelMeterRenderer = (() => ({})) as unknown as MeterAppearance['level'];
 
 function appearance(name: string): ScalarAppearance {
   return { name, knob: scalarRenderer };
@@ -18,6 +21,10 @@ function appearance(name: string): ScalarAppearance {
 
 function finiteAppearance(): FiniteControlAppearance {
   return { action: actionRenderer, toggle: toggleRenderer, choice: choiceRenderer };
+}
+
+function meterAppearance(): MeterAppearance {
+  return { signal: signalMeterRenderer, level: levelMeterRenderer };
 }
 
 function kit(
@@ -64,23 +71,31 @@ describe('component-kit activation transaction', () => {
     expect(activation.getSelectedScalarAppearance()).toBeUndefined();
     expect(activation.getSelectedFrequencyReadout()).toBeUndefined();
     expect(activation.getSelectedFiniteControlAppearance()).toBeUndefined();
+    expect(activation.getSelectedMeterAppearance()).toBeUndefined();
   });
 
-  it('loads every kit, then commits selected scalar, frequency, and finite renderers', async () => {
+  it('loads every kit, then commits every selected appearance in one snapshot', async () => {
     const activation = await subject();
     const finite = finiteAppearance();
-    const declaration = kit('field-kit', { finiteControlAppearances: { 'field-kit-finite': finite } });
+    const meter = meterAppearance();
+    const declaration = kit('field-kit', {
+      finiteControlAppearances: { 'field-kit-finite': finite },
+      meterAppearances: { 'field-kit-meter': meter },
+    });
 
     await activation.activateComponentKits(config([declaration], {
       scalarAppearance: 'field-kit-scalar',
       frequencyReadout: 'field-kit-frequency',
       finiteControlAppearance: 'field-kit-finite',
+      meterAppearance: 'field-kit-meter',
     }));
 
     expect(activation.getSelectedScalarAppearance()).toEqual(appearance('field-kit scalar'));
     expect(activation.getSelectedFrequencyReadout()).toBe(renderer);
     expect(activation.getSelectedFiniteControlAppearance()).toEqual(finite);
     expect(Object.isFrozen(activation.getSelectedFiniteControlAppearance())).toBe(true);
+    expect(activation.getSelectedMeterAppearance()).toEqual(meter);
+    expect(Object.isFrozen(activation.getSelectedMeterAppearance())).toBe(true);
   });
 
   it('keeps scalar/frequency-only API 1 declarations compatible', async () => {
@@ -88,6 +103,7 @@ describe('component-kit activation transaction', () => {
     await activation.activateComponentKits(config([kit('legacy-api-one')]));
 
     expect(activation.getSelectedFiniteControlAppearance()).toBeUndefined();
+    expect(activation.getSelectedMeterAppearance()).toBeUndefined();
   });
 
   it('copies declarations and selection before the single commit', async () => {
@@ -114,6 +130,20 @@ describe('component-kit activation transaction', () => {
     expect(activation.getSelectedFrequencyReadout()).toBe(renderer);
   });
 
+  it('copies a meter appearance before committing it', async () => {
+    const activation = await subject();
+    const selectedAppearance = { signal: signalMeterRenderer, level: levelMeterRenderer };
+    const meters: Record<string, MeterAppearance> = { selected: selectedAppearance };
+
+    await activation.activateComponentKits(config([
+      kit('copy-meter-kit', { meterAppearances: meters }),
+    ], { meterAppearance: 'selected' }));
+    selectedAppearance.level = signalMeterRenderer as MeterAppearance['level'];
+    delete meters.selected;
+
+    expect(activation.getSelectedMeterAppearance()?.level).toBe(levelMeterRenderer);
+  });
+
   it.each([
     ['wrong API version', { ...kit('bad-version'), apiVersion: 2 }],
     ['missing kit id', { ...kit('missing-id'), id: '' }],
@@ -128,6 +158,11 @@ describe('component-kit activation transaction', () => {
     ['finite appearance with an extra member', { ...kit('bad-finite-extra'), finiteControlAppearances: { bad: { ...finiteAppearance(), extra: true } } }],
     ['finite appearance with a non-component member', { ...kit('bad-finite-component'), finiteControlAppearances: { bad: { ...finiteAppearance(), choice: 'nope' } } }],
     ['empty finite appearance id', { ...kit('bad-finite-id'), finiteControlAppearances: { '': finiteAppearance() } }],
+    ['non-record meter declarations', { ...kit('bad-meter-map'), meterAppearances: [] }],
+    ['meter appearance missing a member', { ...kit('bad-meter-missing'), meterAppearances: { bad: { signal: signalMeterRenderer } } }],
+    ['meter appearance with an extra member', { ...kit('bad-meter-extra'), meterAppearances: { bad: { ...meterAppearance(), extra: true } } }],
+    ['meter appearance with a non-component member', { ...kit('bad-meter-component'), meterAppearances: { bad: { ...meterAppearance(), level: 'nope' } } }],
+    ['empty meter appearance id', { ...kit('bad-meter-id'), meterAppearances: { '': meterAppearance() } }],
   ])('rejects %s without committing', async (_name, declaration) => {
     const activation = await subject();
 
@@ -179,6 +214,13 @@ describe('component-kit activation transaction', () => {
         target: selectedAppearance,
       };
     }],
+    ['meter appearance', () => {
+      const selectedAppearance = meterAppearance();
+      return {
+        configured: config([kit('exact-meter-kit', { meterAppearances: { exact: selectedAppearance } })]),
+        target: selectedAppearance,
+      };
+    }],
   ] as const)('rejects symbol and non-enumerable unknown properties on %s', async (_name, makeCase) => {
     const activation = await subject();
     for (const kind of ['symbol', 'non-enumerable'] as const) {
@@ -224,6 +266,11 @@ describe('component-kit activation transaction', () => {
       Reflect.defineProperty(selectedAppearance, 'choice', { value: choiceRenderer, enumerable: false });
       return config([kit('descriptor-finite-kit', { finiteControlAppearances: { descriptor: selectedAppearance } })]);
     }],
+    ['meter appearance', () => {
+      const selectedAppearance = meterAppearance();
+      Reflect.defineProperty(selectedAppearance, 'level', { value: levelMeterRenderer, enumerable: false });
+      return config([kit('descriptor-meter-kit', { meterAppearances: { descriptor: selectedAppearance } })]);
+    }],
   ] as const)('rejects a non-enumerable allowed property on %s', async (_name, makeConfig) => {
     const activation = await subject();
 
@@ -254,6 +301,18 @@ describe('component-kit activation transaction', () => {
     expect(getter).not.toHaveBeenCalled();
   });
 
+  it('rejects a meter appearance accessor without invoking it', async () => {
+    const activation = await subject();
+    const meter = meterAppearance();
+    const getter = vi.fn(() => levelMeterRenderer);
+    Reflect.defineProperty(meter, 'level', { get: getter, enumerable: true });
+
+    await expect(activation.activateComponentKits(config([
+      kit('accessor-meter-kit', { meterAppearances: { accessor: meter } }),
+    ]))).rejects.toThrow(/enumerable data property/i);
+    expect(getter).not.toHaveBeenCalled();
+  });
+
   it('allows additional exports on the loader module namespace', async () => {
     const activation = await subject();
 
@@ -269,6 +328,8 @@ describe('component-kit activation transaction', () => {
     ['frequencyReadouts', 'non-enumerable'],
     ['finiteControlAppearances', 'symbol'],
     ['finiteControlAppearances', 'non-enumerable'],
+    ['meterAppearances', 'symbol'],
+    ['meterAppearances', 'non-enumerable'],
   ] as const)('rejects a %s map with a %s entry', async (mapName, kind) => {
     const activation = await subject();
     const declarations: Record<PropertyKey, unknown> = {};
@@ -276,7 +337,8 @@ describe('component-kit activation transaction', () => {
     Reflect.defineProperty(declarations, key, {
       value: mapName === 'scalarAppearances'
         ? appearance('Hidden')
-        : mapName === 'frequencyReadouts' ? renderer : finiteAppearance(),
+        : mapName === 'frequencyReadouts' ? renderer
+          : mapName === 'finiteControlAppearances' ? finiteAppearance() : meterAppearance(),
       enumerable: kind === 'symbol',
     });
 
@@ -301,6 +363,7 @@ describe('component-kit activation transaction', () => {
     ['duplicate scalar id', [kit('scalar-a', { scalarAppearances: { shared: appearance('A') } }), kit('scalar-b', { scalarAppearances: { shared: appearance('B') } })]],
     ['duplicate frequency id', [kit('frequency-a', { frequencyReadouts: { shared: renderer } }), kit('frequency-b', { frequencyReadouts: { shared: renderer } })]],
     ['duplicate finite id', [kit('finite-a', { finiteControlAppearances: { shared: finiteAppearance() } }), kit('finite-b', { finiteControlAppearances: { shared: finiteAppearance() } })]],
+    ['duplicate meter id', [kit('meter-a', { meterAppearances: { shared: meterAppearance() } }), kit('meter-b', { meterAppearances: { shared: meterAppearance() } })]],
   ])('rejects %s across the complete loaded set', async (_name, declarations) => {
     const activation = await subject();
 
@@ -322,6 +385,7 @@ describe('component-kit activation transaction', () => {
     ['scalarAppearance', 'missing-scalar'],
     ['frequencyReadout', 'missing-frequency'],
     ['finiteControlAppearance', 'missing-finite'],
+    ['meterAppearance', 'missing-meter'],
   ])('rejects an unresolved %s selection', async (property, value) => {
     const activation = await subject();
 

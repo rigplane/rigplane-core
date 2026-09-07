@@ -5,7 +5,7 @@
   "type": "module",
   "sideEffects": false,
   "peerDependencies": {
-    "@rigplane/component-kit-api": "0.2.0",
+    "@rigplane/component-kit-api": "0.3.0",
     "svelte": ">=5.45.2 <6"
   },
   "files": [

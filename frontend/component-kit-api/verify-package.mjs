@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile,
 } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
+import { chromium } from 'playwright';
 
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.dirname(packageRoot);
@@ -32,6 +35,38 @@ async function filesUnder(directory) {
 
 function packageFiles(pack) {
   return pack.files.map(({ path: file }) => file).sort();
+}
+
+async function sha256(file) {
+  return createHash('sha256').update(await readFile(file)).digest('hex');
+}
+
+async function withStaticServer(directory, visit) {
+  const server = createServer(async (request, response) => {
+    try {
+      const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+      const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
+      const file = path.resolve(directory, relative);
+      if (!file.startsWith(`${path.resolve(directory)}${path.sep}`)) throw new Error('bad path');
+      const body = await readFile(file);
+      response.setHeader('content-type', file.endsWith('.js') ? 'text/javascript' : 'text/html');
+      response.end(body);
+    } catch {
+      response.statusCode = 404;
+      response.end('not found');
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    const address = server.address();
+    assert(address && typeof address === 'object');
+    await visit(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 }
 
 async function assertPackedShape(pack, directory, requiredTypes) {
@@ -139,6 +174,8 @@ try {
 
   const apiPack = pack(packageRoot, tarballs);
   const fixturePack = pack(fixtureRoot, tarballs);
+  const apiTarballSha256 = await sha256(apiPack.tarball);
+  const fixtureTarballSha256 = await sha256(fixturePack.tarball);
   await assertPackedShape(apiPack, packageRoot, [
     'dist/types/component-kit-api/src/index.d.ts',
     'dist/types/src/primitives/control-instruments/control-instrument-behavior.d.ts',
@@ -180,6 +217,7 @@ try {
       svelte: '5.55.8',
     },
     devDependencies: {
+      '@sveltejs/vite-plugin-svelte': '6.2.1',
       typescript: '5.9.3',
       vite: '7.3.3',
     },
@@ -194,13 +232,12 @@ try {
       target: 'ES2022',
       types: ['svelte'],
     },
-    include: ['src/**/*.ts'],
+    include: ['src/**/*.ts', 'src/**/*.svelte'],
   }, null, 2));
-  await writeFile(path.join(consumer, 'vite.config.js'), `export default {
+  await writeFile(path.join(consumer, 'vite.config.js'), `import { svelte } from '@sveltejs/vite-plugin-svelte';
+export default {
+  plugins: [svelte()],
   publicDir: false,
-  build: {
-    lib: { entry: 'src/index.ts', formats: ['es'], fileName: () => 'consumer.js' },
-  },
 };
 `);
   await writeFile(path.join(consumer, 'src', 'index.ts'), `import {
@@ -214,8 +251,13 @@ try {
   type FiniteControlReading,
   type FrequencyRendererProps,
   type LayoutManifest,
+  type LevelMeterRendererProps,
+  type MeterAppearance,
+  type MeterNumericEvidence,
   type PresentationDeclaration,
   type ScalarAppearance,
+  type SignalMeterRendererProps,
+  type SignalMeterEvidence,
 } from '@rigplane/component-kit-api';
 import type { Component } from 'svelte';
 import fixtureKit from '@rigplane/external-component-kit-fixture';
@@ -226,6 +268,14 @@ const layout: LayoutManifest | undefined = declaration.layouts?.[0];
 const presentation: PresentationDeclaration | undefined = declaration.presentations?.[0];
 const finite: FiniteControlAppearance | undefined = declaration.finiteControlAppearances?.fixture;
 const numericChoiceRenderer: Component<ChoiceRendererProps<number>> | undefined = finite?.choice;
+const meter: MeterAppearance | undefined = declaration.meterAppearances?.fixture;
+const signalMeterRenderer: Component<SignalMeterRendererProps> | undefined = meter?.signal;
+const levelMeterRenderer: Component<LevelMeterRendererProps> | undefined = meter?.level;
+const oldShape: ComponentKitDeclaration = { apiVersion: 1, id: 'old-shape' };
+// @ts-expect-error a current numeric observation always carries its value
+const invalidCurrentEvidence: MeterNumericEvidence = { state: 'current', domain: { kind: 'engineering', unit: 'w' } };
+// @ts-expect-error unknown signal evidence cannot smuggle a numeric value
+const invalidUnknownSignal: SignalMeterEvidence = { state: 'unknown', value: 0, domain: { kind: 'unknown' } };
 const oldChoiceOption: ControlOption<'OFF'> = { value: 'OFF', label: 'Off' };
 const reasonedChoiceOption: ControlOption<'DATA1'> = {
   value: 'DATA1', label: 'Data 1', disabled: true, disabledReason: 'Not available',
@@ -251,6 +301,11 @@ void scalar;
 void layout;
 void presentation;
 void numericChoiceRenderer;
+void signalMeterRenderer;
+void levelMeterRenderer;
+void oldShape;
+void invalidCurrentEvidence;
+void invalidUnknownSignal;
 void oldChoiceOption;
 void reasonedChoiceOption;
 void inspectChoice;
@@ -271,6 +326,118 @@ export type PrivateRootMustStayUnavailable = [
   ChoiceRendererInput<string>,
 ];
 `);
+  await writeFile(path.join(consumer, 'index.html'), `<main id="app"></main><script type="module" src="/src/mount.ts"></script>`);
+  await writeFile(path.join(consumer, 'src', 'mount.ts'), `import { mount } from 'svelte';
+import App from './App.svelte';
+mount(App, { target: document.querySelector('#app')! });
+`);
+  await writeFile(path.join(consumer, 'src', 'App.svelte'), `<script lang="ts">
+  import fixtureKit from '@rigplane/external-component-kit-fixture';
+  import type {
+    ActionRendererLease,
+    LevelMeterRendererView,
+    SignalMeterRendererView,
+  } from '@rigplane/component-kit-api';
+
+  const appearance = fixtureKit.meterAppearances?.fixture;
+  if (appearance === undefined) throw new Error('packed meter appearance missing');
+  const Signal = appearance.signal;
+  const Level = appearance.level;
+  const engineering = { kind: 'engineering', unit: 'db' } as const;
+  const signals: readonly SignalMeterRendererView[] = [
+    {
+      kind: 'signal', evidence: { state: 'current', value: -12, domain: engineering },
+      scaleMode: 's', displayedFraction: 0.4, peakFraction: 0.6,
+      primaryText: 'S7', secondaryText: '−85 dBm', accessibleDescription: 'S meter S7',
+      crossoverFraction: 0.55, marks: [{ actual: 0, fraction: 0.55, text: '9' }],
+      ticks: [
+        { fraction: 0, kind: 'major' }, { fraction: 0.1, kind: 'mid' },
+        { fraction: 0.2, kind: 'minor' },
+      ],
+    },
+    {
+      kind: 'signal', evidence: { state: 'current', value: -12, domain: engineering },
+      scaleMode: 'none', displayedFraction: null, peakFraction: null,
+      primaryText: '−12 dB rel S9', secondaryText: 'scale unavailable',
+      accessibleDescription: 'S meter minus 12 decibels relative to S9, scale unavailable',
+      crossoverFraction: null, marks: [], ticks: [],
+    },
+    {
+      kind: 'signal', evidence: { state: 'current', value: 112, domain: { kind: 'raw' } },
+      scaleMode: 'raw', displayedFraction: 0.44, peakFraction: 0.5,
+      primaryText: '112', secondaryText: 'uncalibrated',
+      accessibleDescription: 'S meter 112 raw, uncalibrated', crossoverFraction: null,
+      marks: [], ticks: [],
+    },
+    {
+      kind: 'signal', evidence: { state: 'current', value: 41, domain: { kind: 'unknown' } },
+      scaleMode: 'none', displayedFraction: null, peakFraction: null,
+      primaryText: '41', secondaryText: 'unit unknown',
+      accessibleDescription: 'S meter 41, unit unknown', crossoverFraction: null,
+      marks: [], ticks: [],
+    },
+    {
+      kind: 'signal', evidence: { state: 'unknown', domain: { kind: 'unknown' } },
+      scaleMode: 'none', displayedFraction: null, peakFraction: null,
+      primaryText: '?', secondaryText: 'unit unknown',
+      accessibleDescription: 'S meter reading unknown, unit unknown', crossoverFraction: null,
+      marks: [], ticks: [],
+    },
+  ];
+  const levels: readonly LevelMeterRendererView[] = [
+    {
+      kind: 'level', key: 'power', label: 'Po',
+      evidence: { state: 'current', value: 50, domain: { kind: 'engineering', unit: 'w' } },
+      relevant: true, observed: true, displayedFraction: 0.5, peakFraction: 0.7,
+      displayText: '50 W', stateText: '', accessibleDescription: 'Po: Current observation. 50 W',
+      gauge: true, fault: false, peakEnabled: true,
+    },
+    {
+      kind: 'level', key: 'alc', label: 'ALC',
+      evidence: { state: 'stale', value: 0.2, domain: { kind: 'engineering', unit: 'normalized' } },
+      relevant: true, observed: false, displayedFraction: null, peakFraction: null,
+      displayText: 'STALE', stateText: 'STALE', accessibleDescription: 'ALC: Stale observation',
+      gauge: true, fault: false, peakEnabled: false,
+    },
+    {
+      kind: 'level', key: 'drainCurrent', label: 'Id',
+      evidence: { state: 'idle', domain: { kind: 'engineering', unit: 'a' } },
+      relevant: false, observed: false, displayedFraction: null, peakFraction: null,
+      displayText: 'IDLE', stateText: 'IDLE', gauge: true, fault: false, peakEnabled: false,
+    },
+    {
+      kind: 'level', key: 'drainVoltage', label: 'Vd',
+      evidence: { state: 'unknown', domain: { kind: 'unknown' } },
+      relevant: true, observed: false, displayedFraction: null, peakFraction: null,
+      displayText: 'Vd ?', stateText: '', gauge: false, fault: false, peakEnabled: false,
+    },
+    {
+      kind: 'level', key: 'compression', label: 'COMP',
+      evidence: { state: 'unsupported', domain: { kind: 'engineering', unit: 'db' } },
+      relevant: true, observed: false, displayedFraction: null, peakFraction: null,
+      displayText: '?', stateText: '?', gauge: false, fault: false, peakEnabled: false,
+    },
+    {
+      kind: 'level', key: 'swr', label: 'SWR',
+      evidence: { state: 'current', value: 1.5, domain: { kind: 'engineering', unit: 'ratio' } },
+      relevant: true, observed: true, displayedFraction: 0.2, peakFraction: null,
+      displayText: '1.5', stateText: '', accessibleDescription: 'SWR: Current observation. 1.5',
+      gauge: true, fault: false, peakEnabled: false, ratioScale: true,
+    },
+  ];
+  const counter = globalThis as typeof globalThis & { __resetCount: number };
+  counter.__resetCount = 0;
+  const resetPeak: ActionRendererLease = {
+    get active() { return true; },
+    get view() { return { label: 'Reset peak', available: true }; },
+    invoke() { counter.__resetCount += 1; },
+    dispose() {},
+  };
+</script>
+
+{#each signals as view}<Signal {view} />{/each}
+{#each levels as view, index}<Level {view} resetPeak={index === 0 ? resetPeak : undefined} />{/each}
+`);
 
   execute('npm', [
     'install', '--ignore-scripts', '--no-audit', '--no-fund', '--package-lock=false',
@@ -281,6 +448,37 @@ export type PrivateRootMustStayUnavailable = [
   execute(process.execPath, [
     path.join(consumer, 'node_modules', 'vite', 'bin', 'vite.js'), 'build', '--config', 'vite.config.js',
   ], consumer);
+
+  await withStaticServer(path.join(consumer, 'dist'), async (origin) => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      const pageErrors = [];
+      page.on('pageerror', (error) => pageErrors.push(error));
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      const signals = page.locator('[data-fixture-signal]');
+      const levels = page.locator('[data-fixture-level]');
+      assert.equal(await signals.count(), 5);
+      assert.equal(await levels.count(), 6);
+      assert.equal(await signals.nth(0).getAttribute('data-domain'), 'engineering:db');
+      assert.equal(await signals.nth(0).getAttribute('data-tick-kinds'), 'major,mid,minor');
+      assert.equal(await signals.nth(1).getAttribute('data-scale'), 'none');
+      assert.equal(await signals.nth(1).getAttribute('data-value'), '-12');
+      assert.equal(await signals.nth(2).getAttribute('data-domain'), 'raw');
+      assert.equal(await signals.nth(3).getAttribute('data-domain'), 'unknown');
+      assert.equal(await signals.nth(3).getAttribute('data-value'), '41');
+      assert.equal(await signals.nth(4).getAttribute('data-value'), null);
+      assert.equal(await page.locator('[data-fixture-level="alc"]').getAttribute('data-state'), 'stale');
+      assert.equal(await page.locator('[data-fixture-level="alc"]').getAttribute('data-value'), '0.2');
+      assert.equal(await page.locator('[data-fixture-level="drainCurrent"]').getAttribute('data-value'), null);
+      assert.equal(await page.locator('[data-fixture-level="swr"]').getAttribute('data-ratio-scale'), 'true');
+      await page.getByRole('button', { name: 'Reset peak' }).click();
+      assert.equal(await page.evaluate(() => globalThis.__resetCount), 1);
+      assert.deepEqual(pageErrors, []);
+    } finally {
+      await browser.close();
+    }
+  });
 
   await writeFile(path.join(consumer, 'inspect.mjs'), `import assert from 'node:assert/strict';
 import * as api from '@rigplane/component-kit-api';
@@ -308,12 +506,17 @@ assert.equal(api.defineComponentKit(fixtureKit), fixtureKit);
     path.join(consumer, 'node_modules', '@rigplane', 'component-kit-api', 'package.json'),
     'utf8',
   ));
+  const installedFixture = JSON.parse(await readFile(
+    path.join(consumer, 'node_modules', '@rigplane', 'external-component-kit-fixture', 'package.json'),
+    'utf8',
+  ));
   const installedSvelte = JSON.parse(await readFile(
     path.join(consumer, 'node_modules', 'svelte', 'package.json'),
     'utf8',
   ));
-  assert.equal(installedApi.version, '0.2.0');
+  assert.equal(installedApi.version, '0.3.0');
   assert.equal(installedApi.peerDependencies.svelte, '>=5.45.2 <6');
+  assert.equal(installedFixture.peerDependencies['@rigplane/component-kit-api'], '0.3.0');
 
   console.log('component-kit-api portable package verification: OK');
   console.log(`runtime exports: COMPONENT_KIT_API_VERSION, defineComponentKit`);
@@ -322,6 +525,8 @@ assert.equal(api.defineComponentKit(fixtureKit), fixtureKit);
   console.log(`fixture declarations: ${fixtureDeclarations.length}`);
   console.log(`API tarball files (${apiPack.files.length}): ${packageFiles(apiPack).join(', ')}`);
   console.log(`fixture tarball files (${fixturePack.files.length}): ${packageFiles(fixturePack).join(', ')}`);
+  console.log(`API tarball SHA-256: ${apiTarballSha256}`);
+  console.log(`fixture tarball SHA-256 (browser mounted): ${fixtureTarballSha256}`);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }
