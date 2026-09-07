@@ -524,7 +524,7 @@ describe('ifShiftControlStructural — the presentation-only IF-shift control ga
 
 /**
  * `filterShapeControlStructural` (MOR-1502) — a SEPARATE, presentation-only
- * flag `FilterSurface.svelte` uses to decide whether to show the SHARP/SOFT
+ * flag `FilterInstrumentHost.svelte` uses to decide whether to show the SHARP/SOFT
  * shape ROW, deliberately independent of `filterShape.availability.
  * structural` above (which is `hasFilters` alone — see the "per-field
  * structural gates" block — because `scope-adapter.ts` still needs the

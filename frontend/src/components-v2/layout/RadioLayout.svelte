@@ -348,6 +348,8 @@
   <div class="filter-finite-grid" data-testid="filter-finite-grid">
     <div class="filter-finite-seat" data-field="mode">{@render filterInstruments.mode()}</div>
     <div class="filter-finite-seat" data-field="filter">{@render filterInstruments.filter()}</div>
+    <div class="filter-finite-seat" data-field="shape">{@render filterInstruments.shape()}</div>
+    <div class="filter-finite-seat" data-field="dataMode">{@render filterInstruments.dataMode()}</div>
   </div>
 {/snippet}
 

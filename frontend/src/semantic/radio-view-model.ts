@@ -389,7 +389,7 @@ export interface FilterPassbandViewModel {
    * The FTX-1 has none — showing its SHARP/SOFT shape CONTROL permanently
    * disabled is a dead control (same class of defect `ifShiftControlStructural`
    * fixed, MOR-1494 ruling: hide capability-absent controls, don't show them
-   * dead). `FilterSurface.svelte` gates the filter-shape ROW on this flag,
+   * dead). `FilterInstrumentHost.svelte` gates the filter-shape ROW on this flag,
    * and ONLY this flag — never on `filterShape.availability.structural`,
    * which stays reserved for consumers of the derived fact itself (see
    * `deriveFilterPassband`'s doc comment). A plain boolean, not
