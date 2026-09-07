@@ -36,6 +36,7 @@
 </script>
 
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import FrequencyDisplayInteractive from '../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
@@ -174,6 +175,8 @@
     onSelectMainReceiver?: () => void;
     onSelectSubReceiver?: () => void;
     onSpeak?: () => void;
+    operationInput?: VfoOperationProjectionInput;
+    operationControls?: Snippet;
   }
 
   let {
@@ -200,6 +203,8 @@
     onSelectMainReceiver,
     onSelectSubReceiver,
     onSpeak,
+    operationInput,
+    operationControls,
   }: Props = $props();
 
   /**
@@ -255,7 +260,7 @@
     return relativeIdentityUnknown ? t('core.vfo.ops.identityUnknownReason') : undefined;
   }
 
-  function vfoOperationInput(): VfoOperationProjectionInput {
+  function localVfoOperationInput(): VfoOperationProjectionInput {
     return {
       hasVfoPair,
       hasDualReceiver,
@@ -284,7 +289,9 @@
     };
   }
 
-  let vfoOperations = $derived(projectVfoOperations(vfoOperationInput()));
+  const currentVfoOperationInput = (): VfoOperationProjectionInput =>
+    operationInput ?? localVfoOperationInput();
+  let vfoOperations = $derived(projectVfoOperations(currentVfoOperationInput()));
 
   function slotKey(slot: VfoSlot): string {
     if (slot.kind === 'slotted') return slot.id;
@@ -390,7 +397,7 @@
   }
 
   function handleOperationIntent(intent: VfoOperationIntent): void {
-    invokeVfoOperation(vfoOperationInput, intent);
+    invokeVfoOperation(currentVfoOperationInput, intent);
   }
 
   /**
@@ -677,6 +684,7 @@
       {appearance}
       scheme={viewModel.vfoScheme}
       projection={vfoOperations}
+      controls={operationControls}
       digest={hasVfoPair ? {
         rx: formatFrequency(rxFrequencyHz),
         tx: formatFrequency(txFrequencyHz),
