@@ -122,7 +122,10 @@
   const presentedAuthority = (): RfAuthority | null => authority(
     presentation, presentation.controlModel,
   );
-  const authorityCurrent = (): boolean => same(currentAuthority(), presentedAuthority());
+  const authorityCurrent = (): boolean => {
+    const current = currentAuthority();
+    return current !== null && same(current, presentedAuthority());
+  };
 
   function request(field: RfFrontEndLevelField, value: number): void {
     if (!authorityCurrent()) return;

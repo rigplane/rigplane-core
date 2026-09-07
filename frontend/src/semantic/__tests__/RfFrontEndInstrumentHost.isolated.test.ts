@@ -377,6 +377,46 @@ describe('RfFrontEndInstrumentHost', () => {
     },
   );
 
+  it.each([
+    ['combined reading', 'combined', 'disconnected', undefined],
+    ['separate feedback', 'separate', 'reconnecting', commandFeedback()],
+  ] as const)('keeps fresh %s input inert without current authority', (
+    _name, controlModel, sessionState, feedback,
+  ) => {
+    const initial = publication({ controlModel });
+    const r = render(initial, feedback);
+    const binding = controlModel === 'combined'
+      ? captures.pairs[0] as ContinuousPairBinding
+      : captures.scalars.at(-1) as ContinuousScalarBinding;
+
+    r.transition(publication({ controlModel, sessionState })); flushSync();
+    const inactive = [...target.querySelectorAll<HTMLElement>('[role="slider"]')].at(-1)!;
+    expect(inactive.getAttribute('aria-disabled')).toBe('true');
+    expect(binding.attachRenderer().key({ key: 'End', fine: false })).toBe(false);
+    if (controlModel === 'combined') {
+      inactive.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    } else {
+      const node = inactive as HTMLElement & {
+        rendererLease: ReturnType<ContinuousScalarBinding['attachRenderer']>;
+      };
+      expect(node.rendererLease.key({ key: 'End', fine: false })).toBe(false);
+    }
+    expect(r.onLevelChange).not.toHaveBeenCalled();
+
+    r.transition(initial); flushSync();
+    const recovered = [...target.querySelectorAll<HTMLElement>('[role="slider"]')].at(-1)!;
+    expect(recovered.getAttribute('aria-disabled')).toBe('false');
+    if (controlModel === 'combined') {
+      recovered.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    } else {
+      const node = recovered as typeof inactive & {
+        rendererLease: ReturnType<ContinuousScalarBinding['attachRenderer']>;
+      };
+      expect(node.rendererLease.key({ key: 'End', fine: false })).toBe(true);
+    }
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith('squelch', 1);
+  });
+
   it('does not cancel a healthy gesture for ordinary value and feedback updates', () => {
     const r = render(publication(), commandFeedback());
     const pair = captures.pairs[0] as ContinuousPairBinding;
