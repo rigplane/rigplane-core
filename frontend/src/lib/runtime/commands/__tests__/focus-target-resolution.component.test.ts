@@ -81,7 +81,7 @@ import RxAudioInstrumentHostFixture from '../../../../semantic/__tests__/fixture
 import RfFrontEndInstrumentHostFixture, {
   rfTestAuthorityPublication,
 } from '../../../../semantic/__tests__/fixtures/RfFrontEndInstrumentHostFixture.svelte';
-import FilterSurface from '../../../../semantic/FilterSurface.svelte';
+import FilterInstrumentHostFixture from '../../../../semantic/__tests__/fixtures/FilterInstrumentHostFixture.svelte';
 import VfoSurface from '../../../../semantic/VfoSurface.svelte';
 import {
   topologyFixtures, withRxAudio, withModeFilter, withFilterPassband, withRfFrontEnd,
@@ -158,7 +158,9 @@ describe('focus_target dispatch resolves to a real, focusable anchor in the prod
   });
 
   it('"mode" focuses the first mode choice in FilterSurface (filter zone)', () => {
-    render(FilterSurface, { view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])) });
+    render(FilterInstrumentHostFixture, {
+      view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])), renderSurface: true,
+    });
     const button = document.querySelector('[data-testid="filter-mode"] button');
     expect(button).not.toBeNull();
 
@@ -168,7 +170,9 @@ describe('focus_target dispatch resolves to a real, focusable anchor in the prod
   });
 
   it('"filter" focuses the first filter choice in FilterSurface (filter zone)', () => {
-    render(FilterSurface, { view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])) });
+    render(FilterInstrumentHostFixture, {
+      view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])), renderSurface: true,
+    });
     const button = document.querySelector('[data-testid="filter-select"] button');
     expect(button).not.toBeNull();
 
@@ -178,7 +182,9 @@ describe('focus_target dispatch resolves to a real, focusable anchor in the prod
   });
 
   it('"pbt" focuses the PBT-inner slider in FilterSurface (filter zone)', () => {
-    render(FilterSurface, { view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])) });
+    render(FilterInstrumentHostFixture, {
+      view: withFilterPassband(withModeFilter(topologyFixtures['1/single'])), renderSurface: true,
+    });
     const input = document.querySelector('[data-testid="filter-pbtInner"] input');
     expect(input).not.toBeNull();
 

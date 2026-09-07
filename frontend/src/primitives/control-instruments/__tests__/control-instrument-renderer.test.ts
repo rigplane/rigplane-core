@@ -188,6 +188,35 @@ describe('finite renderer leases', () => {
     expect(lease.view?.reading).toEqual({ status: 'unknown' });
   });
 
+  it('keeps retained reading while availability-gated selection is an explicit opt-in', () => {
+    const context = createFiniteRendererContext();
+    let current: InstrumentField<string> = {
+      availability: { structural: true, operational: false },
+      reading: { status: 'known', value: 'USB' },
+    };
+    const invoke = vi.fn();
+    const readCurrent = () => ({
+      context, field: current, label: 'Mode',
+      options: [{ value: 'USB', label: 'USB' }], invoke,
+    });
+    const defaultLease = createChoiceRendererSeat(readCurrent).attachRenderer();
+    const gatedLease = createChoiceRendererSeat(readCurrent, {
+      selectionRequiresAvailability: true,
+    }).attachRenderer();
+
+    expect(defaultLease.view?.reading).toEqual({ status: 'known', value: 'USB' });
+    expect(defaultLease.view?.selected).toBe('USB');
+    expect(gatedLease.view?.reading).toEqual({ status: 'known', value: 'USB' });
+    expect(gatedLease.view?.selected).toBeUndefined();
+    defaultLease.invoke('USB'); gatedLease.invoke('USB');
+    expect(invoke).not.toHaveBeenCalled();
+
+    current = field('USB');
+    expect(gatedLease.view?.selected).toBe('USB');
+    gatedLease.invoke('USB');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('USB');
+  });
+
   it('passes current option reasons through without changing option admission', () => {
     const context = createFiniteRendererContext();
     let options: readonly ControlOption<string>[] = [
