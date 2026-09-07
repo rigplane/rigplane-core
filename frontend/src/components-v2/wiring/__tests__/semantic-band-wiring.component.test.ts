@@ -35,16 +35,31 @@ import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 const h = vi.hoisted(() => ({
   state: null as unknown,
   caps: null as unknown,
-  controlSession: { state: 'connected' as const, epoch: 1 as const },
+  controlSession: { state: 'connected', epoch: 1 } as
+    { state: 'connected' | 'disconnected'; epoch: number },
   authoritySubscribers: new Set<(next: {
-    state: unknown; caps: unknown; session: { state: 'connected'; epoch: 1 };
+    state: unknown; caps: unknown;
+    session: { state: 'connected' | 'disconnected'; epoch: number };
     rxAudioTarget: RxAudioTargetSnapshot;
   }) => void>(),
   txController: null as ManagedAppTxController | null,
   audio: { muted: false, rxEnabled: true, volume: 42 },
   audioConnected: true,
   rxEnabled: true,
+  finiteAppearance: false,
 }));
+
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  const renderer = await import('../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte');
+  return {
+    ...actual,
+    getSelectedFiniteControlAppearance: () => h.finiteAppearance ? {
+      name: 'Band authority probe', action: renderer.default,
+      toggle: renderer.default, choice: renderer.default,
+    } : undefined,
+  };
+});
 
 vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {
@@ -120,6 +135,9 @@ import { sendCommand } from '$lib/transport/ws-client';
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { makeBandHandlers, makeVfoHandlers } from '$lib/runtime/commands/panel-commands';
+import {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
 
 const fresh = { storePath: 'x', observed: true, freshness: 'fresh', availability: 'available' };
 const slot = (freqHz: number) => ({ freqHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -137,6 +155,7 @@ function liveState(over: Partial<ServerState> = {}): ServerState {
     ...slot(hz), vfoA: slot(hz), vfoB: slot(hz + 50000), activeSlot: 'A', filter: 1,
   });
   return {
+    providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false, dataOffModInput: 5,
     txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 14250000 },
     main: receiver(14250000), sub: receiver(7100000),
@@ -159,6 +178,7 @@ const BAND_PLAN = [{
 }];
 
 const liveCaps = (freqRanges: unknown[]): Capabilities => ({
+  providerGeneration: 1,
   model: 'fixture', scope: false, audio: true, tx: true,
   capabilities: ['audio', 'tx', 'dual_rx'], audioTxRequiredModInputSource: 5,
   receivers: 2, vfoScheme: 'main_sub', freqRanges, modes: [], filters: [],
@@ -208,6 +228,9 @@ beforeEach(() => {
   h.txController = txHarness.controller;
   h.state = liveState();
   h.caps = liveCaps(BAND_PLAN);
+  h.controlSession = { state: 'connected', epoch: 1 };
+  h.finiteAppearance = false;
+  resetRetainedInvocations();
   vi.mocked(sendCommand).mockClear();
 });
 
@@ -304,6 +327,72 @@ describe('every band intent lands on the ACTIVE receiver (MOR-1322 B1 class)', (
     btn('entry-set')!.click();
     flushSync();
     expect(setFreqCalls()).toEqual([['set_freq', { freq: 7150000, receiver: 1 }]]);
+  });
+});
+
+describe('the live Band choice host uses current synchronous authority', () => {
+  it('re-resolves current defaultHz and BSR payload at invocation before the Svelte flush', () => {
+    h.finiteAppearance = true;
+    render();
+    const invoke = retainedInvocations.get('Band')!;
+    h.caps = {
+      ...(h.caps as Capabilities),
+      freqRanges: [{
+        ...BAND_PLAN[0],
+        bands: BAND_PLAN[0]!.bands.map(choice => choice.name === '20m'
+          ? { ...choice, default: 14225000, bsrCode: 7 } : choice),
+      }],
+    };
+    publishAuthority();
+    invoke('20m');
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_band', { band: 7 });
+
+    vi.mocked(sendCommand).mockClear();
+    h.caps = {
+      ...(h.caps as Capabilities),
+      freqRanges: [{
+        ...BAND_PLAN[0],
+        bands: BAND_PLAN[0]!.bands.map(choice => choice.name === 'MW'
+          ? { ...choice, default: 1200000 } : choice),
+      }],
+    };
+    publishAuthority();
+    invoke('MW');
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 1200000, receiver: 0 }]]);
+  });
+
+  it.each([
+    ['null', () => { h.controlSession = { state: 'disconnected', epoch: 1 }; },
+      () => { h.controlSession = { state: 'connected', epoch: 1 }; }],
+    ['session', () => { h.controlSession = { state: 'connected', epoch: 2 }; },
+      () => { h.controlSession = { state: 'connected', epoch: 1 }; }],
+    ['provider', () => {
+      h.state = { ...(h.state as ServerState), providerGeneration: 2 };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    }, () => {
+      h.state = { ...(h.state as ServerState), providerGeneration: 1 };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 1 };
+    }],
+    ['topology', () => {
+      h.caps = { ...(h.caps as Capabilities), receivers: 1, vfoScheme: 'single' };
+    }, () => {
+      h.caps = { ...(h.caps as Capabilities), receivers: 2, vfoScheme: 'main_sub' };
+    }],
+  ] as const)('revokes a retained renderer through a %s A-B-A change pre-flush', (_kind, toB, toA) => {
+    h.finiteAppearance = true;
+    render();
+    const retainedA = retainedInvocations.get('Band')!;
+
+    toB();
+    publishAuthority();
+    toA();
+    publishAuthority();
+
+    retainedA('20m');
+    expect(sendCommand).not.toHaveBeenCalled();
+    flushSync();
+    retainedInvocations.get('Band')?.('20m');
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_band', { band: 5 });
   });
 });
 

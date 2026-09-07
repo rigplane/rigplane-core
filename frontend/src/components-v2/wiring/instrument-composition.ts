@@ -8,6 +8,7 @@ import type { RfFrontEndLevelHandles } from '../../semantic/rf-front-end-instrum
 import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
 import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
 import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
+import type { BandControlLayout } from '../../semantic/band-instruments';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
@@ -30,7 +31,7 @@ export interface InstrumentComposition {
   readonly rfFrontEnd: Snippet<[allowBare?: boolean]>;
   readonly filter: Snippet<[allowBare?: boolean, finiteLayout?: FilterFiniteLayout]>;
   readonly dsp: Snippet<[allowBare?: boolean, finiteLayout?: DspFiniteLayout]>;
-  readonly band: Snippet<[allowBare?: boolean]>;
+  readonly band: Snippet<[allowBare?: boolean, controlLayout?: BandControlLayout]>;
   readonly antenna: Snippet<[allowBare?: boolean]>;
   readonly ritXitScan: Snippet<[allowBare?: boolean]>;
   readonly cwKeyer: Snippet<[allowBare?: boolean]>;

@@ -32,6 +32,7 @@
   import type { InstrumentComposition } from '../wiring/instrument-composition';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
+  import type { BandInstrumentHandles } from '../../semantic/band-instruments';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -331,6 +332,12 @@
   </div>
 {/snippet}
 
+{#snippet bandControlLayout(bandInstruments: BandInstrumentHandles)}
+  <div class="band-control-grid" data-testid="band-control-grid">
+    <div class="band-control-seat" data-field="bandChoice">{@render bandInstruments.bandChoice()}</div>
+  </div>
+{/snippet}
+
 {#snippet vfoOperationControls()}
   <div class="vfo-operation-instrument-grid" data-testid="vfo-operation-instrument-grid">
     {#if instruments.vfoOperations.split}<div class="vfo-operation-instrument-seat" data-field="split">{@render instruments.vfoOperations.split()}</div>{/if}
@@ -387,7 +394,11 @@
         {:else}
           {@render instruments.filter()}
         {/if}
-        {@render instruments.band()}
+        {#if skinId === 'desktop-v2'}
+          {@render instruments.band(undefined, bandControlLayout)}
+        {:else}
+          {@render instruments.band()}
+        {/if}
         {@render instruments.antenna()}
         {@render instruments.ritXitScan()}
         <div class="content-left"><LeftSidebar hideTxPanel={semanticRxTx} {declared} /></div>
@@ -693,6 +704,7 @@
   .filter-finite-grid .filter-finite-seat[data-field='filter'] :global(.filter-choice-group) {
     display: flex;
   }
+  .band-control-grid, .band-control-seat { display: contents; }
   .vfo-operation-instrument-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;

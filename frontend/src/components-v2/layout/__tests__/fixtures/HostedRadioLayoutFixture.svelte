@@ -10,6 +10,7 @@
   } from '../../../../semantic/ReceiverInstrumentHost.svelte';
   import type { TxAuxFiniteHandles } from '../../../../semantic/tx-aux-finite';
   import type { VfoOperationHandles } from '../../../../semantic/VfoOperationSeatHost.svelte';
+  import type { BandControlLayout } from '../../../../semantic/band-instruments';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[
@@ -18,6 +19,9 @@
     () => ({ render: () => '' }),
   );
   const txAux = createRawSnippet<[scalarLayout: FixtureSnippet, allowBare?: boolean]>(
+    () => ({ render: () => '' }),
+  );
+  const band = createRawSnippet<[allowBare?: boolean, controlLayout?: BandControlLayout]>(
     () => ({ render: () => '' }),
   );
   const frequency = createRawSnippet<[mount?: ReceiverFrequencyMount]>(() => ({ render: () => '' }));
@@ -51,7 +55,7 @@
     receiverInstruments,
     rxAudioInstruments, rfFrontEndInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
-    band: empty, antenna: empty, ritXitScan: empty, cwKeyer: empty,
+    band, antenna: empty, ritXitScan: empty, cwKeyer: empty,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,
     modInputTxWarning: empty, managedScope: undefined,
   } satisfies FixtureInstrumentComposition;
