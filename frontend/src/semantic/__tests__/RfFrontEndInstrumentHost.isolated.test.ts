@@ -9,6 +9,11 @@ import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter
 const activation = vi.hoisted(() => ({ selected: undefined as unknown }));
 const captures = vi.hoisted(() => ({
   pairs: [] as unknown[], scalars: [] as unknown[], lifecycle: [] as string[],
+  /** MOR-2425 review fix — the `createChoiceRendererSeat` `readCurrent`
+   *  closures, so a test can read `requested`/`options[].disabledReason`
+   *  directly: `FiniteControlRendererFixture` never renders either. */
+  choiceReads: [] as Array<() => { label: string; requested?: unknown;
+    options: readonly { value: unknown; disabledReason?: string }[] }>,
 }));
 vi.mock('../../component-kits/activation', () => ({
   getSelectedScalarAppearance: () => activation.selected,
@@ -45,6 +50,17 @@ vi.mock('../../primitives/scalar/continuous-scalar.svelte', async (importOrigina
     },
   };
 });
+vi.mock('../../primitives/control-instruments/control-instrument-renderer.svelte', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../primitives/control-instruments/control-instrument-renderer.svelte')>();
+  return {
+    ...actual,
+    createChoiceRendererSeat: (...args: Parameters<typeof actual.createChoiceRendererSeat>) => {
+      captures.choiceReads.push(args[0] as (typeof captures.choiceReads)[number]);
+      return actual.createChoiceRendererSeat(...args);
+    },
+  };
+});
 
 import ExternalScalarRenderer from '../../components-v2/controls/value-control/__tests__/ExternalScalarRendererFixture.svelte';
 import type { Skin } from '../../components-v2/controls/value-control/skin';
@@ -60,6 +76,7 @@ import type { ContinuousScalarBinding } from '../../primitives/scalar/continuous
 import Fixture from './fixtures/RfFrontEndInstrumentHostFixture.svelte';
 import { topologyFixtures, withRfFrontEnd } from '../fixtures/topologies';
 import type { Availability, DisabledReason, RadioViewModel, RfFrontEndViewModel } from '../radio-view-model';
+import { DISABLED_REASON_LABEL } from '../rf-front-end-instruments';
 import type {
   RfFrontEndAuthorityPublication as Publication,
   RfFrontEndFiniteChoiceValue,
@@ -187,7 +204,7 @@ let mounted: ReturnType<typeof mount>[] = [];
 beforeEach(() => {
   target = document.createElement('div'); document.body.appendChild(target);
   activation.selected = { name: 'RF host test', hbar: ExternalScalarRenderer } satisfies Skin;
-  captures.pairs = []; captures.scalars = []; captures.lifecycle = [];
+  captures.pairs = []; captures.scalars = []; captures.lifecycle = []; captures.choiceReads = [];
   resetRetainedInvocations();
 });
 afterEach(() => {
@@ -254,6 +271,7 @@ type FiniteOverrides = Partial<{
   pendingPreamp: number | null;
   finiteAppearance: FiniteControlAppearance<RfFrontEndFiniteChoiceValue>;
   rendererContext: FiniteRendererContext | null;
+  renderSurface: boolean;
 }>;
 
 /** A minimal mount dedicated to the four finite handles: they read directly
@@ -620,5 +638,46 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
     flushSync();
     activeB(0);
     expect(onAttenuatorChange).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * MOR-2425 review fix (BLOCKING 2) — on `origin/main` preamp had no
+   * external-renderer path at all; once it renders through
+   * `finiteAppearance.choice`, the mutex explanation and the pending target
+   * must reach it too, or the file header's "disabled control WITH AN
+   * EXPLANATION"/"keyed off `DisabledReasonCode`" claims are false on this
+   * path. `FiniteControlRendererFixture` never surfaces `requested` in the
+   * DOM, so this reads the seat's own `readCurrent()` input directly.
+   */
+  it('forwards the preamp mutex reason and the pending target to the external choice renderer', () => {
+    const view: RadioViewModel = {
+      ...finiteBase(),
+      disabledReasons: [{ field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' }] as DisabledReason[],
+    };
+    renderFinite(view, { finiteAppearance: rfAppearance, pendingPreamp: 2 });
+    const preamp = captures.choiceReads.map((read) => read()).find((input) => input.label === 'Preamp')!;
+    expect(preamp.requested).toEqual({ kind: 'requested-target', target: 2 });
+    for (const option of preamp.options) {
+      expect(option.disabledReason).toBe(DISABLED_REASON_LABEL['mutually-exclusive-control']);
+    }
+  });
+
+  /**
+   * MOR-2425 review fix (non-blocking order note) — `RfFrontEndSurface
+   * .svelte`'s grouped (non-`finiteLayout`) placement must keep the
+   * pre-existing `origin/main` order: preamp and attenuator before the
+   * level controls, DIGI-SEL/IP+ after. Exercises the REAL surface
+   * component via the fixture's `renderSurface` flag, not a bare mock.
+   */
+  it('renders the grouped surface controls in the documented order', () => {
+    renderFinite(finiteBase(), { renderSurface: true });
+    const documented = [
+      'rf-front-end-preamp', 'rf-front-end-attenuator', 'rf-front-end-rfGain',
+      'rf-front-end-squelch', 'rf-front-end-digiSel', 'rf-front-end-ipPlus',
+    ];
+    const order = [...target.querySelectorAll<HTMLElement>('[data-testid]')]
+      .map((node) => node.dataset.testid)
+      .filter((id): id is string => documented.includes(id ?? ''));
+    expect(order).toEqual(documented);
   });
 });

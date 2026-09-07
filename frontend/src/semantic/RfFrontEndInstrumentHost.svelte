@@ -369,9 +369,17 @@
     field: rf?.ipPlus, invoke: (next) => onIpPlusToggle?.(next),
   }));
 
+  const preampMutexReason = (): string | undefined =>
+    preMutex === null ? undefined : DISABLED_REASON_LABEL[preMutex.code];
   const preampSeat = createChoiceRendererSeat<number>(() => ({
     context: rendererContext ?? null, field: rf?.preamp, label: 'Preamp', blocked: preMutex !== null,
-    options: preampChoices().map((value) => ({ value, label: String(value) })),
+    options: preampChoices().map((value) => ({
+      value, label: String(value),
+      ...(preampMutexReason() === undefined ? {} : { disabledReason: preampMutexReason() }),
+    })),
+    ...(pendingPreamp === null ? {} : {
+      requested: { kind: 'requested-target' as const, target: pendingPreamp },
+    }),
     invoke: (level) => onPreChange?.(level),
   }));
   const attenuatorSeat = createChoiceRendererSeat<number>(() => ({

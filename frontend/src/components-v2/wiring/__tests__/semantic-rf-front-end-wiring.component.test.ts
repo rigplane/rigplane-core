@@ -259,6 +259,26 @@ vi.mock('$lib/runtime/commands/panel-commands', async (importOriginal) => {
   };
 });
 
+/** MOR-2425 — the `createContinuousPair` capture wrapper
+ *  `semantic-dsp-wiring.component.test.ts`'s own `createContinuousScalar`
+ *  recipe establishes (its `dspBindings()`), transplanted here so the
+ *  persistence witness below can name the host-owned RF/SQL pair OBJECT: a
+ *  DOM testid is re-created by the zone wrapper on both sides of the switch
+ *  and proves nothing (measured independently — see the witness's comment). */
+const rfPair = vi.hoisted(() => ({ bindings: [] as unknown[] }));
+vi.mock('../../../primitives/scalar/continuous-pair.svelte', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../primitives/scalar/continuous-pair.svelte')>();
+  return {
+    ...actual,
+    createContinuousPair: (...args: Parameters<typeof actual.createContinuousPair>) => {
+      const binding = actual.createContinuousPair(...args);
+      rfPair.bindings.push(binding);
+      return binding;
+    },
+  };
+});
+
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
@@ -507,6 +527,7 @@ beforeEach(() => {
   h.sessionListeners.clear();
   h.sentCommands.length = 0;
   h.selectedFiniteAppearance = undefined;
+  rfPair.bindings.length = 0;
   resetRetainedInvocations();
   resetCommandLifecycle();
   resetRadioState();
@@ -1107,9 +1128,14 @@ describe('desktop-v2 declares a REAL rf-front-end zone (MOR-1366, S7)', () => {
  * function — the exact shape `semantic-dsp-wiring.component.test.ts`'s own
  * "moves one hosted set from named Standard seats to grouped SDR without
  * replacing its host" proves for DSP's NR/NB/notch/AGC handles. The witness
- * below proves the same three things in the same order: the stale pre-switch
- * invocation is detached (i), a fresh current one still commands (ii), and
- * the confirmed display reading is unaffected by the switch itself (iii).
+ * below proves four things, in the order `semantic-dsp-wiring.component
+ * .test.ts`'s own comment requires (identity first, so a rebuilt host can't
+ * pass on inertness alone): (i) the host-owned RF/SQL pair is the SAME
+ * object across the switch — a DOM testid is NOT a valid anchor here, since
+ * the zone wrapper re-creates it on both sides regardless of whether the
+ * host survives; (ii) a fresh current attenuator invocation still commands;
+ * (iii) the confirmed display reading is unaffected by the switch itself;
+ * and only then (iv) the stale pre-switch invocation is inert.
  */
 describe('persistent RF front-end composition across a real Standard->SDR plan switch (MOR-2425 RF-B)', () => {
   it('detaches the pre-switch attenuator invocation and keeps the new one live', () => {
@@ -1120,15 +1146,16 @@ describe('persistent RF front-end composition across a real Standard->SDR plan s
     expect(target.querySelectorAll('.rf-front-end-finite-seat[data-field="attenuator"]')).toHaveLength(1);
     const externalAttenuator = () => target.querySelector<HTMLElement>('[data-testid="external-Attenuator"]');
     const beforeReading = externalAttenuator()!.dataset.reading;
+    const hostPair = rfPair.bindings.at(-1);
 
     props.skinId = 'sdr-test';
     flushSync();
     expect(target.querySelectorAll('.rf-front-end-finite-seat')).toHaveLength(0);
 
-    // (i) The stale pre-switch invocation is DETACHED: its named Standard
-    // seat was torn down when the layout moved to the grouped surface.
-    staleStandardAttenuator!(18);
-    expect(h.att).not.toHaveBeenCalled();
+    // (i) Identity, positively: the SAME host-owned pair object, not a
+    // rebuilt one — the host survives the switch.
+    expect(rfPair.bindings).toHaveLength(1);
+    expect(rfPair.bindings.at(-1)).toBe(hostPair);
 
     // (ii) A fresh, CURRENT invocation exists for the new (grouped)
     // placement and commands normally.
@@ -1143,5 +1170,11 @@ describe('persistent RF front-end composition across a real Standard->SDR plan s
     // itself — only the click above changes anything downstream, and that
     // command is not yet acknowledged/observed.
     expect(externalAttenuator()!.dataset.reading).toBe(beforeReading);
+
+    // (iv) Only now: the stale pre-switch invocation is DETACHED — its named
+    // Standard seat was torn down when the layout moved to the grouped
+    // surface.
+    staleStandardAttenuator!(18);
+    expect(h.att).toHaveBeenCalledTimes(1);
   });
 });
