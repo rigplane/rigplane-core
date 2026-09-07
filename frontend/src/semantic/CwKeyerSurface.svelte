@@ -319,6 +319,7 @@
   onDestroy(() => {
     keySpeedScalar.destroy();
     cwPitchScalar.destroy();
+    breakInDelayScalar.destroy();
   });
   function feedbackLevelValueText(
     label: string, current: Readonly<ContinuousScalarView>, displayed: number | null, unit: string,
@@ -409,7 +410,8 @@
     },
     (value) => setLevel('breakInDelay', value),
   );
-  let breakInDelayView = $derived(breakInDelayScalar.view);
+  const breakInDelayLease = breakInDelayScalar.attachRenderer();
+  let breakInDelayView = $derived(breakInDelayLease.view);
   let breakInDelayBusy = $derived(
     breakInDelayView.presentation.attributes['aria-busy'] === 'true',
   );
@@ -437,14 +439,14 @@
     return `Confirmed ${confirmed}`;
   });
   function noteBreakInDelayInput(target: HTMLInputElement): void {
-    breakInDelayScalar.input(target.valueAsNumber);
+    breakInDelayLease.input(target.valueAsNumber);
   }
   function commitBreakInDelay(target: HTMLInputElement): void {
-    const restored = breakInDelayScalar.commit(target.valueAsNumber);
+    const restored = breakInDelayLease.commit(target.valueAsNumber);
     if (restored !== null) target.value = String(restored);
   }
   function cancelBreakInDelay(target: HTMLInputElement): void {
-    const restored = breakInDelayScalar.cancel();
+    const restored = breakInDelayLease.cancel();
     if (restored !== null) target.value = String(restored);
   }
   function keyBreakInDelay(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {

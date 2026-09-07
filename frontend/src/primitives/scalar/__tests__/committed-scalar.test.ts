@@ -117,10 +117,11 @@ describe('createCommittedScalar', () => {
     ['editability', { editable: false }],
   ] as const)('invalidates a draft on %s change and rejects its stale release', (_name, change) => {
     const { scalar, request, update } = setup();
-    scalar.input(111);
+    const lease = scalar.attachRenderer();
+    lease.input(111);
     update(change);
-    expect(scalar.view.draft).toBeNull();
-    expect(scalar.commit(111)).not.toBeNull();
+    expect(lease.view.draft).toBeNull();
+    expect(lease.commit(111)).not.toBeNull();
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -142,13 +143,14 @@ describe('createCommittedScalar', () => {
       outcome: { phase: 'failed' },
     });
     const { scalar, request, update } = setup(rejectPolicy, terminal);
-    expect(scalar.view.announcement).toBe('Failed: 111');
-    scalar.input(90);
-    expect(scalar.view.draft).toBe(90);
+    const lease = scalar.attachRenderer();
+    expect(lease.view.announcement).toBe('Failed: 111');
+    lease.input(90);
+    expect(lease.view.draft).toBe(90);
 
     update({ feedback: feedback('idle', { providerGeneration: 4 }) });
-    expect(scalar.view).toMatchObject({ draft: null, announcement: null });
-    expect(scalar.commit(90)).toBe(64);
+    expect(lease.view).toMatchObject({ draft: null, announcement: null });
+    expect(lease.commit(90)).toBe(64);
     expect(request).not.toHaveBeenCalled();
   });
 
@@ -173,5 +175,85 @@ describe('createCommittedScalar', () => {
     expect(second.view.draft).toBeNull();
     expect(first.view.announcement).not.toBeNull();
     expect(second.view.announcement).not.toBeNull();
+  });
+
+  it('revokes replaced renderers without letting stale calls consume the current draft', () => {
+    const { scalar, request } = setup();
+    const rendererA = scalar.attachRenderer();
+    rendererA.input(90);
+
+    const rendererB = scalar.attachRenderer();
+    expect(rendererB.view).toMatchObject({ draft: null, displayed: 64, editing: false });
+    rendererB.input(111);
+    rendererA.commit(77);
+    rendererA.input(88);
+    rendererA.cancel();
+    rendererA.dispose();
+
+    expect(request).not.toHaveBeenCalled();
+    expect(rendererB.view).toMatchObject({ draft: 111, displayed: 111, editing: true });
+    expect(rendererB.commit(77)).toBeNull();
+    expect(request).toHaveBeenCalledExactlyOnceWith(111);
+
+    const rendererAReplacement = scalar.attachRenderer();
+    rendererAReplacement.input(120);
+    rendererA.input(121);
+    rendererA.commit(121);
+    rendererA.cancel();
+    expect(rendererAReplacement.view.draft).toBe(120);
+    rendererAReplacement.commit(120);
+    expect(request.mock.calls).toEqual([[111], [120]]);
+  });
+
+  it('makes destroyed owners and their retained renderers permanently inert', () => {
+    const first = setup();
+    const retained = first.scalar.attachRenderer();
+    retained.input(90);
+    first.scalar.destroy();
+    first.scalar.destroy();
+
+    const replacement = setup();
+    const current = replacement.scalar.attachRenderer();
+    current.input(111);
+    retained.input(88);
+    retained.commit(88);
+    retained.cancel();
+    retained.dispose();
+    first.scalar.input(77);
+    expect(first.scalar.commit(77)).toBe(64);
+    expect(first.scalar.cancel()).toBe(64);
+    const afterDestroy = first.scalar.attachRenderer();
+    afterDestroy.input(99);
+    afterDestroy.commit(99);
+
+    expect(first.request).not.toHaveBeenCalled();
+    expect(first.scalar.view).toMatchObject({ draft: null, displayed: 64, editing: false });
+    expect(current.view.draft).toBe(111);
+    current.commit(0);
+    expect(replacement.request).toHaveBeenCalledExactlyOnceWith(111);
+  });
+
+  it('disposes idempotently and preserves feedback presentation across renderer detach', () => {
+    const terminal = feedback('failed', {
+      requestedTarget: 111, transitionId: 'failed-1', outcome: { phase: 'failed' },
+    });
+    const { scalar, request } = setup(rejectPolicy, terminal);
+    const rendererA = scalar.attachRenderer();
+    expect(rendererA.view.announcement).toBe('Failed: 111');
+    rendererA.input(90);
+    rendererA.dispose();
+    rendererA.dispose();
+    rendererA.cancel();
+    rendererA.commit(90);
+
+    const rendererB = scalar.attachRenderer();
+    const rendererBView = rendererB.view;
+    expect(rendererBView).toMatchObject({
+      draft: null, displayed: 64, editing: false, announcement: 'Failed: 111',
+    });
+    expect(rendererBView.presentation.politeAnnouncement).toBeNull();
+    rendererB.input(99);
+    rendererB.commit(99);
+    expect(request).toHaveBeenCalledExactlyOnceWith(99);
   });
 });

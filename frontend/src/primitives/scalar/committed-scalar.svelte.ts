@@ -29,11 +29,20 @@ export interface CommittedScalarView {
   readonly presentation: Readonly<ControlFeedbackPresentation>;
   readonly announcement: string | null;
 }
+export interface CommittedScalarRendererLease {
+  readonly view: Readonly<CommittedScalarView>;
+  input(value: number): void;
+  commit(value: number): number | null;
+  cancel(): number | null;
+  dispose(): void;
+}
 export interface CommittedScalar {
   readonly view: Readonly<CommittedScalarView>;
   input(value: number): void;
   commit(value: number): number | null;
   cancel(): number | null;
+  attachRenderer(): CommittedScalarRendererLease;
+  destroy(): void;
 }
 
 type DraftIdentity = {
@@ -93,6 +102,9 @@ export function createCommittedScalar(
   let announcement: string | null = null;
   let providerAuthorityInitialized = false;
   let lastProviderGeneration: number | null = null;
+  let activeRenderer: number | null = null;
+  let rendererSequence = 0;
+  let destroyed = false;
 
   function isEditable(input: Readonly<CommittedScalarInput>): boolean {
     return input.editable && input.feedback.phase !== 'unavailable';
@@ -166,47 +178,115 @@ export function createCommittedScalar(
       announcement,
     });
   }
+  function passiveViewOf(input: Readonly<CommittedScalarInput>): Readonly<CommittedScalarView> {
+    const presentation = projectControlFeedbackPresentation(
+      input.feedback, presentationState, policy.describeTarget,
+    );
+    const confirmed = input.feedback.phase === 'unavailable' ? null : input.feedback.confirmed;
+    return Object.freeze({
+      feedback: input.feedback,
+      confirmed,
+      draft: null,
+      displayed: authoritativeDisplayed(input, presentation),
+      editable: isEditable(input),
+      editing: false,
+      presentation,
+      announcement: presentation.politeAnnouncement?.message ?? announcement,
+    });
+  }
   function restore(input: Readonly<CommittedScalarInput>): number | null {
     return authoritativeDisplayed(input,
       projectControlFeedbackPresentation(input.feedback, presentationState, policy.describeTarget));
   }
 
-  return {
-    get view() { return viewOf(read()); },
-    input(value: number): void {
-      const current = read();
-      reconcile(current);
+  function clearRendererDraft(): void {
+    draft = null;
+    draftIdentity = null;
+    suppressCommit = false;
+  }
+
+  function input(value: number): void {
+    const current = read();
+    reconcile(current);
+    suppressCommit = false;
+    if (!isEditable(current)) return;
+    const candidate = policy.draftPolicy === 'normalize'
+      ? normalize(value)
+      : Number.isFinite(value) && policy.accepts(value) ? value : null;
+    if (candidate === null) return;
+    draft = candidate;
+    draftIdentity = identityOf(current);
+  }
+
+  function commit(value: number): number | null {
+    const current = read();
+    reconcile(current);
+    if (suppressCommit) {
       suppressCommit = false;
-      if (!isEditable(current)) return;
-      const candidate = policy.draftPolicy === 'normalize'
-        ? normalize(value)
-        : Number.isFinite(value) && policy.accepts(value) ? value : null;
-      if (candidate === null) return;
-      draft = candidate;
-      draftIdentity = identityOf(current);
+      return restore(current);
+    }
+    if (!isEditable(current)) return restore(current);
+    const candidate = normalize(activeDraft(current) ?? value);
+    draft = null;
+    draftIdentity = null;
+    if (candidate === null) return restore(current);
+    request(candidate);
+    return null;
+  }
+
+  function cancel(): number | null {
+    const current = read();
+    reconcile(current);
+    draft = null;
+    draftIdentity = null;
+    suppressCommit = true;
+    return restore(current);
+  }
+
+  function makeLease(renderer: number): CommittedScalarRendererLease {
+    const isActive = (): boolean => !destroyed && renderer === activeRenderer;
+    return {
+      get view() { return isActive() ? viewOf(read()) : passiveViewOf(read()); },
+      input(value: number): void {
+        if (isActive()) input(value);
+      },
+      commit(value: number): number | null {
+        return isActive() ? commit(value) : restore(read());
+      },
+      cancel(): number | null {
+        return isActive() ? cancel() : restore(read());
+      },
+      dispose(): void {
+        if (!isActive()) return;
+        clearRendererDraft();
+        activeRenderer = null;
+      },
+    };
+  }
+
+  return {
+    get view() { return destroyed ? passiveViewOf(read()) : viewOf(read()); },
+    input(value: number): void {
+      if (!destroyed) input(value);
     },
     commit(value: number): number | null {
-      const current = read();
-      reconcile(current);
-      if (suppressCommit) {
-        suppressCommit = false;
-        return restore(current);
-      }
-      if (!isEditable(current)) return restore(current);
-      const candidate = normalize(activeDraft(current) ?? value);
-      draft = null;
-      draftIdentity = null;
-      if (candidate === null) return restore(current);
-      request(candidate);
-      return null;
+      return destroyed ? restore(read()) : commit(value);
     },
     cancel(): number | null {
-      const current = read();
-      reconcile(current);
-      draft = null;
-      draftIdentity = null;
-      suppressCommit = true;
-      return restore(current);
+      return destroyed ? restore(read()) : cancel();
+    },
+    attachRenderer(): CommittedScalarRendererLease {
+      if (destroyed) return makeLease(-1);
+      clearRendererDraft();
+      const renderer = ++rendererSequence;
+      activeRenderer = renderer;
+      return makeLease(renderer);
+    },
+    destroy(): void {
+      if (destroyed) return;
+      destroyed = true;
+      clearRendererDraft();
+      activeRenderer = null;
     },
   };
 }

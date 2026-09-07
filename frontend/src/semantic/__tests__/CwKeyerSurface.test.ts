@@ -634,7 +634,23 @@ describe('Break-in Delay separates draft, submitted target and confirmed truth',
     r.dispose();
   });
 
-  it('emits nothing when unmounted after intermediate drag input', () => {
+  it('adopts one committed renderer lease and destroys its owner on unmount', () => {
+    const committedBlock = CODE.slice(
+      CODE.indexOf('const breakInDelayScalar'),
+      CODE.indexOf('function requestRxFrequencyCorrection'),
+    );
+    expect(committedBlock).toContain(
+      'const breakInDelayLease = breakInDelayScalar.attachRenderer()',
+    );
+    expect(committedBlock).toContain('$derived(breakInDelayLease.view)');
+    expect(committedBlock).not.toMatch(/breakInDelayScalar\.(?:input|commit|cancel)\(/);
+    for (const method of ['input', 'commit', 'cancel']) {
+      expect(committedBlock).toContain(`breakInDelayLease.${method}(`);
+    }
+    expect(CODE).toMatch(/onpointercancel=.*cancelBreakInDelay/);
+    expect(CODE).toMatch(/function keyBreakInDelay[\s\S]*?cancelBreakInDelay\(event\.currentTarget\)/);
+    expect(CODE).toMatch(/onDestroy\(\(\) => \{[\s\S]*?breakInDelayScalar\.destroy\(\)/);
+
     const onLevelChange = vi.fn();
     const r = render(base(), { onLevelChange });
     const input = r.input('breakInDelay')!;
