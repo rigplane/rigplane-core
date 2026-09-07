@@ -42,6 +42,19 @@
       {#if operations.speak}{@render operations.speak()}{/if}
     </section>
   {/if}
+
+  {#if instruments.stationMeters !== null}
+    {@const station = instruments.stationMeters}
+    <section class="station-meters" data-family="stationMeters" aria-label="Station meters">
+      <div>{@render station.compression()}</div>
+      <div>{@render station.drainVoltage()}</div>
+      <div>{@render station.drainCurrent()}</div>
+      <div>{@render station.alc()}</div>
+      <div>{@render station.swr()}</div>
+      <div>{@render station.power()}</div>
+      <div>{@render station.signal()}</div>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -50,5 +63,6 @@
   .tx-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .receiver { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
   .operations { grid-column: 1 / -1; grid-template-columns: repeat(8, minmax(0, 1fr)); }
-  @media (max-width: 44rem) { .face { grid-template-columns: minmax(0, 1fr); } .operations { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .station-meters { grid-column: 1 / -1; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  @media (max-width: 44rem) { .face { grid-template-columns: minmax(0, 1fr); } .operations, .station-meters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>
