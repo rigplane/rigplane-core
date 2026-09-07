@@ -167,6 +167,16 @@
   let httpState = $derived(
     getWsConnected() && getRadioHealth()?.serverReachable !== false ? 'connected' : 'disconnected',
   ); // server link — always real
+  // MOR-2425 R29(3): connection.svelte.ts already computes staleness from
+  // state_update timing (`isStale()`, exposed here as `runtime.connectionStale`)
+  // but had zero consumers before this chip. `getWsConnected()` is required
+  // because `setWsConnected(false)` (ws-client.ts's disconnect/reconnect
+  // path) is the only writer that clears it — `staleState` itself is never
+  // reset on disconnect — so gating on it here is what keeps this chip and
+  // the existing disconnected indicators from ever doubling up on one root
+  // cause: the WS transport can only be 'connected' (true) once it is fully
+  // up, never while connecting/reconnecting/disconnected.
+  let badLink = $derived(getWsConnected() && runtime.connectionStale);
   let rigConnected = $derived(getRigConnected());
   let radioReady = $derived(getRadioReady());
   let radioHealth = $derived(getRadioHealth());
@@ -308,6 +318,13 @@
       <span class="indicator-dot"></span>
       <Cable size={12} color="currentColor" strokeWidth={2.5} />
     </span>
+    {#if badLink}
+      <span class="indicator" role="status" data-testid="bad-link-chip" title={t('core.statusbar.badLink.tooltip')} style="--indicator-color: {stateColor('degraded')}">
+        <span class="indicator-dot"></span>
+        <Unplug size={12} color="currentColor" strokeWidth={2.5} />
+        <span class="bad-link-label">{t('core.statusbar.badLink.label')}</span>
+      </span>
+    {/if}
     {#if hasAnyScope() && !declared.has('scopeDisplay')}
       <span class="indicator" role="status" title={t('core.statusbar.indicator.scope', { state: scopeState })} style="--indicator-color: {stateColor(scopeState)}">
         <span class="indicator-dot"></span>
@@ -463,6 +480,18 @@
   .http-lost-label {
     font-size: 9px;
     color: var(--v2-accent-red, #ef4444);
+    font-weight: 700;
+    margin-left: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* MOR-2425 R29(3): bad-link chip — the WS transport is up but state
+     updates have stalled, so it borrows the yellow "degraded" tone rather
+     than the red fault tone used for a real disconnect. */
+  .bad-link-label {
+    font-size: 9px;
+    color: var(--v2-accent-yellow, #facc15);
     font-weight: 700;
     margin-left: 2px;
     text-transform: uppercase;
