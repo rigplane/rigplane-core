@@ -328,6 +328,33 @@ describe('ReceiverInstrumentHost', () => {
     motion.reduced(false); expect(motion.frames).toBe(4);
   });
 
+  it('resets retained MAIN meter history at a real topology boundary', () => {
+    const publisher = new Publisher(publication({ mainS: 20, scheme: 'main_sub' }));
+    const root = mountFixture(publisher);
+    const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
+    const fills = () => meter().querySelectorAll('[data-meter-fill]').length;
+    const frame = meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame');
+    const high = fills();
+
+    publisher.emit(publication({ mainS: -48, scheme: 'ab_shared' })); flushSync();
+
+    expect(meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame')).toBe(frame);
+    expect(fills()).toBeLessThan(high);
+    expect(meter().querySelector('[data-meter-peak]')).toBeNull();
+
+    publisher.emit(publication({ mainS: 20, scheme: 'ab_shared', epoch: 2 })); flushSync();
+    const reseededHigh = fills();
+    publisher.emit(publication({
+      mainS: -48, scheme: 'ab_shared', epoch: 2, active: 'SUB', mainActiveSlot: 'B',
+    })); flushSync();
+    expect(fills()).toBe(reseededHigh);
+
+    publisher.emit(publication({ mainS: -48, scheme: 'main_sub', epoch: 2 })); flushSync();
+    expect(fills()).toBeLessThan(reseededHigh);
+    expect(meter().querySelector('[data-meter-peak]')).toBeNull();
+    expect(meter().querySelector('[data-meter-frame]')?.getAttribute('data-meter-frame')).toBe(frame);
+  });
+
   it('admits only the receiver field domain to S geometry and calibrated motion', () => {
     const publisher = new Publisher(publication({ mainS: 53, meterQuality: ['uncalibrated'] }));
     const root = mountFixture(publisher);

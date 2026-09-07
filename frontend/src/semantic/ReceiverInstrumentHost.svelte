@@ -212,10 +212,14 @@
       get active() { return activeRecord(model, receiver)?.isActive ?? false; },
       get tunable() { return context !== null && !frequencyDisabled(model, receiver); },
       update(nextModel, nextAuthority) {
+        const topologyChanged = authority !== null && nextAuthority !== null
+          && authority.topologyId !== nextAuthority.topologyId;
         if (nextModel !== null) model = nextModel;
         if (!sameAuthority(authority, nextAuthority)) context = nextAuthority === null ? null : {};
         authority = nextAuthority;
-        motion.sync(meterMotionInput(model, receiver, authority));
+        const motionInput = meterMotionInput(model, receiver, authority);
+        if (topologyChanged) motion.sync({ ...motionInput, session: null });
+        motion.sync(motionInput);
       },
     };
   }
