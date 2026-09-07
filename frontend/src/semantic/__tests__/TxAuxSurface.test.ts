@@ -217,6 +217,22 @@ describe('operational availability decides whether a control is USABLE', () => {
       }
     });
   });
+
+  // MUTATION KILLED: rendering an unobserved toggle as "COMP ?" — the live
+  // IC-7300 reading. '?' is a question, not a claim about the radio.
+  it.each(TX_AUX_TOGGLES)('renders an unobserved "%s" toggle as the em dash', (field, label) => {
+    const view = withField(base(), field, { unknown: true });
+    withSurface(view, snap(), (s) => {
+      expect(s.control(field)!.textContent).toBe(`${label}: —`);
+      expect(s.control(field)!.textContent).not.toContain('?');
+    });
+  });
+
+  it.each(TX_AUX_TOGGLES)('keeps an observed "%s" toggle reading its own word', (field, label) => {
+    withSurface(base(), snap(), (s) => {
+      expect(s.control(field)!.textContent).toBe(`${label}: off`);
+    });
+  });
 });
 
 // ── 2b. MOR-1422: the disabled reason is legible, not just a data hook ─────

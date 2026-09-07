@@ -289,7 +289,8 @@ describe('AF level: 0..100 becomes 0..1 exactly once, at the adapter seam', () =
     render();
     expect(Number(afSlider()!.getAttribute('aria-valuenow')))
       .toBeCloseTo(0.42, 10);
-    expect(text('af-value')).toBe('0.42');
+    // The fact stays 0.42 (the slider above); only the READOUT is formatted.
+    expect(text('af-value')).toBe('42%');
   });
 
   it.each([0, 7, 50, 100])('renders a browser volume of %i on the 0..1 scale', (volume) => {

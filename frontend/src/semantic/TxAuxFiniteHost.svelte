@@ -15,8 +15,13 @@
       ? disabledReasonText(field.availability)
       : usable(field) ? undefined : disabledReasonText({ structural: true, operational: false });
 
+  /** An unobserved reading renders as the em dash, not '?': a question mark
+   *  reads as a prompt rather than as "the radio never reported this". Only
+   *  `TX_AUX_TOGGLES` reaches this — ATU's three-state enum and three
+   *  booleans — so no numeric domain is formatted here; the TX-aux levels
+   *  are rendered by `TxAuxScalarHost`. */
   const textOf = (field: TxAuxField<unknown>): string =>
-    field.reading.status !== 'known' ? '?'
+    field.reading.status !== 'known' ? '—'
       : typeof field.reading.value === 'boolean' ? (field.reading.value ? 'on' : 'off')
         : String(field.reading.value);
 

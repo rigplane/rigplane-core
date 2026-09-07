@@ -113,14 +113,18 @@ describe('the RX-audio surface owns no audio lifetime (MOR-972 P0 / MOR-1058)', 
   /** The whole static import closure of the file, allow-listed. Kills: adding
    *  ANY import that could reach transport or the audio manager — including
    *  through a relative specifier, which a `$lib/...` regex would miss. */
-  it('imports only facts, MOD-input vocabulary, localization and control behavior', () => {
+  it('imports only facts, MOD-input vocabulary, localization, formatting and control behavior', () => {
     const specifiers = [...CODE.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect(specifiers.length).toBeGreaterThan(0);
+    // `./format-level` is the shared readout formatter (MOR-1447). It is on
+    // this list because it declares no imports of its own — asserted below,
+    // so the closure this allow-list guards stays closed.
     expect([...new Set(specifiers)].sort()).toEqual([
       '$lib/i18n', '$lib/radio/mod-input',
-      '../primitives/control-instruments/control-instrument-behavior', './radio-view-model',
-      './rx-audio-instruments',
+      '../primitives/control-instruments/control-instrument-behavior', './format-level',
+      './radio-view-model', './rx-audio-instruments',
     ]);
+    expect(readFileSync('src/semantic/format-level.ts', 'utf8')).not.toMatch(/from\s+'/);
     expect(CODE).toContain('bindAbsoluteChoiceInstrument');
     expect(CODE).toContain('bindChoiceInstrument');
   });
@@ -375,7 +379,24 @@ describe('AF level is 0..1 end to end — converted exactly once, in the adapter
   it('renders the fact verbatim, with no second scaling', () => {
     const r = render(base());
     expect(Number(r.slider()!.getAttribute('aria-valuenow'))).toBeCloseTo(0.42, 10);
-    expect(r.text('af-value')).toBe('0.42');
+    // The slider above carries the unrescaled fact; the readout is formatted.
+    expect(r.text('af-value')).toBe('42%');
+    r.dispose();
+  });
+
+  // Kills: `String(value)` on the readout — the live IC-7300 "AF
+  // 0.2196078431372549" (56/255).
+  it('renders a known level as a percent of the declared 0..1 domain', () => {
+    const r = render(withRx({ afLevel: known(0.2196078431372549) }));
+    expect(r.text('af-value')).toBe('22%');
+    expect(r.text('af-value')).not.toContain('0.21');
+    r.dispose();
+  });
+
+  it('renders an unread level as the em dash, not as a percent', () => {
+    const r = render(withRx({ afLevel: unread<number>() }));
+    expect(r.text('af-value')).toBe(UNKNOWN_TEXT);
+    expect(r.text('af-value')).not.toContain('%');
     r.dispose();
   });
 

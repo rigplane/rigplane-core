@@ -233,8 +233,8 @@ describe('RF gain display observation', () => {
     const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
     const marker = node.querySelector('.stale-cue')!;
     const text = node.textContent;
-    expect(text).toContain('RFG 0.75');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(text).toContain('RFG 75%');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
     expect(node.hasAttribute('tabindex')).toBe(false);
     expect(getComputedStyle(marker).visibility).toBe('hidden');
     expect(getComputedStyle(marker).width).toBe('1ch');
@@ -246,14 +246,14 @@ describe('RF gain display observation', () => {
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-state')).toBe('unknown');
     expect(node.getAttribute('data-display-state')).toBe('stale');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75 (stale, last observed)"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75% (stale, last observed)"]')).toBe(node);
     expect(getComputedStyle(marker).visibility).toBe('visible');
     expect(marker.textContent?.trim()).not.toBe('');
     expect(target.querySelector('[aria-live], button, input')).toBeNull();
     flushSync(() => state.set('indicator', current));
     expect(node.textContent).toBe(text);
     expect(node.getAttribute('data-display-state')).toBe('current');
-    expect(target.querySelector('[role="img"][aria-label="RF gain 0.75"]')).toBe(node);
+    expect(target.querySelector('[role="img"][aria-label="RF gain 75%"]')).toBe(node);
     expect(target.querySelector('[role="img"][aria-label*="stale"]')).toBeNull();
     expect(getComputedStyle(marker).visibility).toBe('hidden');
   });
@@ -268,5 +268,26 @@ describe('RF gain display observation', () => {
   it('keeps a display-unsupported RFgain absent', () => {
     render({ indicator: indicator({ rfGain: { ...known(0), display: { state: 'unsupported' } } }) });
     expect(target.querySelector('[data-indicator-fact="rf-gain"]')).toBeNull();
+  });
+
+  // Kills: `String(value)` on the readout — the live IC-7300 "RFG
+  // 0.8196078431372549" (209/255, the value captured verbatim in
+  // `lib/runtime/adapters/__tests__/fixtures/ic7300-state.json`'s `main.rfGain`).
+  it('renders a known RF gain as a percent of its declared 0..1 domain', () => {
+    const value = 0.8196078431372549;
+    render({ indicator: indicator({
+      rfGain: { ...known(value), display: { state: 'current', value } },
+    }) });
+    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    expect(node.textContent).toContain('RFG 82%');
+    expect(node.textContent).not.toContain('0.81');
+    expect(target.querySelector('[role="img"][aria-label="RF gain 82%"]')).toBe(node);
+  });
+
+  it('renders an unread RF gain carrying no display observation as the em dash', () => {
+    render({ indicator: indicator({ rfGain: unknown<number>() }) });
+    const node = target.querySelector('[data-indicator-fact="rf-gain"]')!;
+    expect(node.textContent).toContain('RFG —');
+    expect(node.textContent).not.toContain('%');
   });
 });
