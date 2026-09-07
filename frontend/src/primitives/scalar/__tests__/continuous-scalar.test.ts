@@ -6,6 +6,7 @@ import {
   createDiscreteContinuousScalarPolicy,
   createHBarContinuousScalarPolicy,
   createKnobContinuousScalarPolicy,
+  createRenderedNativeRangeContinuousScalarPolicy,
   nativeRangeContinuousScalarPolicy,
   type CommandScalarFeedback,
   type ContinuousScalarInput,
@@ -458,6 +459,31 @@ describe('continuous scalar source policies', () => {
     });
     ambiguous.scalar.attachRenderer().nativeInput(1_000_000_000_000.0004);
     expect(ambiguous.request).toHaveBeenCalledExactlyOnceWith(1_000_000_000_000.0005);
+  });
+
+  it('gives a rendered native range its lattice and explicit interactions', () => {
+    const { scalar, request } = readingSetup(
+      createRenderedNativeRangeContinuousScalarPolicy(),
+      { domain: NORMALIZED_DOMAIN, reading: { status: 'known', value: 0.5 } },
+    );
+    const lease = scalar.attachRenderer();
+    const token = lease.beginPointer()!;
+
+    lease.pointer(token, 0.513);
+    lease.endPointer(token);
+    expect(scalar.view).toMatchObject({ draft: 0.51, interactionBase: 0.51 });
+
+    for (const [key, fine] of [
+      ['ArrowRight', true], ['ArrowUp', false], ['ArrowDown', false],
+      ['ArrowLeft', false], ['Home', false], ['End', false],
+    ] as const) expect(lease.key({ key, fine })).toBe(true);
+    lease.reset();
+    lease.wheel({ direction: -1, fine: true });
+
+    expect(request.mock.calls).toEqual([
+      [0.51], [0.52], [0.53], [0.52], [0.51], [0], [1], [0.99],
+    ]);
+    expect(scalar.view).toMatchObject({ draft: null, interaction: 'idle' });
   });
 
   it.each([

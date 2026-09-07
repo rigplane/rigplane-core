@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createContinuousPair,
   createLegacyContinuousPairPolicy,
+  createRenderedNativeRangeContinuousPairPolicy,
   nativeRangeContinuousPairPolicy,
   type ContinuousPairInput,
 } from '../continuous-pair.svelte';
@@ -188,6 +189,101 @@ describe('continuous pair request reconciliation', () => {
 });
 
 describe('continuous pair delegates one scalar lifetime', () => {
+  it('retains rendered-native axis steps while crossing the center dead zone', () => {
+    const { pair, requestRf, requestSql } = readingSetup(
+      createRenderedNativeRangeContinuousPairPolicy(),
+    );
+    const lease = pair.attachRenderer();
+    const axisDrafts: Array<number | null> = [];
+
+    for (let press = 0; press < 6; press += 1) {
+      expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+      axisDrafts.push(pair.view.axisDraft);
+    }
+
+    expect(axisDrafts).toEqual([0.51, 0.52, 0.53, 0.54, 0.55, 0.56]);
+    expect(requestRf).not.toHaveBeenCalled();
+    expect(requestSql.mock.calls).toEqual([[0.02], [0.04]]);
+  });
+
+  it('continues rendered-native keyboard input from the normalized pointer axis', () => {
+    const { pair, requestRf, requestSql } = readingSetup(
+      createRenderedNativeRangeContinuousPairPolicy(),
+    );
+    const lease = pair.attachRenderer();
+    const token = lease.beginPointer()!;
+
+    lease.pointer(token, 0.513);
+    lease.endPointer(token);
+    expect(pair.view).toMatchObject({ axisDraft: 0.51, displayedPosition: 0.51 });
+    expect(requestRf).not.toHaveBeenCalled();
+    expect(requestSql).not.toHaveBeenCalled();
+
+    expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    expect(pair.view).toMatchObject({ axisDraft: 0.52, displayedPosition: 0.52 });
+    expect(requestRf).not.toHaveBeenCalled();
+    expect(requestSql).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['ArrowLeft', false, 0.49, [], []],
+    ['ArrowDown', true, 0.49, [], []],
+    ['ArrowRight', true, 0.51, [], []],
+    ['ArrowUp', false, 0.51, [], []],
+    ['Home', false, 0, [[0]], []],
+    ['End', false, 1, [], [[1]]],
+  ] as const)('handles rendered-native %s on the axis lattice', (key, fine, axis, rf, sql) => {
+    const setup = readingSetup(createRenderedNativeRangeContinuousPairPolicy());
+    const lease = setup.pair.attachRenderer();
+
+    expect(lease.key({ key, fine })).toBe(true);
+    expect(setup.pair.view.axisDraft).toBe(axis);
+    expect(setup.requestRf.mock.calls).toEqual(rf);
+    expect(setup.requestSql.mock.calls).toEqual(sql);
+  });
+
+  it('keeps rendered-native wheel immediate and reset inert', () => {
+    const { pair, requestRf, requestSql } = readingSetup(
+      createRenderedNativeRangeContinuousPairPolicy(),
+      { sql: { reading: { status: 'known', value: 0.5 }, availability: 'available' } },
+    );
+    const lease = pair.attachRenderer();
+
+    lease.wheel({ direction: 1, fine: true });
+    lease.reset();
+    expect(requestRf).not.toHaveBeenCalled();
+    expect(requestSql).toHaveBeenCalledExactlyOnceWith(0.52);
+    expect(pair.view).toMatchObject({ axisDraft: null, interaction: 'idle' });
+
+    const axis = createRenderedNativeRangeContinuousPairPolicy().axis!;
+    expect(axis.key(Number.NaN, { key: 'Home', fine: false }, DOMAIN)).toBeNull();
+    expect(axis.wheel(Number.POSITIVE_INFINITY, { direction: 1, fine: false }, DOMAIN)).toBeNull();
+    expect(axis.normalize(0.5, { ...DOMAIN, max: DOMAIN.min })).toBeNull();
+  });
+
+  it('makes rendered-native unknown authority inert and cancels state on replacement', () => {
+    const policy = createRenderedNativeRangeContinuousPairPolicy();
+    const unknown = readingSetup(policy, {
+      rf: { reading: { status: 'unknown' }, availability: 'available' },
+    });
+    const unknownLease = unknown.pair.attachRenderer();
+    expect(unknownLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    expect(unknownLease.beginPointer()).toBeNull();
+    expect(unknown.requestRf).not.toHaveBeenCalled();
+    expect(unknown.requestSql).not.toHaveBeenCalled();
+
+    const healthy = readingSetup(policy);
+    const stale = healthy.pair.attachRenderer();
+    expect(stale.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    expect(healthy.pair.view.axisDraft).toBe(0.51);
+    const replacement = healthy.pair.attachRenderer();
+    expect(healthy.pair.view.axisDraft).toBeNull();
+    expect(stale.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    expect(replacement.key({ key: 'ArrowRight', fine: false })).toBe(true);
+    healthy.update({ ownerKey: 'rf-sql:sub' });
+    expect(healthy.pair.view.axisDraft).toBeNull();
+  });
+
   it('keeps native input immediate and omits legacy wheel, key and reset behavior', () => {
     const { pair, requestRf, requestSql } = readingSetup();
     const lease = pair.attachRenderer();
