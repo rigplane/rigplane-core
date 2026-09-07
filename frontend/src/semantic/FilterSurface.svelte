@@ -51,9 +51,6 @@
 <script module lang="ts">
   import type { DisplayObservedField, TxAuxField } from './radio-view-model';
 
-  /** Fixed filter-shape choice set (SHARP/SOFT) — same two options
-   *  `FilterPanel`'s shape buttons offer, `[value, label]`. */
-  export const FILTER_SHAPES = [[0, 'SHARP'], [1, 'SOFT']] as const;
   /** `[field, label, min, max, step]` in RAW Hz, same ranges `FilterPanel`'s
    *  IF-shift/PBT sliders have always used. */
   export const FILTER_PASSBAND_LEVELS = [
@@ -89,7 +86,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import { t } from '$lib/i18n';
-  import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import {
     createContinuousScalar, nativeRangeContinuousScalarPolicy,
     type CommandScalarFeedback, type ContinuousScalarInput,
@@ -102,24 +98,19 @@
     view: RadioViewModel;
     handles: FilterInstrumentHandles;
     finiteLayout?: FilterFiniteLayout;
-    pendingDataMode?: number | null;
     filterWidthFeedback?: Readonly<CommandScalarFeedback>;
-    onDataModeChange?: (mode: number) => void;
     onFilterWidthChange?: (width: number) => void;
-    onFilterShapeChange?: (shape: number) => void;
     onIfShiftChange?: (value: number) => void;
     onPbtInnerChange?: (value: number) => void;
     onPbtOuterChange?: (value: number) => void;
     onPbtReset?: () => void;
   }
   let {
-    view, handles, finiteLayout, pendingDataMode = null, filterWidthFeedback,
-    onDataModeChange, onFilterWidthChange,
-    onFilterShapeChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange, onPbtReset,
+    view, handles, finiteLayout, filterWidthFeedback,
+    onFilterWidthChange, onIfShiftChange, onPbtInnerChange, onPbtOuterChange, onPbtReset,
   }: Props = $props();
 
   const pendingFilterId = $props.id();
-  const pendingDataModeId = `${pendingFilterId}-data-mode`;
   const feedbackIntegratedRange = { 'feedback-policy': 'feedback-integrated' } as const;
 
   let modeFilter = $derived(view.modeFilter);
@@ -205,20 +196,6 @@
     );
   });
   onDestroy(() => filterWidthScalar.destroy());
-  function shapeInstrument() {
-    return bindChoiceInstrument(() => ({
-      field: filterPassband?.filterShape, choices: FILTER_SHAPES.map(([value]) => value),
-      invoke: (value) => onFilterShapeChange?.(value),
-    }));
-  }
-  function dataModeInstrument() {
-    return bindChoiceInstrument(() => ({
-      field: filterPassband?.dataMode,
-      choices: filterPassband?.dataModeChoices.map(choice => choice.value) ?? [],
-      blocked: (filterPassband?.dataModeChoices.length ?? 0) < 2,
-      invoke: (value) => onDataModeChange?.(value),
-    }));
-  }
   /** One guarded entry point for all three passband sliders — each still
    *  reads and disables on its OWN field's availability (see the file
    *  header, rule 3), this only routes the already-checked value onward. */
@@ -233,11 +210,13 @@
 
 {#if modeFilter || filterPassband}
   <section class="filter-surface" data-testid="filter-surface" aria-label="Mode and filter controls">
+    {#if finiteLayout}
+      {@render finiteLayout(handles)}
+    {:else if modeFilter}
+      {@render handles.mode()}
+      {@render handles.filter()}
+    {/if}
     {#if modeFilter}
-      {#if finiteLayout}{@render finiteLayout(handles)}{:else}
-        {@render handles.mode()}
-        {@render handles.filter()}
-      {/if}
       {#if modeFilter.filterWidth.availability.structural}
         <label class="filter-level" data-testid="filter-width" data-disabled-reason={reasonOf(modeFilter.filterWidth)}>
           <span class="filter-level-name">Width</span>
@@ -275,21 +254,8 @@
           />
         {/key}
       {/snippet}
-      {#if filterPassband.filterShapeControlStructural}
-        {@const behavior = shapeInstrument()}
-        <div
-          class="filter-choice-group" data-testid="filter-shape"
-          data-disabled-reason={reasonOf(filterPassband.filterShape)}
-        >
-          {#each FILTER_SHAPES as [value, label] (value)}
-            <button
-              type="button" class="filter-choice" data-testid={`filter-shape-${value}`}
-              aria-pressed={behavior.available && behavior.isSelected(value)}
-              disabled={!behavior.available}
-              onclick={() => behavior.invoke(value)}
-            >{label}</button>
-          {/each}
-        </div>
+      {#if !finiteLayout}
+        {@render handles.shape()}
       {/if}
       {#each FILTER_PASSBAND_LEVELS as [field, label, min, max, step] (field)}
         {#if field === 'ifShift' ? filterPassband.ifShiftControlStructural : filterPassband[field].availability.structural}
@@ -337,32 +303,8 @@
           onclick={() => onPbtReset?.()}
         >Reset</button>
       {/if}
-      {#if filterPassband.dataMode.availability.structural}
-        {@const behavior = dataModeInstrument()}
-        <div
-          class={filterPassband.dataModeChoices.length > 1 ? 'filter-choice-group' : 'filter-readout'} data-testid="filter-data-mode"
-          role="group" aria-label={t('core.mobile.sheet.dataMode')}
-          data-disabled-reason={reasonOf(filterPassband.dataMode)}
-          data-data-mode-status={pendingDataMode !== null ? 'pending' : presentationOf(filterPassband.dataMode)}
-          aria-describedby={pendingDataMode !== null ? pendingDataModeId : undefined}
-        >
-          <span class="filter-level-name">{filterPassband.dataModeChoices.length > 1 ? t('core.mobile.sheet.dataMode') : 'DATA'}</span>
-          <output>{textOf(filterPassband.dataMode)}</output>
-          {#if filterPassband.dataModeChoices.length > 1}
-            {#each filterPassband.dataModeChoices as choice (choice.value)}
-              <button
-                type="button" class="filter-choice" data-testid={`filter-data-mode-${choice.value}`}
-                aria-pressed={behavior.available && behavior.isSelected(choice.value)}
-                data-pending={pendingDataMode === choice.value}
-                disabled={!behavior.available}
-                onclick={() => behavior.invoke(choice.value)}
-              >{choice.label ?? (choice.value === 0 ? 'OFF' : `D${choice.value}`)}</button>
-            {/each}
-          {/if}
-          {#if pendingDataMode !== null}
-            <span id={pendingDataModeId} class="sr-only">{t('core.modePanel.dataMode.pendingAnnouncement')}</span>
-          {/if}
-        </div>
+      {#if !finiteLayout}
+        {@render handles.dataMode()}
       {/if}
     {/if}
   </section>
@@ -371,22 +313,14 @@
 <style>
   /* Structure only — a design language owns colour (MOR-977, forced-colors). */
   .filter-surface { display: flex; flex-direction: column; gap: 0.25rem; }
-  .filter-choice-group { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .filter-level, .filter-readout { display: flex; align-items: baseline; gap: 0.5rem; }
+  .filter-level { display: flex; align-items: baseline; gap: 0.5rem; }
   .filter-level-name { min-width: 8ch; }
   .pbt-slot { display: inline-flex; align-items: center; width: 8rem; height: 1.5rem; }
   .pbt-slot input { width: 100%; margin-inline: 0; }
   .pbt-unknown { width: 100%; text-align: center; }
   .pbt-value { min-width: 6ch; font-variant-numeric: tabular-nums; }
   .pbt-cue { width: 1ch; }
-  .filter-choice[aria-pressed='true'] { font-weight: 700; }
-  .filter-choice:disabled { cursor: not-allowed; }
   .pbt-reset-button { align-self: flex-start; }
-  /* MOR-1441 leg 2 — a pending (unconfirmed) target never renders identically
-     to confirmed truth. Structural (italic + reduced opacity), never a
-     color-only tell — same doctrine `.freq[data-freq-status='pending']`
-     (leg 1) established. */
-  .filter-choice[data-pending='true'] { font-style: italic; opacity: 0.75; }
   .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
