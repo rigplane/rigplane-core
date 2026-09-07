@@ -69,22 +69,23 @@ Rules:
 
 The suite result is CI's, so the PR opens here — before REVIEW, not after it.
 
-1. Commit (`refactor: <area description>`), push, then `gh pr create --draft`:
-   `quick.yml` triggers on push/PR to `main`, so the branch has no run of its
-   own until the PR exists (CLAUDE.md §Agent working rules)
+1. Commit (`refactor: <area description>`), push, then `gh pr create` —
+   ready, not `--draft`: `quick.yml` triggers on push/PR to `main` and its
+   `quick` job's `if:` skips a draft PR, so the branch has no run of its own
+   until a ready PR exists (CLAUDE.md §Agent working rules)
 2. Read the gates off that PR's `quick` run at this head: it runs the pytest
    suite, `ruff check` and `ruff format --check` under its `core` path filter,
    and `mypy --strict src/rigplane/web` under its `frontend` one
 3. Compare pass/fail counts against Phase 2 baseline
 4. Any new failure = behavior change → rollback all, mark FAILED
-5. With `quick` green at this head, `gh pr ready`: the verifier reviews a ready
-   PR, never a draft (AGENTS.md, "Draft PRs must not merge ... run `gh pr
-   ready`, then complete checks and review")
+5. Proceed to REVIEW only with `quick` green at this head; the PR opened
+   ready, so the verifier reviews a ready PR, never a draft (AGENTS.md,
+   "Draft PRs must not merge")
 
 ### Phase 6: REVIEW
 
 Dispatch the `verifier` role (`.claude/agents/verifier.md`) on the PR Phase 5
-took out of draft — the implementation agent never reviews its own work
+opened — the implementation agent never reviews its own work
 (CLAUDE.md §Language & Git).
 Have it confirm:
 - Improved readability or reduced duplication
