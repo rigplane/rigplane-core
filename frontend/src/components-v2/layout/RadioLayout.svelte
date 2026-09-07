@@ -464,6 +464,11 @@
               form: 'hbar', compact: false, showLabel: true, showValue: true,
             })}
           </div>
+          <div class="cw-keyer-instrument-seat" data-cw-keyer-seat="pitchHz" data-field="pitchHz">
+            {@render instruments.cwKeyerInstruments.pitchHz({
+              form: 'hbar', compact: false, showLabel: true, showValue: true,
+            })}
+          </div>
           {@render instruments.cwKeyer(undefined, false)}
         {:else}
           {@render instruments.cwKeyer()}

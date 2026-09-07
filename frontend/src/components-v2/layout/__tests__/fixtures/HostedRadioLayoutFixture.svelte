@@ -32,7 +32,7 @@
   const cwKeyer = createRawSnippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>(
     () => ({ render: () => '' }),
   );
-  const cwKeyerInstruments = { keyerSpeed: empty } satisfies CwKeyerInstrumentHandles;
+  const cwKeyerInstruments = { keyerSpeed: empty, pitchHz: empty } satisfies CwKeyerInstrumentHandles;
   const antenna = createRawSnippet<[allowBare?: boolean, controlLayout?: FixtureSnippet]>(
     () => ({ render: () => '' }),
   );
