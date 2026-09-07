@@ -257,7 +257,7 @@ function hostedReceiverInstruments(): ReceiverInstrumentHandles {
   const frequency = (receiver: ReceiverId) => createRawSnippet<[ReceiverFrequencyMount?]>(() => ({
     render: () => `<span data-hosted-frequency="${receiver}">${receiver} frequency</span>`,
   }));
-  const meter = (receiver: ReceiverId) => createRawSnippet<[ReceiverSMeterRenderer]>(() => ({
+  const meter = (receiver: ReceiverId) => createRawSnippet<[ReceiverSMeterRenderer?]>(() => ({
     render: () => `<span data-hosted-s-meter="${receiver}">${receiver} meter</span>`,
   }));
   return {

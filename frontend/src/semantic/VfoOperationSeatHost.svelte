@@ -24,6 +24,7 @@
   interface ExistingProps {
     input: VfoOperationProjectionInput | null;
     scheme: RadioViewModel['vfoScheme'] | null;
+    presentationIsCurrent?: () => boolean;
     children: Snippet<[VfoOperationHandles]>;
   }
   type RendererSelection =
@@ -41,7 +42,8 @@
   import { vfoEqualLabel, vfoSwapLabel } from '../components-v2/vfo/vfo-ops-utils';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
   import {
-    createAbsoluteChoiceRendererSeat, createActionRendererSeat, createToggleRendererSeat,
+    createAbsoluteChoiceRendererSeat, createActionRendererSeat, createFiniteRendererContext,
+    createToggleRendererSeat,
     type AbsoluteChoiceRendererInput, type AvailabilityActionRendererInput,
     type ToggleRendererInput,
   } from '../primitives/control-instruments/control-instrument-renderer.svelte';
@@ -50,7 +52,17 @@
     type VfoOperationIntent, type VfoOperationProjection, type VfoToggleOperation,
   } from './vfo-operation-projection';
 
-  let { input, finiteAppearance, rendererContext, scheme, children }: Props = $props();
+  let {
+    input, finiteAppearance, rendererContext, presentationIsCurrent, scheme, children,
+  }: Props = $props();
+  let combinedRendererContext = $derived.by<FiniteRendererContext | null>(() => {
+    const occurrencePredicate = presentationIsCurrent;
+    return rendererContext === null || rendererContext === undefined || occurrencePredicate === undefined
+      ? rendererContext ?? null
+      : createFiniteRendererContext();
+  });
+  const currentRendererContext = (): FiniteRendererContext | null =>
+    (presentationIsCurrent?.() ?? true) ? combinedRendererContext : null;
 
   const projection = (): VfoOperationProjection | null =>
     input === null ? null : projectVfoOperations(input);
@@ -65,7 +77,7 @@
     intent: VfoOperationIntent,
   ): ToggleRendererInput {
     return {
-      context: rendererContext ?? null,
+      context: currentRendererContext(),
       field: operation === undefined
         ? undefined
         : { availability: operation.availability, reading: operation.reading },
@@ -81,7 +93,7 @@
     intent: VfoOperationIntent,
   ): AvailabilityActionRendererInput {
     return {
-      context: rendererContext ?? null,
+      context: currentRendererContext(),
       availability: operation?.availability,
       label,
       title: operation?.availability.reason,
@@ -92,7 +104,7 @@
   function receiverInput(): AbsoluteChoiceRendererInput<VfoOperationReceiver> {
     const operation = projection()?.activeReceiver;
     return {
-      context: rendererContext ?? null,
+      context: currentRendererContext(),
       reading: operation?.reading.status === 'known'
         ? { status: 'known', value: operation.reading.receiver }
         : { status: 'unknown' },

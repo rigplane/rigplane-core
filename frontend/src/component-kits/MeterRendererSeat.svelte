@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
+  import type { MeterAppearance } from '../../component-kit-api/src/index';
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
   import type { ActionRendererSeat } from '../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { MeterReading, MeterValueDomain } from '../semantic/radio-view-model';
@@ -16,7 +17,8 @@
     domain?: MeterValueDomain;
     relevant?: boolean;
     selectedPresent?: boolean;
-    fallback: Snippet<[frame: SignalMeterFrame]>;
+    signalRenderer?: MeterAppearance['signal'];
+    fallback?: Snippet<[frame: SignalMeterFrame]>;
   }
   interface LevelProps {
     kind: 'level';
@@ -28,7 +30,8 @@
 
   let props: Props = $props();
   const appearance = untrack(() => getSelectedMeterAppearance());
-  const signalRenderer = untrack(() => props.kind === 'level' ? undefined : appearance?.signal);
+  const signalRenderer = untrack(() => props.kind === 'level'
+    ? undefined : props.signalRenderer ?? appearance?.signal);
   const levelRenderer = untrack(() => props.kind === 'level' ? appearance?.level : undefined);
   const resetPeak = untrack(() => props.kind === 'level' && levelRenderer
     ? props.resetPeakSeat?.attachRenderer() : undefined);
@@ -52,5 +55,5 @@
     <Renderer view={signalView!} />
   {/if}
 {:else}
-  {@render props.fallback(props.frame)}
+  {#if props.fallback}{@render props.fallback(props.frame)}{/if}
 {/if}

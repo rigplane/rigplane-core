@@ -271,9 +271,12 @@ type LoadedPresentation<Id extends SkinId> =
   Awaited<ReturnType<(typeof SKIN_LOADERS)[Id]['loader']>>['default'];
 
 export function loadSkin<Id extends SkinId>(id: Id): Promise<LoadedPresentation<Id>>;
+export function loadSkin(record: ExternalPresentationRecord): Promise<HostedFaceComponentV1>;
 export function loadSkin(id: PresentationId): Promise<PresentationComponent>;
-export async function loadSkin(id: PresentationId): Promise<PresentationComponent> {
-  const record = requirePresentationRecord(id);
+export async function loadSkin(
+  source: PresentationId | ExternalPresentationRecord,
+): Promise<PresentationComponent> {
+  const record = typeof source === 'string' ? requirePresentationRecord(source) : source;
   if (record.kind === 'external-instruments-v1') return record.loader();
   return (await record.loader()).default;
 }

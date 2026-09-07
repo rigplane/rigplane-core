@@ -9,8 +9,8 @@
   export interface ReceiverInstrumentHandles {
     readonly mainFrequency: Snippet<[mount?: ReceiverFrequencyMount]>;
     readonly subFrequency?: Snippet<[mount?: ReceiverFrequencyMount]>;
-    readonly mainSMeter: Snippet<[renderer: ReceiverSMeterRenderer]>;
-    readonly subSMeter?: Snippet<[renderer: ReceiverSMeterRenderer]>;
+    readonly mainSMeter: Snippet<[renderer?: ReceiverSMeterRenderer]>;
+    readonly subSMeter?: Snippet<[renderer?: ReceiverSMeterRenderer]>;
     readonly frequencyTunable: (receiver: 'MAIN' | 'SUB') => boolean;
     readonly vfoOperations: Snippet<[appearance: ReceiverVfoAppearance]>;
   }
@@ -18,6 +18,7 @@
 
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
+  import type { FrequencyRenderer, MeterAppearance } from '../../component-kit-api/src/index';
   import type { Capabilities } from '$lib/types/capabilities';
   import type { ServerState } from '$lib/types/state';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -53,6 +54,9 @@
     subscribeControlAuthority: SubscribeReceiverAuthority;
     pendingFrequencyHz?: Partial<Record<ReceiverId, number>>;
     onTuneFrequency?: (receiver: ReceiverId, frequencyHz: number) => void;
+    frequencyRenderer?: FrequencyRenderer;
+    signalRenderer?: MeterAppearance['signal'];
+    presentationIsCurrent?: () => boolean;
     vfoOperations: Snippet<[appearance: ReceiverVfoAppearance]>;
     children: Snippet<[ReceiverInstrumentHandles]>;
   }
@@ -78,6 +82,9 @@
     subscribeControlAuthority,
     pendingFrequencyHz,
     onTuneFrequency,
+    frequencyRenderer,
+    signalRenderer,
+    presentationIsCurrent,
     vfoOperations,
     children,
   }: Props = $props();
@@ -318,7 +325,8 @@
   {#if mainOwner !== null}
     <FrequencyRendererSeat binding={mainOwner.frequency} presentation="interactive"
       compact={mount?.compact ?? false} active={mainOwner.active} receiver="main"
-      vfoFreqHook={mount?.vfoFreqHook ?? true} />
+      vfoFreqHook={mount?.vfoFreqHook ?? true} renderer={frequencyRenderer}
+      {presentationIsCurrent} />
   {/if}
 {/snippet}
 
@@ -326,23 +334,26 @@
   {#if subOwner !== null}
     <FrequencyRendererSeat binding={subOwner.frequency} presentation="interactive"
       compact={mount?.compact ?? false} active={subOwner.active} receiver="sub"
-      vfoFreqHook={mount?.vfoFreqHook ?? true} />
+      vfoFreqHook={mount?.vfoFreqHook ?? true} renderer={frequencyRenderer}
+      {presentationIsCurrent} />
   {/if}
 {/snippet}
 
-{#snippet mainSMeter(renderer: ReceiverSMeterRenderer)}
+{#snippet mainSMeter(renderer?: ReceiverSMeterRenderer)}
   {#if mainOwner !== null}
     {@const meter = receiverMeter(mainOwner.model, 'MAIN')}
     <MeterRendererSeat frame={mainOwner.motion.frame}
-      reading={meter?.reading ?? UNKNOWN_METER_READING} domain={meter?.domain} fallback={renderer} />
+      reading={meter?.reading ?? UNKNOWN_METER_READING} domain={meter?.domain}
+      fallback={renderer} {signalRenderer} />
   {/if}
 {/snippet}
 
-{#snippet subSMeter(renderer: ReceiverSMeterRenderer)}
+{#snippet subSMeter(renderer?: ReceiverSMeterRenderer)}
   {#if subOwner !== null}
     {@const meter = receiverMeter(subOwner.model, 'SUB')}
     <MeterRendererSeat frame={subOwner.motion.frame}
-      reading={meter?.reading ?? UNKNOWN_METER_READING} domain={meter?.domain} fallback={renderer} />
+      reading={meter?.reading ?? UNKNOWN_METER_READING} domain={meter?.domain}
+      fallback={renderer} {signalRenderer} />
   {/if}
 {/snippet}
 

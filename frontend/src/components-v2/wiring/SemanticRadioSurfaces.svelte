@@ -12,10 +12,19 @@
   Both render the same server snapshot.
 -->
 <script module lang="ts">
+  import type { HostedFaceComponentV1 } from '../../../component-kit-api/src/index';
+  import type { ExternalPresentationRecord } from '../../skins/registry';
+
   export type {
     InstrumentComposition,
     InstrumentVfoAppearance,
   } from './instrument-composition';
+
+  export interface ExternalPresentation {
+    readonly record: ExternalPresentationRecord;
+    readonly component: HostedFaceComponentV1;
+    readonly isCurrent: () => boolean;
+  }
 </script>
 
 <script lang="ts">
@@ -89,6 +98,7 @@
     type ReceiverVfoAppearance,
   } from '../../semantic/ReceiverInstrumentHost.svelte';
   import TxAuxScalarHost from '../../semantic/TxAuxScalarHost.svelte';
+  import HostedFaceInstrumentBridge from '../../component-kits/HostedFaceInstrumentBridge.svelte';
   import TxAuxFiniteHost from '../../semantic/TxAuxFiniteHost.svelte';
   import TxAuxSurface, {
     TX_AUX_FEEDBACK_LEVELS, type TxAuxFeedbackLevelField, type TxAuxLevelFeedback,
@@ -136,6 +146,7 @@
    */
   interface Props {
     children?: Snippet<[InstrumentComposition]>;
+    externalPresentation?: ExternalPresentation | null;
     strips?: 'single' | 'dual';
     regions?: boolean;
     regionContent?: Snippet<[Snippet | undefined, ManagedScopeRegion | undefined]>;
@@ -166,7 +177,7 @@
    * `zoneOwning()` returns non-null on both faces.
    */
   let {
-    children: hostedChildren, strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
+    children: hostedChildren, externalPresentation = null, strips = 'single', regions = false, regionContent, scopeControlsInRegionContent = false, regionExtras, vfoAppearance = 'semantic', displayFrameSource, readonlyDisplay,
   }: Props = $props();
 
   /**
@@ -880,10 +891,14 @@
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: dspFiniteRendererContext,
     });
-  let vfoFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
-    ? {} : {
-      finiteAppearance: selectedFiniteAppearance, rendererContext: vfoFiniteRendererContext,
-    });
+  let vfoFiniteRendererSelection = $derived(externalPresentation !== null
+    ? {
+      finiteAppearance: externalPresentation.record.appearances.finite,
+      rendererContext: vfoFiniteRendererContext,
+    }
+    : selectedFiniteAppearance === undefined
+      ? {}
+      : { finiteAppearance: selectedFiniteAppearance, rendererContext: vfoFiniteRendererContext });
   let filterFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: filterFiniteRendererContext,
@@ -1309,7 +1324,7 @@
   });
 </script>
 
-<div class="semantic-surfaces" class:hosted={hostedChildren !== undefined} data-testid="semantic-radio-surfaces">
+<div class="semantic-surfaces" class:hosted={hostedChildren !== undefined || externalPresentation !== null} data-testid="semantic-radio-surfaces">
   <StationMeterInstrumentHost {subscribeStationMeterAuthority}>
   {#snippet children(stationMeters: StationMeterInstrumentHandles)}
   {#snippet receiverVfoOperations(appearance: ReceiverVfoAppearance)}
@@ -1329,6 +1344,9 @@
     {pendingFrequencyHz}
     onTuneFrequency={tuneFrequency}
     vfoOperations={receiverVfoOperations}
+    frequencyRenderer={externalPresentation?.record.appearances.frequency}
+    signalRenderer={externalPresentation?.record.appearances.meter.signal}
+    presentationIsCurrent={externalPresentation?.isCurrent}
   >
   {#snippet children(receiverInstruments)}
   <RxAudioInstrumentHost
@@ -2055,7 +2073,19 @@
     {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBare)}
   {/snippet}
 
-  {#if hostedChildren}
+  {#if externalPresentation}
+    {#key externalPresentation}
+      <HostedFaceInstrumentBridge
+        component={externalPresentation.component}
+        {receiverInstruments}
+        {vfoOperations}
+        {txAuxScalars}
+        receiverAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
+        vfoOperationsAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
+        txAuxAdmitted={surfacePlan() !== null && zoneOwning('txAux') !== null}
+      />
+    {/key}
+  {:else if hostedChildren}
     {@render hostedChildren({
       vfo: hostedVfo,
       vfoOperations,
@@ -2250,6 +2280,8 @@
   <TxAuxScalarHost
     {view} levelFeedback={txAuxLevelFeedback}
     onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
+    scalarAppearance={externalPresentation?.record.appearances.scalar}
+    presentationIsCurrent={externalPresentation?.isCurrent}
   >
   {#snippet children(txAuxScalars)}
     {@render txAuxFiniteComposition(txAuxScalars)}
@@ -2267,6 +2299,7 @@
   {/snippet}
   <VfoOperationSeatHost
     {...vfoFiniteRendererSelection} input={vfoOperationInput} scheme={view?.vfoScheme ?? null}
+    presentationIsCurrent={externalPresentation?.isCurrent}
   >
     {#snippet children(vfoOperations)}
       {@render vfoInstrumentComposition(vfoOperations)}
