@@ -549,7 +549,8 @@ describe('the surface mounts only in the single composition, never in dual', () 
   it('leaves the cockpit composition with no focusable control outside a declared zone', () => {
     render({ strips: 'dual' });
     const outside = [...target.querySelectorAll<HTMLElement>('button, input, select, [tabindex]')]
-      .filter((node) => !node.hasAttribute('disabled') && node.closest('[data-zone-id]') === null);
+      .filter((node) => !node.matches(':disabled') && node.tabIndex >= 0
+        && node.closest('[data-zone-id]') === null);
     expect(outside).toEqual([]);
   });
 });

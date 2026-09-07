@@ -59,10 +59,12 @@
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import ScopeDisplaySurface from '../../semantic/ScopeDisplaySurface.svelte';
+  import TxAuxScalarHost from '../../semantic/TxAuxScalarHost.svelte';
   import TxAuxSurface, {
     TX_AUX_FEEDBACK_LEVELS, type TxAuxFeedbackLevelField, type TxAuxLevelFeedback,
     type TxAuxLevelField, type TxAuxToggleField,
   } from '../../semantic/TxAuxSurface.svelte';
+  import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
   import { keyBlockedReasons } from '../../semantic/rx-tx-surface';
   import VfoSurface, { type VfoSelection } from '../../semantic/VfoSurface.svelte';
   import SemanticControlPanel from '../layout/SemanticControlPanel.svelte';
@@ -1171,12 +1173,11 @@
     {/if}
   {/snippet}
 
-  {#snippet txAuxSurface()}
+  {#snippet txAuxSurface(scalarHandles: TxAuxScalarHandles)}
     {#if view?.txAux}
       <TxAuxSurface
-        {view} tx={txState} levelFeedback={txAuxLevelFeedback}
+        {view} tx={txState} {scalarHandles}
         onToggle={(field) => TX_AUX_TOGGLE_INTENT[field]()}
-        onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
         onAtuTune={requestAtuTune}
       />
     {/if}
@@ -1562,6 +1563,12 @@
     {@render zoned('scopeControls', view?.scopeControls !== undefined, scopeControlsSurface, allowBareSurfaces)}
   {/snippet}
 
+  <TxAuxScalarHost
+    {view} levelFeedback={txAuxLevelFeedback}
+    onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
+  >
+  {#snippet children(txAuxScalars)}
+  {#snippet txAuxBody()}{@render txAuxSurface(txAuxScalars)}{/snippet}
   {#if strips === 'dual'}
     <!--
       MOR-1258: the zone now carries RxTxSurface AND the two TX-adjacent
@@ -1588,7 +1595,7 @@
       {@render txFaultRecovery()}
       {@render txAdjacentAlerts()}
     </div>
-    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface)}
+    {@render zoned('txAux', view?.txAux !== undefined, txAuxBody)}
     {@render zoned('meters', view?.meters !== undefined, metersSurface)}
     <!--
       MOR-2150. The nine remaining optional surfaces, mounted zone-only
@@ -1653,7 +1660,9 @@
       {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
       {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
       {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
-      {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface, allowBareSurfaces)}
+      {@render zoned(
+        'txAux', view?.txAux !== undefined, txAuxBody, allowBareSurfaces,
+      )}
       {#if regionExtras}{@render regionExtras('right')}{/if}
       </div>
       {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
@@ -1696,7 +1705,9 @@
          default. `vfo`/`rxTx` above keep the default: they are in
          `requiredSemanticSurfaces`, which `resolveSurfacePlan` force-restores,
          so no plan can leave either without a zone. -->
-    {@render zoned('txAux', view?.txAux !== undefined, txAuxSurface, allowBareSurfaces)}
+    {@render zoned(
+      'txAux', view?.txAux !== undefined, txAuxBody, allowBareSurfaces,
+    )}
     {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBareSurfaces)}
     {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
     {@render zoned(
@@ -1720,6 +1731,8 @@
     {@render txAdjacentAlerts()}
     {/if}
   {/if}
+  {/snippet}
+  </TxAuxScalarHost>
   {/if}
 </div>
 

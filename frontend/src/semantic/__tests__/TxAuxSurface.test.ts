@@ -23,6 +23,7 @@ import TxAuxSurface, {
   TX_AUX_LEVELS, TX_AUX_TOGGLES,
   type TxAuxLevelField, type TxAuxToggleField,
 } from '../TxAuxSurface.svelte';
+import TxAuxScalarHostFixture from './fixtures/TxAuxScalarHostFixture.svelte';
 import { topologyFixtures, withTxAux } from '../fixtures/topologies';
 import type { Availability, RadioViewModel, TxAuxViewModel } from '../radio-view-model';
 import { blockedLabel, keyBlockedReasons, type TxAuthoritySnapshot } from '../rx-tx-surface';
@@ -97,14 +98,16 @@ const feedbackRecord = (
 ])) as unknown as TxAuxFeedbackRecord;
 
 function render(view: RadioViewModel, tx: TxAuthoritySnapshot, handlers: Handlers = {}) {
-  const component = mount(TxAuxSurface, { target, props: { view, tx, ...handlers } });
+  const component = mount(TxAuxScalarHostFixture, {
+    target, props: { view, tx, presentation: 'grouped', ...handlers },
+  });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
     dispose: () => unmount(component),
     root: () => q('[data-testid="tx-aux-surface"]'),
     control: (field: string) => q<HTMLElement>(`[data-testid="tx-aux-${field}"]`),
-    input: (field: string) => q<HTMLInputElement>(`[data-testid="tx-aux-${field}"] input`),
+    input: (field: string) => q<HTMLElement>(`[data-testid="tx-aux-${field}"] [role="slider"]`),
     tune: () => q<HTMLButtonElement>('[data-testid="tx-aux-atu-tune"]'),
     tuneReasons: () => [...target.querySelectorAll('[data-testid="tx-aux-tune-blocked"] [data-reason]')]
       .map((el) => el.getAttribute('data-reason')),
@@ -121,21 +124,26 @@ function withSurface(
 
 function renderReactiveFeedback(initial: TxAuxFeedbackRecord = feedbackRecord()) {
   const onLevelChange = vi.fn();
-  const props = proxy({ view: base(), tx: snap(), onLevelChange, levelFeedback: initial });
-  const component = mount(TxAuxSurface, { target, props });
+  const props = proxy({
+    view: base(), tx: snap(), presentation: 'grouped' as 'grouped' | 'independent',
+    onLevelChange, levelFeedback: initial,
+  });
+  const component = mount(TxAuxScalarHostFixture, {
+    target, props,
+  });
   flushSync();
   const row = (field: FeedbackLevelField) => target.querySelector<HTMLElement>(
     `[data-testid="tx-aux-${field}"]`,
   )!;
-  const input = (field: FeedbackLevelField) => row(field).querySelector('input')!;
+  const input = (field: FeedbackLevelField) => row(field).querySelector<HTMLElement>('[role="slider"]')!;
   return { dispose: () => unmount(component), row, input, onLevelChange, props };
 }
 
-/** `disabled` for a <button>, or for the <input> a level control wraps. */
+/** `disabled` for a button, or `aria-disabled` for a scalar renderer. */
 function isDisabled(s: ReturnType<typeof render>, field: string): boolean {
   const el = s.control(field)!;
   if (el instanceof HTMLButtonElement) return el.disabled;
-  return s.input(field)!.disabled;
+  return s.input(field)!.getAttribute('aria-disabled') === 'true';
 }
 
 // ── 1. Structural gating: absent, never a disabled promise ─────────────────
@@ -236,7 +244,7 @@ describe('the disabled reason is exposed on hover and to screen readers (MOR-142
     const view = withField(base(), 'rfPower', { availability: { structural: true, operational: false } });
     withSurface(view, snap(), (s) => {
       const input = s.input('rfPower')!;
-      expect(input.title).toBe('Not yet observed');
+      expect(s.control('rfPower')!.title).toBe('Not yet observed');
       expect(describedText(input)).toBe('Not yet observed');
     });
   });
@@ -269,7 +277,7 @@ describe('the disabled reason is exposed on hover and to screen readers (MOR-142
         // `isDisabled` above already draws).
         const control = s.control(field)!;
         const el = control instanceof HTMLButtonElement ? control : s.input(field)!;
-        expect(el.title, field).toBe('Not yet observed');
+        expect(control.title || el.title, field).toBe('Not yet observed');
         expect(describedText(el), field).toBe('Not yet observed');
       });
     },
@@ -607,11 +615,10 @@ describe('level intents reach the caller with the field and the raw value', () =
     const onLevelChange = vi.fn();
     withSurface(base(), snap(), (s) => {
       const input = s.input(field)!;
-      expect(input.min).toBe(String(min));
-      expect(input.max).toBe(String(max));
-      expect(input.step).toBe(String(step));
-      input.value = String(min);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(input.getAttribute('aria-valuemin')).toBe(String(min));
+      expect(input.getAttribute('aria-valuemax')).toBe(String(max));
+      expect(s.control(field)!.dataset.step).toBe(String(step));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
       flushSync();
       expect(onLevelChange).toHaveBeenCalledExactlyOnceWith(field, min);
     }, { onLevelChange });
@@ -622,32 +629,42 @@ describe('level intents reach the caller with the field and the raw value', () =
   // would silently halve someone's RF power.
   it('passes the raw reading straight into the control value', () => {
     withSurface(base(), snap(), (s) => {
-      expect(s.input('rfPower')!.valueAsNumber).toBe(0.8);
-      expect(s.input('micGain')!.valueAsNumber).toBe(128);
-      expect(s.input('voxDelay')!.valueAsNumber).toBe(20);
+      expect(s.input('rfPower')!.getAttribute('aria-valuenow')).toBe('0.8');
+      expect(s.input('micGain')!.getAttribute('aria-valuenow')).toBe('128');
+      expect(s.input('voxDelay')!.getAttribute('aria-valuenow')).toBe('20');
     });
   });
 });
 
 describe('seven TX/VOX levels consume command feedback', () => {
-  it('declares the adopted native range source feedback-integrated without changing debt inventory', () => {
-    const source = readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8');
+  const describedText = (el: HTMLElement): string | null => {
+    const id = el.getAttribute('aria-describedby');
+    return id ? target.querySelector(`#${id}`)?.textContent ?? null : null;
+  };
+
+  it('declares the adopted ValueControl source feedback-integrated without changing debt inventory', () => {
+    const source = readFileSync('src/semantic/TxAuxScalarHost.svelte', 'utf8');
     expect(source.match(/'feedback-policy': 'feedback-integrated'/g)).toHaveLength(1);
-    expect(source).toContain('{...feedbackIntegratedRange}');
+    expect(source).toContain('{...feedbackIntegratedControl}');
   });
 
-  it.each(FEEDBACK_LEVELS)('uses canonical %s feedback and preserves its raw native input', (
+  it.each(FEEDBACK_LEVELS)('uses canonical %s feedback and preserves its raw renderer value', (
     field, _control, canonical,
   ) => {
     const r = renderReactiveFeedback();
     const input = r.input(field);
-    expect(input.valueAsNumber).toBe(canonical);
+    expect(input.getAttribute('aria-valuenow')).toBe(String(canonical));
     expect(input.dataset.commandPhase).toBe('idle');
     expect(input.getAttribute('aria-busy')).toBe('false');
-    input.value = field === 'voxDelay' ? '7' : '177';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.getAttribute('aria-valuetext')).toContain(
+      field === 'voxDelay' ? `${(canonical * 0.1).toFixed(1)}s` : `${Math.round(canonical / 255 * 100)}%`,
+    );
+    const key = field === 'voxDelay' ? 'ArrowLeft' : 'ArrowRight';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
     flushSync();
-    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith(field, input.valueAsNumber);
+    expect(r.onLevelChange).toHaveBeenCalledExactlyOnceWith(
+      field, field === 'voxDelay' ? canonical - 1 : canonical + 1,
+    );
     r.dispose();
   });
 
@@ -659,36 +676,36 @@ describe('seven TX/VOX levels consume command feedback', () => {
       confirmed: null, availability: 'unavailable', providerGeneration: 2, sessionEpoch: 2,
     });
     const r = renderReactiveFeedback(feedbackRecord({ [field]: unavailable }));
-    expect(r.input(field).disabled).toBe(true);
+    expect(r.input(field).getAttribute('aria-disabled')).toBe('true');
     expect(r.input(field).dataset.commandPhase).toBe('unavailable');
     expect(r.row(field).querySelector('output')?.textContent).toContain('?');
     const status = r.row(field).querySelector<HTMLElement>('[data-command-status]')!;
     expect(status.textContent).toContain('unavailable');
     expect(status.classList).toContain('sr-only');
-    expect(r.input(field).title).toBe('Not yet observed');
-    const descriptionId = r.input(field).getAttribute('aria-describedby')!;
-    expect(r.row(field).querySelector(`#${descriptionId}`)?.textContent).toBe('Not yet observed');
+    expect(r.row(field).title).toBe('Not yet observed');
+    expect(describedText(r.input(field))).toBe('Not yet observed');
     expect(r.input(field).getAttribute('aria-valuetext')).toContain('unavailable');
+    expect(r.input(field).getAttribute('aria-valuenow')).toBeNull();
     const visible = r.row(field).cloneNode(true) as HTMLElement;
     visible.querySelectorAll('.sr-only').forEach((node) => node.remove());
     expect(visible.textContent).not.toContain('unavailable');
-    r.input(field).value = String(field === 'voxDelay' ? 7 : 200);
-    r.input(field).dispatchEvent(new Event('input', { bubbles: true }));
+    r.input(field).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(r.onLevelChange).not.toHaveBeenCalled();
     r.dispose();
     },
   );
 
   it.each(['submitted', 'queued', 'dispatched', 'awaiting-confirmation'] as const)(
-    'shows an optimistic target while %s without replacing canonical truth', (phase) => {
+    'reports a pending target while %s without replacing canonical truth', (phase) => {
       const pending = feedback('mic-gain', 128, phase, {
         target: 200, requestedTarget: 200, lifecycleId: 'mic-command',
         transitionId: `mic-${phase}`,
       });
       const r = renderReactiveFeedback(feedbackRecord({ micGain: pending }));
-      expect(r.input('micGain').valueAsNumber).toBe(200);
+      expect(r.input('micGain').getAttribute('aria-valuenow')).toBe('128');
       expect(r.input('micGain').dataset.commandPhase).toBe(phase);
       expect(r.input('micGain').getAttribute('aria-busy')).toBe('true');
+      expect(r.input('micGain').getAttribute('aria-valuetext')).toContain('requested 78%');
       expect(r.row('micGain').querySelector('[data-canonical-value]')?.textContent).toContain('50%');
       expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain('78%');
       expect(r.row('micGain').querySelector('[data-command-status]')?.classList).not.toContain('sr-only');
@@ -705,7 +722,7 @@ describe('seven TX/VOX levels consume command feedback', () => {
       outcome: { phase, ...(error === null ? {} : { error }) },
     });
     const r = renderReactiveFeedback(feedbackRecord({ micGain: terminal }));
-    expect(r.input('micGain').valueAsNumber).toBe(canonical);
+    expect(r.input('micGain').getAttribute('aria-valuenow')).toBe(String(canonical));
     expect(r.input('micGain').getAttribute('aria-busy')).toBe('false');
     expect(r.row('micGain').querySelector('[data-command-status]')?.textContent).toContain(
       phase.replaceAll('-', ' '),
@@ -719,7 +736,7 @@ describe('seven TX/VOX levels consume command feedback', () => {
       expect(status.textContent).toContain(error);
       expect(getComputedStyle(status).overflow).not.toBe('hidden');
     }
-    expect(r.row('micGain').querySelectorAll('[data-tx-aux-feedback-status]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-feedback-lane="micGain"]')).toHaveLength(1);
     r.dispose();
   });
 
@@ -734,19 +751,20 @@ describe('seven TX/VOX levels consume command feedback', () => {
       outcome: { phase: 'failed', error: 'radio refused' },
     });
     const r = renderReactiveFeedback(feedbackRecord({ [field]: failed(1, 1) }));
-    const status = () => r.row(field).querySelector<HTMLElement>(
-      '[data-tx-aux-feedback-status]',
-    );
+    const status = () => target.querySelector<HTMLElement>(`[data-feedback-lane="${field}"]`);
     const first = status()!;
+    r.props.presentation = 'independent';
+    flushSync();
+    expect(status()).toBe(first);
     r.props.levelFeedback = feedbackRecord({ [field]: failed(1, 1) });
     flushSync();
     expect(status()).toBe(first);
-    expect(r.row(field).querySelectorAll('[data-tx-aux-feedback-status]')).toHaveLength(1);
+    expect(target.querySelectorAll(`[data-feedback-lane="${field}"]`)).toHaveLength(1);
     r.props.levelFeedback = feedbackRecord({ [field]: failed(2, 2) });
     flushSync();
     expect(status()).not.toBe(first);
     expect(status()?.getAttribute('aria-live')).toBe('polite');
-    expect(r.row(field).querySelectorAll('[data-tx-aux-feedback-status]')).toHaveLength(1);
+    expect(target.querySelectorAll(`[data-feedback-lane="${field}"]`)).toHaveLength(1);
     r.dispose();
     },
   );
@@ -755,10 +773,9 @@ describe('seven TX/VOX levels consume command feedback', () => {
     const onLevelChange = vi.fn();
     withSurface(base(), snap(), (s) => {
       expect(s.input('micGain')?.dataset.commandPhase).toBeUndefined();
-      expect(s.input('micGain')?.valueAsNumber).toBe(128);
-      s.input('micGain')!.value = '177';
-      s.input('micGain')!.dispatchEvent(new Event('input', { bubbles: true }));
-      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('micGain', 177);
+      expect(s.input('micGain')?.getAttribute('aria-valuenow')).toBe('128');
+      s.input('micGain')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      expect(onLevelChange).toHaveBeenCalledExactlyOnceWith('micGain', 129);
     }, { onLevelChange });
   });
 });
@@ -768,7 +785,7 @@ describe('seven TX/VOX levels consume command feedback', () => {
 describe('every TX-aux level slider reads back as a percent of its own domain', () => {
   /** Same source-stripper the section-5 safety pins use, redefined locally
    *  since it is a plain module-scope const there, not exported. */
-  const source = readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8')
+  const source = readFileSync('src/semantic/TxAuxScalarHost.svelte', 'utf8')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
@@ -833,6 +850,6 @@ describe('every TX-aux level slider reads back as a percent of its own domain', 
   // silently going stale.
   it('builds the default percent format from the row\'s own bound min/max, not a bare rawToPercentDisplay reference', () => {
     expect(source).not.toMatch(/,\s*rawToPercentDisplay\s*[,\]]/);
-    expect(source).toMatch(/rawToPercentDisplay\(v,\s*min,\s*max\)/);
+    expect(source).toMatch(/rawToPercentDisplay\(raw,\s*min,\s*max\)/);
   });
 });
