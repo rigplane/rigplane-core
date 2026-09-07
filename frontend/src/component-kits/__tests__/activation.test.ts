@@ -530,29 +530,67 @@ describe('component-kit activation transaction', () => {
   });
 
   it.each([
-    ['legacy presentation shape', { id: 'legacy-face', loader: async () => faceRenderer, resources: [] }],
-    ['wrong host mode', { ...hostedKit('bad-mode').presentations![0], hostMode: 'self-contained' }],
-    ['missing layout', { ...hostedKit('bad-layout').presentations![0], layoutId: 'absent-layout' }],
-    ['unknown resource', { ...hostedKit('bad-resource').presentations![0], resources: ['network'] }],
-    ['duplicate resource', { ...hostedKit('duplicate-resource').presentations![0], resources: ['audio-fft', 'audio-fft'] }],
-    ['runtime-owned resource', { ...hostedKit('rx-audio').presentations![0], resources: ['rx-audio'] }],
-    ['non-function loader', { ...hostedKit('bad-loader').presentations![0], loader: false }],
-    ['missing scalar appearance', { ...hostedKit('missing-scalar').presentations![0], appearances: { scalar: 'absent', frequency: 'shared', finite: 'shared', meter: 'shared' } }],
-    ['missing frequency appearance', { ...hostedKit('missing-frequency').presentations![0], appearances: { scalar: 'shared', frequency: 'absent', finite: 'shared', meter: 'shared' } }],
-    ['missing finite appearance', { ...hostedKit('missing-finite').presentations![0], appearances: { scalar: 'shared', frequency: 'shared', finite: 'absent', meter: 'shared' } }],
-    ['missing meter appearance', { ...hostedKit('missing-meter').presentations![0], appearances: { scalar: 'shared', frequency: 'shared', finite: 'shared', meter: 'absent' } }],
-  ])('rejects a hosted face with %s before commit', async (_name, presentation) => {
+    ['legacy presentation shape', (p: HostedFacePresentationV1) => ({ id: p.id, loader: p.loader, resources: p.resources }), /missing "hostMode"/],
+    ['wrong host mode', (p: HostedFacePresentationV1) => ({ ...p, hostMode: 'self-contained' }), /hostMode must be/],
+    ['missing layout', (p: HostedFacePresentationV1) => ({ ...p, layoutId: 'absent-layout' }), /not in the activated batch/],
+    ['unknown resource', (p: HostedFacePresentationV1) => ({ ...p, resources: ['network'] }), /unsupported resource "network"/],
+    ['duplicate resource', (p: HostedFacePresentationV1) => ({ ...p, resources: ['audio-fft', 'audio-fft'] }), /duplicate resource/],
+    ['runtime-owned resource', (p: HostedFacePresentationV1) => ({ ...p, resources: ['rx-audio'] }), /unsupported resource "rx-audio"/],
+    ['non-function loader', (p: HostedFacePresentationV1) => ({ ...p, loader: false }), /loader must be a function/],
+    ['missing scalar appearance', (p: HostedFacePresentationV1) => ({ ...p, appearances: { ...p.appearances, scalar: 'absent' } }), /scalar appearance "absent" is not registered/],
+    ['missing frequency appearance', (p: HostedFacePresentationV1) => ({ ...p, appearances: { ...p.appearances, frequency: 'absent' } }), /frequency appearance "absent" is not registered/],
+    ['missing finite appearance', (p: HostedFacePresentationV1) => ({ ...p, appearances: { ...p.appearances, finite: 'absent' } }), /finite appearance "absent" is not registered/],
+    ['missing meter appearance', (p: HostedFacePresentationV1) => ({ ...p, appearances: { ...p.appearances, meter: 'absent' } }), /meter appearance "absent" is not registered/],
+  ] as const)('rejects a hosted face with %s before commit', async (_name, mutate, error) => {
     const activation = await subject();
     const registry = await import('../../skins/registry');
     const layouts = await import('../../presentation/layouts/contract');
     const base = hostedKit(`rejected-${_name.replaceAll(' ', '-')}`);
+    const presentation = mutate(base.presentations[0]);
     const declaration = { ...base, presentations: [presentation as never] };
     const layoutId = declaration.layouts![0].id;
     const presentationId = presentation.id as string;
 
-    await expect(activation.activateComponentKits(config([declaration]))).rejects.toThrow();
+    await expect(activation.activateComponentKits(config([declaration]))).rejects.toThrow(error);
     expect(registry.getPresentationRecord(presentationId)).toBeUndefined();
     expect(layouts.getLayout(layoutId)).toBeUndefined();
+  });
+
+  it.each([
+    ['presentation missing field', (d: ReturnType<typeof hostedKit>) => {
+      delete (d.presentations[0] as unknown as Record<string, unknown>).resources;
+    }, /missing "resources"/],
+    ['presentation extra field', (d: ReturnType<typeof hostedKit>) => {
+      (d.presentations[0] as unknown as Record<string, unknown>).extra = true;
+    }, /unknown property "extra"/],
+    ['appearances missing field', (d: ReturnType<typeof hostedKit>) => {
+      delete (d.presentations[0].appearances as unknown as Record<string, unknown>).meter;
+    }, /missing "meter"/],
+    ['appearances symbol field', (d: ReturnType<typeof hostedKit>) => {
+      addUnknownOwnProperty(d.presentations[0].appearances, 'symbol');
+    }, /unknown property/],
+    ['layout missing field', (d: ReturnType<typeof hostedKit>) => {
+      delete (d.layouts[0] as unknown as Record<string, unknown>).stageSizing;
+    }, /missing "stageSizing"/],
+    ['layout prototype', (d: ReturnType<typeof hostedKit>) => {
+      Object.setPrototypeOf(d.layouts[0], { inherited: true });
+    }, /must be an object/],
+    ['zone prototype', (d: ReturnType<typeof hostedKit>) => {
+      Object.setPrototypeOf(d.layouts[0].zones[0], { inherited: true });
+    }, /zone 0 must be an object/],
+    ['non-enumerable surface', (d: ReturnType<typeof hostedKit>) => {
+      Reflect.defineProperty(d.layouts[0].zones[0].surfaces, '0', { value: 'vfo', enumerable: false });
+    }, /enumerable data property/],
+    ['sizing-array symbol field', (d: ReturnType<typeof hostedKit>) => {
+      const sizing = d.layouts[0].stageSizing;
+      if (sizing.mode === 'fluid') addUnknownOwnProperty(sizing.responsiveBreakpoints, 'symbol');
+    }, /unknown property/],
+  ] as const)('rejects exact nested shape: %s', async (_name, poison, error) => {
+    const activation = await subject();
+    const declaration = hostedKit(`nested-${_name.replaceAll(' ', '-')}`);
+    poison(declaration);
+
+    await expect(activation.activateComponentKits(config([declaration]))).rejects.toThrow(error);
   });
 
   it.each([
@@ -617,20 +655,28 @@ describe('component-kit activation transaction', () => {
       .rejects.toThrow(/duplicate presentation/i);
   });
 
-  it('rejects authored accessors without invoking them', async () => {
+  it('rejects authored array and sizing accessors without invoking them', async () => {
     const activation = await subject();
-    const declaration = hostedKit('accessor-hosted');
-    const getter = vi.fn(() => 'audio-fft');
-    Reflect.defineProperty(declaration.presentations![0].resources, '0', {
-      get: getter, enumerable: true, configurable: true,
-    });
+    for (const target of ['resources', 'sizing'] as const) {
+      const declaration = hostedKit(`accessor-${target}`);
+      const getter = vi.fn(() => target === 'resources' ? 'audio-fft' : 'fluid');
+      if (target === 'resources') {
+        Reflect.defineProperty(declaration.presentations[0].resources, '0', {
+          get: getter, enumerable: true, configurable: true,
+        });
+      } else {
+        Reflect.defineProperty(declaration.layouts[0].stageSizing, 'mode', {
+          get: getter, enumerable: true, configurable: true,
+        });
+      }
 
-    await expect(activation.activateComponentKits(config([declaration])))
-      .rejects.toThrow(/enumerable data property/i);
-    expect(getter).not.toHaveBeenCalled();
+      await expect(activation.activateComponentKits(config([declaration])))
+        .rejects.toThrow(/enumerable data property/i);
+      expect(getter).not.toHaveBeenCalled();
+    }
   });
 
-  it('rolls back every registry on a late failure and permits the exact same-id retry', async () => {
+  it('leaves every registry and selection unchanged on late failure, then permits same-id retry', async () => {
     const activation = await subject();
     const registry = await import('../../skins/registry');
     const layouts = await import('../../presentation/layouts/contract');
@@ -644,13 +690,28 @@ describe('component-kit activation transaction', () => {
       }],
     };
 
-    await expect(activation.activateComponentKits(config([valid, invalid], { presentation: 'retry-face' })))
+    const selection = {
+      scalarAppearance: 'shared',
+      frequencyReadout: 'shared',
+      finiteControlAppearance: 'shared',
+      meterAppearance: 'shared',
+      presentation: 'retry-face',
+    };
+    await expect(activation.activateComponentKits(config([valid, invalid], selection)))
       .rejects.toThrow(/missing/);
+    expect(activation.getSelectedScalarAppearance()).toBeUndefined();
+    expect(activation.getSelectedFrequencyReadout()).toBeUndefined();
+    expect(activation.getSelectedFiniteControlAppearance()).toBeUndefined();
+    expect(activation.getSelectedMeterAppearance()).toBeUndefined();
     expect(activation.getSelectedPresentationId()).toBeUndefined();
     expect(registry.getPresentationRecord('retry-face')).toBeUndefined();
     expect(layouts.getLayout('retry-layout')).toBeUndefined();
 
-    await activation.activateComponentKits(config([valid], { presentation: 'retry-face' }));
+    await activation.activateComponentKits(config([valid], selection));
+    expect(activation.getSelectedScalarAppearance()).toBeDefined();
+    expect(activation.getSelectedFrequencyReadout()).toBeDefined();
+    expect(activation.getSelectedFiniteControlAppearance()).toBeDefined();
+    expect(activation.getSelectedMeterAppearance()).toBeDefined();
     expect(activation.getSelectedPresentationId()).toBe('retry-face');
     expect(registry.getPresentationRecord('retry-face')).toBeDefined();
     expect(layouts.getLayout('retry-layout')).toBeDefined();
