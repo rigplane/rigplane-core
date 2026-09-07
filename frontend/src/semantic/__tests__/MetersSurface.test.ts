@@ -284,9 +284,18 @@ describe('structural availability decides whether a meter EXISTS', () => {
       const tile = s.tile(field)!;
       expect(tile).not.toBeNull();
       expect(tile.dataset.observed).toBe('false');
-      const persistent = ['signal', 'power', 'alc'].includes(field);
-      expect(tile.querySelectorAll('svg')).toHaveLength(persistent ? 1 : 0);
-      expect(tile.textContent).toContain(field === 'power' || field === 'alc' ? 'IDLE' : '?');
+      // The S meter ('signal') has its own vocabulary, unaffected by this PR
+      // (MOR-2425/R32), and still shows its own '?' placeholder.
+      if (field === 'signal') {
+        expect(tile.querySelectorAll('svg')).toHaveLength(1);
+        expect(tile.textContent).toContain('?');
+        return;
+      }
+      // R32: every structurally-present bar meter always draws its gauge
+      // frame — an empty scale (no digits, no 'IDLE'/'?' token) when there
+      // is no reading, never a hidden/placeholder span.
+      expect(tile.querySelectorAll('svg')).toHaveLength(1);
+      expect(tile.textContent).not.toMatch(/IDLE|\?/);
     });
   });
 
@@ -294,7 +303,8 @@ describe('structural availability decides whether a meter EXISTS', () => {
     withSurface(withField(base(), field, { unknown: true }), (s) => {
       const tile = s.tile(field)!;
       expect(tile.dataset.observed).toBe('false');
-      expect(tile.querySelectorAll('svg')).toHaveLength(['signal', 'power', 'alc'].includes(field) ? 1 : 0);
+      // R32: an empty scale still draws its gauge frame, not a hidden span.
+      expect(tile.querySelectorAll('svg')).toHaveLength(1);
     });
   });
 
@@ -525,15 +535,17 @@ describe('motion and forced-colors mechanisms are reused, not forked', () => {
 
   // MUTATION KILLED: encoding relevance/unknown by colour alone. Under
   // forced-colors the palette is overridden, so state must survive as TEXT
-  // and ATTRIBUTES (MOR-977/1250) — the RF word, the '?' placeholder and the
-  // data attributes all do.
+  // and ATTRIBUTES (MOR-977/1250) — the RF word, the accessible no-reading
+  // description (R32 dropped the visible '?' placeholder) and the data
+  // attributes all do.
   it('encodes state as text and attributes, never colour alone', () => {
     // MOR-2250 (PR 2 of 2): was 'swr' — SWR no longer has its own tile, so
-    // this now exercises 'alc', an unrelated projected bar field the '?'
-    // placeholder property applies to identically.
+    // this now exercises 'alc', an unrelated projected bar field the
+    // no-reading treatment applies to identically.
     const view = withField(base('transmitting'), 'alc', { unknown: true });
     withSurface(view, (s) => {
-      expect(s.tile('alc')!.textContent).toContain('?');
+      expect(s.tile('alc')!.textContent).not.toMatch(/\?/);
+      expect(s.tile('alc')!.querySelector('svg')?.getAttribute('aria-label')).toContain('No reading');
       expect(s.tile('alc')!.dataset.observed).toBe('false');
       expect(s.rfLabel()).toBe(RF_LABEL.transmitting);
     });
@@ -1123,22 +1135,31 @@ describe('station level meters honor explicit sample domains (MOR-2425)', () => 
       expect(fills()).toBeGreaterThan(0);
       expect(fault()).toBe('true');
 
-      for (const display of [
-        { state: 'stale', value: 2.25 } as const,
-        { state: 'unknown', reason: 'not-observed' } as const,
-      ]) {
-        props.view = {
-          ...props.view,
-          meters: {
-            ...props.view.meters!,
-            swr: { ...props.view.meters!.swr, display },
-          },
-        };
-        flushSync();
-        expect(ticks()).toBe(6);
-        expect(fills()).toBe(0);
-        expect(fault()).toBe('false');
-      }
+      // R29: a stale reading keeps the same fill/fault as when current —
+      // only "never observed" (unknown) drops to an empty, fault-free scale.
+      props.view = {
+        ...props.view,
+        meters: {
+          ...props.view.meters!,
+          swr: { ...props.view.meters!.swr, display: { state: 'stale', value: 2.25 } },
+        },
+      };
+      flushSync();
+      expect(ticks()).toBe(6);
+      expect(fills()).toBeGreaterThan(0);
+      expect(fault()).toBe('true');
+
+      props.view = {
+        ...props.view,
+        meters: {
+          ...props.view.meters!,
+          swr: { ...props.view.meters!.swr, display: { state: 'unknown', reason: 'not-observed' } },
+        },
+      };
+      flushSync();
+      expect(ticks()).toBe(6);
+      expect(fills()).toBe(0);
+      expect(fault()).toBe('false');
 
       props.view = {
         ...props.view,
@@ -1417,21 +1438,28 @@ describe('persistent TX instruments', () => {
             if (!el) continue;
             const text = el.textContent ?? '';
             const description = el.getAttribute('aria-label') ?? '';
+            // R29/R32: a stale reading keeps its digits and fill, same as a
+            // current one — idle and never-observed are the only empty-scale
+            // states, and neither shows a placeholder text token.
             if (idle) {
-              expect(text).toContain('IDLE');
-              expect(description).toContain('Not measuring in RX');
+              expect(text).not.toMatch(/IDLE|170/);
+              expect(description).toContain('Not measuring in receive');
               expect(description).not.toMatch(/170|\?/);
-            } else {
-              expect(text).not.toContain('IDLE');
-              if (state === 'stale') expect(text).toContain('STALE');
-              if (state === 'unknown') expect(text).toContain('?');
-              if (indeterminate) expect(description).toContain('RF relevance indeterminate');
-            }
-            if (idle || state !== 'current') {
               expect(el.querySelectorAll(key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toHaveLength(0);
-              expect(el.querySelectorAll('[data-testid="bar-gauge-peak-marker"]')).toHaveLength(0);
               expect(el.getAttribute('data-fault')).not.toBe('true');
+            } else if (state === 'unknown') {
+              expect(text).not.toMatch(/IDLE|170|\?/);
               expect(description).not.toContain('170');
+              expect(el.querySelectorAll(key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]')).toHaveLength(0);
+              expect(el.getAttribute('data-fault')).not.toBe('true');
+            } else {
+              // current or stale (R29): the retained value renders
+              // identically either way. The SWR lower row shows only tick
+              // positions on a ratio scale, never raw digits — pre-existing,
+              // unrelated to this PR — so the digit check is power/alc only.
+              if (key !== 'swr') expect(text).toContain('170');
+              expect(el.querySelectorAll(key === 'swr' ? '[data-lower-fill]' : '[data-gauge-fill]').length).toBeGreaterThan(0);
+              if (indeterminate) expect(description).toContain('RF relevance indeterminate');
             }
           }
         });
@@ -1497,7 +1525,9 @@ it('uses current display calibration while preserving VD/ID/COMP through RX idle
       props.view = { ...props.view, meters: { ...props.view.meters!, rfState: 'receiving',
         power: { ...props.view.meters!.power, relevant: false } } };
       flushSync();
-      expect(target.querySelector('[data-meter="power"]')?.textContent).toContain('IDLE');
+      expect(target.querySelector('[data-meter="power"]')?.textContent).not.toContain('IDLE');
+      expect(target.querySelector('[data-meter="power"] svg')?.getAttribute('aria-label'))
+        .toContain('Not measuring in receive');
       expect(['drainVoltage', 'drainCurrent', 'compression'].map((key) =>
         target.querySelector(`[data-meter="${key}"]`)!.outerHTML)).toEqual(other);
     } finally { unmount(component); }

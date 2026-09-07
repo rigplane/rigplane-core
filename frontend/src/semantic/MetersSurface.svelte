@@ -96,6 +96,7 @@
     {@const bar = frame.projection}
     <div class="meter-tile" data-meter-tile data-meter={bar.key} data-testid={`meter-${bar.key}`}
       data-relevant={bar.relevant} data-observed={bar.observed} data-fault={bar.fault}
+      data-meter-state={bar.state}
       role="group" aria-label={`${bar.label} meter`}>
       {#if bar.gauge}
         {#key resetPeakSeat}<StationMeterBarPlacement {frame} label={bar.label}

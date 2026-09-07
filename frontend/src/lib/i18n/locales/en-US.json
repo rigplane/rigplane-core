@@ -223,6 +223,10 @@
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
   "core.vfo.state.unknown": "unknown",
+
+  "core.meter.state.idle": "Not measuring in receive",
+  "core.meter.state.noReading": "No reading",
+
   "core.vfo.ops.equalize": "Equalize VFOs",
   "core.vfo.ops.swap": "Swap VFOs",
   "core.vfo.ops.quickSplit": "Quick split",

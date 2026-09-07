@@ -1,3 +1,4 @@
+import { t } from '$lib/i18n';
 import { calibratedToSegments } from '../../components-v2/meters/smeter-scale';
 import type {
   DisplayIndicator,
@@ -39,25 +40,32 @@ export function meterFill(field: DisplayValue<number>): number {
     : 0;
 }
 
+// MOR-2425 (R29/R32): a stale reading keeps its digits, same as a current
+// one; only "never observed" and "idle" (not measuring in RX) collapse to
+// an empty scale — no `?`/`STALE`/`IDLE` placeholder token. The accessible
+// description below still names those two states, localized.
 export function telemetryText(field: DisplayTelemetry): string {
   const tx = field.txDisplay;
-  if (!tx) return field.state === 'known' ? String(Number(field.value.toFixed(2))) : '?';
+  if (!tx) {
+    if (field.state === 'known') return String(Number(field.value.toFixed(2)));
+    return field.state === 'unsupported' ? '?' : '';
+  }
   if (!tx.supported) return '?';
-  if (tx.relevance === 'idle') return 'IDLE';
-  if (tx.observation.state === 'stale') return 'STALE';
-  if (tx.observation.state !== 'current') return '?';
-  return `${Number(tx.observation.value.toFixed(2))}${tx.relevance === 'indeterminate' ? ' ?' : ''}`;
+  if (tx.relevance === 'idle') return '';
+  if (tx.observation.state !== 'current' && tx.observation.state !== 'stale') return '';
+  const cue = tx.relevance === 'indeterminate' && tx.observation.state === 'current' ? ' ?' : '';
+  return `${Number(tx.observation.value.toFixed(2))}${cue}`;
 }
 
 export function telemetryDescription(label: string, field: DisplayTelemetry): string {
   const tx = field.txDisplay;
   if (!tx) return `${label}: ${field.state === 'known' ? telemetryText(field)
-    : field.state === 'unsupported' ? 'Unsupported' : 'Not observed'}`;
+    : field.state === 'unsupported' ? 'Unsupported' : t('core.meter.state.noReading')}`;
   if (!tx.supported) return `${label}: Unsupported`;
-  if (tx.relevance === 'idle') return `${label}: Not measuring in RX`;
+  if (tx.relevance === 'idle') return `${label}: ${t('core.meter.state.idle')}`;
   const cue = tx.relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
   return `${label}: ${cue}${tx.observation.state === 'stale' ? 'Stale observation'
-    : tx.observation.state === 'current' ? `Current observation: ${Number(tx.observation.value.toFixed(2))}` : 'Not observed'}`;
+    : tx.observation.state === 'current' ? `Current observation: ${Number(tx.observation.value.toFixed(2))}` : t('core.meter.state.noReading')}`;
 }
 
 function envelope(

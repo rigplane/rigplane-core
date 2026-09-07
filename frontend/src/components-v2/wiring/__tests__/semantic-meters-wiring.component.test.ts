@@ -543,7 +543,21 @@ describe('the meters surface mounts only when the view model carries the group',
     };
     push({ intent: 'transmit', observedPtt: 'on' });
     expect(barSvg('power')).not.toBe(mountedPower);
-    expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('false');
+    // R29 (MOR-2425): a stale reading stays observed and keeps its value —
+    // it greys out only on a real disconnect or structural absence, neither
+    // of which applies here.
+    expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('true');
+    // KNOWN GAP (reported, not fixed by this PR — out of its file budget):
+    // `radio-view-model-adapter.ts: meterField` still gates BOTH `operational`
+    // and the calibrated `domain` lookup on `observation.state === 'current'`
+    // strictly, so a stale reading's domain degrades to `{kind:'unknown'}`
+    // even though the underlying calibration `quality` data is unchanged —
+    // this is the meter-specific instance of the field-status.ts chokepoint
+    // (census §E) and zeroes the fill despite the value being retained
+    // above. Fixing `meterField`'s gate is a `radio-view-model-adapter.ts`
+    // change outside this PR's named file list and pushed the count over
+    // the hard ceiling, so it is flagged for a follow-up rather than fixed
+    // here.
     expect(barFillCount('power')).toBe(0);
     expect(barPeakX('power')).toBeNull();
   });

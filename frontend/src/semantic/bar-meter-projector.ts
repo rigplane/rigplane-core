@@ -1,3 +1,4 @@
+import { t } from '$lib/i18n';
 import {
   alcLevel,
   compLevel,
@@ -109,22 +110,26 @@ export function projectTxMeterPresentation(
   if (relevance === 'idle') {
     return {
       state: 'idle', evidence: { state: 'idle' },
-      value: null, text: 'IDLE', description: 'Not measuring in RX',
+      value: null, text: '', description: t('core.meter.state.idle'),
     };
   }
+  // R29/R32: a stale reading keeps its last value on the scale (digits and
+  // fill), same as a current one — only the aria description and the
+  // caller's `data-meter-state` attribute name it as stale. Anything else
+  // (never observed, or a stray non-numeric state) is an empty scale: no
+  // value, no placeholder glyph — the accessible description names that too.
   const cue = relevance === 'indeterminate' ? 'RF relevance indeterminate. ' : '';
-  const evidence: LevelMeterEvidence = observation.state === 'current'
-    || observation.state === 'stale'
+  const retained = observation.state === 'current' || observation.state === 'stale';
+  const evidence: LevelMeterEvidence = retained
     ? { state: observation.state, value: observation.value }
     : { state: observation.state };
   return {
     state: observation.state,
     evidence,
-    value: observation.state === 'current' ? observation.value : null,
-    text: observation.state === 'stale' ? 'STALE' : observation.state === 'current'
-      ? (relevance === 'indeterminate' ? ' ?' : '') : '?',
+    value: retained ? observation.value : null,
+    text: observation.state === 'current' && relevance === 'indeterminate' ? ' ?' : '',
     description: cue + (observation.state === 'stale' ? 'Stale observation'
-      : observation.state === 'current' ? 'Current observation' : 'Not observed'),
+      : observation.state === 'current' ? 'Current observation' : t('core.meter.state.noReading')),
   };
 }
 
@@ -138,12 +143,13 @@ function projectLevelMeter<Key extends LevelMeterKey>(
   const tx = txObserved ? projectTxMeterPresentation(field, rfState) : null;
   const isObserved = tx ? tx.value !== null : observed(field);
   const value = tx ? tx.value ?? 0 : reading(field);
-  const gauge = isObserved || tx !== null;
-  const formatted = format(value, field.domain);
+  // MOR-2425 (R32): every structurally-present meter draws its gauge frame
+  // — an empty scale (zero fill, no digits) when there is no reading, never
+  // a hidden/placeholder span. Callers only reach this once
+  // `field.availability.structural` is already true.
+  const formatted = isObserved ? format(value, field.domain) : '';
   const stateText = tx?.text ?? '';
-  const displayText = gauge
-    ? tx ? (isObserved ? formatted + stateText : stateText) : formatted
-    : `${label} ?`;
+  const displayText = isObserved ? formatted + stateText : stateText;
   const motionFraction = isObserved ? level(value, field.domain) : null;
   const state: LevelMeterState = tx?.state ?? (isObserved ? 'current' : 'unknown');
   const evidence: LevelMeterEvidence = tx?.evidence
@@ -168,7 +174,10 @@ function projectLevelMeter<Key extends LevelMeterKey>(
     showPeak: peakEligible && isObserved && motionFraction !== null
       && (field.domain === undefined || field.domain.kind === 'engineering'),
     source: field.source,
-    gauge,
+    // Always true: `projectBarMeters`/`projectSwrMeter` only call this once
+    // `field.availability.structural` holds — an unsupported meter never
+    // reaches here, it simply has no tile.
+    gauge: true,
   };
 }
 
