@@ -28,14 +28,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
-import MetersSurface from '../MetersSurface.svelte';
+import MetersSurface from './fixtures/StationMeterInstrumentHostFixture.svelte';
 import { projectBarMeters, type BarMeterKey } from '../bar-meter-projector';
 import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';
 import type {
   Availability, MeterField, MeterRfState, MetersViewModel, MeterValueDomain, RadioViewModel,
 } from '../radio-view-model';
 import { RF_LABEL, RF_MARK } from '../rx-tx-surface';
-import { isAlcFault, isSwrFault } from '../../components-v2/panels/meter-utils';
 import { dimColor } from '../../components-v2/meters/bar-gauge-utils';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
@@ -83,6 +82,8 @@ const SOURCE = readFileSync('src/semantic/MetersSurface.svelte', 'utf8')
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/.*$/gm, '');
 const PROJECTOR_SOURCE = readFileSync('src/semantic/bar-meter-projector.ts', 'utf8');
+const HOST_SOURCE = readFileSync('src/semantic/StationMeterInstrumentHost.svelte', 'utf8');
+const PLACEMENT_SOURCE = readFileSync('src/semantic/StationMeterBarPlacement.svelte', 'utf8');
 
 const AVAIL: Availability = { structural: true, operational: true };
 const RF_STATES: readonly MeterRfState[] = ['receiving', 'transmitting', 'uncertain', 'unknown'];
@@ -176,8 +177,10 @@ function compressor(view: RadioViewModel, value: boolean | 'unknown' | 'no-group
 }
 
 let target: HTMLDivElement;
-beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target); });
-afterEach(() => { target.remove(); });
+let originalMatchMedia: typeof window.matchMedia;
+beforeEach(() => { target = document.createElement('div'); document.body.appendChild(target);
+  originalMatchMedia = window.matchMedia; window.matchMedia = vi.fn().mockReturnValue({ matches: true }); });
+afterEach(() => { target.remove(); window.matchMedia = originalMatchMedia; });
 
 function render(view: RadioViewModel) {
   const component = mount(MetersSurface, { target, props: { view } });
@@ -423,11 +426,9 @@ describe('TX truth reaches this surface only through the fact layer (R9)', () =>
     expect(SOURCE).not.toMatch(/\bptt\b/i);
     expect(SOURCE).not.toMatch(/TxAuthoritySnapshot/);
     expect(SOURCE).not.toMatch(/radioState/);
-    // Exactly one fact input plus the generic continuity boundary. Neither is
-    // a second TX authority or a raw runtime/state input.
-    expect(SOURCE).toMatch(
-      /interface Props\s*\{\s*view:\s*RadioViewModel;\s*continuitySession\?:\s*MeterContinuitySession\s*\|\s*null;\s*\}/,
-    );
+    // Only owner-hosted handles cross this presentation boundary: no raw
+    // authority, runtime, view model, source, or session input is accepted.
+    expect(SOURCE).toMatch(/interface Props\s*\{\s*handles:\s*StationMeterInstrumentHandles;\s*\}/);
   });
 
   // MUTATION KILLED: computing an RF state locally (e.g. from txPermit, or
@@ -491,18 +492,16 @@ describe('the cold-start unknown window renders fail-closed', () => {
 // ── 7. Motion / forced-colors carry-overs (MOR-1249 / 1252 / 1250) ────────
 
 describe('motion and forced-colors mechanisms are reused, not forked', () => {
-  // MUTATION KILLED: a local rAF/interval ballistics loop. Smoothing and
-  // peak-hold — including their `prefers-reduced-motion` behaviour — belong to
-  // the reused SVG meter components (LinearSMeter / BarGauge, both driving
-  // `$lib/utils/smoothing.svelte`'s `createSmoother`, which snaps instead of
-  // animating under reduce). A copy here would be a second, unaudited loop.
+  // MUTATION KILLED: a local rAF/interval ballistics loop. The persistent host
+  // owns canonical signal/bar motion; the SVG meters draw passive hosted frames.
   it('schedules no animation loop of its own', () => {
     expect(SOURCE).not.toMatch(/requestAnimationFrame|setInterval|setTimeout/);
     expect(SOURCE).not.toMatch(/createSmoother|updatePeakHold|peakHoldDisplay/);
   });
 
   it('delegates every gauge to the shipped SVG meter components', () => {
-    expect(SOURCE).toMatch(/import BarGauge from '\.\.\/components-v2\/meters\/BarGauge\.svelte'/);
+    expect(SOURCE).toMatch(/import StationMeterBarPlacement from '\.\/StationMeterBarPlacement\.svelte'/);
+    expect(PLACEMENT_SOURCE).toMatch(/import BarGauge from '\.\.\/components-v2\/meters\/BarGauge\.svelte'/);
     expect(SOURCE).toMatch(/import LinearSMeter from '\.\.\/components-v2\/meters\/LinearSMeter\.svelte'/);
   });
 
@@ -559,7 +558,7 @@ describe('the meter table matches the shipped dock', () => {
 
   it('reads its levels and formatters from the shipped meter-utils', () => {
     expect(PROJECTOR_SOURCE).toMatch(/from '\.\.\/components-v2\/panels\/meter-utils'/);
-    expect(SOURCE).toMatch(/from '\.\/bar-meter-projector'/);
+    expect(HOST_SOURCE).toMatch(/from '\.\/bar-meter-projector'/);
   });
 
   // MOR-2250 (PR 2 of 2): 'SWR' dropped from the expected list — it left
@@ -573,11 +572,10 @@ describe('the meter table matches the shipped dock', () => {
 // ── 9. Peak-hold channel (MOR-1282) — the surface passes it through ────────
 
 describe('BarGauge peak channel (MOR-1282)', () => {
-  it('forwards each keyed bar field source and the existing surface session', () => {
-    const calls = [...SOURCE.matchAll(/<BarGauge([\s\S]*?)\/>/g)];
-    expect(calls).toHaveLength(1);
-    expect(calls[0][1]).toMatch(/source=\{bar\.source\}/);
-    expect(calls[0][1]).toMatch(/session=\{continuitySession\}/);
+  it('keeps source/session private and supplies only hosted frames', () => {
+    expect(SOURCE).not.toMatch(/source=|session=|showPeak=|value=\{bar\.|projection=\{/);
+    expect(SOURCE).toMatch(/<LinearSMeter\s+[\s\S]*?frame=\{signalFrame\.motion\}/);
+    expect(PLACEMENT_SOURCE).toMatch(/<BarGauge frame=\{frame\.motion\}/);
     expect(projectBarMeters(base('transmitting')).map(({ key }) => key)).toEqual([
       'power', 'alc', 'drainCurrent', 'drainVoltage', 'compression',
     ]);
@@ -862,6 +860,7 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
       const replacementCaps = makeFaultCaps();
       replacementCaps.meterCalibrations!.s_meter = REPLACEMENT_S_METER_CAL;
       setCapabilities(replacementCaps);
+      props.view = { ...props.view };
       flushSync();
 
       const replacementTicks = tickXs();
@@ -888,12 +887,12 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
   });
 
   it('creates one shared descriptor while permissioning its S-specific consumers separately', () => {
-    expect(SOURCE.match(/\bprojectSignalMeter\(/g)).toHaveLength(1);
+    expect(HOST_SOURCE.match(/\bprojectSignalMeter\(/g)).toHaveLength(1);
     expect(SOURCE.match(/\brenderSlot\(/g)).toHaveLength(1);
     expect(SOURCE).toMatch(/value:\s*signalProjection\.motionFraction/);
     expect(SOURCE).toMatch(/s9:\s*signalProjection\.crossoverFraction/);
-    expect(SOURCE).toMatch(/projectSignalMeter\([\s\S]*?meters\?\.signal\.domain/);
-    expect(SOURCE).toMatch(/<LinearSMeter[\s\S]*?projection=\{signalProjection\}/);
+    expect(HOST_SOURCE).toMatch(/projectSignalMeter\([\s\S]*?meters\.signal\.domain/);
+    expect(SOURCE).toMatch(/<LinearSMeter[\s\S]*?frame=\{signalFrame\.motion\}/);
     expect(SOURCE).toMatch(/zones=\{display\?\.display\?\.zones\}/);
     expect(SOURCE).toMatch(/display=\{signalDisplay\?\.display\s*\?\?\s*undefined\}/);
     expect(SOURCE).not.toMatch(/\bsLevel\(/);
@@ -1011,21 +1010,11 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
     });
   });
 
-  // MUTATION KILLED (verifier mutant M6a, verify-MOR-1345): changing `rawOf`'s
-  // unknown-fallback to a value either predicate would fault on. Today the
-  // whole meters suite stays GREEN through such a change, because the
-  // `isObserved` conjunct above absorbs it — so the fallback is the silent
-  // assumption the "unknown never faults" property actually rests on, and
-  // nothing else in the repo pins it. Source-scanned rather than behavioural
-  // because `rawOf` is module-private to the component: a behavioural test
-  // cannot observe a fallback the render path never reaches.
-  it('pins rawOf\'s unknown-fallback to a value neither fault predicate fires on', () => {
-    const fallback = /reading\.status === 'known' \? f\.reading\.value : (-?\d+(?:\.\d+)?)/.exec(SOURCE);
-    expect(fallback, 'rawOf no longer has a numeric literal fallback').not.toBeNull();
-    const raw = Number(fallback![1]);
-    expect(raw).toBe(0);
-    expect(isSwrFault(raw)).toBe(false);
-    expect(isAlcFault(raw)).toBe(false);
+  // Projection occurs in the host, so this presentation surface has no raw
+  // value fallback or local fault predicate.
+  it('has no surface-local raw fallback that can feed fault predicates', () => {
+    expect(SOURCE).not.toMatch(/rawOf|isSwrFault|isAlcFault/);
+    expect(HOST_SOURCE).not.toMatch(/isSwrFault|isAlcFault/);
   });
 
   // Threads the boolean through to the REAL LinearSMeter (no stub) — mirrors
@@ -1047,7 +1036,7 @@ describe('SWR/ALC fault highlighting reuses the dock\'s own threshold', () => {
   // PEAK_DECAY_MS parity test above (block 10).
   it('the shared projector and MetersDockPanel import their fault predicates from shared meter-utils', () => {
     const dockSource = readFileSync('src/components-v2/panels/MetersDockPanel.svelte', 'utf8');
-    expect(SOURCE).toMatch(/projectSwrMeter/);
+    expect(HOST_SOURCE).toMatch(/projectSwrMeter/);
     expect(PROJECTOR_SOURCE).toMatch(/import\s*\{[^}]*isAlcFault[^}]*isSwrFault[^}]*\}\s*from\s*'\.\.\/components-v2\/panels\/meter-utils'/);
     expect(dockSource).toMatch(/import\s*\{[^}]*isSwrFault[^}]*\}\s*from\s*'\.\/meter-utils'/);
     expect(dockSource).toMatch(/import\s*\{[^}]*isAlcFault[^}]*\}\s*from\s*'\.\/meter-utils'/);

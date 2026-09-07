@@ -1,20 +1,15 @@
 <script module lang="ts">
   import type { MeterField } from './radio-view-model';
-  import {
-    projectSignalMeter,
-    type SignalMeterProjection,
-  } from '../components-v2/meters/smeter-scale';
+  import type { SignalMeterProjection } from '../components-v2/meters/smeter-scale';
   import { renderSlot } from './design-language-renderers';
   import type { LowerScaleDescriptor } from '../components-v2/meters/LinearSMeter.svelte';
-  import type { SwrMeterProjection } from './bar-meter-projector';
+  import type { StationLevelMeterFrame } from './StationMeterInstrumentHost.svelte';
 
   /** Level 1 — does this radio HAVE the meter at all. */
   const present = (f: MeterField): boolean => f.availability.structural;
   /** Level 2 — is it readable now AND actually read. */
   const observed = (f: MeterField): boolean =>
     f.availability.operational && f.reading.status === 'known';
-  const rawOf = (f: MeterField): number => (f.reading.status === 'known' ? f.reading.value : 0);
-
   /**
    * MOR-2250 (PR 2 of 2): the bottom scale row of the shared S-meter bar —
    * the real IC-7300's second, radio-selected TX-meter scale, fixed to SWR
@@ -33,11 +28,12 @@
     { value: 1, label: '∞' },
   ] as const;
 
-  function swrLowerScale(projection: SwrMeterProjection): LowerScaleDescriptor {
+  function swrLowerScale(frame: StationLevelMeterFrame<'swr'>): LowerScaleDescriptor {
+    const projection = frame.projection;
     return {
       label: 'SWR',
       ticks: projection.ratioScale ? SWR_LOWER_SCALE_TICKS : [],
-      valueFraction: projection.motionFraction ?? 0,
+      valueFraction: frame.motion.smoothedFraction,
       fault: projection.fault,
       relevant: projection.relevant,
       stateText: projection.state === 'current' && !projection.ratioScale
@@ -71,112 +67,88 @@
 </script>
 
 <script lang="ts">
-  import BarGauge from '../components-v2/meters/BarGauge.svelte';
   import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
-  import type { RadioViewModel } from './radio-view-model';
-  import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import { RF_LABEL, RF_MARK } from './rx-tx-surface';
-  import { projectBarMeters, projectSwrMeter } from './bar-meter-projector';
+  import StationMeterBarPlacement from './StationMeterBarPlacement.svelte';
+  import type {
+    StationMeterInstrumentHandles, StationSignalMeterFrame,
+  } from './StationMeterInstrumentHost.svelte';
+  import type { ActionRendererSeat } from '../primitives/control-instruments/control-instrument-renderer.svelte';
+  import type { MeterRfState } from './radio-view-model';
 
   interface Props {
-    view: RadioViewModel;
-    continuitySession?: MeterContinuitySession | null;
+    handles: StationMeterInstrumentHandles;
   }
-  let { view, continuitySession }: Props = $props();
-
-  /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine,
-   *  risk R3): a radio that reports no meters gets no empty dock, and no zone
-   *  schema had to learn about it. */
-  let meters = $derived(view.meters);
-
-  let signalProjection = $derived(projectSignalMeter(
-    meters && observed(meters.signal) ? rawOf(meters.signal) : null,
-    meters?.signal.domain,
-  ));
-  let barMeters = $derived(projectBarMeters(view));
-  let swrProjection = $derived(projectSwrMeter(view));
-
-  /**
-   * The active design language's `meters` descriptor for this render, or
-   * `null` when no language is active, the language declares no `meters`
-   * renderer, or its descriptor is missing the `MeterDisplay` quintet.
-   *
-   * MOR-2255: hoisted out of the S-meter branch so the S-meter tile
-   * (`attributes` + `display`) and every `BarGauge` tile (`display.zones`)
-   * read the SAME descriptor from ONE `renderSlot` call. Each consumer falls
-   * back to its own component default when this is `null`.
-   */
-  let display = $derived(meters ? meterDisplay(signalProjection) : null);
-  /** Explicit raw/unknown domains keep the shared bar palette but receive no
-   * S-specific language geometry or annotations. A non-null crossover also
-   * preserves the pre-MOR-2425 omitted-domain compatibility path. */
-  let signalDisplay = $derived(
-    signalProjection.crossoverFraction === null ? null : display,
-  );
-
+  let { handles }: Props = $props();
 </script>
 
-{#if meters}
+{#snippet station(
+  signalFrame: StationSignalMeterFrame | null, signalProjection: SignalMeterProjection | null,
+  swrFrame: StationLevelMeterFrame<'swr'> | null,
+  rfState: MeterRfState,
+  presentGroup: boolean,
+)}
+{#if presentGroup}
+  {@const display = signalProjection ? meterDisplay(signalProjection) : null}
+  {@const signalDisplay = signalProjection?.crossoverFraction == null ? null : display}
+  {#snippet level(frame: StationLevelMeterFrame, resetPeakSeat?: ActionRendererSeat)}
+    {@const bar = frame.projection}
+    <div class="meter-tile" data-meter-tile data-meter={bar.key} data-testid={`meter-${bar.key}`}
+      data-relevant={bar.relevant} data-observed={bar.observed} data-fault={bar.fault}
+      role="group" aria-label={`${bar.label} meter`}>
+      {#if bar.gauge}
+        {#key resetPeakSeat}<StationMeterBarPlacement {frame} label={bar.label}
+          displayValue={bar.displayText} accessibleDescription={bar.accessibleDescription}
+          compact fault={bar.fault} zones={display?.display?.zones} {resetPeakSeat} />{/key}
+      {:else}<span class="meter-unknown">{bar.displayText}</span>{/if}
+    </div>
+  {/snippet}
+  {#snippet power(frame: StationLevelMeterFrame<'power'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
+  {#snippet alc(frame: StationLevelMeterFrame<'alc'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
+  {#snippet drainCurrent(frame: StationLevelMeterFrame<'drainCurrent'>, seat?: ActionRendererSeat)}{@render level(frame, seat)}{/snippet}
+  {#snippet drainVoltage(frame: StationLevelMeterFrame<'drainVoltage'>)}{@render level(frame)}{/snippet}
+  {#snippet compression(frame: StationLevelMeterFrame<'compression'>)}{@render level(frame)}{/snippet}
   <section
     class="meters-surface" data-testid="meters-surface"
-    data-rf-state={meters.rfState} aria-label="Station meters"
+    data-rf-state={rfState} aria-label="Station meters"
   >
     <p class="meters-rf" data-testid="meters-rf">
-      <span data-testid="meters-rf-mark">{RF_MARK[meters.rfState]}</span>
-      <span data-testid="meters-rf-label">{RF_LABEL[meters.rfState]}</span>
+      <span data-testid="meters-rf-mark">{RF_MARK[rfState]}</span>
+      <span data-testid="meters-rf-label">{RF_LABEL[rfState]}</span>
     </p>
 
-    {#if present(meters.signal) || present(meters.swr)}
+    {#if signalFrame !== null}
+      {@const field = signalFrame.field}
       <div
-        class="meter-tile" data-meter-tile data-meter={present(meters.signal) ? "signal" : "swr"} data-testid={present(meters.signal) ? "meter-signal" : "meter-swr"}
-        data-relevant={meters.signal.relevant} data-observed={observed(meters.signal)}
-        role="group" aria-label={present(meters.signal) ? "S meter" : "SWR meter"}
+        class="meter-tile" data-meter-tile data-meter={present(field) ? "signal" : "swr"} data-testid={present(field) ? "meter-signal" : "meter-swr"}
+        data-relevant={field.relevant} data-observed={observed(field)}
+        role="group" aria-label={present(field) ? "S meter" : "SWR meter"}
         {...signalDisplay?.attributes ?? {}}
       >
         <LinearSMeter
-          projection={signalProjection} label="S" compact
-          mainPresent={present(meters.signal)}
+          frame={signalFrame.motion} label="S" compact
+          mainPresent={present(field)}
           display={signalDisplay?.display ?? undefined}
-          lowerScale={swrProjection ? swrLowerScale(swrProjection) : undefined}
-          relevant={meters.signal.relevant}
-          source={meters.signal.source}
-          session={continuitySession}
+          lowerScale={swrFrame ? swrLowerScale(swrFrame) : undefined}
+          relevant={field.relevant}
         />
       </div>
     {/if}
-
-    {#each barMeters as bar (bar.key)}
-        <div
-          class="meter-tile" data-meter-tile data-meter={bar.key} data-testid={`meter-${bar.key}`}
-          data-relevant={bar.relevant} data-observed={bar.observed} data-fault={bar.fault}
-          role="group" aria-label={`${bar.label} meter`}
-        >
-          {#if bar.gauge}
-            <!-- MOR-2255: `zones` comes from the SAME `display` descriptor
-                 the S-meter above reads, so every gauge on this surface is
-                 painted by one language. `undefined` (no language, or a
-                 descriptor without the quintet) falls back to `BarGauge`'s
-                 own `DEFAULT_ZONES`. -->
-            <BarGauge
-              value={bar.motionFraction} label={bar.label}
-              displayValue={bar.displayText}
-              accessibleDescription={bar.accessibleDescription}
-              compact showPeak={bar.showPeak} fault={bar.fault}
-              zones={display?.display?.zones}
-              source={bar.source} session={continuitySession}
-            />
-          {:else}
-            <span class="meter-unknown">{bar.displayText}</span>
-          {/if}
-        </div>
-    {/each}
+    {@render handles.power(power)}
+    {@render handles.alc(alc)}
+    {@render handles.drainCurrent(drainCurrent)}
+    {@render handles.drainVoltage(drainVoltage)}
+    {@render handles.compression(compression)}
   </section>
 {/if}
+{/snippet}
+
+{@render handles.signal(station)}
 
 <style>
   /* Structure only — a design language owns the palette and must never become
-     the sole state channel (MOR-977). Nothing here moves: the gauges own their
-     own ballistics and honour reduced motion themselves. */
+     the sole state channel (MOR-977). The persistent station host owns motion;
+     these gauges only draw its passive frames. */
   .meters-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .meters-rf { display: flex; align-items: baseline; gap: 0.4ch; margin: 0; font-weight: 700; }
   .meter-tile { display: block; }

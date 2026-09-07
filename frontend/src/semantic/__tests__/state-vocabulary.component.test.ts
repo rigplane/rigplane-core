@@ -26,7 +26,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import MetersSurface from '../MetersSurface.svelte';
+import MetersSurface from './fixtures/StationMeterInstrumentHostFixture.svelte';
 import RxTxSurface from '../RxTxSurface.svelte';
 import { topologyFixtures, withMeters } from '../fixtures/topologies';
 import { BLOCKED_LABEL, RF_LABEL, SESSION_LABEL, type TxAuthoritySnapshot } from '../rx-tx-surface';

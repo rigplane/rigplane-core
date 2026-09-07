@@ -579,8 +579,8 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(target.querySelectorAll('.dsp-toggle, .dsp-choice')).toHaveLength(0);
     for (const label of external) expect(q(`[data-testid="external-${label}"]`)).toBeNull();
     expect(ranges()).toHaveLength(7);
-    // Receiver + AF + accepted RF level host + the single finite-renderer fan-in.
-    expect(h.authoritySubscribers.size).toBe(4);
+    // Receiver + AF + RF level + station meter hosts + the single finite-renderer fan-in.
+    expect(h.authoritySubscribers.size).toBe(5);
   });
 
   it.each([

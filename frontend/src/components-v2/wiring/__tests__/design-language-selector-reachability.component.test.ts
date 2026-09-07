@@ -16,8 +16,8 @@
  * declarations barrel, `presentation/languages/declarations`, registers
  * them — imported here transitively through `VfoSurface.svelte` and
  * explicitly below so the registration is not left to that transitive
- * chain), this file mounts the REAL semantic surfaces — `VfoSurface`,
- * `RxTxSurface`, `MetersSurface` directly, plus `SemanticRadioSurfaces`
+ * chain), this file exercises the REAL semantic surfaces — `VfoSurface`,
+ * `RxTxSurface`, `MetersSurface` through its real station-host fixture, plus `SemanticRadioSurfaces`
  * (the only component that emits `.semantic-surfaces`/`.channel-strip`) —
  * across a battery of real states, and asks the REAL DOM whether each
  * selector in that language's own `<id>.css` matches at least one element,
@@ -98,7 +98,7 @@ import type { MeterField, RadioViewModel } from '../../../semantic/radio-view-mo
 import { topologyFixtures, withMeters } from '../../../semantic/fixtures/topologies';
 import VfoSurface from '../../../semantic/VfoSurface.svelte';
 import RxTxSurface from '../../../semantic/RxTxSurface.svelte';
-import MetersSurface from '../../../semantic/MetersSurface.svelte';
+import MetersSurface from '../../../semantic/__tests__/fixtures/StationMeterInstrumentHostFixture.svelte';
 
 const h = vi.hoisted(() => ({
   state: null as ServerState | null,
@@ -342,7 +342,7 @@ const SCENES: readonly Scene[] = [
   {
     // The only scene that reaches `.semantic-surfaces`/`.channel-strip` —
     // the two selectors both studioline.css and fieldline.css declare that
-    // no directly-mounted VfoSurface/RxTxSurface/MetersSurface ever emits.
+    // no directly-mounted VfoSurface/RxTxSurface or hosted meter fixture emits.
     name: 'semantic-radio-surfaces (dual strips)',
     render() {
       const txHarness = new ManagedAppTxHarness();
