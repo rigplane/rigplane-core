@@ -40,13 +40,14 @@ vi.mock('$lib/runtime', () => ({
       h.sessionSubscriber = handler;
       return () => { if (h.sessionSubscriber === handler) h.sessionSubscriber = null; };
     },
+    authoritySubscribers: h.authoritySubscribers,
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
-      h.authoritySubscribers.add(handler);
+      this.authoritySubscribers.add(handler);
       handler({
         state: h.state, caps: h.caps, session: h.session,
         rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
       });
-      return () => { h.authoritySubscribers.delete(handler); };
+      return () => { this.authoritySubscribers.delete(handler); };
     },
     get audio() { return h.audio; },
     get connectionAudio() { return false; },

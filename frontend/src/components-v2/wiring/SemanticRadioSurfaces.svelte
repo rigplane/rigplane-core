@@ -959,7 +959,7 @@
     {/if}
   {/snippet}
   <ReceiverInstrumentHost
-    subscribeControlAuthority={runtime.subscribeControlAuthority}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
     {pendingFrequencyHz}
     onTuneFrequency={tuneFrequency}
     vfoOperations={receiverVfoOperations}
