@@ -44,6 +44,7 @@ import type {
 } from '../radio-view-model';
 import KeyboardHandler from '../../components-v2/layout/KeyboardHandler.svelte';
 import type { KeyboardConfig } from '../../components-v2/layout/keyboard-map';
+import BandInstrumentHostFixture from './fixtures/BandInstrumentHostFixture.svelte';
 
 const SOURCE = readFileSync('src/semantic/BandSurface.svelte', 'utf8');
 /** Comments stripped, so the file's own doctrine prose can never be what a
@@ -72,12 +73,14 @@ beforeEach(() => { target = document.createElement('div'); document.body.appendC
 afterEach(() => { target.remove(); });
 
 type Handlers = {
-  onSelectBand?: (name: string, defaultHz: number, bsrCode: number | null) => void;
+  onSelectBand?: (name: string) => void;
   onEnterFrequency?: (frequencyHz: number) => void;
 };
 
 function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(BandSurface, { target, props: { view, ...handlers } });
+  const component = mount(BandInstrumentHostFixture, {
+    target, props: { view, presentation: 'surface', ...handlers },
+  });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -111,7 +114,7 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
   // import beyond `./radio-view-model` — pure operator-wording lookup
   // (`t()`), never a second fact derivation. See the two tests below for
   // the narrowed guard this replaces.
-  it('imports only facts, i18n wording and control behavior', () => {
+  it('imports only facts, i18n wording and Band instrument types', () => {
     // MOR-1448 review F6: quote-agnostic — a double-quoted import must be
     // caught exactly like a single-quoted one, not slip past a single-quote
     // -only pattern.
@@ -119,9 +122,9 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
     expect(specifiers.length).toBeGreaterThan(0);
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './radio-view-model',
-      '../primitives/control-instruments/control-instrument-behavior',
+      './band-instruments',
     ]);
-    expect(CODE).toContain('bindAbsoluteChoiceInstrument');
+    expect(CODE).toContain('BandInstrumentHandles');
   });
 
   it('never mentions the permit derivation, the band plan or a capability read', () => {
@@ -149,10 +152,10 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
     }
   });
 
-  it('takes exactly one state prop — the view model — plus intent callbacks', () => {
+  it('declares view, instrument placement, and frequency-entry intent props', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1]))
-      .toEqual(['view', 'onSelectBand', 'onEnterFrequency']);
+      .toEqual(['view', 'handles', 'controlLayout', 'onEnterFrequency']);
   });
 
   it('renders nothing at all when the radio declares no band plan', () => {
@@ -585,7 +588,7 @@ describe('defaultHzTxPermit is never presented as band-wide permission (carry-fo
     expect(r.btn('choice-MW')!.disabled).toBe(false);
     r.btn('choice-MW')!.click();
     flushSync();
-    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('MW', 1000000, null);
+    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('MW');
     r.dispose();
   });
 
@@ -604,15 +607,17 @@ describe('defaultHzTxPermit is never presented as band-wide permission (carry-fo
     }
     r.btn('choice-20m')!.click();
     flushSync();
-    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m', 14195000, 5);
+    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m');
     r.dispose();
   });
 
   it('re-resolves the current offered payload when an existing band button invokes', () => {
     const facts = new SvelteMap([['view', base()]]);
     const onSelectBand = vi.fn();
-    const component = mount(BandSurface, {
-      target, props: { get view() { return facts.get('view')!; }, onSelectBand },
+    const component = mount(BandInstrumentHostFixture, {
+      target, props: {
+        get view() { return facts.get('view')!; }, presentation: 'surface', onSelectBand,
+      },
     });
     flushSync();
     const button = target.querySelector<HTMLButtonElement>('[data-testid="band-choice-20m"]')!;
@@ -623,7 +628,7 @@ describe('defaultHzTxPermit is never presented as band-wide permission (carry-fo
     flushSync();
     button.click();
     flushSync();
-    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m', 14225000, 7);
+    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m');
     unmount(component);
   });
 });
@@ -894,7 +899,7 @@ describe('a receiver-scoped write needs a known active receiver (MOR-1322 B1 cla
     expect(r.btn('choice-20m')!.disabled).toBe(false);
     r.btn('choice-20m')!.click();
     flushSync();
-    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m', 14195000, 5);
+    expect(onSelectBand).toHaveBeenCalledExactlyOnceWith('20m');
     r.dispose();
   });
 });

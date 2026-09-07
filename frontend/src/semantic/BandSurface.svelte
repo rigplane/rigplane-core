@@ -52,10 +52,10 @@
 -->
 <script module lang="ts">
   import { t } from '$lib/i18n';
-  import type {
-    BandChoice, BandField, DisabledReasonCode, RadioViewModel,
-  } from './radio-view-model';
-  import { bindAbsoluteChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
+  import type { BandField, DisabledReasonCode, RadioViewModel } from './radio-view-model';
+  import type { BandControlLayout, BandInstrumentHandles } from './band-instruments';
+  import { mhz } from './band-instruments';
+  export { defaultPermitLabel, mhz } from './band-instruments';
 
   /** The ONE rendering of "not measured". Never a band name, never a number. */
   export const UNKNOWN_TEXT = '—';
@@ -108,26 +108,6 @@
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
   export const isCurrent = (f: BandField<string>, name: string): boolean =>
     f.reading.status === 'known' && f.reading.value === name;
-
-  /** Display only, never parsed back — the entry field works in whole Hz so a
-   *  boundary comparison can never lose a digit to a decimal round-trip. */
-  export const mhz = (hz: number): string => `${(hz / 1e6).toFixed(3)} MHz`;
-  /** MOR-1474: catalog keys behind each `defaultHzTxPermit.status` tri-state
-   *  word — the same F4 doctrine as `REASON_KEY` above: the verdict stays
-   *  explicit, but as a per-status key rather than the raw English enum
-   *  interpolated into (in particular) the ru-RU label. */
-  const DEFAULT_PERMIT_STATUS_KEY: Record<BandChoice['defaultHzTxPermit']['status'], string> = {
-    allowed: 'core.band.tx.defaultPermit.status.allowed',
-    denied: 'core.band.tx.defaultPermit.status.denied',
-    unknown: 'core.band.tx.defaultPermit.status.unknown',
-  };
-  /** Rule (2): the permit is spelled WITH the frequency it was sampled at, so
-   *  the label cannot be read as a claim about the whole band. */
-  export const defaultPermitLabel = (choice: BandChoice): string =>
-    t('core.band.tx.defaultPermit.label', {
-      frequency: mhz(choice.defaultHz),
-      status: t(DEFAULT_PERMIT_STATUS_KEY[choice.defaultHzTxPermit.status]),
-    });
 
   /**
    * MOR-1462 (owner ruling B) — the standard ham direct-entry heuristic. A
@@ -228,10 +208,11 @@
 <script lang="ts">
   interface Props {
     view: RadioViewModel;
-    onSelectBand?: (name: string, defaultHz: number, bsrCode: number | null) => void;
+    handles: BandInstrumentHandles;
+    controlLayout?: BandControlLayout;
     onEnterFrequency?: (frequencyHz: number) => void;
   }
-  let { view, onSelectBand, onEnterFrequency }: Props = $props();
+  let { view, handles, controlLayout, onEnterFrequency }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let band = $derived(view.band);
@@ -263,15 +244,6 @@
     entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '',
   );
 
-  const bandChoiceBehavior = bindAbsoluteChoiceInstrument<string>(() => ({
-    choices: band?.bandChoices.map((choice) => choice.name) ?? [],
-    selected: band?.currentBand.reading.status === 'known' ? band.currentBand.reading.value : undefined,
-    available: receiverKnown && band !== undefined,
-    invoke: (name) => {
-      const choice = band?.bandChoices.find((candidate) => candidate.name === name);
-      if (choice) onSelectBand?.(choice.name, choice.defaultHz, choice.bsrCode);
-    },
-  }));
   function commitFrequency(): void {
     if (!entryReady || interpretedHz === null) return;
     onEnterFrequency?.(interpretedHz);
@@ -350,24 +322,7 @@
       {/if}
     </p>
 
-    {#if band.bandChoices.length > 0}
-      <div class="band-row" role="group" aria-label="Band select" data-testid="band-choices">
-        {#each band.bandChoices as choice (choice.name)}
-          <!-- NOT gated on the permit: picking a band is a TUNING action and a
-               band with no TX allocation stays perfectly receivable. The permit
-               is a label here (rule 2), never a tuning gate. -->
-          <button
-            type="button" class="band-choice" data-testid={`band-choice-${choice.name}`}
-            data-default-permit={choice.defaultHzTxPermit.status}
-            aria-pressed={bandChoiceBehavior.isSelected(choice.name)}
-            disabled={!bandChoiceBehavior.available}
-            onclick={() => bandChoiceBehavior.invoke(choice.name)}
-          >{choice.name}
-            <small data-testid={`band-choice-permit-${choice.name}`}
-            >{defaultPermitLabel(choice)}</small></button>
-        {/each}
-      </div>
-    {/if}
+    {#if controlLayout}{@render controlLayout(handles)}{:else}{@render handles.bandChoice()}{/if}
 
     <label class="band-row" data-testid="band-entry" data-bounds={boundsKnown}>
       <span class="band-name">FREQ</span>
@@ -413,9 +368,8 @@
   .band-surface { display: flex; flex-direction: column; gap: 0.25rem; }
   .band-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
   .band-name { min-width: 7ch; }
-  .band-choice[aria-pressed='true'] { font-weight: 700; }
   /* Second channel beside `data-observed`/`data-tx`, never the only one: the
      rendered word itself is the primary one and survives forced-colors. */
   [data-observed='false'] { font-style: italic; }
-  button:disabled, input:disabled { cursor: not-allowed; }
+  input:disabled { cursor: not-allowed; }
 </style>

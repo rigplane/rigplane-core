@@ -597,6 +597,29 @@ describe('RadioLayout structure', () => {
   });
 });
 
+describe('Band choice placement', () => {
+  it.each([
+    ['desktop-v2', true],
+    ['sdr-test', false],
+  ] as const)('%s renders one choice before the one entry', (skinId, independent) => {
+    rt.state = structuredClone(stateFixture);
+    rt.caps = structuredClone(capsFixture);
+    const t = mountLayout(skinId);
+    const choices = t.querySelectorAll('[data-testid="band-choices"]');
+    const entries = t.querySelectorAll('[data-testid="band-entry"]');
+    const grid = t.querySelector('[data-testid="band-control-grid"]');
+    expect(choices).toHaveLength(1);
+    expect(entries).toHaveLength(1);
+    expect(grid !== null).toBe(independent);
+    if (independent) {
+      expect(grid?.querySelector('[data-field="bandChoice"] [data-testid="band-choices"]'))
+        .not.toBeNull();
+    }
+    expect(choices[0]!.compareDocumentPosition(entries[0]!) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+});
+
 // MOR-1369 (v3-rework S6b-1) — the SpectrumPanel `hideScopeControls`
 // suppression channel. `RadioLayout` reuses the SAME `declared` set the
 // MOR-1364 (S6-pre) channel already derives (no second derivation), so this

@@ -53,6 +53,8 @@
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import AntennaSurface from '../../semantic/AntennaSurface.svelte';
   import BandSurface from '../../semantic/BandSurface.svelte';
+  import BandInstrumentHost from '../../semantic/BandInstrumentHost.svelte';
+  import type { BandControlLayout } from '../../semantic/band-instruments';
   import DspSurface, {
     type DspLevelField, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
@@ -611,6 +613,12 @@
     topologyId: string;
     activeReceiver: 'MAIN' | 'SUB' | 'unknown';
   }>;
+  type BandFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
   type VfoFiniteAuthority = Readonly<{
     sessionEpoch: number;
     providerGeneration: number;
@@ -721,6 +729,26 @@
         ? model.activeReceiver.receiver : 'unknown',
     });
   }
+  function bandFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): BandFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    if (model?.band === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
   const sameScopeFiniteAuthority = (
     left: ScopeFiniteAuthority | null | undefined,
     right: ScopeFiniteAuthority | null,
@@ -771,6 +799,16 @@
         && left.topologyId === right.topologyId
         && left.activeReceiver === right.activeReceiver
   );
+  const sameBandFiniteAuthority = (
+    left: BandFiniteAuthority | null | undefined,
+    right: BandFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
   const readSelectedFiniteAppearance = 'getSelectedFiniteControlAppearance' in componentKitActivation
     ? componentKitActivation.getSelectedFiniteControlAppearance : undefined;
   const selectedFiniteAppearance = readSelectedFiniteAppearance?.();
@@ -779,11 +817,13 @@
   let dspFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let vfoFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let filterFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let bandFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
   let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
   let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
   let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
   let lastFilterFiniteAuthority: FilterFiniteAuthority | null | undefined;
+  let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
   const unsubscribeScopeFiniteAuthority = selectedFiniteAppearance === undefined ? undefined
     : runtime.subscribeControlAuthority((publication) => {
       const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
@@ -819,6 +859,13 @@
         lastFilterFiniteAuthority = nextFilter;
         filterFiniteRendererContext = nextFilter === null ? null : createFiniteRendererContext();
       }
+      const nextBand = bandFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameBandFiniteAuthority(lastBandFiniteAuthority, nextBand)) {
+        lastBandFiniteAuthority = nextBand;
+        bandFiniteRendererContext = nextBand === null ? null : createFiniteRendererContext();
+      }
     });
   onDestroy(() => unsubscribeScopeFiniteAuthority?.());
   let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
@@ -838,6 +885,10 @@
   let filterFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: filterFiniteRendererContext,
+    });
+  let bandFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: bandFiniteRendererContext,
     });
 
   let scopeFrameSource = $derived(
@@ -1189,14 +1240,19 @@
    * which hardcodes `receiver: 0` and would tune MAIN while SUB is active.
    * The BSR path stays the shipped handler untouched.
    */
-  function selectBand(name: string, defaultHz: number, bsrCode: number | null): void {
-    const active = view?.activeReceiver;
-    if (active?.status !== 'known') return;
+  function selectBand(name: string): void {
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const model = toRadioViewModel(state, caps);
+    const authority = bandFiniteAuthority(state, caps, session);
+    const active = model?.activeReceiver;
+    const choice = model?.band?.bandChoices.find(candidate => candidate.name === name);
+    if (authority === null || active?.status !== 'known'
+      || authority.activeReceiver !== active.receiver || choice === undefined) return;
     // MOR-1425 review round 2 (B1 residual): this bandless fallback is an
     // ABSOLUTE band default, not a step from the current frequency — 'jump'
     // so a hot digit-tuning burst on this receiver never absorbs it.
-    if (bsrCode !== null) band.onBandSelect(name, defaultHz, bsrCode);
-    else tuneFrequency(active.receiver, defaultHz, 'jump');
+    if (choice.bsrCode !== null) band.onBandSelect(choice.name, choice.defaultHz, choice.bsrCode);
+    else tuneFrequency(active.receiver, choice.defaultHz, 'jump');
   }
   function enterFrequency(frequencyHz: number): void {
     const active = view?.activeReceiver;
@@ -1284,6 +1340,10 @@
     onFilterChange={filterIntents.onFilterChange}
   >
   {#snippet children(filterInstruments)}
+  <BandInstrumentHost
+    {...bandFiniteRendererSelection} {view} onSelectBand={selectBand}
+  >
+  {#snippet children(bandInstruments)}
   <DspInstrumentHost
     {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr}
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
@@ -1758,13 +1818,13 @@
     the dual absence is pinned by name in
     `__tests__/semantic-band-wiring.component.test.ts`.
 
-    It takes NO authority snapshot: the TX permit it renders is already decided
-    inside `view.band` by the one shipped derivation, and this component has no
-    second one to offer.
+    Its finite renderer context follows the shared synchronous control-authority
+    publication. The invoke path below independently re-reads that authority
+    before resolving the named choice and receiver.
   -->
-  {#snippet bandSurface()}
+  {#snippet bandSurface(controlLayout?: BandControlLayout)}
     {#if view?.band}
-      <BandSurface {view} onSelectBand={selectBand} onEnterFrequency={enterFrequency} />
+      <BandSurface {view} handles={bandInstruments} {controlLayout} onEnterFrequency={enterFrequency} />
     {/if}
   {/snippet}
 
@@ -1952,8 +2012,9 @@
     {#snippet body()}{@render dspSurface(finiteLayout)}{/snippet}
     {@render zoned('dsp', view?.dsp !== undefined, body, allowBare)}
   {/snippet}
-  {#snippet hostedBand(allowBare = allowBareSurfaces)}
-    {@render zoned('band', view?.band !== undefined, bandSurface, allowBare)}
+  {#snippet hostedBand(allowBare = allowBareSurfaces, controlLayout?: BandControlLayout)}
+    {#snippet body()}{@render bandSurface(controlLayout)}{/snippet}
+    {@render zoned('band', view?.band !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedAntenna(allowBare = allowBareSurfaces)}
     {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBare)}
@@ -2176,6 +2237,8 @@
   {/if}
   {/snippet}
   </DspInstrumentHost>
+  {/snippet}
+  </BandInstrumentHost>
   {/snippet}
   </FilterInstrumentHost>
   {/snippet}

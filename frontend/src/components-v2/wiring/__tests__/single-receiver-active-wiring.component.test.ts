@@ -140,6 +140,7 @@ const BAND_PLAN = [{
 function singleRxLiveState(over: Partial<ServerState> = {}): ServerState {
   const paths = ['split', 'dualWatch', 'txTarget', 'main.freqHz', 'main.mode', 'main.filter'];
   return {
+    providerGeneration: 1,
     active: 'MAIN', split: false, dualWatch: false, ptt: false,
     txTarget: { status: 'known', receiver: 'MAIN', slot: null, frequencyHz: 14250000 },
     main: {
@@ -152,6 +153,7 @@ function singleRxLiveState(over: Partial<ServerState> = {}): ServerState {
 }
 
 const singleRxCaps = (freqRanges: unknown[]): Capabilities => ({
+  providerGeneration: 1,
   model: 'IC-7300', scope: false, audio: true, tx: true,
   capabilities: ['audio', 'tx'],
   receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected',
