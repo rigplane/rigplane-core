@@ -192,6 +192,35 @@ describe('ReceiverInstrumentHost', () => {
     expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 18_100_001);
   });
 
+  it.each([
+    ['disconnected', 'disconnected', -1, 1, 1, true],
+    ['connecting', 'connecting', 1, 1, 1, true],
+    ['reconnecting', 'reconnecting', 1, 1, 1, true],
+    ['invalid epoch', 'connected', -1, 1, 1, true],
+    ['invalid state generation', 'connected', 1, -1, 1, false],
+    ['invalid capability generation', 'connected', 1, 1, -1, false],
+    ['mismatched generations', 'connected', 1, 1, 2, false],
+  ] as const)('installs inert structural owners for initial %s authority',
+    (_name, sessionState, epoch, generation, capsGeneration, readingsKnown) => {
+      const publisher = new Publisher(publication({ sessionState, epoch, generation, capsGeneration }));
+      const tune = vi.fn(); const root = mountFixture(publisher, { onTuneFrequency: tune });
+      expect(root.querySelector('[data-frequency-owner="SUB"]')).not.toBeNull();
+      expect(root.querySelectorAll('[data-frequency-owner="MAIN"] button')).toHaveLength(readingsKnown ? 8 : 0);
+      expect(retainedInteractions()[0].inert).toBe(true);
+      publisher.emit(publication({ generation: 2, mainHz: 18_100_000 })); flushSync();
+      const recovered = root.querySelector<HTMLElement>('[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]')!;
+      recovered.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.click();
+      recovered.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 18_100_001);
+    });
+
+  it('reconciles a disconnected capability topology change', () => {
+    const publisher = new Publisher(publication({ receivers: 1, sessionState: 'disconnected', epoch: -1 }));
+    const root = mountFixture(publisher); expect(root.querySelector('[data-frequency-owner="SUB"]')).toBeNull();
+    publisher.emit(publication({ sessionState: 'disconnected', epoch: -1 })); flushSync();
+    expect(root.querySelector('[data-frequency-owner="SUB"]')).not.toBeNull();
+  });
+
   it('retains owners across irrelevant publications and keyed grouped/independent replacement', () => {
     const publisher = new Publisher(publication()); const layout = writable('grouped'); const live = fromStore(layout);
     const root = mountFixture(publisher, { get layout() { return live.current; }, get layoutKey() { return live.current; } });

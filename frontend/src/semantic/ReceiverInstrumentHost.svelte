@@ -149,11 +149,11 @@
 
   function createOwner(
     receiver: ReceiverId, initialModel: RadioViewModel,
-    initialAuthority: ReceiverFrequencyAuthority,
+    initialAuthority: ReceiverFrequencyAuthority | null,
   ): ReceiverOwner {
     let model = $state.raw<RadioViewModel | null>(initialModel);
     let authority = $state.raw<ReceiverFrequencyAuthority | null>(initialAuthority);
-    let context = $state.raw<object | null>({});
+    let context = $state.raw<object | null>(initialAuthority === null ? null : {});
     const receiverKey = receiver === 'SUB' ? 'sub' : 'main';
     const frequency = createFrequencyInstrumentBinding({
       get confirmedHz() { return activeRecord(model, receiver)?.frequencyHz ?? null; },
@@ -191,7 +191,7 @@
       ),
       present: indicator?.sMeter.availability.structural ?? false,
       source: indicator?.sMeter.source,
-      session: { controlSessionEpoch: initialAuthority.sessionEpoch },
+      session: initialAuthority === null ? null : { controlSessionEpoch: initialAuthority.sessionEpoch },
     });
     return {
       receiver,
@@ -201,7 +201,7 @@
       get context() { return context; },
       get active() { return activeRecord(model, receiver)?.isActive ?? false; },
       update(nextModel, nextAuthority) {
-        if (nextAuthority !== null) model = nextModel;
+        if (nextModel !== null) model = nextModel;
         if (!sameAuthority(authority, nextAuthority)) context = nextAuthority === null ? null : {};
         authority = nextAuthority;
       },
@@ -220,7 +220,7 @@
   }
 
   function installOwner(
-    receiver: ReceiverId, model: RadioViewModel, authority: ReceiverFrequencyAuthority,
+    receiver: ReceiverId, model: RadioViewModel, authority: ReceiverFrequencyAuthority | null,
   ): ReceiverOwner {
     let created!: ReceiverOwner;
     const dispose = $effect.root(() => { created = createOwner(receiver, model, authority); });
@@ -236,31 +236,34 @@
   function applyPublication(publication: ReceiverAuthorityPublication): void {
     if (destroyed) return;
     const model = toRadioViewModel(publication.state, publication.caps);
-    const validModel = (['MAIN', 'SUB'] as const).some((receiver) =>
-      frequencyAuthority(publication, model, receiver) !== null) ? model : null;
+    const stateGeneration = publication.state?.providerGeneration;
+    const capsGeneration = publication.caps?.providerGeneration;
+    const qualifiedModel = safeGeneration(stateGeneration) && safeGeneration(capsGeneration)
+      && stateGeneration === capsGeneration ? model : null;
+    const ownerModel = qualifiedModel ?? toRadioViewModel(null, publication.caps);
 
-    if (validModel !== null) {
+    if (model !== null && ownerModel !== null) {
       for (const receiver of ['MAIN', 'SUB'] as const) {
-        const structural = validModel.vfos.some((record) => record.receiver === receiver);
+        const structural = model.vfos.some((record) => record.receiver === receiver);
         const current = receiver === 'MAIN' ? mainOwner : subOwner;
         if (!structural) {
           if (current !== null) stopOwner(receiver);
           continue;
         }
-        const authority = frequencyAuthority(publication, validModel, receiver)!;
         if (current === null) {
-          installOwner(receiver, validModel, authority);
+          installOwner(receiver, ownerModel, frequencyAuthority(publication, qualifiedModel, receiver));
         }
       }
     }
 
-    const session = validModel !== null
+    const session = (['MAIN', 'SUB'] as const).some((receiver) =>
+      frequencyAuthority(publication, qualifiedModel, receiver) !== null)
       ? { controlSessionEpoch: publication.session.epoch } : null;
     for (const owner of [mainOwner, subOwner]) {
       if (owner === null) continue;
-      const authority = frequencyAuthority(publication, model, owner.receiver);
-      owner.update(model, authority);
-      const indicator = model?.receiverIndicators?.find((item) => item.receiver === owner.receiver);
+      const authority = frequencyAuthority(publication, qualifiedModel, owner.receiver);
+      owner.update(qualifiedModel, authority);
+      const indicator = owner.model?.receiverIndicators?.find((item) => item.receiver === owner.receiver);
       const value = indicator?.sMeter.availability.operational
         && indicator.sMeter.reading.status === 'known'
         && Number.isFinite(indicator.sMeter.reading.value)
