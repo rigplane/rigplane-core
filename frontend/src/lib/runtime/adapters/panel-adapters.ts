@@ -54,6 +54,7 @@ import {
 import { currentControlSessionEpoch } from '../commands/radio-intents';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { DisplayObservation } from '../../../semantic/radio-view-model';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import {
   controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel,
@@ -332,8 +333,15 @@ export function projectControlFeedback<T>(
   if (state === null) return empty('unavailable', null);
   const field = state.fieldStatus?.[descriptor.fieldPath(scope)];
   const confirmed = descriptor.confirmed(state, scope);
-  if (confirmed === null || field?.observed !== true || field.freshness !== 'fresh'
-    || field.availability !== 'available' || typeof field.lastObservedMonotonic !== 'number'
+  // R29(1): a field that has been observed and carries a value stays
+  // available even once it goes stale — only a field the server has never
+  // resolved (`availability: 'missing'`, or any other non-evidentiary
+  // value) gates the control unavailable. Freshness alone is deliberately
+  // not consulted here: `availability` already folds it in 1:1 on the wire
+  // (`_freshness_availability`, `src/rigplane/web/runtime_helpers.py`).
+  if (confirmed === null || field?.observed !== true
+    || (field.availability !== 'available' && field.availability !== 'stale')
+    || typeof field.lastObservedMonotonic !== 'number'
     || !Number.isFinite(field.lastObservedMonotonic)) return empty('unavailable', null);
 
   let latest: CommandLifecycle | null = null;
@@ -401,6 +409,20 @@ export function getFilterWidthControlFeedback(): Readonly<ControlFeedback<number
 type GlobalCwControl = 'cw-pitch' | 'keyer-speed';
 type GlobalCwField = 'cwPitch' | 'keySpeed';
 
+/**
+ * R29(1): a `'stale'` `DisplayObservation` still carries a real last-observed
+ * value (`display-observation.ts: qualifyEvidence`) — only `'unknown'`/
+ * `'unsupported'` mean the field was never resolved. Used by every accessor
+ * below that qualifies a `DisplayObservation` before trusting
+ * `projectControlFeedback`'s result. A type predicate (not a plain boolean
+ * over `.state`) so callers keep type-narrowed access to `.value`.
+ */
+function hasUsableObservation<T extends number | string | boolean>(
+  observation: DisplayObservation<T>,
+): observation is Extract<DisplayObservation<T>, { state: 'current' | 'stale' }> {
+  return observation.state === 'current' || observation.state === 'stale';
+}
+
 function unavailableControlFeedback(
   feedback: Readonly<ControlFeedback<number>>,
 ): Readonly<ControlFeedback<number>> {
@@ -435,7 +457,7 @@ function getGlobalCwControlFeedback(
       value: state?.[field],
     });
     return session.state === 'connected' && epoch >= 0
-      && observation.state === 'current' && Number.isSafeInteger(observation.value)
+      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
       ? feedback : unavailableControlFeedback(feedback);
   } catch {
     return unavailableControlFeedback(feedback);
@@ -495,7 +517,7 @@ export function getTxAuxControlFeedback(
       state, caps, path: field, structural, value: state?.[field],
     });
     return session.state === 'connected' && epoch >= 0
-      && observation.state === 'current' && Number.isSafeInteger(observation.value)
+      && hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
       ? feedback : unavailableControlFeedback(feedback);
   } catch {
     return unavailableControlFeedback(feedback);
@@ -552,7 +574,7 @@ export function getDspControlFeedback(
         state, caps, path: field, structural: caps?.controls?.nb_depth != null,
         value: state?.[field],
       });
-      return observation.state === 'current' && Number.isSafeInteger(observation.value)
+      return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
         ? feedback : unavailableControlFeedback(feedback);
     }
     const receiverId = activeReceiver;
@@ -564,7 +586,7 @@ export function getDspControlFeedback(
       structural: tags.includes(DSP_FEEDBACK_CAPABILITIES[field]),
       value: receiverState?.[field],
     });
-    return observation.state === 'current' && Number.isSafeInteger(observation.value)
+    return hasUsableObservation(observation) && Number.isSafeInteger(observation.value)
       ? feedback : unavailableControlFeedback(feedback);
   } catch {
     return unavailableControlFeedback(feedback);
@@ -661,7 +683,7 @@ export function getRfSqlControlFeedback(
       state, caps, receiver, path: `${base}.${leaf}`, structural,
       value: receiverState?.[leaf],
     });
-    const qualified = observation.state === 'current' ? feedback : Object.freeze({
+    const qualified = hasUsableObservation(observation) ? feedback : Object.freeze({
       ...feedback,
       confirmed: null, target: null, requestedTarget: null,
       phase: 'unavailable' as const, busy: false, availability: 'unavailable' as const,

@@ -101,13 +101,13 @@ describe('qualified global CW command feedback', () => {
     });
   });
 
-  it('qualifies pitch and speed independently from exact top-level current evidence', () => {
+  it('qualifies pitch and speed independently, keeping a stale-but-observed pitch available (MOR-2425/R29)', () => {
     h.state = state({ fieldStatus: {
       cwPitch: { ...fresh(), freshness: 'stale' }, keySpeed: fresh(),
     } });
     h.caps = caps();
     expect(getCwPitchControlFeedback(connected)).toMatchObject({
-      availability: 'unavailable', confirmed: null,
+      availability: 'available', confirmed: 640,
     });
     expect(getKeySpeedControlFeedback(connected)).toMatchObject({
       availability: 'available', confirmed: 27,
