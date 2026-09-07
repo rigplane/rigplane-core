@@ -574,7 +574,10 @@ describe('this surface is never a second key path (safety note iii)', () => {
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
-  const source = withoutComments(readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8'));
+  const source = withoutComments([
+    readFileSync('src/semantic/TxAuxSurface.svelte', 'utf8'),
+    readFileSync('src/semantic/TxAuxFiniteHost.svelte', 'utf8'),
+  ].join('\n'));
 
   // MUTATION KILLED: a TxAuxSurface variant that renders a key/unkey control.
   // This is the named test the 1B brief requires such a variant to fail.
@@ -601,8 +604,8 @@ describe('this surface is never a second key path (safety note iii)', () => {
     expect(source).not.toMatch(/\btx\.(start|release|setIntent|resetFault)\b/);
   });
 
-  // MUTATION KILLED: re-deriving the block predicate locally. A second copy
-  // could disagree with the key button's; the shared import cannot.
+  // MUTATION KILLED: re-deriving the block predicate in the finite owner. A
+  // second copy could disagree with the key button's; the shared import cannot.
   it('imports the block predicate from the shared rx-tx vocabulary', () => {
     expect(source).toMatch(/import\s*\{[^}]*keyBlockedReasons[^}]*\}\s*from\s*'\.\/rx-tx-surface'/);
   });
