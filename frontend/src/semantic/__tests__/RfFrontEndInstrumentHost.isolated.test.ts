@@ -10,8 +10,10 @@ const activation = vi.hoisted(() => ({ selected: undefined as unknown }));
 const captures = vi.hoisted(() => ({
   pairs: [] as unknown[], scalars: [] as unknown[], lifecycle: [] as string[],
   /** MOR-2425 review fix — the `createChoiceRendererSeat` `readCurrent`
-   *  closures, so a test can read `requested`/`options[].disabledReason`
-   *  directly: `FiniteControlRendererFixture` never renders either. */
+   *  closures, so a test can read `requested` directly: unlike
+   *  `option.disabledReason` (rendered as `title`/`aria-describedby`/
+   *  `.sr-only` by `FiniteControlRendererFixture`), `requested` is not
+   *  surfaced anywhere in that fixture's DOM. */
   choiceReads: [] as Array<() => { label: string; requested?: unknown;
     options: readonly { value: unknown; disabledReason?: string }[] }>,
 }));
@@ -654,12 +656,17 @@ describe('RfFrontEndInstrumentHost finite handles (MOR-2425 RF-B)', () => {
       ...finiteBase(),
       disabledReasons: [{ field: 'rfFrontEnd.preamp', code: 'mutually-exclusive-control' }] as DisabledReason[],
     };
-    renderFinite(view, { finiteAppearance: rfAppearance, pendingPreamp: 2 });
+    renderFinite(view, {
+      finiteAppearance: rfAppearance, pendingPreamp: 2, rendererContext: createFiniteRendererContext(),
+    });
+    expect(target.querySelector('[data-testid="external-Preamp"]')).not.toBeNull();
     const preamp = captures.choiceReads.map((read) => read()).find((input) => input.label === 'Preamp')!;
     expect(preamp.requested).toEqual({ kind: 'requested-target', target: 2 });
-    for (const option of preamp.options) {
-      expect(option.disabledReason).toBe(DISABLED_REASON_LABEL['mutually-exclusive-control']);
-    }
+    const reason = DISABLED_REASON_LABEL['mutually-exclusive-control'];
+    const option = target.querySelector<HTMLElement>('[data-testid="external-Preamp-0"]')!;
+    expect(option.title).toBe(reason);
+    const describedBy = option.getAttribute('aria-describedby')!;
+    expect(target.querySelector(`#${describedBy}`)?.textContent).toBe(reason);
   });
 
   /**
