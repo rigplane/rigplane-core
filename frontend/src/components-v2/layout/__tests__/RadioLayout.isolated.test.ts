@@ -677,11 +677,15 @@ describe('App presentation selection', () => {
     };
     const liveState = {
       ...structuredClone(stateFixture),
-      micGain: 128,
+      micGain: 128, keySpeed: 24,
       fieldStatus: {
         ...stateFixture.fieldStatus,
         micGain: {
           storePath: 'global.operator_controls.mic_gain', observed: true,
+          freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1,
+        },
+        keySpeed: {
+          storePath: 'global.cw.key_speed', observed: true,
           freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1,
         },
       },
@@ -712,9 +716,15 @@ describe('App presentation selection', () => {
     const oldMic = t.querySelector<RendererNode>(
       '[data-testid="tx-aux-micGain"] [data-external-scalar-renderer]',
     );
+    const oldKeyerSpeed = t.querySelector<RendererNode>(
+      '[data-cw-keyer-seat="keyerSpeed"] [data-external-scalar-renderer]',
+    );
     if (oldMic === null) throw new Error('Standard did not render the external MIC probe');
+    if (oldKeyerSpeed === null) throw new Error('Standard did not render the Keyer Speed seat');
     const oldLease = oldMic.rendererLease;
     const micBinding = scalarCapture.bindingsByLease.get(oldLease);
+    const oldKeyerSpeedLease = oldKeyerSpeed.rendererLease;
+    const keyerSpeedBinding = scalarCapture.bindingsByLease.get(oldKeyerSpeedLease);
     const txController = txHarness.controller;
     const txListeners = txHarness.listenerCount();
     const releasedAudioDemand: number[] = [];
@@ -728,9 +738,13 @@ describe('App presentation selection', () => {
     expect(semanticHost).not.toBeNull();
     expect(globalHost).not.toBeNull();
     expect(micBinding).toBeDefined();
+    expect(keyerSpeedBinding).toBeDefined();
+    expect(t.querySelectorAll('[data-testid="cw-keyer-keyerSpeed"]')).toHaveLength(1);
     expect(rt.resources.snapshot('audio-fft').demand).toBeGreaterThan(0);
     const beforeDisplay = oldMic.dataset.display;
+    const beforeKeyerSpeedDisplay = oldKeyerSpeed.dataset.display;
     oldMic.click();
+    oldKeyerSpeed.click();
     flushSync();
     const pendingEvidence = {
       requested: oldMic.dataset.requested,
@@ -740,6 +754,15 @@ describe('App presentation selection', () => {
       oldMic.dataset.display !== beforeDisplay || pendingEvidence.requested !== '',
     ).toBe(true);
     expect(pendingEvidence.requested).not.toBe('');
+    const keyerSpeedPendingEvidence = {
+      requested: oldKeyerSpeed.dataset.requested,
+      phase: oldKeyerSpeed.dataset.phase,
+    };
+    expect(
+      oldKeyerSpeed.dataset.display !== beforeKeyerSpeedDisplay
+      || keyerSpeedPendingEvidence.requested !== ''
+    ).toBe(true);
+    expect(keyerSpeedPendingEvidence.requested).not.toBe('');
     expect(txHarness.trace()).toEqual([]);
 
     vi.mocked(resolveSkinId).mockReturnValue('sdr-test');
@@ -754,6 +777,9 @@ describe('App presentation selection', () => {
     const newMic = t.querySelector<RendererNode>(
       '[data-testid="tx-aux-micGain"] [data-external-scalar-renderer]',
     )!;
+    const newKeyerSpeed = t.querySelector<RendererNode>(
+      '[data-testid="cw-keyer-keyerSpeed"] [data-external-scalar-renderer]',
+    )!;
     expect(t.querySelector('.radio-layout.standard-face')).toBeNull();
     expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     expect(t.querySelector('[data-testid="semantic-radio-surfaces"]')).toBe(semanticHost);
@@ -762,8 +788,17 @@ describe('App presentation selection', () => {
     expect(t.querySelectorAll('[data-testid="app-global-host"]')).toHaveLength(1);
     expect(t.querySelector('[data-testid="app-global-host"]')).toBe(globalHost);
     expect(scalarCapture.bindingsByLease.get(newMic.rendererLease)).toBe(micBinding);
+    expect(scalarCapture.bindingsByLease.get(newKeyerSpeed.rendererLease)).toBe(keyerSpeedBinding);
     expect(newMic.rendererLease).not.toBe(oldLease);
+    expect(newKeyerSpeed.rendererLease).not.toBe(oldKeyerSpeedLease);
     expect(oldLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    expect(oldKeyerSpeedLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
+    expect(t.querySelector('[data-cw-keyer-seat="keyerSpeed"]')).toBeNull();
+    expect(t.querySelectorAll('[data-testid="cw-keyer-keyerSpeed"]')).toHaveLength(1);
+    expect({
+      requested: newKeyerSpeed.dataset.requested,
+      phase: newKeyerSpeed.dataset.phase,
+    }).toEqual(keyerSpeedPendingEvidence);
     expect({
       requested: newMic.dataset.requested,
       phase: newMic.dataset.phase,
