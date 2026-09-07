@@ -676,6 +676,19 @@ describe('component-kit activation transaction', () => {
     }
   });
 
+  it('rejects a nested non-primitive before canonical validation can read toJSON', async () => {
+    const activation = await subject();
+    const declaration = hostedKit('nested-to-json');
+    const toJSON = vi.fn(() => () => 'vfo');
+    const poisonedSurface = {};
+    Reflect.defineProperty(poisonedSurface, 'toJSON', { get: toJSON });
+    (declaration.layouts[0].zones[0].surfaces as unknown as unknown[])[0] = poisonedSurface;
+
+    await expect(activation.activateComponentKits(config([declaration])))
+      .rejects.toThrow(/surface.*string/i);
+    expect(toJSON).not.toHaveBeenCalled();
+  });
+
   it('leaves every registry and selection unchanged on late failure, then permits same-id retry', async () => {
     const activation = await subject();
     const registry = await import('../../skins/registry');

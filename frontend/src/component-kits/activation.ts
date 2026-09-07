@@ -160,9 +160,28 @@ function readDataArray(value: unknown, owner: string): unknown[] {
   return copy;
 }
 
+function readStringArray(value: unknown, owner: string): string[] {
+  const copy = readDataArray(value, owner);
+  if (copy.some((entry) => typeof entry !== 'string')) {
+    throw new ComponentKitActivationError(`${owner} entries must be strings.`);
+  }
+  return copy as string[];
+}
+
+function readNumberArray(value: unknown, owner: string): number[] {
+  const copy = readDataArray(value, owner);
+  if (copy.some((entry) => typeof entry !== 'number')) {
+    throw new ComponentKitActivationError(`${owner} entries must be numbers.`);
+  }
+  return copy as number[];
+}
+
 function copyLayout(value: unknown, owner: string): LayoutManifest {
   const manifest = requireExactRecord(value, owner, LAYOUT_KEYS);
   const id = requireId(manifest.id, owner);
+  if (typeof manifest.schemaVersion !== 'number') {
+    throw new ComponentKitActivationError(`Layout "${id}" schemaVersion must be a number.`);
+  }
   if (typeof manifest.displayName !== 'string' || manifest.displayName.trim() === '') {
     throw new ComponentKitActivationError(`Layout "${id}" must have a non-empty displayName.`);
   }
@@ -176,15 +195,15 @@ function copyLayout(value: unknown, owner: string): LayoutManifest {
     }
     return Object.freeze({
       id: zoneId,
-      surfaces: Object.freeze(readDataArray(zone.surfaces, `Layout "${id}" zone "${zoneId}" surfaces`)),
+      surfaces: Object.freeze(readStringArray(zone.surfaces, `Layout "${id}" zone "${zoneId}" surfaces`)),
       ...(zone.group === undefined ? {} : { group: zone.group }),
     });
   });
   const compatibleTopologies = Object.freeze(
-    readDataArray(manifest.compatibleTopologies, `Layout "${id}" compatibleTopologies`),
+    readStringArray(manifest.compatibleTopologies, `Layout "${id}" compatibleTopologies`),
   );
   const requiredSemanticSurfaces = Object.freeze(
-    readDataArray(manifest.requiredSemanticSurfaces, `Layout "${id}" requiredSemanticSurfaces`),
+    readStringArray(manifest.requiredSemanticSurfaces, `Layout "${id}" requiredSemanticSurfaces`),
   );
   const sizingValue = requireExactRecord(
     manifest.stageSizing,
@@ -195,11 +214,21 @@ function copyLayout(value: unknown, owner: string): LayoutManifest {
       ? ['mode', 'responsiveBreakpoints']
       : ['mode', 'nativeW', 'nativeH', 'minScale'],
   );
+  if (sizingValue.mode !== 'fluid' && sizingValue.mode !== 'fixed-native') {
+    throw new ComponentKitActivationError(
+      `Layout "${id}" stageSizing mode must be "fluid" or "fixed-native".`,
+    );
+  }
+  if (sizingValue.mode === 'fixed-native'
+    && [sizingValue.nativeW, sizingValue.nativeH, sizingValue.minScale]
+      .some((entry) => typeof entry !== 'number')) {
+    throw new ComponentKitActivationError(`Layout "${id}" fixed sizing entries must be numbers.`);
+  }
   const stageSizing = sizingValue.mode === 'fluid'
     ? Object.freeze({
         mode: 'fluid' as const,
         responsiveBreakpoints: Object.freeze(
-          readDataArray(sizingValue.responsiveBreakpoints, `Layout "${id}" responsiveBreakpoints`),
+          readNumberArray(sizingValue.responsiveBreakpoints, `Layout "${id}" responsiveBreakpoints`),
         ),
       })
     : Object.freeze({
