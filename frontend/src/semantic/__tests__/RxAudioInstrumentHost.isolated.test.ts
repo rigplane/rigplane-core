@@ -345,8 +345,13 @@ describe('RxAudioInstrumentHost finite handles (RX-B/RX-C)', () => {
     }
     expect(onRoutingFocus.mock.calls).toEqual(FOCUS_CHOICES.map((focus) => [focus]));
 
-    for (const [value] of SPLIT_CHOICES) {
-      target.querySelector<HTMLButtonElement>(`[data-testid="external-Stereo split-${value}"]`)!.click();
+    // The split seat's external choice VALUE is the STRING label ('on'/'off'),
+    // not the raw boolean — the Component-Kit SDK's `FiniteChoiceValue` bound
+    // is `string | number`, never `boolean` (`rx-audio-instruments.ts`'s own
+    // `RxAudioSplitLabel` doc comment). The callback still receives the
+    // mapped boolean.
+    for (const [, label] of SPLIT_CHOICES) {
+      target.querySelector<HTMLButtonElement>(`[data-testid="external-Stereo split-${label}"]`)!.click();
     }
     expect(onRoutingSplit.mock.calls).toEqual(SPLIT_CHOICES.map(([value]) => [value]));
 

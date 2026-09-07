@@ -99,6 +99,7 @@
   import RitXitScanInstrumentHost from '../../semantic/RitXitScanInstrumentHost.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxAudioInstrumentHost from '../../semantic/RxAudioInstrumentHost.svelte';
+  import type { RxAudioFiniteLayout } from '../../semantic/rx-audio-instruments';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import ScopeDisplaySurface from '../../semantic/ScopeDisplaySurface.svelte';
   import ReceiverInstrumentHost, {
@@ -650,6 +651,15 @@
     topologyId: string;
     activeReceiver: 'MAIN' | 'SUB' | 'unknown';
   }>;
+  /** MOR-2425 RX-B/RX-C — same shape as `RfFrontEndFiniteAuthority`: monitor
+   *  mode/routing focus/routing split/MOD-input source are per-receiver
+   *  finite fields, same as RF-front-end's. */
+  type RxAudioFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
   type FilterFiniteAuthority = Readonly<{
     sessionEpoch: number;
     providerGeneration: number;
@@ -753,6 +763,35 @@
       || stateGeneration !== capsGeneration) return null;
     const model = toRadioViewModel(state, caps);
     if (model?.rfFrontEnd === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  /** MOR-2425 RX-B/RX-C. `deriveRxAudio`'s group-existence gate (`hasAfLevel`
+   *  / `hasLiveAudio` / `hasDualRx` / `hasModInput`) reads only `caps` — it
+   *  bails on `!audio` only when the snapshot argument itself is nullish, and
+   *  the module-level `rxAudioSnapshot` above is always a populated record,
+   *  never null — so passing it here (rather than a per-publication audio
+   *  snapshot) still gives a structurally correct existence check without
+   *  making this authority depend on live session/volume churn, the same
+   *  "existence, not session state" contract `rfFrontEndFiniteAuthority`
+   *  above already keeps for its own group. */
+  function rxAudioFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): RxAudioFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps, undefined, rxAudioSnapshot);
+    if (model?.rxAudio === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
       providerGeneration: stateGeneration as number,
@@ -879,6 +918,16 @@
         && left.topologyId === right.topologyId
         && left.activeReceiver === right.activeReceiver
   );
+  const sameRxAudioFiniteAuthority = (
+    left: RxAudioFiniteAuthority | null | undefined,
+    right: RxAudioFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
   const sameVfoFiniteAuthority = (
     left: VfoFiniteAuthority | null | undefined,
     right: VfoFiniteAuthority | null,
@@ -925,6 +974,7 @@
   let txAuxFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let dspFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let rfFrontEndFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let rxAudioFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let vfoFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let filterFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let bandFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
@@ -933,6 +983,7 @@
   let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
   let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
   let lastRfFrontEndFiniteAuthority: RfFrontEndFiniteAuthority | null | undefined;
+  let lastRxAudioFiniteAuthority: RxAudioFiniteAuthority | null | undefined;
   let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
   let lastFilterFiniteAuthority: FilterFiniteAuthority | null | undefined;
   let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
@@ -963,6 +1014,13 @@
       if (!sameRfFrontEndFiniteAuthority(lastRfFrontEndFiniteAuthority, nextRfFrontEnd)) {
         lastRfFrontEndFiniteAuthority = nextRfFrontEnd;
         rfFrontEndFiniteRendererContext = nextRfFrontEnd === null ? null : createFiniteRendererContext();
+      }
+      const nextRxAudio = rxAudioFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameRxAudioFiniteAuthority(lastRxAudioFiniteAuthority, nextRxAudio)) {
+        lastRxAudioFiniteAuthority = nextRxAudio;
+        rxAudioFiniteRendererContext = nextRxAudio === null ? null : createFiniteRendererContext();
       }
       const nextVfo = vfoFiniteAuthority(
         publication.state, publication.caps, publication.session,
@@ -1007,6 +1065,10 @@
   let rfFrontEndFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: rfFrontEndFiniteRendererContext,
+    });
+  let rxAudioFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: rxAudioFiniteRendererContext,
     });
   let vfoFiniteRendererSelection = $derived(externalPresentation !== null
     ? {
@@ -1483,6 +1545,12 @@
     presentation={rxAudioInstrumentPresentation}
     subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
     onAfLevelChange={rxAudioIntents.onAfLevelChange}
+    onMonitorModeChange={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
+    onFocusChange={(focus) => routingIntents.onFocusChange(focus)}
+    onSplitStereoChange={(split) => routingIntents.onSplitStereoChange(split)}
+    onModInputChange={semanticHandlers.mode.onModInputChange}
+    onSetModInputLan={setModInputLan}
+    {...rxAudioFiniteRendererSelection}
   >
   {#snippet children(rxAudioInstruments)}
   <RfFrontEndInstrumentHost
@@ -1831,21 +1899,16 @@
     under `sdr-test`/`mobile`/`lcd-*`, which declare no such zone. The cockpit
     has made no such decision either, so it still renders nothing there.
 
-    The surface takes no authority snapshot. Its persistent Host above this
-    replaceable body consumes the synchronous control publication only to
-    fence AF target changes; the grouped surface receives the named handle.
-    The remaining intents are the shipped command bus, wired above.
+    The surface takes no authority snapshot and no intent callbacks (MOR-2425
+    RX-B/RX-C): `RxAudioInstrumentHost` above is now the sole owner of all
+    five finite handles AND their command wiring, the same shape
+    `RfFrontEndInstrumentHost`/`DspInstrumentHost` already established — this
+    snippet only decides WHERE the grouped surface (or, on `desktop-v2`, the
+    named Standard seats via `finiteLayout`) is placed.
   -->
-  {#snippet rxAudioSurface()}
+  {#snippet rxAudioSurface(finiteLayout?: RxAudioFiniteLayout)}
     {#if view?.rxAudio}
-      <RxAudioSurface
-        {view} handles={rxAudioInstruments}
-        onMonitorMode={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
-        onRoutingFocus={(focus) => routingIntents.onFocusChange(focus)}
-        onRoutingSplit={(split) => routingIntents.onSplitStereoChange(split)}
-        onSetModInputLan={setModInputLan}
-        onModInputChange={semanticHandlers.mode.onModInputChange}
-      />
+      <RxAudioSurface {view} handles={rxAudioInstruments} {finiteLayout} />
     {/if}
   {/snippet}
 
@@ -2204,8 +2267,11 @@
   {#snippet hostedMeters(allowBare = allowBareSurfaces)}
     {@render zoned('meters', view?.meters !== undefined, metersSurface, allowBare)}
   {/snippet}
-  {#snippet hostedRxAudio(allowBare = allowBareSurfaces)}
-    {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBare)}
+  {#snippet hostedRxAudio(
+    allowBare = allowBareSurfaces, finiteLayout?: RxAudioFiniteLayout,
+  )}
+    {#snippet body()}{@render rxAudioSurface(finiteLayout)}{/snippet}
+    {@render zoned('rxAudio', view?.rxAudio !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedRfFrontEnd(
     allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout,

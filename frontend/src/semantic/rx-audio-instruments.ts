@@ -49,34 +49,43 @@ export const READINESS_LABEL: Record<ModInputReadiness['status'], string> = {
   mismatch: 'not LAN — web voice TX would modulate from the wrong source',
 };
 
+/** `SPLIT_CHOICES`'s own label type — used as the SPLIT seat's external-facing
+ *  choice value (see `RxAudioFiniteChoiceValue` below). */
+export type RxAudioSplitLabel = (typeof SPLIT_CHOICES)[number][1];
+
 /** The one widened choice type `RxAudioInstrumentHost`'s finite seats and its
  *  `FiniteControlAppearance` parameter share — the same "declare the seat at
- *  the appearance's own union" shape `DspFiniteChoiceValue` uses. */
-export type RxAudioFiniteChoiceValue = MonitorMode | AudioFocus | boolean | number;
+ *  the appearance's own union" shape `DspFiniteChoiceValue` uses. `boolean` is
+ *  NOT a member: the public Component-Kit SDK's `FiniteChoiceValue` (every
+ *  other production seat's bound) is `string | number` — `component-kit-api/
+ *  src/index.ts`, checked directly — so the split seat reports its two
+ *  choices by `SPLIT_CHOICES`'s own STRING label ('on'/'off'), not the raw
+ *  boolean fact; `RxAudioInstrumentHost.svelte`'s `splitSeat` maps the label
+ *  back to a boolean before calling `onSplitStereoChange`. The raw/bare
+ *  (non-`finiteAppearance`) rendering is unaffected — it reads `SPLIT_CHOICES`
+ *  and `rx.routingSplit`'s boolean fact directly, as before. */
+export type RxAudioFiniteChoiceValue = MonitorMode | AudioFocus | RxAudioSplitLabel | number;
 
-/**
- * The finite five (`monitorMode`/`routingFocus`/`routingSplit`/
- * `modInputSource`/`setModInputLan`) are optional, unlike every other shipped
- * handle record in this directory (`DspFiniteHandles`, `TxAuxFiniteHandles`),
- * because `RxAudioInstrumentHandles` is ALSO the exact type
- * `InstrumentComposition.rxAudioInstruments` (`components-v2/wiring/
- * instrument-composition.ts`) uses, and several existing literal
- * `InstrumentComposition` fixtures outside this MOR-2425 RX-B/RX-C cut
- * (`semantic-desktop-migration.component.test.ts`, `skins/__tests__/
- * entrypoints.test.ts`, `DualSdrFaceSkin.component.test.ts`,
- * `HostedRadioLayoutFixture.svelte`) still construct it with only `afLevel`.
- * Widening those five as REQUIRED would break every one of them, and none is
- * in this cut's scope — `SemanticRadioSurfaces.svelte`,
- * `instrument-composition.ts` and `HostedRadioLayoutFixture.svelte` are the
- * root/L1-owned integration seam this cut must not edit. Phase B's SRS wiring
- * is the natural place to either supply all five everywhere or tighten this
- * back to required once every consumer does.
- */
+/** The finite five (`monitorMode`/`routingFocus`/`routingSplit`/
+ *  `modInputSource`/`setModInputLan`), required exactly like every other
+ *  shipped handle record in this directory (`DspFiniteHandles`,
+ *  `TxAuxFiniteHandles`) — `RxAudioInstrumentHost.svelte` always constructs
+ *  all five, so every `InstrumentComposition.rxAudioInstruments` consumer
+ *  (`HostedRadioLayoutFixture.svelte` included) supplies them too
+ *  (MOR-2425 RX-B/RX-C). */
 export interface RxAudioInstrumentHandles {
   readonly afLevel: Snippet;
-  readonly monitorMode?: Snippet;
-  readonly routingFocus?: Snippet;
-  readonly routingSplit?: Snippet;
-  readonly modInputSource?: Snippet;
-  readonly setModInputLan?: Snippet;
+  readonly monitorMode: Snippet;
+  readonly routingFocus: Snippet;
+  readonly routingSplit: Snippet;
+  readonly modInputSource: Snippet;
+  readonly setModInputLan: Snippet;
 }
+
+/** DSP/RF analogue (`dsp-instruments.ts`'s `DspFiniteLayout`,
+ *  `rf-front-end-instruments.ts`'s `RfFrontEndFiniteLayout`): a layout
+ *  snippet that places the finite five wherever the active face wants them,
+ *  in place of `RxAudioSurface`'s own default grouping (MOR-2425 RX-B/RX-C).
+ *  Takes the full handles record (`afLevel` included) — `RxAudioSurface.svelte`
+ *  keeps rendering `afLevel` itself unconditionally either way. */
+export type RxAudioFiniteLayout = Snippet<[RxAudioInstrumentHandles]>;

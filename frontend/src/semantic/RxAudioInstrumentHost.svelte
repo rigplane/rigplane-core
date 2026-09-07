@@ -29,6 +29,7 @@
     RxAudioFiniteChoiceValue,
     RxAudioInstrumentHandles,
     RxAudioInstrumentPresentation,
+    RxAudioSplitLabel,
     SubscribeRxAudioAuthority,
   } from './rx-audio-instruments';
 
@@ -134,6 +135,16 @@
     select.value = modInputValue;
     if (source) modInputBehavior.invoke(source.value);
   }
+  /** The split seat's external-facing choice VALUE is `SPLIT_CHOICES`'s own
+   *  string LABEL, not the raw boolean fact — the public Component-Kit SDK's
+   *  `FiniteChoiceValue` (every other production seat's bound, and
+   *  `RxAudioFiniteChoiceValue`'s own bound) is `string | number`, and never
+   *  `boolean` (`component-kit-api/src/index.ts`). The raw/bare rendering
+   *  below is unaffected — it reads `SPLIT_CHOICES`/`rx.routingSplit` directly. */
+  const splitLabelOf = (value: boolean): RxAudioSplitLabel =>
+    SPLIT_CHOICES.find(([choice]) => choice === value)![1];
+  const splitValueOf = (label: RxAudioSplitLabel): boolean =>
+    SPLIT_CHOICES.find(([, choice]) => choice === label)![0];
   const monitorSeat = createAbsoluteChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, label: 'Monitor mode',
     reading: rx === undefined ? { status: 'unknown' } : { status: 'known', value: rx.monitorMode },
@@ -149,13 +160,18 @@
     options: FOCUS_CHOICES.map((focus) => ({ value: focus, label: focus })),
     invoke: (focus) => onFocusChange?.(focus as AudioFocus),
   }));
-  const splitSeat = createAbsoluteChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, label: 'Stereo split',
-    reading: rx?.routingSplit.reading ?? { status: 'unknown' },
-    available: rx?.routingSplit.availability.structural === true,
-    options: SPLIT_CHOICES.map(([value, label]) => ({ value, label })),
-    invoke: (split) => onSplitStereoChange?.(split as boolean),
-  }));
+  const splitSeat = createAbsoluteChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => {
+    const reading = rx?.routingSplit.reading;
+    return {
+      context: rendererContext ?? null, label: 'Stereo split',
+      reading: reading?.status === 'known'
+        ? { status: 'known' as const, value: splitLabelOf(reading.value) }
+        : { status: 'unknown' as const },
+      available: rx?.routingSplit.availability.structural === true,
+      options: SPLIT_CHOICES.map(([, label]) => ({ value: label, label })),
+      invoke: (label) => onSplitStereoChange?.(splitValueOf(label as RxAudioSplitLabel)),
+    };
+  });
   const modInputSeat = createChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => ({
     context: rendererContext ?? null, label: 'MOD input',
     field: rx?.modInputSource, blocked: !modInputRecognized,

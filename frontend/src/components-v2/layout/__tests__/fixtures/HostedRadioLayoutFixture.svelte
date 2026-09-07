@@ -16,6 +16,7 @@
     AntennaInstrumentHandles, AntennaInstrumentLayout,
   } from '../../../../semantic/AntennaInstrumentHost.svelte';
   import type { RitXitScanInstrumentHandles } from '../../../../semantic/RitXitScanInstrumentHost.svelte';
+  import type { RxAudioInstrumentHandles } from '../../../../semantic/rx-audio-instruments';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[
@@ -54,7 +55,10 @@
     frequencyTunable: () => true,
     vfoOperations: operations,
   } satisfies ReceiverInstrumentHandles;
-  const rxAudioInstruments = { afLevel: empty };
+  const rxAudioInstruments = {
+    afLevel: empty, monitorMode: empty, routingFocus: empty, routingSplit: empty,
+    modInputSource: empty, setModInputLan: empty,
+  } satisfies RxAudioInstrumentHandles;
   const txAuxInstruments = {
     atu: empty, vox: empty, compressor: empty, monitor: empty, atuTune: empty,
   } satisfies TxAuxFiniteHandles;

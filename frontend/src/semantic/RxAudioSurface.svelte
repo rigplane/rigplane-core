@@ -65,13 +65,14 @@
 
 <script lang="ts">
   import type { RadioViewModel } from './radio-view-model';
-  import type { RxAudioInstrumentHandles } from './rx-audio-instruments';
+  import type { RxAudioFiniteLayout, RxAudioInstrumentHandles } from './rx-audio-instruments';
 
   interface Props {
     view: RadioViewModel;
     handles: RxAudioInstrumentHandles;
+    finiteLayout?: RxAudioFiniteLayout;
   }
-  let { view, handles }: Props = $props();
+  let { view, handles, finiteLayout }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine):
    *  a radio with no audio chain gets no empty panel and no zone had to learn
@@ -83,12 +84,17 @@
   <section class="rx-audio-surface" data-testid="rx-audio-surface" aria-label="Receive audio">
     <!-- Monitor-mode radiogroup and the paired link-lost annotation
          (MOR-1384) are one `RxAudioInstrumentHost` handle: the annotation
-         must never separate from the control it explains. Optional chaining
-         throughout this section: the five finite handles are optional on
-         `RxAudioInstrumentHandles` only so pre-existing `InstrumentComposition`
-         fixtures outside this cut, still built with `afLevel` alone, keep
-         type-checking (rx-audio-instruments.ts has the full account). -->
-    {@render handles.monitorMode?.()}
+         must never separate from the control it explains. When `finiteLayout`
+         is supplied it places the finite five itself (MOR-2425 RX-B/RX-C) —
+         mirrors `RfFrontEndSurface.svelte`'s own `{#if finiteLayout}` shape:
+         the monitor-mode handle sits BEFORE the AF scalar in the default
+         grouped order, so it is the one rendered directly (not suppressed)
+         in the same position `finiteLayout(handles)` takes over. -->
+    {#if finiteLayout}
+      {@render finiteLayout(handles)}
+    {:else}
+      {@render handles.monitorMode()}
+    {/if}
 
     {#if rx.afLevel.availability.structural}
       <label
@@ -102,15 +108,17 @@
       </label>
     {/if}
 
-    {@render handles.routingFocus?.()}
-    {@render handles.routingSplit?.()}
-    <!-- MOD-input readiness/source readouts and the one-click LAN remedy
-         (MOR-2366) are two adjacent handles, not one: `ModInputTxWarning`
-         must be able to render the SAME remedy independently later without
-         a second owner of the command (rx-tx-surface.ts::keyBlockedReasons
-         doctrine). -->
-    {@render handles.modInputSource?.()}
-    {@render handles.setModInputLan?.()}
+    {#if !finiteLayout}
+      {@render handles.routingFocus()}
+      {@render handles.routingSplit()}
+      <!-- MOD-input readiness/source readouts and the one-click LAN remedy
+           (MOR-2366) are two adjacent handles, not one: `ModInputTxWarning`
+           must be able to render the SAME remedy independently later without
+           a second owner of the command (rx-tx-surface.ts::keyBlockedReasons
+           doctrine). -->
+      {@render handles.modInputSource()}
+      {@render handles.setModInputLan()}
+    {/if}
   </section>
 {/if}
 
