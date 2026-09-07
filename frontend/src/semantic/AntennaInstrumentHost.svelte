@@ -28,8 +28,6 @@
     f.reading.status !== 'known' ? UNKNOWN_TEXT
       : typeof f.reading.value === 'boolean' ? (f.reading.value ? 'on' : 'off')
         : String(f.reading.value);
-  export const valueOf = <T>(f: AntennaField<T>): T | undefined =>
-    f.reading.status === 'known' ? f.reading.value : undefined;
 
   export function tunerIdle(view: RadioViewModel): boolean {
     const atu = view.txAux?.atu;
