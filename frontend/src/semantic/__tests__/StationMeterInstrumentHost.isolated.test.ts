@@ -2,11 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
 import { proxy } from 'svelte/internal/client';
-import type { MeterAppearance } from '../../../component-kit-api/src/index';
+import type { MeterAppearance, SignalMeterRendererView } from '../../../component-kit-api/src/index';
 const selectedMeter = vi.hoisted(() => ({ current: undefined as MeterAppearance | undefined }));
+const rendererViews = vi.hoisted(() => ({ signals: [] as SignalMeterRendererView[] }));
 vi.mock('../../component-kits/activation', () => ({
   getSelectedMeterAppearance: () => selectedMeter.current,
 }));
+vi.mock('../meter-renderer-view', async (original) => {
+  const actual = await original<typeof import('../meter-renderer-view')>();
+  return { ...actual,
+    toSignalMeterRendererView(...args: Parameters<typeof actual.toSignalMeterRendererView>) {
+      const projected = actual.toSignalMeterRendererView(...args);
+      rendererViews.signals.push(projected);
+      return projected;
+    },
+  };
+});
 const motion = vi.hoisted(() => ({ bars: [] as any[], signals: [] as any[] }));
 vi.mock('../../components-v2/meters/bar-meter-motion.svelte', async (original) => {
   const actual = await original<typeof import('../../components-v2/meters/bar-meter-motion.svelte')>();
@@ -57,6 +68,7 @@ let component: ReturnType<typeof mount> | null;
 beforeEach(() => {
   target = document.createElement('div'); document.body.appendChild(target);
   component = null; motion.bars = []; motion.signals = []; stationMeterProbe.clear();
+  rendererViews.signals = [];
   selectedMeter.current = undefined;
   window.matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() });
 });
@@ -135,6 +147,23 @@ describe('StationMeterInstrumentHost', () => {
     expect(meter('power').dataset).toMatchObject({ state: 'current', domain: 'engineering:w', value: '0.6' });
     expect(meter('alc').dataset).toMatchObject({ state: 'current', domain: 'raw', value: '40' });
     expect(meter('drainVoltage').dataset).toMatchObject({ state: 'current', domain: 'unknown', value: '200' });
+  });
+
+  it('keeps a structurally present unavailable-known signal external but fail-closed', () => {
+    selectedMeter.current = fixtureMeterAppearance;
+    const unavailable = field(view('receiving'), 'signal', {
+      reading: { status: 'known', value: 120 },
+      availability: { structural: true, operational: false },
+    });
+    render({ view: unavailable, session: { controlSessionEpoch: 1 } });
+    const signal = target.querySelector<HTMLElement>('[data-fixture-signal]')!;
+    const publicView = rendererViews.signals.at(-1)!;
+    expect(signal).not.toBeNull();
+    expect(signal.dataset.state).toBe('unknown');
+    expect(signal.hasAttribute('data-value')).toBe(false);
+    expect(publicView.evidence).toEqual({ state: 'unknown', domain: { kind: 'unknown' } });
+    expect(publicView.displayedFraction).toBeNull();
+    expect(publicView.peakFraction).toBeNull();
   });
 
   it('routes real external reset leases and revokes a retained A-B-A button', () => {
