@@ -7,6 +7,10 @@
     ContinuousPairView,
   } from '../../../primitives/scalar/continuous-pair.svelte';
   import { clamp } from '../../../primitives/scalar/value-control-core';
+  import type {
+    DualParamIssuedStatusPresentation,
+    DualParamLane,
+  } from './dual-param-issued-status';
   import './value-control.css';
 
   interface Props {
@@ -20,6 +24,7 @@
     variant?: 'modern' | 'hardware' | 'hardware-illuminated';
     shortcutHint?: string | null;
     title?: string | null;
+    issuedStatusPresentation?: Readonly<DualParamIssuedStatusPresentation>;
   }
 
   let {
@@ -33,6 +38,7 @@
     variant = 'hardware-illuminated',
     shortcutHint = null,
     title = null,
+    issuedStatusPresentation,
   }: Props = $props();
 
   let containerEl: HTMLDivElement | null = $state(null);
@@ -90,6 +96,27 @@
     ? undefined : Math.round(view.position * 100));
   let rfLane = $derived(view?.lanes.rf ?? null);
   let sqlLane = $derived(view?.lanes.sql ?? null);
+  let rfStatusText = $derived(issuedStatusPresentation === undefined
+    ? rfLane?.announcement ?? null : issuedStatusPresentation.rf.text);
+  let sqlStatusText = $derived(issuedStatusPresentation === undefined
+    ? sqlLane?.announcement ?? null : issuedStatusPresentation.sql.text);
+
+  $effect(() => {
+    const snapshot = view;
+    if (issuedStatusPresentation === undefined || snapshot === null) return;
+    for (const lane of ['rf', 'sql'] as const satisfies readonly DualParamLane[]) {
+      const laneView = snapshot.lanes[lane];
+      if (laneView.evidence !== 'command-feedback') continue;
+      const output = issuedStatusPresentation[lane];
+      const announcement = laneView.presentation.politeAnnouncement;
+      if (announcement !== null) {
+        const text = untrack(() => output.format({ lane, view: snapshot, laneView, announcement }));
+        untrack(() => output.accept(text));
+      } else if (laneView.feedback.transitionId === null) {
+        untrack(() => output.accept(null));
+      }
+    }
+  });
 
   function normX(clientX: number): number | null {
     if (!containerEl) return null;
@@ -239,11 +266,11 @@
     <span class="axis-gap"></span>
     <span class="axis-sql">{sqlLabel}</span>
   </div>
-  {#if rfLane?.announcement}
-    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-control-feedback-status>{rfLane.announcement}</span>
+  {#if rfStatusText}
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-control-feedback-status>{rfStatusText}</span>
   {/if}
-  {#if sqlLane?.announcement}
-    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-control-feedback-status>{sqlLane.announcement}</span>
+  {#if sqlStatusText}
+    <span class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-control-feedback-status>{sqlStatusText}</span>
   {/if}
 </div>
 {/if}
