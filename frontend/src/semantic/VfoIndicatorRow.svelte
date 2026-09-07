@@ -19,10 +19,11 @@
     slotLabel?: string;
     radioWide?: RadioWideIndicatorsViewModel;
     continuitySession?: MeterContinuitySession | null;
+    sMeter?: Snippet;
   }
 
   let {
-    indicator, radioWide, appearance = 'semantic', children, slotLabel, continuitySession,
+    indicator, radioWide, appearance = 'semantic', children, slotLabel, continuitySession, sMeter,
   }: Props = $props();
 
   const rfLabel = (state: RadioWideIndicatorsViewModel['rfState']): string =>
@@ -96,7 +97,11 @@
 
   <div class="s-meter" data-testid="receiver-s-meter" data-receiver={indicator.receiver}>
     {#if indicator.sMeter.reading.status === 'known' && Number.isFinite(indicator.sMeter.reading.value)}
-      <LinearSMeter value={indicator.sMeter.reading.value} compact label={appearance === 'standard' ? slotLabel : undefined} variant={appearance === 'sdr' ? 'sdr-screen' : 'vfo-wide'} source={indicator.sMeter.source} session={continuitySession} />
+      {#if sMeter}
+        {@render sMeter()}
+      {:else}
+        <LinearSMeter value={indicator.sMeter.reading.value} compact label={appearance === 'standard' ? slotLabel : undefined} variant={appearance === 'sdr' ? 'sdr-screen' : 'vfo-wide'} source={indicator.sMeter.source} session={continuitySession} />
+      {/if}
     {:else}
       <div
         class="s-meter-unknown"

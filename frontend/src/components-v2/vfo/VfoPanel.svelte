@@ -3,6 +3,7 @@
 </script>
 
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import LinearSMeter from '../meters/LinearSMeter.svelte';
   import FrequencyDisplayInteractive from '../../primitives/frequency/FrequencyDisplayInteractive.svelte';
   import { StatusIndicator } from '$lib/Button';
@@ -37,7 +38,8 @@
     receiver: 'main' | 'sub';
     receiverLabel: string;
     slotTag: string;
-    freq: number | null;
+    frequency?: Snippet;
+    freq?: number | null;
     displayHz?: number | null;
     pendingDisplayHz?: number | null;
     frequencyState?: 'current' | 'stale' | 'unknown' | 'unsupported';
@@ -46,7 +48,8 @@
     frequencyDisabled?: boolean;
     mode: string | null;
     filter: string | null;
-    sValue: number | null;
+    sMeter?: Snippet;
+    sValue?: number | null;
     meterPresent?: boolean;
     meterOperational?: boolean;
     meterSource?: MeterSourceIdentity | null;
@@ -63,9 +66,9 @@
   }
 
   let {
-    receiver, receiverLabel, slotTag, freq, displayHz, pendingDisplayHz = null,
+    receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
     frequencyState = 'current', staleReason, contextKey, frequencyDisabled = false,
-    mode, filter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
+    mode, filter, sMeter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
     badgeItems, bandText, rit, slotChoices = [],
     layoutProfile = 'baseline',
@@ -110,11 +113,15 @@
   </div>
 
   <div class="smeter-row panel-meter">
-    {#if meterPresent}
+    {#if sMeter}
+      <div data-testid="receiver-s-meter" data-receiver={receiver}>
+        {@render sMeter()}
+      </div>
+    {:else if meterPresent}
       <div data-testid="receiver-s-meter" data-receiver={receiver}
         data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
         aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
-        <LinearSMeter value={Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
+        <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
       </div>
     {/if}
   </div>
@@ -124,7 +131,9 @@
       <div class="freq-row">
         <span class="vfo-freq" data-vfo-freq data-display-state={frequencyState} class:display-unknown={displayHz === null}
           aria-describedby={staleDisplay ? staleId : undefined}>
-          {#if freq !== null && Number.isFinite(freq)}
+          {#if frequency}
+            {@render frequency()}
+          {:else if freq !== null && freq !== undefined && Number.isFinite(freq)}
             <FrequencyDisplayInteractive
               {freq} {displayHz} {pendingDisplayHz} {contextKey}
               disabled={frequencyDisabled || frequencyState !== 'current'}

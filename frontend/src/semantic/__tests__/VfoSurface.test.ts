@@ -18,10 +18,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { mount, unmount, flushSync } from 'svelte';
+import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
+import type {
+  ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverSMeterMount,
+} from '../ReceiverInstrumentHost.svelte';
 import {
   validateRadioViewModel, type RadioViewModel, type ReceiverId,
   type ReceiverIndicatorViewModel, type VfoSlot,
@@ -247,6 +250,22 @@ function withReceiverIndicators(id: TopologyFixtureId): RadioViewModel {
   return validateRadioViewModel({
     ...base, receiverIndicators: receivers.map(receiverIndicator),
   });
+}
+
+function hostedReceiverInstruments(): ReceiverInstrumentHandles {
+  const frequency = (receiver: ReceiverId) => createRawSnippet<[ReceiverFrequencyMount?]>(() => ({
+    render: () => `<span data-hosted-frequency="${receiver}">${receiver} frequency</span>`,
+  }));
+  const sMeter = (receiver: ReceiverId) => createRawSnippet<[ReceiverSMeterMount?]>(() => ({
+    render: () => `<span data-hosted-s-meter="${receiver}">${receiver} meter</span>`,
+  }));
+  return {
+    mainFrequency: frequency('MAIN'), subFrequency: frequency('SUB'),
+    mainSMeter: sMeter('MAIN'), subSMeter: sMeter('SUB'),
+    vfoOperations: createRawSnippet(() => ({
+      render: () => '<span data-hosted-vfo-operations>VFO operations</span>',
+    })),
+  };
 }
 
 describe('receiver-addressed indicator composition (MOR-2299 slice 1)', () => {
@@ -2361,15 +2380,39 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(group).not.toMatch(/phase\??:|['\"](?:idle|pending|failed)['\"]/);
   });
 
-  it('forwards fixed-receiver meter context through every instrument branch', () => {
+  it('keeps local meter source/session confined to the standalone fallback branches', () => {
     const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
     expect(source.match(/<VfoIndicatorRow/g)).toHaveLength(3);
     expect(source).toMatch(/radioWide=\{viewModel\.radioWideIndicators\}[\s\S]*?\{continuitySession\}/);
-    expect(source).toMatch(/slotLabel=\{instrumentSlot\(receiver\)\} \{continuitySession\}/);
-    expect(source).toContain('<VfoIndicatorRow {indicator} {continuitySession} />');
+    expect(source).toMatch(/continuitySession=\{receiverInstruments === undefined \? continuitySession : undefined\}/);
     const panel = source.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
-    expect(panel).toMatch(/meterSource=\{indicator\?\.sMeter\.source\}/);
-    expect(panel).toMatch(/continuitySession/);
+    expect(panel).toMatch(/meterSource=\{receiverInstruments === undefined \? indicator\?\.sMeter\.source : undefined\}/);
+    expect(panel).toMatch(/continuitySession=\{receiverInstruments === undefined \? continuitySession : undefined\}/);
+  });
+
+  it.each(['semantic', 'sdr', 'standard'] as const)(
+    'uses the named receiver handles and one global operations handle in %s',
+    (appearance) => {
+      const root = mountSurface({
+        viewModel: withReceiverIndicators('2/main_sub'), appearance,
+        receiverInstruments: hostedReceiverInstruments(),
+      });
+      for (const receiver of ['MAIN', 'SUB']) {
+        expect(root.querySelectorAll(`[data-hosted-frequency="${receiver}"]`)).toHaveLength(1);
+        expect(root.querySelectorAll(`[data-hosted-s-meter="${receiver}"]`)).toHaveLength(1);
+      }
+      expect(root.querySelectorAll('[data-hosted-vfo-operations]')).toHaveLength(1);
+      expect(root.querySelector('[data-hosted-frequency]')?.closest('[data-vfo-freq]')).not.toBeNull();
+    },
+  );
+
+  it('keeps standalone VfoSurface on its established local frequency and meter owners', () => {
+    const root = mountSurface({
+      viewModel: withReceiverIndicators('2/main_sub'), onTuneFrequency: vi.fn(),
+    });
+    expect(root.querySelector('[data-hosted-frequency], [data-hosted-s-meter]')).toBeNull();
+    expect(root.querySelectorAll('.freq.interactive')).toHaveLength(2);
+    expect(root.querySelectorAll('[data-testid="receiver-s-meter"] svg')).toHaveLength(2);
   });
 
   it.each(['sdr', 'standard'] as const)('pairs addressed facts and one bridge in %s', (appearance) => {

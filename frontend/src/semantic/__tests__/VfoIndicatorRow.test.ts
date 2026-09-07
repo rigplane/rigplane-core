@@ -1,7 +1,7 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
+import { createRawSnippet, flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import VfoIndicatorRow from '../VfoIndicatorRow.svelte';
 import type {
   Availability, RadioWideIndicatorsViewModel,
@@ -57,9 +57,22 @@ describe('VfoIndicatorRow', () => {
   });
 
   it('renders a true unknown shell and never passes a fabricated zero to LinearSMeter', () => {
-    const root = render({ indicator: indicator({ sMeter: unknown() }) });
+    const sMeter = createRawSnippet(() => ({
+      render: () => '<span data-hosted-s-meter>host meter</span>',
+    }));
+    const root = render({ indicator: indicator({ sMeter: unknown() }), sMeter });
+    expect(root.querySelector('[data-hosted-s-meter]')).toBeNull();
     expect(root.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();
     expect(root.querySelector('[data-testid="receiver-s-meter-unknown"]')?.textContent).toContain('S —');
+  });
+
+  it('uses the caller-owned meter for a known reading in the established receiver seat', () => {
+    const sMeter = createRawSnippet(() => ({
+      render: () => '<span data-hosted-s-meter>host meter</span>',
+    }));
+    const root = render({ indicator: indicator(), sMeter });
+    expect(root.querySelector('[data-hosted-s-meter]')?.closest('[data-testid="receiver-s-meter"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();
   });
 
   it('preserves known false and zero as observed OFF/0 facts, not unknown', () => {
@@ -115,12 +128,14 @@ describe('VfoIndicatorRow', () => {
     expect(source).not.toMatch(/radioState|ServerState|fieldStatus|\$lib\/transport|tx-controller|panel-commands/);
   });
 
-  it('forwards only the receiver S-meter source and supplied continuity session', () => {
+  it('keeps source/session on the local fallback while admitting one caller-owned meter', () => {
     const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
     const call = source.match(/<LinearSMeter([\s\S]*?)\/>/)?.[1] ?? '';
     expect(call).toMatch(/source=\{indicator\.sMeter\.source\}/);
     expect(call).toMatch(/session=\{continuitySession\}/);
     expect(source).toMatch(/continuitySession\?: MeterContinuitySession \| null/);
+    expect(source).toMatch(/sMeter\?: Snippet/);
+    expect(source).toContain('{@render sMeter()}');
   });
 });
 
