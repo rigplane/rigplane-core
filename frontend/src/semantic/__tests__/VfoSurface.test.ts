@@ -23,7 +23,8 @@ import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
 import type {
-  ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverVfoAppearance,
+  ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverSMeterRenderer,
+  ReceiverVfoAppearance,
 } from '../ReceiverInstrumentHost.svelte';
 import {
   validateRadioViewModel, type RadioViewModel, type ReceiverId,
@@ -256,8 +257,12 @@ function hostedReceiverInstruments(): ReceiverInstrumentHandles {
   const frequency = (receiver: ReceiverId) => createRawSnippet<[ReceiverFrequencyMount?]>(() => ({
     render: () => `<span data-hosted-frequency="${receiver}">${receiver} frequency</span>`,
   }));
+  const meter = (receiver: ReceiverId) => createRawSnippet<[ReceiverSMeterRenderer]>(() => ({
+    render: () => `<span data-hosted-s-meter="${receiver}">${receiver} meter</span>`,
+  }));
   return {
     mainFrequency: frequency('MAIN'), subFrequency: frequency('SUB'),
+    mainSMeter: meter('MAIN'), subSMeter: meter('SUB'),
     frequencyTunable: () => true,
     vfoOperations: createRawSnippet<[appearance: ReceiverVfoAppearance]>((appearance) => ({
       render: () => `<span data-hosted-vfo-operations="${appearance()}">VFO operations</span>`,
@@ -2385,6 +2390,9 @@ describe('MOR-2342 historical instrument presentations', () => {
     const panel = source.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
     expect(panel).toMatch(/meterSource=\{indicator\?\.sMeter\.source\}/);
     expect(panel).toMatch(/\{continuitySession\}/);
+    expect(source.match(/receiverInstruments\?\.(?:mainSMeter|subSMeter)/g)).toHaveLength(6);
+    expect(source.match(/sMeter=\{receiverInstruments === undefined \? undefined : hostedMeter\}/g))
+      .toHaveLength(3);
   });
 
   it.each(['semantic', 'sdr', 'standard'] as const)(
@@ -2396,6 +2404,7 @@ describe('MOR-2342 historical instrument presentations', () => {
       });
       for (const receiver of ['MAIN', 'SUB']) {
         expect(root.querySelectorAll(`[data-hosted-frequency="${receiver}"]`)).toHaveLength(1);
+        expect(root.querySelectorAll(`[data-hosted-s-meter="${receiver}"]`)).toHaveLength(1);
       }
       expect(root.querySelector('[data-hosted-vfo-operations]')).toBeNull();
       expect(root.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);

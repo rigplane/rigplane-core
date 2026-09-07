@@ -448,14 +448,19 @@ describe('explicit presentation contract', () => {
     expect(absent.querySelector('[data-testid="receiver-s-meter"]')).toBeNull();
   });
 
-  it('places a caller-owned frequency snippet in the established seat', () => {
+  it('places caller-owned frequency and meter snippets in the established seats', () => {
     const frequency = createRawSnippet(() => ({
       render: () => '<span data-hosted-frequency>host frequency</span>',
     }));
-    const t = mountPanel({ ...explicit, frequency, frequencyDisabled: true });
+    const sMeter = createRawSnippet(() => ({
+      render: () => '<span data-hosted-s-meter>host meter</span>',
+    }));
+    const t = mountPanel({ ...explicit, frequency, frequencyDisabled: true, sMeter });
     expect(t.querySelector('[data-hosted-frequency]')?.closest('[data-vfo-freq]')).not.toBeNull();
     expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('false');
+    expect(t.querySelector('[data-hosted-s-meter]')?.closest('[data-testid="receiver-s-meter"]')).not.toBeNull();
     expect(t.querySelector('.freq.interactive')).toBeNull();
+    expect(t.querySelector('[data-testid="receiver-s-meter"] svg')).toBeNull();
   });
 
   it('emits the exact explicit slot choice key without inventing A/B', () => {
@@ -478,13 +483,13 @@ describe('explicit presentation contract', () => {
     expect(source).not.toMatch(/stores\/|runtime\/|capabilities/);
   });
 
-  it('forwards optional meter context while the legacy adapter omits the new frequency owner', () => {
+  it('keeps local meter context on the legacy fallback and omits new owners from the adapter', () => {
     const panel = readFileSync('src/components-v2/vfo/VfoPanel.svelte', 'utf8');
     const meter = panel.match(/<LinearSMeter([\s\S]*?)\/>/)?.[1] ?? '';
     expect(meter).toMatch(/source=\{meterSource\}/);
     expect(meter).toMatch(/session=\{continuitySession\}/);
     const legacy = readFileSync('src/components-v2/vfo/LegacyVfoPanelAdapter.svelte', 'utf8');
     const call = legacy.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
-    expect(call).not.toMatch(/frequency=|meterSource|continuitySession/);
+    expect(call).not.toMatch(/frequency=|sMeter=|meterSource|continuitySession/);
   });
 });

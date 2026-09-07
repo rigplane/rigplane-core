@@ -48,7 +48,8 @@
     frequencyDisabled?: boolean;
     mode: string | null;
     filter: string | null;
-    sValue: number | null;
+    sMeter?: Snippet;
+    sValue?: number | null;
     meterPresent?: boolean;
     meterOperational?: boolean;
     meterSource?: MeterSourceIdentity | null;
@@ -67,7 +68,7 @@
   let {
     receiver, receiverLabel, slotTag, frequency, freq, displayHz, pendingDisplayHz = null,
     frequencyState = 'current', staleReason, contextKey, frequencyDisabled = false,
-    mode, filter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
+    mode, filter, sMeter, sValue, meterPresent = true, meterOperational, meterSource, continuitySession,
     isActive,
     badgeItems, bandText, rit, slotChoices = [],
     layoutProfile = 'baseline',
@@ -112,11 +113,15 @@
   </div>
 
   <div class="smeter-row panel-meter">
-    {#if meterPresent}
+    {#if sMeter}
+      <div data-testid="receiver-s-meter" data-receiver={receiver}>
+        {@render sMeter()}
+      </div>
+    {:else if meterPresent}
       <div data-testid="receiver-s-meter" data-receiver={receiver}
         data-operational={meterOperational === undefined ? undefined : String(meterOperational)}
         aria-label={sValue === null ? `${receiverLabel} S meter unknown` : undefined}>
-        <LinearSMeter value={Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
+        <LinearSMeter value={typeof sValue === 'number' && Number.isFinite(sValue) ? sValue : null} compact label={slotTag} variant={meterVariant} source={meterSource} session={continuitySession} />
       </div>
     {/if}
   </div>
