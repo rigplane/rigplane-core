@@ -178,14 +178,35 @@ describe('ReceiverInstrumentHost', () => {
       const publisher = new Publisher(publication({ sessionState, epoch, generation, capsGeneration }));
       const tune = vi.fn(); const root = mountFixture(publisher, { onTuneFrequency: tune });
       expect(root.querySelector('[data-frequency-owner="SUB"]')).not.toBeNull();
+      expect(root.querySelector('[data-frequency-owner="MAIN"]')?.getAttribute('data-frequency-tunable')).toBe('false');
+      expect(root.querySelector('[data-frequency-owner="SUB"]')?.getAttribute('data-frequency-tunable')).toBe('false');
       expect(root.querySelectorAll('[data-frequency-owner="MAIN"] button')).toHaveLength(readingsKnown ? 8 : 0);
       expect(retainedInteractions()[0].inert).toBe(true);
       publisher.emit(publication({ generation: 2, mainHz: 18_100_000 })); flushSync();
+      expect(root.querySelector('[data-frequency-owner="MAIN"]')?.getAttribute('data-frequency-tunable')).toBe('true');
+      expect(root.querySelector('[data-frequency-owner="SUB"]')?.getAttribute('data-frequency-tunable')).toBe('true');
       const recovered = root.querySelector<HTMLElement>('[data-frequency-owner="MAIN"] [data-alternate-frequency-readout]')!;
       recovered.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.click();
       recovered.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
       expect(tune).toHaveBeenCalledExactlyOnceWith('MAIN', 18_100_001);
     });
+
+  it('publishes exact per-receiver operational, authority, and value tunability', () => {
+    const publisher = new Publisher(publication()); const root = mountFixture(publisher);
+    const tunable = (receiver: 'MAIN' | 'SUB') => root.querySelector(
+      `[data-frequency-owner="${receiver}"]`,
+    )?.getAttribute('data-frequency-tunable');
+    expect([tunable('MAIN'), tunable('SUB')]).toEqual(['true', 'true']);
+    const unavailable = publication();
+    publisher.emit({ ...unavailable, caps: {
+      ...unavailable.caps!, capabilities: unavailable.caps!.capabilities.filter((tag) => tag !== 'dual_rx'),
+    } }); flushSync();
+    expect([tunable('MAIN'), tunable('SUB')]).toEqual(['true', 'false']);
+    publisher.emit(publication({ sessionState: 'disconnected', epoch: -1 })); flushSync();
+    expect([tunable('MAIN'), tunable('SUB')]).toEqual(['false', 'false']);
+    publisher.emit(publication({ mainHz: Number.NaN })); flushSync();
+    expect([tunable('MAIN'), tunable('SUB')]).toEqual(['false', 'true']);
+  });
 
   it('reconciles a disconnected capability topology change', () => {
     const publisher = new Publisher(publication({ receivers: 1, sessionState: 'disconnected', epoch: -1 }));

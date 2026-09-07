@@ -19,6 +19,7 @@
   const operations = createRawSnippet<[appearance: ReceiverVfoAppearance]>(() => ({ render: () => '' }));
   const receiverInstruments = {
     mainFrequency: frequency, subFrequency: frequency,
+    frequencyTunable: () => true,
     vfoOperations: operations,
   } satisfies ReceiverInstrumentHandles;
   const scalars = {

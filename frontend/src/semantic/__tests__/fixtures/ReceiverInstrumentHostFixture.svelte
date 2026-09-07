@@ -30,8 +30,8 @@
 {#snippet hosted(handles: ReceiverInstrumentHandles)}
   {#key layoutKey}
     <div data-receiver-layout={layout}>
-      <section data-frequency-owner="MAIN">{@render handles.mainFrequency({ compact: true, vfoFreqHook: false })}</section>
-      {#if handles.subFrequency}<section data-frequency-owner="SUB">{@render handles.subFrequency({ compact: false, vfoFreqHook: false })}</section>{/if}
+      <section data-frequency-owner="MAIN" data-frequency-tunable={handles.frequencyTunable('MAIN')}>{@render handles.mainFrequency({ compact: true, vfoFreqHook: false })}</section>
+      {#if handles.subFrequency}<section data-frequency-owner="SUB" data-frequency-tunable={handles.frequencyTunable('SUB')}>{@render handles.subFrequency({ compact: false, vfoFreqHook: false })}</section>{/if}
       <aside data-operation-placement={layout}>{@render handles.vfoOperations(layout === 'grouped' ? 'semantic' : 'sdr')}</aside>
     </div>
   {/key}

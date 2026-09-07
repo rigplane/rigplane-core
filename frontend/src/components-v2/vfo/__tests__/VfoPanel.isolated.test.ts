@@ -435,6 +435,7 @@ describe('explicit presentation contract', () => {
   it('keeps the established wrapper hook and the real frequency control in tab order', () => {
     const t = mountPanel(explicit);
     expect(t.querySelector('[data-vfo-freq]')?.classList.contains('vfo-freq')).toBe(true);
+    expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('true');
     expect(t.querySelector('.freq')?.getAttribute('tabindex')).toBe('0');
   });
 
@@ -451,8 +452,9 @@ describe('explicit presentation contract', () => {
     const frequency = createRawSnippet(() => ({
       render: () => '<span data-hosted-frequency>host frequency</span>',
     }));
-    const t = mountPanel({ ...explicit, frequency });
+    const t = mountPanel({ ...explicit, frequency, frequencyDisabled: true });
     expect(t.querySelector('[data-hosted-frequency]')?.closest('[data-vfo-freq]')).not.toBeNull();
+    expect(t.querySelector('[data-vfo-freq]')?.getAttribute('data-freq-tunable')).toBe('false');
     expect(t.querySelector('.freq.interactive')).toBeNull();
   });
 

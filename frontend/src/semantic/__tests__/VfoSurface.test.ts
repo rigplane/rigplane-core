@@ -258,6 +258,7 @@ function hostedReceiverInstruments(): ReceiverInstrumentHandles {
   }));
   return {
     mainFrequency: frequency('MAIN'), subFrequency: frequency('SUB'),
+    frequencyTunable: () => true,
     vfoOperations: createRawSnippet<[appearance: ReceiverVfoAppearance]>((appearance) => ({
       render: () => `<span data-hosted-vfo-operations="${appearance()}">VFO operations</span>`,
     })),

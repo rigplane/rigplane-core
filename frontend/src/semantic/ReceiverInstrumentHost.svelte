@@ -7,6 +7,7 @@
   export interface ReceiverInstrumentHandles {
     readonly mainFrequency: Snippet<[mount?: ReceiverFrequencyMount]>;
     readonly subFrequency?: Snippet<[mount?: ReceiverFrequencyMount]>;
+    readonly frequencyTunable: (receiver: 'MAIN' | 'SUB') => boolean;
     readonly vfoOperations: Snippet<[appearance: ReceiverVfoAppearance]>;
   }
 </script>
@@ -55,6 +56,7 @@
     readonly model: RadioViewModel | null;
     readonly context: object | null;
     readonly active: boolean;
+    readonly tunable: boolean;
     update(model: RadioViewModel | null, authority: ReceiverFrequencyAuthority | null): void;
   }
 
@@ -86,6 +88,16 @@
     return display === undefined
       ? record.frequencyHz
       : display.state === 'current' || display.state === 'stale' ? display.value : null;
+  }
+
+  function frequencyDisabled(model: RadioViewModel | null, receiver: ReceiverId): boolean {
+    const record = activeRecord(model, receiver);
+    const indicator = model?.receiverIndicators?.find((item) => item.receiver === receiver);
+    return record === null
+      || indicator?.availability.operational !== true
+      || record.frequencyHz === null
+      || !Number.isFinite(record.frequencyHz)
+      || record.display?.frequencyHz.state !== 'current';
   }
 
   function slotIdentity(record: VfoViewModel): string {
@@ -149,15 +161,7 @@
         return pendingFrequencyHz?.[receiver] === undefined
           ? undefined : t('core.vfo.freq.pendingAnnouncement');
       },
-      get disabled() {
-        const record = activeRecord(model, receiver);
-        const indicator = model?.receiverIndicators?.find((item) => item.receiver === receiver);
-        return record === null
-          || indicator?.availability.operational !== true
-          || record.frequencyHz === null
-          || !Number.isFinite(record.frequencyHz)
-          || record.display?.frequencyHz.state !== 'current';
-      },
+      get disabled() { return frequencyDisabled(model, receiver); },
       get context() { return context; },
       receiver: receiverKey,
       minFreq: 0,
@@ -173,6 +177,7 @@
       get model() { return model; },
       get context() { return context; },
       get active() { return activeRecord(model, receiver)?.isActive ?? false; },
+      get tunable() { return context !== null && !frequencyDisabled(model, receiver); },
       update(nextModel, nextAuthority) {
         if (nextModel !== null) model = nextModel;
         if (!sameAuthority(authority, nextAuthority)) context = nextAuthority === null ? null : {};
@@ -187,6 +192,11 @@
     } else {
       subOwnerRoot?.(); subOwnerRoot = null; subOwner = null;
     }
+  }
+
+  function frequencyTunable(receiver: ReceiverId): boolean {
+    const owner = receiver === 'MAIN' ? mainOwner : subOwner;
+    return owner?.tunable ?? false;
   }
 
   function installOwner(
@@ -262,7 +272,7 @@
 {/snippet}
 
 {#if subOwner === null}
-  {@render children({ mainFrequency, vfoOperations })}
+  {@render children({ mainFrequency, frequencyTunable, vfoOperations })}
 {:else}
-  {@render children({ mainFrequency, subFrequency, vfoOperations })}
+  {@render children({ mainFrequency, subFrequency, frequencyTunable, vfoOperations })}
 {/if}

@@ -342,7 +342,8 @@
   }
 
   function hasTunableFrequency(vfo: VfoViewModel): boolean {
-    if (receiverInstruments !== undefined) return vfo.isActiveSlot && vfo.frequencyHz !== null
+    if (receiverInstruments !== undefined) return vfo.isActiveSlot
+      && receiverInstruments.frequencyTunable(vfo.receiver)
       && (vfo.receiver === 'MAIN' || receiverInstruments.subFrequency !== undefined);
     return vfo.isActiveSlot && vfo.frequencyHz !== null && onTuneFrequency !== undefined;
   }
@@ -839,7 +840,7 @@
           contextKey={receiverInstruments === undefined
             ? `${frequencyLifetimeKey ?? 'unscoped'}:${viewModel.topologyId}:${receiver}:${dominant ? slotKey(dominant.slot) : 'unknown'}`
             : undefined}
-          frequencyDisabled={receiverInstruments === undefined ? !dominant || readoutDisabled(dominant) : undefined}
+          frequencyDisabled={!dominant || readoutDisabled(dominant)}
           mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
           filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}
           sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'

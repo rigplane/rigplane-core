@@ -124,7 +124,8 @@
   <div class="panel-body">
     <div class="display-row">
       <div class="freq-row">
-        <span class="vfo-freq" data-vfo-freq data-display-state={frequencyState} class:display-unknown={displayHz === null}
+        <span class="vfo-freq" data-vfo-freq data-freq-tunable={!frequencyDisabled}
+          data-display-state={frequencyState} class:display-unknown={displayHz === null}
           aria-describedby={staleDisplay ? staleId : undefined}>
           {#if frequency}
             {@render frequency()}

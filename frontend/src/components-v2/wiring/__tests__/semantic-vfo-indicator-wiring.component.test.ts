@@ -451,6 +451,19 @@ describe('production receiver-indicator partitioning', () => {
     expect(sub.querySelector('[data-testid="receiver-s-meter-unknown"]')).not.toBeNull();
   });
 
+  it.each([
+    ['semantic', { strips: 'dual' }],
+    ['Standard', { strips: 'single', vfoAppearance: 'standard' }],
+  ] as const)('matches unavailable SUB wrapper metadata to its inert renderer in %s', (_name, props) => {
+    render(caps('main_sub', 2, false), state(), {}, props);
+    const instrument = target.querySelector<HTMLElement>(props.strips === 'dual'
+      ? '[data-testid="channel-strip-SUB"]' : '[data-receiver-instrument="SUB"]')!;
+    const frequency = instrument.querySelector<HTMLElement>('[data-vfo-freq]')!;
+    expect(frequency.dataset.freqTunable).toBe('false');
+    expect(frequency.querySelector('.freq')?.getAttribute('aria-disabled')).toBe('true');
+    expect(frequency.querySelector('.freq')?.getAttribute('tabindex')).toBe('-1');
+  });
+
   it('keeps both S-meter shells mounted but unknown across a provider mismatch', () => {
     render({ ...caps('main_sub', 2), providerGeneration: 2 });
     expect(rowReceivers(target)).toEqual(['MAIN', 'SUB']);
