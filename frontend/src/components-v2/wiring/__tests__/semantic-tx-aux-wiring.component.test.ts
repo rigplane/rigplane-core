@@ -373,6 +373,7 @@ afterEach(() => {
 
 describe('L1 hosted desktop TX auxiliary composition', () => {
   it('places all five finite and eight scalar handles independently', () => {
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     renderHostedDesktop();
 
     const fields = [
@@ -383,6 +384,7 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
     const remainder = q('[data-testid="tx-aux-surface"]');
     const finiteGrid = q('.tx-aux-finite-grid');
     const grid = q('.tx-aux-scalar-grid');
+    const reasons = q('[data-testid="tx-aux-tune-blocked"]');
 
     expect(target.querySelectorAll('[data-zone-id="tx-aux"]')).toHaveLength(1);
     expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
@@ -392,6 +394,9 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
     expect(grid?.closest('[data-zone-id="tx-aux"]')).toBe(zone);
     expect(finiteGrid?.querySelectorAll(':scope > .tx-aux-finite-seat')).toHaveLength(5);
     expect(grid?.querySelectorAll(':scope > .tx-aux-scalar-seat')).toHaveLength(8);
+    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
+    expect(reasons?.querySelectorAll('[data-reason]')).toHaveLength(2);
+    expect(grid!.compareDocumentPosition(reasons!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     for (const [field, testid] of [
       ['atu', 'tx-aux-atu'], ['vox', 'tx-aux-vox'], ['compressor', 'tx-aux-compressor'],
@@ -417,6 +422,17 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
 });
 
 describe('selected finite TX auxiliary authority lifetime', () => {
+  it('keeps one external Standard reason list after every scalar', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    renderHostedDesktop();
+    const reasons = q('[data-testid="tx-aux-tune-blocked"]')!;
+    expect(q('[data-testid="external-TUNE"]')).not.toBeNull();
+    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
+    expect(q('.tx-aux-scalar-grid')!.compareDocumentPosition(reasons)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('keeps the selected external appearance inert when authority is absent', () => {
     h.selectedFiniteAppearance = finiteAppearance;
     h.session = { state: 'disconnected', epoch: 7 };
@@ -673,13 +689,17 @@ describe('ATU TUNE is gated by the live App TX authority', () => {
   });
 
   it.each(['native', 'external'] as const)('rechecks live authority behind the %s TUNE path', (path) => {
+    const liveSnapshot = new ManagedAppTxHarness();
+    h.txController = Object.freeze({
+      ...txHarness.controller, snapshot: () => liveSnapshot.controller.snapshot(),
+    });
     if (path === 'external') h.selectedFiniteAppearance = finiteAppearance;
     render();
     const tune = q<HTMLButtonElement>(path === 'native'
       ? '[data-testid="tx-aux-atu-tune"]' : '[data-testid="external-TUNE"]')!;
     const invoke = path === 'native' ? () => tune.click() : retainedInvocations.get('TUNE')!;
     expect(tune.disabled).toBe(false);
-    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+    liveSnapshot.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
     expect(tune.disabled).toBe(false);
     invoke();
     expect(h.atuTune).not.toHaveBeenCalled();

@@ -1265,7 +1265,7 @@
     showFinite = true, showScalars = true,
   )}
     {#if view?.txAux}
-      <TxAuxSurface {view} {finiteHandles} {scalarHandles} {showFinite} {showScalars} />
+      <TxAuxSurface {view} tx={txState} {finiteHandles} {scalarHandles} {showFinite} {showScalars} />
     {/if}
   {/snippet}
 
@@ -1666,8 +1666,8 @@
   {/snippet}
   {#snippet hostedTxAux(instrumentLayout: Snippet, allowBare = allowBareSurfaces)}
     {#snippet body()}
-      {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
       {@render instrumentLayout()}
+      {@render txAuxSurface(txAuxInstruments, txAuxScalars, false, false)}
     {/snippet}
     {@render zoned('txAux', view?.txAux !== undefined, body, allowBare)}
   {/snippet}

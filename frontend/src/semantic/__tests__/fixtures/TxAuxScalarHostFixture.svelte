@@ -39,13 +39,9 @@
     {#snippet finiteComposition(finite: TxAuxFiniteHandles)}
       {#key presentation}
         {#if presentation === 'grouped'}
-          <TxAuxSurface {view} scalarHandles={scalars} finiteHandles={finite} />
+          <TxAuxSurface {view} {tx} scalarHandles={scalars} finiteHandles={finite} />
         {:else}
           <section data-testid="independent-tx-aux-composition" aria-label="Transmit auxiliary controls">
-            <TxAuxSurface
-              {view} scalarHandles={scalars} finiteHandles={finite}
-              showScalars={false} showFinite={false}
-            />
             <div class="tx-aux-row" data-testid="independent-tx-aux-finite">
               <div data-slot="monitor">{@render finite.monitor()}</div>
               <div data-slot="atu">{@render finite.atu()}</div>
@@ -63,6 +59,10 @@
               <div data-slot="delay">{@render scalars.voxDelay(scalarPresentation)}</div>
               <div data-slot="monitor">{@render scalars.monitorLevel(scalarPresentation)}</div>
             </div>
+            <TxAuxSurface
+              {view} {tx} scalarHandles={scalars} finiteHandles={finite}
+              showScalars={false} showFinite={false}
+            />
           </section>
         {/if}
       {/key}

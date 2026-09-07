@@ -92,7 +92,9 @@ describe('TxAuxFiniteHost native composition', () => {
     r.props.presentation = 'independent';
     flushSync();
     expect(target.querySelectorAll('[data-testid="tx-aux-surface"]')).toHaveLength(1);
-    expect(target.querySelector('[data-testid="tx-aux-surface"]')?.children).toHaveLength(0);
+    expect(target.querySelector('[data-testid="tx-aux-surface"]')?.children).toHaveLength(1);
+    expect(target.querySelector('[data-testid="tx-aux-surface"]')?.firstElementChild
+      ?.getAttribute('data-testid')).toBe('tx-aux-tune-blocked');
     expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(4);
     expect(target.querySelectorAll('[data-testid="tx-aux-atu-tune"]')).toHaveLength(1);
     expect(target.querySelectorAll('[role="slider"]')).toHaveLength(8);
@@ -116,6 +118,10 @@ describe('TxAuxFiniteHost native composition', () => {
     expect(vox.title).toBe('Not yet observed');
     expect(tune.disabled).toBe(true);
     expect(tune.title.length).toBeGreaterThan(0);
+    const reasons = target.querySelector('[data-testid="tx-aux-tune-blocked"]')!;
+    const scalars = target.querySelectorAll('[role="slider"]');
+    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
+    expect(scalars[7]!.compareDocumentPosition(reasons) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     bypassClick(vox);
     bypassClick(tune);
     expect(r.onToggle).not.toHaveBeenCalled();
@@ -151,6 +157,7 @@ describe('TxAuxFiniteHost external leases', () => {
     const r = render({
       finiteAppearance: appearance,
       rendererContext: createFiniteRendererContext(),
+      tx: BLOCKED,
       view: {
         ...view,
         txAux: {
@@ -164,6 +171,11 @@ describe('TxAuxFiniteHost external leases', () => {
     expect(atu.ariaPressed).toBe('true');
     expect(atu.ariaLabel).toBe('ATU: tuning');
     expect(vox.disabled).toBe(true);
+    const reasons = target.querySelector('[data-testid="tx-aux-tune-blocked"]')!;
+    const scalars = target.querySelectorAll('[role="slider"]');
+    expect(target.querySelectorAll('[data-testid="tx-aux-tune-blocked"]')).toHaveLength(1);
+    expect(reasons.querySelectorAll('[data-reason]')).toHaveLength(2);
+    expect(scalars[7]!.compareDocumentPosition(reasons) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     bypassClick(vox);
     expect(r.onToggle).not.toHaveBeenCalled();
     r.dispose();

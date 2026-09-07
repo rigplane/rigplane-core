@@ -303,16 +303,14 @@
 {/snippet}
 
 {#snippet txAuxInstrumentLayout()}
-  <div class="tx-aux-instrument-layout">
-    <div class="tx-aux-finite-grid">
-      <div class="tx-aux-finite-seat" data-field="atu">{@render instruments.txAuxInstruments.atu()}</div>
-      <div class="tx-aux-finite-seat" data-field="vox">{@render instruments.txAuxInstruments.vox()}</div>
-      <div class="tx-aux-finite-seat" data-field="compressor">{@render instruments.txAuxInstruments.compressor()}</div>
-      <div class="tx-aux-finite-seat" data-field="monitor">{@render instruments.txAuxInstruments.monitor()}</div>
-      <div class="tx-aux-finite-seat" data-field="atuTune">{@render instruments.txAuxInstruments.atuTune()}</div>
-    </div>
-    {@render txAuxScalars()}
+  <div class="tx-aux-finite-grid">
+    <div class="tx-aux-finite-seat" data-field="atu">{@render instruments.txAuxInstruments.atu()}</div>
+    <div class="tx-aux-finite-seat" data-field="vox">{@render instruments.txAuxInstruments.vox()}</div>
+    <div class="tx-aux-finite-seat" data-field="compressor">{@render instruments.txAuxInstruments.compressor()}</div>
+    <div class="tx-aux-finite-seat" data-field="monitor">{@render instruments.txAuxInstruments.monitor()}</div>
+    <div class="tx-aux-finite-seat" data-field="atuTune">{@render instruments.txAuxInstruments.atuTune()}</div>
   </div>
+  {@render txAuxScalars()}
 {/snippet}
 
 {#snippet semanticDeckContent(appearance: 'standard' | 'sdr' | 'semantic', allowBare = false)}
@@ -643,10 +641,7 @@
   .desktop-control-face .content-center { width: 100%; }
   .desktop-control-face :global(.spectrum-toolbar) { height: auto; min-height: 32px; flex-wrap: wrap; }
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
-  .tx-aux-instrument-layout { display: flex; flex-wrap: wrap; column-gap: 0.5rem; row-gap: 0.25rem; }
-  .tx-aux-finite-grid, .tx-aux-finite-seat[data-field='atuTune'] { display: contents; }
-  .tx-aux-instrument-layout .tx-aux-scalar-grid { order: 2; flex-basis: 100%; }
-  .tx-aux-instrument-layout :global(.tx-aux-blocked) { order: 3; flex-basis: 100%; }
+  .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .tx-aux-scalar-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

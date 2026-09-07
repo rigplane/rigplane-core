@@ -181,9 +181,9 @@
       {#if atuReason !== undefined}
         <span id={tuneAtuReasonId} class="sr-only">{atuReason}</span>
       {/if}
-      <ul class="tx-aux-blocked" id={blockedId} data-testid="tx-aux-tune-blocked">
-        {#each tuneBlocked as code (code)}<li data-reason={code}>{blockedLabel(code)}</li>{/each}
-      </ul>
+    {/if}
+    {#if tuneBlocked.length > 0}
+      <span id={blockedId} class="sr-only">{tuneBlocked.map((code) => blockedLabel(code)).join('; ')}</span>
     {/if}
   {/if}
 {/snippet}
@@ -191,8 +191,6 @@
 {@render children({ atu, vox, compressor, monitor, atuTune })}
 
 <style>
-  .tx-aux-blocked { margin: 0; padding-inline-start: 1.2em; }
-  .tx-aux-blocked:empty { display: none; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .tx-aux-toggle[aria-pressed='true'] { font-weight: 700; }
   .tx-aux-toggle:disabled, .tx-aux-tune:disabled { cursor: not-allowed; }
