@@ -7,6 +7,7 @@ import type { RxAudioInstrumentHandles } from '../../semantic/rx-audio-instrumen
 import type { RfFrontEndLevelHandles } from '../../semantic/rf-front-end-instruments';
 import type { DspFiniteLayout } from '../../semantic/dsp-instruments';
 import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.svelte';
+import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
@@ -27,7 +28,7 @@ export interface InstrumentComposition {
   readonly meters: Snippet<[allowBare?: boolean]>;
   readonly rxAudio: Snippet<[allowBare?: boolean]>;
   readonly rfFrontEnd: Snippet<[allowBare?: boolean]>;
-  readonly filter: Snippet<[allowBare?: boolean]>;
+  readonly filter: Snippet<[allowBare?: boolean, finiteLayout?: FilterFiniteLayout]>;
   readonly dsp: Snippet<[allowBare?: boolean, finiteLayout?: DspFiniteLayout]>;
   readonly band: Snippet<[allowBare?: boolean]>;
   readonly antenna: Snippet<[allowBare?: boolean]>;

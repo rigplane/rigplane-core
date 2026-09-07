@@ -31,6 +31,7 @@
   import VfoHeader from './VfoHeader.svelte';
   import type { InstrumentComposition } from '../wiring/instrument-composition';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
+  import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -323,6 +324,13 @@
   </div>
 {/snippet}
 
+{#snippet filterFiniteLayout(filterInstruments: FilterInstrumentHandles)}
+  <div class="filter-finite-grid" data-testid="filter-finite-grid">
+    <div class="filter-finite-seat" data-field="mode">{@render filterInstruments.mode()}</div>
+    <div class="filter-finite-seat" data-field="filter">{@render filterInstruments.filter()}</div>
+  </div>
+{/snippet}
+
 {#snippet vfoOperationControls()}
   <div class="vfo-operation-instrument-grid" data-testid="vfo-operation-instrument-grid">
     {#if instruments.vfoOperations.split}<div class="vfo-operation-instrument-seat" data-field="split">{@render instruments.vfoOperations.split()}</div>{/if}
@@ -374,7 +382,11 @@
 
       <div class="desktop-controls-left">
         {@render instruments.rfFrontEnd()}
-        {@render instruments.filter()}
+        {#if skinId === 'desktop-v2'}
+          {@render instruments.filter(undefined, filterFiniteLayout)}
+        {:else}
+          {@render instruments.filter()}
+        {/if}
         {@render instruments.band()}
         {@render instruments.antenna()}
         {@render instruments.ritXitScan()}

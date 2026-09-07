@@ -59,6 +59,8 @@
   import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
   import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
+  import FilterInstrumentHost from '../../semantic/FilterInstrumentHost.svelte';
+  import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { MeterContinuitySession } from '../../primitives/meters/meter-ballistics.svelte';
   import {
@@ -544,6 +546,12 @@
     topologyId: string;
     activeReceiver: 'MAIN' | 'SUB' | 'unknown';
   }>;
+  type FilterFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
   type VfoFiniteAuthority = Readonly<{
     sessionEpoch: number;
     providerGeneration: number;
@@ -634,6 +642,26 @@
       topologyId: model.topologyId,
     });
   }
+  function filterFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): FilterFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    if (model?.modeFilter === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
   const sameScopeFiniteAuthority = (
     left: ScopeFiniteAuthority | null | undefined,
     right: ScopeFiniteAuthority | null,
@@ -674,6 +702,16 @@
         && left.providerGeneration === right.providerGeneration
         && left.topologyId === right.topologyId
   );
+  const sameFilterFiniteAuthority = (
+    left: FilterFiniteAuthority | null | undefined,
+    right: FilterFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
   const readSelectedFiniteAppearance = 'getSelectedFiniteControlAppearance' in componentKitActivation
     ? componentKitActivation.getSelectedFiniteControlAppearance : undefined;
   const selectedFiniteAppearance = readSelectedFiniteAppearance?.();
@@ -681,10 +719,12 @@
   let txAuxFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let dspFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let vfoFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let filterFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
   let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
   let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
   let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
+  let lastFilterFiniteAuthority: FilterFiniteAuthority | null | undefined;
   const unsubscribeScopeFiniteAuthority = selectedFiniteAppearance === undefined ? undefined
     : runtime.subscribeControlAuthority((publication) => {
       const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
@@ -713,6 +753,13 @@
         lastVfoFiniteAuthority = nextVfo;
         vfoFiniteRendererContext = nextVfo === null ? null : createFiniteRendererContext();
       }
+      const nextFilter = filterFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameFilterFiniteAuthority(lastFilterFiniteAuthority, nextFilter)) {
+        lastFilterFiniteAuthority = nextFilter;
+        filterFiniteRendererContext = nextFilter === null ? null : createFiniteRendererContext();
+      }
     });
   onDestroy(() => unsubscribeScopeFiniteAuthority?.());
   let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
@@ -728,6 +775,10 @@
   let vfoFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: vfoFiniteRendererContext,
+    });
+  let filterFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: filterFiniteRendererContext,
     });
 
   let scopeFrameSource = $derived(
@@ -1166,6 +1217,12 @@
   >
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
+  <FilterInstrumentHost
+    {...filterFiniteRendererSelection} {view} {pendingFilter}
+    onModeChange={filterIntents.onModeChange}
+    onFilterChange={filterIntents.onFilterChange}
+  >
+  {#snippet children(filterInstruments)}
   <DspInstrumentHost
     {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr}
     onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
@@ -1509,16 +1566,13 @@
     (`sdr-test`, `mobile` and the two `lcd-*` layouts declare no `filter` zone
     either), so it still renders nothing there.
   -->
-  {#snippet filterSurface()}
+  {#snippet filterSurface(finiteLayout?: FilterFiniteLayout)}
     {#if view?.modeFilter || view?.filterPassband}
       <FilterSurface
-        {view}
-        {pendingFilter}
+        {view} handles={filterInstruments} {finiteLayout}
         {pendingDataMode}
         {filterWidthFeedback}
         onDataModeChange={filterIntents.onDataModeChange}
-        onModeChange={filterIntents.onModeChange}
-        onFilterChange={filterIntents.onFilterChange}
         onFilterWidthChange={filterIntents.onFilterWidthChange}
         onFilterShapeChange={filterIntents.onFilterShapeChange}
         onIfShiftChange={filterIntents.onIfShiftChange}
@@ -1822,10 +1876,13 @@
   {#snippet hostedRfFrontEnd(allowBare = allowBareSurfaces)}
     {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBare)}
   {/snippet}
-  {#snippet hostedFilter(allowBare = allowBareSurfaces)}
+  {#snippet hostedFilter(
+    allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout,
+  )}
+    {#snippet body()}{@render filterSurface(finiteLayout)}{/snippet}
     {@render zoned(
       'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined,
-      filterSurface, allowBare,
+      body, allowBare,
     )}
   {/snippet}
   {#snippet hostedDsp(
@@ -2058,6 +2115,8 @@
   {/if}
   {/snippet}
   </DspInstrumentHost>
+  {/snippet}
+  </FilterInstrumentHost>
   {/snippet}
   <VfoOperationSeatHost
     {...vfoFiniteRendererSelection} input={vfoOperationInput} scheme={view?.vfoScheme ?? null}
