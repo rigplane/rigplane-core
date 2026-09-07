@@ -1328,7 +1328,7 @@ describe('MOR-1082 — the semantic vertical consults the resolved surface plan'
 // composition only — rxAudio). Every pin above proves it exclusively against
 // txAux, which was the only one OF THOSE THREE a real manifest declared a
 // zone for when these pins were written (`vfo`/`rxTx` had zones from the
-// start; `desktop-v2` declares all fourteen surfaces today) —
+// start) —
 // a wiring change that special-cased `if (surface === 'txAux')` would pass
 // every one of them just as well. These pins exercise the SAME mechanism
 // against `meters`, a structurally unrelated surface, through a SYNTHETIC
