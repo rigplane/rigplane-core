@@ -23,6 +23,7 @@ import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
+import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 
 
 const h = vi.hoisted(() => ({
@@ -176,6 +177,11 @@ const METER_PATHS = [
   'powerMeter', 'swrMeter', 'alcMeter', 'compMeter', 'vdMeter', 'idMeter',
   'main.sMeter', 'sub.sMeter', 'compressorOn', 'compressorLevel',
 ];
+const S_METER_CAL = [
+  { raw: 0, actual: -54, label: 'S0' },
+  { raw: 120, actual: 0, label: 'S9' },
+  { raw: 241, actual: 60, label: 'S9+60' },
+];
 
 function liveState(withMeters: boolean, over: Partial<ServerState> = {}): ServerState {
   const paths = ['active', 'split', 'dualWatch', 'txTarget'];
@@ -197,7 +203,10 @@ function liveState(withMeters: boolean, over: Partial<ServerState> = {}): Server
     main: receiver(14250000), sub: receiver(14300000),
     ...(withMeters ? METER_STATE : {}),
     ...over,
-    fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
+    fieldStatus: Object.fromEntries(paths.map((p) => [
+      p, p === 'main.sMeter' || p === 'sub.sMeter'
+        ? { ...fresh, quality: ['calibrated'] } : fresh,
+    ])),
   } as unknown as ServerState;
 }
 
@@ -211,6 +220,7 @@ const liveCaps = (withMeters: boolean): Capabilities => ({
   audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
+  meterCalibrations: withMeters ? { s_meter: S_METER_CAL } : undefined,
   scopeSource: null, audioFftAvailable: false,
 } as unknown as Capabilities);
 
@@ -271,6 +281,7 @@ beforeEach(() => {
   h.txController = txHarness.controller;
   h.state = liveState(true);
   h.caps = liveCaps(true);
+  expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   h.session = { state: 'connected', epoch: 1 };
   h.sessionSubscriber = null;
   h.noop.mockReset();
@@ -284,6 +295,7 @@ afterEach(() => {
   expect(txHarness.trace()).toEqual([]);
   expect(h.sessionSubscriber).toBeNull();
   document.body.innerHTML = '';
+  clearCapabilities();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -382,22 +394,23 @@ describe('the meters surface mounts only when the view model carries the group',
     ): void => {
       h.state = signalState(active, sMeter, providerGeneration);
       h.caps = { ...liveCaps(true), providerGeneration };
+      expect(setCapabilities(h.caps as Capabilities)).toBe(true);
       push({});
     };
     const signalObserved = (): string | undefined =>
       q('[data-testid="meter-signal"]')!.dataset.observed;
     const armPeak = (active: 'MAIN' | 'SUB', providerGeneration = 1): number => {
-      setSignal(active, 240, providerGeneration);
-      setSignal(active, 60, providerGeneration);
+      setSignal(active, 40, providerGeneration);
+      setSignal(active, -30, providerGeneration);
       expect(signalObserved()).toBe('true');
       expect(signalHasPeak()).toBe(true);
       return signalFillCount();
     };
 
-    h.state = signalState('MAIN', 240);
+    h.state = signalState('MAIN', 40);
     render();
     const receiverFill = armPeak('MAIN');
-    setSignal('SUB', 60);
+    setSignal('SUB', -30);
     expect(signalObserved()).toBe('true');
     expect(signalFillCount()).toBe(receiverFill);
     expect(signalHasPeak()).toBe(false);
@@ -409,7 +422,7 @@ describe('the meters surface mounts only when the view model carries the group',
     expect(signalHasPeak()).toBe(false);
 
     const providerFill = armPeak('SUB');
-    setSignal('SUB', 60, 2);
+    setSignal('SUB', -30, 2);
     expect(signalObserved()).toBe('true');
     expect(signalFillCount()).toBe(providerFill);
     expect(signalHasPeak()).toBe(false);

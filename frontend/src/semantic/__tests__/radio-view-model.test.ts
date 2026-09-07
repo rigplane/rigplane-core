@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateRadioViewModel, type RadioViewModel } from '../radio-view-model';
-import { withModeFilter, withFilterPassband } from '../fixtures/topologies';
+import { topologyFixtures, withMeters, withModeFilter, withFilterPassband } from '../fixtures/topologies';
 
 function valid(): RadioViewModel {
   return {
@@ -105,6 +105,55 @@ describe('validateRadioViewModel', () => {
       .receiverIndicators![0].sMeter.source).toEqual(MAIN_S_SOURCE);
     expect(validateRadioViewModel(withReceiverSource('SUB', SUB_S_SOURCE))
       .receiverIndicators![0].sMeter.source).toEqual(SUB_S_SOURCE);
+  });
+
+  it.each([
+    { kind: 'engineering', unit: 'db' }, { kind: 'raw' }, { kind: 'unknown' },
+  ] as const)('round-trips receiver S-meter domain %j', (domain) => {
+    const indicator = receiverIndicator();
+    const model = validateRadioViewModel({
+      ...valid(), receiverIndicators: [{
+        ...indicator, sMeter: { ...indicator.sMeter, domain },
+      }],
+    });
+    expect(model.receiverIndicators![0].sMeter.domain).toEqual(domain);
+  });
+
+  it.each([
+    { kind: 'engineering', unit: 'ratio' },
+    { kind: 'engineering' },
+    { kind: 'raw', unit: 'db' },
+    { kind: 'unknown', source: 'guess' },
+    { kind: 'mystery' },
+  ])('rejects malformed receiver S-meter domain %j', (domain) => {
+    const indicator = receiverIndicator();
+    expect(() => validateRadioViewModel({
+      ...valid(), receiverIndicators: [{
+        ...indicator, sMeter: { ...indicator.sMeter, domain },
+      }],
+    })).toThrow(TypeError);
+  });
+
+  it('preserves omitted legacy station domain and validates explicit station signal domain', () => {
+    const legacy = withMeters(topologyFixtures['1/single']);
+    expect(validateRadioViewModel(legacy).meters!.signal).not.toHaveProperty('domain');
+
+    const explicit = {
+      ...legacy,
+      meters: {
+        ...legacy.meters!,
+        signal: { ...legacy.meters!.signal, domain: { kind: 'engineering', unit: 'db' } },
+      },
+    } as const;
+    expect(validateRadioViewModel(explicit).meters!.signal.domain)
+      .toEqual({ kind: 'engineering', unit: 'db' });
+    expect(() => validateRadioViewModel({
+      ...legacy,
+      meters: {
+        ...legacy.meters!,
+        signal: { ...legacy.meters!.signal, domain: { kind: 'engineering', unit: 'w' } },
+      },
+    })).toThrow(TypeError);
   });
 
   it.each([

@@ -27,7 +27,8 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
-  MeterField, MeterRfState, MeterSourceIdentity, MeterSourcePath, MetersViewModel,
+  MeterEngineeringUnit, MeterField, MeterRfState, MeterSourceIdentity, MeterSourcePath,
+  MeterValueDomain, MetersViewModel,
   AudioFocus, MonitorMode, RxAudioViewModel, ModeFilterViewModel,
   ActiveFilterConfiguration, FilterPassbandViewModel, DspViewModel, RfFrontEndViewModel,
   BandChoice, BandViewModel, RitXitViewModel, AntennaViewModel, ScanViewModel,
@@ -273,6 +274,34 @@ function meterRfState(tx: MetersTxAuthority): MeterRfState {
   return tx.radioTx === 'off' && tx.txRisk === 'none' ? 'receiving' : 'unknown';
 }
 
+const METER_UNIT_BY_PATH = {
+  'main.sMeter': 'db', 'sub.sMeter': 'db', powerMeter: 'w', swrMeter: 'ratio',
+  alcMeter: 'normalized', compMeter: 'db', vdMeter: 'v', idMeter: 'a',
+} as const satisfies Readonly<Record<MeterSourcePath, MeterEngineeringUnit>>;
+
+/**
+ * Observation quality says what the backend published; capability calibration
+ * only says which projection geometry is available. Exactly one decisive token
+ * in an otherwise all-string array establishes the domain. Live fields always
+ * receive an explicit result, including `unknown`.
+ */
+function meterValueDomain(
+  state: ServerState | null, path: MeterSourcePath, qualified: boolean,
+): MeterValueDomain {
+  if (!qualified) return { kind: 'unknown' };
+  const quality: readonly unknown[] | undefined = state?.fieldStatus?.[path]?.quality;
+  if (!Array.isArray(quality) || quality.some((value) => typeof value !== 'string')) {
+    return { kind: 'unknown' };
+  }
+  const decisive = quality.filter(
+    (value) => value === 'calibrated' || value === 'uncalibrated',
+  );
+  if (decisive.length !== 1) return { kind: 'unknown' };
+  return decisive[0] === 'calibrated'
+    ? { kind: 'engineering', unit: METER_UNIT_BY_PATH[path] }
+    : { kind: 'raw' };
+}
+
 function meterField(
   structural: boolean, observation: DisplayObservation<number>, relevant: boolean,
   state: ServerState,
@@ -285,6 +314,9 @@ function meterField(
     reading: operational ? { status: 'known', value: observation.value } : { status: 'unknown' },
     availability: { structural, operational },
     relevant,
+    domain: source === null
+      ? { kind: 'unknown' }
+      : meterValueDomain(state, source.path, operational),
     source: operational && source !== null
       && typeof providerGeneration === 'number'
       && Number.isSafeInteger(providerGeneration) && providerGeneration >= 0
@@ -909,6 +941,9 @@ function deriveReceiverIndicators(
         ...txAuxField(
           true, sMeterOperational,
           sMeterObservation.state === 'current' ? sMeterObservation.value : undefined,
+        ),
+        domain: meterValueDomain(
+          state, receiver === 'MAIN' ? 'main.sMeter' : 'sub.sMeter', sMeterOperational,
         ),
         source: sMeterOperational
           && typeof providerGeneration === 'number'

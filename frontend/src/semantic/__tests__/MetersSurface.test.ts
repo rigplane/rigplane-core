@@ -32,12 +32,14 @@ import MetersSurface from '../MetersSurface.svelte';
 import { projectBarMeters, type BarMeterKey } from '../bar-meter-projector';
 import { topologyFixtures, withMeters, withTxAux } from '../fixtures/topologies';
 import type {
-  Availability, MeterField, MeterRfState, MetersViewModel, RadioViewModel,
+  Availability, MeterField, MeterRfState, MetersViewModel, MeterValueDomain, RadioViewModel,
 } from '../radio-view-model';
 import { RF_LABEL, RF_MARK } from '../rx-tx-surface';
 import { isAlcFault, isSwrFault } from '../../components-v2/panels/meter-utils';
+import { dimColor } from '../../components-v2/meters/bar-gauge-utils';
 import type { Capabilities } from '$lib/types/capabilities';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
+import { getDesignLanguage, registerDesignLanguage } from '../../presentation/languages/contract';
 
 // MOR-1470: swr/alc tables for the fault-highlighting suite — fault
 // predicates only fire in the calibrated engineering domain.
@@ -130,6 +132,16 @@ function withRaw(view: RadioViewModel, field: MeterKey, value: number): RadioVie
       ...meters,
       [field]: { ...current, reading: { status: 'known', value } } satisfies MeterField,
     } as MetersViewModel,
+  };
+}
+
+function withSignalDomain(view: RadioViewModel, domain: MeterValueDomain): RadioViewModel {
+  return {
+    ...view,
+    meters: {
+      ...view.meters!,
+      signal: { ...view.meters!.signal, domain },
+    },
   };
 }
 
@@ -650,6 +662,94 @@ describe('raw sMeter renders honestly, never a fabricated S-unit (MOR-1451)', ()
   });
 });
 
+describe('station signal rendering honors the explicit sample domain (MOR-2425)', () => {
+  const S_METER_CAL = [
+    { raw: 0, actual: -54, label: 'S0' },
+    { raw: 130, actual: 0, label: 'S9' },
+    { raw: 240, actual: 40, label: 'S9+40' },
+  ];
+
+  const PROBE_ZONES = [
+    { end: 0.5, color: '#102030' },
+    { end: 1, color: '#D0E0F0' },
+  ] as const;
+  const BAR_FIELDS = ['power', 'alc', 'drainCurrent', 'drainVoltage', 'compression'] as const;
+
+  function withProbeMeterLanguage(fn: () => void): void {
+    const original = getDesignLanguage('fieldline')!;
+    registerDesignLanguage({
+      ...original,
+      renderers: {
+        ...original.renderers,
+        meters: () => ({
+          kind: 'domain-probe-meter', segmentCount: 12, segmentGapPx: 3,
+          toneBelowS9: '#112233', toneAboveS9: '#AABBCC', zones: PROBE_ZONES,
+          unknown: false,
+        }),
+      },
+    });
+    document.documentElement.dataset.designLanguage = 'fieldline';
+    try {
+      fn();
+    } finally {
+      registerDesignLanguage(original);
+      delete document.documentElement.dataset.designLanguage;
+    }
+  }
+
+  it.each([
+    [{ kind: 'raw' } as const, 53, 'uncalibrated'],
+    [{ kind: 'unknown' } as const, 53, 'unit unknown'],
+  ])('keeps selected bar palettes but withholds S semantics for explicit %j', (domain, value, stateText) => {
+    const caps = makeFaultCaps();
+    caps.meterCalibrations!.s_meter = S_METER_CAL;
+    setCapabilities(caps);
+    try {
+      withProbeMeterLanguage(() => {
+        const view = withSignalDomain(withRaw(base(), 'signal', value), domain);
+        withSurface(view, (s) => {
+          const signal = s.tile('signal')!;
+          expect(signal.textContent).toContain(String(value));
+          expect(signal.textContent).toContain(stateText);
+          expect(signal.textContent).not.toMatch(/S[0-9]|dBm/);
+          expect(signal.querySelectorAll('[data-main-relevant] line')).toHaveLength(0);
+          expect(signal.querySelectorAll('[data-segment]')).toHaveLength(20);
+          expect([...signal.attributes].some((attribute) => attribute.name.startsWith('data-dl-')))
+            .toBe(false);
+
+          for (const field of BAR_FIELDS) {
+            const fills = [...s.tile(field)!.querySelectorAll('rect')]
+              .map((rect) => rect.getAttribute('fill'));
+            expect(fills).toContain(dimColor(PROBE_ZONES[0].color));
+            expect(fills).toContain(dimColor(PROBE_ZONES[1].color));
+          }
+        });
+      });
+    } finally {
+      clearCapabilities();
+    }
+  });
+
+  it('retains engineering text but suppresses unsupported motion without a table', () => {
+    setCapabilities(makeFaultCaps());
+    try {
+      const view = withSignalDomain(withRaw(base(), 'signal', -12), {
+        kind: 'engineering', unit: 'db',
+      });
+      withSurface(view, (s) => {
+        const tile = s.tile('signal')!;
+        expect(tile.textContent).toContain('\u221212 dB rel S9');
+        expect(tile.textContent).toContain('scale unavailable');
+        expect(tile.querySelectorAll('[data-meter-fill], [data-meter-peak]')).toHaveLength(0);
+        expect(tile.querySelectorAll('[data-main-relevant] line')).toHaveLength(0);
+      });
+    } finally {
+      clearCapabilities();
+    }
+  });
+
+});
+
 describe('the host descriptor and LinearSMeter share one signal projection', () => {
   const NONUNIFORM_S_METER_CAL = [
     { raw: 0, actual: -54, label: 'S0' },
@@ -689,7 +789,9 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
     }) as unknown as typeof window.matchMedia;
 
     try {
-      withSurface(withRaw(base(), 'signal', -48), (s) => {
+      withSurface(withSignalDomain(withRaw(base(), 'signal', -48), {
+        kind: 'engineering', unit: 'db',
+      }), (s) => {
         const tile = s.tile('signal')!;
         expect(tile.dataset.dlUnknown).toBe('false');
         expect(tile.dataset.dlLitCount).toBe('1');
@@ -723,7 +825,11 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
       removeEventListener: () => {},
     }) as unknown as typeof window.matchMedia;
 
-    const props: { view: RadioViewModel } = proxy({ view: withRaw(base(), 'signal', -48) });
+    const props: { view: RadioViewModel } = proxy({
+      view: withSignalDomain(withRaw(base(), 'signal', -48), {
+        kind: 'engineering', unit: 'db',
+      }),
+    });
     const component = mount(MetersSurface, { target, props });
     flushSync();
     const tickXs = () => [...target.querySelectorAll<SVGLineElement>('[data-main-relevant] line')]
@@ -769,11 +875,15 @@ describe('the host descriptor and LinearSMeter share one signal projection', () 
     }
   });
 
-  it('creates one projection and reuses its motion and S9 fractions for the descriptor and the exact object for LinearSMeter', () => {
+  it('creates one shared descriptor while permissioning its S-specific consumers separately', () => {
     expect(SOURCE.match(/\bprojectSignalMeter\(/g)).toHaveLength(1);
+    expect(SOURCE.match(/\brenderSlot\(/g)).toHaveLength(1);
     expect(SOURCE).toMatch(/value:\s*signalProjection\.motionFraction/);
-    expect(SOURCE).toMatch(/s9:\s*signalProjection\.s9Fraction/);
+    expect(SOURCE).toMatch(/s9:\s*signalProjection\.crossoverFraction/);
+    expect(SOURCE).toMatch(/projectSignalMeter\([\s\S]*?meters\?\.signal\.domain/);
     expect(SOURCE).toMatch(/<LinearSMeter[\s\S]*?projection=\{signalProjection\}/);
+    expect(SOURCE).toMatch(/zones=\{display\?\.display\?\.zones\}/);
+    expect(SOURCE).toMatch(/display=\{signalDisplay\?\.display\s*\?\?\s*undefined\}/);
     expect(SOURCE).not.toMatch(/\bsLevel\(/);
   });
 });

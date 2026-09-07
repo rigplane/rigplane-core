@@ -187,9 +187,8 @@
 
   // Index of the first visual segment at or above the projected S9 anchor,
   // rescaled by SEG_COUNT so it follows non-20 display geometry.
-  const s9SegmentIndex = $derived(
-    Math.round(signalProjection.s9Fraction * SEG_COUNT),
-  );
+  const crossoverSegmentIndex = $derived(signalProjection.crossoverFraction === null
+    ? null : Math.round(signalProjection.crossoverFraction * SEG_COUNT));
 
   // ── Colors ──────────────────────────────────────────────────────────────────
   const ACTIVE_COLORS: ReadonlyArray<string> = [
@@ -221,8 +220,8 @@
   // still reports strong/over-range readings in the ramp's hot colors
   // rather than collapsing every reading to one fixed color.
   function activeColor(i: number): string {
-    if (hasTone) {
-      return i < s9SegmentIndex ? display.toneBelowS9 : display.toneAboveS9;
+    if (hasTone && crossoverSegmentIndex !== null) {
+      return i < crossoverSegmentIndex ? display.toneBelowS9 : display.toneAboveS9;
     }
     const denom = SEG_COUNT - 1;
     const fraction = denom === 0 ? Math.min(1, Math.max(0, smoothedSegs / SEG_COUNT)) : i / denom;
@@ -239,7 +238,8 @@
   // this PR doesn't already have a caller for). So this stays the same two
   // hex literals it was before, language active or not.
   function dimColor(i: number): string {
-    return i < s9SegmentIndex ? '#0A2415' : '#1A1008';
+    return crossoverSegmentIndex !== null
+      ? (i < crossoverSegmentIndex ? '#0A2415' : '#1A1008') : '#0A2415';
   }
 
   // ── Lower scale row (MOR-2250, PR 2 of 2) ───────────────────────────────────
@@ -363,17 +363,22 @@
   let peakX = $derived(BAR_X + peakSegs * (SEG_W + SEG_GAP));
   // Only show peak line if it's meaningfully ahead of current bar
   let showPeak = $derived(
-    signalProjection.motionFraction !== null && mainPresent && peakSegs - smoothedSegs > 0.3,
+    signalProjection.scaleMode !== 'none' && signalProjection.motionFraction !== null
+      && mainPresent && peakSegs - smoothedSegs > 0.3,
   );
 
   // Peak-line color zones as fractions of the raw 20-segment domain — 15/20
   // and 18/20 are visual gradient stops with no calibration anchor (unlike
-  // s9SegmentIndex above), rescaled the same way so they track SEG_COUNT.
+  // projected crossover above), rescaled the same way so they track SEG_COUNT.
   const peakZoneYellow = $derived(Math.round((15 / RAW_SEGMENT_DOMAIN) * SEG_COUNT));
   const peakZoneOrange = $derived(Math.round((18 / RAW_SEGMENT_DOMAIN) * SEG_COUNT));
 
   // Color of peak line based on zone
-  let peakColor = $derived(peakSegs <= s9SegmentIndex ? 'var(--v2-accent-cyan-bright)' : peakSegs <= peakZoneYellow ? 'var(--v2-accent-yellow)' : peakSegs <= peakZoneOrange ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)');
+  let peakColor = $derived(crossoverSegmentIndex === null
+    ? 'var(--v2-accent-cyan-bright)'
+    : peakSegs <= crossoverSegmentIndex ? 'var(--v2-accent-cyan-bright)'
+      : peakSegs <= peakZoneYellow ? 'var(--v2-accent-yellow)'
+        : peakSegs <= peakZoneOrange ? 'var(--v2-accent-orange-alt)' : 'var(--v2-accent-red-alt)');
 
   // ── Reactive display values ─────────────────────────────────────────────────
   let fullSegs = $derived(signalProjection.motionFraction === null ? 0 : Math.floor(smoothedSegs));
@@ -391,9 +396,13 @@
   const sdrFill = $derived(
     (signalProjection.motionFraction === null ? 0 : meterFrame.smoothedFraction) * SDR_CELLS * 2,
   );
-  const sdrS9 = $derived(signalProjection.s9Fraction * SDR_CELLS * 2);
+  const sdrCrossover = $derived(signalProjection.crossoverFraction === null
+    ? null : signalProjection.crossoverFraction * SDR_CELLS * 2);
   function sdrColor(index: number): string {
-    const aboveS9 = index >= sdrS9;
+    if (sdrCrossover === null) {
+      return index < sdrFill ? '#4FB9EC' : '#1a2230';
+    }
+    const aboveS9 = index >= sdrCrossover;
     return index < sdrFill ? (aboveS9 ? '#FF3030' : '#4FB9EC')
       : (aboveS9 ? '#2a1618' : '#1a2230');
   }
@@ -401,11 +410,11 @@
 
 {#if variant === 'sdr-screen'}
   <svg class="sdr-meter" viewBox="0 0 420 50" preserveAspectRatio="none"
-    data-variant={variant} role="img" aria-label={`S meter ${displaySUnit} ${displayDbm}`}>
+    data-variant={variant} role="img" aria-label={signalProjection.accessibleDescription}>
     {#if mainPresent}
     <g data-main-relevant={relevant ? 'true' : 'false'} opacity={relevant ? 1 : DIM_OPACITY}>
       <g font-family="Roboto Mono, monospace" font-size="11" fill="var(--v2-text-primary, #C8D4E0)" font-weight="700">
-        <text x="4" y="14">{displayDbm === 'uncalibrated' ? 'raw' : 'S'}</text>
+        <text x="4" y="14">{signalProjection.scaleMode === 's' ? 'S' : signalProjection.scaleMode === 'raw' ? 'raw' : 'level'}</text>
         {#each labelMarks as mark}
           <text x={14 + mark.fraction * 328} y="14"
             text-anchor="middle" fill={mark.actual > 0 ? 'var(--v2-accent-red, #FF4040)' : 'var(--v2-text-primary, #C8D4E0)'}>
@@ -420,7 +429,7 @@
       {/each}
       <text x="412" y="31" text-anchor="end" fill="var(--v2-text-primary, #DFFCF5)"
         font-family="Roboto Mono, monospace" font-size="12" font-weight="700">{displaySUnit}</text>
-      {#if displayDbm === 'uncalibrated'}
+      {#if signalProjection.scaleMode === 'raw'}
         <text x="412" y="46" text-anchor="end" fill="var(--v2-text-secondary, #A0B4C8)" font-size="10">uncalibrated</text>
       {/if}
     </g>
@@ -433,6 +442,8 @@
   height="auto"
   preserveAspectRatio="xMidYMid meet"
   data-variant={variant}
+  role="img"
+  aria-label={signalProjection.accessibleDescription}
   data-lower-fault={lowerScale ? (lowerScale.fault ? 'true' : 'false') : undefined}
 >
   <!-- Main-bar content (MOR-2250 fix cycle 2): everything that is NOT the

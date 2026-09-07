@@ -187,6 +187,11 @@ export interface TxAuxViewModel {
  * authority's conclusion, it never computes one.
  */
 export type MeterReading = { status: 'known'; value: number } | { status: 'unknown' };
+export type MeterEngineeringUnit = 'db' | 'normalized' | 'w' | 'ratio' | 'v' | 'a';
+export type MeterValueDomain =
+  | { readonly kind: 'engineering'; readonly unit: MeterEngineeringUnit }
+  | { readonly kind: 'raw' }
+  | { readonly kind: 'unknown' };
 export type MeterSourcePath =
   | 'main.sMeter' | 'sub.sMeter'
   | 'powerMeter' | 'swrMeter' | 'alcMeter' | 'compMeter' | 'vdMeter' | 'idMeter';
@@ -197,6 +202,12 @@ export interface MeterField {
   reading: MeterReading;
   availability: Availability;
   relevant: boolean;
+  /**
+   * Omitted only by pre-MOR-2425 internal fixtures/callers. Live adapters emit
+   * an explicit domain, including `unknown`; consumers must not infer an
+   * explicit unknown domain from profile calibration metadata.
+   */
+  domain?: MeterValueDomain;
   source?: MeterSourceIdentity | null;
 }
 
@@ -1033,6 +1044,8 @@ export interface ScopeDisplayViewModel {
  */
 export type ReceiverIndicatorField<T> = TxAuxField<T>;
 export interface ReceiverSMeterField extends ReceiverIndicatorField<number> {
+  /** Same compatibility rule as `MeterField.domain`. */
+  domain?: MeterValueDomain;
   source?: MeterSourceIdentity | null;
 }
 export interface ReceiverIndicatorViewModel {
@@ -1381,6 +1394,30 @@ const METER_SOURCE_PATHS: readonly MeterSourcePath[] = [
   'main.sMeter', 'sub.sMeter', 'powerMeter', 'swrMeter', 'alcMeter', 'compMeter', 'vdMeter', 'idMeter',
 ];
 type MeterSourceExpectation = 'signal' | Exclude<MeterSourcePath, 'main.sMeter' | 'sub.sMeter'>;
+const METER_UNIT_BY_SOURCE = {
+  'main.sMeter': 'db', 'sub.sMeter': 'db', powerMeter: 'w', swrMeter: 'ratio',
+  alcMeter: 'normalized', compMeter: 'db', vdMeter: 'v', idMeter: 'a',
+} as const satisfies Readonly<Record<MeterSourcePath, MeterEngineeringUnit>>;
+
+function validateMeterValueDomain(
+  value: unknown, path: string, expectedSource: MeterSourceExpectation,
+): MeterValueDomain {
+  const v = record(value, path);
+  if (v.kind === 'engineering') {
+    exactKeys(v, ['kind', 'unit'], path);
+    const unit = oneOf(
+      v.unit, ['db', 'normalized', 'w', 'ratio', 'v', 'a'] as const, `${path}.unit`,
+    );
+    const expectedUnit = expectedSource === 'signal' ? 'db' : METER_UNIT_BY_SOURCE[expectedSource];
+    if (unit !== expectedUnit) invalid(`${path}.unit`, expectedUnit);
+    return { kind: 'engineering', unit };
+  }
+  if (v.kind === 'raw' || v.kind === 'unknown') {
+    exactKeys(v, ['kind'], path);
+    return { kind: v.kind };
+  }
+  return invalid(`${path}.kind`, "'engineering' | 'raw' | 'unknown'");
+}
 
 function validateMeterSource(
   value: unknown, path: string, expected: MeterSourceExpectation,
@@ -1413,7 +1450,7 @@ function validateMeterField(
   value: unknown, path: string, expectedSource: MeterSourceExpectation,
 ): MeterField {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant', 'source'], path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'domain', 'source'], path);
   const r = record(v.reading, `${path}.reading`);
   let reading: MeterReading;
   if (r.status === 'known') {
@@ -1429,6 +1466,9 @@ function validateMeterField(
     reading,
     availability: validateAvailability(v.availability, `${path}.availability`),
     relevant: bool(v.relevant, `${path}.relevant`),
+    ...(v.domain !== undefined
+      ? { domain: validateMeterValueDomain(v.domain, `${path}.domain`, expectedSource) }
+      : {}),
     ...(v.source !== undefined
       ? { source: v.source === null ? null : validateMeterSource(v.source, `${path}.source`, expectedSource) }
       : {}),
@@ -1439,9 +1479,10 @@ function validateDisplayObservedMeterField(
   value: unknown, path: string, expectedSource: MeterSourceExpectation,
 ): DisplayObservedMeterField {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'relevant', 'display', 'source'], path);
+  exactKeys(v, ['reading', 'availability', 'relevant', 'display', 'domain', 'source'], path);
   const strict = validateMeterField({
     reading: v.reading, availability: v.availability, relevant: v.relevant,
+    ...(v.domain !== undefined ? { domain: v.domain } : {}),
     ...(v.source !== undefined ? { source: v.source } : {}),
   }, path, expectedSource);
   return {
@@ -1552,17 +1593,19 @@ function validateReceiverSMeterField(
   value: unknown, path: string, receiver: ReceiverId,
 ): ReceiverSMeterField {
   const v = record(value, path);
-  exactKeys(v, ['reading', 'availability', 'source'], path);
+  exactKeys(v, ['reading', 'availability', 'domain', 'source'], path);
   const strict = validateTxAuxField(
     { reading: v.reading, availability: v.availability }, path, num,
   );
-  if (v.source === undefined) return strict;
-  if (v.source === null) return { ...strict, source: null };
+  const domain = v.domain === undefined
+    ? {} : { domain: validateMeterValueDomain(v.domain, `${path}.domain`, 'signal') };
+  if (v.source === undefined) return { ...strict, ...domain };
+  if (v.source === null) return { ...strict, ...domain, source: null };
   const source = validateMeterSource(v.source, `${path}.source`, 'signal');
   if (source.receiver !== receiver) {
     invalid(`${path}.source`, `the canonical ${receiver} receiver source`);
   }
-  return { ...strict, source };
+  return { ...strict, ...domain, source };
 }
 
 function validateReceiverIndicator(value: unknown, path: string): ReceiverIndicatorViewModel {
