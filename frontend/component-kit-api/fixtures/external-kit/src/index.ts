@@ -2,8 +2,6 @@ import {
   COMPONENT_KIT_API_VERSION,
   defineComponentKit,
   type DesignLanguageManifest,
-  type FiniteControlAppearance,
-  type FrequencyRenderer,
   type HostedComponentKitDeclarationV1,
   type HostedFaceComponentV1,
   type HostedFacePresentationV1,
@@ -12,36 +10,24 @@ import {
   type MeterAppearance,
   type PresentationComponent,
   type PresentationDeclaration,
-  type ScalarAppearance,
 } from '@rigplane/component-kit-api';
 import FaceA from './FaceA.svelte';
 import FaceB from './FaceB.svelte';
+import FixtureActionRenderer from './FixtureActionRenderer.svelte';
+import FixtureChoiceRenderer from './FixtureChoiceRenderer.svelte';
+import FixtureFrequencyRenderer from './FixtureFrequencyRenderer.svelte';
 import FixtureLevelMeter from './FixtureLevelMeter.svelte';
+import FixtureScalarRenderer from './FixtureScalarRenderer.svelte';
 import FixtureSignalMeter from './FixtureSignalMeter.svelte';
+import FixtureToggleRenderer from './FixtureToggleRenderer.svelte';
 
 const component = (() => ({})) as unknown as PresentationComponent;
-const scalarRenderer = (() => ({})) as unknown as NonNullable<ScalarAppearance['hbar']>;
-const frequencyRenderer = (() => ({})) as unknown as FrequencyRenderer;
-const actionRenderer = ((_internals, { lease }) => {
-  void lease.view?.available;
-  return {};
-}) satisfies FiniteControlAppearance['action'];
-const toggleRenderer = ((_internals, { lease }) => {
-  void lease.view?.confirmed;
-  return {};
-}) satisfies FiniteControlAppearance['toggle'];
-const choiceRenderer = ((_internals, { lease }) => {
-  const option = lease.view?.options[0];
-  const request = option === undefined ? undefined : () => lease.invoke(option.value);
-  void request;
-  return {};
-}) satisfies FiniteControlAppearance['choice'];
 const meterAppearance = {
   signal: FixtureSignalMeter,
   level: FixtureLevelMeter,
 } satisfies MeterAppearance;
 
-const language: DesignLanguageManifest = {
+export const reservedDesignLanguage: DesignLanguageManifest = {
   id: 'fixture-line',
   displayName: 'Fixture Line',
   tokens: {
@@ -90,7 +76,7 @@ const faceBLayout: LayoutManifest = {
   fallbackLayoutId: null,
 };
 
-const group: InstrumentGroup = {
+export const reservedInstrumentGroup: InstrumentGroup = {
   schemaVersion: 1,
   id: 'fixture-group',
   canvas: { w: 800, h: 480 },
@@ -128,16 +114,24 @@ export const fixtureKit: HostedComponentKitDeclarationV1 = defineComponentKit({
   apiVersion: COMPONENT_KIT_API_VERSION,
   id: 'external-fixture',
   scalarAppearances: {
-    fixture: { name: 'fixture', hbar: scalarRenderer },
+    fixture: {
+      name: 'fixture',
+      hbar: FixtureScalarRenderer,
+      knob: FixtureScalarRenderer,
+      bipolar: FixtureScalarRenderer,
+      discrete: FixtureScalarRenderer,
+    },
   },
-  frequencyReadouts: { fixture: frequencyRenderer },
+  frequencyReadouts: { fixture: FixtureFrequencyRenderer },
   finiteControlAppearances: {
-    fixture: { action: actionRenderer, toggle: toggleRenderer, choice: choiceRenderer },
+    fixture: {
+      action: FixtureActionRenderer,
+      toggle: FixtureToggleRenderer,
+      choice: FixtureChoiceRenderer,
+    },
   },
   meterAppearances: { fixture: meterAppearance },
-  designLanguages: [language],
   layouts: [faceALayout, faceBLayout],
-  instrumentGroups: [group],
   presentations: [faceAPresentation, faceBPresentation],
 });
 

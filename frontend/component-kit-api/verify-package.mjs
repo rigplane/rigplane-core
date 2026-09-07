@@ -197,6 +197,34 @@ async function assertHostedFaceSources() {
   assert(sources.every((source) => source.includes('showValue:')));
 }
 
+async function assertFixturePublicImports() {
+  const sourceFiles = [
+    'index.ts', 'FaceA.svelte', 'FaceB.svelte',
+    'FixtureScalarRenderer.svelte', 'FixtureFrequencyRenderer.svelte',
+    'FixtureActionRenderer.svelte', 'FixtureToggleRenderer.svelte',
+    'FixtureChoiceRenderer.svelte', 'FixtureSignalMeter.svelte', 'FixtureLevelMeter.svelte',
+  ];
+  for (const name of sourceFiles) {
+    const source = await readFile(path.join(fixtureRoot, 'src', name), 'utf8');
+    const imports = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/gu)]
+      .map((match) => match[1]);
+    for (const specifier of imports) {
+      if (specifier.startsWith('.')) {
+        assert.equal(name, 'index.ts');
+        assert.match(specifier, /^\.\/[^/]+\.svelte$/u);
+      } else {
+        assert(
+          specifier === '@rigplane/component-kit-api' || specifier === 'svelte',
+          `Unexpected fixture source import ${specifier} in ${name}`,
+        );
+      }
+    }
+    for (const forbidden of ['$lib', '/frontend/src/', '@rigplane/component-kit-api/']) {
+      assert(!source.includes(forbidden));
+    }
+  }
+}
+
 function pack(directory, destination) {
   const result = execute('npm', [
     'pack', '--json', '--ignore-scripts', '--pack-destination', destination,
@@ -232,6 +260,7 @@ async function installedSveltePackages(nodeModules) {
 
 execute(process.execPath, [path.join(packageRoot, 'build.mjs')], frontendRoot);
 await assertHostedFaceSources();
+await assertFixturePublicImports();
 
 const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'rigplane-component-kit-'));
 try {
@@ -356,10 +385,17 @@ try {
   assert(fixtureRuntime.includes('fixture-face-a'));
   assert(fixtureRuntime.includes('fixture-face-b'));
   assert(fixtureRuntime.includes('data-external-face'));
+  for (const marker of [
+    'data-fixture-scalar', 'data-fixture-frequency', 'data-fixture-action',
+    'data-fixture-toggle', 'data-fixture-choice',
+  ]) assert(fixtureRuntime.includes(marker));
   assert(!fixtureRuntime.includes('$lib'));
   assert(!fixtureRuntime.includes('/frontend/src/'));
   assert(!fixtureRuntime.includes('InstrumentComposition'));
   assert(!fixtureRuntime.includes('SignalMeterFrame'));
+  assert(!fixtureRuntime.includes('activateComponentKits'));
+  assert(!fixtureRuntime.includes('registerLayouts'));
+  assert(!fixtureRuntime.includes('commitExternalPresentationBatch'));
 
   await writeFile(path.join(consumer, 'package.json'), JSON.stringify({
     name: 'component-kit-portable-consumer',
@@ -627,14 +663,135 @@ mount(App, { target: document.querySelector('#app')! });
   } from '@rigplane/external-component-kit-fixture';
   import type {
     ActionRendererLease,
+    ChoiceRendererLease,
+    FiniteChoiceValue,
+    FrequencyInteraction,
+    FrequencyReadoutModel,
     LevelMeterRendererView,
+    ScalarRendererLease,
+    ScalarRendererSeat,
+    ScalarRendererView,
     SignalMeterRendererView,
+    ToggleRendererLease,
   } from '@rigplane/component-kit-api';
 
-  const appearance = fixtureKit.meterAppearances?.fixture;
-  if (appearance === undefined) throw new Error('packed meter appearance missing');
-  const Signal = appearance.signal;
-  const Level = appearance.level;
+  const scalarAppearance = fixtureKit.scalarAppearances?.fixture;
+  const frequency = fixtureKit.frequencyReadouts?.fixture;
+  const finite = fixtureKit.finiteControlAppearances?.fixture;
+  const meter = fixtureKit.meterAppearances?.fixture;
+  if (scalarAppearance?.hbar === undefined) throw new Error('packed scalar appearance missing');
+  if (frequency === undefined) throw new Error('packed frequency appearance missing');
+  if (finite === undefined) throw new Error('packed finite appearance missing');
+  if (meter === undefined) throw new Error('packed meter appearance missing');
+  const Scalar = scalarAppearance.hbar;
+  const Frequency = frequency;
+  const Action = finite.action;
+  const Toggle = finite.toggle;
+  const Choice = finite.choice;
+  const Signal = meter.signal;
+  const Level = meter.level;
+
+  const rendererHarness = globalThis as typeof globalThis & {
+    __scalarStats: () => Readonly<{
+      attachments: number; attachArguments: number[]; disposals: number;
+      nativeInputs: number[]; keys: string[];
+    }>;
+    __frequencyStats: () => Readonly<{ clicks: number; wheels: number; keys: number }>;
+    __finiteStats: () => Readonly<{
+      actions: number; toggles: number; choices: FiniteChoiceValue[]; disposals: number;
+    }>;
+    __hideConcreteRenderers: () => void;
+  };
+  let scalarPresent = $state(true);
+  let finitePresent = $state(true);
+  const scalarStats = {
+    attachments: 0, attachArguments: [] as number[], disposals: 0,
+    nativeInputs: [] as number[], keys: [] as string[],
+  };
+  const scalarView: ScalarRendererView = {
+    domain: { min: 0, max: 100, step: 5, defaultValue: 25, fineStepDivisor: 10 },
+    domainValid: true, canonical: 25, draft: null, displayed: 25, interactionBase: 25,
+    editable: true, busy: false, interaction: 'idle', evidence: 'reading',
+    reading: { status: 'known', value: 25 }, confirmed: null, target: null, requested: null,
+    phase: null, error: null, presentation: null, announcement: null,
+  };
+  const scalarLease: ScalarRendererLease = {
+    view: scalarView,
+    beginPointer: () => null,
+    pointer: () => {},
+    endPointer: () => {},
+    cancelPointer: () => {},
+    nativeInput: (candidate) => scalarStats.nativeInputs.push(candidate),
+    wheel: () => {},
+    key: ({ key }) => { scalarStats.keys.push(key); return true; },
+    reset: () => {},
+    cancel: () => {},
+    dispose: () => { scalarStats.disposals += 1; },
+  };
+  const scalarSeat: ScalarRendererSeat = {
+    view: scalarView,
+    attachRenderer(...args: []) {
+      scalarStats.attachments += 1;
+      scalarStats.attachArguments.push(args.length);
+      return scalarLease;
+    },
+    cancel: () => {},
+  };
+  rendererHarness.__scalarStats = () => scalarStats;
+
+  const digit = { char: '7', multiplier: 1_000_000, digitIndex: 0 };
+  const frequencyStats = { clicks: 0, wheels: 0, keys: 0 };
+  const frequencyModel: FrequencyReadoutModel = {
+    confirmedHz: 7_100_000, displayHz: 7_100_000, pendingDisplayHz: null,
+    shownHz: 7_100_000, source: 'confirmed', status: 'confirmed', known: true,
+    digits: [digit], groups: { mhz: [digit], khz: [], hz: [] },
+    textGroups: { mhz: '7', khz: '100', hz: '000' },
+  };
+  const frequencyInteraction: FrequencyInteraction = {
+    inert: false, selectedDigitIndex: 0, hoveredDigitIndex: null,
+    handleWheel: () => { frequencyStats.wheels += 1; },
+    handleDigitClick: () => { frequencyStats.clicks += 1; },
+    handleKeyDown: () => { frequencyStats.keys += 1; },
+    handleDigitEnter: () => {},
+    handleDigitLeave: () => {},
+    isSelected: () => true,
+    isHovered: () => false,
+  };
+  rendererHarness.__frequencyStats = () => frequencyStats;
+
+  const finiteStats = {
+    actions: 0, toggles: 0, choices: [] as FiniteChoiceValue[], disposals: 0,
+  };
+  const actionLease: ActionRendererLease = {
+    active: true,
+    view: { label: 'Fixture action', available: true },
+    invoke: () => { finiteStats.actions += 1; },
+    dispose: () => { finiteStats.disposals += 1; },
+  };
+  const toggleLease: ToggleRendererLease = {
+    active: true,
+    view: { label: 'Fixture toggle', available: true, confirmed: false },
+    invoke: () => { finiteStats.toggles += 1; },
+    dispose: () => { finiteStats.disposals += 1; },
+  };
+  const choiceLease: ChoiceRendererLease<FiniteChoiceValue> = {
+    active: true,
+    view: {
+      label: 'Fixture choice', available: true, reading: { status: 'known', value: 'USB' },
+      selected: 'USB', options: [
+        { value: 'USB', label: 'USB' },
+        { value: 'LSB', label: 'LSB', disabled: true, disabledReason: 'Unavailable' },
+      ],
+    },
+    invoke: (value) => finiteStats.choices.push(value),
+    dispose: () => { finiteStats.disposals += 1; },
+  };
+  rendererHarness.__finiteStats = () => finiteStats;
+  rendererHarness.__hideConcreteRenderers = () => {
+    scalarPresent = false;
+    finitePresent = false;
+  };
+
   const engineering = { kind: 'engineering', unit: 'db' } as const;
   const signals: readonly SignalMeterRendererView[] = [
     {
@@ -817,6 +974,30 @@ mount(App, { target: document.querySelector('#app')! });
 {/snippet}
 
 {@render hostedFace()}
+{#if scalarPresent}
+  <Scalar
+    binding={scalarSeat}
+    label="Fixture scalar"
+    compact={true}
+    showLabel={false}
+    showValue={true}
+    unit=" W"
+  />
+{/if}
+<Frequency
+  model={frequencyModel}
+  interaction={frequencyInteraction}
+  presentation="interactive"
+  compact={false}
+  active={true}
+  receiver="main"
+  vfoFreqHook={false}
+/>
+{#if finitePresent}
+  <Action lease={actionLease} />
+  <Toggle lease={toggleLease} />
+  <Choice lease={choiceLease} />
+{/if}
 {#each signals as view}<Signal {view} />{/each}
 {#each levels as view, index}<Level {view} resetPeak={index === 0 ? resetPeak : undefined} />{/each}
 `);
@@ -858,6 +1039,44 @@ mount(App, { target: document.querySelector('#app')! });
         'rfPower', 'micGain', 'driveGain', 'voxGain', 'antiVoxGain',
         'voxDelay', 'compressorLevel', 'monitorLevel',
       ];
+      const scalarControl = page.locator('[data-fixture-scalar]');
+      assert.equal(await scalarControl.count(), 1);
+      assert.equal(await scalarControl.getAttribute('data-compact'), 'true');
+      assert.equal(await scalarControl.locator('span').count(), 0);
+      assert.equal(await scalarControl.locator('output').textContent(), '25 W');
+      assert.deepEqual(await page.evaluate(() => globalThis.__scalarStats()), {
+        attachments: 1, attachArguments: [0], disposals: 0, nativeInputs: [], keys: [],
+      });
+      await scalarControl.locator('input').fill('40');
+      await scalarControl.locator('input').press('ArrowRight');
+      assert.deepEqual(await page.evaluate(() => globalThis.__scalarStats()), {
+        attachments: 1, attachArguments: [0], disposals: 0,
+        nativeInputs: [40], keys: ['ArrowRight'],
+      });
+
+      const frequencyDigit = page.locator('[data-fixture-frequency] button');
+      await frequencyDigit.click();
+      await frequencyDigit.dispatchEvent('wheel');
+      await frequencyDigit.press('ArrowRight');
+      assert.deepEqual(await page.evaluate(() => globalThis.__frequencyStats()), {
+        clicks: 1, wheels: 1, keys: 1,
+      });
+
+      await page.locator('[data-fixture-action]').click();
+      await page.locator('[data-fixture-toggle]').click();
+      await page.locator('[data-fixture-choice] button', { hasText: 'USB' }).click();
+      assert.equal(await page.locator('[data-fixture-choice] button', { hasText: 'LSB' }).isDisabled(), true);
+      assert.deepEqual(await page.evaluate(() => globalThis.__finiteStats()), {
+        actions: 1, toggles: 1, choices: ['USB'], disposals: 0,
+      });
+      await page.evaluate(() => globalThis.__hideConcreteRenderers());
+      await scalarControl.waitFor({ state: 'detached' });
+      await page.locator('[data-fixture-action]').waitFor({ state: 'detached' });
+      assert.equal(await page.locator('[data-fixture-toggle]').count(), 0);
+      assert.equal(await page.locator('[data-fixture-choice]').count(), 0);
+      assert.equal((await page.evaluate(() => globalThis.__scalarStats())).disposals, 1);
+      assert.equal((await page.evaluate(() => globalThis.__finiteStats())).disposals, 0);
+
       assert.equal(await page.locator('[data-external-face="a"]').count(), 1);
       assert.equal(await page.locator('[data-seat]').count(), 20);
       for (const name of seatNames) {
@@ -951,16 +1170,42 @@ mount(App, { target: document.querySelector('#app')! });
 
   await writeFile(path.join(consumer, 'inspect.mjs'), `import assert from 'node:assert/strict';
 import * as api from '@rigplane/component-kit-api';
-import fixtureKit, {
+assert.equal(globalThis.document, undefined);
+const fixtureModule = await import('@rigplane/external-component-kit-fixture');
+assert.equal(globalThis.document, undefined);
+const {
+  default: fixtureKit,
   FixtureFaceA,
   FixtureFaceB,
   faceAPresentation,
   faceBPresentation,
+  reservedDesignLanguage,
+  reservedInstrumentGroup,
   reservedPresentation,
-} from '@rigplane/external-component-kit-fixture';
+} = fixtureModule;
 assert.deepEqual(Object.keys(api).sort(), ['COMPONENT_KIT_API_VERSION', 'defineComponentKit']);
 assert.equal(api.COMPONENT_KIT_API_VERSION, 1);
 assert.equal(api.defineComponentKit(fixtureKit), fixtureKit);
+assert.deepEqual(Object.keys(fixtureKit).sort(), [
+  'apiVersion', 'finiteControlAppearances', 'frequencyReadouts', 'id', 'layouts',
+  'meterAppearances', 'presentations', 'scalarAppearances',
+]);
+assert.equal(Object.hasOwn(fixtureKit, 'designLanguages'), false);
+assert.equal(Object.hasOwn(fixtureKit, 'instrumentGroups'), false);
+assert.equal(reservedDesignLanguage.id, 'fixture-line');
+assert.equal(reservedInstrumentGroup.id, 'fixture-group');
+const scalarAppearance = fixtureKit.scalarAppearances.fixture;
+const finiteAppearance = fixtureKit.finiteControlAppearances.fixture;
+const meterAppearance = fixtureKit.meterAppearances.fixture;
+for (const component of [
+  scalarAppearance.hbar, scalarAppearance.knob, scalarAppearance.bipolar,
+  scalarAppearance.discrete, fixtureKit.frequencyReadouts.fixture,
+  finiteAppearance.action, finiteAppearance.toggle, finiteAppearance.choice,
+  meterAppearance.signal, meterAppearance.level,
+]) assert.equal(typeof component, 'function');
+assert.equal(scalarAppearance.hbar, scalarAppearance.knob);
+assert.equal(scalarAppearance.hbar, scalarAppearance.bipolar);
+assert.equal(scalarAppearance.hbar, scalarAppearance.discrete);
 assert.notEqual(FixtureFaceA, FixtureFaceB);
 assert.equal(faceAPresentation.hostMode, 'external-instruments-v1');
 assert.equal(faceBPresentation.hostMode, 'external-instruments-v1');
