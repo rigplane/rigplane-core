@@ -3,16 +3,17 @@ name: coordinate-sessions
 description: >
   Method for a session coordinating several peer Claude Code sessions — each
   owning its own line of work — alongside its own subagents in this repository.
-  Covers roles, addressing peers whose names rotate, what a dispatch must
-  carry, the PR pipeline from baseline to squash-merge, cycle limits,
-  guardrail exceptions, escalation, measurement discipline, and session end.
+  Covers roles and model choice, how a peer session is created and controlled,
+  addressing peers whose names rotate, what a dispatch must carry, the PR
+  pipeline from baseline to squash-merge, cycle limits, guardrail exceptions,
+  escalation, measurement discipline, and session end.
   Use when running or joining a multi-session workstream; a single line of work
   needs only CLAUDE.md's pipeline.
 ---
 
 # Coordinate sessions
 
-Peers are not subagents. You cannot read a peer's context, cannot stop it, and
+Peers are not subagents. A peer runs its own turn, on its own model, and you
 cannot see what it has pushed except through git and `gh`. What you hold that
 nobody else does is the map: which line owns which branch, PR and ticket.
 
@@ -28,21 +29,68 @@ leave to the coordinator.
   §Agent working rules — The pipeline). The owner has carved out three things
   you do yourself: deleting a false line of prose in a change already under
   review, writing and correcting PR bodies, and merging.
-- **`builder`** — implements from a spec. Pass `model: opus` and ask for high
-  thinking effort explicitly in every dispatch rather than relying on the
-  default (owner's instruction, 2026-09-03).
-- **`verifier`** (opus, pinned in `.claude/agents/verifier.md`) — independent
-  adversarial review. Tell it in the dispatch to review the code only and not
+- **`builder`** — implements from a spec. Default to a mid-tier model, and
+  choose the effort from the complexity of the task in hand. Escalate the model
+  only for the specific bounded piece that stalls, and only after clarifying
+  the contract or shrinking the task first. Record the model, the effort and a
+  one-line reason for both in the delegation card (owner's instruction,
+  2026-09-07, superseding the 2026-09-03 instruction to pass `model: opus` with
+  high effort in every dispatch).
+- **`verifier`** — independent adversarial review. Choose a mid-tier model for
+  a local edit, and a strong one for contracts, lifetimes, concurrency and
+  architecture; record the choice on each dispatch (owner's instruction,
+  2026-09-07). The `model` in an agent's frontmatter under `.claude/agents/` is
+  the default that a `model` passed on the dispatch replaces. Tell it in the
+  dispatch to review the code only and not
   to grade documentation, comments, changelog rows or PR-body prose. Its own
   rules already block on defects *inside* the diff and return PASS with a
   named correction for a false claim in a PR body, comment or commit message.
 - **`scout`, `researcher`, `auditor`** — read-only, per `.claude/agents/`.
+- **Mechanical helper** — a cheaper model at small or medium effort, for
+  inventories, diff counts, artifact comparisons and known documentation or
+  metadata edits. A conclusion it is unsure of goes back to the coordinator
+  rather than into its result (owner's instruction, 2026-09-07).
 - **Non-code finder/coordinator** — consolidates PR-body, evidence, and prose
   findings separately from the code-only verifier.
 - The author never reviews, and **you are an author too**: the dispatch brief
   is your claim about the code, not the code. Brief the verifier against the
   brief as well as the diff. Never review the output of your own dispatch
   yourself — hand it to a verifier or to a peer that did not write it.
+
+## Sessions as the unit of delegation
+
+When the owner asks for sessions rather than subagents, each executor runs as
+its own desktop session, not as a subagent inside yours. You create one with
+`spawn_task`, which raises a chip the owner starts with one click; the session
+it spins off gets a fresh worktree of its own. Install dependencies inside that
+worktree — a real `npm ci`, never a shared or symlinked `node_modules`
+(AGENTS.md §Multi-agent Git hygiene).
+
+What you can do to a peer session is narrower than what you can do to a
+subagent, so plan around the tools that exist:
+
+- `send_message` delivers a message that arrives in the target session as a
+  user turn. It is unavailable in unattended sessions and cannot deliver to
+  them, so a scheduled or remote-dispatched line is reachable only through the
+  owner.
+- `list_events` reads the target session's recent transcript, and
+  `search_session_transcripts` searches transcript content across sessions.
+  Reading a peer's transcript tells you what it says it did; the result you
+  accept still comes only through git and `gh`.
+- `list_sessions` and `get_session` give addresses and per-session metadata,
+  including worktree and branch.
+- `archive_session` stops a session's process and cleans up its worktree. It
+  needs the owner's explicit agreement per call, and it does not archive a
+  session that is still working. Stopping a peer is therefore not yours to do
+  on your own.
+
+Two authors never hold the same working file at once, and every shared live
+seam of the application has one named owner (owner's instruction, 2026-09-07).
+Keep the operating table outside this repository, in the private handoff: task,
+role with its actual model and effort, worktree/branch/head, path ownership,
+status, blocker, next step, and a link to the report. Linear holds the goal,
+priorities, dependencies and acceptance criteria; do not build a competing plan
+beside it.
 
 ## Addressing peers
 
@@ -64,9 +112,30 @@ leave to the coordinator.
 ## What a dispatch carries
 
 Print the delegation card before the call, never after: the task in one
-sentence; complexity; why delegate and why that level; the role and its pinned
-model plus effort; the acceptance criterion, stating explicitly whether the
-agent may mutate state or is read-only.
+sentence; complexity; why delegate and why that level; the acceptance
+criterion, stating explicitly whether the agent may mutate state or is
+read-only. Beyond that, the owner's instruction of 2026-09-07 requires every
+dispatch to carry:
+
+- the goal, its Linear owner, and checkable acceptance criteria;
+- the role, the model and effort actually chosen, and why they fit;
+- the repository, worktree, branch and exact base commit;
+- the allowed paths, the owner of any shared file, and the agreed interfaces;
+- what is in scope, what is left to another task, and which decisions are
+  already taken;
+- the size limits, with the rule that on approaching one the agent recounts and
+  reports rather than squeezing the code or dropping evidence of behaviour;
+- the behaviour checks and required project checks to run, and the path where
+  the report goes;
+- the handback conditions: exact commit, full list of changes, checks run with
+  their results, limits, remaining findings, and either a clean tree or an
+  exact description of the work in progress;
+- which actions are authorized — preparation, push/PR, integration and
+  deployment are distinct permissions and are never implied by one another.
+
+An executor does not widen the architecture silently: a contract mismatch, a
+file-ownership collision, a failed material check or an exceeded budget is
+reported at once, with concrete options.
 
 In the prompt itself:
 
@@ -96,13 +165,21 @@ whose commit changed the tree being compared, valid only while `git diff
 --name-only <that sha>..<your base> -- <those paths>` is empty (CLAUDE.md
 §Agent working rules). One tree state, one instrument.
 
-Then: push → `gh pr create --draft` → `quick` runs on the PR → `gh pr ready` →
-the implementation or integration owner directly dispatches a fresh independent
-review on the final candidate → receive its immutable packet → confirm required
-checks green at the exact head → merge → remove the worktree.
+Then, following the cadence in AGENTS.md §Delivery batching and CI cadence:
+run focused changed-scope checks during development, and not the full `quick`
+suite → push the final candidate → open the PR, or mark an existing one, Ready
+once, so that one immutable head receives one natural `quick` run, with
+`visual` running only when its own paths are selected → the implementation or
+integration owner directly dispatches a fresh independent review on that exact
+head → receive its immutable packet → confirm required checks green at the
+exact head → merge → remove the worktree.
 
-- There is no window before the PR: `quick.yml` triggers only on push/PR to
-  `main`, so a pushed branch has no run of its own until a PR exists.
+- A draft PR must not merge, and it runs neither `quick` nor `visual`; the
+  `ready_for_review` event starts the required CI. Marking Ready once, on the
+  final candidate, is what buys the single run.
+- The verifier reviews that exact head and consumes the CI evidence already
+  there, rather than rerunning suites. A correction changes the head, and the
+  new head gets its own run and its own exact-head review.
 - Read the gate's verdict from the commit status — `gh pr checks <n>`, the
   `Agent Review Gate` row — never from a run list. The publisher job is green
   when it has successfully published a *refusal*, and `issue_comment` runs
@@ -135,10 +212,13 @@ checks green at the exact head → merge → remove the worktree.
 ## Cycle limits
 
 Two execution attempts, two review rounds, two test-fix cycles; exceeding one
-means FAILED with a classification (CLAUDE.md §Failure handling). A third
-round is the owner's call, not yours and not the peer's. Ask before the round
-starts, not after the BLOCKED has been handed back, and scope the request to
-the delta the round would cover rather than to a re-review of the whole PR.
+means FAILED with a classification (CLAUDE.md §Failure handling). A negative
+review is returned to the executor with concrete fixes; negative reviews are
+not by themselves grounds to abandon the work (owner's instruction,
+2026-09-07). A third round is the owner's call, not yours and not the peer's.
+Ask before the round starts, not after the BLOCKED has been handed back, and
+scope the request to the delta the round would cover rather than to a re-review
+of the whole PR.
 
 ## Direct review dispatch
 
@@ -238,6 +318,11 @@ or red answer on the same instrument.
   measures a tree that no longer exists.
 - **False prose is deleted, not softened** (CLAUDE.md §Testing). A deleted
   sentence cannot be wrong; a weakened one still can.
+- **A status word is a claim about how far the work got.** To the owner,
+  distinguish implemented privately, verified, reviewed, merged, built and
+  running, and say which one holds. A whole programme is never reported
+  complete because one family, one package or one PR is (owner's instruction,
+  2026-09-07).
 - The verifier does not grade prose, so a prose-only finding is yours: delete
   the line in the same commit and confirm the delta, rather than spending a
   review round on it.
