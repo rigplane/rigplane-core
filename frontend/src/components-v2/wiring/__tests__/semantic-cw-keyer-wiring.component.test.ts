@@ -123,12 +123,9 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   getModInputTxGuardHandlers: () => ({ onSetLan: vi.fn(), onDismiss: vi.fn() }),
 }));
 
-/**
- * MOR-2425 — the same `createContinuousScalar` capture wrapper
- * `semantic-dsp-wiring.component.test.ts` establishes for its own persistent
- * scalar host, lifted here so the pitch persistence witness below can name
- * the binding OBJECT, not just its DOM projection.
- */
+/** MOR-2425 — the `createContinuousScalar` capture wrapper
+ *  `semantic-dsp-wiring.component.test.ts` establishes, so the persistence
+ *  witness below can name the binding OBJECT, not just its DOM projection. */
 const scalars = vi.hoisted(() => ({
   bindings: [] as Array<{ command: string | null; binding: unknown }>,
   leases: [] as Array<{ binding: unknown; lease: unknown }>,
@@ -931,16 +928,11 @@ describe('the surface mounts only where a declared zone can hold it', () => {
 });
 
 /**
- * `RadioLayout`'s `desktop-v2` branch seats `pitchHz` (like `keyerSpeed`)
- * outside `<CwKeyerSurface>` and suppresses the surface's own copy
- * (`showPitchHz={false}`, coupled to the existing `showKeyerSpeed`
- * suppression); every other layout still renders it inside the surface via
- * the grouped handle. Both must produce exactly one control per field.
- *
- * MUTATION KILLED (b1): dropping `pitchHz` from the RadioLayout seat while
- * leaving `showPitchHz` true duplicates the control under `desktop-v2`.
- * MUTATION KILLED (b2): dropping the seat only (suppression untouched)
- * leaves `desktop-v2` with zero `pitchHz` controls.
+ * `desktop-v2` seats `pitchHz` outside `<CwKeyerSurface>` (like `keyerSpeed`)
+ * and suppresses the surface's own copy; every other layout still renders it
+ * via the grouped handle. MUTATION KILLED (b1): dropping the seat while the
+ * surface's copy stays shown duplicates it. (b2): dropping the seat without
+ * restoring the surface's copy leaves zero.
  */
 describe('pitch mounts exactly once regardless of the hosting layout', () => {
   it.each(['desktop-v2', 'sdr-test'] as const)(
@@ -962,13 +954,9 @@ describe('pitch mounts exactly once regardless of the hosting layout', () => {
 
 /**
  * MOR-2425 — the witness the persistent pitch binding exists for, in the
- * order its parts must be read (mirrors `semantic-dsp-wiring.component.test.ts`'s
- * `nbWidth` witness for the same host lineage). A test that only drove the
- * retained pre-switch lease and asserted `not.toHaveBeenCalled()` would be
- * GREENER under the very defect it excludes: a host torn down and rebuilt per
- * face loses the binding, and a destroyed binding commands nothing either. So
- * identity comes first, then proof the CURRENT lease still commands, then the
- * surviving evidence — and only then the inertness claim.
+ * order its parts must be read (mirrors the `nbWidth` witness in
+ * `semantic-dsp-wiring.component.test.ts`): identity first, then proof the
+ * CURRENT lease still commands, then surviving evidence — only then inertness.
  */
 describe('the pitch binding survives a Standard→SDR switch (MOR-2425)', () => {
   it('keeps the pitch binding, its pending evidence and its live lease across the switch', () => {
