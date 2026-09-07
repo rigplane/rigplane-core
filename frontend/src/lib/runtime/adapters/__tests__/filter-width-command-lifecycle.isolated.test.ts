@@ -116,6 +116,7 @@ describe('Filter Width command lifecycle projection (MOR-1664)', () => {
       'set_cw_pitch', 'set_key_speed', 'set_mic_gain', 'set_drive_gain',
       'set_vox_gain', 'set_anti_vox_gain', 'set_vox_delay',
       'set_compressor_level', 'set_monitor_gain', 'set_nb_level', 'set_nb_width',
+      'set_nr_level', 'set_nb_depth',
       'set_notch_filter', 'set_manual_notch_width', 'set_agc_time_constant',
     ]);
     expect(RADIO_INTENT_NAMES).toContain(FILTER_WIDTH_COMMAND_DESCRIPTOR.intentName);
@@ -596,6 +597,8 @@ describe('Break-in Delay ControlFeedback projection (MOR-1744)', () => {
       ['set_monitor_gain', TX_AUX_COMMAND_DESCRIPTORS.monitorGain],
       ['set_nb_level', DSP_COMMAND_DESCRIPTORS.nbLevel],
       ['set_nb_width', DSP_COMMAND_DESCRIPTORS.nbWidth],
+      ['set_nr_level', DSP_COMMAND_DESCRIPTORS.nrLevel],
+      ['set_nb_depth', DSP_COMMAND_DESCRIPTORS.nbDepth],
       ['set_notch_filter', DSP_COMMAND_DESCRIPTORS.notchFilter],
       ['set_manual_notch_width', DSP_COMMAND_DESCRIPTORS.manualNotchWidth],
       ['set_agc_time_constant', DSP_COMMAND_DESCRIPTORS.agcTimeConstant],

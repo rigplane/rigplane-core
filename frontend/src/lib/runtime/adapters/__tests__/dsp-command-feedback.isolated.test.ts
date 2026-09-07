@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   session: { state: 'connected' as 'connected' | 'disconnected', epoch: 7 },
   active: 'MAIN' as 'MAIN' | 'SUB' | null,
   operational: true,
+  indicatorCount: 1,
   stateReads: 0, capsReads: 0, commandReads: 0, sessionReads: 0,
 }));
 
@@ -30,44 +31,56 @@ vi.mock('$lib/runtime/adapters/radio-view-model-adapter', () => ({
     ? { activeReceiver: { status: 'unknown' }, receiverIndicators: [] }
     : {
       activeReceiver: { status: 'known', receiver: h.active },
-      receiverIndicators: [{
+      receiverIndicators: Array.from({ length: h.indicatorCount }, () => ({
         receiver: h.active,
         availability: { structural: true, operational: h.operational },
-      }],
+      })),
     },
 }));
 
 import { DSP_COMMAND_DESCRIPTORS, type DspCommandFeedbackField } from '$lib/stores/commands.svelte';
-import { getDspControlFeedback } from '../panel-adapters';
+import {
+  getDspControlFeedback,
+  projectDspControlFeedbackToDisplay,
+  type ControlFeedback,
+} from '../panel-adapters';
 
 const FIELDS = [
-  'nbLevel', 'nbWidth', 'notchFilter', 'manualNotchWidth', 'agcTimeConstant',
+  'nbLevel', 'nbWidth', 'nrLevel', 'nbDepth',
+  'notchFilter', 'manualNotchWidth', 'agcTimeConstant',
 ] as const satisfies readonly DspCommandFeedbackField[];
 const VALUES: Readonly<Record<DspCommandFeedbackField, number>> = {
-  nbLevel: 60, nbWidth: 70, notchFilter: -80, manualNotchWidth: 3, agcTimeConstant: 900,
+  nbLevel: 60, nbWidth: 70, nrLevel: 128, nbDepth: 5,
+  notchFilter: -80, manualNotchWidth: 3, agcTimeConstant: 900,
 };
 const fresh = (marker = 5) => ({
   storePath: 'fixture', observed: true, freshness: 'fresh' as const,
   availability: 'available' as const, lastObservedMonotonic: marker,
 });
 const state = (over: Record<string, unknown> = {}): ServerState => ({
-  stateContractVersion: 1, providerGeneration: 3, active: 'MAIN', nbWidth: VALUES.nbWidth,
+  stateContractVersion: 1, providerGeneration: 3, active: 'MAIN',
+  nbWidth: VALUES.nbWidth, nbDepth: VALUES.nbDepth,
   main: {
-    nbLevel: VALUES.nbLevel, notchFilter: VALUES.notchFilter,
+    nbLevel: VALUES.nbLevel, nrLevel: VALUES.nrLevel, notchFilter: VALUES.notchFilter,
     manualNotchWidth: VALUES.manualNotchWidth, agcTimeConstant: VALUES.agcTimeConstant,
   },
-  sub: { nbLevel: 61, notchFilter: -81, manualNotchWidth: 4, agcTimeConstant: 901 },
+  sub: {
+    nbLevel: 61, nrLevel: 129, notchFilter: -81,
+    manualNotchWidth: 4, agcTimeConstant: 901,
+  },
   fieldStatus: {
-    nbWidth: fresh(), 'main.nbLevel': fresh(), 'main.notchFilter': fresh(),
+    nbWidth: fresh(), nbDepth: fresh(),
+    'main.nbLevel': fresh(), 'main.nrLevel': fresh(), 'main.notchFilter': fresh(),
     'main.manualNotchWidth': fresh(), 'main.agcTimeConstant': fresh(),
-    'sub.nbLevel': fresh(), 'sub.notchFilter': fresh(),
+    'sub.nbLevel': fresh(), 'sub.nrLevel': fresh(), 'sub.notchFilter': fresh(),
     'sub.manualNotchWidth': fresh(), 'sub.agcTimeConstant': fresh(),
   },
   ...over,
 } as unknown as ServerState);
 const caps = (over: Record<string, unknown> = {}): Capabilities => ({
   stateContractVersion: 1, providerGeneration: 3, receivers: 1, vfoScheme: 'single',
-  capabilities: ['nb', 'notch', 'agc'], controls: { nb_depth: { min: 0, max: 255, step: 1 } },
+  capabilities: ['nb', 'nr', 'notch', 'agc'],
+  controls: { nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: 10 } },
   ...over,
 } as unknown as Capabilities);
 const connected = { state: 'connected' as const, epoch: 7 };
@@ -76,10 +89,12 @@ const command = (
 ): CommandLifecycle => {
   const descriptor = DSP_COMMAND_DESCRIPTORS[field];
   const receiver = h.active === 'SUB' ? 1 : 0;
-  const key = field === 'nbLevel' || field === 'nbWidth' ? 'level' : 'value';
+  const key = field === 'nbLevel' || field === 'nbWidth'
+    || field === 'nrLevel' || field === 'nbDepth' ? 'level' : 'value';
+  const global = field === 'nbWidth' || field === 'nbDepth';
   return {
     id: field, name: descriptor.intentName,
-    params: field === 'nbWidth' ? { [key]: target } : { [key]: target, receiver },
+    params: global ? { [key]: target } : { [key]: target, receiver },
     originalEpoch: 7, createdAt: 1, updatedAt: 1, timeoutMs: 5_000,
     status: 'pending', providerGeneration: 3, ...over,
   };
@@ -89,6 +104,7 @@ describe('qualified raw DSP command feedback', () => {
   afterEach(() => {
     h.state = null; h.caps = null; h.commands = [];
     h.session = { state: 'connected', epoch: 7 }; h.active = 'MAIN'; h.operational = true;
+    h.indicatorCount = 1;
     h.stateReads = 0; h.capsReads = 0; h.commandReads = 0; h.sessionReads = 0;
   });
 
@@ -122,15 +138,24 @@ describe('qualified raw DSP command feedback', () => {
     expect(h.sessionReads).toBe(0);
   });
 
-  it('uses canonical SUB receiver fields while NB Width keeps global receiver-zero identity', () => {
+  it('uses canonical SUB receiver fields while NB Width and NB Depth keep global identity', () => {
     h.active = 'SUB';
     h.state = state({ active: 'SUB' });
-    h.caps = caps({ receivers: 2, vfoScheme: 'main_sub', capabilities: ['dual_rx', 'nb', 'notch', 'agc'] });
+    h.caps = caps({
+      receivers: 2, vfoScheme: 'main_sub',
+      capabilities: ['dual_rx', 'nb', 'nr', 'notch', 'agc'],
+    });
+    expect(getDspControlFeedback('nrLevel', connected)).toMatchObject({
+      confirmed: 129, scope: { control: 'nr-level', receiver: 1 },
+    });
     expect(getDspControlFeedback('notchFilter', connected)).toMatchObject({
       confirmed: -81, scope: { control: 'notch-position', receiver: 1 },
     });
     expect(getDspControlFeedback('nbWidth', connected)).toMatchObject({
       confirmed: 70, scope: { control: 'nb-width', receiver: 0 },
+    });
+    expect(getDspControlFeedback('nbDepth', connected)).toMatchObject({
+      confirmed: 5, scope: { control: 'nb-depth', receiver: 0 },
     });
   });
 
@@ -191,7 +216,26 @@ describe('qualified raw DSP command feedback', () => {
     h.caps = caps({ capabilities: ['notch', 'agc'], controls: {} });
     expect(getDspControlFeedback('nbLevel', connected).availability).toBe('unavailable');
     expect(getDspControlFeedback('nbWidth', connected).availability).toBe('unavailable');
+    expect(getDspControlFeedback('nrLevel', connected).availability).toBe('unavailable');
+    h.commands = [command('nbDepth', 7)];
+    expect(getDspControlFeedback('nbDepth', connected)).toMatchObject({
+      availability: 'unavailable', phase: 'unavailable', target: null,
+    });
     expect(getDspControlFeedback('notchFilter', connected).availability).toBe('available');
+  });
+
+  it('fails closed for ambiguous and missing or stale transformed observations', () => {
+    h.state = state(); h.caps = caps(); h.indicatorCount = 2;
+    expect(getDspControlFeedback('nrLevel', connected).availability).toBe('unavailable');
+    h.indicatorCount = 1;
+    h.state = state({
+      fieldStatus: { ...state().fieldStatus, 'main.nrLevel': undefined },
+    });
+    expect(getDspControlFeedback('nrLevel', connected).availability).toBe('unavailable');
+    h.state = state({
+      fieldStatus: { ...state().fieldStatus, nbDepth: { ...fresh(), freshness: 'stale' } },
+    });
+    expect(getDspControlFeedback('nbDepth', connected).availability).toBe('unavailable');
   });
 
   it('drops old provider and session lifecycles after authority replacement', () => {
@@ -204,5 +248,117 @@ describe('qualified raw DSP command feedback', () => {
       providerGeneration: 4, sessionEpoch: 7, confirmed: 70,
       phase: 'idle', target: null, requestedTarget: null, outcome: null,
     });
+  });
+});
+
+const LEGACY_NR_CAPS = caps({
+  controls: {
+    nr_level: { raw_min: 0, raw_max: 255, display_min: 0, display_max: 15 },
+    nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: 10 },
+  },
+});
+const EXACT_NR_CAPS = caps({
+  controls: {
+    nr_level: {
+      mapping: 'identity', raw_min: 0, raw_max: 10, raw_step: 1, raw_origin: 0,
+      display_min: '0', display_max: '10', display_step: '1', display_origin: '0',
+      display_unit: 'level', quantization: 'reject', restoration: 'exact',
+    },
+    nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: 10 },
+  },
+});
+
+function rawFeedback(over: Partial<ControlFeedback<number>> = {}): Readonly<ControlFeedback<number>> {
+  return Object.freeze({
+    confirmed: 128, target: 136, requestedTarget: 136,
+    phase: 'awaiting-confirmation', busy: true, availability: 'available',
+    outcome: null, lifecycleId: '[7,"nr"]', transitionId: '[7,"nr","acknowledged"]',
+    providerGeneration: 3, sessionEpoch: 7,
+    scope: Object.freeze({ control: 'nr-level', receiver: 0 as const }),
+    repeatPolicy: 'latest-target-wins', ...over,
+  });
+}
+
+describe('pure transformed DSP feedback projection', () => {
+  afterEach(() => {
+    h.state = null; h.caps = null; h.commands = [];
+    h.session = { state: 'connected', epoch: 7 }; h.active = 'MAIN'; h.operational = true;
+    h.indicatorCount = 1;
+    h.stateReads = 0; h.capsReads = 0; h.commandReads = 0; h.sessionReads = 0;
+  });
+
+  it('keeps a raw NR alias busy until exact confirmation while all display slots equal 8', () => {
+    h.state = state({ main: { ...state().main, nrLevel: 128 } });
+    h.caps = LEGACY_NR_CAPS;
+    h.commands = [command('nrLevel', 136, { status: 'acknowledged' })];
+    const raw = getDspControlFeedback('nrLevel', connected);
+    const display = projectDspControlFeedbackToDisplay('nrLevel', raw, LEGACY_NR_CAPS);
+    expect(display).toMatchObject({
+      confirmed: 8, target: 8, requestedTarget: 8,
+      phase: 'awaiting-confirmation', busy: true, availability: 'available',
+    });
+    expect(raw).toMatchObject({ confirmed: 128, target: 136, requestedTarget: 136, busy: true });
+  });
+
+  it('reuses exact-domain NR and explicit-capability NB Depth mappings', () => {
+    expect(projectDspControlFeedbackToDisplay(
+      'nrLevel', rawFeedback({ confirmed: 4, target: 7, requestedTarget: 7 }), EXACT_NR_CAPS,
+    )).toMatchObject({ confirmed: 4, target: 7, requestedTarget: 7 });
+    expect(projectDspControlFeedbackToDisplay(
+      'nbDepth', rawFeedback({ confirmed: 0, target: 5, requestedTarget: 9 }), LEGACY_NR_CAPS,
+    )).toMatchObject({ confirmed: 1, target: 6, requestedTarget: 10 });
+  });
+
+  it.each([
+    ['nr below exact domain', 'nrLevel', -1, EXACT_NR_CAPS],
+    ['nb below explicit range', 'nbDepth', -1, LEGACY_NR_CAPS],
+    ['nb above explicit range', 'nbDepth', 10, LEGACY_NR_CAPS],
+    ['nb fractional raw', 'nbDepth', 4.5, LEGACY_NR_CAPS],
+    ['nb malformed selected range', 'nbDepth', 5, caps({
+      controls: { nb_depth: { raw_min: 0, raw_max: 9, display_min: 1, display_max: Infinity } },
+    })],
+    ['nb empty selected range', 'nbDepth', 5, caps({
+      controls: { nb_depth: { raw_min: 5, raw_max: 5, display_min: 1, display_max: 10 } },
+    })],
+  ] as const)('fails closed for %s without clamping invalid raw evidence', (
+    _case, field, confirmed, currentCaps,
+  ) => {
+    const raw = rawFeedback({ confirmed, target: null, requestedTarget: null });
+    const display = projectDspControlFeedbackToDisplay(field, raw, currentCaps);
+    expect(display).toMatchObject({
+      confirmed: null, target: null, requestedTarget: null,
+      phase: 'unavailable', busy: false, availability: 'unavailable',
+      outcome: null, lifecycleId: null, transitionId: null,
+      providerGeneration: 3, sessionEpoch: 7,
+      scope: raw.scope, repeatPolicy: raw.repeatPolicy,
+    });
+    expect(raw.confirmed).toBe(confirmed);
+  });
+
+  it.each(['confirmed', 'target', 'requestedTarget'] as const)(
+    'fails closed when the present %s slot cannot be projected',
+    slot => {
+      const raw = rawFeedback({ confirmed: 4, target: 5, requestedTarget: 6, [slot]: 10 });
+      expect(projectDspControlFeedbackToDisplay('nbDepth', raw, LEGACY_NR_CAPS)).toMatchObject({
+        confirmed: null, target: null, requestedTarget: null,
+        phase: 'unavailable', busy: false, availability: 'unavailable',
+      });
+      expect(raw[slot]).toBe(10);
+    },
+  );
+
+  it('maps nullable slots independently and preserves every metadata field and reference', () => {
+    const outcome = Object.freeze({ phase: 'failed' as const, error: 'radio refused' });
+    const scope = Object.freeze({ control: 'nb-depth', receiver: 0 as const });
+    const raw = rawFeedback({
+      confirmed: 5, target: null, requestedTarget: 9,
+      phase: 'failed', busy: false, outcome, scope,
+    });
+    const display = projectDspControlFeedbackToDisplay('nbDepth', raw, LEGACY_NR_CAPS);
+    expect(display).toEqual({ ...raw, confirmed: 6, target: null, requestedTarget: 10 });
+    expect(display.outcome).toBe(outcome);
+    expect(display.scope).toBe(scope);
+    expect(Object.isFrozen(display)).toBe(true);
+    expect([h.stateReads, h.capsReads, h.commandReads, h.sessionReads]).toEqual([0, 0, 0, 0]);
   });
 });
