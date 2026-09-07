@@ -3,7 +3,7 @@
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
   import type { MeterReading, MeterValueDomain } from '../semantic/radio-view-model';
   import { toSignalMeterRendererView } from '../semantic/meter-renderer-view';
-  import * as activation from './activation';
+  import { getSelectedMeterAppearance } from './activation';
 
   interface Props {
     frame: SignalMeterFrame;
@@ -13,11 +13,7 @@
   }
 
   let { frame, reading, domain, fallback }: Props = $props();
-  const selectedRenderer = untrack(() =>
-    'getSelectedMeterAppearance' in activation
-      ? activation.getSelectedMeterAppearance()?.signal
-      : undefined,
-  );
+  const selectedRenderer = untrack(() => getSelectedMeterAppearance()?.signal);
   const view = $derived(toSignalMeterRendererView(frame, reading, domain));
 </script>
 

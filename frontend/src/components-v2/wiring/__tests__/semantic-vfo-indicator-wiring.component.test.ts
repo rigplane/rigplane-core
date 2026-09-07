@@ -30,6 +30,7 @@ const group = new Proxy({}, { get: () => h.noop });
 
 vi.mock('../../../component-kits/activation', () => ({
   getSelectedFrequencyReadout: () => selectedFrequency.current,
+  getSelectedMeterAppearance: () => undefined,
 }));
 
 vi.mock('$lib/runtime', () => ({
