@@ -4,7 +4,7 @@
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
   import { presentationResources, runtime } from './lib/runtime/frontend-runtime';
-  import type { ResourceLease } from '$lib/runtime/resource-demand';
+  import type { AppResource, ResourceLease } from '$lib/runtime/resource-demand';
   import { systemController } from '$lib/runtime/system-controller';
   import { provideManagedAppTxHost } from '$lib/runtime/tx-controller/managed-app-host';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
@@ -35,11 +35,14 @@
     densityActivation, provideSurfacePlan, resolveSurfacePlan,
   } from './presentation/workspace/resolution';
   import { getWorkspace, initWorkspaceStore } from './presentation/workspace/store.svelte';
-  import SemanticRadioSurfaces from './components-v2/wiring/SemanticRadioSurfaces.svelte';
+  import SemanticRadioSurfaces, {
+    type ExternalPresentation as ExternalPresentationInput,
+  } from './components-v2/wiring/SemanticRadioSurfaces.svelte';
+  import { getSelectedPresentationId } from './component-kits/activation';
   import {
-    loadSkin, presentationHostMode, presentationResourcePlan, resolveSkinId,
+    getPresentationRecord, loadSkin, resolveSkinId,
     type InstrumentHandlesPresentation, type PresentationComponent,
-    type SelfContainedPresentation, type SkinId,
+    type PresentationId, type SelfContainedPresentation, type SkinId,
   } from './skins/registry';
   import { t } from '$lib/i18n';
   import './app.css';
@@ -79,10 +82,16 @@
   }));
 
   type CommittedPresentation =
-    | { id: SkinId; component: InstrumentHandlesPresentation; hostMode: 'instrument-handles' }
-    | { id: SkinId; component: SelfContainedPresentation; hostMode: 'self-contained' };
+    | { id: SkinId; layoutId: SkinId; component: InstrumentHandlesPresentation; hostMode: 'instrument-handles' }
+    | { id: SkinId; layoutId: SkinId; component: SelfContainedPresentation; hostMode: 'self-contained' }
+    | {
+        id: PresentationId;
+        layoutId: string;
+        hostMode: 'external-instruments-v1';
+        externalPresentation: ExternalPresentationInput;
+      };
   let presentation = $state<CommittedPresentation | null>(null);
-  let committedSkinId = $derived<SkinId | null>(presentation?.id ?? null);
+  let committedLayoutId = $derived<string | null>(presentation?.layoutId ?? null);
 
   // MOR-1081: the workspace's `designLanguage` is the ONLY source the
   // `[data-design-language]` activation attribute (MOR-1278) is written from,
@@ -100,7 +109,7 @@
   // rules arrive with the cutover — and it is absent entirely wherever the
   // language is not active, so no shipped v2 skin sees a new attribute.
   $effect(() => {
-    const layoutId = committedSkinId;
+    const layoutId = committedLayoutId;
     if (layoutId === null) {
       delete document.documentElement.dataset.designLanguage;
       delete document.documentElement.dataset.languageMode;
@@ -146,7 +155,7 @@
   // against the ACTIVE layout manifest and handed down as a getter.
   // A getter, so a consumer's `$derived` re-runs when either input changes.
   provideSurfacePlan(() => {
-    const layoutId = committedSkinId;
+    const layoutId = committedLayoutId;
     if (layoutId === null) return null;
     const manifest = getLayout(layoutId);
     return manifest === undefined ? null : resolveSurfacePlan(manifest, getWorkspace());
@@ -171,21 +180,59 @@
   let SelfContainedComponent = $derived(
     presentation?.hostMode === 'self-contained' ? presentation.component : null,
   );
+  let ExternalPresentation = $derived(
+    presentation?.hostMode === 'external-instruments-v1'
+      ? presentation.externalPresentation
+      : null,
+  );
   let loaderGeneration = 0;
+  let requestedPresentationId: PresentationId | null = null;
   /** Cleared by App teardown; a resolution that lands afterwards is inert. */
   let presentationActive = true;
 
   $effect(() => {
-    const requested = skinId;
+    const builtInFallback = skinId;
+    const requested = getSelectedPresentationId() ?? builtInFallback;
     if (demoMode === 'control-buttons') return;
+    if (requested === requestedPresentationId) return;
+    requestedPresentationId = requested;
     void requestPresentation(requested);
   });
 
-  async function requestPresentation(id: SkinId): Promise<void> {
+  async function requestPresentation(id: PresentationId): Promise<void> {
     const generation = ++loaderGeneration;
-    let loaded: PresentationComponent;
+    let bridge: ResourceLease[] = [];
     try {
-      loaded = await loadSkin(id);
+      const record = getPresentationRecord(id);
+      if (record === undefined) throw new Error(`Presentation "${id}" is not registered.`);
+      if (record.kind === 'external-instruments-v1') {
+        const component = await loadSkin(record);
+        if (!presentationActive || generation !== loaderGeneration) return;
+        bridge = acquireSwapBridge(id, record.resources);
+        let occurrence: ExternalPresentationInput;
+        occurrence = Object.freeze({
+          record,
+          component,
+          isCurrent: () => presentationActive
+            && presentation?.hostMode === 'external-instruments-v1'
+            && presentation.externalPresentation === occurrence,
+        });
+        presentation = Object.freeze({
+          id: record.id,
+          layoutId: record.layoutId,
+          hostMode: record.kind,
+          externalPresentation: occurrence,
+        });
+      } else {
+        const loaded: PresentationComponent = await loadSkin(id);
+        if (!presentationActive || generation !== loaderGeneration) return;
+        bridge = acquireSwapBridge(id, record.resources);
+        presentation = record.kind === 'built-in-instrument-layout'
+          ? { id: record.id, layoutId: record.id, component: loaded as InstrumentHandlesPresentation, hostMode: 'instrument-handles' }
+          : { id: record.id, layoutId: record.id, component: loaded as SelfContainedPresentation, hostMode: 'self-contained' };
+      }
+      presentationFailed = false;
+      await tick();
     } catch (err) {
       // A stale or post-teardown failure is inert: only the newest request
       // owns the error surface (same guard doctrine as the bootstrap catch).
@@ -196,21 +243,6 @@
       // runtime teardown.
       presentationFailed = presentation === null;
       return;
-    }
-    if (!presentationActive || generation !== loaderGeneration) return;
-
-    // Hold the incoming presentation's demand BEFORE the swap so destroying
-    // the outgoing subtree can never drop a live resource to zero and bounce
-    // it (MOR-973). Released only after the commit has flushed, by which time
-    // the new subtree owns its own leases.
-    const bridge = acquireSwapBridge(id);
-    try {
-      presentationFailed = false;
-      const hostMode = presentationHostMode(id);
-      presentation = hostMode === 'instrument-handles'
-        ? { id, component: loaded as InstrumentHandlesPresentation, hostMode }
-        : { id, component: loaded as SelfContainedPresentation, hostMode };
-      await tick();
     } finally {
       releaseSwapBridge(bridge);
     }
@@ -221,9 +253,9 @@
    * to those already demanded: a presentation choice must not manufacture a
    * live service (v3 ADR invariant 12).
    */
-  function acquireSwapBridge(id: SkinId): ResourceLease[] {
+  function acquireSwapBridge(id: PresentationId, resources: readonly AppResource[]): ResourceLease[] {
     const leases: ResourceLease[] = [];
-    for (const resource of presentationResourcePlan(id)) {
+    for (const resource of resources) {
       try {
         if (presentationResources.snapshot(resource).demand <= 0) continue;
         // Every acquisition returns its own distinct lease object, so a
@@ -356,12 +388,12 @@
       {/if}
     </div>
   </div>
-{:else if HostedPresentation}
+{:else if HostedPresentation || ExternalPresentation}
   <!-- One unkeyed host outlives replacement of either hosted presentation.
        The child places radio instruments; SRS retains bindings and authority. -->
-  <SemanticRadioSurfaces>
+  <SemanticRadioSurfaces externalPresentation={ExternalPresentation}>
     {#snippet children(instruments)}
-      <HostedPresentation {instruments} />
+      {#if HostedPresentation}<HostedPresentation {instruments} />{/if}
     {/snippet}
   </SemanticRadioSurfaces>
 {:else if SelfContainedComponent}
