@@ -802,31 +802,56 @@ function mergeBusyPhase(
 }
 
 /**
- * Terminal outcomes ranked worst-first: a non-`'confirmed'` outcome on
- * either side always dominates a `'confirmed'` one on the other, so a
- * half-failed gesture is never reported as `'confirmed'`. The order among
- * the non-`'confirmed'` outcomes is otherwise arbitrary but fixed, so two
- * differently-failed sides still resolve to one deterministic outcome.
+ * Terminal outcomes ranked worst-first, used only when both sides' records
+ * are live and terminal: a non-`'confirmed'` outcome on either side beats a
+ * `'confirmed'` one on the other. The order among the non-`'confirmed'`
+ * outcomes is otherwise arbitrary but fixed, so two differently-failed
+ * sides still resolve to one deterministic outcome.
  */
 const TERMINAL_OUTCOME_PRIORITY: readonly ControlFeedbackOutcome[] = Object.freeze([
   'failed', 'timed-out', 'cancelled', 'superseded', 'confirmed',
 ]);
 
 /**
- * Combines two non-busy sides' phase/outcome. Each side's `outcome` here is
- * either `null` (idle — no lifecycle ran) or a terminal outcome; ranked by
- * `TERMINAL_OUTCOME_PRIORITY` when both are terminal, otherwise the
- * non-idle side wins outright.
+ * Combines two non-busy sides' phase/outcome. `outcome === null` here means
+ * idle under `getPbtInner/OuterControlFeedback`'s own definition: no
+ * lifecycle ever ran, or one did and its record already retired
+ * (`commands.svelte.ts: retainTerminalOutcome` expires each record
+ * `OUTCOME_RETENTION_MS` after its own terminal transition, independent of
+ * the other side's), or `projectControlFeedback` filtered it out
+ * (`locallyObsolete`, provider-generation mismatch). Idle is therefore not
+ * "no lifecycle ran" — it can equally mean "ran and the evidence is gone" —
+ * which is why an idle side may never promote the other to `'confirmed'`:
+ *
+ *   idle | idle                -> idle       (case A: no evidence either side)
+ *   idle | confirmed           -> idle       (case B: a lone confirmed half
+ *                                              is not corroborated once the
+ *                                              other half's record is gone;
+ *                                              not reported)
+ *   idle | non-confirmed       -> that outcome (case C: while its record
+ *                                                stays live)
+ *   live terminal | live terminal -> `TERMINAL_OUTCOME_PRIORITY` (case D)
+ *
+ * `'confirmed'` is reachable only through case D with both sides confirmed:
+ * a half-failed gesture is never derived as `'confirmed'`, at any point in
+ * its retention window or after.
  */
 function mergeTerminalOutcome(
   inner: Readonly<ControlFeedback<number>>, outer: Readonly<ControlFeedback<number>>,
 ): { phase: ControlFeedbackPhase; outcome: Readonly<{ phase: ControlFeedbackOutcome; error?: string }> | null } {
-  if (inner.outcome === null && outer.outcome === null) return { phase: 'idle', outcome: null };
-  if (inner.outcome === null) return { phase: outer.phase, outcome: outer.outcome };
-  if (outer.outcome === null) return { phase: inner.phase, outcome: inner.outcome };
-  const winner = TERMINAL_OUTCOME_PRIORITY.indexOf(inner.outcome.phase)
-    <= TERMINAL_OUTCOME_PRIORITY.indexOf(outer.outcome.phase) ? inner : outer;
-  return { phase: winner.phase, outcome: winner.outcome };
+  const bothIdle = inner.outcome === null && outer.outcome === null;
+  if (bothIdle) return { phase: 'idle', outcome: null }; // case A
+
+  const bothLiveTerminal = inner.outcome !== null && outer.outcome !== null;
+  if (bothLiveTerminal) { // case D
+    const winner = TERMINAL_OUTCOME_PRIORITY.indexOf(inner.outcome.phase)
+      <= TERMINAL_OUTCOME_PRIORITY.indexOf(outer.outcome.phase) ? inner : outer;
+    return { phase: winner.phase, outcome: winner.outcome };
+  }
+
+  const live = inner.outcome !== null ? inner : outer; // exactly one side idle
+  if (live.outcome!.phase === 'confirmed') return { phase: 'idle', outcome: null }; // case B
+  return { phase: live.phase, outcome: live.outcome }; // case C
 }
 
 function unavailableIfShiftFeedback(
@@ -894,9 +919,14 @@ export function getIfShiftControlFeedback(
   const { phase, outcome } = busy
     ? { phase: mergeBusyPhase(inner, outer), outcome: null }
     : mergeTerminalOutcome(inner, outer);
-  const lifecycleId = inner.lifecycleId === null && outer.lifecycleId === null
+  // Idle carries no ids anywhere else in this file (`empty()`,
+  // `unavailableIfShiftFeedback`) — including here, so that
+  // `mergeTerminalOutcome`'s idle-on-a-retired-confirmation case (case B
+  // above) does not compose a fresh id out of the surviving side's live
+  // outcome and trigger a one-shot announcement for a phase nobody reports.
+  const lifecycleId = phase === 'idle' || (inner.lifecycleId === null && outer.lifecycleId === null)
     ? null : JSON.stringify([inner.lifecycleId, outer.lifecycleId]);
-  const transitionId = inner.transitionId === null && outer.transitionId === null
+  const transitionId = phase === 'idle' || (inner.transitionId === null && outer.transitionId === null)
     ? null : JSON.stringify([inner.transitionId, outer.transitionId]);
   return Object.freeze({
     confirmed, target, requestedTarget, phase, busy, availability: 'available' as const,

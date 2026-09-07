@@ -243,6 +243,24 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
     expect(feedback.phase).not.toBe('awaiting-confirmation');
   });
 
+  it('ranks a held (queued) side as less advanced than a merely awaiting-confirmation side', () => {
+    h.state = state(); h.caps = pbtCaps();
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150, {
+        status: 'acknowledged',
+        hold: {
+          commandId: PBT_INNER_COMMAND_DESCRIPTOR.intentName, originalEpoch: 7, eventEpoch: 1,
+          kind: 'held', reason: 'tx_active', expiresAt: 999,
+        },
+      }),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160, { status: 'acknowledged' }),
+    ];
+    const feedback = getIfShiftControlFeedback(connected);
+    expect(feedback.busy).toBe(true);
+    expect(feedback.phase).toBe('queued');
+    expect(feedback.phase).not.toBe('awaiting-confirmation');
+  });
+
   it('composes a transitionId that changes with either half, distinct across two gestures', () => {
     h.state = state(); h.caps = pbtCaps();
     h.commands = [
@@ -257,5 +275,18 @@ describe('IF-shift command feedback (real on Yaesu, derived on Icom PBT-only)', 
     const second = getIfShiftControlFeedback(connected);
     expect(first.transitionId).not.toBe(second.transitionId);
     expect(first.lifecycleId ?? first.transitionId).not.toBe(second.lifecycleId ?? second.transitionId);
+
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160, { id: 'gesture-c' }),
+    ];
+    const third = getIfShiftControlFeedback(connected);
+    h.commands = [
+      command(PBT_INNER_COMMAND_DESCRIPTOR, 'value', 150),
+      command(PBT_OUTER_COMMAND_DESCRIPTOR, 'value', 160, { id: 'gesture-d' }),
+    ];
+    const fourth = getIfShiftControlFeedback(connected);
+    expect(third.transitionId).not.toBe(fourth.transitionId);
+    expect(third.lifecycleId ?? third.transitionId).not.toBe(fourth.lifecycleId ?? fourth.transitionId);
   });
 });
