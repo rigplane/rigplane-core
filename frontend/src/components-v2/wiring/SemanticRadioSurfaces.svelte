@@ -2080,9 +2080,11 @@
         {receiverInstruments}
         {vfoOperations}
         {txAuxScalars}
+        {stationMeters}
         receiverAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
         vfoOperationsAdmitted={surfacePlan() !== null && zoneOwning('vfo') !== null}
         txAuxAdmitted={surfacePlan() !== null && zoneOwning('txAux') !== null}
+        stationMetersAdmitted={surfacePlan() !== null && zoneOwning('meters') !== null}
       />
     {/key}
   {:else if hostedChildren}
