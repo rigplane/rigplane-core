@@ -7,7 +7,7 @@
  */
 import type { Component } from 'svelte';
 import type {
-  ContinuousScalarBinding,
+  ContinuousScalarRendererSeat,
   ContinuousScalarView,
 } from '../../../primitives/scalar/continuous-scalar.svelte';
 import type { PoliteControlAnnouncement } from '../../../primitives/control-feedback/control-feedback-presentation';
@@ -18,7 +18,7 @@ import type {
 
 /** Binding and presentation inputs shared by every appearance renderer. */
 export interface SkinRendererProps {
-  binding: ContinuousScalarBinding;
+  binding: ContinuousScalarRendererSeat;
   label: string;
   displayFn?: (v: number) => string;
   unknownDisplay?: string;

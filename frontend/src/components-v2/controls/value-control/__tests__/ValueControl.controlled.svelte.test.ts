@@ -16,6 +16,7 @@ import {
   type CommandScalarFeedback,
   type ContinuousScalarBinding,
   type ContinuousScalarInput,
+  type ContinuousScalarRendererSeat,
   type ContinuousScalarRendererLease,
 } from '../../../../primitives/scalar/continuous-scalar.svelte';
 
@@ -134,11 +135,12 @@ function countViewReads(
     wheel: (event) => lease.wheel(event),
     key: (event) => lease.key(event),
     reset: () => lease.reset(),
+    cancel: (reason) => lease.cancel(reason),
     dispose: () => lease.dispose(),
   });
   return {
     get view() { onRead(); return binding.view; },
-    attachRenderer: () => countedLease(binding.attachRenderer()),
+    attachRenderer: (isCurrent) => countedLease(binding.attachRenderer(isCurrent)),
     cancel: (reason) => binding.cancel(reason),
     destroy: () => binding.destroy(),
   };
@@ -581,8 +583,10 @@ describe('ValueControl controlled HBar rendering', () => {
 
     state.binding = failedBinding;
     flushSync();
-    expect(control.getAttribute('data-command-phase')).toBe('failed');
-    expect(control.getAttribute('aria-busy')).toBe('false');
+    const failedControl = slider(target);
+    expect(failedControl).not.toBe(control);
+    expect(failedControl.getAttribute('data-command-phase')).toBe('failed');
+    expect(failedControl.getAttribute('aria-busy')).toBe('false');
     expect(target.querySelector('[data-control-feedback-status]')?.textContent)
       .toBe('Failed: 30 Hz: radio rejected');
     pendingBinding.destroy();
@@ -820,6 +824,8 @@ describe('ValueControl controlled HBar rendering', () => {
     expect(visibleValue(target)).toContain('80');
     retainedSlider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(firstRequest).not.toHaveBeenCalled();
+    expect(secondRequest).not.toHaveBeenCalled();
+    slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(secondRequest).toHaveBeenCalledWith(90);
 
     const firstLease = first.attachRenderer();
@@ -972,6 +978,28 @@ describe('ValueControl controlled Bipolar rendering', () => {
     expect(request).not.toHaveBeenCalled();
     slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
     expect(request).toHaveBeenCalledExactlyOnceWith(50);
+
+    const retainedLease = binding.attachRenderer();
+    expect(retainedLease.beginPointer()).not.toBeNull();
+    retainedLease.dispose();
+    binding.destroy();
+  });
+
+  it('replaces HBar with Knob on the same external owner and revokes retained callbacks', () => {
+    const request = vi.fn();
+    const binding = readingBinding(20, request);
+    const { state, target } = mountReactive({ binding, label: 'Replaceable', renderer: 'hbar' });
+    const retainedHBar = slider(target);
+
+    state.renderer = 'knob';
+    flushSync();
+    expect(target.querySelector('.vc-knob')).not.toBeNull();
+    expect(slider(target).getAttribute('aria-valuenow')).toBe('20');
+
+    retainedHBar.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).not.toHaveBeenCalled();
+    slider(target).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request).toHaveBeenCalledExactlyOnceWith(30);
 
     const retainedLease = binding.attachRenderer();
     expect(retainedLease.beginPointer()).not.toBeNull();
@@ -1574,8 +1602,14 @@ describe('ValueControl external scalar appearances', () => {
       onChange: vi.fn(),
     });
     const control = slider(target);
+    const externalControl = control as HTMLElement & {
+      readonly rendererSeat: ContinuousScalarRendererSeat;
+    };
 
     expect(control.getAttribute('data-external-scalar-renderer')).toBe(renderer);
+    expect('destroy' in externalControl.rendererSeat).toBe(false);
+    expect(typeof externalControl.rendererSeat.attachRenderer).toBe('function');
+    expect(typeof externalControl.rendererSeat.cancel).toBe('function');
     expect(control.getAttribute('data-label')).toBe('Controlled');
     expect(control.getAttribute('data-display')).toBe('display:20');
     expect(control.getAttribute('data-accent-color')).toBe('#123456');
@@ -1664,14 +1698,22 @@ describe('ValueControl external scalar appearances', () => {
     const { state, target } = mountReactive({ binding, label: 'External command', renderer: 'hbar' });
     const external = slider(target) as HTMLElement & {
       readonly rendererLease: ContinuousScalarRendererLease;
+      readonly rendererSeat: ContinuousScalarRendererSeat;
     };
     const staleLease = external.rendererLease;
+    const staleSeat = external.rendererSeat;
 
     expect(staleLease.view).toEqual(binding.view);
+    expect(staleSeat).not.toBe(binding);
+    expect(staleSeat.view).toEqual(binding.view);
+    expect('destroy' in staleSeat).toBe(false);
     expect(external.getAttribute('data-confirmed')).toBe('20');
     expect(external.getAttribute('data-requested')).toBe('30');
     expect(external.getAttribute('data-phase')).toBe('failed');
     expect(external.getAttribute('data-error')).toBe('radio rejected');
+    staleLease.nativeInput(40);
+    expect(binding.view).toMatchObject({ draft: 40, confirmed: 20, requested: 30 });
+    expect(request).toHaveBeenCalledExactlyOnceWith(40);
 
     state.skin = { name: 'Explicit built-in fallback' };
     flushSync();
@@ -1680,13 +1722,92 @@ describe('ValueControl external scalar appearances', () => {
     expect(replacement.getAttribute('aria-valuenow')).toBe('20');
     expect(replacement.getAttribute('data-command-phase')).toBe('failed');
     expect(binding.view).toMatchObject({
-      confirmed: 20, requested: 30, phase: 'failed', error: 'radio rejected',
+      draft: null, confirmed: 20, requested: 30, phase: 'failed', error: 'radio rejected',
     });
     expect(target.querySelector('[data-control-feedback-status]')).toBeNull();
 
+    const staleLateLease = staleSeat.attachRenderer();
+    staleSeat.cancel('authority');
+    staleLateLease.nativeInput(90);
     expect(staleLease.key({ key: 'ArrowRight', fine: false })).toBe(false);
-    expect(request).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledExactlyOnceWith(40);
     replacement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    expect(request.mock.calls).toEqual([[40], [30]]);
+
+    state.skin = undefined;
+    flushSync();
+    const externalA2 = slider(target) as HTMLElement & {
+      readonly rendererSeat: ContinuousScalarRendererSeat;
+    };
+    expect(externalA2.rendererSeat).not.toBe(staleSeat);
+    staleSeat.attachRenderer().nativeInput(100);
+    expect(externalA2.rendererSeat.attachRenderer().key({ key: 'ArrowRight', fine: false })).toBe(true);
+    expect(request.mock.calls).toEqual([[40], [30], [30]]);
+    binding.destroy();
+  });
+
+  it('does not retarget an A1 callback when A1, B, and A2 use the same renderer component', () => {
+    const request = vi.fn();
+    const binding = readingBinding(20, request);
+    activationState.selectedScalarAppearance = externalAppearance;
+    const { state, target } = mountReactive({
+      binding, label: 'Repeated component', renderer: 'hbar',
+    });
+    const nodeA1 = slider(target) as HTMLElement & {
+      readonly rendererSeat: ContinuousScalarRendererSeat;
+    };
+    const seatA1 = nodeA1.rendererSeat;
+
+    state.skin = { ...externalAppearance, name: 'External B' };
+    flushSync();
+    const nodeB = slider(target) as HTMLElement & {
+      readonly rendererSeat: ContinuousScalarRendererSeat;
+    };
+    expect(nodeB).not.toBe(nodeA1);
+    expect(nodeB.rendererSeat).not.toBe(seatA1);
+    nodeA1.click();
+    seatA1.attachRenderer().nativeInput(70);
+    expect(request).not.toHaveBeenCalled();
+    nodeB.click();
+    expect(request).toHaveBeenCalledExactlyOnceWith(30);
+
+    state.skin = externalAppearance;
+    flushSync();
+    const nodeA2 = slider(target) as HTMLElement & {
+      readonly rendererSeat: ContinuousScalarRendererSeat;
+    };
+    expect(nodeA2).not.toBe(nodeB);
+    expect(nodeA2.rendererSeat).not.toBe(seatA1);
+    nodeA1.click();
+    nodeB.click();
+    expect(request).toHaveBeenCalledTimes(1);
+    nodeA2.click();
+    expect(request.mock.calls).toEqual([[30], [30]]);
+    binding.destroy();
+  });
+
+  it('retires its renderer occurrence when an external owner outlives ValueControl', async () => {
+    const request = vi.fn();
+    const binding = readingBinding(20, request);
+    activationState.selectedScalarAppearance = externalAppearance;
+    const first = mountReactive({ binding, label: 'Unmounted A', renderer: 'hbar' });
+    const nodeA = slider(first.target) as HTMLElement & {
+      readonly rendererSeat: ContinuousScalarRendererSeat;
+    };
+    const seatA = nodeA.rendererSeat;
+
+    components = components.filter((component) => component !== first.component);
+    await unmount(first.component);
+    const second = mountReactive({ binding, label: 'Current B', renderer: 'hbar' });
+    const nodeB = slider(second.target);
+    const staleLateLease = seatA.attachRenderer();
+    staleLateLease.nativeInput(70);
+    seatA.cancel('authority');
+    staleLateLease.dispose();
+
+    expect(request).not.toHaveBeenCalled();
+    expect(binding.view).toMatchObject({ canonical: 20, displayed: 20 });
+    nodeB.click();
     expect(request).toHaveBeenCalledExactlyOnceWith(30);
     binding.destroy();
   });

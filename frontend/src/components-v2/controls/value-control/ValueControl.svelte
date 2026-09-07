@@ -20,8 +20,10 @@
     createDiscreteContinuousScalarPolicy,
     createHBarContinuousScalarPolicy,
     createKnobContinuousScalarPolicy,
+    createContinuousScalarRendererSeat,
     type ContinuousScalarBinding,
     type ContinuousScalarPolicy,
+    type ContinuousScalarRendererSeat,
   } from '../../../primitives/scalar/continuous-scalar.svelte';
 
   interface PresentationProps {
@@ -213,7 +215,10 @@
     }
   });
 
-  onDestroy(() => ownedBinding?.destroy());
+  onDestroy(() => {
+    currentRendererOccurrence = Object.freeze({});
+    ownedBinding?.destroy();
+  });
 
   let legacy = $derived<LegacyReadingPresentation>({
     phase: feedbackPhase,
@@ -226,8 +231,45 @@
       ? displayFn(value)
       : undefined,
   );
+  let skinComponent = $derived(
+    effectiveAppearance
+      ? renderer === 'knob' ? effectiveAppearance.knob
+      : renderer === 'hbar' ? effectiveAppearance.hbar
+        : renderer === 'bipolar' ? effectiveAppearance.bipolar
+          : effectiveAppearance.discrete
+      : undefined,
+  );
+  const initialAppearance = untrack(() => effectiveAppearance);
+  let attachedSeatBinding = untrack(() => scalarBinding);
+  let attachedSeatRenderer = untrack(() => renderer);
+  let attachedSeatAppearance = initialAppearance;
+  let attachedSeatComponent = untrack(() => skinComponent);
+  let currentRendererOccurrence: object;
+
+  function makeRendererSeat(binding: ContinuousScalarBinding): ContinuousScalarRendererSeat {
+    const occurrence = Object.freeze({});
+    currentRendererOccurrence = occurrence;
+    return createContinuousScalarRendererSeat(
+      binding,
+      () => currentRendererOccurrence === occurrence,
+    );
+  }
+
+  let rendererSeat = $state(makeRendererSeat(untrack(() => scalarBinding)));
+  $effect.pre(() => {
+    if (scalarBinding === attachedSeatBinding
+      && renderer === attachedSeatRenderer
+      && effectiveAppearance === attachedSeatAppearance
+      && skinComponent === attachedSeatComponent) return;
+    attachedSeatBinding = scalarBinding;
+    attachedSeatRenderer = renderer;
+    attachedSeatAppearance = effectiveAppearance;
+    attachedSeatComponent = skinComponent;
+    rendererSeat = makeRendererSeat(scalarBinding);
+  });
+
   let rendererProps = $derived({
-    binding: scalarBinding,
+    binding: rendererSeat,
     label,
     displayFn,
     unknownDisplay,
@@ -254,43 +296,37 @@
     tickStyle,
     dimmed: externalBinding === undefined ? disabled : undefined,
   });
-  let skinComponent = $derived(
-    effectiveAppearance
-      ? renderer === 'knob' ? effectiveAppearance.knob
-      : renderer === 'hbar' ? effectiveAppearance.hbar
-        : renderer === 'bipolar' ? effectiveAppearance.bipolar
-          : effectiveAppearance.discrete
-      : undefined,
-  );
 </script>
 
-{#if skinComponent}
-  {@const SkinRenderer = skinComponent}
-  {#if renderer === 'knob'}
-    <SkinRenderer {...knobProps} />
+{#key rendererSeat}
+  {#if skinComponent}
+    {@const SkinRenderer = skinComponent}
+    {#if renderer === 'knob'}
+      <SkinRenderer {...knobProps} />
+    {:else if renderer === 'hbar'}
+      <SkinRenderer {...hbarProps} />
+    {:else if renderer === 'discrete'}
+      <SkinRenderer {...discreteProps} />
+    {:else}
+      <SkinRenderer {...rendererProps} />
+    {/if}
   {:else if renderer === 'hbar'}
-    <SkinRenderer {...hbarProps} />
+    <HBarRenderer
+      binding={rendererSeat} {label} {displayFn} {unknownDisplay}
+      {fillColor} {fillGradient} {trackColor}
+      {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
+      {accessibility} {legacy} {valueProjection} {issuedStatusPresentation}
+    />
+  {:else if renderer === 'bipolar'}
+    <BipolarRenderer
+      binding={rendererSeat} {label} {displayFn} {unknownDisplay}
+      {fillColor} {fillGradient} {trackColor}
+      {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
+      {accessibility} {legacy}
+    />
+  {:else if renderer === 'knob'}
+    <KnobRenderer {...knobProps} />
   {:else if renderer === 'discrete'}
-    <SkinRenderer {...discreteProps} />
-  {:else}
-    <SkinRenderer {...rendererProps} />
+    <DiscreteRenderer {...discreteProps} />
   {/if}
-{:else if renderer === 'hbar'}
-  <HBarRenderer
-    binding={scalarBinding} {label} {displayFn} {unknownDisplay}
-    {fillColor} {fillGradient} {trackColor}
-    {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
-    {accessibility} {legacy} {valueProjection} {issuedStatusPresentation}
-  />
-{:else if renderer === 'bipolar'}
-  <BipolarRenderer
-    binding={scalarBinding} {label} {displayFn} {unknownDisplay}
-    {fillColor} {fillGradient} {trackColor}
-    {accentColor} {showValue} {showLabel} {compact} {variant} {unit} {shortcutHint} {title}
-    {accessibility} {legacy}
-  />
-{:else if renderer === 'knob'}
-  <KnobRenderer {...knobProps} />
-{:else if renderer === 'discrete'}
-  <DiscreteRenderer {...discreteProps} />
-{/if}
+{/key}

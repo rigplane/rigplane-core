@@ -1,5 +1,10 @@
 import type { Component, Snippet } from 'svelte';
 import type { Skin as HostScalarAppearance } from '../../src/components-v2/controls/value-control/skin';
+import type {
+  ContinuousScalarRendererLease as HostScalarRendererLease,
+  ContinuousScalarRendererSeat as HostScalarRendererSeat,
+  ContinuousScalarView as HostScalarRendererView,
+} from '../../src/primitives/scalar/continuous-scalar.svelte';
 import type { FrequencyInteraction as HostFrequencyInteraction } from '../../src/primitives/frequency/frequency-interaction.svelte';
 import type { FrequencyReadoutModel as HostFrequencyReadoutModel } from '../../src/primitives/frequency/frequency-readout';
 import type { InstrumentReading as HostInstrumentReading } from '../../src/primitives/control-instruments/control-instrument-behavior';
@@ -27,6 +32,9 @@ export const COMPONENT_KIT_API_VERSION = 1 as const;
 
 export type ComponentKitApiVersion = typeof COMPONENT_KIT_API_VERSION;
 export type ScalarAppearance = HostScalarAppearance;
+export type ScalarRendererLease = HostScalarRendererLease;
+export type ScalarRendererSeat = HostScalarRendererSeat;
+export type ScalarRendererView = HostScalarRendererView;
 export type FrequencyInteraction = HostFrequencyInteraction;
 export type FrequencyReadoutModel = HostFrequencyReadoutModel;
 export type DesignLanguageManifest = HostDesignLanguageManifest;

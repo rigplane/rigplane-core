@@ -248,6 +248,7 @@ try {
     'dist/types/component-kit-api/src/index.d.ts',
     'dist/types/src/primitives/control-instruments/control-instrument-behavior.d.ts',
     'dist/types/src/primitives/control-instruments/control-instrument-renderer.svelte.d.ts',
+    'dist/types/src/primitives/scalar/continuous-scalar.svelte.d.ts',
   ]);
   await assertPackedShape(fixturePack, fixtureRoot, ['dist/index.d.ts']);
 
@@ -263,6 +264,20 @@ try {
   const apiDeclarationSource = (await Promise.all(
     apiDeclarations.map((file) => readFile(file, 'utf8')),
   )).join('\n');
+  const scalarDeclarationSource = await readFile(
+    path.join(
+      packageRoot, 'dist', 'types', 'src', 'primitives', 'scalar',
+      'continuous-scalar.svelte.d.ts',
+    ),
+    'utf8',
+  );
+  assert(apiDeclarationSource.includes('ScalarRendererSeat'));
+  assert(scalarDeclarationSource.includes('ContinuousScalarRendererSeat'));
+  assert(!scalarDeclarationSource.includes('ContinuousScalarBinding'));
+  assert(!scalarDeclarationSource.includes('createContinuousScalar('));
+  assert(!scalarDeclarationSource.includes('createContinuousScalarRendererSeat('));
+  assert(!scalarDeclarationSource.includes('destroy(): void'));
+  assert(!scalarDeclarationSource.includes("'availability' | 'terminal' | 'owner-dispose'"));
   assert(!apiDeclarationSource.includes('PresentationHostMode'));
   assert(apiDeclarationSource.includes("'external-instruments-v1'"));
   assert(apiDeclarationSource.includes('HostedFacePropsV1'));
@@ -399,6 +414,7 @@ export default {
   type MeterNumericEvidence,
   type PresentationDeclaration,
   type ScalarAppearance,
+  type ScalarRendererSeat,
   type SignalMeterRendererProps,
   type SignalMeterEvidence,
   type TxAuxScalarPresentationV1,
@@ -414,6 +430,10 @@ import fixtureKit, {
 
 const declaration: HostedComponentKitDeclarationV1 = fixtureKit;
 const scalar: ScalarAppearance | undefined = declaration.scalarAppearances?.fixture;
+declare const scalarRendererSeat: ScalarRendererSeat;
+const scalarRendererLease = scalarRendererSeat.attachRenderer();
+scalarRendererSeat.cancel('authority');
+void [scalarRendererSeat.view, scalarRendererLease.view];
 const layout: LayoutManifest | undefined = declaration.layouts?.[0];
 const finite: FiniteControlAppearance | undefined = declaration.finiteControlAppearances?.fixture;
 const numericChoiceRenderer: Component<ChoiceRendererProps<number>> | undefined = finite?.choice;
@@ -522,10 +542,14 @@ import type {
   TxAuxScalarPresentationV1,
   VfoOperationHandleV1,
   VfoOperationInstrumentFamilyV1,
+  ScalarRendererSeat,
 } from '@rigplane/component-kit-api';
 import type { Snippet } from 'svelte';
 
 const wrongMode = 'instrument-handles';
+declare const scalarRendererSeat: ScalarRendererSeat;
+// @ts-expect-error renderer seats cannot destroy their host-owned scalar owner
+scalarRendererSeat.destroy();
 // @ts-expect-error external faces have one admitted host discriminator
 const wrongHostMode: HostedFacePresentationV1['hostMode'] = wrongMode;
 // @ts-expect-error the internal DOM hook is not a hosted-seat presentation option
@@ -980,9 +1004,9 @@ assert.deepEqual(fixtureKit.presentations?.map(({ id }) => id), ['fixture-face-a
     path.join(consumer, 'node_modules', 'svelte', 'package.json'),
     'utf8',
   ));
-  assert.equal(installedApi.version, '0.4.0');
+  assert.equal(installedApi.version, '0.5.0');
   assert.equal(installedApi.peerDependencies.svelte, '>=5.45.2 <6');
-  assert.equal(installedFixture.peerDependencies['@rigplane/component-kit-api'], '0.4.0');
+  assert.equal(installedFixture.peerDependencies['@rigplane/component-kit-api'], '0.5.0');
 
   console.log('component-kit-api portable package verification: OK');
   console.log(`runtime exports: COMPONENT_KIT_API_VERSION, defineComponentKit`);
