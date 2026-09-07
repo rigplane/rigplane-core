@@ -174,9 +174,16 @@ integration owner directly dispatches a fresh independent review on that exact
 head → receive its immutable packet → confirm required checks green at the
 exact head → merge → remove the worktree.
 
-- A draft PR must not merge, and it runs neither `quick` nor `visual`; the
-  `ready_for_review` event starts the required CI. Marking Ready once, on the
-  final candidate, is what buys the single run.
+- A draft PR must not merge, and its head has no `quick` job to read: that
+  job's `if:` in `.github/workflows/quick.yml` requires
+  `github.event.pull_request.draft == false`, and `ready_for_review` is one of
+  that workflow's `pull_request` `types:`. Marking Ready once, on the final
+  candidate, is what buys the single run.
+- A documentation-only head starts no `quick.yml` run at all: that workflow's
+  `paths-ignore` covers `docs/**`, `.claude/**` and `**/*.md` on both `push`
+  and `pull_request`. Its required `quick` context is published green, without
+  numbers, by `.github/workflows/docs-only-quick.yml` — so green there is not
+  evidence that anything ran.
 - The verifier reviews that exact head and consumes the CI evidence already
   there, rather than rerunning suites. A correction changes the head, and the
   new head gets its own run and its own exact-head review.

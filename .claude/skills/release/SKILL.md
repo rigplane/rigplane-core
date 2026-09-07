@@ -138,7 +138,7 @@ uv build && rm -rf dist/
 
 ```bash
 # 2j. Optional regression check (.claude/commands/regression-check.md).
-# Its step 1 reads "the run on its draft PR", which a release cut from
+# Its step 1 reads "the run on its ready PR", which a release cut from
 # `main` does not have; 2h above is the record in that case.
 ```
 

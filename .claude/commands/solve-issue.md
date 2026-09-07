@@ -39,22 +39,23 @@ Dispatch the `builder` role (`.claude/agents/builder.md`) with the plan as its s
 ### Phase 4: REGCHECK (mandatory)
 The post-change result is CI's, so the PR opens here — before REVIEW, not after it.
 - Commit with a conventional message: `fix(#$ARGUMENTS): ...` or `feat(#$ARGUMENTS): ...`
-- Push, then `gh pr create --draft` with `Closes #$ARGUMENTS` in the body:
-  `quick.yml` triggers on push/PR to `main`, so the branch has no run of its
-  own until the PR exists (CLAUDE.md §Agent working rules)
+- Push, then `gh pr create` — ready, not `--draft` — with `Closes #$ARGUMENTS`
+  in the body: `quick.yml` triggers on push/PR to `main` and its `quick`
+  job's `if:` skips a draft PR, so the branch has no `quick` job to read
+  until a ready PR exists (CLAUDE.md §Agent working rules)
 - Run `/regression-check` (see `.claude/commands/regression-check.md`), which
   takes its numbers from that PR's `quick` run at this head
 - Compare test results against baseline
 - If regression detected → back to EXECUTE (counts toward retry limit); push
   the fix and read the `quick` run on the new head
 - Do NOT proceed to REVIEW with regressions
-- With `quick` green at this head, `gh pr ready`: the verifier reviews a ready
-  PR, never a draft (AGENTS.md, "Draft PRs must not merge ... run `gh pr
-  ready`, then complete checks and review")
+- Proceed to REVIEW only with `quick` green at this head; the PR opened
+  ready, so the verifier reviews a ready PR, never a draft (AGENTS.md,
+  "Draft PRs must not merge")
 
 ### Phase 5: REVIEW
 Dispatch the `verifier` role (`.claude/agents/verifier.md`) — on the PR Phase 4
-took out of draft.
+opened.
 - The verifier did not write the change and must not be the builder
 - Review all changes against the plan; check safety, correctness, layering
 - Have the verifier report its verdict back as text; you relay it
@@ -73,8 +74,8 @@ pytest suite, `ruff check`, `ruff format`, and `mypy`.
   run on the new head
 
 ### Phase 7: PR (merge readiness)
-The PR is already open and out of draft since Phase 4; this phase is what makes
-it mergeable.
+The PR has been open and ready since Phase 4; this phase is what makes it
+mergeable.
 - PR body references the issue: `Closes #$ARGUMENTS`, and says why the change
   is one unit of work if it crosses the soft threshold in CLAUDE.md §Guardrails
 - Re-derive the size at the head you pushed — `git diff --stat
