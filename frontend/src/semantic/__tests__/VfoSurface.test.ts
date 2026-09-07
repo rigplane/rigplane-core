@@ -23,7 +23,7 @@ import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
 import type {
-  ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverSMeterMount,
+  ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverVfoAppearance,
 } from '../ReceiverInstrumentHost.svelte';
 import {
   validateRadioViewModel, type RadioViewModel, type ReceiverId,
@@ -256,14 +256,10 @@ function hostedReceiverInstruments(): ReceiverInstrumentHandles {
   const frequency = (receiver: ReceiverId) => createRawSnippet<[ReceiverFrequencyMount?]>(() => ({
     render: () => `<span data-hosted-frequency="${receiver}">${receiver} frequency</span>`,
   }));
-  const sMeter = (receiver: ReceiverId) => createRawSnippet<[ReceiverSMeterMount?]>(() => ({
-    render: () => `<span data-hosted-s-meter="${receiver}">${receiver} meter</span>`,
-  }));
   return {
     mainFrequency: frequency('MAIN'), subFrequency: frequency('SUB'),
-    mainSMeter: sMeter('MAIN'), subSMeter: sMeter('SUB'),
-    vfoOperations: createRawSnippet(() => ({
-      render: () => '<span data-hosted-vfo-operations>VFO operations</span>',
+    vfoOperations: createRawSnippet<[appearance: ReceiverVfoAppearance]>((appearance) => ({
+      render: () => `<span data-hosted-vfo-operations="${appearance()}">VFO operations</span>`,
     })),
   };
 }
@@ -2380,18 +2376,18 @@ describe('MOR-2342 historical instrument presentations', () => {
     expect(group).not.toMatch(/phase\??:|['\"](?:idle|pending|failed)['\"]/);
   });
 
-  it('keeps local meter source/session confined to the standalone fallback branches', () => {
+  it('keeps local meter source/session on every receiver branch', () => {
     const source = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
     expect(source.match(/<VfoIndicatorRow/g)).toHaveLength(3);
     expect(source).toMatch(/radioWide=\{viewModel\.radioWideIndicators\}[\s\S]*?\{continuitySession\}/);
-    expect(source).toMatch(/continuitySession=\{receiverInstruments === undefined \? continuitySession : undefined\}/);
+    expect(source).toMatch(/slotLabel=\{instrumentSlot\(receiver\)\} \{continuitySession\}/);
     const panel = source.match(/<VfoPanel([\s\S]*?)\/>/)?.[1] ?? '';
-    expect(panel).toMatch(/meterSource=\{receiverInstruments === undefined \? indicator\?\.sMeter\.source : undefined\}/);
-    expect(panel).toMatch(/continuitySession=\{receiverInstruments === undefined \? continuitySession : undefined\}/);
+    expect(panel).toMatch(/meterSource=\{indicator\?\.sMeter\.source\}/);
+    expect(panel).toMatch(/\{continuitySession\}/);
   });
 
   it.each(['semantic', 'sdr', 'standard'] as const)(
-    'uses the named receiver handles and one global operations handle in %s',
+    'uses named frequency handles and its local operation group in grouped %s',
     (appearance) => {
       const root = mountSurface({
         viewModel: withReceiverIndicators('2/main_sub'), appearance,
@@ -2399,9 +2395,10 @@ describe('MOR-2342 historical instrument presentations', () => {
       });
       for (const receiver of ['MAIN', 'SUB']) {
         expect(root.querySelectorAll(`[data-hosted-frequency="${receiver}"]`)).toHaveLength(1);
-        expect(root.querySelectorAll(`[data-hosted-s-meter="${receiver}"]`)).toHaveLength(1);
       }
-      expect(root.querySelectorAll('[data-hosted-vfo-operations]')).toHaveLength(1);
+      expect(root.querySelector('[data-hosted-vfo-operations]')).toBeNull();
+      expect(root.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
+      expect(root.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
       expect(root.querySelector('[data-hosted-frequency]')?.closest('[data-vfo-freq]')).not.toBeNull();
     },
   );
@@ -2410,7 +2407,7 @@ describe('MOR-2342 historical instrument presentations', () => {
     const root = mountSurface({
       viewModel: withReceiverIndicators('2/main_sub'), onTuneFrequency: vi.fn(),
     });
-    expect(root.querySelector('[data-hosted-frequency], [data-hosted-s-meter]')).toBeNull();
+    expect(root.querySelector('[data-hosted-frequency]')).toBeNull();
     expect(root.querySelectorAll('.freq.interactive')).toHaveLength(2);
     expect(root.querySelectorAll('[data-testid="receiver-s-meter"] svg')).toHaveLength(2);
   });

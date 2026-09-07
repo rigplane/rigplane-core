@@ -270,7 +270,7 @@ describe('the surfaces render from the live adapter output', () => {
   it('defaults to the single unsliced surface — no channel-strip wrapper at all', () => {
     render();
     expect(q('[data-testid="channel-strips"]')).toBeNull();
-    expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(2);
+    expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(1);
   });
 
   // MOR-1069, finding N1 (routed from the MOR-1068 verification). MOR-1068

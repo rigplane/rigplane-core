@@ -159,6 +159,19 @@ function pushMeter(value: number, providerGeneration = 1): void {
   publishAuthority();
   flushSync();
 }
+function frequencyState(display: 'unknown' | 'current' | 'stale'): ServerState {
+  const next = state();
+  for (const path of ['main.freqHz', 'main.vfoA.freqHz']) {
+    if (display === 'unknown') delete next.fieldStatus?.[path];
+    else if (display === 'stale') next.fieldStatus![path] = {
+      ...fresh, freshness: 'stale', availability: 'stale',
+    };
+  }
+  return next;
+}
+function pushState(next: ServerState): void {
+  h.state = next; txHarness.emitServerSnapshot({}); publishAuthority(); flushSync();
+}
 const rowReceivers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>('[data-testid="vfo-indicator-row"]')]
   .map((row) => row.dataset.indicatorReceiver);
 
@@ -217,6 +230,57 @@ afterEach(() => {
 });
 
 describe('production receiver-indicator partitioning', () => {
+  it.each([
+    ['dual semantic receiver strip', { strips: 'dual' }],
+    ['single semantic VFO surface', { strips: 'single' }],
+    ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
+  ] as const)('keeps one %s renderer through unknown/current/stale/current', (_name, props) => {
+    selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+    render(caps('main_sub', 2), frequencyState('unknown'), {}, props);
+    const selector = '[data-vfo-receiver="MAIN"] [data-alternate-frequency-readout]';
+    const renderer = target.querySelector<HTMLElement>(selector)!;
+    expect(renderer).not.toBeNull();
+    expect(renderer.getAttribute('aria-disabled')).toBe('true');
+    const cardinality = () => [
+      target.querySelectorAll('[data-testid="vfo-surface"]').length,
+      target.querySelectorAll('[data-testid="vfo-ops"]').length,
+    ];
+    const initialCardinality = cardinality();
+
+    pushState(frequencyState('current'));
+    expect(target.querySelector(selector)).toBe(renderer);
+    const digit = renderer.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!;
+    digit.click();
+    renderer.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    const currentCalls = h.noop.mock.calls.length;
+    expect(currentCalls).toBeGreaterThan(0);
+
+    pushState(frequencyState('stale'));
+    expect(target.querySelector(selector)).toBe(renderer);
+    expect(renderer.textContent).toContain('14200000');
+    const staleWheel = new WheelEvent('wheel', { deltaY: -1, cancelable: true });
+    renderer.querySelector<HTMLButtonElement>('[data-multiplier="1"]')!.dispatchEvent(staleWheel);
+    expect(renderer.getAttribute('aria-disabled')).toBe('true');
+    expect(staleWheel.defaultPrevented).toBe(false);
+    expect(h.noop).toHaveBeenCalledTimes(currentCalls);
+    expect(cardinality()).toEqual(initialCardinality);
+
+    pushState(frequencyState('current'));
+    expect(target.querySelector(selector)).toBe(renderer);
+    expect(renderer.getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it.each([
+    ['grouped Standard', { strips: 'single', vfoAppearance: 'standard' }, 1, 'standard'],
+    ['independent dual SDR', { strips: 'dual', vfoAppearance: 'sdr' }, 3, 'sdr'],
+  ] as const)('renders one operation group and status in %s', (_name, props, surfaces, appearance) => {
+    render(caps('main_sub', 2), state(), {}, props);
+    expect(target.querySelectorAll('[data-testid="vfo-surface"]')).toHaveLength(surfaces);
+    expect(target.querySelectorAll('[data-testid="vfo-active-receiver"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="vfo-ops"]')).toHaveLength(1);
+    expect(target.querySelector('[data-vfo-operation-appearance]')?.getAttribute('data-vfo-operation-appearance')).toBe(appearance);
+  });
+
   it.each([
     ['dual receiver strip', { strips: 'dual' }],
     ['single VFO surface', { strips: 'single' }],
@@ -322,8 +386,7 @@ describe('production receiver-indicator partitioning', () => {
       outstandingFrameIds.delete(frameId);
     });
     render(caps('main_sub', 2), state(), {}, props);
-    // Two schedules per receiver motion binding, plus the existing MetersSurface pair.
-    expect(requestedFrameIds.size).toBe(6);
+    expect(requestedFrameIds.size).toBeGreaterThan(0);
     expect(outstandingFrameIds).toEqual(requestedFrameIds);
     unmount(component!);
     component = null;

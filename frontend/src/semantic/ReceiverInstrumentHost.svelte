@@ -2,21 +2,17 @@
   import type { Snippet } from 'svelte';
 
   export type ReceiverFrequencyMount = Readonly<{ compact?: boolean; vfoFreqHook?: boolean }>;
-  export type ReceiverSMeterMount = Readonly<{
-    compact?: boolean; label?: string; variant?: 'vfo' | 'vfo-wide' | 'sdr-screen';
-  }>;
+  export type ReceiverVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
   export interface ReceiverInstrumentHandles {
     readonly mainFrequency: Snippet<[mount?: ReceiverFrequencyMount]>;
     readonly subFrequency?: Snippet<[mount?: ReceiverFrequencyMount]>;
-    readonly mainSMeter: Snippet<[mount?: ReceiverSMeterMount]>;
-    readonly subSMeter?: Snippet<[mount?: ReceiverSMeterMount]>;
-    readonly vfoOperations: Snippet;
+    readonly vfoOperations: Snippet<[appearance: ReceiverVfoAppearance]>;
   }
 </script>
 
 <script lang="ts">
-  import { onDestroy, onMount, untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import type { Capabilities } from '$lib/types/capabilities';
   import type { ServerState } from '$lib/types/state';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -26,13 +22,6 @@
     createFrequencyInstrumentBinding,
     type FrequencyInstrumentBinding,
   } from '../primitives/frequency/frequency-instrument.svelte';
-  import LinearSMeter from '../components-v2/meters/LinearSMeter.svelte';
-  import {
-    createSignalMeterMotion,
-    type SignalMeterMotionBinding,
-    type SignalMeterMotionInput,
-  } from '../components-v2/meters/signal-meter-motion.svelte';
-  import { projectSignalMeter } from '../components-v2/meters/smeter-scale';
   import type { RadioViewModel, ReceiverId, VfoViewModel } from './radio-view-model';
 
   type ReceiverAuthorityPublication = Readonly<{
@@ -50,7 +39,7 @@
     subscribeControlAuthority: SubscribeReceiverAuthority;
     pendingFrequencyHz?: Partial<Record<ReceiverId, number>>;
     onTuneFrequency?: (receiver: ReceiverId, frequencyHz: number) => void;
-    vfoOperations: Snippet;
+    vfoOperations: Snippet<[appearance: ReceiverVfoAppearance]>;
     children: Snippet<[ReceiverInstrumentHandles]>;
   }
 
@@ -63,12 +52,10 @@
   interface ReceiverOwner {
     readonly receiver: ReceiverId;
     readonly frequency: FrequencyInstrumentBinding;
-    readonly motion: SignalMeterMotionBinding;
     readonly model: RadioViewModel | null;
     readonly context: object | null;
     readonly active: boolean;
     update(model: RadioViewModel | null, authority: ReceiverFrequencyAuthority | null): void;
-    syncMeter(input: SignalMeterMotionInput): void;
   }
 
   let {
@@ -83,7 +70,6 @@
   let subOwner = $state.raw<ReceiverOwner | null>(null);
   let mainOwnerRoot: (() => void) | null = null;
   let subOwnerRoot: (() => void) | null = null;
-  let mounted = false;
   let destroyed = false;
 
   const safeGeneration = (value: unknown): value is number =>
@@ -181,22 +167,9 @@
           ? undefined : (frequencyHz: number) => onTuneFrequency?.(receiver, frequencyHz);
       },
     });
-    const indicator = initialModel.receiverIndicators?.find((item) => item.receiver === receiver);
-    const motion = createSignalMeterMotion({
-      projection: projectSignalMeter(
-        indicator?.sMeter.availability.operational
-          && indicator.sMeter.reading.status === 'known'
-          && Number.isFinite(indicator.sMeter.reading.value)
-          ? indicator.sMeter.reading.value : null,
-      ),
-      present: indicator?.sMeter.availability.structural ?? false,
-      source: indicator?.sMeter.source,
-      session: initialAuthority === null ? null : { controlSessionEpoch: initialAuthority.sessionEpoch },
-    });
     return {
       receiver,
       frequency,
-      motion,
       get model() { return model; },
       get context() { return context; },
       get active() { return activeRecord(model, receiver)?.isActive ?? false; },
@@ -205,13 +178,10 @@
         if (!sameAuthority(authority, nextAuthority)) context = nextAuthority === null ? null : {};
         authority = nextAuthority;
       },
-      syncMeter: (input) => motion.sync(input),
     };
   }
 
   function stopOwner(receiver: ReceiverId): void {
-    const owner = receiver === 'MAIN' ? mainOwner : subOwner;
-    owner?.motion.stop();
     if (receiver === 'MAIN') {
       mainOwnerRoot?.(); mainOwnerRoot = null; mainOwner = null;
     } else {
@@ -229,7 +199,6 @@
     } else {
       subOwner = created; subOwnerRoot = dispose;
     }
-    if (mounted) created.motion.start();
     return created;
   }
 
@@ -256,24 +225,10 @@
       }
     }
 
-    const session = (['MAIN', 'SUB'] as const).some((receiver) =>
-      frequencyAuthority(publication, qualifiedModel, receiver) !== null)
-      ? { controlSessionEpoch: publication.session.epoch } : null;
     for (const owner of [mainOwner, subOwner]) {
       if (owner === null) continue;
       const authority = frequencyAuthority(publication, qualifiedModel, owner.receiver);
       owner.update(qualifiedModel, authority);
-      const indicator = owner.model?.receiverIndicators?.find((item) => item.receiver === owner.receiver);
-      const value = indicator?.sMeter.availability.operational
-        && indicator.sMeter.reading.status === 'known'
-        && Number.isFinite(indicator.sMeter.reading.value)
-        ? indicator.sMeter.reading.value : null;
-      owner.syncMeter({
-        projection: projectSignalMeter(value),
-        present: indicator?.sMeter.availability.structural ?? false,
-        source: indicator?.sMeter.source,
-        session,
-      });
     }
   }
 
@@ -281,17 +236,9 @@
   let unsubscribe: () => void = () => undefined;
   unsubscribe = initialSubscribe(applyPublication);
 
-  onMount(() => {
-    mounted = true;
-    mainOwner?.motion.start();
-    subOwner?.motion.start();
-  });
-
   onDestroy(() => {
     destroyed = true;
     unsubscribe();
-    mainOwner?.motion.stop();
-    subOwner?.motion.stop();
     mainOwnerRoot?.();
     subOwnerRoot?.();
   });
@@ -314,22 +261,8 @@
   {/if}
 {/snippet}
 
-{#snippet mainSMeter(mount?: ReceiverSMeterMount)}
-  {#if mainOwner !== null}
-    <LinearSMeter frame={mainOwner.motion.frame} compact={mount?.compact ?? false}
-      label={mount?.label} variant={mount?.variant} />
-  {/if}
-{/snippet}
-
-{#snippet subSMeter(mount?: ReceiverSMeterMount)}
-  {#if subOwner !== null}
-    <LinearSMeter frame={subOwner.motion.frame} compact={mount?.compact ?? false}
-      label={mount?.label} variant={mount?.variant} />
-  {/if}
-{/snippet}
-
 {#if subOwner === null}
-  {@render children({ mainFrequency, mainSMeter, vfoOperations })}
+  {@render children({ mainFrequency, vfoOperations })}
 {:else}
-  {@render children({ mainFrequency, subFrequency, mainSMeter, subSMeter, vfoOperations })}
+  {@render children({ mainFrequency, subFrequency, vfoOperations })}
 {/if}

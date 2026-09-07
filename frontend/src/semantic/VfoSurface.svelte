@@ -335,7 +335,7 @@
   }
 
   function hasDigitReadout(vfo: VfoViewModel): boolean {
-    if (receiverInstruments !== undefined) return vfo.isActiveSlot && vfo.frequencyHz !== null
+    if (receiverInstruments !== undefined) return vfo.isActiveSlot
       && (vfo.receiver === 'MAIN' || receiverInstruments.subFrequency !== undefined);
     return vfo.isActiveSlot && onTuneFrequency !== undefined
       && (vfo.frequencyHz !== null || vfo.display !== undefined);
@@ -743,9 +743,6 @@
 
   {#snippet radioWideContent()}
   {#if showRadioWideFacts}
-    {#if receiverInstruments !== undefined}
-      {@render receiverInstruments.vfoOperations()}
-    {:else}
     {#if viewModel.radioWideIndicators}
       <VfoIndicatorRow
         radioWide={viewModel.radioWideIndicators}
@@ -778,26 +775,15 @@
       groupReason={identityOnlyReasonText()}
       onIntent={handleOperationIntent}
     />
-    {/if}
   {/if}
   {/snippet}
 
   {#snippet receiverInstrument(receiver: ReceiverId)}
-    {@const meterHandle = receiver === 'MAIN'
-      ? receiverInstruments?.mainSMeter : receiverInstruments?.subSMeter}
-    {#snippet hostedMeter()}
-      {@render meterHandle!({
-        compact: true, label: appearance === 'standard' ? instrumentSlot(receiver) : undefined,
-        variant: appearance === 'sdr' ? 'sdr-screen' : 'vfo-wide',
-      })}
-    {/snippet}
     <section class="receiver-instrument" data-receiver-instrument={receiver}
       class:instrument-active={viewModel.vfos.some((vfo) => vfo.receiver === receiver && vfo.isActive)}
       aria-label={`${receiver} instrument`}>
       <VfoIndicatorRow indicator={receiverIndicators.find((item) => item.receiver === receiver)} {appearance}
-        slotLabel={instrumentSlot(receiver)}
-        continuitySession={receiverInstruments === undefined ? continuitySession : undefined}
-        sMeter={receiverInstruments === undefined ? undefined : hostedMeter}>
+        slotLabel={instrumentSlot(receiver)} {continuitySession}>
         <div class="freq-stack">
           {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}
             {#if vfo.receiver === receiver}{@render vfoTile(vfo, i)}{/if}
@@ -814,13 +800,8 @@
     {@const indicator = receiverIndicators.find((item) => item.receiver === receiver)}
     {@const frequencyHandle = receiver === 'MAIN'
       ? receiverInstruments?.mainFrequency : receiverInstruments?.subFrequency}
-    {@const meterHandle = receiver === 'MAIN'
-      ? receiverInstruments?.mainSMeter : receiverInstruments?.subSMeter}
     {#snippet hostedFrequency()}
       {@render frequencyHandle!({ compact: false, vfoFreqHook: false })}
-    {/snippet}
-    {#snippet hostedMeter()}
-      {@render meterHandle!({ compact: true, label: dominant ? instrumentSlot(receiver) : '—', variant: 'vfo' })}
     {/snippet}
     {@const choices = viewModel.vfos.flatMap((choice, index) =>
         choice.receiver === receiver && choice !== dominant
@@ -846,7 +827,7 @@
         <VfoPanel
           receiver={receiver === 'SUB' ? 'sub' : 'main'} receiverLabel={receiver}
           slotTag={dominant ? (dominant.slot.kind === 'slotted' ? dominant.slot.id : roleLabel(dominant)) : '—'}
-          frequency={receiverInstruments !== undefined && dominant?.frequencyHz != null
+          frequency={receiverInstruments !== undefined && dominant && frequencyHandle
             ? hostedFrequency : undefined}
           freq={receiverInstruments === undefined ? dominant?.frequencyHz ?? null : undefined}
           displayHz={receiverInstruments === undefined && dominant
@@ -861,13 +842,12 @@
           frequencyDisabled={receiverInstruments === undefined ? !dominant || readoutDisabled(dominant) : undefined}
           mode={dominant ? displayValue(dominant.display?.mode, dominant.mode) : null}
           filter={dominant ? displayValue(dominant.display?.filter, dominant.filter) : null}
-          sMeter={receiverInstruments === undefined ? undefined : hostedMeter}
-          sValue={receiverInstruments === undefined && indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
+          sValue={indicator?.sMeter.availability.operational && indicator.sMeter.reading.status === 'known'
             && Number.isFinite(indicator.sMeter.reading.value) ? indicator.sMeter.reading.value : null}
-          meterPresent={receiverInstruments === undefined ? indicator?.sMeter.availability.structural ?? false : undefined}
-          meterOperational={receiverInstruments === undefined ? indicator?.sMeter.availability.operational ?? false : undefined}
-          meterSource={receiverInstruments === undefined ? indicator?.sMeter.source : undefined}
-          continuitySession={receiverInstruments === undefined ? continuitySession : undefined}
+          meterPresent={indicator?.sMeter.availability.structural ?? false}
+          meterOperational={indicator?.sMeter.availability.operational ?? false}
+          meterSource={indicator?.sMeter.source}
+          {continuitySession}
           isActive={dominant?.isActive ?? false} badgeItems={standardBadges(indicator)}
           bandText={dominant ? standardBand(dominant) : null}
           rit={dominant ? standardRit(dominant) : undefined} slotChoices={choices}
@@ -901,6 +881,7 @@
       {/each}
     </div>
   {:else}
+    {#if appearance !== 'semantic' && !showVfoList}{@render activeReceiverStatus()}{/if}
     {#if showVfoList}
       <div class="vfo-list" data-testid="vfo-list">
         {#each viewModel.vfos as vfo, i (vfo.receiver + ':' + i)}{@render vfoTile(vfo, i)}{/each}
@@ -909,14 +890,7 @@
       {#if receiverIndicators.length > 0}
         <div class="receiver-indicators" data-testid="vfo-receiver-indicators">
           {#each receiverIndicators as indicator (indicator.receiver)}
-            {@const meterHandle = indicator.receiver === 'MAIN'
-              ? receiverInstruments?.mainSMeter : receiverInstruments?.subSMeter}
-            {#snippet hostedMeter()}
-              {@render meterHandle!({ compact: true, variant: 'vfo-wide' })}
-            {/snippet}
-            <VfoIndicatorRow {indicator}
-              continuitySession={receiverInstruments === undefined ? continuitySession : undefined}
-              sMeter={receiverInstruments === undefined ? undefined : hostedMeter} />
+            <VfoIndicatorRow {indicator} {continuitySession} />
           {/each}
         </div>
       {/if}

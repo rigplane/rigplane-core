@@ -71,7 +71,9 @@
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import ScopeDisplaySurface from '../../semantic/ScopeDisplaySurface.svelte';
-  import ReceiverInstrumentHost from '../../semantic/ReceiverInstrumentHost.svelte';
+  import ReceiverInstrumentHost, {
+    type ReceiverVfoAppearance,
+  } from '../../semantic/ReceiverInstrumentHost.svelte';
   import TxAuxScalarHost from '../../semantic/TxAuxScalarHost.svelte';
   import TxAuxSurface, {
     TX_AUX_FEEDBACK_LEVELS, type TxAuxFeedbackLevelField, type TxAuxLevelFeedback,
@@ -939,10 +941,11 @@
 </script>
 
 <div class="semantic-surfaces" class:hosted={hostedChildren !== undefined} data-testid="semantic-radio-surfaces">
-  {#snippet receiverVfoOperations()}
+  {#snippet receiverVfoOperations(appearance: ReceiverVfoAppearance)}
     {#if view}
       <VfoSurface
         viewModel={view}
+        {appearance}
         showVfoList={false}
         groupLabel={t('core.vfo.radioWideGroupLabel')}
         {hasDualReceiver}
@@ -1014,6 +1017,7 @@
               disabled={!isOperationalStrip(view, receiverId)}
               indicatorReceiver={receiverId}
               {receiverInstruments}
+              continuitySession={meterContinuitySession}
               {pendingFrequencyHz}
             />
           </div>
@@ -1037,7 +1041,7 @@
             Same placement rule split/dual-watch already follow, for the same
             reason: one radio-wide action must not appear once per receiver.
           -->
-          {@render receiverInstruments.vfoOperations()}
+          {@render receiverInstruments.vfoOperations(vfoAppearance)}
         </div>
       {/if}
     {/if}
@@ -1069,6 +1073,7 @@
         onSelectSubReceiver={vfo.onSubVfoClick}
         onSpeak={systemIntents.onSpeak}
         {receiverInstruments}
+        continuitySession={meterContinuitySession}
         {pendingFrequencyHz}
       />
     {/if}

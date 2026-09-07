@@ -5,7 +5,7 @@
     InstrumentVfoAppearance as FixtureVfoAppearance,
   } from '../../../wiring/instrument-composition';
   import type {
-    ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverSMeterMount,
+    ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverVfoAppearance,
   } from '../../../../semantic/ReceiverInstrumentHost.svelte';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
@@ -16,10 +16,10 @@
     () => ({ render: () => '' }),
   );
   const frequency = createRawSnippet<[mount?: ReceiverFrequencyMount]>(() => ({ render: () => '' }));
-  const sMeter = createRawSnippet<[mount?: ReceiverSMeterMount]>(() => ({ render: () => '' }));
+  const operations = createRawSnippet<[appearance: ReceiverVfoAppearance]>(() => ({ render: () => '' }));
   const receiverInstruments = {
     mainFrequency: frequency, subFrequency: frequency,
-    mainSMeter: sMeter, subSMeter: sMeter, vfoOperations: empty,
+    vfoOperations: operations,
   } satisfies ReceiverInstrumentHandles;
   const scalars = {
     rfPower: empty, micGain: empty, driveGain: empty, voxGain: empty,

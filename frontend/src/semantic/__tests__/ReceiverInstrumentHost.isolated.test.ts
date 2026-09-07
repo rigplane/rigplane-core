@@ -32,12 +32,12 @@ const available = () => ({
 });
 function state(options: {
   receivers?: number; generation?: number; mainHz?: number; subHz?: number;
-  mainS?: number; subS?: number; active?: 'MAIN' | 'SUB'; meterKnown?: boolean;
+  active?: 'MAIN' | 'SUB';
   activeKnown?: boolean; mainActiveSlot?: 'A' | 'B'; mainActiveSlotKnown?: boolean;
 } = {}): ServerState {
   const {
     receivers = 2, generation = 1, mainHz = 14_250_000, subHz = 7_100_000,
-    mainS = 200, subS = 78, active = 'MAIN', meterKnown = true, activeKnown = true,
+    active = 'MAIN', activeKnown = true,
     mainActiveSlot = 'A', mainActiveSlotKnown = true,
   } = options;
   const slot = (frequencyHz: number) => ({ freqHz: frequencyHz, mode: 'USB', filterNum: 1, dataMode: 0 });
@@ -51,20 +51,20 @@ function state(options: {
     'main.vfoB.freqHz', 'main.vfoB.mode', 'main.vfoB.filterNum'];
   if (activeKnown) paths.push('active');
   if (mainActiveSlotKnown) paths.push('main.activeSlot');
-  if (meterKnown) paths.push('main.sMeter');
+  paths.push('main.sMeter');
   if (receivers === 2) {
     paths.push('sub', 'sub.freqHz', 'sub.mode', 'sub.filter', 'sub.activeSlot',
       'sub.vfoA.freqHz', 'sub.vfoA.mode', 'sub.vfoA.filterNum',
       'sub.vfoB.freqHz', 'sub.vfoB.mode', 'sub.vfoB.filterNum');
-    if (meterKnown) paths.push('sub.sMeter');
+    paths.push('sub.sMeter');
   }
   return {
     stateContractVersion: 1, providerGeneration: generation, revision: 1, stateRevision: 1,
     freshnessRevision: 1, observationSeq: 1, updatedAt: '2026-09-06T00:00:00Z',
     active, ptt: false, split: false, dualWatch: false, tunerStatus: 0,
     txTarget: { status: 'unknown', reason: 'not-observed' },
-    main: receiver(mainHz, mainS, mainActiveSlot),
-    ...(receivers === 2 ? { sub: receiver(subHz, subS, 'A') } : {}),
+    main: receiver(mainHz, 200, mainActiveSlot),
+    ...(receivers === 2 ? { sub: receiver(subHz, 78, 'A') } : {}),
     connection: {} as ServerState['connection'],
     fieldStatus: Object.fromEntries(paths.map((path) => [path, available()])),
   } as ServerState;
@@ -88,41 +88,14 @@ class Publisher {
   };
   emit(next: Publication): void { this.current = next; this.handlers.forEach((handler) => handler(next)); }
 }
-interface MotionHarness {
-  readonly frames: number;
-  readonly listeners: number;
-  reduced(next: boolean): void;
-  restore(): void;
-}
-function installMotionHarness(): MotionHarness {
-  let reduced = false; let id = 0;
-  const frames = new Map<number, FrameRequestCallback>();
-  const listeners = new Set<() => void>();
-  const originalMatchMedia = window.matchMedia;
-  window.matchMedia = vi.fn().mockReturnValue({
-    get matches() { return reduced; },
-    addEventListener: (_: string, callback: () => void) => listeners.add(callback),
-    removeEventListener: (_: string, callback: () => void) => listeners.delete(callback),
-  }) as unknown as typeof window.matchMedia;
-  const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
-    frames.set(++id, callback); return id;
-  });
-  const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((frame) => { frames.delete(frame); });
-  return {
-    get frames() { return frames.size; }, get listeners() { return listeners.size; },
-    reduced(next) { reduced = next; listeners.forEach((listener) => listener()); },
-    restore() { window.matchMedia = originalMatchMedia; request.mockRestore(); cancel.mockRestore(); },
-  };
-}
 let components: ReturnType<typeof mount>[] = [];
-let motion: MotionHarness;
 beforeEach(() => {
   selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
-  clearRetainedInteractions(); motion = installMotionHarness();
+  clearRetainedInteractions();
 });
 afterEach(() => {
   components.forEach((component) => unmount(component)); components = [];
-  document.body.replaceChildren(); selectedFrequency.current = undefined; motion.restore();
+  document.body.replaceChildren(); selectedFrequency.current = undefined;
 });
 function mountFixture(publisher: Publisher, props: Record<string, unknown> = {}): HTMLElement {
   const target = document.createElement('div'); document.body.appendChild(target);
@@ -224,13 +197,13 @@ describe('ReceiverInstrumentHost', () => {
   it('retains owners across irrelevant publications and keyed grouped/independent replacement', () => {
     const publisher = new Publisher(publication()); const layout = writable('grouped'); const live = fromStore(layout);
     const root = mountFixture(publisher, { get layout() { return live.current; }, get layoutKey() { return live.current; } });
-    expect(motion.frames).toBe(4); expect(root.querySelectorAll('[data-vfo-operations]')).toHaveLength(1);
+    expect(root.querySelectorAll('[data-vfo-operations]')).toHaveLength(1);
     const first = retainedInteractions()[0]; const count = retainedInteractions().length;
-    publisher.emit(publication({ mainS: 26 })); flushSync();
+    publisher.emit(publication()); flushSync();
     expect(retainedInteractions()).toHaveLength(count); expect(first.inert).toBe(false);
     layout.set('independent'); flushSync();
     expect(first.inert).toBe(true); expect(retainedInteractions().length).toBeGreaterThan(count);
-    expect(motion.frames).toBe(4); expect(root.querySelectorAll('[data-vfo-operations]')).toHaveLength(1);
+    expect(root.querySelectorAll('[data-vfo-operations]')).toHaveLength(1);
   });
 
   it('isolates receiver commands and recreates a disposed owner after structural removal', () => {
@@ -240,8 +213,9 @@ describe('ReceiverInstrumentHost', () => {
     sub.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
     expect(tune).toHaveBeenCalledExactlyOnceWith('SUB', 7_100_001);
     publisher.emit(publication({ receivers: 1 })); flushSync();
-    expect(root.querySelector('[data-frequency-owner="SUB"]')).toBeNull(); expect(motion.frames).toBe(2);
-    publisher.emit(publication()); flushSync(); expect(motion.frames).toBe(4);
+    expect(root.querySelector('[data-frequency-owner="SUB"]')).toBeNull();
+    publisher.emit(publication()); flushSync();
+    expect(root.querySelector('[data-frequency-owner="SUB"]')).not.toBeNull();
   });
 
   it('keeps selected external renderers mounted and inert while authority is disconnected', () => {
@@ -249,30 +223,14 @@ describe('ReceiverInstrumentHost', () => {
     const oldMain = retainedInteractions()[0];
     publisher.emit(publication({ sessionState: 'disconnected', epoch: -1 })); flushSync();
     expect(root.querySelector('[data-frequency-owner="SUB"]')).not.toBeNull();
-    expect(oldMain.inert).toBe(true); expect(motion.frames).toBe(4);
-  });
-
-  it('uses the shared meter continuity and tears down every owned schedule and subscriber', () => {
-    const publisher = new Publisher(publication({ mainS: 200 })); const root = mountFixture(publisher);
-    const meter = () => root.querySelector<HTMLElement>('[data-meter-owner="MAIN"]')!;
-    const fills = () => meter().querySelectorAll('[data-meter-fill]').length;
-    const high = fills();
-    publisher.emit(publication({ mainS: 26 })); flushSync();
-    expect(fills()).toBe(high); expect(meter().textContent).toContain('26');
-    publisher.emit(publication({ mainS: 26, epoch: 2 })); flushSync(); expect(fills()).toBeLessThan(high);
-    publisher.emit(publication({ mainS: 26, generation: 2 })); flushSync(); expect(meter().textContent).toContain('26');
-    publisher.emit(publication({ meterKnown: false, generation: 2 })); flushSync();
-    expect(fills()).toBe(0); expect(meter().textContent).toContain('S ?');
-    motion.reduced(true); expect(motion.frames).toBe(0); motion.reduced(false); expect(motion.frames).toBe(4);
+    expect(oldMain.inert).toBe(true);
     const component = components.pop()!; unmount(component);
-    expect(motion.frames).toBe(0); expect(motion.listeners).toBe(0); expect(publisher.handlers.size).toBe(0);
+    expect(publisher.handlers.size).toBe(0);
   });
 
-  it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {
+  it('requires the synchronous publisher and owns no fallback clocks', () => {
     const source = readFileSync('src/semantic/ReceiverInstrumentHost.svelte', 'utf8');
     expect(source).toMatch(/subscribeControlAuthority: SubscribeReceiverAuthority/);
     expect(source).not.toMatch(/subscribeControlAuthority\?|requestAnimationFrame|setInterval|setTimeout|Date\.now/);
-    expect(source).toContain('source: indicator?.sMeter.source');
-    expect(source).not.toMatch(/providerGeneration === .*source|controlSessionEpoch ===/);
   });
 });
