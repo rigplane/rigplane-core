@@ -77,7 +77,13 @@ const h = vi.hoisted(() => ({
   deliveryListeners: new Set<(event: TestCommandDelivery) => void>(),
   lifecycleDeliveryListeners: new Set<(event: TestLifecycleDelivery) => void>(),
   transportSessionListeners: new Set<(next: TestControlSession) => void>(),
+  selectedFiniteAppearance: undefined as unknown,
 }));
+
+vi.mock('../../../component-kits/activation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../component-kits/activation')>();
+  return { ...actual, getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance };
+});
 
 vi.mock('$lib/transport/ws-client', () => ({
   getControlSession: () => h.session,
@@ -263,9 +269,13 @@ import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 // .component.test.ts`'s S6a context-injection recipe — the only way to prove
 // the `rf-front-end` zone binding, since `useSurfacePlan()` falls back to
 // `NO_PLAN` on a standalone mount.
-import { desktopV2Layout } from '../../../presentation/layouts/declarations';
+import { desktopV2Layout, sdrTestLayout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY, type SurfacePlan } from '../../../presentation/workspace/resolution';
+import FiniteControlRendererFixture, {
+  resetRetainedInvocations, retainedInvocations,
+} from '../../../primitives/control-instruments/__tests__/support/FiniteControlRendererFixture.svelte';
+import type { FiniteControlAppearance } from '../../../primitives/control-instruments/control-instrument-renderer.svelte';
 
 const fresh = {
   storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
@@ -316,6 +326,15 @@ const liveCaps = (withRfFrontEnd: boolean, rfSqlControlModel?: 'separate' | 'com
   scopeSource: null, audioFftAvailable: false,
   ...(rfSqlControlModel !== undefined ? { rfSqlControlModel } : {}),
 } as unknown as Capabilities);
+
+/** MOR-2425 RF-B — same shared external-renderer fixture the DSP/CW-keyer
+ *  wiring tests use, so a mounted choice/toggle seat can be identified by its
+ *  own accessible label (`retainedInvocations`) across a re-render. */
+const finiteAppearance = {
+  action: FiniteControlRendererFixture as FiniteControlAppearance['action'],
+  toggle: FiniteControlRendererFixture as FiniteControlAppearance['toggle'],
+  choice: FiniteControlRendererFixture as FiniteControlAppearance['choice'],
+} satisfies FiniteControlAppearance;
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -468,6 +487,8 @@ beforeEach(() => {
   h.session = { state: 'connected', epoch: 7 };
   h.sessionListeners.clear();
   h.sentCommands.length = 0;
+  h.selectedFiniteAppearance = undefined;
+  resetRetainedInvocations();
   resetCommandLifecycle();
   resetRadioState();
   clearCapabilities();
@@ -487,6 +508,7 @@ afterEach(() => {
   expect(h.sessionListeners.size).toBe(0);
   expect(h.authorityListeners.size).toBe(0);
   resetCommandLifecycle();
+  resetRetainedInvocations();
   resetRadioState();
   clearCapabilities();
   document.body.innerHTML = '';
@@ -497,19 +519,25 @@ afterEach(() => {
 describe('every rfFrontEnd intent reaches its own command-bus handler, none cross-wired', () => {
   const ALL = [h.att, h.pre, h.rfGain, h.squelch, h.digiSel, h.ipPlus];
 
-  it('routes the preamp choice to onPreChange, verbatim', () => {
+  // MOR-2425 RF-B: every offered preamp level, not a single sample — a fresh
+  // mount per value (`liveCaps`'s `preValues: [0, 1, 2]`), matching the
+  // per-value discipline `RfFrontEndInstrumentHost.isolated.test.ts` already
+  // established at the host level, now proven through the LIVE composed tree.
+  it.each([0, 1, 2])('routes preamp choice %i to onPreChange, verbatim', (level) => {
     render();
-    el('preamp-2')!.click();
+    el(`preamp-${level}`)!.click();
     flushSync();
-    expect(h.pre).toHaveBeenCalledExactlyOnceWith(2);
+    expect(h.pre).toHaveBeenCalledExactlyOnceWith(level);
     for (const other of ALL.filter((s) => s !== h.pre)) expect(other).not.toHaveBeenCalled();
   });
 
-  it('routes the attenuator choice to onAttChange, verbatim', () => {
+  // Every offered attenuator step (`liveCaps`'s `attValues: [0, 6, 12, 18]`),
+  // same per-value discipline as preamp above.
+  it.each([0, 6, 12, 18])('routes attenuator choice %i dB to onAttChange, verbatim', (db) => {
     render();
-    el('attenuator-18')!.click();
+    el(`attenuator-${db}`)!.click();
     flushSync();
-    expect(h.att).toHaveBeenCalledExactlyOnceWith(18);
+    expect(h.att).toHaveBeenCalledExactlyOnceWith(db);
     for (const other of ALL.filter((s) => s !== h.att)) expect(other).not.toHaveBeenCalled();
   });
 
@@ -568,6 +596,60 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
     flushSync();
     expect(h.ipPlus).toHaveBeenCalledExactlyOnceWith(true);
     for (const other of ALL.filter((s) => s !== h.ipPlus)) expect(other).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * MOR-2425 RF-B. Each of the four finite controls has exactly ONE owner
+ * (`RfFrontEndInstrumentHost`) and must render exactly once in the composed
+ * tree — a double owner (grouped surface AND a hypothetical named seat both
+ * rendering the same field) would show two `[data-testid]` matches here.
+ *
+ * NOTE: this only proves "exactly once" for the single composition RadioLayout
+ * currently offers RF-front-end. Placing four NAMED Standard seats beside the
+ * RF/SQL scalar seats (`RadioLayout.svelte`'s `desktop-v2` branch) needs a
+ * `finiteLayout` argument on `InstrumentComposition['rfFrontEnd']`, which is
+ * off-lease for this change (`instrument-composition.ts` must not change per
+ * the dispatch); that placement is therefore NOT implemented, and there is no
+ * second (Standard-seat) layout shape here to prove "exactly once" against —
+ * only the one shape SDR/generic already had.
+ */
+describe('each finite control has exactly one owner in the composed tree', () => {
+  it('renders preamp, attenuator, DIGI-SEL and IP+ exactly once', () => {
+    render();
+    for (const id of ['preamp', 'attenuator', 'digiSel', 'ipPlus']) {
+      expect(target.querySelectorAll(`[data-testid="rf-front-end-${id}"]`)).toHaveLength(1);
+    }
+  });
+});
+
+/* ── the preamp mutex, through the live composed tree ────────────── */
+
+describe('the preamp mutex (MOR-479/MOR-1293) survives the live wiring seam', () => {
+  it('disables every preamp choice and blocks onPreChange while DIGI-SEL reads ON', () => {
+    const state = liveState(true);
+    (state as unknown as { main: Record<string, unknown> }).main.digisel = true;
+    h.state = state;
+    render();
+    for (const value of [0, 1, 2]) expect(el(`preamp-${value}`)!.hasAttribute('disabled')).toBe(true);
+    expect(el('preamp-mutex-reason')).not.toBeNull();
+    el('preamp-1')!.click();
+    flushSync();
+    expect(h.pre).not.toHaveBeenCalled();
+    // The mutex is preamp-specific — it must never reach the neighbor fields.
+    expect(el('attenuator-6')!.hasAttribute('disabled')).toBe(false);
+    el('digiSel')!.click();
+    flushSync();
+    expect(h.digiSel).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it('leaves preamp enabled and routed once DIGI-SEL reads OFF', () => {
+    render();
+    expect(el('preamp-0')!.hasAttribute('disabled')).toBe(false);
+    expect(el('preamp-mutex-reason')).toBeNull();
+    el('preamp-0')!.click();
+    flushSync();
+    expect(h.pre).toHaveBeenCalledExactlyOnceWith(0);
   });
 });
 
@@ -964,5 +1046,67 @@ describe('desktop-v2 declares a REAL rf-front-end zone (MOR-1366, S7)', () => {
     const plan = resolveSurfacePlan(desktopV2Layout, readWorkspace({ version: 1 }).workspace);
     render({ strips: 'single' }, plan);
     expect(el('surface')!.closest('[data-zone-id="rf-front-end"]')).not.toBeNull();
+  });
+});
+
+/**
+ * MOR-2425 RF-B persistence witness, over a REAL per-skin
+ * `SURFACE_PLAN_CONTEXT_KEY` override (mirrors `semantic-dsp-wiring
+ * .component.test.ts`'s own `renderHosted()` recipe) so the resolved
+ * `SurfacePlan` genuinely changes between `desktop-v2` and `sdr-test` — not
+ * merely a `skinId` string flip with no consequence.
+ *
+ * Both layouts declare the SAME `rf-front-end` zone id
+ * (`desktop-declarations.ts`/`declarations.ts`'s `sdrTestLayout`), and
+ * `RadioLayout.svelte`'s `rfFrontEnd` composition call takes no
+ * `finiteLayout` argument — placing four NAMED Standard seats beside the
+ * RF/SQL scalar seats would need one, and `instrument-composition.ts` is
+ * off-lease for this change, so that placement is NOT implemented (see the
+ * "exactly one owner" describe above). The grouped surface therefore renders
+ * IDENTICALLY for both skins today, and the switch below exercises the
+ * `SemanticRadioSurfaces`-owned host/authority machinery — never torn down
+ * just because the resolved plan changed — rather than a seat relocation.
+ * There is consequently no "detached pre-switch callback" to prove inert:
+ * nothing detaches under the current (unrelocated) composition, so this
+ * witness stops at the three parts that DO apply here.
+ */
+describe('persistent RF front-end composition across a real Standard->SDR plan switch (MOR-2425 RF-B)', () => {
+  function renderHostedFace() {
+    target = document.createElement('div');
+    document.body.appendChild(target);
+    const props = proxy({ skinId: 'desktop-v2' as 'desktop-v2' | 'sdr-test' });
+    const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
+      resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
+        readWorkspace({ version: 1 }).workspace)]]);
+    component = mount(HostedRadioLayoutFixture, { target, props, context });
+    flushSync();
+    return props;
+  }
+
+  it('keeps the attenuator seat, its command and its display live across the switch', () => {
+    h.selectedFiniteAppearance = finiteAppearance;
+    const props = renderHostedFace();
+    const before = retainedInvocations.get('Attenuator');
+    expect(before).toBeDefined();
+    const externalAttenuator = () => target.querySelector<HTMLElement>('[data-testid="external-Attenuator"]');
+    const beforeReading = externalAttenuator()!.dataset.reading;
+
+    props.skinId = 'sdr-test';
+    flushSync();
+
+    // (i) Identity: the SAME retained seat/renderer, not rebuilt by the switch.
+    const after = retainedInvocations.get('Attenuator');
+    expect(after).toBe(before);
+
+    // (ii) Admission: the CURRENT (retained) invocation still sends exactly
+    // one command with the expected value.
+    after!(18);
+    flushSync();
+    expect(h.att).toHaveBeenCalledExactlyOnceWith(18);
+
+    // (iii) Display state (the confirmed reading) is unchanged by the switch
+    // itself — only the click above changes anything downstream, and that
+    // command is not yet acknowledged/observed.
+    expect(externalAttenuator()!.dataset.reading).toBe(beforeReading);
   });
 });
