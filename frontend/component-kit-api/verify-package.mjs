@@ -150,6 +150,15 @@ try {
     path.join(packageRoot, 'dist'),
     new Set(['svelte']),
   );
+  const apiDeclarationPaths = apiDeclarations.map((file) =>
+    path.relative(path.join(packageRoot, 'dist'), file).replaceAll(path.sep, '/')
+  );
+  assert(!apiDeclarationPaths.some((file) => file.endsWith('/skins/registry.d.ts')));
+  assert(!apiDeclarationPaths.some((file) => file.endsWith('/instrument-composition.d.ts')));
+  const apiDeclarationSource = (await Promise.all(
+    apiDeclarations.map((file) => readFile(file, 'utf8')),
+  )).join('\n');
+  assert(!apiDeclarationSource.includes('PresentationHostMode'));
   const fixtureDeclarations = await assertClosedDeclarations(
     path.join(fixtureRoot, 'dist'),
     new Set(['@rigplane/component-kit-api', 'svelte']),

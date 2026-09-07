@@ -518,7 +518,7 @@ describe('v3 package boundaries (MOR-1061)', () => {
     const hits = await restrictedImportHits(
       `<script lang="ts">\n`
         + `  import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';\n`
-        + `  import type { InstrumentComposition } from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';\n`
+        + `  import type { InstrumentComposition } from '../../components-v2/wiring/instrument-composition';\n`
         + `</script>`,
       'src/skins/sdr-test/SdrTestSkin.svelte',
     );

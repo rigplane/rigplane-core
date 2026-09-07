@@ -3,7 +3,7 @@
   import type {
     InstrumentComposition as FixtureInstrumentComposition,
     InstrumentVfoAppearance as FixtureVfoAppearance,
-  } from '../../../wiring/SemanticRadioSurfaces.svelte';
+  } from '../../../wiring/instrument-composition';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[appearance: FixtureVfoAppearance, allowBare?: boolean]>(
@@ -29,9 +29,8 @@
 <script lang="ts">
   import type { SkinId } from '../../../../skins/registry';
   import RadioLayout from '../../RadioLayout.svelte';
-  import SemanticRadioSurfaces, {
-    type InstrumentComposition,
-  } from '../../../wiring/SemanticRadioSurfaces.svelte';
+  import SemanticRadioSurfaces from '../../../wiring/SemanticRadioSurfaces.svelte';
+  import type { InstrumentComposition } from '../../../wiring/instrument-composition';
 
   let { skinId = 'desktop-v2' }: { skinId?: SkinId } = $props();
 </script>

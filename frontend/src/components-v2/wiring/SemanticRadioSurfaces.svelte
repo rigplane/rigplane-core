@@ -12,36 +12,18 @@
   Both render the same server snapshot.
 -->
 <script module lang="ts">
-  import type { Snippet as CompositionSnippet } from 'svelte';
-  import type { ManagedScopeRegion as CompositionManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
-  import type { TxAuxScalarHandles as CompositionTxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
-
-  export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
-
-  export interface InstrumentComposition {
-    readonly vfo: CompositionSnippet<[appearance: InstrumentVfoAppearance, allowBare?: boolean]>;
-    readonly rxTx: CompositionSnippet<[allowBare?: boolean]>;
-    readonly txAuxControls: CompositionSnippet<[scalarLayout: CompositionSnippet, allowBare?: boolean]>;
-    readonly txAuxScalars: CompositionTxAuxScalarHandles;
-    readonly meters: CompositionSnippet<[allowBare?: boolean]>;
-    readonly rxAudio: CompositionSnippet<[allowBare?: boolean]>;
-    readonly rfFrontEnd: CompositionSnippet<[allowBare?: boolean]>;
-    readonly filter: CompositionSnippet<[allowBare?: boolean]>;
-    readonly dsp: CompositionSnippet<[allowBare?: boolean]>;
-    readonly band: CompositionSnippet<[allowBare?: boolean]>;
-    readonly antenna: CompositionSnippet<[allowBare?: boolean]>;
-    readonly ritXitScan: CompositionSnippet<[allowBare?: boolean]>;
-    readonly cwKeyer: CompositionSnippet<[allowBare?: boolean]>;
-    readonly scopeDisplay: CompositionSnippet<[allowBare?: boolean]>;
-    readonly scopeControls: CompositionSnippet<[allowBare?: boolean]>;
-    readonly txFaultRecovery: CompositionSnippet;
-    readonly modInputTxWarning: CompositionSnippet;
-    readonly managedScope: CompositionManagedScopeRegion | undefined;
-  }
+  export type {
+    InstrumentComposition,
+    InstrumentVfoAppearance,
+  } from './instrument-composition';
 </script>
 
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
+  import type {
+    InstrumentComposition,
+    InstrumentVfoAppearance,
+  } from './instrument-composition';
   import { t } from '$lib/i18n';
   import { getScopeSource } from '$lib/stores/capabilities.svelte';
   import { presentationResources, runtime } from '$lib/runtime';

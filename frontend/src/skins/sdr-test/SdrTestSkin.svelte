@@ -28,7 +28,7 @@
   path.
 -->
 <script lang="ts">
-  import type { InstrumentComposition } from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
+  import type { InstrumentComposition } from '../../components-v2/wiring/instrument-composition';
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';
   import '../desktop-v2/semantic-controls.css';
 

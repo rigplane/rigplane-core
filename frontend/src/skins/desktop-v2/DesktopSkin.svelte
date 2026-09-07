@@ -8,7 +8,7 @@
   RadioLayout, which owns their Standard placement and responsive geometry.
 -->
 <script lang="ts">
-  import type { InstrumentComposition } from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
+  import type { InstrumentComposition } from '../../components-v2/wiring/instrument-composition';
   import RadioLayout from '../../components-v2/layout/RadioLayout.svelte';
   import './semantic-controls.css';
 

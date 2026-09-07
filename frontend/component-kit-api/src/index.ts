@@ -21,7 +21,7 @@ import type {
 import type { InstrumentGroup as HostInstrumentGroup } from '../../src/presentation/groups/contract';
 import type { DesignLanguageManifest as HostDesignLanguageManifest } from '../../src/presentation/languages/contract';
 import type { LayoutManifest as HostLayoutManifest } from '../../src/presentation/layouts/contract';
-import type { loadSkin, presentationResourcePlan } from '../../src/skins/registry';
+import type { AppResource } from '../../src/lib/runtime/resource-demand';
 
 export const COMPONENT_KIT_API_VERSION = 1 as const;
 
@@ -32,8 +32,8 @@ export type FrequencyReadoutModel = HostFrequencyReadoutModel;
 export type DesignLanguageManifest = HostDesignLanguageManifest;
 export type LayoutManifest = Omit<HostLayoutManifest, 'loader'>;
 export type InstrumentGroup = HostInstrumentGroup;
-export type PresentationComponent = Awaited<ReturnType<typeof loadSkin>>;
-export type PresentationResources = ReturnType<typeof presentationResourcePlan>;
+export type PresentationComponent = Component;
+export type PresentationResources = readonly AppResource[];
 export type FiniteChoiceValue = string | number;
 export type FiniteControlReading<T extends FiniteChoiceValue = FiniteChoiceValue> =
   HostInstrumentReading<T>;
@@ -73,7 +73,7 @@ export type FrequencyRenderer = Component<FrequencyRendererProps>;
 
 export interface PresentationDeclaration {
   readonly id: string;
-  readonly loader: () => ReturnType<typeof loadSkin>;
+  readonly loader: () => Promise<PresentationComponent>;
   readonly resources: PresentationResources;
 }
 

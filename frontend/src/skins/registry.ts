@@ -10,7 +10,7 @@
 import type { Component } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { AppResource } from '$lib/runtime/resource-demand';
-import type { InstrumentComposition } from '../components-v2/wiring/SemanticRadioSurfaces.svelte';
+import type { InstrumentComposition } from '../components-v2/wiring/instrument-composition';
 import {
   normalizeLayoutMode,
   type LayoutMode,
@@ -151,8 +151,9 @@ const SKIN_LOADERS = {
   'dual-sdr-face': () => import('./dual-sdr-face/DualSdrFaceSkin.svelte'),
 } satisfies SkinLoaderMap;
 
-export async function loadSkin<Id extends SkinId>(id: Id): Promise<LoadedPresentation<Id>> {
-  return (await SKIN_LOADERS[id]()).default as LoadedPresentation<Id>;
+export function loadSkin<Id extends SkinId>(id: Id): Promise<LoadedPresentation<Id>>;
+export async function loadSkin(id: SkinId): Promise<PresentationComponent> {
+  return (await SKIN_LOADERS[id]()).default;
 }
 
 /**

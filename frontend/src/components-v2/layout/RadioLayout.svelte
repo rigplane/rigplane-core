@@ -29,7 +29,7 @@
   import LeftSidebar from './LeftSidebar.svelte';
   import RightSidebar from './RightSidebar.svelte';
   import VfoHeader from './VfoHeader.svelte';
-  import type { InstrumentComposition } from '../wiring/SemanticRadioSurfaces.svelte';
+  import type { InstrumentComposition } from '../wiring/instrument-composition';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import KeyboardHandler from './KeyboardHandler.svelte';
   import StatusBar from './StatusBar.svelte';
