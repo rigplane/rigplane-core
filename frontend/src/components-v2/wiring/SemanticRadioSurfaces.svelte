@@ -56,6 +56,8 @@
   import DspSurface, {
     type DspLevelField, type DspToggleField,
   } from '../../semantic/DspSurface.svelte';
+  import DspInstrumentHost from '../../semantic/DspInstrumentHost.svelte';
+  import type { DspFiniteHandles, DspFiniteLayout } from '../../semantic/dsp-instruments';
   import FilterSurface from '../../semantic/FilterSurface.svelte';
   import MetersSurface from '../../semantic/MetersSurface.svelte';
   import type { MeterContinuitySession } from '../../primitives/meters/meter-ballistics.svelte';
@@ -530,6 +532,12 @@
     providerGeneration: number;
     topologyId: string;
   }>;
+  type DspFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
   const slotIdentity = (slot: VfoSlot): string => {
     if (slot.kind === 'slotted') return `slotted:${slot.id}`;
     if (slot.kind === 'relative') return `relative:${slot.role}`;
@@ -578,6 +586,26 @@
       topologyId: model.topologyId,
     });
   }
+  function dspFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): DspFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    if (model?.dsp === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
   const sameScopeFiniteAuthority = (
     left: ScopeFiniteAuthority | null | undefined,
     right: ScopeFiniteAuthority | null,
@@ -599,13 +627,25 @@
         && left.providerGeneration === right.providerGeneration
         && left.topologyId === right.topologyId
   );
+  const sameDspFiniteAuthority = (
+    left: DspFiniteAuthority | null | undefined,
+    right: DspFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
   const readSelectedFiniteAppearance = 'getSelectedFiniteControlAppearance' in componentKitActivation
     ? componentKitActivation.getSelectedFiniteControlAppearance : undefined;
   const selectedFiniteAppearance = readSelectedFiniteAppearance?.();
   let finiteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let txAuxFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let dspFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
   let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
+  let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
   const unsubscribeScopeFiniteAuthority = selectedFiniteAppearance === undefined ? undefined
     : runtime.subscribeControlAuthority((publication) => {
       const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
@@ -620,6 +660,13 @@
         lastTxAuxFiniteAuthority = nextTxAux;
         txAuxFiniteRendererContext = nextTxAux === null ? null : createFiniteRendererContext();
       }
+      const nextDsp = dspFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameDspFiniteAuthority(lastDspFiniteAuthority, nextDsp)) {
+        lastDspFiniteAuthority = nextDsp;
+        dspFiniteRendererContext = nextDsp === null ? null : createFiniteRendererContext();
+      }
     });
   onDestroy(() => unsubscribeScopeFiniteAuthority?.());
   let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
@@ -627,6 +674,10 @@
   let txAuxFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: txAuxFiniteRendererContext,
+    });
+  let dspFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: dspFiniteRendererContext,
     });
 
   let scopeFrameSource = $derived(
@@ -1044,6 +1095,13 @@
     onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
   >
   {#snippet children(rfFrontEndInstruments)}
+  <DspInstrumentHost
+    {...dspFiniteRendererSelection} {view} {agcLabels} {pendingNb} {pendingNr}
+    onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
+    onNotchModeChange={dspIntents.onNotchModeChange}
+    onAgcModeChange={agcIntents.onAgcModeChange}
+  >
+  {#snippet children(dspInstruments)}
   {#if readonlyDisplay}
     {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
@@ -1459,17 +1517,15 @@
     carry-forward (1) requires stay OUT of the view model — read at this seam,
     from `runtime.caps`, and handed down as plain props.
   -->
-  {#snippet dspSurface()}
+  {#snippet dspSurface(finiteLayout?: DspFiniteLayout)}
     {#if view?.dsp}
       <DspSurface
-        {view} {agcLabels} {nbLevelMax} {nbLevelPercent} {pendingNb} {pendingNr}
-        onToggle={(field, next) => DSP_TOGGLE_INTENT[field](next)}
+        {view} finiteHandles={dspInstruments} {finiteLayout} {nbLevelMax} {nbLevelPercent}
         onLevelChange={(field, value) => DSP_LEVEL_INTENT[field](value)}
-        onNotchModeChange={dspIntents.onNotchModeChange}
-        onAgcModeChange={agcIntents.onAgcModeChange}
       />
     {/if}
   {/snippet}
+  {#snippet groupedDspSurface()}{@render dspSurface()}{/snippet}
 
   <!--
     MOR-1306 (vocabulary slice 6B). Same structural gate and same reasoning as
@@ -1699,8 +1755,11 @@
       filterSurface, allowBare,
     )}
   {/snippet}
-  {#snippet hostedDsp(allowBare = allowBareSurfaces)}
-    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBare)}
+  {#snippet hostedDsp(
+    allowBare = allowBareSurfaces, finiteLayout?: DspFiniteLayout,
+  )}
+    {#snippet body()}{@render dspSurface(finiteLayout)}{/snippet}
+    {@render zoned('dsp', view?.dsp !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedBand(allowBare = allowBareSurfaces)}
     {@render zoned('band', view?.band !== undefined, bandSurface, allowBare)}
@@ -1793,7 +1852,7 @@
       'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
       false,
     )}
-    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, false)}
+    {@render zoned('dsp', view?.dsp !== undefined, groupedDspSurface, false)}
     {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, false)}
     {@render zoned('band', view?.band !== undefined, bandSurface, false)}
     {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, false)}
@@ -1838,7 +1897,7 @@
       {@render txFaultRecovery()}
       {@render txAdjacentAlerts()}
       {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBareSurfaces)}
-      {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
+      {@render zoned('dsp', view?.dsp !== undefined, groupedDspSurface, allowBareSurfaces)}
       {@render zoned('cwKeyer', view?.cwKeyer !== undefined, cwKeyerSurface, allowBareSurfaces)}
       {@render zoned(
         'txAux', view?.txAux !== undefined, txAuxBody, allowBareSurfaces,
@@ -1894,7 +1953,7 @@
       'filter', view?.modeFilter !== undefined || view?.filterPassband !== undefined, filterSurface,
       allowBareSurfaces,
     )}
-    {@render zoned('dsp', view?.dsp !== undefined, dspSurface, allowBareSurfaces)}
+    {@render zoned('dsp', view?.dsp !== undefined, groupedDspSurface, allowBareSurfaces)}
     {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBareSurfaces)}
     {@render zoned('band', view?.band !== undefined, bandSurface, allowBareSurfaces)}
     {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBareSurfaces)}
@@ -1923,6 +1982,8 @@
   {/snippet}
   </TxAuxScalarHost>
   {/if}
+  {/snippet}
+  </DspInstrumentHost>
   {/snippet}
   </RfFrontEndInstrumentHost>
   {/snippet}

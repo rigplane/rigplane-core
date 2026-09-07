@@ -122,17 +122,18 @@
 
 <script lang="ts">
   import type { RadioViewModel } from './radio-view-model';
-  import type { DspFiniteHandles } from './dsp-instruments';
+  import type { DspFiniteHandles, DspFiniteLayout } from './dsp-instruments';
 
   interface Props {
     view: RadioViewModel;
     finiteHandles: DspFiniteHandles;
+    finiteLayout?: DspFiniteLayout;
     nbLevelMax?: number;
     nbLevelPercent?: boolean;
     onLevelChange?: (field: DspLevelField, value: number) => void;
   }
   let {
-    view, finiteHandles, nbLevelMax = 255, nbLevelPercent = false, onLevelChange,
+    view, finiteHandles, finiteLayout, nbLevelMax = 255, nbLevelPercent = false, onLevelChange,
   }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
@@ -156,10 +157,14 @@
 
 {#if dsp}
   <section class="dsp-surface" data-testid="dsp-surface" aria-label="DSP controls">
-    <div class="dsp-row">
-      {@render finiteHandles.nrActive()}
-      {@render finiteHandles.nbActive()}
-    </div>
+    {#if finiteLayout}
+      {@render finiteLayout(finiteHandles)}
+    {:else}
+      <div class="dsp-row">
+        {@render finiteHandles.nrActive()}
+        {@render finiteHandles.nbActive()}
+      </div>
+    {/if}
 
     {#each DSP_LEVELS as [field, label, min, max, step, format] (field)}
       {#if dsp[field].availability.structural}
@@ -192,8 +197,10 @@
       </label>
     {/if}
 
-    {@render finiteHandles.notchMode()}
-    {@render finiteHandles.agcMode()}
+    {#if !finiteLayout}
+      {@render finiteHandles.notchMode()}
+      {@render finiteHandles.agcMode()}
+    {/if}
   </section>
 {/if}
 

@@ -13,3 +13,5 @@ export interface DspFiniteHandles {
   readonly notchMode: Snippet;
   readonly agcMode: Snippet;
 }
+
+export type DspFiniteLayout = Snippet<[DspFiniteHandles]>;
