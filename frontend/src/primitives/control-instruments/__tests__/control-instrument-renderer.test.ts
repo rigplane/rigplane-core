@@ -188,6 +188,35 @@ describe('finite renderer leases', () => {
     expect(lease.view?.reading).toEqual({ status: 'unknown' });
   });
 
+  it('passes current option reasons through without changing option admission', () => {
+    const context = createFiniteRendererContext();
+    let options: readonly ControlOption<string>[] = [
+      { value: 'MAIN', label: 'MAIN', disabled: true, disabledReason: 'MAIN unavailable' },
+      { value: 'SUB', label: 'SUB', disabledReason: 'SUB description only' },
+    ];
+    const invoke = vi.fn();
+    const seat = createAbsoluteChoiceRendererSeat(() => ({
+      context, reading: { status: 'unknown' }, available: true,
+      label: 'Active receiver', options, invoke,
+    }));
+    const lease = seat.attachRenderer();
+
+    expect(lease.view?.options).toEqual(options);
+    lease.invoke('MAIN');
+    lease.invoke('SUB');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('SUB');
+
+    options = [
+      { value: 'MAIN', label: 'MAIN', disabled: true, disabledReason: 'Replacement reason' },
+      { value: 'SUB', label: 'SUB' },
+    ];
+    expect(lease.view?.options[0]?.disabledReason).toBe('Replacement reason');
+    expect(lease.view?.options[1]?.disabledReason).toBeUndefined();
+    lease.invoke('MAIN');
+    lease.invoke('SUB');
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps an unknown absolute choice actionable through the existing binding', () => {
     const context = createFiniteRendererContext();
     const invoke = vi.fn();
