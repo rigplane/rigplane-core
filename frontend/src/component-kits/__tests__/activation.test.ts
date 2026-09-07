@@ -689,6 +689,43 @@ describe('component-kit activation transaction', () => {
     expect(toJSON).not.toHaveBeenCalled();
   });
 
+  it.each(['apiVersion', 'resource'] as const)(
+    'rejects a non-primitive %s without coercion or registry side effects',
+    async (target) => {
+      const activation = await subject();
+      const registry = await import('../../skins/registry');
+      const layouts = await import('../../presentation/layouts/contract');
+      const idSuffix = target === 'apiVersion' ? 'api-version' : target;
+      const declaration = hostedKit(`coercion-${idSuffix}`);
+      const leakedLayout = layout(`coercion-leak-${idSuffix}`);
+      const primitiveGetter = vi.fn(() => {
+        layouts.registerLayouts([leakedLayout as never]);
+        return () => 'poison';
+      });
+      const poison = {};
+      Reflect.defineProperty(poison, Symbol.toPrimitive, { get: primitiveGetter });
+      const configured = target === 'apiVersion'
+        ? { ...declaration, apiVersion: poison }
+        : {
+            ...declaration,
+            presentations: [{ ...declaration.presentations[0], resources: [poison] }],
+          };
+
+      await expect(activation.activateComponentKits(config([configured])))
+        .rejects.toThrow(target === 'apiVersion' ? /unsupported API version/ : /entries must be strings/);
+      expect(primitiveGetter).not.toHaveBeenCalled();
+      expect(layouts.getLayout(leakedLayout.id)).toBeUndefined();
+      expect(layouts.getLayout(declaration.layouts[0].id)).toBeUndefined();
+      expect(registry.getPresentationRecord(declaration.presentations[0].id)).toBeUndefined();
+      expect(activation.getSelectedPresentationId()).toBeUndefined();
+
+      await activation.activateComponentKits(config(
+        [declaration], { presentation: declaration.presentations[0].id },
+      ));
+      expect(activation.getSelectedPresentationId()).toBe(declaration.presentations[0].id);
+    },
+  );
+
   it('leaves every registry and selection unchanged on late failure, then permits same-id retry', async () => {
     const activation = await subject();
     const registry = await import('../../skins/registry');

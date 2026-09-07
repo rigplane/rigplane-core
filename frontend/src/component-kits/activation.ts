@@ -340,7 +340,11 @@ function prepareActivation(declarations: readonly unknown[], selectionValue: unk
     ownDataEntries(value, 'Component kit', KIT_KEYS);
     const id = requireId(value.id, 'Component kit');
     if (value.apiVersion !== COMPONENT_KIT_API_VERSION) {
-      throw new ComponentKitActivationError(`Component kit "${id}" requires unsupported API version ${String(value.apiVersion)}.`);
+      const version = value.apiVersion;
+      const versionLabel = version === null || typeof version === 'object' || typeof version === 'function'
+        ? '<non-primitive>'
+        : String(version);
+      throw new ComponentKitActivationError(`Component kit "${id}" requires unsupported API version ${versionLabel}.`);
     }
     if (kitIds.has(id)) throw new ComponentKitActivationError(`Duplicate component-kit id "${id}".`);
     kitIds.add(id);
@@ -483,13 +487,14 @@ function prepareActivation(declarations: readonly unknown[], selectionValue: unk
     if (typeof presentation.loader !== 'function') {
       throw new ComponentKitActivationError(`Presentation "${id}" loader must be a function.`);
     }
-    const resourceValues = readDataArray(presentation.resources, `Presentation "${id}" resources`);
-    const resources = resourceValues.map((resource) => {
-      if (typeof resource !== 'string' || !PRESENTATION_RESOURCES.includes(resource as never)) {
-        throw new ComponentKitActivationError(`Presentation "${id}" has unsupported resource "${String(resource)}".`);
+    const resources = readStringArray(
+      presentation.resources, `Presentation "${id}" resources`,
+    ) as Array<(typeof PRESENTATION_RESOURCES)[number]>;
+    for (const resource of resources) {
+      if (!PRESENTATION_RESOURCES.includes(resource as never)) {
+        throw new ComponentKitActivationError(`Presentation "${id}" has unsupported resource "${resource}".`);
       }
-      return resource as (typeof PRESENTATION_RESOURCES)[number];
-    });
+    }
     if (new Set(resources).size !== resources.length) {
       throw new ComponentKitActivationError(`Presentation "${id}" has a duplicate resource.`);
     }

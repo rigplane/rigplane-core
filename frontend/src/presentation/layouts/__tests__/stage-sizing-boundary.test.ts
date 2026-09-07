@@ -21,6 +21,13 @@ const SRC_ROOT = 'src';
 const LAYOUTS_DIR = path.join(SRC_ROOT, 'presentation', 'layouts') + path.sep;
 const SOURCE_EXTENSIONS = new Set(['.ts', '.svelte']);
 const GUARDED_NAMES = [/\bstageSizing\b/];
+// Component-kit startup may validate and copy this declaration field, but it
+// does not consume it for runtime sizing. The paired activation test pins the
+// copied/frozen graph and rejects authored accessors before registration.
+const DECLARATION_ADMISSION_ALLOWLIST = new Set([
+  path.join(SRC_ROOT, 'component-kits', 'activation.ts'),
+  path.join(SRC_ROOT, 'component-kits', '__tests__', 'activation.test.ts'),
+]);
 
 function collectSourceFiles(dir: string): string[] {
   const out: string[] = [];
@@ -36,7 +43,15 @@ describe('stageSizing stays declaration-only outside layouts/ (MOR-1247)', () =>
   it('no file outside presentation/layouts/ names stageSizing', () => {
     const offenders = collectSourceFiles(SRC_ROOT)
       .filter((file) => !file.startsWith(LAYOUTS_DIR))
+      .filter((file) => !DECLARATION_ADMISSION_ALLOWLIST.has(file))
       .filter((file) => GUARDED_NAMES.some((re) => re.test(readFileSync(file, 'utf8'))));
     expect(offenders).toEqual([]);
+  });
+
+  it('allows only the activation declaration admission and its direct test', () => {
+    expect([...DECLARATION_ADMISSION_ALLOWLIST]).toEqual([
+      path.join(SRC_ROOT, 'component-kits', 'activation.ts'),
+      path.join(SRC_ROOT, 'component-kits', '__tests__', 'activation.test.ts'),
+    ]);
   });
 });
