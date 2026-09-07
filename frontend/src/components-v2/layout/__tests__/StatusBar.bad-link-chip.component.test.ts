@@ -1,8 +1,7 @@
 /**
  * MOR-2425 R29(3) — `connection.svelte.ts: isStale()` (exposed as
- * `frontend-runtime.ts: get connectionStale()`) has computed WS-update
- * staleness from real timing since MOR-1419, but no consumer ever displayed
- * it: `isStale()` is read by two `frontend-runtime.ts` getters
+ * `frontend-runtime.ts: get connectionStale()`) computes WS-update
+ * staleness from real timing, but no consumer ever displayed it: `isStale()` is read by two `frontend-runtime.ts` getters
  * (`connectionStale`, and `connection`'s `stale` field), and nothing
  * rendered either one until this chip. This test drives the REAL
  * staleness mechanism (real `setInterval`, real `markStateUpdated()`) under
@@ -84,8 +83,9 @@ describe('StatusBar bad-link chip (MOR-2425 R29(3))', () => {
 
   // Explicit budget, not vitest's 10s default: these four dynamic imports
   // (transformed here, not at collection time — see file header for why
-  // they must stay dynamic) cost ~4.8s cold, which blew the default hook
-  // timeout under concurrent test-file load.
+  // they must stay dynamic) cost ~4.8s cold — close enough to the 10s
+  // default that a loaded machine or a second concurrent vitest run turns
+  // it red (measured: 8 concurrent single-file runs all timed out).
   beforeAll(async () => {
     vi.useFakeTimers();
     conn = await import('$lib/stores/connection.svelte');
