@@ -1244,6 +1244,8 @@
 </script>
 
 <div class="semantic-surfaces" class:hosted={hostedChildren !== undefined} data-testid="semantic-radio-surfaces">
+  <StationMeterInstrumentHost {subscribeStationMeterAuthority}>
+  {#snippet children(stationMeters: StationMeterInstrumentHandles)}
   {#snippet receiverVfoOperations(appearance: ReceiverVfoAppearance)}
     {#if view}
       <VfoSurface
@@ -1289,8 +1291,6 @@
     onAgcModeChange={agcIntents.onAgcModeChange}
   >
   {#snippet children(dspInstruments)}
-  <StationMeterInstrumentHost {subscribeStationMeterAuthority}>
-  {#snippet children(stationMeters: StationMeterInstrumentHandles)}
   {#if readonlyDisplay}
     {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
@@ -2175,8 +2175,6 @@
   </TxAuxScalarHost>
   {/if}
   {/snippet}
-  </StationMeterInstrumentHost>
-  {/snippet}
   </DspInstrumentHost>
   {/snippet}
   </FilterInstrumentHost>
@@ -2194,6 +2192,8 @@
   </RxAudioInstrumentHost>
   {/snippet}
   </ReceiverInstrumentHost>
+  {/snippet}
+  </StationMeterInstrumentHost>
 </div>
 
 <style>

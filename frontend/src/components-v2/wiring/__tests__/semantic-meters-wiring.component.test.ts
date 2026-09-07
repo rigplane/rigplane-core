@@ -32,6 +32,7 @@ const h = vi.hoisted(() => ({
   txController: null as ManagedAppTxController | null,
   session: { state: 'connected', epoch: 1 } as ControlSessionSnapshot,
   sessionSubscriber: null as ((next: ControlSessionSnapshot) => void) | null,
+  deferAuthority: false,
   authoritySubscribers: new Set<(next: {
     state: unknown; caps: unknown; session: ControlSessionSnapshot;
     rxAudioTarget: RxAudioTargetSnapshot;
@@ -52,7 +53,7 @@ vi.mock('$lib/runtime', () => ({
     },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {
       h.authoritySubscribers.add(handler);
-      handler({
+      if (!h.deferAuthority) handler({
         state: h.state, caps: h.caps, session: h.session,
         rxAudioTarget: Object.freeze({ muted: h.audio.muted, rxEnabled: h.audio.rxEnabled }),
       });
@@ -284,6 +285,7 @@ beforeEach(() => {
   expect(setCapabilities(h.caps as Capabilities)).toBe(true);
   h.session = { state: 'connected', epoch: 1 };
   h.sessionSubscriber = null;
+  h.deferAuthority = false;
   h.noop.mockReset();
 });
 
@@ -363,6 +365,16 @@ describe('the meters surface mounts only when the view model carries the group',
     expect(Object.keys(relevance())).toContain('power');
     expect(q('[data-testid="meter-signal"]')!.dataset.observed).toBe('true');
     expect(q('[data-testid="meter-drainVoltage"]')!.dataset.observed).toBe('true');
+  });
+
+  it('keeps one station host across delayed dual-receiver authority', () => {
+    h.deferAuthority = true;
+    render({ strips: 'dual' });
+    expect(h.authoritySubscribers.size).toBe(4);
+    expect(() => push({})).not.toThrow();
+    expect(target.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
+    expect(target.querySelectorAll('[data-testid="meters-surface"]')).toHaveLength(1);
+    expect(h.authoritySubscribers.size).toBe(4);
   });
 
   it('keeps mounted meter shells but clears readings across a provider generation mismatch', () => {
