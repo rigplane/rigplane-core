@@ -1367,12 +1367,18 @@ describe("the SDR face's zones are placed as five regions (MOR-2231, batch 5)", 
   it.each(['sdr-test', 'desktop-v2'] as const)('%s owns each control once in its intended column', (skinId) => {
     const root = render(skinId);
     for (const [region, surfaces] of [
-      ['left', ['rf-front-end', 'filter', 'band', 'antenna', 'ritxit-scan']],
-      ['center', ['scope-controls', 'scope-display']],
-      ['right', ['rx-tx', 'rx-audio', 'dsp', 'cw-keyer', 'tx-aux']],
+      // MOR-2425: Standard arranges the two persistent antenna seats itself and
+      // mounts no grouped `antenna-surface`; SDR keeps the grouped one. Both
+      // stay inside the left column, so the column claim is unchanged.
+      ['left', ['rf-front-end-surface', 'filter-surface', 'band-surface',
+        skinId === 'desktop-v2' ? 'antenna-control-grid' : 'antenna-surface',
+        'ritxit-scan-surface']],
+      ['center', ['scope-controls-surface', 'scope-display-surface']],
+      ['right', ['rx-tx-surface', 'rx-audio-surface', 'dsp-surface', 'cw-keyer-surface',
+        'tx-aux-surface']],
     ] as const) {
       for (const surface of surfaces) {
-        const selector = `[data-testid="${surface}-surface"]`;
+        const selector = `[data-testid="${surface}"]`;
         expect(root.querySelectorAll(selector), surface).toHaveLength(1);
         expect(root.querySelector(`.desktop-controls-${region} ${selector}`), surface).not.toBeNull();
       }
@@ -2308,7 +2314,9 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   it('the fixture actually emits all three groups (non-vacuity)', () => {
     const t = renderAll('desktop-v2');
     expect(t.querySelector('[data-testid="band-surface"]')).not.toBeNull();
-    expect(t.querySelector('[data-testid="antenna-surface"]')).not.toBeNull();
+    // MOR-2425: on Standard the antenna group emits as the two seats RadioLayout
+    // arranges itself, not as the grouped surface SDR still mounts.
+    expect(t.querySelector('[data-testid="antenna-control-grid"]')).not.toBeNull();
     expect(t.querySelector('[data-testid="ritxit-scan-surface"]')).not.toBeNull();
   });
 
@@ -2317,7 +2325,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   // deck", which is the double-presentation defect this slice closes. Run
   // against the real resolved plan (see `renderWithPlan`), because that is the
   // read `zoneOwning()` makes.
-  it.each([['band', 'band-surface'], ['antenna', 'antenna-surface'],
+  it.each([['band', 'band-surface'], ['antenna', 'antenna-control-grid'],
     ['rit-xit-scan', 'ritxit-scan-surface']])(
     'mounts %s inside its own declared zone element', (zoneId, testid) => {
       const t = renderWithPlan('desktop-v2');
@@ -2346,7 +2354,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   it('drops the legacy ANTENNA twin for the semantic surface', () => {
     const t = renderAll('desktop-v2');
     expect(t.querySelector('.left-sidebar [data-panel-id="antenna"]')).toBeNull();
-    expect(t.querySelector('[data-testid="antenna-surface"]')).not.toBeNull();
+    expect(t.querySelector('[data-testid="antenna-control-grid"]')).not.toBeNull();
   });
 
   /**
@@ -2410,7 +2418,7 @@ describe('band, antenna and ritXitScan are zone-owned on desktop-v2 (MOR-1367, S
   // covers only some of the three zones, or a second mount path.
   it('presents band, antenna and ritXitScan exactly ONCE each on desktop-v2', () => {
     const t = renderAll('desktop-v2');
-    for (const testid of ['band-surface', 'antenna-surface', 'ritxit-scan-surface']) {
+    for (const testid of ['band-surface', 'antenna-control-grid', 'ritxit-scan-surface']) {
       expect(t.querySelectorAll(`[data-testid="${testid}"]`).length, testid).toBe(1);
     }
     for (const selector of [

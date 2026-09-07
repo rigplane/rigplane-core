@@ -10,6 +10,10 @@ import type { VfoOperationHandles } from '../../semantic/VfoOperationSeatHost.sv
 import type { FilterFiniteLayout } from '../../semantic/filter-instruments';
 import type { BandControlLayout } from '../../semantic/band-instruments';
 import type { CwKeyerInstrumentHandles } from '../../semantic/CwKeyerInstrumentHost.svelte';
+import type {
+  AntennaInstrumentHandles, AntennaInstrumentLayout,
+} from '../../semantic/AntennaInstrumentHost.svelte';
+import type { RitXitScanInstrumentHandles } from '../../semantic/RitXitScanInstrumentHost.svelte';
 
 export type InstrumentVfoAppearance = 'semantic' | 'sdr' | 'standard';
 
@@ -33,8 +37,11 @@ export interface InstrumentComposition {
   readonly filter: Snippet<[allowBare?: boolean, finiteLayout?: FilterFiniteLayout]>;
   readonly dsp: Snippet<[allowBare?: boolean, finiteLayout?: DspFiniteLayout]>;
   readonly band: Snippet<[allowBare?: boolean, controlLayout?: BandControlLayout]>;
-  readonly antenna: Snippet<[allowBare?: boolean]>;
+  readonly antenna: Snippet<[allowBare?: boolean, controlLayout?: Snippet]>;
+  readonly antennaInstruments: AntennaInstrumentHandles;
+  readonly antennaLayout: AntennaInstrumentLayout;
   readonly ritXitScan: Snippet<[allowBare?: boolean]>;
+  readonly ritXitInstruments: RitXitScanInstrumentHandles;
   readonly cwKeyerInstruments: CwKeyerInstrumentHandles;
   readonly cwKeyer: Snippet<[allowBare?: boolean, showKeyerSpeed?: boolean]>;
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;

@@ -61,6 +61,7 @@
   } from '../../presentation/workspace/resolution';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import AntennaSurface from '../../semantic/AntennaSurface.svelte';
+  import AntennaInstrumentHost from '../../semantic/AntennaInstrumentHost.svelte';
   import BandSurface from '../../semantic/BandSurface.svelte';
   import BandInstrumentHost from '../../semantic/BandInstrumentHost.svelte';
   import type { BandControlLayout } from '../../semantic/band-instruments';
@@ -90,6 +91,7 @@
   } from '../../semantic/RfFrontEndSurface.svelte';
   import RfFrontEndInstrumentHost from '../../semantic/RfFrontEndInstrumentHost.svelte';
   import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
+  import RitXitScanInstrumentHost from '../../semantic/RitXitScanInstrumentHost.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
   import RxAudioInstrumentHost from '../../semantic/RxAudioInstrumentHost.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
@@ -633,6 +635,12 @@
     topologyId: string;
     activeReceiver: 'MAIN' | 'SUB' | 'unknown';
   }>;
+  type RitXitFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
   type VfoFiniteAuthority = Readonly<{
     sessionEpoch: number;
     providerGeneration: number;
@@ -763,6 +771,26 @@
         ? model.activeReceiver.receiver : 'unknown',
     });
   }
+  function ritXitFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): RitXitFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    if (model?.ritXit === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
   const sameScopeFiniteAuthority = (
     left: ScopeFiniteAuthority | null | undefined,
     right: ScopeFiniteAuthority | null,
@@ -823,6 +851,16 @@
         && left.topologyId === right.topologyId
         && left.activeReceiver === right.activeReceiver
   );
+  const sameRitXitFiniteAuthority = (
+    left: RitXitFiniteAuthority | null | undefined,
+    right: RitXitFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
   const readSelectedFiniteAppearance = 'getSelectedFiniteControlAppearance' in componentKitActivation
     ? componentKitActivation.getSelectedFiniteControlAppearance : undefined;
   const selectedFiniteAppearance = readSelectedFiniteAppearance?.();
@@ -832,12 +870,14 @@
   let vfoFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let filterFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let bandFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let ritXitFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
   let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
   let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
   let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
   let lastFilterFiniteAuthority: FilterFiniteAuthority | null | undefined;
   let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
+  let lastRitXitFiniteAuthority: RitXitFiniteAuthority | null | undefined;
   const unsubscribeScopeFiniteAuthority = runtime.subscribeControlAuthority((publication) => {
       const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
       if (!sameScopeFiniteAuthority(lastScopeFiniteAuthority, next)) {
@@ -879,6 +919,13 @@
         lastBandFiniteAuthority = nextBand;
         bandFiniteRendererContext = nextBand === null ? null : createFiniteRendererContext();
       }
+      const nextRitXit = ritXitFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameRitXitFiniteAuthority(lastRitXitFiniteAuthority, nextRitXit)) {
+        lastRitXitFiniteAuthority = nextRitXit;
+        ritXitFiniteRendererContext = nextRitXit === null ? null : createFiniteRendererContext();
+      }
     });
   onDestroy(() => unsubscribeScopeFiniteAuthority?.());
   let scopeFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
@@ -906,6 +953,10 @@
   let bandFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: bandFiniteRendererContext,
+    });
+  let ritXitFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: ritXitFiniteRendererContext,
     });
 
   let scopeFrameSource = $derived(
@@ -1373,6 +1424,14 @@
     onSelectBand={selectBand} onEnterFrequency={enterFrequency}
   >
   {#snippet children(bandInstruments)}
+  <AntennaInstrumentHost
+    {view} tx={txState} readTx={() => tx.snapshot()}
+    subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
+    onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
+    onToggleRxAnt={antennaIntents.onToggleRxAnt}
+    finiteAppearance={selectedFiniteAppearance}
+  >
+  {#snippet children(antennaInstruments, antennaLayout)}
   <CwKeyerInstrumentHost
     {view} {keySpeedFeedback}
     onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
@@ -1385,6 +1444,13 @@
     onAgcModeChange={agcIntents.onAgcModeChange}
   >
   {#snippet children(dspInstruments)}
+  <RitXitScanInstrumentHost
+    {...ritXitFiniteRendererSelection} {view}
+    onRitToggle={ritXitIntents.onRitToggle}
+    onXitToggle={ritXitIntents.onXitToggle}
+    onClear={ritXitIntents.onClear}
+  >
+  {#snippet children(ritXitInstruments)}
   {#if readonlyDisplay}
     {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
@@ -1759,13 +1825,15 @@
     still takes no lease and keys nothing — exactly one `<RxTxSurface>`
     remains the key/unkey authority (R9).
   -->
-  {#snippet antennaSurface()}
+  {#snippet antennaSurface(controlLayout?: Snippet)}
     {#if view?.antenna}
-      <AntennaSurface
-        {view} tx={txState}
-        onSelectPort={(port) => ANTENNA_PORT_INTENT[port]?.()}
-        onToggleRxAnt={antennaIntents.onToggleRxAnt}
-      />
+      {#if controlLayout}
+        {@render controlLayout()}
+      {:else}
+        <AntennaSurface
+          {view} tx={txState} handles={antennaInstruments} layout={antennaLayout}
+        />
+      {/if}
     {/if}
   {/snippet}
 
@@ -1879,11 +1947,9 @@
     {#if view?.ritXit || view?.scan}
       <RitXitScanSurface
         {view} {ritDomain}
-        onRitToggle={ritXitIntents.onRitToggle}
-        onXitToggle={ritXitIntents.onXitToggle}
+        handles={ritXitInstruments}
         onRitOffsetChange={ritXitIntents.onRitOffsetChange}
         onXitOffsetChange={ritXitIntents.onXitOffsetChange}
-        onClear={ritXitIntents.onClear}
         onScanStart={(type) => scanIntents.onScanStart(type)}
         onScanStop={scanIntents.onScanStop}
         onResumeModeChange={(mode) => scanIntents.onResumeChange(mode)}
@@ -2051,8 +2117,9 @@
     {#snippet body()}{@render bandSurface(controlLayout)}{/snippet}
     {@render zoned('band', view?.band !== undefined, body, allowBare)}
   {/snippet}
-  {#snippet hostedAntenna(allowBare = allowBareSurfaces)}
-    {@render zoned('antenna', view?.antenna !== undefined, antennaSurface, allowBare)}
+  {#snippet hostedAntenna(allowBare = allowBareSurfaces, controlLayout?: Snippet)}
+    {#snippet body()}{@render antennaSurface(controlLayout)}{/snippet}
+    {@render zoned('antenna', view?.antenna !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedRitXitScan(allowBare = allowBareSurfaces)}
     {@render zoned(
@@ -2106,7 +2173,10 @@
       dsp: hostedDsp,
       band: hostedBand,
       antenna: hostedAntenna,
+      antennaInstruments,
+      antennaLayout,
       ritXitScan: hostedRitXitScan,
+      ritXitInstruments,
       cwKeyerInstruments,
       cwKeyer: hostedCwKeyer,
       scopeDisplay: hostedScopeDisplay,
@@ -2292,9 +2362,13 @@
   </TxAuxScalarHost>
   {/if}
   {/snippet}
+  </RitXitScanInstrumentHost>
+  {/snippet}
   </DspInstrumentHost>
   {/snippet}
   </CwKeyerInstrumentHost>
+  {/snippet}
+  </AntennaInstrumentHost>
   {/snippet}
   </BandInstrumentHost>
   {/snippet}

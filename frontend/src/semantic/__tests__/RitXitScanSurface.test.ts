@@ -18,7 +18,8 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import RitXitScanSurface, { OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, UNKNOWN_TEXT } from '../RitXitScanSurface.svelte';
+import { OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, UNKNOWN_TEXT } from '../RitXitScanSurface.svelte';
+import RitXitScanInstrumentHostFixture from './fixtures/RitXitScanInstrumentHostFixture.svelte';
 import { topologyFixtures, withRitXit, withScan } from '../fixtures/topologies';
 import type {
   Availability, RadioViewModel, RitXitField, RitXitViewModel, ScanField, ScanViewModel,
@@ -26,6 +27,7 @@ import type {
 
 const ON: Availability = { structural: true, operational: true };
 const SOURCE = readFileSync('src/semantic/RitXitScanSurface.svelte', 'utf8');
+const HOST_SOURCE = readFileSync('src/semantic/RitXitScanInstrumentHost.svelte', 'utf8');
 
 const base = (): RadioViewModel => withScan(withRitXit(topologyFixtures['1/single']));
 const withRx = (over: Partial<RitXitViewModel>): RadioViewModel => {
@@ -55,10 +57,12 @@ type Handlers = {
   onScanStart?: (type: number) => void;
   onScanStop?: () => void;
   onResumeModeChange?: (mode: number) => void;
+  presentation?: 'grouped' | 'independent';
+  ritDomain?: import('$lib/types/capabilities').ControlDomain | null;
 };
 
 function render(view: RadioViewModel, handlers: Handlers = {}) {
-  const component = mount(RitXitScanSurface, { target, props: { view, ...handlers } });
+  const component = mount(RitXitScanInstrumentHostFixture, { target, props: { view, ...handlers } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   return {
@@ -76,15 +80,27 @@ const bypassClick = (el: HTMLElement) => el.dispatchEvent(new MouseEvent('click'
 describe('current-input action bindings', () => {
   it('uses toggles for RIT, XIT and scan, plus an action for the resume cycle', () => {
     expect(SOURCE).toContain('bindToggleInstrument');
-    expect(SOURCE).toContain('const ritToggle = bindToggleInstrument');
-    expect(SOURCE).toContain('const xitToggle = bindToggleInstrument');
+    expect(HOST_SOURCE).toContain('const ritToggle = bindToggleInstrument');
+    expect(HOST_SOURCE).toContain('const xitToggle = bindToggleInstrument');
     expect(SOURCE).toContain('const scanToggle = bindToggleInstrument');
     expect(SOURCE).toContain('const resumeCycle = bindActionInstrument');
   });
 
   it('keeps RIT and XIT callbacks as zero-argument intents', () => {
-    expect(SOURCE).toContain('invoke: () => onRitToggle?.()');
-    expect(SOURCE).toContain('invoke: () => onXitToggle?.()');
+    expect(HOST_SOURCE).toContain('invoke: () => onRitToggle?.()');
+    expect(HOST_SOURCE).toContain('invoke: () => onXitToggle?.()');
+  });
+});
+
+describe('hosted finite placement', () => {
+  it.each(['grouped', 'independent'] as const)('preserves RIT, XIT, offset, CLEAR order in %s', (presentation) => {
+    const r = render(base(), { presentation });
+    const order = [...target.querySelectorAll('[data-testid="ritxit"] button, [data-testid="ritxit"] label')]
+      .map(element => element.getAttribute('data-testid'));
+    expect(order).toEqual(['ritxit-rit-toggle', 'ritxit-xit-toggle', 'ritxit-offset', 'ritxit-clear']);
+    expect(r.all('ritxit-offset')).toHaveLength(1);
+    expect(r.all('scan')).toHaveLength(1);
+    r.dispose();
   });
 });
 

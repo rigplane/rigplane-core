@@ -12,6 +12,10 @@
   import type { VfoOperationHandles } from '../../../../semantic/VfoOperationSeatHost.svelte';
   import type { BandControlLayout } from '../../../../semantic/band-instruments';
   import type { CwKeyerInstrumentHandles } from '../../../../semantic/CwKeyerInstrumentHost.svelte';
+  import type {
+    AntennaInstrumentHandles, AntennaInstrumentLayout,
+  } from '../../../../semantic/AntennaInstrumentHost.svelte';
+  import type { RitXitScanInstrumentHandles } from '../../../../semantic/RitXitScanInstrumentHost.svelte';
 
   const empty = createRawSnippet(() => ({ render: () => '' }));
   const vfo = createRawSnippet<[
@@ -29,6 +33,18 @@
     () => ({ render: () => '' }),
   );
   const cwKeyerInstruments = { keyerSpeed: empty } satisfies CwKeyerInstrumentHandles;
+  const antenna = createRawSnippet<[allowBare?: boolean, controlLayout?: FixtureSnippet]>(
+    () => ({ render: () => '' }),
+  );
+  const antennaInstruments = {
+    txPort: empty, rxAnt: empty,
+  } satisfies AntennaInstrumentHandles;
+  const antennaLayout = {
+    blockedId: 'fixture-antenna-blocked', blocked: [],
+  } satisfies AntennaInstrumentLayout;
+  const ritXitInstruments = {
+    rit: empty, xit: empty, clear: empty,
+  } satisfies RitXitScanInstrumentHandles;
   const frequency = createRawSnippet<[mount?: ReceiverFrequencyMount]>(() => ({ render: () => '' }));
   const meter = createRawSnippet<[renderer?: ReceiverSMeterRenderer]>(() => ({ render: () => '' }));
   const operations = createRawSnippet<[appearance: ReceiverVfoAppearance]>(() => ({ render: () => '' }));
@@ -60,7 +76,8 @@
     receiverInstruments,
     rxAudioInstruments, rfFrontEndInstruments,
     meters: empty, rxAudio: empty, rfFrontEnd: empty, filter: empty, dsp: empty,
-    band, antenna: empty, ritXitScan: empty, cwKeyerInstruments, cwKeyer,
+    band, antenna, antennaInstruments, antennaLayout,
+    ritXitScan: empty, ritXitInstruments, cwKeyerInstruments, cwKeyer,
     scopeDisplay: empty, scopeControls: empty, txFaultRecovery: empty,
     modInputTxWarning: empty, managedScope: undefined,
   } satisfies FixtureInstrumentComposition;
