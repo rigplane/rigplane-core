@@ -81,15 +81,7 @@ export function getTxAuxControlFeedback(field: keyof typeof txAuxControls) {
   });
 }
 
-const dspScalarControls = Object.freeze({
-  nbLevel: 'nb-level',
-  nbWidth: 'nb-width',
-  nrLevel: 'nr-level',
-  nbDepth: 'nb-depth',
-  notchFilter: 'notch-position',
-  manualNotchWidth: 'manual-notch-width',
-  agcTimeConstant: 'agc-time',
-} as const);
+const dspScalarControls = Object.freeze({ nbLevel: 'nb-level', nbWidth: 'nb-width' } as const);
 
 /** MOR-2425 — offline fixtures never fabricate radio-global DSP command-feedback authority. */
 export function getDspControlFeedback(field: keyof typeof dspScalarControls) {
