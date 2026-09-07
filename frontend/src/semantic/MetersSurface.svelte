@@ -58,12 +58,14 @@
    * the slot is called ONCE per render (see `display` below) and read twice,
    * never once per gauge.
    */
-  const signalDisplay = (signalProjection: SignalMeterProjection): ReturnType<typeof renderSlot> =>
-    signalProjection.scaleMode !== 's' || signalProjection.crossoverFraction === null ? null
-      : renderSlot('meters', {
+  const meterDisplay = (signalProjection: SignalMeterProjection): ReturnType<typeof renderSlot> =>
+    renderSlot('meters', {
       value: signalProjection.motionFraction,
       max: 1,
-      s9: signalProjection.crossoverFraction,
+      // Explicit raw/unknown domains cannot expose this fallback to the
+      // S-meter: `signalDisplay` below withholds their S-specific descriptor.
+      // The shared descriptor still owns the unrelated BarGauge palettes.
+      s9: signalProjection.crossoverFraction ?? 0,
     });
 </script>
 
@@ -102,7 +104,13 @@
    * read the SAME descriptor from ONE `renderSlot` call. Each consumer falls
    * back to its own component default when this is `null`.
    */
-  let display = $derived(meters ? signalDisplay(signalProjection) : null);
+  let display = $derived(meters ? meterDisplay(signalProjection) : null);
+  /** Explicit raw/unknown domains keep the shared bar palette but receive no
+   * S-specific language geometry or annotations. A non-null crossover also
+   * preserves the pre-MOR-2425 omitted-domain compatibility path. */
+  let signalDisplay = $derived(
+    signalProjection.crossoverFraction === null ? null : display,
+  );
 
 </script>
 
@@ -121,12 +129,12 @@
         class="meter-tile" data-meter-tile data-meter={present(meters.signal) ? "signal" : "swr"} data-testid={present(meters.signal) ? "meter-signal" : "meter-swr"}
         data-relevant={meters.signal.relevant} data-observed={observed(meters.signal)}
         role="group" aria-label={present(meters.signal) ? "S meter" : "SWR meter"}
-        {...display?.attributes ?? {}}
+        {...signalDisplay?.attributes ?? {}}
       >
         <LinearSMeter
           projection={signalProjection} label="S" compact
           mainPresent={present(meters.signal)}
-          display={display?.display ?? undefined}
+          display={signalDisplay?.display ?? undefined}
           lowerScale={present(meters.swr) ? swrLowerScale(meters.swr, meters.rfState) : undefined}
           relevant={meters.signal.relevant}
           source={meters.signal.source}

@@ -57,7 +57,7 @@ export interface SignalMeterProjection {
   readonly primaryText: string;
   readonly secondaryText: string;
   readonly accessibleDescription: string;
-  /** S9 crossover in `s` mode; absent for raw/unprojectable geometry. */
+  /** S9 crossover for calibrated S or omitted-domain compatibility only. */
   readonly crossoverFraction: number | null;
   readonly marks: readonly SignalMeterProjectionMark[];
   readonly ticks: readonly SignalMeterProjectionTick[];
@@ -248,7 +248,7 @@ export function projectSignalMeter(
     color: mark.color,
   }));
   const ticks = scaleMode === 's' ? scaleTicks(scale, projectionCalibration) : [];
-  const crossoverFraction = scaleMode === 's'
+  const crossoverFraction = scaleMode === 's' || domain === undefined
     ? rawToSegmentsForCalibration(
         getS9RawForCalibration(projectionCalibration), projectionCalibration,
       ) / SEGMENT_DOMAIN

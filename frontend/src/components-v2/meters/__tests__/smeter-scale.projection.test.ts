@@ -167,7 +167,7 @@ describe('projectSignalMeter', () => {
     expect(projection.scaleMode).toBe('raw');
     expect(projection.primaryText).toBe('53');
     expect(projection.secondaryText).toBe('uncalibrated');
-    expect(projection.crossoverFraction).toBeNull();
+    expect(projection.crossoverFraction).toBe(11 / 20);
     expect(projection.marks).toEqual([]);
     expect(projection.ticks).toEqual([]);
   });

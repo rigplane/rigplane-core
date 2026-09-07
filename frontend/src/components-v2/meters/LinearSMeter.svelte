@@ -220,7 +220,7 @@
   // still reports strong/over-range readings in the ramp's hot colors
   // rather than collapsing every reading to one fixed color.
   function activeColor(i: number): string {
-    if (signalProjection.scaleMode === 's' && hasTone && crossoverSegmentIndex !== null) {
+    if (hasTone && crossoverSegmentIndex !== null) {
       return i < crossoverSegmentIndex ? display.toneBelowS9 : display.toneAboveS9;
     }
     const denom = SEG_COUNT - 1;
@@ -238,7 +238,7 @@
   // this PR doesn't already have a caller for). So this stays the same two
   // hex literals it was before, language active or not.
   function dimColor(i: number): string {
-    return signalProjection.scaleMode === 's' && crossoverSegmentIndex !== null
+    return crossoverSegmentIndex !== null
       ? (i < crossoverSegmentIndex ? '#0A2415' : '#1A1008') : '#0A2415';
   }
 
@@ -374,7 +374,7 @@
   const peakZoneOrange = $derived(Math.round((18 / RAW_SEGMENT_DOMAIN) * SEG_COUNT));
 
   // Color of peak line based on zone
-  let peakColor = $derived(signalProjection.scaleMode !== 's' || crossoverSegmentIndex === null
+  let peakColor = $derived(crossoverSegmentIndex === null
     ? 'var(--v2-accent-cyan-bright)'
     : peakSegs <= crossoverSegmentIndex ? 'var(--v2-accent-cyan-bright)'
       : peakSegs <= peakZoneYellow ? 'var(--v2-accent-yellow)'
@@ -399,7 +399,7 @@
   const sdrCrossover = $derived(signalProjection.crossoverFraction === null
     ? null : signalProjection.crossoverFraction * SDR_CELLS * 2);
   function sdrColor(index: number): string {
-    if (signalProjection.scaleMode !== 's' || sdrCrossover === null) {
+    if (sdrCrossover === null) {
       return index < sdrFill ? '#4FB9EC' : '#1a2230';
     }
     const aboveS9 = index >= sdrCrossover;

@@ -193,7 +193,11 @@ function withMeters(state: ServerState): ServerState {
     ...s,
     powerMeter: 120, swrMeter: 30, alcMeter: 40, compMeter: 20, vdMeter: 200, idMeter: 90,
     main: rx(s.main, -12), sub: rx(s.sub, -30),
-    fieldStatus: { ...(s.fieldStatus as FieldStatusMap), ...statuses(METER_PATHS) },
+    fieldStatus: {
+      ...(s.fieldStatus as FieldStatusMap), ...statuses(METER_PATHS),
+      'main.sMeter': { ...fresh, quality: ['calibrated'] },
+      'sub.sMeter': { ...fresh, quality: ['calibrated'] },
+    },
   } as unknown as ServerState;
 }
 
