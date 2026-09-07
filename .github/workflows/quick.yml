@@ -208,7 +208,6 @@ jobs:
         run: |
           cd frontend
           npm ci
-          npm run verify:component-kit-api
           npm run lint
           npm run i18n:check
           npm run check
@@ -231,6 +230,11 @@ jobs:
         if: needs.classify.outputs.frontend == 'true'
         working-directory: frontend
         run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
+
+      - name: Verify portable component-kit package
+        if: needs.classify.outputs.frontend == 'true'
+        working-directory: frontend
+        run: npm run verify:component-kit-api
 
       - name: Frontend i18n visual smoke (RP-ML-006)
         id: i18n-visual

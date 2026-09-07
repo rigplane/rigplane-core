@@ -208,7 +208,14 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
 
         self.assertEqual(quick.count(command), 1)
         self.assertEqual(worker.count(command), 1)
-        self.assertLess(quick.index("npm ci"), quick.index(command))
+        npm_install = quick.index("npm ci")
+        browser_install = quick.index("npx playwright install chromium")
+        system_dependencies = quick.index("npx playwright install-deps chromium")
+        portable_verifier = quick.index(command)
+        self.assertLess(npm_install, browser_install)
+        self.assertLess(browser_install, system_dependencies)
+        self.assertLess(system_dependencies, portable_verifier)
+        self.assertLess(portable_verifier, quick.index("Frontend i18n visual smoke"))
         self.assertLess(worker.index("npm ci"), worker.index(command))
 
     def test_docs_only_routes_match_predicate_and_are_base_controlled(self) -> None:

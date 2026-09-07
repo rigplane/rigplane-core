@@ -2,6 +2,7 @@ import {
   COMPONENT_KIT_API_VERSION,
   type FiniteControlAppearance,
   type FrequencyRenderer,
+  type MeterAppearance,
   type ScalarAppearance,
 } from '../../component-kit-api/src/index';
 import { skins as builtInScalarAppearances } from '../components-v2/controls/value-control/skins';
@@ -10,6 +11,7 @@ export interface ComponentKitSelection {
   readonly scalarAppearance?: string;
   readonly frequencyReadout?: string;
   readonly finiteControlAppearance?: string;
+  readonly meterAppearance?: string;
 }
 
 export interface ComponentKitHostConfig {
@@ -21,26 +23,30 @@ interface ActiveSnapshot {
   readonly scalarAppearances: ReadonlyMap<string, ScalarAppearance>;
   readonly frequencyReadouts: ReadonlyMap<string, FrequencyRenderer>;
   readonly finiteControlAppearances: ReadonlyMap<string, FiniteControlAppearance>;
+  readonly meterAppearances: ReadonlyMap<string, MeterAppearance>;
   readonly selectedScalarAppearance?: string;
   readonly selectedFrequencyReadout?: string;
   readonly selectedFiniteControlAppearance?: string;
+  readonly selectedMeterAppearance?: string;
 }
 
 const EMPTY_SNAPSHOT: ActiveSnapshot = Object.freeze({
   scalarAppearances: new Map(),
   frequencyReadouts: new Map(),
   finiteControlAppearances: new Map(),
+  meterAppearances: new Map(),
 });
 const CONFIG_KEYS = ['kits', 'selection'] as const;
 const SELECTION_KEYS = [
-  'scalarAppearance', 'frequencyReadout', 'finiteControlAppearance',
+  'scalarAppearance', 'frequencyReadout', 'finiteControlAppearance', 'meterAppearance',
 ] as const;
 const KIT_KEYS = [
   'apiVersion', 'id', 'scalarAppearances', 'frequencyReadouts', 'finiteControlAppearances',
-  'designLanguages', 'layouts', 'instrumentGroups', 'presentations',
+  'meterAppearances', 'designLanguages', 'layouts', 'instrumentGroups', 'presentations',
 ] as const;
 const APPEARANCE_KEYS = ['name', 'knob', 'hbar', 'bipolar', 'discrete'] as const;
 const FINITE_APPEARANCE_KEYS = ['action', 'toggle', 'choice'] as const;
+const METER_APPEARANCE_KEYS = ['signal', 'level'] as const;
 const UNSUPPORTED_SECTIONS = [
   'designLanguages', 'layouts', 'instrumentGroups', 'presentations',
 ] as const;
@@ -117,6 +123,21 @@ function copyFiniteAppearance(value: unknown, id: string): FiniteControlAppearan
   return Object.freeze({ ...value }) as unknown as FiniteControlAppearance;
 }
 
+function copyMeterAppearance(value: unknown, id: string): MeterAppearance {
+  if (!isPlainRecord(value)) {
+    throw new ComponentKitActivationError(`Meter appearance "${id}" must be an object.`);
+  }
+  ownDataEntries(value, `Meter appearance "${id}"`, METER_APPEARANCE_KEYS);
+  for (const slot of METER_APPEARANCE_KEYS) {
+    if (typeof value[slot] !== 'function') {
+      throw new ComponentKitActivationError(
+        `Meter appearance "${id}" member "${slot}" must be a component.`,
+      );
+    }
+  }
+  return Object.freeze({ ...value }) as unknown as MeterAppearance;
+}
+
 function readSelection(value: unknown): ComponentKitSelection {
   if (value === undefined) return {};
   if (!isPlainRecord(value)) {
@@ -142,6 +163,8 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
   const frequencyOwners = new Map<string, string>();
   const finiteControlAppearances = new Map<string, FiniteControlAppearance>();
   const finiteAppearanceOwners = new Map<string, string>();
+  const meterAppearances = new Map<string, MeterAppearance>();
+  const meterAppearanceOwners = new Map<string, string>();
   const kitIds = new Set<string>();
 
   for (const value of declarations) {
@@ -223,6 +246,27 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
         finiteAppearanceOwners.set(appearanceId, `component kit "${id}"`);
       }
     }
+
+    if (value.meterAppearances !== undefined) {
+      if (!isPlainRecord(value.meterAppearances)) {
+        throw new ComponentKitActivationError(
+          `Component kit "${id}" meterAppearances must be a record.`,
+        );
+      }
+      for (const [appearanceId, appearance] of ownDataEntries(
+        value.meterAppearances,
+        `Component kit "${id}" meterAppearances`,
+      )) {
+        requireId(appearanceId, `Component kit "${id}" meter appearance`);
+        if (meterAppearanceOwners.has(appearanceId)) {
+          throw new ComponentKitActivationError(
+            `Duplicate meter appearance "${appearanceId}" conflicts with ${meterAppearanceOwners.get(appearanceId)}.`,
+          );
+        }
+        meterAppearances.set(appearanceId, copyMeterAppearance(appearance, appearanceId));
+        meterAppearanceOwners.set(appearanceId, `component kit "${id}"`);
+      }
+    }
   }
 
   const selection = readSelection(selectionValue);
@@ -238,13 +282,21 @@ function prepareSnapshot(declarations: readonly unknown[], selectionValue: unkno
       `Selected finite control appearance "${selection.finiteControlAppearance}" is not registered.`,
     );
   }
+  if (selection.meterAppearance !== undefined
+    && !meterAppearances.has(selection.meterAppearance)) {
+    throw new ComponentKitActivationError(
+      `Selected meter appearance "${selection.meterAppearance}" is not registered.`,
+    );
+  }
   return Object.freeze({
     scalarAppearances,
     frequencyReadouts,
     finiteControlAppearances,
+    meterAppearances,
     selectedScalarAppearance: selection.scalarAppearance,
     selectedFrequencyReadout: selection.frequencyReadout,
     selectedFiniteControlAppearance: selection.finiteControlAppearance,
+    selectedMeterAppearance: selection.meterAppearance,
   });
 }
 
@@ -291,4 +343,10 @@ export function getSelectedFiniteControlAppearance(): FiniteControlAppearance | 
   return snapshot.selectedFiniteControlAppearance === undefined
     ? undefined
     : snapshot.finiteControlAppearances.get(snapshot.selectedFiniteControlAppearance);
+}
+
+export function getSelectedMeterAppearance(): MeterAppearance | undefined {
+  return snapshot.selectedMeterAppearance === undefined
+    ? undefined
+    : snapshot.meterAppearances.get(snapshot.selectedMeterAppearance);
 }
