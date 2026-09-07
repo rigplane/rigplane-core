@@ -2,15 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { fromStore, writable } from 'svelte/store';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import type { Capabilities, VfoScheme } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
-import type { FrequencyRenderer } from '../../../component-kit-api/src/index';
+import type { FrequencyRenderer, MeterAppearance } from '../../../component-kit-api/src/index';
 const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
+const selectedMeter = vi.hoisted(() => ({ current: undefined as MeterAppearance | undefined }));
 vi.mock('../../component-kits/activation', () => ({
   getSelectedFrequencyReadout: () => selectedFrequency.current,
+  getSelectedMeterAppearance: () => selectedMeter.current,
 }));
-import Fixture from './fixtures/ReceiverInstrumentHostFixture.svelte';
+import Fixture, {
+  FIXTURE_LEVEL_SOURCE_SHA256, FIXTURE_SIGNAL_SOURCE_SHA256,
+  FIXTURE_TARBALL_SHA256, fixtureMeterAppearance,
+} from './fixtures/ReceiverInstrumentHostFixture.svelte';
 import AlternateFrequencyReadoutHarness, {
   clearRetainedInteractions, retainedInteractions,
 } from '../../primitives/frequency/__tests__/AlternateFrequencyReadoutHarness.svelte';
@@ -132,12 +138,14 @@ let components: ReturnType<typeof mount>[] = [];
 let motion: MotionHarness;
 beforeEach(() => {
   selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+  selectedMeter.current = undefined;
   clearRetainedInteractions(); motion = installMotionHarness();
   expect(setCapabilities(capabilities())).toBe(true);
 });
 afterEach(() => {
   components.forEach((component) => unmount(component)); components = [];
   document.body.replaceChildren(); selectedFrequency.current = undefined; motion.restore();
+  selectedMeter.current = undefined;
   clearCapabilities();
 });
 function mountFixture(publisher: Publisher, props: Record<string, unknown> = {}): HTMLElement {
@@ -328,6 +336,65 @@ describe('ReceiverInstrumentHost', () => {
     motion.reduced(false); expect(motion.frames).toBe(4);
   });
 
+  it('mounts the real external fixture renderer for MAIN and SUB with honest domains', () => {
+    expect(createHash('sha256').update(readFileSync(
+      'component-kit-api/fixtures/external-kit/src/FixtureSignalMeter.svelte',
+    )).digest('hex')).toBe(FIXTURE_SIGNAL_SOURCE_SHA256);
+    expect(createHash('sha256').update(readFileSync(
+      'component-kit-api/fixtures/external-kit/src/FixtureLevelMeter.svelte',
+    )).digest('hex')).toBe(FIXTURE_LEVEL_SOURCE_SHA256);
+    expect(FIXTURE_TARBALL_SHA256)
+      .toBe('726a85423500204a0ef03c0d84987a54322664560185fd9ebd2c304ec50ddb13');
+    selectedMeter.current = fixtureMeterAppearance;
+    const publisher = new Publisher(publication()); const root = mountFixture(publisher);
+    const meters = () => Array.from(root.querySelectorAll<HTMLElement>('[data-fixture-signal]'));
+    expect(meters()).toHaveLength(2);
+    expect(meters().map((meter) => [meter.dataset.domain, meter.dataset.value]))
+      .toEqual([['engineering:db', '20'], ['engineering:db', '-24']]);
+
+    publisher.emit(publication({ mainS: 53, subS: 54, meterQuality: ['uncalibrated'] })); flushSync();
+    expect(meters().map((meter) => [meter.dataset.domain, meter.dataset.value]))
+      .toEqual([['raw', '53'], ['raw', '54']]);
+    expect(meters().every((meter) => !/dBm|\bS[0-9]/.test(meter.textContent ?? ''))).toBe(true);
+    publisher.emit(publication({ mainS: 41, subS: 42, meterQuality: [] })); flushSync();
+    expect(meters().map((meter) => [meter.dataset.domain, meter.dataset.value, meter.dataset.scale]))
+      .toEqual([['unknown', '41', 'none'], ['unknown', '42', 'none']]);
+    publisher.emit(publication({ meterKnown: false, meterQuality: [] })); flushSync();
+    expect(meters().every((meter) => meter.dataset.value === undefined)).toBe(true);
+  });
+
+  it('preserves dB-relative-to-S9 evidence without inventing geometry or dBm', () => {
+    selectedMeter.current = fixtureMeterAppearance;
+    const noCalibration = { ...capabilities(), meterCalibrations: {} };
+    expect(setCapabilities(noCalibration)).toBe(true);
+    const initial = publication({ mainS: -12 });
+    const publisher = new Publisher({ ...initial, caps: noCalibration });
+    const root = mountFixture(publisher);
+    const meter = root.querySelector<HTMLElement>('[data-fixture-signal]')!;
+    expect([meter.dataset.domain, meter.dataset.value, meter.dataset.scale])
+      .toEqual(['engineering:db', '-12', 'none']);
+    expect(meter.textContent).toContain('−12 dB rel S9');
+    expect(meter.textContent).not.toContain('dBm');
+  });
+
+  it('keeps one motion owner across external-native-external component replacement', () => {
+    selectedMeter.current = fixtureMeterAppearance;
+    const publisher = new Publisher(publication()); const layout = writable('external-a');
+    const live = fromStore(layout);
+    const root = mountFixture(publisher, { get layoutKey() { return live.current; } });
+    expect(root.querySelectorAll('[data-fixture-signal]')).toHaveLength(2);
+    expect(motion.frames).toBe(4);
+
+    selectedMeter.current = undefined; layout.set('native-b'); flushSync();
+    expect(root.querySelectorAll('[data-fixture-signal]')).toHaveLength(0);
+    expect(root.querySelectorAll('[data-meter-frame]')).toHaveLength(2);
+    expect(motion.frames).toBe(4);
+
+    selectedMeter.current = fixtureMeterAppearance; layout.set('external-a-again'); flushSync();
+    expect(root.querySelectorAll('[data-fixture-signal]')).toHaveLength(2);
+    expect(motion.frames).toBe(4);
+  });
+
   it('resets retained MAIN meter history at a real topology boundary', () => {
     const publisher = new Publisher(publication({ mainS: 20, scheme: 'main_sub' }));
     const root = mountFixture(publisher);
@@ -382,6 +449,10 @@ describe('ReceiverInstrumentHost', () => {
   });
 
   it('requires the synchronous publisher and owns no fallback clocks or continuity comparison', () => {
+    const addedSources = [
+      'src/semantic/meter-renderer-view.ts',
+      'src/component-kits/MeterRendererSeat.svelte',
+    ].map((file) => readFileSync(file, 'utf8')).join('\n');
     const source = readFileSync('src/semantic/ReceiverInstrumentHost.svelte', 'utf8');
     expect(source).toMatch(/subscribeControlAuthority: SubscribeReceiverAuthority/);
     expect(source).not.toMatch(/subscribeControlAuthority\?|requestAnimationFrame|setInterval|setTimeout|Date\.now/);
@@ -389,5 +460,10 @@ describe('ReceiverInstrumentHost', () => {
     expect(source).toContain('projectSignalMeter(value, meter?.domain)');
     expect(source).not.toMatch(/LinearSMeter/);
     expect(source).not.toMatch(/providerGeneration === .*source|controlSessionEpoch ===/);
+    expect(`${source}\n${addedSources}`)
+      .not.toMatch(/requestAnimationFrame|setInterval|setTimeout|Date\.now/);
+    expect(addedSources).not.toMatch(
+      /calibrat|normaliz|MeterSourceIdentity|MeterContinuitySession|FrequencyInstrumentBinding/i,
+    );
   });
 });

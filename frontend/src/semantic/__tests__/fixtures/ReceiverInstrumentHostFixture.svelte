@@ -1,3 +1,21 @@
+<script module lang="ts">
+  import type { MeterAppearance } from '../../../../component-kit-api/src/index';
+  import FixtureLevelMeter from '../../../../component-kit-api/fixtures/external-kit/src/FixtureLevelMeter.svelte';
+  import FixtureSignalMeter from '../../../../component-kit-api/fixtures/external-kit/src/FixtureSignalMeter.svelte';
+
+  export const FIXTURE_SIGNAL_SOURCE_SHA256 =
+    '6a1ce5577294415d033d6c45edf88a2e2c30f1ab5f81baf2678614616dcffca8';
+  export const FIXTURE_LEVEL_SOURCE_SHA256 =
+    'e6f909e12cb8b0bcb1adccde853ce47d8fbb4813805bd6cf73490a367f569ecc';
+  export const FIXTURE_TARBALL_SHA256 =
+    '726a85423500204a0ef03c0d84987a54322664560185fd9ebd2c304ec50ddb13';
+
+  export const fixtureMeterAppearance = {
+    signal: FixtureSignalMeter,
+    level: FixtureLevelMeter,
+  } satisfies MeterAppearance;
+</script>
+
 <script lang="ts">
   import ReceiverInstrumentHost, {
     type ReceiverInstrumentHandles,

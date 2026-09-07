@@ -54,6 +54,7 @@ vi.mock('$lib/transport/ws-client', () => ({ sendCommand: vi.fn() }));
 vi.mock('../../../component-kits/activation', () => ({
   getSelectedFiniteControlAppearance: () => h.selectedFiniteAppearance,
   getSelectedFrequencyReadout: () => undefined,
+  getSelectedMeterAppearance: () => undefined,
   getSelectedScalarAppearance: () => undefined,
 }));
 vi.mock('$lib/runtime/commands/radio-intents', async () => {

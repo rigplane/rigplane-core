@@ -23,6 +23,7 @@
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { t } from '$lib/i18n';
   import FrequencyRendererSeat from '../primitives/frequency/FrequencyRendererSeat.svelte';
+  import MeterRendererSeat from '../component-kits/MeterRendererSeat.svelte';
   import {
     createFrequencyInstrumentBinding,
     type FrequencyInstrumentBinding,
@@ -33,7 +34,9 @@
     type SignalMeterMotionInput,
   } from '../components-v2/meters/signal-meter-motion.svelte';
   import { projectSignalMeter } from '../components-v2/meters/smeter-scale';
-  import type { RadioViewModel, ReceiverId, VfoViewModel } from './radio-view-model';
+  import type {
+    MeterReading, RadioViewModel, ReceiverId, ReceiverSMeterField, VfoViewModel,
+  } from './radio-view-model';
 
   type ReceiverAuthorityPublication = Readonly<{
     state: ServerState | null; caps: Capabilities | null;
@@ -88,6 +91,13 @@
 
   const safeGeneration = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+  const UNKNOWN_METER_READING = Object.freeze({ status: 'unknown' }) satisfies MeterReading;
+
+  function receiverMeter(
+    model: RadioViewModel | null, receiver: ReceiverId,
+  ): ReceiverSMeterField | undefined {
+    return model?.receiverIndicators?.find((item) => item.receiver === receiver)?.sMeter;
+  }
 
   function activeRecord(model: RadioViewModel | null, receiver: ReceiverId): VfoViewModel | null {
     const records = model?.vfos.filter((record) => record.receiver === receiver && record.isActiveSlot) ?? [];
@@ -322,13 +332,17 @@
 
 {#snippet mainSMeter(renderer: ReceiverSMeterRenderer)}
   {#if mainOwner !== null}
-    {@render renderer(mainOwner.motion.frame)}
+    {@const meter = receiverMeter(mainOwner.model, 'MAIN')}
+    <MeterRendererSeat frame={mainOwner.motion.frame}
+      reading={meter?.reading ?? UNKNOWN_METER_READING} domain={meter?.domain} fallback={renderer} />
   {/if}
 {/snippet}
 
 {#snippet subSMeter(renderer: ReceiverSMeterRenderer)}
   {#if subOwner !== null}
-    {@render renderer(subOwner.motion.frame)}
+    {@const meter = receiverMeter(subOwner.model, 'SUB')}
+    <MeterRendererSeat frame={subOwner.motion.frame}
+      reading={meter?.reading ?? UNKNOWN_METER_READING} domain={meter?.domain} fallback={renderer} />
   {/if}
 {/snippet}
 
