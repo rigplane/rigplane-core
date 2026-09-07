@@ -59,11 +59,16 @@ export type ChoiceRendererProps<T extends FiniteChoiceValue = FiniteChoiceValue>
   HostChoiceRendererProps<T>;
 export type FiniteControlAppearance = HostFiniteControlAppearance<FiniteChoiceValue>;
 
+/**
+ * Signal `engineering/db` values are dB relative to S9, never dBm.
+ * `raw` and `unknown` do not authorize an engineering unit label.
+ */
 export type MeterDisplayDomain =
   | Readonly<{ kind: 'engineering'; unit: 'db' | 'normalized' | 'w' | 'ratio' | 'v' | 'a' }>
   | Readonly<{ kind: 'raw' }>
   | Readonly<{ kind: 'unknown' }>;
 
+/** Stale evidence may retain its numeric value while live projected geometry is unavailable. */
 export type MeterNumericEvidence =
   | Readonly<{
     state: 'current' | 'stale';

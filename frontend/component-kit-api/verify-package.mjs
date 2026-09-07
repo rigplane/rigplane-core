@@ -424,15 +424,30 @@ mount(App, { target: document.querySelector('#app')! });
       displayText: '1.5', stateText: '', accessibleDescription: 'SWR: Current observation. 1.5',
       gauge: true, fault: false, peakEnabled: false, ratioScale: true,
     },
+    {
+      kind: 'level', key: 'swr', label: 'SWR',
+      evidence: { state: 'current', value: 120, domain: { kind: 'raw' } },
+      relevant: true, observed: true, displayedFraction: 0.47, peakFraction: null,
+      displayText: '120 raw', stateText: '', accessibleDescription: 'SWR: 120 raw',
+      gauge: true, fault: false, peakEnabled: false, ratioScale: false,
+    },
   ];
-  const counter = globalThis as typeof globalThis & { __resetCount: number };
+  const counter = globalThis as typeof globalThis & {
+    __resetCount: number;
+    __disposeReset: () => void;
+    __invokeReset: () => void;
+  };
+  let resetActive = $state(true);
   counter.__resetCount = 0;
   const resetPeak: ActionRendererLease = {
-    get active() { return true; },
-    get view() { return { label: 'Reset peak', available: true }; },
-    invoke() { counter.__resetCount += 1; },
-    dispose() {},
+    get active() { return resetActive; },
+    get view() { return resetActive ? { label: 'Reset peak', available: true } : undefined; },
+    invoke() { if (resetActive) counter.__resetCount += 1; },
+    dispose() { resetActive = false; },
   };
+  const retainedResetInvoke = resetPeak.invoke.bind(resetPeak);
+  counter.__disposeReset = () => resetPeak.dispose();
+  counter.__invokeReset = retainedResetInvoke;
 </script>
 
 {#each signals as view}<Signal {view} />{/each}
@@ -455,11 +470,21 @@ mount(App, { target: document.querySelector('#app')! });
       const page = await browser.newPage();
       const pageErrors = [];
       page.on('pageerror', (error) => pageErrors.push(error));
+      await page.addInitScript(() => {
+        globalThis.__fixtureTimerCalls = [];
+        for (const name of ['setTimeout', 'setInterval', 'requestAnimationFrame']) {
+          const original = globalThis[name];
+          globalThis[name] = (...args) => {
+            globalThis.__fixtureTimerCalls.push(name);
+            return Reflect.apply(original, globalThis, args);
+          };
+        }
+      });
       await page.goto(origin, { waitUntil: 'networkidle' });
       const signals = page.locator('[data-fixture-signal]');
       const levels = page.locator('[data-fixture-level]');
       assert.equal(await signals.count(), 5);
-      assert.equal(await levels.count(), 6);
+      assert.equal(await levels.count(), 7);
       assert.equal(await signals.nth(0).getAttribute('data-domain'), 'engineering:db');
       assert.equal(await signals.nth(0).getAttribute('data-tick-kinds'), 'major,mid,minor');
       assert.equal(await signals.nth(1).getAttribute('data-scale'), 'none');
@@ -471,9 +496,19 @@ mount(App, { target: document.querySelector('#app')! });
       assert.equal(await page.locator('[data-fixture-level="alc"]').getAttribute('data-state'), 'stale');
       assert.equal(await page.locator('[data-fixture-level="alc"]').getAttribute('data-value'), '0.2');
       assert.equal(await page.locator('[data-fixture-level="drainCurrent"]').getAttribute('data-value'), null);
-      assert.equal(await page.locator('[data-fixture-level="swr"]').getAttribute('data-ratio-scale'), 'true');
+      assert.deepEqual(
+        await page.locator('[data-fixture-level="swr"]').evaluateAll((nodes) =>
+          nodes.map((node) => node.getAttribute('data-ratio-scale'))),
+        ['true', 'false'],
+      );
+      assert.equal(await page.getByRole('button', { name: 'Reset peak' }).count(), 1);
       await page.getByRole('button', { name: 'Reset peak' }).click();
       assert.equal(await page.evaluate(() => globalThis.__resetCount), 1);
+      await page.evaluate(() => globalThis.__disposeReset());
+      await page.evaluate(() => globalThis.__invokeReset());
+      assert.equal(await page.evaluate(() => globalThis.__resetCount), 1);
+      assert.equal(await page.getByRole('button', { name: 'Reset peak' }).count(), 0);
+      assert.deepEqual(await page.evaluate(() => globalThis.__fixtureTimerCalls), []);
       assert.deepEqual(pageErrors, []);
     } finally {
       await browser.close();

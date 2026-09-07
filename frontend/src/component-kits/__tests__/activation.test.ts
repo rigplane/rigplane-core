@@ -138,7 +138,7 @@ describe('component-kit activation transaction', () => {
     await activation.activateComponentKits(config([
       kit('copy-meter-kit', { meterAppearances: meters }),
     ], { meterAppearance: 'selected' }));
-    selectedAppearance.level = signalMeterRenderer as MeterAppearance['level'];
+    selectedAppearance.level = (() => ({})) as unknown as MeterAppearance['level'];
     delete meters.selected;
 
     expect(activation.getSelectedMeterAppearance()?.level).toBe(levelMeterRenderer);
