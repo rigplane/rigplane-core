@@ -69,6 +69,7 @@
   } from '../../semantic/RfFrontEndSurface.svelte';
   import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
+  import RxAudioInstrumentHost from '../../semantic/RxAudioInstrumentHost.svelte';
   import RxTxSurface from '../../semantic/RxTxSurface.svelte';
   import ScopeDisplaySurface from '../../semantic/ScopeDisplaySurface.svelte';
   import ReceiverInstrumentHost, {
@@ -506,6 +507,13 @@
       toRadioViewModel(runtime.state, runtime.caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
     ),
   );
+  let rxAudioInstrumentPresentation = $derived({
+    state: runtime.state,
+    caps: runtime.caps,
+    session: runtime.controlSession,
+    rxAudioTarget: { muted: runtime.audio.muted, rxEnabled: runtime.audio.rxEnabled },
+    rxAudio: canonicalView?.rxAudio,
+  });
 
   type ScopeFiniteAuthority = Readonly<{
     sessionEpoch: number;
@@ -968,6 +976,12 @@
     vfoOperations={receiverVfoOperations}
   >
   {#snippet children(receiverInstruments)}
+  <RxAudioInstrumentHost
+    presentation={rxAudioInstrumentPresentation}
+    subscribeControlAuthority={runtime.subscribeControlAuthority}
+    onAfLevelChange={rxAudioIntents.onAfLevelChange}
+  >
+  {#snippet children(rxAudioInstruments)}
   {#if readonlyDisplay}
     {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
   {:else}
@@ -1260,15 +1274,16 @@
     under `sdr-test`/`mobile`/`lcd-*`, which declare no such zone. The cockpit
     has made no such decision either, so it still renders nothing there.
 
-    It takes NO authority snapshot: nothing here is TX truth. The intents are
-    the shipped command bus, wired above.
+    The surface takes no authority snapshot. Its persistent Host above this
+    replaceable body consumes the synchronous control publication only to
+    fence AF target changes; the grouped surface receives the named handle.
+    The remaining intents are the shipped command bus, wired above.
   -->
   {#snippet rxAudioSurface()}
     {#if view?.rxAudio}
       <RxAudioSurface
-        {view}
+        {view} handles={rxAudioInstruments}
         onMonitorMode={(mode) => rxAudioIntents.onMonitorModeChange(mode)}
-        onAfLevel={(level) => rxAudioIntents.onAfLevelChange(level)}
         onRoutingFocus={(focus) => routingIntents.onFocusChange(focus)}
         onRoutingSplit={(split) => routingIntents.onSplitStereoChange(split)}
         onSetModInputLan={setModInputLan}
@@ -1656,6 +1671,7 @@
       txAuxControls: hostedTxAux,
       txAuxScalars,
       receiverInstruments,
+      rxAudioInstruments,
       meters: hostedMeters,
       rxAudio: hostedRxAudio,
       rfFrontEnd: hostedRfFrontEnd,
@@ -1836,6 +1852,8 @@
   {/snippet}
   </TxAuxScalarHost>
   {/if}
+  {/snippet}
+  </RxAudioInstrumentHost>
   {/snippet}
   </ReceiverInstrumentHost>
 </div>

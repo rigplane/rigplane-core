@@ -90,7 +90,7 @@ import type { RxAudioAuthorityPublication } from '../../../../semantic/rx-audio-
 
 let mounted: ReturnType<typeof mount>[] = [];
 
-function render<P extends Record<string, unknown>>(component: Component<P>, props: P): void {
+function render<P extends object>(component: Component<P>, props: P): void {
   const target = document.createElement('div');
   document.body.appendChild(target);
   mounted.push(mount(component, { target, props }));
