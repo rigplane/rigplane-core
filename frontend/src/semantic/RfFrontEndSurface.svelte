@@ -35,13 +35,14 @@
 
 <script lang="ts">
   import type { RadioViewModel } from './radio-view-model';
-  import type { RfFrontEndLevelHandles } from './rf-front-end-instruments';
+  import type { RfFrontEndFiniteLayout, RfFrontEndLevelHandles } from './rf-front-end-instruments';
 
   interface Props {
     view: RadioViewModel;
     levelHandles: RfFrontEndLevelHandles;
+    finiteLayout?: RfFrontEndFiniteLayout;
   }
-  let { view, levelHandles }: Props = $props();
+  let { view, levelHandles, finiteLayout }: Props = $props();
 
   let rf = $derived(view.rfFrontEnd);
 </script>
@@ -55,10 +56,14 @@
       {#if rf.squelch.availability.structural}{@render levelHandles.squelch()}{/if}
     {/if}
 
-    {@render levelHandles.preamp()}
-    {@render levelHandles.attenuator()}
-    {@render levelHandles.digiSel()}
-    {@render levelHandles.ipPlus()}
+    {#if finiteLayout}
+      {@render finiteLayout(levelHandles)}
+    {:else}
+      {@render levelHandles.preamp()}
+      {@render levelHandles.attenuator()}
+      {@render levelHandles.digiSel()}
+      {@render levelHandles.ipPlus()}
+    {/if}
   </section>
 {/if}
 

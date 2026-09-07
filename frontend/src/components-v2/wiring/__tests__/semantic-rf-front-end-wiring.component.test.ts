@@ -361,6 +361,25 @@ function renderHosted() {
   return props;
 }
 
+/**
+ * MOR-2425 RF-B (cycle 2): the REAL per-skin `SURFACE_PLAN_CONTEXT_KEY`
+ * override (mirrors `semantic-dsp-wiring.component.test.ts`'s own
+ * `renderHosted()` recipe), through the actual `RadioLayout.svelte` — the
+ * only mount that places the four finite handles differently by skin
+ * (named Standard seats on `desktop-v2`, the grouped surface on `sdr-test`).
+ */
+function renderHostedFace(skinId: 'desktop-v2' | 'sdr-test' = 'desktop-v2') {
+  target = document.createElement('div');
+  document.body.appendChild(target);
+  const props = proxy({ skinId });
+  const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
+    resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
+      readWorkspace({ version: 1 }).workspace)]]);
+  component = mount(HostedRadioLayoutFixture, { target, props, context });
+  flushSync();
+  return props;
+}
+
 const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
 const el = (id: string) => q<HTMLElement>(`[data-testid="rf-front-end-${id}"]`);
 interface LevelDriver {
@@ -602,24 +621,45 @@ describe('every rfFrontEnd intent reaches its own command-bus handler, none cros
 /**
  * MOR-2425 RF-B. Each of the four finite controls has exactly ONE owner
  * (`RfFrontEndInstrumentHost`) and must render exactly once in the composed
- * tree — a double owner (grouped surface AND a hypothetical named seat both
- * rendering the same field) would show two `[data-testid]` matches here.
+ * tree — a double owner (grouped surface AND a named seat both rendering the
+ * same field) would show two `[data-testid]` matches here.
  *
- * NOTE: this only proves "exactly once" for the single composition RadioLayout
- * currently offers RF-front-end. Placing four NAMED Standard seats beside the
- * RF/SQL scalar seats (`RadioLayout.svelte`'s `desktop-v2` branch) needs a
- * `finiteLayout` argument on `InstrumentComposition['rfFrontEnd']`, which is
- * off-lease for this change (`instrument-composition.ts` must not change per
- * the dispatch); that placement is therefore NOT implemented, and there is no
- * second (Standard-seat) layout shape here to prove "exactly once" against —
- * only the one shape SDR/generic already had.
+ * Cycle 2 landed the second layout shape this NOTE previously said did not
+ * exist: `RadioLayout.svelte`'s `desktop-v2` branch now places the four in
+ * NAMED Standard seats (`rfFrontEndFiniteLayout`, `.rf-front-end-finite-seat`)
+ * instead of the grouped surface's own default order. `sdr-test` still gets
+ * the grouped shape unchanged. Both are proven "exactly once" below, through
+ * the real `RadioLayout.svelte` (`renderHostedFace`) rather than the bare
+ * `SemanticRadioSurfaces` mount `render()` uses for the first case.
  */
 describe('each finite control has exactly one owner in the composed tree', () => {
-  it('renders preamp, attenuator, DIGI-SEL and IP+ exactly once', () => {
+  it('renders preamp, attenuator, DIGI-SEL and IP+ exactly once (bare SemanticRadioSurfaces mount)', () => {
     render();
     for (const id of ['preamp', 'attenuator', 'digiSel', 'ipPlus']) {
       expect(target.querySelectorAll(`[data-testid="rf-front-end-${id}"]`)).toHaveLength(1);
     }
+  });
+
+  it.each(['desktop-v2', 'sdr-test'] as const)(
+    'renders preamp, attenuator, DIGI-SEL and IP+ exactly once on %s',
+    (skinId) => {
+      renderHostedFace(skinId);
+      for (const id of ['preamp', 'attenuator', 'digiSel', 'ipPlus']) {
+        expect(target.querySelectorAll(`[data-testid="rf-front-end-${id}"]`)).toHaveLength(1);
+      }
+    },
+  );
+
+  it('places the four in the NAMED Standard seat grid on desktop-v2', () => {
+    renderHostedFace('desktop-v2');
+    const seats = [...target.querySelectorAll<HTMLElement>('.rf-front-end-finite-seat')]
+      .map((seat) => seat.dataset.field);
+    expect(seats).toEqual(['preamp', 'attenuator', 'digiSel', 'ipPlus']);
+  });
+
+  it('has no Standard seat grid on sdr-test — the grouped surface owns placement there', () => {
+    renderHostedFace('sdr-test');
+    expect(target.querySelectorAll('.rf-front-end-finite-seat')).toHaveLength(0);
   });
 });
 
@@ -1056,51 +1096,46 @@ describe('desktop-v2 declares a REAL rf-front-end zone (MOR-1366, S7)', () => {
  * `SurfacePlan` genuinely changes between `desktop-v2` and `sdr-test` — not
  * merely a `skinId` string flip with no consequence.
  *
- * Both layouts declare the SAME `rf-front-end` zone id
- * (`desktop-declarations.ts`/`declarations.ts`'s `sdrTestLayout`), and
- * `RadioLayout.svelte`'s `rfFrontEnd` composition call takes no
- * `finiteLayout` argument — placing four NAMED Standard seats beside the
- * RF/SQL scalar seats would need one, and `instrument-composition.ts` is
- * off-lease for this change, so that placement is NOT implemented (see the
- * "exactly one owner" describe above). The grouped surface therefore renders
- * IDENTICALLY for both skins today, and the switch below exercises the
- * `SemanticRadioSurfaces`-owned host/authority machinery — never torn down
- * just because the resolved plan changed — rather than a seat relocation.
- * There is consequently no "detached pre-switch callback" to prove inert:
- * nothing detaches under the current (unrelocated) composition, so this
- * witness stops at the three parts that DO apply here.
+ * Cycle 2 gave `RadioLayout.svelte`'s `rfFrontEnd` composition call a real
+ * `finiteLayout` argument: `desktop-v2` now places the four in NAMED
+ * Standard seats (`rfFrontEndFiniteLayout`) while `sdr-test` keeps the
+ * grouped surface's own order. Measured empirically (this test failing
+ * against the pre-cycle-2 assertion, then passing against this one — see the
+ * PR's mutation record): the switch moves the attenuator's rendered seat to
+ * a DIFFERENT `{#if finiteLayout}` branch of `RfFrontEndSurface.svelte`, so
+ * its retained external-renderer invocation is REBUILT, not the same
+ * function — the exact shape `semantic-dsp-wiring.component.test.ts`'s own
+ * "moves one hosted set from named Standard seats to grouped SDR without
+ * replacing its host" proves for DSP's NR/NB/notch/AGC handles. The witness
+ * below proves the same three things in the same order: the stale pre-switch
+ * invocation is detached (i), a fresh current one still commands (ii), and
+ * the confirmed display reading is unaffected by the switch itself (iii).
  */
 describe('persistent RF front-end composition across a real Standard->SDR plan switch (MOR-2425 RF-B)', () => {
-  function renderHostedFace() {
-    target = document.createElement('div');
-    document.body.appendChild(target);
-    const props = proxy({ skinId: 'desktop-v2' as 'desktop-v2' | 'sdr-test' });
-    const context = new Map<unknown, unknown>([[SURFACE_PLAN_CONTEXT_KEY, () =>
-      resolveSurfacePlan(props.skinId === 'desktop-v2' ? desktopV2Layout : sdrTestLayout,
-        readWorkspace({ version: 1 }).workspace)]]);
-    component = mount(HostedRadioLayoutFixture, { target, props, context });
-    flushSync();
-    return props;
-  }
-
-  it('keeps the attenuator seat, its command and its display live across the switch', () => {
+  it('detaches the pre-switch attenuator invocation and keeps the new one live', () => {
     h.selectedFiniteAppearance = finiteAppearance;
-    const props = renderHostedFace();
-    const before = retainedInvocations.get('Attenuator');
-    expect(before).toBeDefined();
+    const props = renderHostedFace('desktop-v2');
+    const staleStandardAttenuator = retainedInvocations.get('Attenuator');
+    expect(staleStandardAttenuator).toBeDefined();
+    expect(target.querySelectorAll('.rf-front-end-finite-seat[data-field="attenuator"]')).toHaveLength(1);
     const externalAttenuator = () => target.querySelector<HTMLElement>('[data-testid="external-Attenuator"]');
     const beforeReading = externalAttenuator()!.dataset.reading;
 
     props.skinId = 'sdr-test';
     flushSync();
+    expect(target.querySelectorAll('.rf-front-end-finite-seat')).toHaveLength(0);
 
-    // (i) Identity: the SAME retained seat/renderer, not rebuilt by the switch.
-    const after = retainedInvocations.get('Attenuator');
-    expect(after).toBe(before);
+    // (i) The stale pre-switch invocation is DETACHED: its named Standard
+    // seat was torn down when the layout moved to the grouped surface.
+    staleStandardAttenuator!(18);
+    expect(h.att).not.toHaveBeenCalled();
 
-    // (ii) Admission: the CURRENT (retained) invocation still sends exactly
-    // one command with the expected value.
-    after!(18);
+    // (ii) A fresh, CURRENT invocation exists for the new (grouped)
+    // placement and commands normally.
+    const currentSdrAttenuator = retainedInvocations.get('Attenuator');
+    expect(currentSdrAttenuator).toBeDefined();
+    expect(currentSdrAttenuator).not.toBe(staleStandardAttenuator);
+    currentSdrAttenuator!(18);
     flushSync();
     expect(h.att).toHaveBeenCalledExactlyOnceWith(18);
 

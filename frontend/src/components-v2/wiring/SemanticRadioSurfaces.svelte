@@ -93,6 +93,7 @@
     type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
   import RfFrontEndInstrumentHost from '../../semantic/RfFrontEndInstrumentHost.svelte';
+  import type { RfFrontEndFiniteLayout } from '../../semantic/rf-front-end-instruments';
   import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
   import RitXitScanInstrumentHost from '../../semantic/RitXitScanInstrumentHost.svelte';
   import RxAudioSurface from '../../semantic/RxAudioSurface.svelte';
@@ -1975,9 +1976,9 @@
     the surface the moment a rework slice declares a zone for it there, same
     as `rxAudio` left it — it still renders nothing there today.
   -->
-  {#snippet rfFrontEndSurface()}
+  {#snippet rfFrontEndSurface(finiteLayout?: RfFrontEndFiniteLayout)}
     {#if view?.rfFrontEnd}
-      <RfFrontEndSurface {view} levelHandles={rfFrontEndInstruments} />
+      <RfFrontEndSurface {view} levelHandles={rfFrontEndInstruments} {finiteLayout} />
     {/if}
   {/snippet}
 
@@ -2175,8 +2176,11 @@
   {#snippet hostedRxAudio(allowBare = allowBareSurfaces)}
     {@render zoned('rxAudio', view?.rxAudio !== undefined, rxAudioSurface, allowBare)}
   {/snippet}
-  {#snippet hostedRfFrontEnd(allowBare = allowBareSurfaces)}
-    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, rfFrontEndSurface, allowBare)}
+  {#snippet hostedRfFrontEnd(
+    allowBare = allowBareSurfaces, finiteLayout?: RfFrontEndFiniteLayout,
+  )}
+    {#snippet body()}{@render rfFrontEndSurface(finiteLayout)}{/snippet}
+    {@render zoned('rfFrontEnd', view?.rfFrontEnd !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedFilter(
     allowBare = allowBareSurfaces, finiteLayout?: FilterFiniteLayout,

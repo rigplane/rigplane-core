@@ -68,3 +68,8 @@ export interface RfFrontEndFiniteHandles {
 export type RfFrontEndLevelHandles =
   | Readonly<{ kind: 'combined'; rfSql: Snippet } & RfFrontEndFiniteHandles>
   | Readonly<{ kind: 'separate'; rfGain: Snippet; squelch: Snippet } & RfFrontEndFiniteHandles>;
+
+/** DSP analogue (`dsp-instruments.ts`'s `DspFiniteLayout`): a layout snippet
+ *  that places the four finite handles wherever the active face wants them,
+ *  in place of `RfFrontEndSurface`'s own default grouping (MOR-2425 RF-B). */
+export type RfFrontEndFiniteLayout = Snippet<[RfFrontEndFiniteHandles]>;

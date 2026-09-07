@@ -32,6 +32,7 @@
   import type { InstrumentComposition } from '../wiring/instrument-composition';
   import type { DspFiniteHandles } from '../../semantic/dsp-instruments';
   import type { DspScalarHandles } from '../../semantic/dsp-scalars';
+  import type { RfFrontEndFiniteHandles } from '../../semantic/rf-front-end-instruments';
   import type { FilterInstrumentHandles } from '../../semantic/filter-instruments';
   import type { BandInstrumentHandles } from '../../semantic/band-instruments';
   import { ANTENNA_BLOCKED_LABEL } from '../../semantic/AntennaInstrumentHost.svelte';
@@ -327,6 +328,15 @@
   </div>
 {/snippet}
 
+{#snippet rfFrontEndFiniteLayout(rfFrontEndInstruments: RfFrontEndFiniteHandles)}
+  <div class="rf-front-end-finite-grid">
+    <div class="rf-front-end-finite-seat" data-field="preamp">{@render rfFrontEndInstruments.preamp()}</div>
+    <div class="rf-front-end-finite-seat" data-field="attenuator">{@render rfFrontEndInstruments.attenuator()}</div>
+    <div class="rf-front-end-finite-seat" data-field="digiSel">{@render rfFrontEndInstruments.digiSel()}</div>
+    <div class="rf-front-end-finite-seat" data-field="ipPlus">{@render rfFrontEndInstruments.ipPlus()}</div>
+  </div>
+{/snippet}
+
 {#snippet dspScalarLayout(dspScalars: DspScalarHandles)}
   <div class="dsp-scalar-grid">
     <div class="dsp-scalar-seat" data-field="nbLevel">{@render dspScalars.nbLevel()}</div>
@@ -422,7 +432,11 @@
       )}
 
       <div class="desktop-controls-left">
-        {@render instruments.rfFrontEnd()}
+        {#if skinId === 'desktop-v2'}
+          {@render instruments.rfFrontEnd(undefined, rfFrontEndFiniteLayout)}
+        {:else}
+          {@render instruments.rfFrontEnd()}
+        {/if}
         {#if skinId === 'desktop-v2'}
           {@render instruments.filter(undefined, filterFiniteLayout)}
         {:else}
@@ -747,6 +761,7 @@
   .desktop-control-face :global([data-zone-id='meters']) { grid-area: 5 / 1 / 6 / -1; }
   .tx-aux-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .rf-front-end-finite-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
   .dsp-scalar-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
