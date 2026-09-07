@@ -90,7 +90,7 @@
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
   import RfFrontEndSurface, {
-    type RfFrontEndLevelField, type RfFrontEndToggleField,
+    type RfFrontEndLevelField,
   } from '../../semantic/RfFrontEndSurface.svelte';
   import RfFrontEndInstrumentHost from '../../semantic/RfFrontEndInstrumentHost.svelte';
   import RitXitScanSurface from '../../semantic/RitXitScanSurface.svelte';
@@ -436,9 +436,6 @@
     rfGain: (value) => rfFrontEndIntents.onRfGainChange(Math.round(value * 255)),
     squelch: (value) => rfFrontEndIntents.onSquelchChange(Math.round(value * 255)),
   };
-  const RF_FRONT_END_TOGGLE_INTENT: Record<RfFrontEndToggleField, (next: boolean) => void> = {
-    digiSel: rfFrontEndIntents.onDigiSelToggle, ipPlus: rfFrontEndIntents.onIpPlusToggle,
-  };
   /**
    * MOR-1308 (vocabulary slice 8B). The shipped RIT/XIT and scan command
    * vocabularies, composed unmodified — the O1 "one register, two gates"
@@ -633,6 +630,14 @@
     topologyId: string;
     activeReceiver: 'MAIN' | 'SUB' | 'unknown';
   }>;
+  /** MOR-2425 RF-B — same shape as `DspFiniteAuthority`: preamp/attenuator/
+   *  DIGI-SEL/IP+ are per-receiver finite fields, same as DSP's. */
+  type RfFrontEndFiniteAuthority = Readonly<{
+    sessionEpoch: number;
+    providerGeneration: number;
+    topologyId: string;
+    activeReceiver: 'MAIN' | 'SUB' | 'unknown';
+  }>;
   type FilterFiniteAuthority = Readonly<{
     sessionEpoch: number;
     providerGeneration: number;
@@ -716,6 +721,26 @@
       || stateGeneration !== capsGeneration) return null;
     const model = toRadioViewModel(state, caps);
     if (model?.dsp === undefined) return null;
+    return Object.freeze({
+      sessionEpoch: session.epoch,
+      providerGeneration: stateGeneration as number,
+      topologyId: model.topologyId,
+      activeReceiver: model.activeReceiver.status === 'known'
+        ? model.activeReceiver.receiver : 'unknown',
+    });
+  }
+  function rfFrontEndFiniteAuthority(
+    state: typeof runtime.state,
+    caps: typeof runtime.caps,
+    session: typeof runtime.controlSession,
+  ): RfFrontEndFiniteAuthority | null {
+    const stateGeneration = state?.providerGeneration;
+    const capsGeneration = caps?.providerGeneration;
+    if (session.state !== 'connected' || !Number.isSafeInteger(session.epoch) || session.epoch < 0
+      || !Number.isSafeInteger(stateGeneration) || stateGeneration! < 0
+      || stateGeneration !== capsGeneration) return null;
+    const model = toRadioViewModel(state, caps);
+    if (model?.rfFrontEnd === undefined) return null;
     return Object.freeze({
       sessionEpoch: session.epoch,
       providerGeneration: stateGeneration as number,
@@ -832,6 +857,16 @@
         && left.topologyId === right.topologyId
         && left.activeReceiver === right.activeReceiver
   );
+  const sameRfFrontEndFiniteAuthority = (
+    left: RfFrontEndFiniteAuthority | null | undefined,
+    right: RfFrontEndFiniteAuthority | null,
+  ): boolean => left !== undefined && (
+    left === null || right === null ? left === right
+      : left.sessionEpoch === right.sessionEpoch
+        && left.providerGeneration === right.providerGeneration
+        && left.topologyId === right.topologyId
+        && left.activeReceiver === right.activeReceiver
+  );
   const sameVfoFiniteAuthority = (
     left: VfoFiniteAuthority | null | undefined,
     right: VfoFiniteAuthority | null,
@@ -877,6 +912,7 @@
   let finiteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let txAuxFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let dspFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
+  let rfFrontEndFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let vfoFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let filterFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
   let bandFiniteRendererContext = $state.raw<FiniteRendererContext | null>(null);
@@ -884,6 +920,7 @@
   let lastScopeFiniteAuthority: ScopeFiniteAuthority | null | undefined;
   let lastTxAuxFiniteAuthority: TxAuxFiniteAuthority | null | undefined;
   let lastDspFiniteAuthority: DspFiniteAuthority | null | undefined;
+  let lastRfFrontEndFiniteAuthority: RfFrontEndFiniteAuthority | null | undefined;
   let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
   let lastFilterFiniteAuthority: FilterFiniteAuthority | null | undefined;
   let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
@@ -907,6 +944,13 @@
       if (!sameDspFiniteAuthority(lastDspFiniteAuthority, nextDsp)) {
         lastDspFiniteAuthority = nextDsp;
         dspFiniteRendererContext = nextDsp === null ? null : createFiniteRendererContext();
+      }
+      const nextRfFrontEnd = rfFrontEndFiniteAuthority(
+        publication.state, publication.caps, publication.session,
+      );
+      if (!sameRfFrontEndFiniteAuthority(lastRfFrontEndFiniteAuthority, nextRfFrontEnd)) {
+        lastRfFrontEndFiniteAuthority = nextRfFrontEnd;
+        rfFrontEndFiniteRendererContext = nextRfFrontEnd === null ? null : createFiniteRendererContext();
       }
       const nextVfo = vfoFiniteAuthority(
         publication.state, publication.caps, publication.session,
@@ -947,6 +991,10 @@
   let dspFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
     ? {} : {
       finiteAppearance: selectedFiniteAppearance, rendererContext: dspFiniteRendererContext,
+    });
+  let rfFrontEndFiniteRendererSelection = $derived(selectedFiniteAppearance === undefined
+    ? {} : {
+      finiteAppearance: selectedFiniteAppearance, rendererContext: rfFrontEndFiniteRendererContext,
     });
   let vfoFiniteRendererSelection = $derived(externalPresentation !== null
     ? {
@@ -1429,6 +1477,12 @@
     presentation={rfFrontEndInstrumentPresentation}
     subscribeControlAuthority={(handler) => runtime.subscribeControlAuthority(handler)}
     onLevelChange={(field, value) => RF_FRONT_END_LEVEL_INTENT[field](value)}
+    {pendingPreamp}
+    onPreChange={(level) => rfFrontEndIntents.onPreChange(level)}
+    onAttChange={(db) => rfFrontEndIntents.onAttChange(db)}
+    onDigiSelToggle={rfFrontEndIntents.onDigiSelToggle}
+    onIpPlusToggle={rfFrontEndIntents.onIpPlusToggle}
+    {...rfFrontEndFiniteRendererSelection}
   >
   {#snippet children(rfFrontEndInstruments)}
   {#snippet vfoInstrumentComposition(vfoOperations: VfoOperationHandles)}
@@ -1921,14 +1975,7 @@
   -->
   {#snippet rfFrontEndSurface()}
     {#if view?.rfFrontEnd}
-      <RfFrontEndSurface
-        {view}
-        levelHandles={rfFrontEndInstruments}
-        {pendingPreamp}
-        onPreampChange={(level) => rfFrontEndIntents.onPreChange(level)}
-        onAttenuatorChange={(db) => rfFrontEndIntents.onAttChange(db)}
-        onToggle={(field, next) => RF_FRONT_END_TOGGLE_INTENT[field](next)}
-      />
+      <RfFrontEndSurface {view} levelHandles={rfFrontEndInstruments} />
     {/if}
   {/snippet}
 

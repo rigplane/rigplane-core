@@ -64,6 +64,7 @@
   } satisfies VfoOperationHandles;
   const rfFrontEndInstruments = {
     kind: 'separate', rfGain: empty, squelch: empty,
+    preamp: empty, attenuator: empty, digiSel: empty, ipPlus: empty,
   } as const;
   const scalars = {
     rfPower: empty, micGain: empty, driveGain: empty, voxGain: empty,
