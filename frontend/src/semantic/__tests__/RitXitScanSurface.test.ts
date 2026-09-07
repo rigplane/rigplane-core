@@ -17,8 +17,11 @@
  */
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount } from 'svelte';
-import { OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, UNKNOWN_TEXT } from '../RitXitScanSurface.svelte';
+import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
+import RitXitScanSurface, {
+  DF_SPANS, OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, RESUME_MODES, SCAN_TYPES, UNKNOWN_TEXT,
+} from '../RitXitScanSurface.svelte';
+import type { RitXitScanInstrumentHandles } from '../RitXitScanInstrumentHost.svelte';
 import RitXitScanInstrumentHostFixture from './fixtures/RitXitScanInstrumentHostFixture.svelte';
 import { topologyFixtures, withRitXit, withScan } from '../fixtures/topologies';
 import type {
@@ -77,13 +80,47 @@ function render(view: RadioViewModel, handlers: Handlers = {}) {
 /** MOR-1304 F3 recipe: bypasses jsdom's disabled-button `.click()` no-op. */
 const bypassClick = (el: HTMLElement) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
+/**
+ * MOR-2425 restore — the TYPE/SPAN/RESUME groups live entirely in the SCAN
+ * row, which never renders `handles` (that only happens inside `{#if rx}`).
+ * Mounting `RitXitScanSurface` directly with a stub `handles` (never invoked
+ * for a scan-only view) avoids widening `RitXitScanInstrumentHostFixture`'s
+ * fixed prop list for props only these tests need.
+ */
+const stubHandles: RitXitScanInstrumentHandles = {
+  rit: createRawSnippet(() => ({ render: () => '<span></span>' })),
+  xit: createRawSnippet(() => ({ render: () => '<span></span>' })),
+  clear: createRawSnippet(() => ({ render: () => '<span></span>' })),
+};
+type ScanHandlers = {
+  onScanStart?: (type: number) => void;
+  onScanStop?: () => void;
+  onDfSpanChange?: (span: number) => void;
+  onResumeModeChange?: (mode: number) => void;
+  scanCapable?: boolean;
+};
+function renderScan(view: RadioViewModel, handlers: ScanHandlers = {}) {
+  const component = mount(RitXitScanSurface, {
+    target, props: { view, handles: stubHandles, ...handlers },
+  });
+  flushSync();
+  const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
+  return {
+    dispose: () => unmount(component),
+    el: (id: string) => q<HTMLElement>(`[data-testid="${id}"]`),
+    all: (id: string) => target.querySelectorAll(`[data-testid="${id}"]`),
+  };
+}
+
 describe('current-input action bindings', () => {
-  it('uses toggles for RIT, XIT and scan, plus an action for the resume cycle', () => {
+  // MOR-2425 restore: the single-action resume CYCLE is gone (superseded by
+  // four explicit literal-value buttons below), so this no longer pins a
+  // `bindActionInstrument` action — only the toggles remain.
+  it('uses toggles for RIT, XIT and scan', () => {
     expect(SOURCE).toContain('bindToggleInstrument');
     expect(HOST_SOURCE).toContain('const ritToggle = bindToggleInstrument');
     expect(HOST_SOURCE).toContain('const xitToggle = bindToggleInstrument');
     expect(SOURCE).toContain('const scanToggle = bindToggleInstrument');
-    expect(SOURCE).toContain('const resumeCycle = bindActionInstrument');
   });
 
   it('keeps RIT and XIT callbacks as zero-argument intents', () => {
@@ -463,7 +500,13 @@ describe('scan start/stop: guarded on a KNOWN scanning state only (MOR-1495 revi
     r.dispose();
   });
 
-  it('starts with the surface\'s own default type (PROG, 0x01) via a normal click, from a cold start where scanType has never been reported', () => {
+  // MOR-2425 restore supersedes this title's OLD framing ("always starts
+  // with PROG regardless of the last-observed type"): the new contract is
+  // "starts with the surface's own SELECTED type; default still PROG until
+  // a TYPE button changes it" (see the `scan TYPE selection` describe block
+  // below for the selection half). This case never clicks a TYPE button, so
+  // the selection stays at its default and the assertion is unchanged.
+  it('starts with the surface\'s own SELECTED type (default PROG, 0x01) via a normal click, from a cold start where scanType has never been reported', () => {
     const onScanStart = vi.fn();
     const r = render(
       withSc({ scanning: knownScan(false), scanType: unreadScan<number>(OFF_AVAIL) }), { onScanStart },
@@ -474,7 +517,11 @@ describe('scan start/stop: guarded on a KNOWN scanning state only (MOR-1495 revi
     r.dispose();
   });
 
-  it('starts with the local default even when a DIFFERENT type happens to be the last-observed one — type is never read from the observed fact', () => {
+  // MOR-2425 restore supersedes this title's OLD framing too — same
+  // rationale as above: the SELECTED type (not the OBSERVED `scanType`
+  // fact) still decides START's argument; no TYPE button is clicked here,
+  // so the selection is still the default.
+  it('starts with the locally SELECTED type (still the default here) even when a DIFFERENT type happens to be the last-observed one — type is never read from the observed fact', () => {
     const onScanStart = vi.fn();
     const r = render(withSc({ scanning: knownScan(false), scanType: knownScan(0x22) }), { onScanStart });
     r.el('scan-toggle')!.click();
@@ -493,54 +540,135 @@ describe('scan start/stop: guarded on a KNOWN scanning state only (MOR-1495 revi
   });
 });
 
-describe('scan resume mode: a single honest cycle over the raw masked value', () => {
-  it('disables the cycle control while resumeMode is unobserved', () => {
-    const r = render(withSc({ scanResumeMode: unreadScan<number>() }));
-    expect(r.el('scan-resume-cycle')!.hasAttribute('disabled')).toBe(true);
+/**
+ * MOR-2425 restore. `renderScan` mounts `RitXitScanSurface` directly (no
+ * `ritXit` group, so `handles` is never invoked) — the shared fixture-backed
+ * `render()`/`withSc()` above cannot express `scanCapable` or `onDfSpanChange`
+ * without widening `RitXitScanInstrumentHostFixture`'s fixed prop list, which
+ * no other test in this file needs.
+ */
+function coldStart(over: Partial<ScanViewModel> = {}): RadioViewModel {
+  const view = withScan(topologyFixtures['1/single']);
+  return {
+    ...view,
+    scan: {
+      ...view.scan!, scanning: knownScan(false), scanType: unreadScan<number>(OFF_AVAIL), ...over,
+    },
+  };
+}
+const hexId = (value: number) => `0x${value.toString(16).padStart(2, '0')}`;
+const scanTypeCases = SCAN_TYPES.map(([value, label]) => ({ value, label, hex: hexId(value) }));
+const dfSpanCases = DF_SPANS.map(([value, label]) => ({ value, label, hex: hexId(value) }));
+const resumeCases = RESUME_MODES.map(([value, label]) => ({ value, label, hex: hexId(value) }));
+
+describe('scan TYPE selection: six buttons restore v2.11.1, MOR-2425', () => {
+  it('is hidden entirely — not merely disabled — while scanCapable is false', () => {
+    const r = renderScan(coldStart(), { scanCapable: false });
+    expect(r.el('scan-type-group')).toBeNull();
     r.dispose();
   });
 
-  it('refuses to dispatch when the click bypasses disabled', () => {
-    const onResumeModeChange = vi.fn();
-    const r = render(withSc({ scanResumeMode: unreadScan<number>() }), { onResumeModeChange });
-    bypassClick(r.el('scan-resume-cycle')!);
+  it.each(scanTypeCases)(
+    '$label ($hex) dispatches onScanStart with its own byte exactly once, from a cold start where scanType has never been reported',
+    ({ value, hex }) => {
+      const onScanStart = vi.fn();
+      const r = renderScan(coldStart(), { onScanStart, scanCapable: true });
+      r.el(`scan-type-${hex}`)!.click();
+      flushSync();
+      expect(onScanStart).toHaveBeenCalledExactlyOnceWith(value);
+      r.dispose();
+    },
+  );
+
+  it('restarts an ACTIVE scan with the newly selected type — v2.11.1 handleTypeClick fires unconditionally, even mid-scan', () => {
+    const onScanStart = vi.fn();
+    const r = renderScan(coldStart({ scanning: knownScan(true) }), { onScanStart, scanCapable: true });
+    r.el('scan-type-0x22')!.click();
     flushSync();
-    expect(onResumeModeChange).not.toHaveBeenCalled();
+    expect(onScanStart).toHaveBeenCalledExactlyOnceWith(0x22);
     r.dispose();
   });
 
-  it('advances the masked resume value by one, encoded as the full CI-V byte', () => {
-    const onResumeModeChange = vi.fn();
-    const r = render(withSc({ scanResumeMode: knownScan(1) }), { onResumeModeChange });
-    r.el('scan-resume-cycle')!.click();
+  it('a SUBSEQUENT click on scan-toggle START reuses the just-selected type, not the PROG default', () => {
+    const onScanStart = vi.fn();
+    const r = renderScan(coldStart(), { onScanStart, scanCapable: true });
+    r.el('scan-type-0x22')!.click();
+    r.el('scan-toggle')!.click();
     flushSync();
-    expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(0xD2);
+    expect(onScanStart).toHaveBeenNthCalledWith(1, 0x22);
+    expect(onScanStart).toHaveBeenNthCalledWith(2, 0x22);
+    r.dispose();
+  });
+});
+
+describe('ΔF SPAN: seven buttons, visible only for the ΔF type, MOR-2425', () => {
+  it('is absent from the DOM by default (PROG selected, no active ΔF scan)', () => {
+    const r = renderScan(coldStart(), { scanCapable: true });
+    expect(r.el('scan-span-group')).toBeNull();
     r.dispose();
   });
 
-  it('wraps from the last masked value back to 0xD0', () => {
-    const onResumeModeChange = vi.fn();
-    const r = render(withSc({ scanResumeMode: knownScan(3) }), { onResumeModeChange });
-    r.el('scan-resume-cycle')!.click();
-    flushSync();
-    expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(0xD0);
+  it('stays absent while scanCapable is false — the TYPE group that would select ΔF is itself hidden', () => {
+    const r = renderScan(coldStart(), { scanCapable: false });
+    expect(r.el('scan-type-group')).toBeNull();
+    expect(r.el('scan-span-group')).toBeNull();
     r.dispose();
   });
 
-  // F1 (fix round) — the backend validator is `if resume_mode not in
-  // range(0xD0, 0xD4): raise ValueError(...)` (control.py:2283-2289). Every
-  // one of the four masked cycle positions must dispatch a value inside that
-  // accepted range — the assertion whose absence let the masked-only bug ship.
-  it.each([
-    [0, 0xD1], [1, 0xD2], [2, 0xD3], [3, 0xD0],
-  ])('dispatches an accepted-range value (0xD0..0xD3) from masked %i', (masked, expected) => {
-    const onResumeModeChange = vi.fn();
-    const r = render(withSc({ scanResumeMode: knownScan(masked) }), { onResumeModeChange });
-    r.el('scan-resume-cycle')!.click();
-    flushSync();
-    expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(expected);
-    expect(expected).toBeGreaterThanOrEqual(0xD0);
-    expect(expected).toBeLessThanOrEqual(0xD3);
+  it.each(dfSpanCases)(
+    '$label ($hex) dispatches onDfSpanChange with its own byte exactly once, once ΔF is SELECTED — never observed',
+    ({ value, hex }) => {
+      const onDfSpanChange = vi.fn();
+      // Cold start: scanType has never been reported at all (matches the
+      // TYPE describe block's bootstrap case) — only the LOCAL selection
+      // (set by clicking the ΔF type button) may decide SPAN's visibility.
+      const r = renderScan(coldStart(), { onDfSpanChange, scanCapable: true });
+      r.el('scan-type-0x03')!.click();
+      flushSync();
+      r.el(`scan-span-${hex}`)!.click();
+      flushSync();
+      expect(onDfSpanChange).toHaveBeenCalledExactlyOnceWith(value);
+      r.dispose();
+    },
+  );
+
+  it('also shows once an OBSERVED active scan reports ΔF, independent of the local selection', () => {
+    const r = renderScan(
+      coldStart({ scanning: knownScan(true), scanType: knownScan(0x03) }), { scanCapable: true },
+    );
+    expect(r.el('scan-span-group')).not.toBeNull();
     r.dispose();
   });
+});
+
+describe('scan RESUME mode: four explicit literal buttons, MOR-2425 (replacing the cycle)', () => {
+  it('renders only when scanResumeMode is structural', () => {
+    const r = renderScan(coldStart({
+      scanResumeMode: { reading: { status: 'unknown' }, availability: { structural: false, operational: false } },
+    }), { scanCapable: true });
+    expect(r.el('scan-resume-group')).toBeNull();
+    r.dispose();
+  });
+
+  it('is hidden entirely — not merely disabled — while scanCapable is false', () => {
+    const r = renderScan(coldStart(), { scanCapable: false });
+    expect(r.el('scan-resume-group')).toBeNull();
+    r.dispose();
+  });
+
+  // The load-bearing divergence from the old cycle button (which required
+  // `reading.status === 'known'` to compute a next value): v2.11.1's four
+  // explicit buttons carried no such precondition, and this restoration
+  // preserves that — none of the four reads `scanResumeMode.reading` at all.
+  it.each(resumeCases)(
+    '$label ($hex) dispatches onResumeModeChange with its own literal byte exactly once, WHILE scanResumeMode is unobserved',
+    ({ value, hex }) => {
+      const onResumeModeChange = vi.fn();
+      const r = renderScan(coldStart({ scanResumeMode: unreadScan<number>() }), { onResumeModeChange, scanCapable: true });
+      r.el(`scan-resume-${hex}`)!.click();
+      flushSync();
+      expect(onResumeModeChange).toHaveBeenCalledExactlyOnceWith(value);
+      r.dispose();
+    },
+  );
 });

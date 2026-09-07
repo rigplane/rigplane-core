@@ -34,7 +34,7 @@
     InstrumentVfoAppearance,
   } from './instrument-composition';
   import { t } from '$lib/i18n';
-  import { getScopeSource } from '$lib/stores/capabilities.svelte';
+  import { getScopeSource, hasCapability } from '$lib/stores/capabilities.svelte';
   import { presentationResources, runtime } from '$lib/runtime';
   import * as componentKitActivation from '../../component-kits/activation';
   import { ScopeFrameHost, type ScopeFramePresentation } from '$lib/runtime/scope-frame-host';
@@ -445,6 +445,13 @@
    */
   const ritXitIntents = semanticHandlers.ritXit;
   const scanIntents = semanticHandlers.scan;
+  /** MOR-2425 restore — `RitXitScanSurface`'s TYPE/SPAN/RESUME button groups
+   * hide (not merely disable) unless the connected radio declares the
+   * `scan` capability: `makeScanHandlers()` gates every scan intent on it,
+   * but the `scan` view-model group itself is per-field "ever reported"
+   * with no capability check (see that surface's own file header). Same
+   * "caps-echo display metadata" seam as `hasDualReceiver` below. */
+  let scanCapable = $derived(hasCapability('scan'));
   /** MOR-1731: consume the shared validated tri-state boundary. `undefined`
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
@@ -1799,6 +1806,7 @@
         onIfShiftChange={filterIntents.onIfShiftChange}
         onPbtInnerChange={filterIntents.onPbtInnerChange}
         onPbtOuterChange={filterIntents.onPbtOuterChange}
+        onPbtReset={filterIntents.onPbtReset}
       />
     {/if}
   {/snippet}
@@ -1946,12 +1954,13 @@
   {#snippet ritXitScanSurface()}
     {#if view?.ritXit || view?.scan}
       <RitXitScanSurface
-        {view} {ritDomain}
+        {view} {ritDomain} {scanCapable}
         handles={ritXitInstruments}
         onRitOffsetChange={ritXitIntents.onRitOffsetChange}
         onXitOffsetChange={ritXitIntents.onXitOffsetChange}
         onScanStart={(type) => scanIntents.onScanStart(type)}
         onScanStop={scanIntents.onScanStop}
+        onDfSpanChange={(span) => scanIntents.onDfSpanChange(span)}
         onResumeModeChange={(mode) => scanIntents.onResumeChange(mode)}
       />
     {/if}
