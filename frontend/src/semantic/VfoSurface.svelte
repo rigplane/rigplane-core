@@ -42,7 +42,13 @@
   import type { SignalMeterFrame } from '../components-v2/meters/signal-meter-motion.svelte';
   import VfoPanel from '../components-v2/vfo/VfoPanel.svelte';
   import VfoIndicatorRow from './VfoIndicatorRow.svelte';
-  import VfoOperationGroup, { type VfoOperationIntent } from './VfoOperationGroup.svelte';
+  import VfoOperationGroup from './VfoOperationGroup.svelte';
+  import {
+    invokeVfoOperation,
+    projectVfoOperations,
+    type VfoOperationIntent,
+    type VfoOperationProjectionInput,
+  } from './vfo-operation-projection';
   import type { ReceiverInstrumentHandles } from './ReceiverInstrumentHost.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
@@ -206,15 +212,6 @@
    */
   let vfoPool = $derived(selectionPoolSize ?? viewModel.vfos.length);
   let hasVfoPair = $derived(vfoPool > 1);
-  let dualActions = $derived(viewModel.radioWideIndicators?.actions ?? {
-    main: { structural: false, operational: false },
-    sub: { structural: false, operational: false },
-    equalize: { structural: hasVfoPair, operational: Boolean(onEqualizeVfos) },
-    swap: { structural: hasVfoPair, operational: Boolean(onSwapVfos) },
-    quickSplit: { structural: false, operational: false },
-    quickDualWatch: { structural: false, operational: false },
-    speak: { structural: false, operational: false },
-  });
   let relativeIdentityUnknown = $derived(viewModel.vfos.some((vfo) => vfo.slot.kind === 'relative'));
   let relativeReceiver = $derived(
     viewModel.vfos.find((vfo) => vfo.slot.kind === 'relative')?.receiver ?? null,
@@ -257,21 +254,37 @@
   function identityOnlyReasonText(): string | undefined {
     return relativeIdentityUnknown ? t('core.vfo.ops.identityUnknownReason') : undefined;
   }
-  /** MOR-1481: quick-split's own operational gate
-   *  (`viewModel.split.status === 'unknown'`) is the SAME condition
-   *  `toggleSplit`'s fact-toggle carries below, so the two share one
-   *  catalog key rather than a parallel vocabulary. Identity wins when both
-   *  apply — it is the more actionable claim (the A/B resolver exists for
-   *  it), while nothing on this surface resolves an unread split state. */
-  function quickSplitReasonText(): string | undefined {
-    if (relativeIdentityUnknown) return t('core.vfo.ops.identityUnknownReason');
-    return viewModel.split.status === 'unknown' ? t('core.vfo.split.unknownReason') : undefined;
+
+  function vfoOperationInput(): VfoOperationProjectionInput {
+    return {
+      hasVfoPair,
+      hasDualReceiver,
+      relativeIdentityUnknown,
+      activeReceiver: viewModel.activeReceiver,
+      split: viewModel.split,
+      dualWatch: viewModel.dualWatch,
+      actions: viewModel.radioWideIndicators?.actions,
+      callbacks: {
+        onToggleSplit,
+        onToggleDualWatch,
+        onSelectMainReceiver,
+        onSelectSubReceiver,
+        onEqualizeVfos,
+        onSwapVfos,
+        onQuickSplit,
+        onQuickDualWatch,
+        onSpeak,
+      },
+      reasons: {
+        receiverUnavailable: t('core.vfo.select.receiverUnavailableReason'),
+        identityUnknown: t('core.vfo.ops.identityUnknownReason'),
+        splitUnknown: t('core.vfo.split.unknownReason'),
+        dualWatchUnknown: t('core.vfo.dualWatch.unknownReason'),
+      },
+    };
   }
-  /** Mirrors `quickSplitReasonText` for dual watch. */
-  function quickDualWatchReasonText(): string | undefined {
-    if (relativeIdentityUnknown) return t('core.vfo.ops.identityUnknownReason');
-    return viewModel.dualWatch.status === 'unknown' ? t('core.vfo.dualWatch.unknownReason') : undefined;
-  }
+
+  let vfoOperations = $derived(projectVfoOperations(vfoOperationInput()));
 
   function slotKey(slot: VfoSlot): string {
     if (slot.kind === 'slotted') return slot.id;
@@ -376,84 +389,8 @@
     window.setTimeout(() => { relativeSelectionPending = false; }, 2500);
   }
 
-  function toggleSplit(): void {
-    if (viewModel.split.status !== 'known') return;
-    onToggleSplit?.();
-  }
-
-  function toggleDualWatch(): void {
-    if (viewModel.dualWatch.status !== 'known') return;
-    onToggleDualWatch?.();
-  }
-
-  /**
-   * MOR-1652 — equalize and swap are caller-admitted primitive intents. They
-   * do not need an observed A/B identity because this surface neither chooses
-   * a direction nor derives source/target; an omitted callback remains inert.
-   */
-  function equalizeVfos(): void {
-    if (!dualActions.equalize.operational) return;
-    onEqualizeVfos?.();
-  }
-
-  function swapVfos(): void {
-    if (!dualActions.swap.operational) return;
-    onSwapVfos?.();
-  }
-
-  function selectMainReceiver(): void {
-    if (!dualActions.main.operational) return;
-    onSelectMainReceiver?.();
-  }
-
-  function selectSubReceiver(): void {
-    if (!dualActions.sub.operational) return;
-    onSelectSubReceiver?.();
-  }
-
-  function speak(): void {
-    if (!dualActions.speak.operational) return;
-    onSpeak?.();
-  }
-
-  /**
-   * MOR-1321 — the OPERATIONAL half of the gate, and it applies to the quick
-   * triggers only. `quick_split` / `quick_dualwatch` end with the corresponding
-   * fact turned ON, so firing one while that fact is unobserved would ask the
-   * radio to reach a state this surface cannot see it reach — the same reason
-   * `toggleSplit`/`toggleDualWatch` above refuse, and the same `disabled`
-   * attribute, not a parallel mechanism.
-   *
-   * Equalize and swap deliberately have NO such guard: neither reads a fact,
-   * both are meaningful whatever split/dual-watch report, and gating them on an
-   * unrelated unknown would invent a dependency the radio does not have.
-   */
-  function quickSplit(): void {
-    if (relativeIdentityUnknown || !dualActions.quickSplit.operational
-      || viewModel.split.status !== 'known') return;
-    onQuickSplit?.();
-  }
-
-  function quickDualWatch(): void {
-    if (relativeIdentityUnknown || !dualActions.quickDualWatch.operational
-      || viewModel.dualWatch.status !== 'known') return;
-    onQuickDualWatch?.();
-  }
-
   function handleOperationIntent(intent: VfoOperationIntent): void {
-    switch (intent.kind) {
-      case 'select-receiver':
-        if (intent.receiver === 'MAIN') selectMainReceiver();
-        else selectSubReceiver();
-        break;
-      case 'toggle-split': toggleSplit(); break;
-      case 'toggle-dual-watch': toggleDualWatch(); break;
-      case 'equalize': equalizeVfos(); break;
-      case 'swap': swapVfos(); break;
-      case 'quick-split': quickSplit(); break;
-      case 'quick-dual-watch': quickDualWatch(); break;
-      case 'speak': speak(); break;
-    }
+    invokeVfoOperation(vfoOperationInput, intent);
   }
 
   /**
@@ -482,23 +419,6 @@
   let txFrequencyHz = $derived(
     viewModel.txTarget.status === 'known' ? viewModel.txTarget.frequencyHz : null,
   );
-  let operationActions = $derived({
-    main: { ...dualActions.main, operational: dualActions.main.operational && onSelectMainReceiver !== undefined },
-    sub: { ...dualActions.sub, operational: dualActions.sub.operational && onSelectSubReceiver !== undefined },
-    equalize: { ...dualActions.equalize, operational: dualActions.equalize.operational && onEqualizeVfos !== undefined },
-    swap: { ...dualActions.swap, operational: dualActions.swap.operational && onSwapVfos !== undefined },
-    quickSplit: {
-      ...dualActions.quickSplit,
-      operational: !relativeIdentityUnknown && viewModel.split.status === 'known'
-        && dualActions.quickSplit.operational && onQuickSplit !== undefined,
-    },
-    quickDualWatch: {
-      ...dualActions.quickDualWatch,
-      operational: !relativeIdentityUnknown && viewModel.dualWatch.status === 'known'
-        && dualActions.quickDualWatch.operational && onQuickDualWatch !== undefined,
-    },
-    speak: { ...dualActions.speak, operational: dualActions.speak.operational && onSpeak !== undefined },
-  });
   function instrumentSlot(receiver: ReceiverId): string {
     const slot = viewModel.vfos.find((vfo) => vfo.receiver === receiver && vfo.isActiveSlot)?.slot;
     return slot?.kind === 'slotted' ? slot.id : '—';
@@ -753,29 +673,15 @@
         {continuitySession}
       />
     {/if}
-    {@const splitReason = viewModel.split.status === 'unknown' ? t('core.vfo.split.unknownReason') : undefined}
-    {@const dualWatchReason = viewModel.dualWatch.status === 'unknown' ? t('core.vfo.dualWatch.unknownReason') : undefined}
     <VfoOperationGroup
       {appearance}
       scheme={viewModel.vfoScheme}
-      activeReceiver={viewModel.activeReceiver}
-      split={viewModel.split}
-      dualWatch={viewModel.dualWatch}
-      splitAvailability={{ structural: true, operational: viewModel.split.status === 'known', reason: splitReason }}
-      dualWatchAvailability={{ structural: hasDualReceiver, operational: viewModel.dualWatch.status === 'known', reason: dualWatchReason }}
-      actions={operationActions}
-      actionReasons={{
-        main: dualActions.main.structural && !dualActions.main.operational ? t('core.vfo.select.receiverUnavailableReason') : undefined,
-        sub: dualActions.sub.structural && !dualActions.sub.operational ? t('core.vfo.select.receiverUnavailableReason') : undefined,
-        quickSplit: quickSplitReasonText(),
-        quickDualWatch: quickDualWatchReasonText(),
-      }}
+      projection={vfoOperations}
       digest={hasVfoPair ? {
         rx: formatFrequency(rxFrequencyHz),
         tx: formatFrequency(txFrequencyHz),
         splitState: viewModel.split.status === 'known' ? String(viewModel.split.value) as 'true' | 'false' : 'mixed',
       } : undefined}
-      groupReason={identityOnlyReasonText()}
       onIntent={handleOperationIntent}
     />
   {/if}

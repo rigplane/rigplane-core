@@ -458,6 +458,21 @@ describe('radio-wide singleton row and complete DUAL action block (MOR-2309)', (
       expect(callbacks[handler]).not.toHaveBeenCalled();
     }
   });
+
+  it('rechecks current facts before a stale enabled operation can invoke', () => {
+    const state = writable(withRadioWide());
+    const live = fromStore(state);
+    const onQuickSplit = vi.fn();
+    const target = mountSurface({ get viewModel() { return live.current; }, onQuickSplit });
+    const button = target.querySelector<HTMLButtonElement>('[data-vfo-quick-split]')!;
+    expect(button.disabled).toBe(false);
+    state.set(validateRadioViewModel({ ...withRadioWide(), split: { status: 'unknown' } }));
+    expect(button.disabled).toBe(false);
+    button.click();
+    expect(onQuickSplit).not.toHaveBeenCalled();
+    flushSync();
+    expect(button.disabled).toBe(true);
+  });
 });
 
 /** Normalized rendered-DOM summary — only VFO-surface-owned facts. */
@@ -2373,7 +2388,8 @@ describe('MOR-2342 historical instrument presentations', () => {
   it('delegates operations to a pure v3 fact-and-intent component', () => {
     const surface = readFileSync('src/semantic/VfoSurface.svelte', 'utf8');
     const group = readFileSync('src/semantic/VfoOperationGroup.svelte', 'utf8');
-    expect(surface).toMatch(/import VfoOperationGroup, \{ type VfoOperationIntent \} from '\.\/VfoOperationGroup\.svelte'/);
+    expect(surface).toContain("import VfoOperationGroup from './VfoOperationGroup.svelte'");
+    expect(surface).toContain("from './vfo-operation-projection'");
     expect(surface).toContain('<VfoOperationGroup');
     expect(group).toContain('ActiveReceiverToggle');
     expect(group).not.toMatch(/\$lib\/(?:runtime|stores|transport)|capabilities\.svelte|withDoubleClick/);
