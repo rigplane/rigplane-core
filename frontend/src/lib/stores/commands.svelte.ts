@@ -250,10 +250,12 @@ export const TX_AUX_COMMAND_DESCRIPTORS = Object.freeze({
 }) satisfies Readonly<Record<TxAuxCommandFeedbackField, StateBackedCommandDescriptor<number>>>;
 
 export type DspCommandFeedbackField =
-  | 'nbLevel' | 'nbWidth' | 'notchFilter' | 'manualNotchWidth' | 'agcTimeConstant';
-type ReceiverDspCommandFeedbackField = Exclude<DspCommandFeedbackField, 'nbWidth'>;
+  | 'nbLevel' | 'nbWidth' | 'nrLevel' | 'nbDepth'
+  | 'notchFilter' | 'manualNotchWidth' | 'agcTimeConstant';
+type ReceiverDspCommandFeedbackField = Exclude<DspCommandFeedbackField, 'nbWidth' | 'nbDepth'>;
 type ReceiverDspCommandFeedbackIntent =
-  | 'set_nb_level' | 'set_notch_filter' | 'set_manual_notch_width' | 'set_agc_time_constant';
+  | 'set_nb_level' | 'set_nr_level'
+  | 'set_notch_filter' | 'set_manual_notch_width' | 'set_agc_time_constant';
 
 function rawReceiverDspCommandDescriptor(
   intentName: ReceiverDspCommandFeedbackIntent,
@@ -289,9 +291,23 @@ const NB_WIDTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object
   matches: (confirmed: number, requested: number) => confirmed === requested,
 });
 
+const nbDepthTarget = (command: Pick<CommandLifecycle, 'params'>): number | null =>
+  exactSafeIntegerTarget(command, 'level');
+const NB_DEPTH_COMMAND_DESCRIPTOR: StateBackedCommandDescriptor<number> = Object.freeze({
+  intentName: 'set_nb_depth', repeatPolicy: 'latest-target-wins',
+  scope: (command: Pick<CommandLifecycle, 'params'>) => nbDepthTarget(command) === null
+    ? null : Object.freeze({ control: 'nb-depth', receiver: 0 }),
+  fieldPath: () => 'nbDepth',
+  target: nbDepthTarget,
+  confirmed: (state: ServerState) => safeInteger(state.nbDepth),
+  matches: (confirmed: number, requested: number) => confirmed === requested,
+});
+
 export const DSP_COMMAND_DESCRIPTORS = Object.freeze({
   nbLevel: rawReceiverDspCommandDescriptor('set_nb_level', 'nb-level', 'nbLevel', 'level'),
   nbWidth: NB_WIDTH_COMMAND_DESCRIPTOR,
+  nrLevel: rawReceiverDspCommandDescriptor('set_nr_level', 'nr-level', 'nrLevel', 'level'),
+  nbDepth: NB_DEPTH_COMMAND_DESCRIPTOR,
   notchFilter: rawReceiverDspCommandDescriptor(
     'set_notch_filter', 'notch-position', 'notchFilter', 'value',
   ),

@@ -55,6 +55,9 @@ import { currentControlSessionEpoch } from '../commands/radio-intents';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
+import {
+  controlRangeFromCapsOrDefault, nbDepthRawToDisplay, projectNrLevel,
+} from '$lib/radio/filter-controls';
 
 // Re-export types for panel imports
 export type {
@@ -501,12 +504,13 @@ export function getTxAuxControlFeedback(
 
 export type DspControlFeedbackField = DspCommandFeedbackField;
 const DSP_FEEDBACK_CAPABILITIES: Readonly<Record<
-  Exclude<DspControlFeedbackField, 'nbWidth'>, string
+  Exclude<DspControlFeedbackField, 'nbWidth' | 'nbDepth'>, string
 >> = Object.freeze({
-  nbLevel: 'nb', notchFilter: 'notch', manualNotchWidth: 'notch', agcTimeConstant: 'agc',
+  nbLevel: 'nb', nrLevel: 'nr',
+  notchFilter: 'notch', manualNotchWidth: 'notch', agcTimeConstant: 'agc',
 });
 
-/** Qualified raw DSP feedback; NB Width alone has stable radio-global identity. */
+/** Qualified raw DSP feedback; NB Width and NB Depth have stable radio-global identity. */
 export function getDspControlFeedback(
   field: DspControlFeedbackField,
   currentControlSession?: ControlSessionSnapshot,
@@ -521,9 +525,11 @@ export function getDspControlFeedback(
   const scope = Object.freeze({
     control: field === 'nbLevel' ? 'nb-level'
       : field === 'nbWidth' ? 'nb-width'
-        : field === 'notchFilter' ? 'notch-position'
-          : field === 'manualNotchWidth' ? 'manual-notch-width' : 'agc-time',
-    receiver: field === 'nbWidth' ? 0 as const : receiver,
+        : field === 'nrLevel' ? 'nr-level'
+          : field === 'nbDepth' ? 'nb-depth'
+            : field === 'notchFilter' ? 'notch-position'
+              : field === 'manualNotchWidth' ? 'manual-notch-width' : 'agc-time',
+    receiver: field === 'nbWidth' || field === 'nbDepth' ? 0 as const : receiver,
   });
   const feedback = projectControlFeedback(
     descriptor, state, commands, scope, epoch, isCommandLifecycleSuperseded,
@@ -541,10 +547,10 @@ export function getDspControlFeedback(
     if (receiverEntries.length !== 1 || !receiverEntries[0].availability.operational) {
       return unavailableControlFeedback(feedback);
     }
-    if (field === 'nbWidth') {
+    if (field === 'nbWidth' || field === 'nbDepth') {
       const observation = qualifyRadioDisplayObservation({
         state, caps, path: field, structural: caps?.controls?.nb_depth != null,
-        value: state?.nbWidth,
+        value: state?.[field],
       });
       return observation.state === 'current' && Number.isSafeInteger(observation.value)
         ? feedback : unavailableControlFeedback(feedback);
@@ -563,6 +569,48 @@ export function getDspControlFeedback(
   } catch {
     return unavailableControlFeedback(feedback);
   }
+}
+
+type TransformedDspControlFeedbackField = 'nrLevel' | 'nbDepth';
+
+function projectDspRawValueToDisplay(
+  field: TransformedDspControlFeedbackField,
+  raw: number,
+  caps: Capabilities | null | undefined,
+): number | null {
+  if (field === 'nrLevel') {
+    const value = projectNrLevel(caps, raw, true).value;
+    return value !== null && Number.isFinite(value) ? value : null;
+  }
+  try {
+    const range = controlRangeFromCapsOrDefault('nb_depth', caps);
+    const values = [range.rawMin, range.rawMax, range.displayMin, range.displayMax];
+    if (!values.every(value => typeof value === 'number' && Number.isFinite(value))
+      || !Number.isSafeInteger(range.rawMin) || !Number.isSafeInteger(range.rawMax)
+      || range.rawMax <= range.rawMin || range.displayMax <= range.displayMin
+      || !Number.isSafeInteger(raw) || raw < range.rawMin || raw > range.rawMax) return null;
+    const display = nbDepthRawToDisplay(raw, range);
+    return Number.isFinite(display) ? display : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Pure raw-to-display projection; descriptor-unit confirmation remains untouched. */
+export function projectDspControlFeedbackToDisplay(
+  field: TransformedDspControlFeedbackField,
+  rawFeedback: Readonly<ControlFeedback<number>>,
+  caps: Capabilities | null | undefined,
+): Readonly<ControlFeedback<number>> {
+  const project = (raw: number | null): number | null | undefined =>
+    raw === null ? null : projectDspRawValueToDisplay(field, raw, caps) ?? undefined;
+  const confirmed = project(rawFeedback.confirmed);
+  const target = project(rawFeedback.target);
+  const requestedTarget = project(rawFeedback.requestedTarget);
+  if (confirmed === undefined || target === undefined || requestedTarget === undefined) {
+    return unavailableControlFeedback(rawFeedback);
+  }
+  return Object.freeze({ ...rawFeedback, confirmed, target, requestedTarget });
 }
 
 type RfSqlFeedbackLane = Readonly<{
