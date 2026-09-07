@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import type {
-    ContinuousScalarBinding,
+    ContinuousScalarRendererSeat,
     ContinuousScalarRendererLease,
     ContinuousScalarView,
   } from '../../../primitives/scalar/continuous-scalar.svelte';
@@ -21,7 +21,7 @@
   } from './scalar-render-presentation';
 
   interface Props {
-    binding: ContinuousScalarBinding;
+    binding: ContinuousScalarRendererSeat;
     label: string;
     displayFn?: (v: number) => string;
     unknownDisplay?: string;

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import type {
+    ContinuousScalarRendererSeat,
     ContinuousScalarRendererLease,
     ContinuousScalarView,
   } from '../../../../primitives/scalar/continuous-scalar.svelte';
@@ -66,6 +67,10 @@
     Object.defineProperty(node, 'rendererLease', {
       configurable: true,
       get: () => lease,
+    });
+    Object.defineProperty(node, 'rendererSeat', {
+      configurable: true,
+      get: (): ContinuousScalarRendererSeat => attachedBinding,
     });
   }
 </script>

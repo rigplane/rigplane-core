@@ -7,6 +7,7 @@ import {
   createHBarContinuousScalarPolicy,
   createKnobContinuousScalarPolicy,
   createRenderedNativeRangeContinuousScalarPolicy,
+  createContinuousScalarRendererSeat,
   nativeRangeContinuousScalarPolicy,
   type CommandScalarFeedback,
   type ContinuousScalarInput,
@@ -1455,6 +1456,70 @@ describe('continuous scalar deferred work', () => {
 });
 
 describe('continuous scalar renderer leases and cleanup', () => {
+  it('fences renderer occurrences without replacing or exposing the raw owner', () => {
+    vi.useFakeTimers();
+    try {
+      const { scalar, request } = readingSetup();
+      const occurrenceA1 = Object.freeze({ id: 'A' });
+      const occurrenceB = Object.freeze({ id: 'B' });
+      const occurrenceA2 = Object.freeze({ id: 'A' });
+      let currentOccurrence: object = occurrenceA1;
+      const seatA1 = createContinuousScalarRendererSeat(
+        scalar,
+        () => currentOccurrence === occurrenceA1,
+      );
+      const leaseA1 = seatA1.attachRenderer();
+      const tokenA1 = leaseA1.beginPointer()!;
+
+      expect(seatA1.view).toEqual(scalar.view);
+      expect('destroy' in seatA1).toBe(false);
+      leaseA1.pointer(tokenA1, 2_600);
+      leaseA1.key({ key: 'ArrowRight', fine: false });
+      currentOccurrence = occurrenceB;
+      vi.advanceTimersByTime(50);
+      expect(request).toHaveBeenCalledExactlyOnceWith(2_600);
+
+      const seatB = createContinuousScalarRendererSeat(
+        scalar,
+        () => currentOccurrence === occurrenceB,
+      );
+      const leaseB = seatB.attachRenderer();
+      const staleLateLease = seatA1.attachRenderer();
+      seatA1.cancel('authority');
+      leaseA1.cancel('authority');
+      expect(leaseA1.beginPointer()).toBeNull();
+      leaseA1.pointer(tokenA1, 3_000);
+      leaseA1.endPointer(tokenA1);
+      leaseA1.cancelPointer(tokenA1);
+      leaseA1.nativeInput(3_100);
+      leaseA1.wheel({ direction: 1, fine: false });
+      expect(leaseA1.key({ key: 'ArrowRight', fine: false })).toBe(false);
+      leaseA1.reset();
+      leaseA1.dispose();
+      staleLateLease.nativeInput(3_500);
+      leaseB.key({ key: 'ArrowRight', fine: false });
+      expect(scalar.view.draft).toBe(2_500);
+      seatA1.cancel('authority');
+      expect(scalar.view.draft).toBe(2_500);
+      vi.advanceTimersByTime(50);
+      expect(request.mock.calls).toEqual([[2_600], [2_500]]);
+
+      currentOccurrence = occurrenceA2;
+      const seatA2 = createContinuousScalarRendererSeat(
+        scalar,
+        () => currentOccurrence === occurrenceA2,
+      );
+      const leaseA2 = seatA2.attachRenderer();
+      seatA1.attachRenderer().nativeInput(3_600);
+      leaseB.nativeInput(3_700);
+      leaseA2.nativeInput(3_800);
+      expect(request.mock.calls).toEqual([[2_600], [2_500], [3_800]]);
+      expect(scalar.view.canonical).toBe(2_400);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('makes replaced renderer callbacks and stale gesture tokens inert', () => {
     vi.useFakeTimers();
     const { scalar, request } = readingSetup();

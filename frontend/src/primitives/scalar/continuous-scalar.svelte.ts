@@ -125,12 +125,20 @@ export interface ContinuousScalarRendererLease {
   wheel(event: ScalarStepInput): void;
   key(event: ScalarKeyInput): boolean;
   reset(): void;
+  cancel(reason: 'authority'): void;
   dispose(): void;
 }
 
-export interface ContinuousScalarBinding {
+export interface ContinuousScalarRendererSeat {
   readonly view: Readonly<ContinuousScalarView>;
   attachRenderer(): ContinuousScalarRendererLease;
+  cancel(reason: 'authority'): void;
+}
+
+/** @internal */
+export interface ContinuousScalarBinding {
+  readonly view: Readonly<ContinuousScalarView>;
+  attachRenderer(isCurrent?: () => boolean): ContinuousScalarRendererLease;
   cancel(reason: 'authority' | 'availability' | 'terminal' | 'owner-dispose'): void;
   destroy(): void;
 }
@@ -482,6 +490,7 @@ function terminalIdentity(input: Readonly<ContinuousScalarInput>): AuthorityIden
   ]);
 }
 
+/** @internal */
 export function createContinuousScalar(
   read: () => Readonly<ContinuousScalarInput>,
   policy: Readonly<ContinuousScalarPolicy>,
@@ -609,14 +618,26 @@ export function createContinuousScalar(
     return input;
   }
 
+  function rendererIsCurrent(renderer: number, isCurrent: () => boolean): boolean {
+    if (destroyed || renderer !== activeRenderer) return false;
+    if (isCurrent()) return true;
+    clearTransient();
+    activeRenderer = null;
+    return false;
+  }
+
   function dispatch(
     candidate: number,
     source: ScalarSource,
     authority: AuthorityIdentity,
     generation: number,
+    renderer: number,
+    isCurrent: () => boolean,
   ): void {
+    if (!rendererIsCurrent(renderer, isCurrent)) return;
     const input = current();
     if (!destroyed && generation === invalidationGeneration
+      && rendererIsCurrent(renderer, isCurrent)
       && sameAuthority(authority, authorityOf(input)) && editable(input)) {
       localCommandRequest = input.evidence === 'command-feedback'
         ? {
@@ -632,11 +653,13 @@ export function createContinuousScalar(
 
   function applyCandidate(
     renderer: number,
+    isCurrent: () => boolean,
     source: ScalarSource,
     candidate: number | null,
   ): boolean {
+    if (!rendererIsCurrent(renderer, isCurrent)) return false;
     const input = current();
-    if (destroyed || renderer !== activeRenderer || !editable(input) || candidate === null) return false;
+    if (!rendererIsCurrent(renderer, isCurrent) || !editable(input) || candidate === null) return false;
     const normalized = policy.normalize(candidate, input.domain);
     if (normalized === null || !Number.isFinite(normalized)
       || normalized < input.domain.min || normalized > input.domain.max) return false;
@@ -670,11 +693,11 @@ export function createContinuousScalar(
     }
     const mode = policy.dispatch(source);
     if (mode === 'immediate') {
-      dispatch(normalized, source, authority, generation);
+      dispatch(normalized, source, authority, generation, renderer, isCurrent);
     } else {
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        if (renderer === activeRenderer) dispatch(normalized, source, authority, generation);
+        dispatch(normalized, source, authority, generation, renderer, isCurrent);
       }, mode.debounceMs);
     }
     return true;
@@ -730,12 +753,16 @@ export function createContinuousScalar(
     });
   }
 
-  function makeLease(renderer: number): ContinuousScalarRendererLease {
+  function makeLease(
+    renderer: number,
+    isCurrent: () => boolean,
+  ): ContinuousScalarRendererLease {
     return {
       get view() { return viewOf(current()); },
       beginPointer(): number | null {
+        if (!rendererIsCurrent(renderer, isCurrent)) return null;
         const input = current();
-        if (destroyed || renderer !== activeRenderer || !editable(input)) return null;
+        if (!rendererIsCurrent(renderer, isCurrent) || !editable(input)) return null;
         localCommandRequest = null;
         const token = ++gestureSequence;
         activeGesture = { renderer, token };
@@ -743,12 +770,14 @@ export function createContinuousScalar(
         return token;
       },
       pointer(token: number, candidate: number): void {
+        if (!rendererIsCurrent(renderer, isCurrent)) return;
         current();
         if (activeGesture?.renderer === renderer && activeGesture.token === token) {
-          applyCandidate(renderer, 'pointer', candidate);
+          applyCandidate(renderer, isCurrent, 'pointer', candidate);
         }
       },
       endPointer(token: number): void {
+        if (!rendererIsCurrent(renderer, isCurrent)) return;
         current();
         if (activeGesture?.renderer !== renderer || activeGesture.token !== token) return;
         activeGesture = null;
@@ -756,17 +785,20 @@ export function createContinuousScalar(
         current();
       },
       cancelPointer(token: number): void {
+        if (!rendererIsCurrent(renderer, isCurrent)) return;
         current();
         if (activeGesture?.renderer === renderer && activeGesture.token === token) clearTransient();
       },
       nativeInput(candidate: number): void {
-        applyCandidate(renderer, 'native-input', candidate);
+        applyCandidate(renderer, isCurrent, 'native-input', candidate);
       },
       wheel(event: ScalarStepInput): void {
+        if (!rendererIsCurrent(renderer, isCurrent)) return;
         const input = current();
-        if (destroyed || renderer !== activeRenderer || !editable(input)) return;
+        if (!rendererIsCurrent(renderer, isCurrent) || !editable(input)) return;
         const base = interactionBase(input);
-        if (base === null || !applyCandidate(renderer, 'wheel', policy.wheel(base, event, input.domain))) return;
+        if (base === null
+          || !applyCandidate(renderer, isCurrent, 'wheel', policy.wheel(base, event, input.domain))) return;
         if (policy.wheelIdleMs === 0) {
           draft = null;
           draftCanonical = null;
@@ -777,8 +809,10 @@ export function createContinuousScalar(
           const authority = authorityOf(input);
           wheelTimer = setTimeout(() => {
             wheelTimer = null;
+            if (!rendererIsCurrent(renderer, isCurrent)) return;
             const latest = current();
-            if (renderer === activeRenderer && sameAuthority(authority, authorityOf(latest))) {
+            if (rendererIsCurrent(renderer, isCurrent)
+              && sameAuthority(authority, authorityOf(latest))) {
               draft = null;
               draftCanonical = null;
               interaction = 'idle';
@@ -788,21 +822,26 @@ export function createContinuousScalar(
         }
       },
       key(event: ScalarKeyInput): boolean {
+        if (!rendererIsCurrent(renderer, isCurrent)) return false;
         const input = current();
-        if (destroyed || renderer !== activeRenderer || !editable(input)) return false;
+        if (!rendererIsCurrent(renderer, isCurrent) || !editable(input)) return false;
         const base = interactionBase(input);
         if (base === null) return false;
         const candidate = policy.key(base, event, input.domain);
         if (candidate === null) return false;
-        return applyCandidate(renderer, 'keyboard', candidate);
+        return applyCandidate(renderer, isCurrent, 'keyboard', candidate);
       },
       reset(): void {
+        if (!rendererIsCurrent(renderer, isCurrent)) return;
         const input = current();
-        if (!destroyed && renderer === activeRenderer && editable(input))
-          applyCandidate(renderer, 'reset', policy.reset(input.domain));
+        if (rendererIsCurrent(renderer, isCurrent) && editable(input))
+          applyCandidate(renderer, isCurrent, 'reset', policy.reset(input.domain));
+      },
+      cancel(): void {
+        if (rendererIsCurrent(renderer, isCurrent)) clearTransient();
       },
       dispose(): void {
-        if (renderer !== activeRenderer) return;
+        if (!rendererIsCurrent(renderer, isCurrent)) return;
         clearTransient();
         activeRenderer = null;
       },
@@ -811,11 +850,11 @@ export function createContinuousScalar(
 
   return {
     get view() { return viewOf(current()); },
-    attachRenderer(): ContinuousScalarRendererLease {
+    attachRenderer(isCurrent = () => true): ContinuousScalarRendererLease {
       if (!destroyed && activeRenderer !== null) clearTransient();
       const renderer = ++rendererSequence;
       if (!destroyed) activeRenderer = renderer;
-      return makeLease(renderer);
+      return makeLease(renderer, isCurrent);
     },
     cancel(): void { clearTransient(); },
     destroy(): void {
@@ -825,4 +864,41 @@ export function createContinuousScalar(
       activeRenderer = null;
     },
   };
+}
+
+function inactiveRendererLease(
+  readView: () => Readonly<ContinuousScalarView>,
+): ContinuousScalarRendererLease {
+  return Object.freeze({
+    get view() { return readView(); },
+    beginPointer: () => null,
+    pointer: () => {},
+    endPointer: () => {},
+    cancelPointer: () => {},
+    nativeInput: () => {},
+    wheel: () => {},
+    key: () => false,
+    reset: () => {},
+    cancel: () => {},
+    dispose: () => {},
+  });
+}
+
+/** @internal */
+export function createContinuousScalarRendererSeat(
+  owner: ContinuousScalarBinding,
+  isCurrent: () => boolean,
+): ContinuousScalarRendererSeat {
+  let attachment: ContinuousScalarRendererLease | null = null;
+  return Object.freeze({
+    get view() { return owner.view; },
+    attachRenderer(): ContinuousScalarRendererLease {
+      if (!isCurrent()) return inactiveRendererLease(() => owner.view);
+      attachment = owner.attachRenderer(isCurrent);
+      return attachment;
+    },
+    cancel(reason: 'authority'): void {
+      attachment?.cancel(reason);
+    },
+  });
 }
