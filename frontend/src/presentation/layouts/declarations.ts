@@ -68,9 +68,8 @@ export const sdrTestLayout: LayoutManifest = {
   // suppressed it here.
   //
   // MOR-2231 (step 1, batch 4): `scopeDisplay` and `scopeControls` join, under
-  // the ids `desktop-declarations.ts` already uses. That completes the
-  // fourteen — every name in `SEMANTIC_SURFACE_NAMES` (`contract.ts`) now has
-  // a zone here. Both already mounted BARE through the single composition's
+  // the ids `desktop-declarations.ts` already uses. Both already mounted BARE
+  // through the single composition's
   // `zoned()` calls in `SemanticRadioSurfaces.svelte` (both take the default
   // `allowBare` on that path), so declaring the zone gives each a
   // `data-zone-id` host.

@@ -18,7 +18,7 @@
     presentation?: 'grouped' | 'independent';
     scalarPresentation?: Readonly<CwContinuousPresentation>;
     breakInDelayFeedback?: Readonly<BreakInDelayFeedback>;
-    cwPitchFeedback?: Readonly<CommandScalarFeedback>;
+    pitchFeedback?: Readonly<CommandScalarFeedback>;
     keySpeedFeedback?: Readonly<CommandScalarFeedback>;
     autoTuneAvailable?: boolean;
     onBreakInMode?: (mode: number) => void;
@@ -31,27 +31,27 @@
 
   let {
     view, presentation = 'grouped', scalarPresentation,
-    breakInDelayFeedback, cwPitchFeedback, keySpeedFeedback, autoTuneAvailable = false,
+    breakInDelayFeedback, pitchFeedback, keySpeedFeedback, autoTuneAvailable = false,
     onBreakInMode, onLevelChange, onApfOn, onTwinPeakToggle, onReversePaddleToggle, onAutoTune,
   }: Props = $props();
 </script>
 
-<CwKeyerInstrumentHost {view} {keySpeedFeedback} {onLevelChange}>
+<CwKeyerInstrumentHost {view} {keySpeedFeedback} {pitchFeedback} {onLevelChange}>
   {#snippet children(handles: CwKeyerInstrumentHandles)}
     {#key presentation}
       {#if presentation === 'grouped'}
         <CwKeyerSurface
           {view} continuousHandles={handles} {breakInDelayFeedback} {autoTuneAvailable}
-          {cwPitchFeedback}
           {onBreakInMode} {onLevelChange} {onApfOn} {onTwinPeakToggle}
           {onReversePaddleToggle} {onAutoTune}
         />
       {:else}
         <section data-testid="independent-cw-keyer-composition">
           <div data-slot="keyer-speed">{@render handles.keyerSpeed(scalarPresentation)}</div>
+          <div data-slot="pitch-hz">{@render handles.pitchHz(scalarPresentation)}</div>
           <CwKeyerSurface
-            {view} continuousHandles={handles} showKeyerSpeed={false}
-            {breakInDelayFeedback} {cwPitchFeedback} {autoTuneAvailable}
+            {view} continuousHandles={handles} showKeyerSpeed={false} showPitchHz={false}
+            {breakInDelayFeedback} {autoTuneAvailable}
             {onBreakInMode} {onLevelChange} {onApfOn} {onTwinPeakToggle}
             {onReversePaddleToggle} {onAutoTune}
           />

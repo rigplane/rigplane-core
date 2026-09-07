@@ -1506,8 +1506,10 @@
   >
   {#snippet children(antennaInstruments, antennaLayout)}
   <CwKeyerInstrumentHost
-    {view} {keySpeedFeedback}
+    {view} {keySpeedFeedback} pitchFeedback={cwPitchFeedback}
     onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
+    scalarAppearance={externalPresentation?.record.appearances.scalar}
+    presentationIsCurrent={externalPresentation?.isCurrent}
   >
   {#snippet children(cwKeyerInstruments)}
   <DspInstrumentHost
@@ -2058,14 +2060,14 @@
     gated inside the surface on the model's one `txPermit`, and the key/unkey
     authority stays the single `<RxTxSurface>` above (decomposition R9).
   -->
-  {#snippet cwKeyerSurface(showKeyerSpeed = true)}
+  {#snippet cwKeyerSurface(showKeyerSpeed = true, showPitchHz = true)}
     {#if view?.cwKeyer}
       <CwKeyerSurface
         {view}
         continuousHandles={cwKeyerInstruments}
         {showKeyerSpeed}
+        {showPitchHz}
         {breakInDelayFeedback}
-        {cwPitchFeedback}
         {autoTuneAvailable}
         onBreakInMode={(mode) => cwIntents.onBreakInModeChange(mode)}
         onLevelChange={(field, value) => CW_LEVEL_INTENT[field](value)}
@@ -2209,7 +2211,7 @@
   {#snippet hostedCwKeyer(
     allowBare = allowBareSurfaces, showKeyerSpeed = true,
   )}
-    {#snippet body()}{@render cwKeyerSurface(showKeyerSpeed)}{/snippet}
+    {#snippet body()}{@render cwKeyerSurface(showKeyerSpeed, showKeyerSpeed)}{/snippet}
     {@render zoned('cwKeyer', view?.cwKeyer !== undefined, body, allowBare)}
   {/snippet}
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}

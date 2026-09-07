@@ -436,7 +436,7 @@ describe('production receiver-indicator partitioning', () => {
       /<CwKeyerInstrumentHost[\s\S]*?\{keySpeedFeedback\}[\s\S]*?\{#snippet children\(cwKeyerInstruments\)}/,
     );
     expect(source).toMatch(
-      /<CwKeyerSurface(?:(?!\/>)[\s\S])*?\{cwPitchFeedback\}(?:(?!\/>)[\s\S])*?\/>/,
+      /<CwKeyerInstrumentHost[\s\S]*?pitchFeedback=\{cwPitchFeedback\}[\s\S]*?\{#snippet children\(cwKeyerInstruments\)}/,
     );
     expect(source).not.toMatch(
       /<CwKeyerSurface(?:(?!\/>)[\s\S])*?\{keySpeedFeedback\}/,
