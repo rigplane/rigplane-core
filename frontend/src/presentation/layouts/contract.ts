@@ -20,20 +20,18 @@ import { isValidLanguageId as isValidProductId } from '../languages/contract';
  *  LAST B-slice of the vocabulary program). Adding a name makes it
  *  DECLARABLE — it does not mount anything by itself. Which layouts then
  *  DECLARE a name is recorded in `__tests__/*-declarability.test.ts` for the
- *  twelve names that have such a file (`vfo` and `rxTx` predate the pattern
- *  and have none), each pinning its own `DECLARES_*` literal against the real
- *  barrel: as of the rework tail `desktop-v2`
- *  declares a zone for EVERY name in this list (`desktop-declarations.ts`'s
- *  `DESKTOP_V2_ZONES`, with `__tests__/zone-ownership-coverage.test.ts`
- *  holding the partition), while the dual cockpit declares only `vfo`,
- *  `rxTx` and `txAux`.
+ *  names that have such a file, each pinning its own `DECLARES_*` literal
+ *  against the real barrel. `desktop-v2`'s zones are `desktop-declarations.ts`'s
+ *  `DESKTOP_V2_ZONES`; `__tests__/zone-ownership-coverage.test.ts` holds the
+ *  partition and records, in `RECORDED_REASONS`, every name in this list that
+ *  no `desktop-v2` zone declares.
  *  Distinct from the design-language renderer slot of the same name
  *  (`languages/contract.ts`'s `RENDERER_SLOT_NAMES`): that one says how a
  *  language DRAWS a meter, this one says which layout zone may HOST the
  *  surface. */
 export const SEMANTIC_SURFACE_NAMES = [
   'vfo', 'rxTx', 'txAux', 'meters', 'rxAudio', 'filter', 'dsp', 'rfFrontEnd', 'band', 'antenna', 'ritXitScan',
-  'cwKeyer', 'scopeDisplay', 'scopeControls',
+  'cwKeyer', 'scopeDisplay', 'scopeControls', 'memory',
 ] as const;
 export type SemanticSurfaceName = (typeof SEMANTIC_SURFACE_NAMES)[number];
 

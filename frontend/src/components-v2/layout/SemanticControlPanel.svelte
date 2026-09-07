@@ -9,6 +9,7 @@
     rfFrontEnd: 'RF FRONT END', filter: 'MODE / FILTER', band: 'BAND',
     antenna: 'ANTENNA', ritXitScan: 'RIT / XIT / SCAN', rxAudio: 'RX AUDIO',
     dsp: 'DSP', cwKeyer: 'CW', rxTx: 'TX', txAux: 'TX CONTROLS', meters: 'STATION METERS',
+    memory: 'MEMORY',
   };
 </script>
 

@@ -1792,8 +1792,9 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
     'desktop-vfo-ops': 'S10 row 7 (split row) is already gated on `semanticDeck`; the section '
       + 'itself is PERMANENT because of the band tabs above (row 10).',
     'desktop-workspace': 'S10 row 9 — PERMANENT. Workspace preferences are not a radio fact.',
-    memory: 'NO SEMANTIC SURFACE EXISTS. Memory channels are not in the MOR-1262 vocabulary at '
-      + 'all, so there is nothing to relocate into and nothing to double-present.',
+    memory: 'IN THE VOCABULARY, UNDECLARED (MOR-2425, Memory lane phase B1). `memory` joined '
+      + 'SEMANTIC_SURFACE_NAMES, but no desktop-v2 zone declares it and no semantic surface mounts '
+      + 'it yet, so the legacy panels are still the only hosts.',
     // Not in the inventory above under the default fixture, but reachable and
     // decided, so recorded here rather than discovered later:
     tx: 'R9 — the ONE key/unkey authority. It follows the semantic DECK via `hideTxPanel` '

@@ -284,14 +284,14 @@ tests named above. No other consumer is tracked in this repository.
   during the single `activateComponentKits` call at startup (§5); there is no
   per-session or per-user switch beyond editing `component-kits.config.ts`
   and rebuilding — no hot install (§5).
-- **Four families exist today.** Of the fourteen declarable
-  `SemanticSurfaceName`s (`frontend/src/presentation/layouts/contract.ts:
-  SEMANTIC_SURFACE_NAMES`), only `vfo` (→ `receiver` and `vfoOperations`),
-  `txAux`, and `meters` (→ `stationMeters`) have a corresponding
-  `HostedInstrumentFamiliesV1` family. The other eleven — `rxTx`, `rxAudio`,
-  `filter`, `dsp`, `rfFrontEnd`, `band`, `antenna`, `ritXitScan`, `cwKeyer`,
-  `scopeDisplay`, `scopeControls` — have no family in
-  `HostedInstrumentFamiliesV1` and are unavailable to a hosted face.
+- **Four families exist today.** Of the declarable `SemanticSurfaceName`s
+  (`frontend/src/presentation/layouts/contract.ts: SEMANTIC_SURFACE_NAMES`),
+  only `vfo` (→ `receiver` and `vfoOperations`), `txAux`, and `meters`
+  (→ `stationMeters`) have a corresponding `HostedInstrumentFamiliesV1`
+  family (`frontend/src/component-kits/HostedFaceInstrumentBridge.svelte`'s
+  `satisfies HostedInstrumentFamiliesV1` object is the live list). Every
+  other name has no family in `HostedInstrumentFamiliesV1` and is
+  unavailable to a hosted face.
 - **`presentationIsCurrent` gates only some handles** (§4). It reaches
   receiver frequency seats (`FrequencyRendererSeat`, via
   `ReceiverInstrumentHost.svelte`'s `mainFrequency`/`subFrequency` snippets),

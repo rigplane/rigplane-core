@@ -20,11 +20,13 @@
  * whole point. The reason strings are not decoration: they are what the next
  * slice reads instead of guessing.
  *
- * MOR-1370 (S6b-2) declares the `scopeControls` zone — the last excused
- * surface in the vocabulary — which empties `RECORDED_REASONS` below. THE
- * LEDGER IS NOW EMPTY: every `SEMANTIC_SURFACE_NAMES` member is zone-owned on
- * `desktop-v2`, and the partition pin holds with zero excused entries. That is
- * the intended terminal state, not a gap — MOR-1317 closes program-wide here.
+ * MOR-1370 (S6b-2) declared the `scopeControls` zone — the last surface the
+ * MOR-1317 rework tail itself excused — which emptied `RECORDED_REASONS`
+ * below for that program: every MOR-1317-era `SEMANTIC_SURFACE_NAMES` member
+ * was zone-owned on `desktop-v2`, with the partition pin holding on zero
+ * excused entries. MOR-2425 (Memory lane, phase B1) reopens the ledger with
+ * one entry: `memory` joins the vocabulary here with no `desktop-v2` zone,
+ * excused below until its own follow-up join declares one.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -41,13 +43,19 @@ const OWNED = declaredSurfaces(desktopV2Layout);
  * this map only by gaining a `desktop-v2` zone in the same commit.
  *
  * `filter`, `rfFrontEnd` (S7), `band`, `antenna`, `ritXitScan` (S8),
- * `rxAudio`, `dsp`, `cwKeyer` (S9) and `scopeControls` (S6b-2, this slice)
- * have all graduated to real zones on `desktopV2Layout` — `OWNED` now covers
- * every one of them, so an entry here would fail both the partition pin and
- * the overlap pin below. ALL GRADUATED: the map is empty, which is the
- * terminal state this ledger exists to reach, not a gap.
+ * `rxAudio`, `dsp`, `cwKeyer` (S9) and `scopeControls` (S6b-2) all graduated
+ * to real zones on `desktopV2Layout` under the MOR-1317 rework tail — `OWNED`
+ * covers every one of them. `memory` (MOR-2425, Memory lane phase B1) is the
+ * one live entry below: admitted to `SEMANTIC_SURFACE_NAMES` with no
+ * `desktop-v2` zone yet, it is excused here until its own follow-up join
+ * declares one.
  */
-const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {};
+const RECORDED_REASONS: Partial<Record<SemanticSurfaceName, string>> = {
+  memory:
+    'MOR-2425 (Memory lane, phase B1) admits `memory` to the vocabulary ' +
+    'without declaring a desktop-v2 zone; the zone and its mount land in ' +
+    'the phase B2 follow-up join.',
+};
 
 describe('MOR-1317 — every semantic surface has a desktop-v2 decision', () => {
   /**
