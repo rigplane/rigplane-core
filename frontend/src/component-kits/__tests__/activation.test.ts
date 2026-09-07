@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   FiniteControlAppearance,
   FrequencyRenderer,
@@ -108,6 +108,10 @@ async function subject() {
 }
 
 beforeEach(() => {
+  vi.resetModules();
+});
+
+afterEach(() => {
   vi.resetModules();
 });
 
