@@ -27,6 +27,28 @@ DOC_EXACT = {
 }
 CI_EXACT = {"tests/test_ci_path_filters.py"}
 CORE_EXACT = {"pyproject.toml", "uv.lock", ".importlinter"}
+# Paths under docs/ that a test under tests/ reads (Path(...)/open()/
+# read_text()) at test time, not merely cites in a comment or docstring — a
+# change to any of these can break the named test(s), so they must run
+# pytest like any other test input rather than take the docs-only fast path.
+# Each comment stops being true, and the entry should be removed, once the
+# named test stops reading that file.
+CORE_DOCS_TEST_INPUT_EXACT = {
+    "docs/internals/ui-radio-control-contract.toml",  # tests/architecture/test_ui_radio_control_contract.py, tests/test_mor1408_registry_projection.py
+    "docs/parity/ic7610_command_matrix.json",  # tests/test_ic7610_parity_matrix.py
+    "docs/PROJECT.md",  # tests/test_ic7610_parity_matrix.py
+    "docs/parity/README.md",  # tests/test_ic7610_parity_matrix.py
+    "docs/operations/managed-runtime-packaging.md",  # tests/test_managed_runtime_packaging_doc.py
+    "docs/api/web.md",  # tests/test_web_api_contract.py
+    "docs/guide/web-ui.md",  # tests/test_web_api_contract.py, tests/test_docs_runtime_sync.py
+    "docs/api/command-catalog.md",  # tests/test_handlers_coverage.py, tests/test_command_catalog_docs.py
+    "docs/api/radio.md",  # tests/test_docs_runtime_sync.py
+    "docs/guide/connection.md",  # tests/test_docs_runtime_sync.py
+    "docs/api/audio.md",  # tests/test_docs_runtime_sync.py
+    "docs/guide/audio-recipes.md",  # tests/test_docs_runtime_sync.py
+    "docs/guide/diagnostic-reports.md",  # tests/test_docs_runtime_sync.py
+    "docs/internals/audio-capture-health.md",  # tests/test_docs_runtime_sync.py
+}
 
 
 class ClassificationError(ValueError):
@@ -42,6 +64,8 @@ def _parts(path: str) -> tuple[str, ...]:
 
 def is_documentation(path: str) -> bool:
     parts = _parts(path)
+    if path in CORE_DOCS_TEST_INPUT_EXACT:
+        return False
     suffix = PurePosixPath(path).suffix.lower()
     return (
         parts[0] in {"docs", ".claude"} or suffix in DOC_SUFFIXES or path in DOC_EXACT
@@ -67,6 +91,8 @@ def is_frontend(path: str) -> bool:
 
 def is_core(path: str) -> bool:
     parts = _parts(path)
+    if path in CORE_DOCS_TEST_INPUT_EXACT:
+        return True
     if is_documentation(path) or is_ci_control(path):
         return False
     return parts[0] in {"src", "tests", "rigs", "contracts"} or path in CORE_EXACT
