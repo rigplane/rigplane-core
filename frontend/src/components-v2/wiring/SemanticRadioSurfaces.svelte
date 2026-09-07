@@ -824,8 +824,7 @@
   let lastVfoFiniteAuthority: VfoFiniteAuthority | null | undefined;
   let lastFilterFiniteAuthority: FilterFiniteAuthority | null | undefined;
   let lastBandFiniteAuthority: BandFiniteAuthority | null | undefined;
-  const unsubscribeScopeFiniteAuthority = selectedFiniteAppearance === undefined ? undefined
-    : runtime.subscribeControlAuthority((publication) => {
+  const unsubscribeScopeFiniteAuthority = runtime.subscribeControlAuthority((publication) => {
       const next = scopeFiniteAuthority(publication.state, publication.caps, publication.session);
       if (!sameScopeFiniteAuthority(lastScopeFiniteAuthority, next)) {
         lastScopeFiniteAuthority = next;
@@ -1255,8 +1254,16 @@
     else tuneFrequency(active.receiver, choice.defaultHz, 'jump');
   }
   function enterFrequency(frequencyHz: number): void {
-    const active = view?.activeReceiver;
-    if (active?.status !== 'known') return;
+    const state = runtime.state, caps = runtime.caps, session = runtime.controlSession;
+    const model = toRadioViewModel(state, caps);
+    const authority = bandFiniteAuthority(state, caps, session);
+    const active = model?.activeReceiver;
+    const currentBand = model?.band;
+    if (authority === null || active?.status !== 'known'
+      || authority.activeReceiver !== active.receiver || currentBand === undefined
+      || currentBand.tuneMinHz === null || currentBand.tuneMaxHz === null
+      || !Number.isFinite(frequencyHz)
+      || frequencyHz < currentBand.tuneMinHz || frequencyHz > currentBand.tuneMaxHz) return;
     // MOR-1425 review round 2 (B1 residual): a typed frequency is the most
     // explicitly ABSOLUTE gesture in the UI — 'jump', same reasoning as
     // `selectBand` above.
@@ -1341,7 +1348,8 @@
   >
   {#snippet children(filterInstruments)}
   <BandInstrumentHost
-    {...bandFiniteRendererSelection} {view} onSelectBand={selectBand}
+    {...bandFiniteRendererSelection} {view} entryRendererContext={bandFiniteRendererContext}
+    onSelectBand={selectBand} onEnterFrequency={enterFrequency}
   >
   {#snippet children(bandInstruments)}
   <DspInstrumentHost
@@ -1824,7 +1832,7 @@
   -->
   {#snippet bandSurface(controlLayout?: BandControlLayout)}
     {#if view?.band}
-      <BandSurface {view} handles={bandInstruments} {controlLayout} onEnterFrequency={enterFrequency} />
+      <BandSurface {view} handles={bandInstruments} {controlLayout} />
     {/if}
   {/snippet}
 

@@ -152,10 +152,13 @@ describe('the band surface derives nothing (7B carry-forward 1)', () => {
     }
   });
 
-  it('declares view, instrument placement, and frequency-entry intent props', () => {
+  it('declares only view and the shared Band instrument placement', () => {
     const props = CODE.slice(CODE.indexOf('interface Props'), CODE.indexOf('}: Props'));
     expect([...props.matchAll(/^\s{4}(\w+)[?]?:/gm)].map((m) => m[1]))
-      .toEqual(['view', 'handles', 'controlLayout', 'onEnterFrequency']);
+      .toEqual(['view', 'handles', 'controlLayout']);
+    for (const displaced of ['entryText = $state', 'function commitFrequency', 'function parseMhzToHz']) {
+      expect(CODE).not.toContain(displaced);
+    }
   });
 
   it('renders nothing at all when the radio declares no band plan', () => {

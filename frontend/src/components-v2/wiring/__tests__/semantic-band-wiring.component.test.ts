@@ -416,6 +416,102 @@ describe('the live Band choice host uses current synchronous authority', () => {
   });
 });
 
+describe('the live Band frequency entry uses current synchronous authority', () => {
+  it('routes a retained pre-flush submit to the current receiver', () => {
+    render();
+    typeFrequency('7150000');
+    h.state = liveState({ active: 'SUB' } as Partial<ServerState>);
+
+    btn('entry-set')!.click();
+
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 7150000, receiver: 1 }]]);
+  });
+
+  it.each([
+    ['current bounds', () => {
+      h.caps = liveCaps([{ ...BAND_PLAN[0], start: 30000000, end: 60000000 }]);
+    }],
+    ['disconnected session', () => {
+      h.controlSession = { state: 'disconnected', epoch: 1 };
+    }],
+    ['provider mismatch', () => {
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    }],
+  ] as const)('refuses a retained pre-flush submit against %s', (_kind, invalidate) => {
+    render();
+    typeFrequency('14.200');
+    invalidate();
+
+    btn('entry-set')!.click();
+
+    expect(setFreqCalls()).toEqual([]);
+  });
+
+  it.each([
+    ['null', () => { h.controlSession = { state: 'disconnected', epoch: 1 }; },
+      () => { h.controlSession = { state: 'connected', epoch: 1 }; }],
+    ['session', () => { h.controlSession = { state: 'connected', epoch: 2 }; },
+      () => { h.controlSession = { state: 'connected', epoch: 1 }; }],
+    ['provider', () => {
+      h.state = { ...(h.state as ServerState), providerGeneration: 2 };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 2 };
+    }, () => {
+      h.state = { ...(h.state as ServerState), providerGeneration: 1 };
+      h.caps = { ...(h.caps as Capabilities), providerGeneration: 1 };
+    }],
+    ['topology', () => {
+      h.caps = { ...(h.caps as Capabilities), receivers: 1, vfoScheme: 'single' };
+    }, () => {
+      h.caps = { ...(h.caps as Capabilities), receivers: 2, vfoScheme: 'main_sub' };
+    }],
+  ] as const)('keeps draft but revokes stale commands through %s A-B-A', (_kind, toB, toA) => {
+    render();
+    typeFrequency('7.100');
+    const retainedInput = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    const retainedSet = btn('entry-set')!;
+
+    toB(); publishAuthority();
+    toA(); publishAuthority();
+    retainedInput.value = '14.200';
+    retainedInput.dispatchEvent(new Event('input', { bubbles: true }));
+    retainedSet.click();
+
+    expect(setFreqCalls()).toEqual([]);
+    flushSync();
+    expect(q<HTMLInputElement>('[data-testid="band-entry-input"]')!.value).toBe('7.100');
+    btn('entry-set')!.click();
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 7100000, receiver: 0 }]]);
+  });
+
+  it('keeps draft but revokes the old renderer through coalesced structural A-absent-A', () => {
+    render();
+    typeFrequency('7.100');
+    const retainedInput = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    const retainedSet = btn('entry-set')!;
+
+    h.caps = liveCaps([]);
+    publishAuthority();
+    h.caps = liveCaps(BAND_PLAN);
+    publishAuthority();
+    flushSync();
+
+    const currentInput = q<HTMLInputElement>('[data-testid="band-entry-input"]')!;
+    expect(currentInput).not.toBe(retainedInput);
+    expect(currentInput.value).toBe('7.100');
+    expect(setFreqCalls()).toEqual([]);
+
+    retainedInput.value = '14.200';
+    retainedInput.dispatchEvent(new Event('input', { bubbles: true }));
+    retainedSet.click();
+    expect(currentInput.value).toBe('7.100');
+    expect(setFreqCalls()).toEqual([]);
+
+    h.state = liveState({ active: 'SUB' } as Partial<ServerState>);
+    btn('entry-set')!.click();
+    expect(setFreqCalls()).toEqual([['set_freq', { freq: 7100000, receiver: 1 }]]);
+  });
+});
+
 /*
  * ── MOR-1425 review round 2 (B1 residual) ──────────────────────────────
  *

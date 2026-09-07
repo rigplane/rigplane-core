@@ -597,11 +597,11 @@ describe('RadioLayout structure', () => {
   });
 });
 
-describe('Band choice placement', () => {
+describe('Band instrument placement', () => {
   it.each([
     ['desktop-v2', true],
     ['sdr-test', false],
-  ] as const)('%s renders one choice before the one entry', (skinId, independent) => {
+  ] as const)('%s renders choice then entry exactly once', (skinId, independent) => {
     rt.state = structuredClone(stateFixture);
     rt.caps = structuredClone(capsFixture);
     const t = mountLayout(skinId);
@@ -614,6 +614,10 @@ describe('Band choice placement', () => {
     if (independent) {
       expect(grid?.querySelector('[data-field="bandChoice"] [data-testid="band-choices"]'))
         .not.toBeNull();
+      expect(grid?.querySelector('[data-field="frequencyEntry"] [data-testid="band-entry"]'))
+        .not.toBeNull();
+    } else {
+      expect(t.querySelector('[data-field="frequencyEntry"]')).toBeNull();
     }
     expect(choices[0]!.compareDocumentPosition(entries[0]!) & Node.DOCUMENT_POSITION_FOLLOWING)
       .toBeTruthy();

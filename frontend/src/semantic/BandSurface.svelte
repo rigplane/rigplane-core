@@ -3,9 +3,9 @@
 
   Presentation only. It renders the MOR-1294 `band` fact group — the current
   band, the capability-derived band choice set, the live TX permit and the
-  tuning envelope — and emits intents as callbacks. It holds no state beyond
-  the operator's own unsubmitted keystrokes, consults no controller and owns
-  no command path.
+  tuning envelope — and emits intents as callbacks. The retained
+  `BandInstrumentHost` owns the operator's unsubmitted entry draft; this
+  surface consults no controller and owns no command path.
 
   SAFETY-ADJACENT. This surface renders TX-PERMISSION information: a fail-open
   bug here tells an operator "you may transmit" where transmission is not
@@ -54,11 +54,10 @@
   import { t } from '$lib/i18n';
   import type { BandField, DisabledReasonCode, RadioViewModel } from './radio-view-model';
   import type { BandControlLayout, BandInstrumentHandles } from './band-instruments';
-  import { mhz } from './band-instruments';
-  export { defaultPermitLabel, mhz } from './band-instruments';
-
-  /** The ONE rendering of "not measured". Never a band name, never a number. */
-  export const UNKNOWN_TEXT = '—';
+  import { UNKNOWN_TEXT } from './band-instruments';
+  export {
+    defaultPermitLabel, interpretFrequencyEntry, mhz, UNKNOWN_TEXT,
+  } from './band-instruments';
 
   /** The `disabledReasons` codes that can EXPLAIN a TX denial, in the order
    *  they are preferred. Rule (3): explanation only — the denial itself is
@@ -108,46 +107,6 @@
     f.reading.status === 'known' ? String(f.reading.value) : UNKNOWN_TEXT;
   export const isCurrent = (f: BandField<string>, name: string): boolean =>
     f.reading.status === 'known' && f.reading.value === name;
-
-  /**
-   * MOR-1462 (owner ruling B) — the standard ham direct-entry heuristic. A
-   * decimal point always means MHz, parsed as an EXACT DECIMAL STRING to
-   * integer Hz (never `Number(text) * 1e6` — a float round-trip can miss
-   * the exact Hz a double cannot represent, which rule 5's boundary
-   * comparison must never lose a digit to). A bare integer is read as kHz
-   * when that reading falls inside the radio's declared tunable range, Hz
-   * when only the raw reading does, and kHz WINS when both do (the
-   * ambiguous case — e.g. a range wide enough that both `7100` and
-   * `7100`×1000 are in-band). `null` means the SAME visible refusal a
-   * malformed or out-of-range entry already produced (rule 5, unrelaxed):
-   * `entryReady` stays false and nothing dispatches.
-   */
-  export function interpretFrequencyEntry(
-    raw: string, minHz: number, maxHz: number,
-  ): number | null {
-    const text = raw.trim();
-    if (text === '' || !Number.isFinite(minHz) || !Number.isFinite(maxHz)) return null;
-    if (text.includes('.')) return parseMhzToHz(text, minHz, maxHz);
-    if (!/^\d+$/.test(text)) return null;
-    const value = Number(text);
-    const asKhz = value * 1000;
-    if (asKhz >= minHz && asKhz <= maxHz) return asKhz;
-    if (value >= minHz && value <= maxHz) return value;
-    return null;
-  }
-
-  /** MHz decimal string -> exact integer Hz by scaling the DIGITS
-   *  themselves, so `14.0741` lands on exactly 14074100 with no
-   *  double-precision round-trip. More than 6 fractional digits is finer
-   *  than 1 Hz and is refused outright, same as an out-of-range value. */
-  function parseMhzToHz(text: string, minHz: number, maxHz: number): number | null {
-    const match = /^(\d+)\.(\d+)$/.exec(text);
-    if (!match) return null;
-    const [, whole, frac] = match;
-    if (frac.length > 6) return null;
-    const hz = Number(whole) * 1_000_000 + Number(frac.padEnd(6, '0'));
-    return hz >= minHz && hz <= maxHz ? hz : null;
-  }
 
   /** Rule (3): consulted ONLY once `currentBandTx` already said `denied` (or,
    *  from the fix-round F1 caveat, once the authoritative `txPermit` itself is
@@ -210,85 +169,11 @@
     view: RadioViewModel;
     handles: BandInstrumentHandles;
     controlLayout?: BandControlLayout;
-    onEnterFrequency?: (frequencyHz: number) => void;
   }
-  let { view, handles, controlLayout, onEnterFrequency }: Props = $props();
+  let { view, handles, controlLayout }: Props = $props();
 
   /** Absent group ⇒ this surface renders nothing (S0 optional-group doctrine). */
   let band = $derived(view.band);
-  /** Rule (4). */
-  let receiverKnown = $derived(view.activeReceiver.status === 'known');
-  /** Rule (5). */
-  let boundsKnown = $derived(
-    band !== undefined && band.tuneMinHz !== null && band.tuneMaxHz !== null,
-  );
-  /** The operator's raw keystrokes, kept as typed: an empty or malformed entry
-   *  must stay refusable rather than coerce to 0 Hz. */
-  let entryText = $state('');
-  /** MOR-1462: the smart kHz/MHz/Hz interpretation of `entryText`, or `null`
-   *  while it cannot resolve to an in-range Hz value. Bounds must be KNOWN
-   *  first (rule 5) — this stays `null`, never a guess, until they are. */
-  let interpretedHz = $derived(
-    boundsKnown && band?.tuneMinHz != null && band?.tuneMaxHz != null
-      ? interpretFrequencyEntry(entryText, band.tuneMinHz, band.tuneMaxHz)
-      : null,
-  );
-  let entryReady = $derived(receiverKnown && boundsKnown && interpretedHz !== null);
-  /** The operator-visible confirmation of what their keystrokes resolved to
-   *  — shown before commit so a kHz/MHz/Hz misread is caught before it
-   *  tunes, per the ticket's own "→ 7.100 MHz" example. Gated on
-   *  `entryReady` (review hardening), not just a resolvable `interpretedHz`
-   *  — otherwise a valid-looking target could render next to a Set button
-   *  the receiver-unknown gate has permanently disabled. */
-  let entryHint = $derived(
-    entryReady && interpretedHz !== null ? `→ ${mhz(interpretedHz)}` : '',
-  );
-
-  function commitFrequency(): void {
-    if (!entryReady || interpretedHz === null) return;
-    onEnterFrequency?.(interpretedHz);
-  }
-  /** MOR-1444: Escape cancels a typed entry — clears the keystrokes without
-   *  dispatching, mirroring the "never coerce a malformed entry" rule above
-   *  rather than adding a second dispatch guard. */
-  function cancelEntry(): void {
-    entryText = '';
-  }
-  /** MOR-1444: Enter commits through the same `commitFrequency` path (and
-   *  therefore the same `entryReady` guard) the Set button already uses;
-   *  Escape cancels. Template-only wiring — no new prop, import or hook. */
-  function handleEntryKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      // Round-3 review: preventDefault() alone never stops propagation —
-      // harmless here (Enter has no shipped window-level binding today),
-      // but this key is not itself the safety property, so it gets the
-      // same treatment as Escape rather than relying on that being true.
-      event.stopPropagation();
-      commitFrequency();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      // Round-3 review (REQUIRED FIX): preventDefault() does NOT stop
-      // propagation. Every rig profile ships "Escape -> clear_rit_xit"
-      // (rigs/_keyboard-default.toml) on KeyboardHandler's window-level
-      // listener. Without stopPropagation, this keydown — after the blur
-      // below already moved document.activeElement off the (ignored-tag)
-      // input — would bubble to that listener and fire a REAL radio write
-      // (makeRitXitHandlers().onClear()), silently clearing the operator's
-      // RIT/XIT offset on a frequency-entry cancel. The ticket's "Esc
-      // cancels entry without dispatch" means this dispatch too.
-      event.stopPropagation();
-      cancelEntry();
-      // Round-2 review, recorder item 3: leaving focus in the (now-empty)
-      // input keeps it an "ignored tag" for KeyboardHandler's
-      // shouldIgnoreEvent, silently suppressing band hotkeys until a Tab.
-      // Blurring un-suppresses them immediately. This does not attempt to
-      // return focus to wherever the gesture started (this file has no
-      // reference to that, and the entry may have been reached without one)
-      // — the next Tab resumes from the document's normal order.
-      if (event.currentTarget instanceof HTMLElement) event.currentTarget.blur();
-    }
-  }
 </script>
 
 {#if band}
@@ -322,43 +207,12 @@
       {/if}
     </p>
 
-    {#if controlLayout}{@render controlLayout(handles)}{:else}{@render handles.bandChoice()}{/if}
-
-    <label class="band-row" data-testid="band-entry" data-bounds={boundsKnown}>
-      <span class="band-name">FREQ</span>
-      <!-- MOR-1462: type="text"/inputmode="decimal" rather than
-           type="number" — the smart interpretation accepts kHz-scale
-           keystrokes numerically far below `tuneMinHz` (a valid kHz entry
-           for a band whose bounds are stated in Hz), which a native
-           number-input min/max would flag as invalid despite being
-           correct; unit resolution is entirely this file's own JS-side
-           `interpretFrequencyEntry`, not the browser's. The
-           `[data-freq-entry]` hook and the reset-on-first-digit routing in
-           KeyboardHandler.svelte are type-agnostic (`.value =`/`input`
-           event only) and are unaffected by this change. -->
-      <input
-        type="text" inputmode="decimal" data-testid="band-entry-input" data-freq-entry
-        value={entryText} disabled={!receiverKnown || !boundsKnown}
-        oninput={(event) => { entryText = event.currentTarget.value; }}
-        onkeydown={handleEntryKeydown}
-      />
-      {#if entryHint}
-        <span data-testid="band-entry-hint">{entryHint}</span>
-      {/if}
-      <span data-testid="band-entry-range">{boundsKnown && band.tuneMinHz !== null
-        && band.tuneMaxHz !== null
-        ? `${mhz(band.tuneMinHz)} … ${mhz(band.tuneMaxHz)}`
-        : UNKNOWN_TEXT}</span>
-      <button
-        type="button" data-testid="band-entry-set" disabled={!entryReady}
-        onclick={commitFrequency}
-      >Set</button>
-      {#if !boundsKnown || !receiverKnown}
-        <span data-testid="band-entry-reason">{boundsKnown
-          ? t('core.band.entry.reason.receiverUnconfirmed')
-          : t('core.band.entry.reason.boundsUnknown')}</span>
-      {/if}
-    </label>
+    {#if controlLayout}
+      {@render controlLayout(handles)}
+    {:else}
+      {@render handles.bandChoice()}
+      {@render handles.frequencyEntry()}
+    {/if}
   </section>
 {/if}
 
@@ -371,5 +225,4 @@
   /* Second channel beside `data-observed`/`data-tx`, never the only one: the
      rendered word itself is the primary one and survives forced-colors. */
   [data-observed='false'] { font-style: italic; }
-  input:disabled { cursor: not-allowed; }
 </style>

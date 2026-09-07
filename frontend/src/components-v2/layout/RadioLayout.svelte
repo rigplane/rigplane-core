@@ -335,6 +335,9 @@
 {#snippet bandControlLayout(bandInstruments: BandInstrumentHandles)}
   <div class="band-control-grid" data-testid="band-control-grid">
     <div class="band-control-seat" data-field="bandChoice">{@render bandInstruments.bandChoice()}</div>
+    <div class="band-control-seat" data-field="frequencyEntry">
+      {@render bandInstruments.frequencyEntry()}
+    </div>
   </div>
 {/snippet}
 
